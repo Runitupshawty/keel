@@ -47,6 +47,9 @@ windows = { workspace = true, features = ["Win32_Security", "Win32_System_Thread
 
 [dev-dependencies]
 tempfile = "3"
+# Cloud sources walk through a cloud provider (opendal's memory service in tests).
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud"] }
+opendal = { workspace = true, features = ["services-memory"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # Peak working set for the 2M-entry perf test.

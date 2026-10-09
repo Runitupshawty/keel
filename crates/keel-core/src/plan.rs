@@ -10,7 +10,10 @@ use crate::{oplog, Cancelled, Indexer, Library, SourceId};
 use anyhow::{Context, Result};
 use keel_vfs::{ops::Conflict, Kind, VPath};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnConflict {
@@ -120,8 +123,12 @@ pub struct Change {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Warning {
-    /// Deleting `path` removes the only indexed copy of `files` files' content.
+    /// Deleting `path` removes the only indexed copy of `files` files' content (copies on
+    /// lost or retired volumes do not count).
     LastCopy { path: VPath, files: u64 },
+    /// `files` files under `path` are their content's only copies outside one failure
+    /// domain: after the delete every copy left shares one disk (or account, or host).
+    SingleDomain { path: VPath, files: u64 },
     /// Projected from the source's last generation; executing fails while it is offline.
     OfflineSource { source: SourceId, label: String },
     /// Not in the index: projected from the live filesystem.
@@ -168,6 +175,7 @@ impl std::error::Error for PlanChanged {}
 fn kind_of(w: &Warning) -> Warning {
     match w.clone() {
         Warning::LastCopy { path, .. } => Warning::LastCopy { path, files: 0 },
+        Warning::SingleDomain { path, .. } => Warning::SingleDomain { path, files: 0 },
         Warning::ContentUnverified { path, .. } => Warning::ContentUnverified { path, files: 0 },
         w => w,
     }
@@ -431,32 +439,33 @@ fn sampled_alone(lib: &Shared, h: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
-/// `LastCopy` for each deleted path holding files whose content no record outside the
-/// deletion holds (by content id, or a sampled hash no other record shares);
+/// `LastCopy` for each deleted path holding files whose content no counted record outside
+/// the deletion holds (by content id, or a sampled hash no other record shares);
+/// `SingleDomain` for files whose remaining copies all fall in one failure domain;
 /// `ContentUnverified` for the other files without a content id yet.
 fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Result<()> {
-    /// (content id, files with it) under one deleted path.
+    /// (content id, deleted records with it) under one deleted path.
     type Contents = Vec<(Vec<u8>, u64)>;
-    let mut deleted: HashMap<Vec<u8>, u64> = HashMap::new();
+    let mut deleted: HashMap<Vec<u8>, HashSet<(String, i64)>> = HashMap::new();
     // (path, its content ids, its files whose sampled hash is unique)
     let mut per_path: Vec<(VPath, Contents, u64)> = Vec::new();
     for p in paths {
         let Some((src, rel)) = lib.source_for(p) else {
             continue;
         };
-        let (cas, pending) = {
+        let (rows, pending) = {
             let c = src.store.get()?;
             let Some((id, _)) = resolve(&c, &rel, src.nocase())? else {
                 continue;
             };
-            let cas: Contents = c
+            let rows: Vec<(Vec<u8>, i64)> = c
                 .prepare_cached(
                     "WITH RECURSIVE sub(id) AS (
                          SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
-                     SELECT cas_id, count(*) FROM record
-                     WHERE id IN (SELECT id FROM sub) AND cas_id IS NOT NULL GROUP BY cas_id",
+                     SELECT cas_id, id FROM record
+                     WHERE id IN (SELECT id FROM sub) AND cas_id IS NOT NULL AND drift IS NULL",
                 )?
-                .query_map([id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             let pending: Vec<Option<Vec<u8>>> = c
                 .prepare_cached(
@@ -467,7 +476,7 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
                 )?
                 .query_map([id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
-            (cas, pending)
+            (rows, pending)
         };
         let (mut unverified, mut alone) = (0, 0);
         for sampled in pending {
@@ -482,29 +491,47 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
                 files: unverified,
             });
         }
-        for (c, n) in &cas {
-            *deleted.entry(c.clone()).or_default() += n;
+        let mut cas: HashMap<Vec<u8>, u64> = HashMap::new();
+        for (c, id) in rows {
+            deleted
+                .entry(c.clone())
+                .or_default()
+                .insert((src.id.0.clone(), id));
+            *cas.entry(c).or_default() += 1;
         }
-        per_path.push((p.clone(), cas, alone));
+        per_path.push((p.clone(), cas.into_iter().collect(), alone));
     }
-    // A hard link outside the deletion keeps the content too: records are counted here,
-    // not files.
-    // ponytail: one count per content id per source; batch it if deletes of huge hashed
+    // Per content: (no counted copy left, left in one failure domain only). A hard link
+    // outside the deletion keeps the content too.
+    // ponytail: one lookup per content id per source; batch it if deletes of huge hashed
     // trees get slow.
-    let mut total: HashMap<&[u8], u64> = HashMap::new();
-    for cas in deleted.keys() {
-        let copies = crate::hash::copies(lib, cas)?;
-        total.insert(cas, copies.iter().map(|(_, keys)| keys.len() as u64).sum());
+    let mut left: HashMap<&[u8], (bool, bool)> = HashMap::new();
+    if !deleted.is_empty() {
+        let vols = crate::protect::Volumes::load(lib)?;
+        for (cas, records) in &deleted {
+            left.insert(cas, crate::protect::after_delete(lib, &vols, cas, records)?);
+        }
     }
     for (path, cas, alone) in per_path {
-        let files: u64 = alone
-            + cas
-                .iter()
-                .filter(|(c, _)| total[c.as_slice()] <= deleted[c])
+        let count = |pick: fn(&(bool, bool)) -> bool| -> u64 {
+            cas.iter()
+                .filter(|(c, _)| pick(&left[c.as_slice()]))
                 .map(|(_, n)| n)
-                .sum::<u64>();
+                .sum()
+        };
+        let files = alone + count(|l| l.0);
+        let single = count(|l| l.1);
         if files > 0 {
-            warnings.push(Warning::LastCopy { path, files });
+            warnings.push(Warning::LastCopy {
+                path: path.clone(),
+                files,
+            });
+        }
+        if single > 0 {
+            warnings.push(Warning::SingleDomain {
+                path,
+                files: single,
+            });
         }
     }
     Ok(())

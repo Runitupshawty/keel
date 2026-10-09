@@ -133,16 +133,18 @@ fn collisions_are_hashed_whole_and_only_true_copies_are_duplicates() {
     assert!(!lib.last_copy(&rec(sa, "big1.bin")).unwrap());
     assert!(lib.last_copy(&rec(sa, "unique.bin")).unwrap());
     let copies = lib.redundancy(&rec(sb, "big3.bin")).unwrap();
-    assert_eq!(copies.count, 2);
+    assert_eq!(copies.copies, 2);
     assert_eq!(
         copies
             .locations
             .iter()
-            .map(|v| v.label.as_str())
+            .map(|v| v.source_label.as_str())
             .collect::<Vec<_>>(),
         ["s0", "s1"]
     );
-    assert_eq!(lib.redundancy(&rec(sa, "other.txt")).unwrap().count, 1);
+    // Both folders are on one disk: one failure domain.
+    assert_eq!(copies.failure_domains, 1);
+    assert_eq!(lib.redundancy(&rec(sa, "other.txt")).unwrap().copies, 1);
     assert_eq!(lib.stats().unique_content, 5);
 
     // LastCopy warnings follow the content ids.
@@ -386,7 +388,7 @@ fn hard_links_are_not_copies() {
     let dups = lib.duplicates(0).unwrap();
     assert_eq!(dups.len(), 1);
     assert_eq!(dups[0].records, [rec(&s[0], "x.txt"), rec(&s[0], "z.txt")]);
-    assert_eq!(lib.redundancy(&rec(&s[0], "y.txt")).unwrap().count, 2);
+    assert_eq!(lib.redundancy(&rec(&s[0], "y.txt")).unwrap().copies, 2);
     std::fs::remove_file(a.join("z.txt")).unwrap();
     walk(&s[0], &lib.router()).unwrap();
     assert!(lib.duplicates(0).unwrap().is_empty());

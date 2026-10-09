@@ -477,6 +477,12 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             files(*n, "is", "are"),
             path.name()
         ),
+        // --- Task 33 ---
+        Warning::SingleDomain { path, files: n } => format!(
+            "{} the only copy outside one failure domain: every copy left would be on one              disk, account or host ({})",
+            files(*n, "is", "are"),
+            path.name()
+        ),
     }
 }
 
