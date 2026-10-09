@@ -8,6 +8,11 @@ repository.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = ["power"]
+# Pause hashing on battery power.
+power = ["dep:battery"]
+
 [dependencies]
 anyhow.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
@@ -22,9 +27,14 @@ directories.workspace = true
 regex.workspace = true
 notify-debouncer-mini = "0.4"
 tracing.workspace = true
+blake3.workspace = true
+battery = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Security"] }
+windows = { workspace = true, features = ["Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

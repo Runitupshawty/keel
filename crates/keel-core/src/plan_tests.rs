@@ -5,7 +5,7 @@ use crate::oplog::OUTSIDE;
 use crate::{JobStatus, SourceKind};
 use keel_vfs::Router;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 fn v(p: &Path) -> VPath {
     VPath::local(p)

@@ -64,3 +64,7 @@ CREATE TRIGGER record_au AFTER UPDATE OF name, path ON record BEGIN
 END;
 CREATE TABLE tag(id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT, parent INTEGER);
 CREATE TABLE record_tag(record INTEGER NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY(record, tag));
+
+-- @source 2
+-- Content identity: sampled-hash collisions are looked up per hashed file.
+CREATE INDEX record_sampled ON record(sampled_hash) WHERE sampled_hash IS NOT NULL;

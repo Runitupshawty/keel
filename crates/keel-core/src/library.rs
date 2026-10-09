@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -26,6 +26,13 @@ impl std::fmt::Display for SourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// One record of one source (record ids are per source store).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RecordRef {
+    pub source: SourceId,
+    pub id: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +203,9 @@ pub(crate) struct Shared {
     pub(crate) db: Pool,
     pub(crate) sources: RwLock<Vec<Arc<Source>>>,
     pub(crate) router: RwLock<Arc<Router>>,
+    /// Set by the app while the user is busy: background hashing pauses.
+    pub(crate) activity: AtomicBool,
+    pub(crate) pause_on_battery: AtomicBool,
 }
 
 impl Shared {
@@ -262,6 +272,8 @@ impl Library {
             db,
             sources: RwLock::new(sources),
             router: RwLock::new(Arc::new(Router::new())),
+            activity: AtomicBool::new(false),
+            pause_on_battery: AtomicBool::new(true),
         });
         let lib = Library {
             id: LibraryId(id),
@@ -273,6 +285,7 @@ impl Library {
         // Built-in kinds resume here; others when the app registers them.
         lib.jobs.register("index", IndexJob::restore)?;
         lib.jobs.register("op", crate::plan::ExecJob::restore)?;
+        lib.jobs.register("hash", crate::HashJob::restore)?;
         Ok(lib)
     }
 

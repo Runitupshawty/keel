@@ -5,17 +5,19 @@
 
 mod db;
 mod fsid;
+mod hash;
 mod index;
 mod jobs;
 mod library;
 mod oplog;
 mod plan;
 
+pub use hash::{on_battery, Copies, DupGroup, HashJob, VolumeRef, SAMPLE, WHOLE};
 pub use index::{ChangeEvent, IndexProgress, Indexer, WatchHandle, BATCH, POLL_INTERVAL};
 pub use jobs::{Job, JobCtx, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
-    Library, LibraryId, LibraryStats, LibrarySummary, Source, SourceDef, SourceId, SourceKind,
-    SourceStatus, SourceSummary,
+    Library, LibraryId, LibraryStats, LibrarySummary, RecordRef, Source, SourceDef, SourceId,
+    SourceKind, SourceStatus, SourceSummary,
 };
 pub use oplog::OpLogEntry;
 pub use plan::{validate_preview_execute, Action, Change, OnConflict, Op, Plan, Warning};

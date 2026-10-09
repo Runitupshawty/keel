@@ -10,7 +10,7 @@ use crate::{oplog, Cancelled, Indexer, Library, SourceId};
 use anyhow::{Context, Result};
 use keel_vfs::{ops::Conflict, Kind, VPath};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnConflict {
@@ -355,8 +355,8 @@ fn exists(lib: &Shared, p: &VPath) -> bool {
     }
 }
 
-/// `LastCopy` for each deleted path holding files whose content id has no record outside
-/// the deletion. Files without a content id yet are not counted.
+/// `LastCopy` for each deleted path holding files whose content id has no confirmed record
+/// outside the deletion. Files without a content id yet are not counted.
 fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Result<()> {
     /// (content id, files with it) under one deleted path.
     type Contents = Vec<(Vec<u8>, u64)>;
@@ -387,19 +387,13 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
     if deleted.is_empty() {
         return Ok(());
     }
+    // Copies elsewhere count only with a confirmed (whole-file) content id: an unconfirmed
+    // shared sampled hash is not proof of a second copy.
     // ponytail: one count per content id per source; batch it if deletes of huge hashed
     // trees get slow.
-    let sources: Vec<Arc<Source>> = lib.sources.read().clone();
     let mut total: HashMap<&[u8], u64> = HashMap::new();
     for cas in deleted.keys() {
-        let mut n = 0u64;
-        for s in &sources {
-            n += s.store.get()?.query_row(
-                "SELECT count(*) FROM record WHERE cas_id = ?1",
-                [cas],
-                |r| r.get::<_, i64>(0),
-            )? as u64;
-        }
+        let n = crate::hash::copies(lib, cas)?.iter().map(|(_, n)| n).sum();
         total.insert(cas, n);
     }
     for (path, cas) in per_path {
