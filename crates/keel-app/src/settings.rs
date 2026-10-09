@@ -37,6 +37,9 @@ pub struct Settings {
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
     /// keychain only.
     pub clouds: Vec<keel_vfs::CloudAccount>,
+    // --- Task 24 ---
+    /// A second `keel` hands its folder / search to the running one and exits.
+    pub single_instance: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +59,7 @@ impl Default for Settings {
             remote_thumbnails: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
+            single_instance: true,
         }
     }
 }
@@ -95,7 +99,7 @@ impl Settings {
         config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("profiles")
-            .join("default")
+            .join(crate::cli::profile()) // Task 24: `--profile`
             .join("config.toml")
     }
 
@@ -339,6 +343,11 @@ pub fn window(
                         )
                         .suffix(" MB"),
                     );
+                    ui.end_row();
+                    // --- Task 24 ---
+                    ui.label("Instances");
+                    ui.checkbox(&mut s.single_instance, "Reuse the running window")
+                        .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
                     ui.end_row();
                 });
             ui.add_space(4.0);

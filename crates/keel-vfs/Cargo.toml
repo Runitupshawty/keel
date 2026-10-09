@@ -86,7 +86,8 @@ trash = "5"
 sysinfo = { version = "0.32", default-features = false, features = ["disk"] }
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+# Task 24: the console and window helpers in `desktop`.
+windows = { workspace = true, features = ["Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 opendal = { workspace = true, features = ["services-memory"] }

@@ -27,6 +27,11 @@ pub struct Boot {
     pub home: VPath,
     /// The session as found on disk; `Some` turns saving on (off in tests).
     pub saved: Option<Option<Session>>,
+    // --- Task 24 ---
+    /// FOLDER / --search from the command line.
+    pub request: crate::cli::Request,
+    /// This process is the single instance: requests from later `keel` runs arrive here.
+    pub server: Option<crate::single_instance::Listener>,
 }
 
 impl Boot {
@@ -39,6 +44,8 @@ impl Boot {
             notices: Vec::new(),
             home: start,
             saved: None,
+            request: Default::default(),
+            server: None,
         }
     }
 }
@@ -78,6 +85,16 @@ impl App {
             state.toasts.error(notice);
         }
         state.load_searcher();
+        // --- Task 24 ---
+        state.external(boot.request);
+        if let Some(listener) = boot.server {
+            let (tx, ctx) = (state.tx.clone(), cc.egui_ctx.clone());
+            crate::single_instance::serve(listener, move |req| {
+                crate::single_instance::bring_to_front(&ctx);
+                crate::worker::send(&tx, &ctx, crate::state::Msg::External(req));
+            });
+        }
+        // --- end Task 24 ---
         Self {
             state,
             split: 0.5,

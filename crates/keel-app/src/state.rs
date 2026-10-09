@@ -132,6 +132,9 @@ pub enum Msg {
     /// A notice for an info toast.
     Info(String),
     // --- end remotes ---
+    // --- Task 24 ---
+    /// A later `keel` run handed over its command line (single instance).
+    External(crate::cli::Request),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -519,6 +522,8 @@ impl AppState {
             Msg::Remote(event) => self.remote_event(event),
             Msg::Download { name, done, total } => self.download_progress(name, done, total),
             Msg::Info(text) => self.toasts.info(text),
+            // --- Task 24 ---
+            Msg::External(req) => self.external(req),
         }
     }
 
