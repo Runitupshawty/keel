@@ -8,10 +8,17 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Linux system libraries
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -20,6 +27,12 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  check:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+
   release:
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
@@ -27,12 +40,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Fetch runtime dependencies
         shell: pwsh
-        run: ./scripts/fetch-deps.ps1
+        run: |
+          ./scripts/fetch-deps.ps1
+          if (-not (Get-ChildItem target/deps -Filter 'pdfium*.dll')) { throw 'pdfium library missing from target/deps' }
       - name: Build release
         run: cargo build --release
       - name: Package release

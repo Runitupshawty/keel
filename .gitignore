@@ -1,2 +1,5 @@
 target/
 *.log
+*.zip
+*.tar.gz
+target/deps/

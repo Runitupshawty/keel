@@ -23,3 +23,6 @@ windows.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }
