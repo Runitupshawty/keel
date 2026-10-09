@@ -61,6 +61,18 @@ impl Idle {
 mod tests {
     use super::*;
     #[test]
+    fn scrolling_back_more_than_one_screen_is_safe() {
+        // vt100 0.15 underflowed here (offset > rows); 0.16 clamps.
+        let mut parser = vt100::Parser::new(3, 10, 10_000);
+        for i in 0..20 {
+            parser.process(format!("line{i}\r\n").as_bytes());
+        }
+        parser.screen_mut().set_scrollback(9);
+        assert_eq!(parser.screen().scrollback(), 9);
+        assert_eq!(parser.screen().cell(0, 4).unwrap().contents(), "9");
+        assert!(parser.screen().contents().starts_with("line9"));
+    }
+    #[test]
     fn idle_needs_submitted_input_and_a_prompt() {
         let mut idle = Idle::default();
         assert_eq!(idle.output(true), None); // first prompt after startup

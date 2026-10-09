@@ -16,7 +16,7 @@ use std::thread::JoinHandle;
 struct Resources {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     reader: JoinHandle<()>,
     waiter: JoinHandle<()>,
 }
@@ -157,7 +157,7 @@ impl Session {
             resources: Some(Resources {
                 master: Mutex::new(pair.master),
                 writer,
-                killer: Arc::new(Mutex::new(killer)),
+                killer: Mutex::new(killer),
                 reader,
                 waiter,
             }),
@@ -179,7 +179,10 @@ impl Session {
         if let Some(r) = &self.resources {
             r.master.lock().resize(size(cols, rows))?;
         }
-        self.grid.lock().set_size(rows.max(1), cols.max(1));
+        self.grid
+            .lock()
+            .screen_mut()
+            .set_size(rows.max(1), cols.max(1));
         Ok(())
     }
     pub fn grid(&self) -> MutexGuard<'_, vt100::Parser> {
@@ -199,19 +202,15 @@ impl Session {
         drop(idle);
         let _ = self.write(line.as_bytes());
     }
-    /// Asynchronous counterpart to `kill`, usable by the UI while an input worker
-    /// owns another reference. It also interrupts a blocked PTY write on close.
+    /// Kills the child without waiting (usable through a shared `Arc`). The cloned
+    /// killer only signals (TerminateProcess / SIGHUP), so this never blocks; it also
+    /// unblocks a PTY write stuck on a dead reader.
     pub fn terminate(&self) {
         if !self.alive.swap(false, Ordering::AcqRel) {
             return;
         }
         if let Some(r) = &self.resources {
-            let killer = r.killer.clone();
-            let _ = std::thread::Builder::new()
-                .name("keel-pty-kill".into())
-                .spawn(move || {
-                    let _ = killer.lock().kill();
-                });
+            let _ = r.killer.lock().kill();
         }
     }
     /// Terminates the child; resource cleanup is off-thread because ConPTY close may block.
