@@ -42,7 +42,8 @@ pub enum Op {
         dst_dir: VPath,
         on_conflict: OnConflict,
     },
-    /// To the OS trash (never a permanent delete).
+    /// To the OS trash locally; other providers remove their way (`Warning::Permanent` when
+    /// it cannot be undone).
     Delete {
         paths: Vec<VPath>,
     },
@@ -130,6 +131,11 @@ pub enum Warning {
         path: VPath,
         on_conflict: OnConflict,
     },
+    /// The provider deletes for good (no trash): SFTP, S3.
+    Permanent { path: VPath },
+    /// `files` deleted files have no content id yet, so whether another copy exists is not
+    /// known (no `LastCopy` can be computed for them).
+    ContentUnverified { path: VPath, files: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,8 +222,15 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
         }
         Op::Delete { paths } => {
             anyhow::ensure!(!paths.is_empty(), "nothing to delete");
+            let router = lib.router.read().clone();
             for p in paths {
                 let probe = probe(lib, p, &mut warnings)?;
+                let permanent = router
+                    .provider_for(p)
+                    .is_some_and(|pr| pr.remove_kind() == keel_vfs::RemoveKind::Permanent);
+                if permanent {
+                    warnings.push(Warning::Permanent { path: p.clone() });
+                }
                 changes.push(Change {
                     action: Action::Delete,
                     from: p.clone(),
@@ -356,7 +369,7 @@ fn exists(lib: &Shared, p: &VPath) -> bool {
 }
 
 /// `LastCopy` for each deleted path holding files whose content id has no confirmed record
-/// outside the deletion. Files without a content id yet are not counted.
+/// outside the deletion; `ContentUnverified` for files without a content id yet.
 fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Result<()> {
     /// (content id, files with it) under one deleted path.
     type Contents = Vec<(Vec<u8>, u64)>;
@@ -379,6 +392,20 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
         let cas: Contents = stmt
             .query_map([id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
             .collect::<rusqlite::Result<_>>()?;
+        let unverified: i64 = c
+            .prepare_cached(
+                "WITH RECURSIVE sub(id) AS (
+                     SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
+                 SELECT count(*) FROM record
+                 WHERE id IN (SELECT id FROM sub) AND kind = 0 AND cas_id IS NULL",
+            )?
+            .query_row([id], |r| r.get(0))?;
+        if unverified > 0 {
+            warnings.push(Warning::ContentUnverified {
+                path: p.clone(),
+                files: unverified as u64,
+            });
+        }
         for (c, n) in &cas {
             *deleted.entry(c.clone()).or_default() += n;
         }

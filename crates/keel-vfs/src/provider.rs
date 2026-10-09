@@ -6,6 +6,17 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+/// What `Provider::remove` does (for delete confirmations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveKind {
+    /// Local: the OS trash. Google Drive: the Drive trash.
+    Trash,
+    /// Dropbox: deleted, restorable from dropbox.com for about 30 days.
+    RecoverableDelete,
+    /// SFTP, S3: gone (unless the bucket keeps versions).
+    Permanent,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
     pub write: bool,
@@ -68,6 +79,10 @@ pub trait Provider: Send + Sync {
     }
     /// Local: OS trash only, never a permanent delete.
     fn remove(&self, p: &VPath) -> Result<()>;
+    /// What `remove` does here; permanent unless the provider says otherwise.
+    fn remove_kind(&self) -> RemoveKind {
+        RemoveKind::Permanent
+    }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
     /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
     fn local_copy_cancellable(

@@ -81,6 +81,11 @@ fn preview_projects_from_the_index_with_last_copy_warnings() {
     assert_eq!(
         plan.warnings,
         [
+            // other/a.txt has no content id.
+            Warning::ContentUnverified {
+                path: other.clone(),
+                files: 1,
+            },
             Warning::LastCopy {
                 path: keep.clone(),
                 files: 2,
@@ -195,10 +200,14 @@ fn offline_sources_preview_from_their_last_generation() {
     assert_eq!((plan.changes[0].files, plan.changes[0].bytes), (1, 7));
     assert_eq!(
         plan.warnings,
-        [Warning::OfflineSource {
-            source: src.id.clone(),
-            label: "box".into(),
-        }]
+        [
+            Warning::OfflineSource {
+                source: src.id.clone(),
+                label: "box".into(),
+            },
+            Warning::Permanent { path: a.clone() },
+            Warning::ContentUnverified { path: a, files: 1 },
+        ]
     );
 }
 
@@ -336,7 +345,17 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
         },
     )
     .unwrap();
-    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    // No trash on this provider, and nothing is known about other copies.
+    assert_eq!(
+        plan.warnings,
+        [
+            Warning::Permanent { path: f.clone() },
+            Warning::ContentUnverified {
+                path: f.clone(),
+                files: 1
+            },
+        ]
+    );
     // Executed after the path vanished from the plan's second item: skipped, not failed.
     let job = lib
         .jobs()

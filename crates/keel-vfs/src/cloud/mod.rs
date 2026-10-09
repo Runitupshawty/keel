@@ -59,16 +59,7 @@ pub struct S3Config {
     pub bucket: String,
 }
 
-/// What `Provider::remove` does on each service (for the delete confirmation wording).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoveKind {
-    /// Google Drive: moved to the Drive trash.
-    Trash,
-    /// Dropbox: deleted, restorable from dropbox.com for about 30 days.
-    RecoverableDelete,
-    /// S3: gone (unless the bucket keeps versions).
-    Permanent,
-}
+pub use crate::provider::RemoveKind;
 
 /// Cloud failures a caller may want to tell apart (`anyhow::Error::downcast_ref`).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -1509,6 +1500,9 @@ impl Provider for Fresh<'_> {
     fn remove(&self, p: &VPath) -> Result<()> {
         self.cloud.remove(p)
     }
+    fn remove_kind(&self) -> RemoveKind {
+        self.cloud.core.account.kind.remove_kind()
+    }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.cloud.local_copy(p)
     }
@@ -1580,6 +1574,9 @@ impl Provider for CloudProvider {
     /// Drive: to the trash; Dropbox: recoverable delete; S3: permanent (`remove_kind`).
     fn remove(&self, p: &VPath) -> Result<()> {
         self.core.remove(p)
+    }
+    fn remove_kind(&self) -> RemoveKind {
+        self.core.account.kind.remove_kind()
     }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
