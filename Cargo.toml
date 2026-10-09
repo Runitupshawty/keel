@@ -17,6 +17,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
+libloading = "0.8"
+nucleo = "0.5"
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
