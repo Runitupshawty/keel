@@ -1,6 +1,7 @@
 -- Versioned migrations. A `-- @<db> <version>` line starts the migration that takes that
 -- database (`library` = library.db, `source` = source.db) to <version>; migrations run in
--- order, each in its own transaction, and never change once released (add a new version).
+-- order, together in one write transaction, and never change once released (add a new
+-- version).
 
 -- @library 1
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);

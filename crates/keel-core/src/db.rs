@@ -56,9 +56,26 @@ fn migrations(store: Store) -> Vec<(u32, String)> {
 
 /// WAL everywhere; `library.db` (jobs, checkpoints, op log) syncs every commit, source stores
 /// (rebuildable by a walk) only at checkpoints.
+/// Retries `f` while SQLite reports the database busy without waiting itself (switching a new
+/// database to WAL, starting a write while another connection recovers the WAL), up to 5 s.
+fn retry_busy<T>(mut f: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match f() {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            r => return r,
+        }
+    }
+}
+
 fn configure(conn: &Connection, store: Store) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(5))?;
-    conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+    retry_busy(|| conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(())))?;
     let sync = match store {
         Store::Library => "FULL",
         Store::Source => "NORMAL",
@@ -68,8 +85,14 @@ fn configure(conn: &Connection, store: Store) -> Result<()> {
 }
 
 /// Brings `conn` to the newest version of `store`.
-fn migrate(conn: &mut Connection, store: Store) -> Result<()> {
-    let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+/// All pending migrations run in one write transaction that also reads the version, so two
+/// processes opening a store at once never both migrate it.
+fn migrate(conn: &Connection, store: Store) -> Result<()> {
+    let conn: &Connection = conn;
+    let tx = retry_busy(move || {
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+    })?;
+    let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let all = migrations(store);
     let newest = all.last().map_or(0, |(v, _)| *v);
     anyhow::ensure!(
@@ -78,13 +101,12 @@ fn migrate(conn: &mut Connection, store: Store) -> Result<()> {
         store.tag()
     );
     for (v, sql) in all.into_iter().filter(|(v, _)| *v > version) {
-        let tx = conn.transaction()?;
         tx.execute_batch(&sql)
             .with_context(|| format!("{} migration {v}", store.tag()))?;
         set_meta(&tx, "schema_version", &v.to_string())?;
         tx.pragma_update(None, "user_version", v)?;
-        tx.commit()?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -105,10 +127,9 @@ impl Pool {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut conn =
-            Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         configure(&conn, store)?;
-        migrate(&mut conn, store)?;
+        migrate(&conn, store)?;
         Ok(Pool(Arc::new(Inner {
             path: path.to_owned(),
             store,
@@ -220,6 +241,27 @@ mod tests {
                 .unwrap();
             assert_eq!(sync, if store == Store::Library { 2 } else { 1 });
         }
+    }
+
+    #[test]
+    fn concurrent_opens_migrate_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    start.wait();
+                    Pool::open(&path, Store::Source).unwrap();
+                });
+            }
+        });
+        let newest = migrations(Store::Source).last().unwrap().0;
+        let pool = Pool::open(&path, Store::Source).unwrap();
+        assert_eq!(
+            pool.meta("schema_version").unwrap(),
+            Some(newest.to_string())
+        );
     }
 
     #[test]

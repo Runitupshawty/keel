@@ -443,6 +443,20 @@ impl Jobs {
     }
 }
 
+/// Ended jobs kept in `library.db` (older ones are pruned on open).
+const KEEP_ENDED: i64 = 500;
+
+/// Deletes all but the newest `KEEP_ENDED` ended jobs.
+pub(crate) fn prune(db: &Pool) -> Result<()> {
+    db.get()?.execute(
+        "DELETE FROM job WHERE status IN ('done', 'failed', 'cancelled') AND id NOT IN (
+             SELECT id FROM job WHERE status IN ('done', 'failed', 'cancelled')
+             ORDER BY id DESC LIMIT ?1)",
+        [KEEP_ENDED],
+    )?;
+    Ok(())
+}
+
 /// How long dropping a library waits for its jobs.
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -726,6 +740,38 @@ mod tests {
         let start = Instant::now();
         assert!(!lib.close(Duration::from_millis(100)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn ended_jobs_are_pruned_on_open() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "j").unwrap();
+        {
+            let c = lib.shared.db.get().unwrap();
+            c.execute(
+                "INSERT INTO job(kind, state, status, created, updated)
+                 VALUES ('x', 'null', 'running', 0, 0)",
+                [],
+            )
+            .unwrap();
+            for _ in 0..KEEP_ENDED + 10 {
+                c.execute(
+                    "INSERT INTO job(kind, state, status, created, updated)
+                     VALUES ('x', 'null', 'done', 0, 0)",
+                    [],
+                )
+                .unwrap();
+            }
+        }
+        drop(lib);
+        let lib = Library::open(data.path(), "j").unwrap();
+        let jobs = lib.jobs().list().unwrap();
+        assert_eq!(jobs.len() as i64, KEEP_ENDED + 1);
+        assert!(
+            jobs.iter().any(|j| j.status == JobStatus::Running),
+            "pending kept"
+        );
+        assert_eq!(jobs[0].id, KEEP_ENDED + 11, "the newest kept");
     }
 
     #[test]

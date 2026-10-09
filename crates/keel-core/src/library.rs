@@ -347,6 +347,7 @@ impl Library {
             shared,
             _lock: lock,
         };
+        crate::jobs::prune(&lib.shared.db)?;
         // Resumed by `jobs().resume_all()` once the app has set the router.
         lib.jobs.register("index", IndexJob::restore);
         lib.jobs.register("op", crate::plan::ExecJob::restore);
