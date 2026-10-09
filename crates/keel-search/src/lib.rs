@@ -116,27 +116,29 @@ pub fn folder_index(searcher: &dyn Searcher) -> anyhow::Result<Vec<String>> {
 }
 
 /// fd-style name search under `root` with the `ignore` crate (hidden and
-/// git-ignored entries are skipped). Matches a substring of the file name,
+/// git-ignored entries are skipped). Matches a substring of the file name, or the
+/// `regex` pattern when `query.regex` (an invalid pattern finds nothing),
 /// case-insensitive unless `match_case`, and stops after `query.max` hits.
 /// Blocks on disk IO: worker threads only.
-// ponytail: `regex` is matched as a literal substring; add the `regex` crate
-// if a walk-backed search ever needs real patterns.
 pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
-    let fold = |text: &str| {
-        if query.match_case {
-            text.to_owned()
-        } else {
-            text.to_lowercase()
-        }
-    };
-    let needle = fold(&query.text);
     let max = query.max as usize;
     let mut hits = Vec::new();
     if max == 0 {
         return hits;
     }
+    let pattern = if query.regex {
+        query.text.clone()
+    } else {
+        regex::escape(&query.text)
+    };
+    let Ok(matcher) = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!query.match_case)
+        .build()
+    else {
+        return hits;
+    };
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if entry.depth() == 0 || !fold(&entry.file_name().to_string_lossy()).contains(&needle) {
+        if entry.depth() == 0 || !matcher.is_match(&entry.file_name().to_string_lossy()) {
             continue;
         }
         match hit_for_path(entry.path()) {
@@ -253,6 +255,23 @@ mod tests {
             ..query("")
         };
         assert_eq!(walk(&root, &capped).len(), 1);
+
+        // Polish backlog: `regex` is a real pattern, not a literal substring.
+        let regex = |text: &str| Query {
+            regex: true,
+            ..query(text)
+        };
+        let names = |hits: Vec<super::Hit>| -> Vec<String> {
+            hits.iter().map(|h| h.path.name().to_owned()).collect()
+        };
+        assert_eq!(
+            names(walk(&root, &regex(r"^keel\w+\.txt$"))),
+            ["KeelNeedle.txt"]
+        );
+        assert!(walk(&root, &regex(r"^needle$")).is_empty(), "anchored");
+        assert!(walk(&root, &regex("(unclosed")).is_empty(), "bad pattern");
+        // Without `regex`, pattern characters are literal.
+        assert!(walk(&root, &query(r"needle\.txt")).is_empty());
 
         std::fs::remove_dir_all(&root).unwrap();
     }
