@@ -47,9 +47,23 @@ trailing spaces/dots. Ping, filtered ListSources and the requesting peer's Grant
 are allowed for paired devices without a grant; file operations default-deny.
 Handlers must reject symlink traversal (or independently enforce the authorized
 subtree after resolution), and must not decode or reinterpret paths. Transport validation
-cannot inspect a Handler's filesystem. Handler writes must stage changes,
-consume through exact EOF and publish atomically; cancellation must discard the
-staging file. Operations already committed before revocation cannot be undone.
+cannot inspect a Handler's filesystem. Every Handler method receives a
+`RequestCtx` (requesting peer id and its label) for logging and prompts.
+
+Writes are pushed in pieces: `Request::Write { source, path, offset, size, final_,
+expect }` appends exactly `size` body bytes to the host's `.keel-partial-<id>`
+staging file (`<id>` fixed per device and target). `offset` must equal the staged
+length (`Request::StatPartial` answers `Response::Partial { len, .. }`), except 0,
+which starts over. A `final_` piece publishes atomically once complete, after checking
+`expect` (BLAKE3 of the whole file) when given; a failed check drops the staging file.
+A cancelled piece leaves the staging file at its `offset`, so a dropped transfer
+resumes from the last complete piece. Operations already committed before revocation
+cannot be undone.
+
+`Request::List { source, path, after, limit }` pages by name: at most `PAGE_LIMIT`
+(500) entries after `after`, with `Response::Entries { entries, more }`. A 10,000-entry
+folder in one header would exceed the 1 MiB limit. `EntryInfo::content_id` is CBOR
+bytes.
 
 Grant downgrades, revoke and forget synchronously cancel handlers and close **all**
 of that peer's sessions, including active reads and writes. Each later request
@@ -84,7 +98,7 @@ The requested Task 35 API is preserved, with these documented additions/details:
   relay-only operation and header/connection timeouts. `NodeOptions::offline()`
   binds loopback with no relays or address lookup. Custom relays can be supplied
   using `iroh::RelayMode::Custom`; configure their addresses outside source code.
-- `Node::write_stream(peer, source, path, body, size)` supplies the body missing
+- `Node::write_stream(peer, source, path, body, WriteAt)` supplies the body missing
   from the specified `request(Request::Write)` signature. `request` sends an
   empty body and exposes a Read header only; use the streaming methods for data.
 - `try_set_label` reports persistence errors; the required void `set_label`
@@ -94,10 +108,22 @@ The requested Task 35 API is preserved, with these documented additions/details:
 - `PairCode::ticket() -> String` retains the generated full ticket. A code parsed
   from short text cannot reconstruct addresses and returns that short text.
 
-For Task 36, implement the remote `keel_vfs::Provider` adapter in `keel-net` or
-an integration crate and register it with the VFS router. `keel-net` already
-depends on `keel-vfs` for the required SecretStore API, so adding the reverse
-dependency directly to `keel-vfs` would create a Cargo dependency cycle.
+## Library integration
+
+`NodeProvider` is the `keel_vfs::Provider` for `node://<peer id>/<source id>/<path>`;
+register it with the router (`router.register`). It lives here, not in keel-vfs,
+because keel-net already depends on keel-vfs. A device's root lists the sources it
+granted; listings walk every page; writes buffer to an anonymous temp file and are
+pushed on `flush()` as one verified final piece; `caps` follow the grants devices
+reported; `remove` is permanent from the client's view (a library host trashes).
+Its calls block on the node's runtime, so call them off async tasks.
+
+`LibraryHandler` serves a `keel_core::Library`: its non-device sources, lists and
+stats from the live provider, reads/writes/mkdir/rename/remove through the router.
+Each path must canonicalize to exactly `<canonical root>/<path>`, so a symlink or
+junction anywhere on the way is refused; writes re-check before publishing. Device
+writes go to local sources only. Every served request is appended to the library's
+op log as `net.<op>` with the peer id and label.
 
 iroh uses an explicit ring CryptoProvider, without touching the process default.
 This coexists with keel-vfs's graviola provider. The offline regression test

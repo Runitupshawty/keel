@@ -55,10 +55,11 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
     };
     match req {
         Request::Ping | Request::ListSources | Request::Grants => true,
-        Request::List { source, path }
+        Request::List { source, path, .. }
         | Request::Stat { source, path }
         | Request::Read { source, path, .. } => check(source, path, false),
         Request::Write { source, path, .. }
+        | Request::StatPartial { source, path }
         | Request::Mkdir { source, path }
         | Request::Remove { source, path } => check(source, path, true),
         Request::Rename { source, from, to } => {
@@ -107,14 +108,27 @@ impl Node {
         recv: RecvStream,
     ) -> Result<()> {
         let mut body_started = false;
+        let ctx = RequestCtx {
+            peer,
+            label: self
+                .state
+                .lock()
+                .data
+                .peers
+                .iter()
+                .find(|r| r.peer.id == peer)
+                .map(|r| r.peer.label.clone())
+                .unwrap_or_default(),
+        };
+        let h = &self.handler;
         let response: Result<Response> = async {
             Ok(match req {
                 Request::Ping => Response::Pong {
                     label: self.label(),
-                    storage: self.handler.storage().await,
+                    storage: h.storage(&ctx).await,
                 },
                 Request::ListSources => {
-                    let mut sources = self.handler.sources().await;
+                    let mut sources = h.sources(&ctx).await;
                     let state = self.state.lock();
                     sources.retain(|s| {
                         state
@@ -131,18 +145,33 @@ impl Node {
                         .filter(|g| g.peer == peer)
                         .collect(),
                 ),
-                Request::List { source, path } => {
-                    Response::Entries(self.handler.list(&source, &path).await?)
+                Request::List {
+                    source,
+                    path,
+                    after,
+                    limit,
+                } => {
+                    // ponytail: the Handler lists the whole folder for every page; a
+                    // Handler-side cursor if huge folders over slow links matter.
+                    let mut entries = h.list(&ctx, &source, &path).await?;
+                    entries.sort_by(|a, b| a.name.cmp(&b.name));
+                    if let Some(after) = after {
+                        entries.retain(|e| e.name > after);
+                    }
+                    let limit = limit.clamp(1, PAGE_LIMIT) as usize;
+                    let more = entries.len() > limit;
+                    entries.truncate(limit);
+                    Response::Entries { entries, more }
                 }
                 Request::Stat { source, path } => {
-                    Response::Entry(self.handler.stat(&source, &path).await?)
+                    Response::Entry(h.stat(&ctx, &source, &path).await?)
                 }
                 Request::Read {
                     source,
                     path,
                     range,
                 } => {
-                    let info = self.handler.stat(&source, &path).await?;
+                    let info = h.stat(&ctx, &source, &path).await?;
                     ensure!(!info.is_dir, "cannot read directory");
                     let (offset, length) = range.unwrap_or((0, info.size));
                     ensure!(
@@ -150,10 +179,7 @@ impl Node {
                         "invalid range"
                     );
                     let size = length.min(info.size - offset);
-                    let body = self
-                        .handler
-                        .read(&source, &path, Some((offset, size)))
-                        .await?;
+                    let body = h.read(&ctx, &source, &path, Some((offset, size))).await?;
                     wire::send(send, &Response::Read { size }).await?;
                     body_started = true;
                     let mut body = wire::ExactReader::new(body, size);
@@ -162,27 +188,39 @@ impl Node {
                     tokio::io::copy(&mut body, send).await?;
                     return Ok(Response::Read { size });
                 }
-                Request::Write { source, path, size } => {
-                    self.handler
-                        .write(
-                            &source,
-                            &path,
-                            Box::new(wire::ExactReader::new(recv, size)),
-                            size,
-                        )
-                        .await?;
+                Request::Write {
+                    source,
+                    path,
+                    offset,
+                    size,
+                    final_,
+                    expect,
+                } => {
+                    ensure!(offset.checked_add(size).is_some(), "invalid range");
+                    let at = WriteAt {
+                        offset,
+                        size,
+                        final_,
+                        expect,
+                    };
+                    let body = Box::new(wire::ExactReader::new(recv, size));
+                    h.write(&ctx, &source, &path, body, at).await?;
                     Response::Ok
                 }
+                Request::StatPartial { source, path } => Response::Partial {
+                    len: h.stat_partial(&ctx, &source, &path).await?,
+                    complete: false,
+                },
                 Request::Mkdir { source, path } => {
-                    self.handler.mkdir(&source, &path).await?;
+                    h.mkdir(&ctx, &source, &path).await?;
                     Response::Ok
                 }
                 Request::Rename { source, from, to } => {
-                    self.handler.rename(&source, &from, &to).await?;
+                    h.rename(&ctx, &source, &from, &to).await?;
                     Response::Ok
                 }
                 Request::Remove { source, path } => {
-                    self.handler.remove(&source, &path).await?;
+                    h.remove(&ctx, &source, &path).await?;
                     Response::Ok
                 }
             })
@@ -253,28 +291,38 @@ impl Node {
         })
         .await?
     }
-    /// Streams exactly `size` bytes. The body must then reach EOF. A denied request
-    /// stops uploading immediately. Hosts must stage writes (see `Handler`).
+    /// Pushes one piece of a file (see `WriteAt`): streams exactly `at.size` bytes of
+    /// `body`, which must then reach EOF. A denied request stops uploading immediately.
+    /// A whole file in one go is `WriteAt { offset: 0, size, final_: true, expect }`.
     pub async fn write_stream(
         &self,
         peer: &PeerId,
         source: &str,
         path: &str,
         body: Box<dyn AsyncRead + Send + Unpin>,
+        at: WriteAt,
+    ) -> Result<Response> {
+        let req = Request::Write {
+            source: source.into(),
+            path: path.into(),
+            offset: at.offset,
+            size: at.size,
+            final_: at.final_,
+            expect: at.expect,
+        };
+        self.body_request(peer, &req, body, at.size).await
+    }
+    /// Sends `req` followed by exactly `size` bytes of `body`.
+    pub(crate) async fn body_request(
+        &self,
+        peer: &PeerId,
+        req: &Request,
+        body: Box<dyn AsyncRead + Send + Unpin>,
         size: u64,
     ) -> Result<Response> {
-        let (_conn, mut send, mut recv) = tokio::time::timeout(
-            self.options.request_timeout,
-            self.start_request(
-                peer,
-                &Request::Write {
-                    source: source.into(),
-                    path: path.into(),
-                    size,
-                },
-            ),
-        )
-        .await??;
+        let (_conn, mut send, mut recv) =
+            tokio::time::timeout(self.options.request_timeout, self.start_request(peer, req))
+                .await??;
         let mut body = wire::ExactReader::new(body, size);
         let upload = async {
             tokio::io::copy(&mut body, &mut send).await?;

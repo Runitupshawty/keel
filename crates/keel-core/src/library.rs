@@ -804,6 +804,19 @@ impl Library {
         crate::oplog::entries(&self.shared, limit)
     }
 
+    /// Appends a finished operation (redacted like every entry); returns its id.
+    pub fn log_op(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        result: &str,
+        ok: bool,
+    ) -> Result<i64> {
+        let id = crate::oplog::record(&self.shared, kind, payload, result)?;
+        crate::oplog::set_result(&self.shared, id, result, ok)?;
+        Ok(id)
+    }
+
     pub fn sources(&self) -> Vec<SourceSummary> {
         self.shared
             .sources

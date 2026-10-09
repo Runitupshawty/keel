@@ -16,7 +16,7 @@ impl Files {
 }
 #[async_trait::async_trait]
 impl Handler for Files {
-    async fn sources(&self) -> Vec<SourceInfo> {
+    async fn sources(&self, _: &RequestCtx) -> Vec<SourceInfo> {
         ["docs", "private"]
             .into_iter()
             .map(|id| SourceInfo {
@@ -26,11 +26,11 @@ impl Handler for Files {
             })
             .collect()
     }
-    async fn list(&self, source: &str, path: &str) -> Result<Vec<EntryInfo>> {
+    async fn list(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<Vec<EntryInfo>> {
         assert_eq!((source, path), ("docs", "shared"));
-        Ok(vec![self.stat(source, "shared/file").await?])
+        Ok(vec![self.stat(ctx, source, "shared/file").await?])
     }
-    async fn stat(&self, source: &str, path: &str) -> Result<EntryInfo> {
+    async fn stat(&self, _: &RequestCtx, source: &str, path: &str) -> Result<EntryInfo> {
         assert_eq!(source, "docs");
         let size = if path == "shared/slow" {
             100_000
@@ -51,6 +51,7 @@ impl Handler for Files {
     }
     async fn read(
         &self,
+        _: &RequestCtx,
         source: &str,
         path: &str,
         range: Option<(u64, u64)>,
@@ -72,22 +73,27 @@ impl Handler for Files {
     }
     async fn write(
         &self,
+        _: &RequestCtx,
         source: &str,
         path: &str,
         mut body: Box<dyn AsyncRead + Send + Unpin>,
-        size: u64,
+        at: WriteAt,
     ) -> Result<()> {
         assert_eq!(source, "docs");
+        assert_eq!((at.offset, at.final_), (0, true));
         let mut bytes = Vec::new();
         body.read_to_end(&mut bytes).await?;
-        anyhow::ensure!(bytes.len() as u64 == size, "wrong body size");
+        anyhow::ensure!(bytes.len() as u64 == at.size, "wrong body size");
         self.0.lock().insert(path.into(), bytes);
         Ok(())
     }
-    async fn mkdir(&self, _: &str, _: &str) -> Result<()> {
+    async fn stat_partial(&self, _: &RequestCtx, _: &str, _: &str) -> Result<u64> {
+        Ok(0)
+    }
+    async fn mkdir(&self, _: &RequestCtx, _: &str, _: &str) -> Result<()> {
         Ok(())
     }
-    async fn rename(&self, _: &str, from: &str, to: &str) -> Result<()> {
+    async fn rename(&self, _: &RequestCtx, _: &str, from: &str, to: &str) -> Result<()> {
         let mut files = self.0.lock();
         let Some(bytes) = files.remove(from) else {
             bail!("missing")
@@ -95,15 +101,24 @@ impl Handler for Files {
         files.insert(to.into(), bytes);
         Ok(())
     }
-    async fn remove(&self, _: &str, path: &str) -> Result<()> {
+    async fn remove(&self, _: &RequestCtx, _: &str, path: &str) -> Result<()> {
         self.0.lock().remove(path);
         Ok(())
     }
-    async fn storage(&self) -> Option<Storage> {
+    async fn storage(&self, _: &RequestCtx) -> Option<Storage> {
         Some(Storage {
             used: 10,
             total: 100,
         })
+    }
+}
+
+fn whole(size: u64) -> WriteAt {
+    WriteAt {
+        offset: 0,
+        size,
+        final_: true,
+        expect: None,
     }
 }
 
@@ -166,7 +181,7 @@ async fn paired_loopback_requests_filter_sources_and_stream_ranges() {
         matches!(b.request(&aid, Request::ListSources).await.unwrap(), Response::Sources(v) if v.len() == 1 && v[0].id == "docs")
     );
     assert!(
-        matches!(b.request(&aid, Request::List { source: "docs".into(), path: "shared".into() }).await.unwrap(), Response::Entries(v) if v[0].name == "file")
+        matches!(b.request(&aid, Request::List { source: "docs".into(), path: "shared".into(), after: None, limit: 10 }).await.unwrap(), Response::Entries { entries: v, more: false } if v[0].name == "file")
     );
     assert!(
         matches!(b.request(&aid, Request::Stat { source: "docs".into(), path: "shared/file".into() }).await.unwrap(), Response::Entry(e) if e.size == 10)
@@ -203,7 +218,10 @@ async fn grants_revoke_inflight_and_forget_refuses_connections() {
             Request::Write {
                 source: "docs".into(),
                 path: "shared/new".into(),
-                size: 0
+                offset: 0,
+                size: 0,
+                final_: true,
+                expect: None,
             }
         )
         .await
@@ -298,7 +316,7 @@ async fn streaming_writes_are_exact_and_mutations_obey_subtree() {
             "docs",
             "shared/new",
             Box::new(std::io::Cursor::new(b"new body".to_vec())),
-            8
+            whole(8),
         )
         .await
         .unwrap(),
@@ -317,7 +335,7 @@ async fn streaming_writes_are_exact_and_mutations_obey_subtree() {
             "docs",
             "shared/truncated",
             Box::new(std::io::Cursor::new(b"short".to_vec())),
-            8
+            whole(8),
         )
         .await
         .is_err());

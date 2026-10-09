@@ -78,34 +78,59 @@ pub enum NetEvent {
     Request { peer: PeerId, what: String },
 }
 
+/// Who a `Handler` call serves: the paired device and its label (as it last told us).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestCtx {
+    pub peer: PeerId,
+    pub label: String,
+}
+
+/// One pushed piece of a file (`Request::Write`). `offset` must equal the host's staged
+/// length for this target (`Request::StatPartial`), except 0, which starts over. `final_`
+/// publishes the staged file atomically once it holds `offset + size` bytes, after
+/// checking `expect` (the BLAKE3 of the whole file) when given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteAt {
+    pub offset: u64,
+    pub size: u64,
+    pub final_: bool,
+    pub expect: Option<[u8; 32]>,
+}
+
 /// Host operations. Paths are validated relative slash-separated paths, and ranges
 /// are `(offset, length)`. Implementations must reject symlink traversal unless
 /// they independently enforce the authorized subtree after resolution. They
 /// must not interpret percent escapes or normalize paths into another resource.
-/// Writes must stage their body and publish atomically only after exact EOF;
-/// dropping any future/body on cancellation must discard staged changes.
+/// Writes append to a `.keel-partial-<id>` staging file (`<id>` fixed per device and
+/// target, so a dropped transfer resumes from `stat_partial`) and publish atomically
+/// only on a final write after exact EOF; a cancelled write leaves the staging file at
+/// the piece's `offset` (removed when that is 0).
 #[async_trait::async_trait]
 pub trait Handler: Send + Sync {
-    async fn sources(&self) -> Vec<SourceInfo>;
-    async fn list(&self, source: &str, path: &str) -> Result<Vec<EntryInfo>>;
-    async fn stat(&self, source: &str, path: &str) -> Result<EntryInfo>;
+    async fn sources(&self, ctx: &RequestCtx) -> Vec<SourceInfo>;
+    async fn list(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<Vec<EntryInfo>>;
+    async fn stat(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<EntryInfo>;
     async fn read(
         &self,
+        ctx: &RequestCtx,
         source: &str,
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Box<dyn AsyncRead + Send + Unpin>>;
     async fn write(
         &self,
+        ctx: &RequestCtx,
         source: &str,
         path: &str,
         body: Box<dyn AsyncRead + Send + Unpin>,
-        size: u64,
+        at: WriteAt,
     ) -> Result<()>;
-    async fn mkdir(&self, source: &str, path: &str) -> Result<()>;
-    async fn rename(&self, source: &str, from: &str, to: &str) -> Result<()>;
-    async fn remove(&self, source: &str, path: &str) -> Result<()>;
-    async fn storage(&self) -> Option<Storage>;
+    /// Bytes staged for `path` by this device (0 when nothing is).
+    async fn stat_partial(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<u64>;
+    async fn mkdir(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<()>;
+    async fn rename(&self, ctx: &RequestCtx, source: &str, from: &str, to: &str) -> Result<()>;
+    async fn remove(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<()>;
+    async fn storage(&self, ctx: &RequestCtx) -> Option<Storage>;
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInfo {
@@ -113,21 +138,32 @@ pub struct SourceInfo {
     pub label: String,
     pub kind: String,
 }
+/// `modified` is in unix seconds; `content_id` is the BLAKE3 of the bytes, when the
+/// host knows it (CBOR bytes on the wire).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryInfo {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<i64>,
+    #[serde(with = "serde_bytes")]
     pub content_id: Option<[u8; 32]>,
 }
+/// Most entries one `Response::Entries` page carries (keeps it under the header limit).
+pub const PAGE_LIMIT: u32 = 500;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     Ping,
     ListSources,
+    /// One page of a folder, by name: the entries after `after` (from the start when
+    /// None), at most `limit` (capped at `PAGE_LIMIT`). `Response::Entries::more` says
+    /// whether to ask again with the last name as `after`.
     List {
         source: String,
         path: String,
+        after: Option<String>,
+        limit: u32,
     },
     Stat {
         source: String,
@@ -138,10 +174,20 @@ pub enum Request {
         path: String,
         range: Option<(u64, u64)>,
     },
+    /// Body: exactly `size` bytes. See `WriteAt`.
     Write {
         source: String,
         path: String,
+        offset: u64,
         size: u64,
+        final_: bool,
+        #[serde(with = "serde_bytes")]
+        expect: Option<[u8; 32]>,
+    },
+    /// The staged length of an unfinished write: `Response::Partial`.
+    StatPartial {
+        source: String,
+        path: String,
     },
     Mkdir {
         source: String,
@@ -167,6 +213,7 @@ impl Request {
             Self::Stat { .. } => "stat",
             Self::Read { .. } => "read",
             Self::Write { .. } => "write",
+            Self::StatPartial { .. } => "stat-partial",
             Self::Mkdir { .. } => "mkdir",
             Self::Rename { .. } => "rename",
             Self::Remove { .. } => "remove",
@@ -181,10 +228,18 @@ pub enum Response {
         storage: Option<Storage>,
     },
     Sources(Vec<SourceInfo>),
-    Entries(Vec<EntryInfo>),
+    Entries {
+        entries: Vec<EntryInfo>,
+        more: bool,
+    },
     Entry(EntryInfo),
     Read {
         size: u64,
+    },
+    /// Bytes staged so far; `complete` once that target was already published.
+    Partial {
+        len: u64,
+        complete: bool,
     },
     Ok,
     Grants(Vec<Grant>),
