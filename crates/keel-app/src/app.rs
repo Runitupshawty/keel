@@ -6,6 +6,7 @@ use crate::pane::{self, DragPayload, ViewCx};
 use crate::session::Session;
 use crate::settings::{Persist, Settings};
 use crate::state::AppState;
+use crate::tab::Tab;
 use egui::{pos2, Rect, Sense, UiBuilder};
 use humansize::{format_size, DECIMAL};
 use keel_vfs::{Router, VPath};
@@ -22,6 +23,7 @@ pub struct Boot {
     /// Repaired (`Session::repair`); `missing` lists the folders it replaced.
     pub session: Session,
     pub missing: Vec<VPath>,
+    pub home: VPath,
     /// The session as found on disk; `Some` turns saving on (off in tests).
     pub saved: Option<Option<Session>>,
 }
@@ -34,6 +36,7 @@ impl Boot {
             settings: Settings::default(),
             session: Session::single(start.clone()),
             missing: Vec::new(),
+            home: start,
             saved: None,
         }
     }
@@ -47,6 +50,12 @@ pub struct App {
     pending_drop: Option<(Vec<PathBuf>, Instant)>,
     /// Settings + session writer; None in tests.
     persist: Option<Persist>,
+    /// Where a lone tab that panicked is reset to.
+    home: VPath,
+    /// A frame panicked: the crash dialog is up.
+    pub crashed: bool,
+    #[cfg(test)]
+    pub panic_next_frame: bool,
 }
 
 impl App {
@@ -78,15 +87,42 @@ impl App {
             split: 0.5,
             pending_drop: None,
             persist,
+            home: boot.home,
+            crashed: false,
+            #[cfg(test)]
+            panic_next_frame: false,
+        }
+    }
+
+    /// A frame panicked (the hook wrote crash.log): drop popups and close the active tab,
+    /// or send it home when it is the pane's only tab.
+    fn recover(&mut self) {
+        self.crashed = true;
+        self.pending_drop = None;
+        let s = &mut self.state;
+        s.dialog = None;
+        s.jump.open = false;
+        s.palette.open = false;
+        let p = s.active;
+        let pane = &mut s.panes[p];
+        if pane.tabs.len() > 1 {
+            pane.close_tab(pane.active);
+        } else {
+            pane.tabs[0] = Tab::new(self.home.clone());
+            s.list(p, 0);
         }
     }
 
     fn frame(&mut self, ctx: &egui::Context) {
+        #[cfg(test)]
+        if std::mem::take(&mut self.panic_next_frame) {
+            panic!("test panic inside a frame");
+        }
         let s = &mut self.state;
         s.drain();
         s.tick();
         s.jobs.tick();
-        if s.dialog.is_none() && !s.jump.open && !s.palette.open {
+        if s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed {
             for action in keys::actions(ctx) {
                 s.run(s.active, action);
             }
@@ -267,7 +303,14 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.frame(ctx);
+        // A panic inside a frame is logged by the panic hook; the app keeps running.
+        let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ctx)));
+        if frame.is_err() {
+            self.recover();
+        }
+        if self.crashed {
+            crate::crash::modal(ctx, &mut self.crashed);
+        }
         if let Some(persist) = &mut self.persist {
             persist.update(&self.state.settings, Session::of(&self.state));
         }
@@ -451,6 +494,36 @@ mod tests {
         harness.press_key(Key::F6);
         harness.step();
         assert_eq!(harness.state().state.active, 1);
+    }
+
+    #[test]
+    fn panicking_frame_is_logged_and_survived() {
+        let start = fixture("keel-crash-fixture");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start.clone())));
+        wait_listed(&mut harness);
+        harness
+            .state_mut()
+            .state
+            .run(0, Action::NewTabAt(start.join("src")));
+        assert_eq!(harness.state().state.panes[0].tabs.len(), 2);
+
+        harness.state_mut().panic_next_frame = true;
+        harness.step();
+        let app = harness.state();
+        assert!(app.crashed, "crash dialog up");
+        assert_eq!(app.state.panes[0].tabs.len(), 1, "failing tab closed");
+        // Later frames run normally; OK dismisses the dialog.
+        harness.run_steps(3);
+        egui_kittest::kittest::Queryable::get_by_label(&harness, "OK").click();
+        harness.run_steps(2);
+        assert!(!harness.state().crashed);
+
+        // Ctrl+, opens Settings once the dialog is gone.
+        harness.press_key_modifiers(egui::Modifiers::COMMAND, Key::Comma);
+        harness.run_steps(2);
+        assert!(harness.state().state.settings_open);
     }
 
     /// GPU-dependent: run locally with `cargo test -p keel-app -- --ignored`

@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod crash;
 mod dialogs;
 mod icons;
 mod jobs;
@@ -28,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    crash::install_panic_hook();
     // pdfium sits next to the executable (copied there by build.rs).
     if let Some(dir) = std::env::current_exe()
         .ok()
@@ -71,6 +73,7 @@ fn main() -> eframe::Result<()> {
         settings,
         session,
         missing,
+        home,
         saved: Some(saved),
     };
     eframe::run_native(
