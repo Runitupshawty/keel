@@ -3,6 +3,7 @@
 
 mod app;
 mod clipboard;
+mod clouds;
 mod crash;
 mod dialogs;
 mod icons;

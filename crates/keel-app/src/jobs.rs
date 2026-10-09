@@ -144,7 +144,7 @@ impl Jobs {
         }
         let verb = if t.mv { "Moving" } else { "Copying" };
         let title = format!("{verb} {} to {}", items(t.src.len()), t.dst.display());
-        let remote = t.src.iter().chain([&t.dst]).any(|p| p.scheme == "sftp");
+        let remote = t.src.iter().chain([&t.dst]).any(crate::remotes::is_network);
         let id = self.spawn(title, tx, move |report, cancel| {
             keel_vfs::ops::transfer(&t.src, &t.dst, t.mv, conflict, report, cancel, &router)
         });
@@ -203,7 +203,7 @@ impl Jobs {
     /// Sends each path to the OS trash (remote: deletes it; the user confirmed that); stops
     /// at the first failure.
     pub fn delete(&mut self, paths: Vec<VPath>, router: Arc<Router>, tx: Sender<Msg>) -> u64 {
-        let remote = paths.first().is_some_and(|p| p.scheme == "sftp");
+        let remote = paths.first().is_some_and(crate::remotes::is_network);
         let (title, did) = if remote {
             (format!("Deleting {}", items(paths.len())), "deleted")
         } else {

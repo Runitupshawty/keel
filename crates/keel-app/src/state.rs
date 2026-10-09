@@ -169,6 +169,8 @@ pub struct AppState {
     pub settings_open: bool,
     /// SFTP hosts: providers, status, host-key prompts, host editor (`remotes.rs`).
     pub remotes: crate::remotes::Remotes,
+    /// Cloud accounts: providers, status, the account wizard (`clouds.rs`).
+    pub clouds: crate::clouds::Clouds,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -211,12 +213,15 @@ impl AppState {
         // Remote hosts are registered before the restored tabs list (lazily connecting).
         let mut remotes = crate::remotes::Remotes::new(tx.clone(), ctx.clone());
         remotes.sync(&router, &settings.remotes);
-        let previewer = worker::spawn_previewer(
-            router.clone(),
-            remotes.sftp.clone(),
-            tx.clone(),
-            ctx.clone(),
-        );
+        // Cloud accounts too; each reads the keychain on its first use, on a worker.
+        #[cfg(not(test))]
+        let secrets: Arc<dyn keel_vfs::SecretStore> = Arc::new(keel_vfs::cloud::KeyringStore);
+        #[cfg(test)]
+        let secrets: Arc<dyn keel_vfs::SecretStore> =
+            Arc::new(keel_vfs::cloud::MemoryStore::default());
+        let mut clouds = crate::clouds::Clouds::new(tx.clone(), ctx.clone(), secrets);
+        clouds.sync(&router, &settings.clouds);
+        let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
         let mut panes = session
             .panes
@@ -263,6 +268,7 @@ impl AppState {
             settings,
             settings_open: false,
             remotes,
+            clouds,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -294,8 +300,14 @@ impl AppState {
         if !self.settings_open {
             return;
         }
-        let theme_changed =
-            crate::settings::window(ctx, &mut self.settings_open, s, &mut self.remotes, &self.tx);
+        let theme_changed = crate::settings::window(
+            ctx,
+            &mut self.settings_open,
+            s,
+            &mut self.remotes,
+            &mut self.clouds,
+            &self.tx,
+        );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
         let max = s.max_preview_bytes();
@@ -520,7 +532,7 @@ impl AppState {
             return;
         };
         tab.loading = false;
-        let remote = tab.dir.scheme == "sftp";
+        let remote = crate::remotes::is_network(&tab.dir);
         match result {
             Ok(hits) => {
                 tab.set_listing(crate::tab::hits_listing(hits));
@@ -546,8 +558,8 @@ impl AppState {
         let TabKind::Search { query, due, req } = &mut tab.kind else {
             return;
         };
-        // A remote tab searches names on its host (remotes.rs); Everything stays local.
-        let remote = tab.dir.scheme == "sftp";
+        // A remote or cloud tab searches names there (remotes.rs); Everything stays local.
+        let remote = crate::remotes::is_network(&tab.dir);
         let searcher = match self.searcher.clone() {
             _ if remote => None,
             Some(s) => Some(s),
@@ -766,6 +778,7 @@ impl AppState {
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
         self.remote_tick();
+        self.cloud_tick();
         let cwd = self.panes[self.active].tab().dir.to_local_path();
         self.terminal
             .follow(cwd, &self.settings, &self.tx, &self.ctx);
@@ -1064,7 +1077,15 @@ impl AppState {
             Action::Delete => {
                 let paths = self.target_paths(p);
                 let remote = paths.first().filter(|p| p.scheme == "sftp");
-                if let Some(host) = remote.map(|p| p.authority.clone()) {
+                let cloud = paths.first().filter(|p| p.scheme == "cloud");
+                let cloud = cloud.and_then(|p| self.clouds.account(&p.authority));
+                if let Some(account) = cloud {
+                    // Each service deletes differently: say what this one does.
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::clouds::delete_text(paths.len(), account.kind.remove_kind()),
+                        on_yes: Action::DeleteRemote(paths),
+                    });
+                } else if let Some(host) = remote.map(|p| p.authority.clone()) {
                     // No trash on a remote host: say so, once per batch.
                     let label = self.remotes.label(&host).to_owned();
                     self.dialog = Some(Dialog::Confirm {
@@ -1083,6 +1104,7 @@ impl AppState {
                     .delete(paths, self.router.clone(), self.tx.clone());
             }
             Action::Remote { host, cmd } => self.remote_cmd(host, cmd),
+            Action::Cloud { id, cmd } => self.cloud_cmd(id, cmd),
             Action::Trash(paths) => {
                 self.jobs
                     .delete(paths, self.router.clone(), self.tx.clone());
@@ -1199,7 +1221,7 @@ impl AppState {
             Action::Search => {
                 if !self.tab(p).is_search() {
                     let mut tab = Tab::search(self.tab(p).dir.clone());
-                    if tab.dir.scheme != "sftp" {
+                    if !crate::remotes::is_network(&tab.dir) {
                         tab.error = self.search_reason.clone();
                     }
                     let pane = &mut self.panes[p];
@@ -1431,7 +1453,6 @@ impl AppState {
     fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
         worker::spawn_local(
             self.router.clone(),
-            self.remotes.sftp.clone(),
             path,
             self.tx.clone(),
             self.ctx.clone(),

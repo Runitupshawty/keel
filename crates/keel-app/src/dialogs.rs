@@ -47,8 +47,10 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.horizontal(|ui| {
                     // Enter / Space press the focused button (egui), which starts on "yes";
                     // Tab moves to Cancel. No window-wide Enter, so Enter on Cancel cancels.
+                    // Drive's delete is a move to its trash (the text says so).
                     let yes = ui.button(match on_yes {
-                        Action::DeleteRemote(_) => "Delete",
+                        Action::DeleteRemote(_) if !text.starts_with("Move ") => "Delete",
+                        Action::Cloud { .. } => "Remove",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");

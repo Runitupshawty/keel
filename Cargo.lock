@@ -3576,6 +3576,7 @@ dependencies = [
  "keel-vfs",
  "natord",
  "open",
+ "opendal",
  "parking_lot",
  "resvg 0.44.0",
  "rfd",

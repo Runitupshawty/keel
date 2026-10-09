@@ -28,7 +28,8 @@ pub struct Thumbs {
     cache: HashMap<PreviewKey, (Option<TextureHandle>, u64)>,
     pending: HashSet<PreviewKey>,
     clock: u64,
-    /// Thumbnails for remote files (setting `remote_thumbnails`): each one is a download.
+    /// Thumbnails for remote and cloud files (setting `remote_thumbnails`): each one is a
+    /// download.
     pub remote: bool,
 }
 
@@ -47,7 +48,7 @@ impl Thumbs {
     pub fn get(&mut self, e: &Entry) -> Option<(egui::TextureId, egui::Vec2)> {
         if !THUMB_EXTS.contains(&e.ext.as_str())
             || e.encrypted
-            || (!self.remote && e.path.scheme == "sftp")
+            || (!self.remote && crate::remotes::is_network(&e.path))
         {
             return None;
         }

@@ -1,9 +1,11 @@
 //! Sidebar "Remotes" section: one row per configured host with a status dot, its bookmarks
 //! nested below, and a right-click menu (connect, disconnect, edit, ssh, copy address).
+//! The "Cloud" section: one row per account with a status dot (reconnect, edit, remove).
 
+use crate::clouds::{root_of, CloudCmd};
 use crate::keys::Action;
 use crate::remotes::{home_of, remote_path, RemoteCmd};
-use keel_vfs::{ConnStatus, RemoteHost, VPath};
+use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, VPath};
 use std::collections::HashMap;
 
 /// What the sidebar shows for one host (rebuilt from config + status every frame).
@@ -128,6 +130,92 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
                     out.push(Action::Navigate(path.clone()));
                 } else if r.middle_clicked() {
                     out.push(Action::NewTabAt(path.clone()));
+                }
+            }
+        });
+    }
+}
+
+/// What the sidebar shows for one cloud account (rebuilt from config + status every frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudRow {
+    pub id: String,
+    pub label: String,
+    pub status: ConnStatus,
+    pub detail: String,
+    pub root: VPath,
+}
+
+pub fn cloud_rows(
+    accounts: &[CloudAccount],
+    status: &HashMap<String, (ConnStatus, String)>,
+) -> Vec<CloudRow> {
+    accounts
+        .iter()
+        .map(|a| {
+            let (status, detail) = status
+                .get(&a.id)
+                .cloned()
+                .unwrap_or((ConnStatus::Disconnected, String::new()));
+            CloudRow {
+                id: a.id.clone(),
+                label: a.label.clone(),
+                status,
+                detail,
+                root: root_of(&a.id),
+            }
+        })
+        .collect()
+}
+
+/// No "Copy link": the cloud provider exposes no share links yet.
+pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut Vec<Action>) {
+    let cmd = |id: &str, cmd| Action::Cloud {
+        id: id.to_owned(),
+        cmd,
+    };
+    if rows.is_empty() {
+        ui.horizontal(|ui| {
+            ui.weak("None configured");
+            if ui.small_button("Add…").clicked() {
+                out.push(cmd("", CloudCmd::Add));
+            }
+        });
+        return;
+    }
+    for row in rows {
+        let r = ui
+            .horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 4.5, dot_color(ui, row.status));
+                let here = current.scheme == "cloud" && current.authority == row.id;
+                ui.add(
+                    egui::Button::new(row.label.as_str())
+                        .frame(false)
+                        .selected(here),
+                )
+            })
+            .inner;
+        let tip = match row.status {
+            ConnStatus::Disconnected => "Not connected yet".to_owned(),
+            _ => row.detail.clone(),
+        };
+        let r = r.on_hover_text(tip);
+        if r.clicked() {
+            out.push(Action::Navigate(row.root.clone()));
+        } else if r.middle_clicked() {
+            out.push(Action::NewTabAt(row.root.clone()));
+        }
+        r.context_menu(|ui| {
+            for (text, c) in [
+                ("Reconnect", CloudCmd::Reconnect),
+                ("Edit…", CloudCmd::Edit),
+                ("Remove…", CloudCmd::Remove),
+            ] {
+                if ui.button(text).clicked() {
+                    out.push(cmd(&row.id, c));
+                    ui.close_menu();
                 }
             }
         });

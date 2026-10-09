@@ -15,7 +15,7 @@ use parking_lot::RwLock;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,8 +28,7 @@ pub const RETRY: Duration = Duration::from_secs(10);
 /// The provider waits this long for a host-key answer, then gives up.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Live SFTP providers by host id, shared with the preview and launch workers (they need
-/// `local_copy_with_progress`, which the Router's `dyn Provider` does not offer).
+/// Live SFTP providers by host id (connect / disconnect from the sidebar).
 pub type SftpMap = Arc<RwLock<HashMap<String, Arc<SftpProvider>>>>;
 
 /// Sidebar right-click commands on a host (`Add` opens an empty editor).
@@ -58,8 +57,8 @@ pub struct Remotes {
     events: Sender<RemoteEvent>,
     pub prompts: VecDeque<HostKeyPrompt>,
     pub editor: Option<Editor>,
-    /// The Settings window shows the Remotes page.
-    pub page: bool,
+    /// The Settings window's page.
+    pub page: crate::settings::Page,
     confirm_remove: Option<String>,
     retry_at: HashMap<String, Instant>,
     /// The newest remote search; older walks stop early.
@@ -83,7 +82,7 @@ impl Remotes {
             events,
             prompts: VecDeque::new(),
             editor: None,
-            page: false,
+            page: crate::settings::Page::General,
             confirm_remove: None,
             retry_at: HashMap::new(),
             search_gen: Arc::default(),
@@ -231,8 +230,11 @@ impl Remotes {
 
     /// Settings → Remotes: the host list with Add / Edit / Remove.
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings, tx: &Sender<Msg>) {
-        ui.checkbox(&mut s.remote_thumbnails, "Thumbnails for remote files")
-            .on_hover_text("Grid view then downloads every image and video it shows");
+        ui.checkbox(
+            &mut s.remote_thumbnails,
+            "Thumbnails for remote and cloud files",
+        )
+        .on_hover_text("Grid view then downloads every image and video it shows");
         ui.add_space(6.0);
         if s.remotes.is_empty() {
             ui.weak("No remote hosts yet.");
@@ -380,8 +382,8 @@ fn valid_user(u: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
-/// A stable id slug from the label, unique among `taken`.
-pub fn slug(label: &str, taken: &[RemoteHost]) -> String {
+/// A stable id slug from the label, unique among the `taken` ids.
+pub fn slug(label: &str, taken: &[String]) -> String {
     let mut base: String = label
         .to_lowercase()
         .chars()
@@ -395,7 +397,7 @@ pub fn slug(label: &str, taken: &[RemoteHost]) -> String {
     if base.is_empty() {
         base = "host".into();
     }
-    let free = |id: &str| taken.iter().all(|h| h.id != id);
+    let free = |id: &str| taken.iter().all(|t| t != id);
     if free(&base) {
         return base;
     }
@@ -495,7 +497,8 @@ impl Editor {
         if new && self.auth == AuthKind::KeyFile && self.passphrase_in_keyring && secret.is_none() {
             return Err("Enter the key passphrase (it is kept in the OS keychain)".into());
         }
-        let id = self.id.clone().unwrap_or_else(|| slug(label, existing));
+        let taken: Vec<String> = existing.iter().map(|h| h.id.clone()).collect();
+        let id = self.id.clone().unwrap_or_else(|| slug(label, &taken));
         Ok((
             RemoteHost {
                 id,
@@ -722,27 +725,28 @@ pub fn delete_text(n: usize, label: &str) -> String {
     )
 }
 
-/// Materialises `path` for preview / open-with. Remote files report progress as
+/// Paths on a remote host or cloud account (no trash there, downloads for previews).
+pub fn is_network(p: &VPath) -> bool {
+    matches!(p.scheme.as_str(), "sftp" | "cloud")
+}
+
+/// Materialises `path` for preview / open-with. Remote and cloud files report progress as
 /// `Msg::Download` when larger than `BIG_DOWNLOAD`. Blocks: workers only.
 pub fn materialise(
     router: &Router,
-    sftp: &SftpMap,
     path: &VPath,
     tx: &Sender<Msg>,
     ctx: &egui::Context,
 ) -> anyhow::Result<PathBuf> {
-    let remote = (path.scheme == "sftp")
-        .then(|| sftp.read().get(&path.authority).cloned())
-        .flatten();
-    let Some(provider) = remote else {
-        return router
-            .provider_for(path)
-            .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))?
-            .local_copy(path);
-    };
+    let provider = router
+        .provider_for(path)
+        .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))?;
+    if !is_network(path) {
+        return provider.local_copy(path);
+    }
     let name = path.name().to_owned();
     let last = Cell::new(None::<Instant>);
-    provider.local_copy_with_progress(path, &|p| {
+    let progress = |p: keel_vfs::Progress| {
         let done = p.done_items == p.total_items;
         let due = last
             .get()
@@ -759,7 +763,8 @@ pub fn materialise(
                 },
             );
         }
-    })
+    };
+    provider.local_copy_cancellable(path, &progress, &AtomicBool::new(false))
 }
 
 /// Breadth-first name search under `root`: case-insensitive substring, at most `limit`
@@ -838,6 +843,14 @@ pub fn spawn_search(
 impl AppState {
     pub fn remote_event(&mut self, event: RemoteEvent) {
         match event {
+            // Cloud ids hold a ':' (SFTP host slugs never do).
+            RemoteEvent::Status {
+                host_id,
+                status,
+                detail,
+            } if host_id.starts_with("cloud:") || host_id.starts_with("cloud-auth:") => {
+                self.cloud_event(&host_id, status, detail)
+            }
             RemoteEvent::Status {
                 host_id,
                 status,

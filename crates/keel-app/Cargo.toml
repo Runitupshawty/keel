@@ -51,6 +51,8 @@ rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 arboard = { version = "3.6", default-features = false }
 
 [dev-dependencies]
+# The real cloud provider over an in-memory service in the job tests.
+opendal = { workspace = true, features = ["services-memory"] }
 # Archive fixtures for the tests.
 zip.workspace = true
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

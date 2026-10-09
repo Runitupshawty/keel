@@ -307,8 +307,11 @@ impl App {
         }
         s.settings_ui(ctx);
         s.remotes.modals(ctx, &mut s.settings, &s.tx);
+        s.cloud_modals(ctx);
         let error = ctx.style().visuals.error_fg_color;
-        s.toasts.show(ctx, error);
+        if let Some(action) = s.toasts.show(ctx, error) {
+            s.run(s.active, action);
+        }
     }
 }
 

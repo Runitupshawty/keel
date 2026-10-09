@@ -127,6 +127,26 @@ pub fn store_tokens(secrets: &dyn SecretStore, id: &str, tokens: &OAuthTokens) -
     secrets.set(&format!("{id}/expires_at"), &secs.to_string())
 }
 
+/// Signs an account out: revokes its grant where the service allows it (Drive: the refresh
+/// token; Dropbox: the access token), then deletes its keychain entries whatever the
+/// service answered. S3 keys are only revocable in the provider's console. Blocks on the
+/// network: workers only. The error is the revoke's (the entries are gone either way).
+pub fn sign_out(account: &CloudAccount, secrets: &dyn SecretStore) -> Result<()> {
+    let field = match account.kind {
+        CloudKind::GoogleDrive => "refresh_token",
+        _ => "access_token",
+    };
+    let revoked = match (
+        oauth::revoke_url(account.kind),
+        secrets.get(&format!("{}/{field}", account.id)),
+    ) {
+        (Some(url), Ok(Some(token))) => oauth::revoke(account.kind, url, &token),
+        _ => Ok(()),
+    };
+    forget_account(secrets, &account.id);
+    revoked
+}
+
 /// rustls' crypto (pure Rust, so cross-target builds need no C toolchain) and opendal's
 /// HTTP transport, installed once per process.
 fn init() {
