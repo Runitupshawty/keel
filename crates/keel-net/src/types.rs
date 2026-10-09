@@ -75,7 +75,16 @@ pub enum NetEvent {
     PeerOffline(PeerId),
     Paired(Peer),
     GrantChanged,
-    Request { peer: PeerId, what: String },
+    Request {
+        peer: PeerId,
+        what: String,
+    },
+    /// Spacedrop: a received file was verified and moved into the inbox at `path`.
+    DropReceived {
+        peer: PeerId,
+        id: String,
+        path: std::path::PathBuf,
+    },
 }
 
 /// Who a `Handler` call serves: the paired device and its label (as it last told us).
@@ -131,6 +140,17 @@ pub trait Handler: Send + Sync {
     async fn rename(&self, ctx: &RequestCtx, source: &str, from: &str, to: &str) -> Result<()>;
     async fn remove(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<()>;
     async fn storage(&self, ctx: &RequestCtx) -> Option<Storage>;
+    /// Spacedrop: `ctx.peer` offers `files` (relative paths and sizes) as drop `id`.
+    /// `Some(inbox folder)` accepts; the default declines.
+    async fn drop_offer(
+        &self,
+        ctx: &RequestCtx,
+        id: &str,
+        files: &[(String, u64)],
+    ) -> Option<std::path::PathBuf> {
+        let _ = (ctx, id, files);
+        None
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInfo {
@@ -203,6 +223,18 @@ pub enum Request {
         path: String,
     },
     Grants,
+    /// Spacedrop: offer `files` (relative paths, sizes) as drop `id` (32 hex digits).
+    /// `Response::Ok` accepts (again for the same device and files: idempotent, so a
+    /// sender re-offers to resume), `Response::Denied` declines. Once accepted, the
+    /// pieces go as `Write` / `StatPartial` with source `drop:<id>`.
+    DropOffer {
+        id: String,
+        files: Vec<(String, u64)>,
+    },
+    /// Spacedrop: the sender gave up; the receiver drops what it staged.
+    DropCancel {
+        id: String,
+    },
 }
 impl Request {
     pub(crate) fn name(&self) -> &'static str {
@@ -218,6 +250,8 @@ impl Request {
             Self::Rename { .. } => "rename",
             Self::Remove { .. } => "remove",
             Self::Grants => "grants",
+            Self::DropOffer { .. } => "drop-offer",
+            Self::DropCancel { .. } => "drop-cancel",
         }
     }
 }

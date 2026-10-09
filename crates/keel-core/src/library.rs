@@ -804,6 +804,42 @@ impl Library {
         crate::oplog::entries(&self.shared, limit)
     }
 
+    /// Content ids the index holds for `entries` (listed children of folder `dir`, relative
+    /// to the root of source `id`): for files whose size and modification time still match
+    /// their record, else None.
+    pub fn content_ids(
+        &self,
+        id: &SourceId,
+        dir: &str,
+        entries: &[keel_vfs::Entry],
+    ) -> Result<Vec<Option<[u8; 32]>>> {
+        use rusqlite::OptionalExtension;
+        let src = self.source(id).with_context(|| format!("no source {id}"))?;
+        let c = src.store.get()?;
+        let Some((parent, _)) = crate::index::resolve(&c, dir, src.nocase())? else {
+            return Ok(vec![None; entries.len()]);
+        };
+        let mut stmt = c.prepare_cached(
+            "SELECT size, mtime, cas_id FROM record
+             WHERE parent = ?1 AND name = ?2 AND kind = 0 AND cas_id IS NOT NULL",
+        )?;
+        entries
+            .iter()
+            .map(|e| {
+                let row: Option<(i64, Option<i64>, Vec<u8>)> = stmt
+                    .query_row(rusqlite::params![parent, e.name], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .optional()?;
+                Ok(row
+                    .filter(|(size, mtime, _)| {
+                        *size as u64 == e.size && *mtime == e.modified.map(crate::fsid::unix_ns)
+                    })
+                    .and_then(|(_, _, cas)| cas.try_into().ok()))
+            })
+            .collect()
+    }
+
     /// Appends a finished operation (redacted like every entry); returns its id.
     pub fn log_op(
         &self,

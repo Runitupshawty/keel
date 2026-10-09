@@ -87,6 +87,8 @@ pub struct Node {
     pub(crate) weak: Weak<Node>,
     pub(crate) pairing: tokio::sync::Mutex<Option<crate::pairing::Invitation>>,
     subscribers: Mutex<Vec<crossbeam_channel::Sender<NetEvent>>>,
+    /// Spacedrop: accepted incoming drops by id.
+    pub(crate) drops: Mutex<std::collections::HashMap<String, crate::spacedrop::Incoming>>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -146,7 +148,9 @@ impl Node {
             weak: weak.clone(),
             pairing: tokio::sync::Mutex::new(None),
             subscribers: Mutex::new(Vec::new()),
+            drops: Mutex::default(),
         });
+        crate::spacedrop::register_node(&node);
         let ep = node.endpoint.clone();
         let weak = node.weak.clone();
         let stop = node.stop.clone();

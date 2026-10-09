@@ -99,7 +99,12 @@ impl Lister {
                 Ok(fsid::list(&local(dir)?).with_context(|| format!("list {}", dir.display()))?)
             }
             // Fresh and complete: a cut-off listing fails (the folder is kept as unreadable).
-            Lister::Remote(p) => Ok(p.list_complete(dir)?.into_iter().map(item_of).collect()),
+            // Device sources: with the content ids their host sent.
+            Lister::Remote(p) => Ok(p
+                .list_complete_ids(dir)?
+                .into_iter()
+                .map(|(e, cas)| Item { cas, ..item_of(e) })
+                .collect()),
         }
     }
 
@@ -132,6 +137,7 @@ fn item_of(e: keel_vfs::Entry) -> Item {
         link: e.is_link,
         fs_id: None,
         error: None,
+        cas: None,
         name: e.name,
         kind,
     }
@@ -484,6 +490,13 @@ impl Walk<'_> {
                     &gone,
                     &still,
                 )?;
+                if let Some(cas) = item.cas.filter(|_| item.kind == FILE) {
+                    self.conn
+                        .prepare_cached(
+                            "UPDATE record SET cas_id = ?2 WHERE id = ?1 AND cas_id IS NOT ?2",
+                        )?
+                        .execute(params![id, &cas[..]])?;
+                }
                 if item.kind == DIR && !item.link {
                     stack.push(Pending {
                         dir: p.dir.join(&item.name),

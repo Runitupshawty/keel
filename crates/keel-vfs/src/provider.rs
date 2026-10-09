@@ -35,6 +35,15 @@ pub trait Provider: Send + Sync {
     /// off at a display cap (an index would take the missing entries as deleted). No
     /// default: a wrapper must forward it (or say why its `list` already qualifies).
     fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>>;
+    /// `list_complete` with each entry's content id (the BLAKE3 of its bytes) where the
+    /// provider is told it (a paired device's index); None elsewhere.
+    fn list_complete_ids(&self, dir: &VPath) -> Result<Vec<(Entry, Option<[u8; 32]>)>> {
+        Ok(self
+            .list_complete(dir)?
+            .into_iter()
+            .map(|e| (e, None))
+            .collect())
+    }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
     /// Call `flush()` and check its result when done: providers that stage writes (SFTP)
     /// commit there, and a writer dropped without a successful `flush()` is discarded

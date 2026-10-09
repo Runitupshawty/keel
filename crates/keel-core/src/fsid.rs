@@ -23,6 +23,8 @@ pub(crate) struct Item {
     pub fs_id: Option<String>,
     /// Kept with the record when its metadata could not be read.
     pub error: Option<String>,
+    /// The content id a device source's host sent with its listing.
+    pub cas: Option<[u8; 32]>,
 }
 
 /// Unix nanoseconds (negative before 1970; saturating outside 1678..2262).
@@ -90,6 +92,7 @@ fn from_metadata(name: String, path: &Path, md: io::Result<std::fs::Metadata>) -
         fs_id,
         name,
         error: None,
+        cas: None,
     }
 }
 
@@ -270,6 +273,7 @@ mod win {
                         fs_id: Some(fs_id(volume.VolumeSerialNumber, info.FileId.Identifier)),
                         name,
                         error: None,
+                        cas: None,
                     });
                 }
                 if info.NextEntryOffset == 0 {

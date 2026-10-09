@@ -125,6 +125,26 @@ junction anywhere on the way is refused; writes re-check before publishing. Devi
 writes go to local sources only. Every served request is appended to the library's
 op log as `net.<op>` with the peer id and label.
 
+## Spacedrop
+
+`spacedrop::send(node, lib, peer, paths)` starts a durable keel-core job (kind
+`drop`; call `spacedrop::register(lib)` before `resume_all`). It walks folders, offers
+the file list (`Request::DropOffer`), and pushes each file in 4 MiB `Write` pieces to
+source `drop:<id>`. Before each file it asks `StatPartial` and resumes from the staged
+length, re-hashing the bytes it skips, so the final piece always carries the whole
+file's BLAKE3. A dropped link, or a closed and reopened sender node, is retried with
+backoff until nothing has moved for ten minutes; a decline, a changed source file or an
+unsendable name fails the job; cancelling it sends `DropCancel`.
+
+The receiving node asks `Handler::drop_offer` (default: decline;
+`LibraryHandler::on_drop(inbox, ask)` asks once per drop id and answers re-offers
+from that decision). Only the accepted device may send pieces of that drop; grants
+are not involved. Pieces stage in `<inbox>/.keel-partial-<id>/` with a `meta.json`,
+so a restarted receiver resumes when the sender re-offers. Each file is verified and
+renamed into the inbox only when complete (`name (1).ext` instead of overwriting),
+emitting `NetEvent::DropReceived`; the staging folder goes when the drop is complete
+or cancelled.
+
 iroh uses an explicit ring CryptoProvider, without touching the process default.
 This coexists with keel-vfs's graviola provider. The offline regression test
 installs graviola first, then opens nodes and completes a pairing and QUIC ping.

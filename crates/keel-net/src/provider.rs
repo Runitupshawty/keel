@@ -145,7 +145,13 @@ impl NodeProvider {
     }
 
     /// Every page of a folder; any failed page fails the whole listing.
-    fn pages(&self, dir: &VPath, peer: &PeerId, source: &str, path: &str) -> Result<Vec<Entry>> {
+    fn pages(
+        &self,
+        dir: &VPath,
+        peer: &PeerId,
+        source: &str,
+        path: &str,
+    ) -> Result<Vec<(Entry, Option<[u8; 32]>)>> {
         let mut out = Vec::new();
         let mut after = None;
         loop {
@@ -160,7 +166,7 @@ impl NodeProvider {
             };
             let last = entries.last().map(|e| e.name.clone());
             for info in entries.iter().filter(|e| valid_name(&e.name)) {
-                out.push(entry(dir.join(&info.name), info));
+                out.push((entry(dir.join(&info.name), info), info.content_id));
             }
             match last {
                 Some(last) if more => {
@@ -209,12 +215,11 @@ impl Provider for NodeProvider {
         }
     }
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
-        let t = target(dir)?;
-        match &t.at {
-            None => self.sources(dir, &t.peer),
-            Some((source, path)) => self.pages(dir, &t.peer, source, path),
-        }
-        .with_context(|| dir.display())
+        Ok(self
+            .list_complete_ids(dir)?
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect())
     }
     fn stat(&self, p: &VPath) -> Result<Entry> {
         let t = target(p)?;
@@ -239,6 +244,19 @@ impl Provider for NodeProvider {
     /// Pages through the folder; never cut off.
     fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
         self.list(dir)
+    }
+    /// With the content ids the device's index holds.
+    fn list_complete_ids(&self, dir: &VPath) -> Result<Vec<(Entry, Option<[u8; 32]>)>> {
+        let t = target(dir)?;
+        match &t.at {
+            None => Ok(self
+                .sources(dir, &t.peer)?
+                .into_iter()
+                .map(|e| (e, None))
+                .collect()),
+            Some((source, path)) => self.pages(dir, &t.peer, source, path),
+        }
+        .with_context(|| dir.display())
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
         let (peer, source, path) = file_target(p)?;

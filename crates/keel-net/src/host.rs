@@ -6,27 +6,62 @@
 //! so a link inside a shared folder cannot reach outside the grant. Every served request
 //! is appended to the library's op log with the requesting device's id.
 use crate::*;
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use keel_core::{Library, SourceId, SourceKind};
 use keel_vfs::{Entry, Kind, Provider, VPath};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock},
+    sync::Arc,
     time::UNIX_EPOCH,
 };
-use tokio::io::{AsyncRead, AsyncSeekExt};
+use tokio::{io::AsyncRead, sync::watch};
 
 pub struct LibraryHandler {
     lib: Arc<Library>,
+    /// Spacedrop: the inbox and who decides on offers (`on_drop`).
+    drops: Mutex<Option<(PathBuf, Ask)>>,
+    /// Offers being decided or decided, by drop id (a sender re-offers while waiting).
+    offers: Mutex<HashMap<String, watch::Receiver<Option<bool>>>>,
+}
+
+type Ask = Arc<dyn Fn(IncomingDrop) + Send + Sync>;
+
+/// A Spacedrop offer waiting for an answer (`LibraryHandler::on_drop`).
+pub struct IncomingDrop {
+    pub peer: PeerId,
+    /// The sending device's label.
+    pub label: String,
+    pub id: String,
+    /// Relative paths and sizes.
+    pub files: Vec<(String, u64)>,
+    pub reply: DropReply,
+}
+
+/// Answers an offer once; dropped unanswered, the offer is declined.
+pub struct DropReply(watch::Sender<Option<bool>>);
+impl DropReply {
+    pub fn answer(self, accept: bool) {
+        let _ = self.0.send(Some(accept));
+    }
 }
 
 impl LibraryHandler {
     pub fn new(lib: Arc<Library>) -> Self {
-        Self { lib }
+        Self {
+            lib,
+            drops: Mutex::default(),
+            offers: Mutex::default(),
+        }
+    }
+
+    /// Accepts Spacedrop offers into `inbox` when `ask` answers yes (it may answer later,
+    /// from another thread). Without this, every offer is declined.
+    pub fn on_drop(&self, inbox: PathBuf, ask: impl Fn(IncomingDrop) + Send + Sync + 'static) {
+        *self.drops.lock() = Some((inbox, Arc::new(ask)));
     }
 
     /// Runs `f` (with the library) on the blocking pool and logs it as `net.<op>`.
@@ -175,9 +210,6 @@ impl AsyncRead for Bridge {
     }
 }
 
-/// Pieces being written now (one writer per staging file).
-static WRITING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
-
 /// `.keel-partial-<id>` next to `dest`: `<id>` is fixed per device and target, so a
 /// transfer that broke off resumes into the same file.
 fn staging_for(peer: &PeerId, dest: &Path) -> PathBuf {
@@ -186,26 +218,6 @@ fn staging_for(peer: &PeerId, dest: &Path) -> PathBuf {
     h.update(dest.as_os_str().as_encoded_bytes());
     let id = data_encoding::HEXLOWER.encode(&h.finalize().as_bytes()[..16]);
     dest.with_file_name(format!(".keel-partial-{id}"))
-}
-
-/// A piece in progress: unless it completed, the staging file goes back to the piece's
-/// offset (removed when that is 0), also when the request is dropped.
-struct Piece {
-    path: PathBuf,
-    offset: u64,
-    done: bool,
-}
-impl Drop for Piece {
-    fn drop(&mut self) {
-        if !self.done {
-            if self.offset == 0 {
-                let _ = std::fs::remove_file(&self.path);
-            } else if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
-                let _ = f.set_len(self.offset);
-            }
-        }
-        WRITING.lock().remove(&self.path);
-    }
 }
 
 fn local_dest(lib: &Library, id: &str, rel: &str) -> Result<PathBuf> {
@@ -235,11 +247,21 @@ impl Handler for LibraryHandler {
         let payload = json!({"source": source, "path": path});
         self.serve(ctx, "list", payload, move |lib| {
             let (abs, provider) = locate(lib, &id, &rel)?;
-            Ok(provider
+            let entries: Vec<Entry> = provider
                 .list_complete(&abs)?
-                .iter()
+                .into_iter()
                 .filter(|e| !e.name.starts_with(".keel-partial-"))
-                .map(info)
+                .collect();
+            let ids = lib
+                .content_ids(&SourceId(id), &rel, &entries)
+                .unwrap_or_else(|_| vec![None; entries.len()]);
+            Ok(entries
+                .iter()
+                .zip(ids)
+                .map(|(e, content_id)| EntryInfo {
+                    content_id,
+                    ..info(e)
+                })
                 .collect())
         })
         .await
@@ -292,7 +314,7 @@ impl Handler for LibraryHandler {
         ctx: &RequestCtx,
         source: &str,
         path: &str,
-        mut body: Box<dyn AsyncRead + Send + Unpin>,
+        body: Box<dyn AsyncRead + Send + Unpin>,
         at: WriteAt,
     ) -> Result<()> {
         let (id, rel, peer) = (source.to_owned(), path.to_owned(), ctx.peer);
@@ -301,39 +323,8 @@ impl Handler for LibraryHandler {
         let staged = async {
             let (lib, id, rel) = (self.lib.clone(), id.clone(), rel.clone());
             let dest = tokio::task::spawn_blocking(move || local_dest(&lib, &id, &rel)).await??;
-            let staging = staging_for(&peer, &dest);
-            ensure!(
-                WRITING.lock().insert(staging.clone()),
-                "this file is being written already"
-            );
-            // Armed (done = false) once the piece is known to start at the staged end.
-            let mut piece = Piece {
-                path: staging.clone(),
-                offset: at.offset,
-                done: true,
-            };
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(at.offset == 0)
-                .open(&staging)
-                .await?;
-            let len = file.metadata().await?.len();
-            ensure!(
-                len == at.offset,
-                "offset {} != staged length {len}",
-                at.offset
-            );
-            piece.done = false;
-            file.seek(SeekFrom::Start(at.offset)).await?;
-            let copied = tokio::io::copy(&mut body, &mut file).await?;
-            ensure!(copied == at.size, "body size mismatch");
-            file.sync_all().await?;
-            drop(file);
-            if !at.final_ {
-                piece.done = true;
-            }
-            Ok((piece, dest))
+            let piece = crate::stage::write_piece(staging_for(&peer, &dest), body, at).await?;
+            Ok::<_, anyhow::Error>((piece, dest))
         }
         .await;
         self.serve(ctx, "write", payload, move |lib| {
@@ -341,14 +332,7 @@ impl Handler for LibraryHandler {
             if piece.done {
                 return Ok(());
             }
-            if let Some(expect) = at.expect {
-                let mut h = blake3::Hasher::new();
-                h.update_reader(std::fs::File::open(&piece.path)?)?;
-                if h.finalize().as_bytes() != &expect {
-                    piece.offset = 0;
-                    bail!("content check failed");
-                }
-            }
+            piece.verify(at.expect)?;
             // The folder may have been swapped for a link while the body streamed.
             ensure!(local_dest(lib, &id, &rel)? == dest, "target moved");
             std::fs::rename(&piece.path, &dest)?;
@@ -398,6 +382,40 @@ impl Handler for LibraryHandler {
             provider.remove(&abs)
         })
         .await
+    }
+    /// Asks `on_drop`'s callback once per drop id; a re-offer while it is being decided
+    /// waits for the same answer.
+    async fn drop_offer(
+        &self,
+        ctx: &RequestCtx,
+        id: &str,
+        files: &[(String, u64)],
+    ) -> Option<PathBuf> {
+        let (inbox, ask) = self.drops.lock().clone()?;
+        let mut rx = {
+            let mut offers = self.offers.lock();
+            match offers.get(id) {
+                Some(rx) => rx.clone(),
+                None => {
+                    let (tx, rx) = watch::channel(None);
+                    offers.insert(id.to_owned(), rx.clone());
+                    ask(IncomingDrop {
+                        peer: ctx.peer,
+                        label: ctx.label.clone(),
+                        id: id.to_owned(),
+                        files: files.to_vec(),
+                        reply: DropReply(tx),
+                    });
+                    rx
+                }
+            }
+        };
+        let accepted = rx.wait_for(Option::is_some).await.ok().and_then(|v| *v) == Some(true);
+        let payload = json!({"peer": ctx.peer.0.to_string(), "device": ctx.label,
+            "drop": id, "files": files.len()});
+        let result = if accepted { "accepted" } else { "declined" };
+        let _ = self.lib.log_op("net.drop-offer", &payload, result, true);
+        accepted.then_some(inbox)
     }
     /// Every local volume together.
     async fn storage(&self, _: &RequestCtx) -> Option<Storage> {

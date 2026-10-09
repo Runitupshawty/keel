@@ -54,7 +54,11 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         })
     };
     match req {
-        Request::Ping | Request::ListSources | Request::Grants => true,
+        Request::Ping
+        | Request::ListSources
+        | Request::Grants
+        | Request::DropOffer { .. }
+        | Request::DropCancel { .. } => true,
         Request::List { source, path, .. }
         | Request::Stat { source, path }
         | Request::Read { source, path, .. } => check(source, path, false),
@@ -88,7 +92,7 @@ impl Node {
                         let allowed = {
                             let state = node.state.lock();
                             !state.closed && !cancel.is_cancelled() && state.data.peers.iter().any(|r| r.peer.id == peer)
-                                && permitted(&state.data.grants,peer,&req)
+                                && (permitted(&state.data.grants,peer,&req) || node.drop_permits(peer, &req))
                         };
                         tracing::debug!(peer = %peer.0, what = req.name(), allowed, "net request");
                         node.emit(NetEvent::Request { peer, what: req.name().into() });
@@ -188,6 +192,11 @@ impl Node {
                     tokio::io::copy(&mut body, send).await?;
                     return Ok(Response::Read { size });
                 }
+                Request::DropOffer { id, files } => self.drop_offer(&ctx, &id, files).await?,
+                Request::DropCancel { id } => {
+                    self.drop_cancel(peer, &id);
+                    Response::Ok
+                }
                 Request::Write {
                     source,
                     path,
@@ -204,13 +213,21 @@ impl Node {
                         expect,
                     };
                     let body = Box::new(wire::ExactReader::new(recv, size));
-                    h.write(&ctx, &source, &path, body, at).await?;
+                    match source.strip_prefix(crate::spacedrop::SOURCE) {
+                        Some(id) => self.drop_piece(peer, id, &path, body, at).await?,
+                        None => h.write(&ctx, &source, &path, body, at).await?,
+                    }
                     Response::Ok
                 }
-                Request::StatPartial { source, path } => Response::Partial {
-                    len: h.stat_partial(&ctx, &source, &path).await?,
-                    complete: false,
-                },
+                Request::StatPartial { source, path } => {
+                    match source.strip_prefix(crate::spacedrop::SOURCE) {
+                        Some(id) => self.drop_partial(peer, id, &path)?,
+                        None => Response::Partial {
+                            len: h.stat_partial(&ctx, &source, &path).await?,
+                            complete: false,
+                        },
+                    }
+                }
                 Request::Mkdir { source, path } => {
                     h.mkdir(&ctx, &source, &path).await?;
                     Response::Ok

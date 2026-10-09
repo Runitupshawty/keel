@@ -15,7 +15,10 @@ pub(crate) struct Pair {
     pub lib: Arc<Library>,
     pub source: String,
     pub files: tempfile::TempDir,
-    _dirs: Vec<tempfile::TempDir>,
+    /// The host's handler (Spacedrop offers go to it).
+    pub handler: Arc<LibraryHandler>,
+    guest_secrets: Arc<MemoryStore>,
+    dirs: Vec<tempfile::TempDir>,
 }
 
 pub(crate) fn folder(root: &Path) -> SourceDef {
@@ -40,17 +43,19 @@ pub(crate) fn pair() -> Pair {
     let files = tempfile::tempdir().unwrap();
     let lib = Arc::new(Library::open(dirs[0].path(), "test").unwrap());
     let source = lib.add_source(folder(files.path())).unwrap().0;
+    let handler = Arc::new(LibraryHandler::new(lib.clone()));
+    let guest_secrets = Arc::new(MemoryStore::default());
     let (host, guest) = rt.block_on(async {
         let host = Node::open_with_options(
             Arc::new(MemoryStore::default()),
             dirs[1].path(),
-            Arc::new(LibraryHandler::new(lib.clone())),
+            handler.clone(),
             NodeOptions::offline(),
         )
         .await
         .unwrap();
         let guest = Node::open_with_options(
-            Arc::new(MemoryStore::default()),
+            guest_secrets.clone(),
             dirs[2].path(),
             Arc::new(LibraryHandler::new(lib.clone())),
             NodeOptions::offline(),
@@ -71,11 +76,26 @@ pub(crate) fn pair() -> Pair {
         lib,
         source,
         files,
-        _dirs: dirs,
+        handler,
+        guest_secrets,
+        dirs,
     }
 }
 
 impl Pair {
+    /// Opens the (closed) guest node again: same identity and data.
+    pub fn reopen_guest(&mut self) {
+        self.guest = self.rt.block_on(async {
+            Node::open_with_options(
+                self.guest_secrets.clone(),
+                self.dirs[2].path(),
+                Arc::new(LibraryHandler::new(self.lib.clone())),
+                NodeOptions::offline(),
+            )
+            .await
+            .unwrap()
+        });
+    }
     pub fn grant(&self, subtree: &str, access: Access) {
         self.host
             .grant(Grant {
