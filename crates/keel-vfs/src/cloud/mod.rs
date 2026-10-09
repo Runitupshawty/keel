@@ -241,7 +241,9 @@ pub fn sign_out(account: &CloudAccount, secrets: &dyn SecretStore) -> Result<()>
         revoke_tokens(account.kind, tokens, client)
     })
 }
-fn sign_out_with(
+/// `sign_out` with its own revoke (called with the tokens and client read before the
+/// entries were deleted).
+pub fn sign_out_with(
     account: &CloudAccount,
     secrets: &dyn SecretStore,
     revoke: impl FnOnce(&OAuthTokens, &OAuthClient) -> Result<()>,

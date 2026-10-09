@@ -3587,6 +3587,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vt100",
+ "zeroize",
  "zip 2.4.2",
 ]
 

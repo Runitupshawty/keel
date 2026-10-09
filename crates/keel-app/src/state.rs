@@ -1078,8 +1078,13 @@ impl AppState {
                 let paths = self.target_paths(p);
                 let remote = paths.first().filter(|p| p.scheme == "sftp");
                 let cloud = paths.first().filter(|p| p.scheme == "cloud");
-                let cloud = cloud.and_then(|p| self.clouds.account(&p.authority));
-                if let Some(account) = cloud {
+                let cloud = cloud.map(|p| (p, self.clouds.account(&p.authority)));
+                if let Some((path, account)) = cloud {
+                    // Never the local "trash" wording for a cloud the app no longer knows.
+                    let Some(account) = account else {
+                        let why = format!("{}: unknown cloud account", path.display());
+                        return self.toasts.error(why);
+                    };
                     // Each service deletes differently: say what this one does.
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::clouds::delete_text(paths.len(), account.kind.remove_kind()),

@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+### Known limitations
+
+- Cloud accounts show no storage quota or free space anywhere yet.
+- There is no "Copy link" (share link) for cloud files; the sidebar menu leaves it out.
+- Cancelling a Google Drive or Dropbox upload ends its retries, but a request already on the wire finishes first.
+
 ## [0.2.0] - 2026-10-09
 
 Archives as folders, an embedded terminal and SFTP remotes, on Windows, macOS and Linux.

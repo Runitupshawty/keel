@@ -2,7 +2,7 @@
 //! nested below, and a right-click menu (connect, disconnect, edit, ssh, copy address).
 //! The "Cloud" section: one row per account with a status dot (reconnect, edit, remove).
 
-use crate::clouds::{root_of, CloudCmd};
+use crate::clouds::{needs_sign_in, root_of, CloudCmd};
 use crate::keys::Action;
 use crate::remotes::{home_of, remote_path, RemoteCmd};
 use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, VPath};
@@ -207,12 +207,14 @@ pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut
         } else if r.middle_clicked() {
             out.push(Action::NewTabAt(row.root.clone()));
         }
+        let reauth = row.status == ConnStatus::Failed && needs_sign_in(&row.detail);
         r.context_menu(|ui| {
-            for (text, c) in [
+            let sign_in = reauth.then_some(("Sign in again…", CloudCmd::SignIn));
+            for (text, c) in sign_in.into_iter().chain([
                 ("Reconnect", CloudCmd::Reconnect),
                 ("Edit…", CloudCmd::Edit),
                 ("Remove…", CloudCmd::Remove),
-            ] {
+            ]) {
                 if ui.button(text).clicked() {
                     out.push(cmd(&row.id, c));
                     ui.close_menu();
