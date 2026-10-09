@@ -6,7 +6,8 @@ use std::collections::HashMap;
 /// Keychain service for every cloud secret. Accounts are `<cloud id>/<field>`.
 pub const KEYRING_SERVICE: &str = "Keel Cloud";
 
-/// Secret fields stored per account (`<cloud id>/<field>`).
+/// Secret fields stored per account (`<cloud id>/<field>`). OAuth tokens are one JSON
+/// entry, `tokens`; the three token fields here are what earlier builds wrote.
 pub const FIELDS: [&str; 6] = [
     "access_token",
     "refresh_token",
@@ -26,7 +27,7 @@ pub trait SecretStore: Send + Sync {
 
 /// Removes every secret of an account (sign-out / account removal). Best effort per field.
 pub fn forget_account(store: &dyn SecretStore, id: &str) {
-    for field in FIELDS {
+    for field in FIELDS.into_iter().chain(["tokens"]) {
         let _ = store.delete(&format!("{id}/{field}"));
     }
 }

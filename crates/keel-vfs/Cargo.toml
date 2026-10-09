@@ -9,12 +9,29 @@ repository.workspace = true
 path = "src/lib.rs"
 
 [features]
-default = ["zip", "sevenz", "tar", "rar"]
+default = ["zip", "sevenz", "tar", "rar", "cloud"]
 zip = ["dep:zip", "dep:chrono"]
 sevenz = ["dep:sevenz-rust"]
 tar = ["dep:tar", "dep:flate2", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
 # libunrar is C++ built with `cc`; cross-target checks from Windows build without it.
 rar = ["dep:unrar_sys"]
+# Google Drive, Dropbox and S3 (`cloud::`): opendal, reqwest, rustls + graviola, the OAuth
+# loopback listener and the browser hand-off.
+cloud = [
+    "dep:opendal",
+    "dep:opendal-http-transport-reqwest",
+    "dep:reqwest",
+    "dep:reqsign-core",
+    "dep:reqsign-aws-v4",
+    "dep:tiny_http",
+    "dep:rustls",
+    "dep:rustls-graviola",
+    "dep:open",
+    "dep:base64",
+    "dep:getrandom",
+    "dep:url",
+    "dep:serde_json",
+]
 
 [dependencies]
 zip = { workspace = true, optional = true }
@@ -45,16 +62,19 @@ dirs.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 sha1.workspace = true
-opendal.workspace = true
-reqwest.workspace = true
-tiny_http.workspace = true
-rustls.workspace = true
-rustls-graviola.workspace = true
-open.workspace = true
-base64.workspace = true
-getrandom.workspace = true
-url.workspace = true
-serde_json.workspace = true
+opendal = { workspace = true, optional = true }
+opendal-http-transport-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+reqsign-core = { workspace = true, optional = true }
+reqsign-aws-v4 = { workspace = true, optional = true }
+tiny_http = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-graviola = { workspace = true, optional = true }
+open = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 toml.workspace = true
 notify = "6"
 notify-debouncer-mini = "0.4"
@@ -70,3 +90,5 @@ windows.workspace = true
 
 [dev-dependencies]
 opendal = { workspace = true, features = ["services-memory"] }
+# Fake HTTP services in the cloud tests.
+http = "1"

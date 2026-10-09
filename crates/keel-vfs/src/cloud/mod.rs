@@ -16,14 +16,23 @@ use std::{
     collections::{HashMap, HashSet},
     io::{self, Read, Write},
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// Directives to keep in the app's `tracing` filter: the S3 signing library logs its
+/// credential providers at debug level (Keel's prints no key, but a debug filter should
+/// not depend on that).
+pub const LOG_FILTER_HINT: &str = "reqsign_core=warn,reqsign_aws_v4=warn";
 
 /// Non-secret account metadata (config `[[clouds]]`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CloudAccount {
-    /// Stable slug (`[A-Za-z0-9_-]+`): the VPath authority and the keychain prefix.
+    /// Stable lowercase slug (`[a-z0-9_-]+`): the VPath authority and the keychain prefix
+    /// (lowercase because Windows Credential Manager ignores case).
     pub id: String,
     pub label: String,
     pub kind: CloudKind,
@@ -61,8 +70,29 @@ pub enum RemoveKind {
     Permanent,
 }
 
+/// Cloud failures a caller may want to tell apart (`anyhow::Error::downcast_ref`).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CloudError {
+    /// The TLS crypto needs CPU features this machine lacks (named in the field).
+    #[error(
+        "cloud accounts need a CPU with AES, AVX2, ADX and BMI2 (most x86-64 CPUs since \
+         2014) or a 64-bit ARM CPU with AES and SHA-2; this one lacks {0}"
+    )]
+    UnsupportedCpu(String),
+    /// HTTPS could not be set up.
+    #[error("cloud access unavailable: {0}")]
+    Unavailable(String),
+}
+
 /// Dropbox's single-request upload limit (opendal has no upload sessions yet).
 const DROPBOX_UPLOAD_LIMIT: u64 = 150 * 1024 * 1024;
+/// Drive uploads are one request with the whole file in memory (opendal has no resumable
+/// Drive upload yet), so they are capped.
+const DRIVE_UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
+/// Entries shown per folder. ponytail: a bigger folder is cut off here (and a warning
+/// logged); page it in the UI if anyone keeps that many files in one folder.
+const LIST_CAP: usize = 50_000;
 
 impl CloudKind {
     pub fn remove_kind(self) -> RemoveKind {
@@ -70,6 +100,21 @@ impl CloudKind {
             CloudKind::GoogleDrive => RemoveKind::Trash,
             CloudKind::Dropbox => RemoveKind::RecoverableDelete,
             CloudKind::S3 => RemoveKind::Permanent,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            CloudKind::GoogleDrive => "Google Drive",
+            CloudKind::Dropbox => "Dropbox",
+            CloudKind::S3 => "S3",
+        }
+    }
+    /// Largest file one upload request may carry.
+    fn upload_limit(self) -> Option<u64> {
+        match self {
+            CloudKind::GoogleDrive => Some(DRIVE_UPLOAD_LIMIT),
+            CloudKind::Dropbox => Some(DROPBOX_UPLOAD_LIMIT),
+            CloudKind::S3 => None,
         }
     }
     /// The app registration shipped in `assets/cloud-clients.toml`, unless it is still a
@@ -112,41 +157,178 @@ pub fn resolve_client(account: &CloudAccount, secrets: &dyn SecretStore) -> Resu
     Ok(OAuthClient { id, secret })
 }
 
-/// Saves tokens under `<id>/access_token`, `<id>/refresh_token` (kept if `None`) and
-/// `<id>/expires_at` (Unix seconds).
+/// All of an account's tokens in one keychain entry (`<id>/tokens`, JSON), so a refresh
+/// is saved atomically.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredTokens {
+    #[serde(default)]
+    access: String,
+    #[serde(default)]
+    refresh: Option<String>,
+    /// Unix seconds.
+    #[serde(default)]
+    expires_at: u64,
+}
+/// Per-field entries written by earlier builds: read as a fallback, removed on save.
+const LEGACY_TOKEN_FIELDS: [&str; 3] = ["access_token", "refresh_token", "expires_at"];
+/// Windows Credential Manager keeps at most 1280 UTF-16 units per secret.
+const KEYCHAIN_MAX_CHARS: usize = 1200;
+
+/// Saves tokens as the one `<id>/tokens` entry. A `None` refresh token keeps the stored
+/// one. An access token too long for the keychain is not kept (the next start refreshes).
 pub fn store_tokens(secrets: &dyn SecretStore, id: &str, tokens: &OAuthTokens) -> Result<()> {
-    secrets.set(&format!("{id}/access_token"), &tokens.access)?;
-    if let Some(refresh) = &tokens.refresh {
-        secrets.set(&format!("{id}/refresh_token"), refresh)?;
+    let refresh = match &tokens.refresh {
+        Some(r) => Some(r.clone()),
+        None => load_tokens(secrets, id)
+            .ok()
+            .flatten()
+            .and_then(|t| t.refresh),
+    };
+    let mut stored = StoredTokens {
+        access: tokens.access.clone(),
+        refresh,
+        expires_at: tokens
+            .expires_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+    let mut json = serde_json::to_string(&stored)?;
+    if json.chars().count() > KEYCHAIN_MAX_CHARS {
+        stored.access.clear();
+        stored.expires_at = 0;
+        json = serde_json::to_string(&stored)?;
     }
-    let secs = tokens
-        .expires_at
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    secrets.set(&format!("{id}/expires_at"), &secs.to_string())
+    secrets.set(&format!("{id}/tokens"), &json)?;
+    for field in LEGACY_TOKEN_FIELDS {
+        let _ = secrets.delete(&format!("{id}/{field}"));
+    }
+    Ok(())
+}
+/// The account's tokens: the JSON entry, else the per-field entries of earlier builds.
+fn load_tokens(secrets: &dyn SecretStore, id: &str) -> Result<Option<OAuthTokens>> {
+    let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
+    if let Some(json) = secrets.get(&format!("{id}/tokens"))? {
+        let t: StoredTokens = serde_json::from_str(&json)
+            .context("the stored cloud sign-in is unreadable; sign in again")?;
+        return Ok(Some(OAuthTokens {
+            access: t.access,
+            refresh: t.refresh,
+            expires_at: at(t.expires_at),
+        }));
+    }
+    let field = |f: &str| secrets.get(&format!("{id}/{f}"));
+    let (access, refresh) = (field("access_token")?, field("refresh_token")?);
+    if access.is_none() && refresh.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(OAuthTokens {
+        access: access.unwrap_or_default(),
+        refresh,
+        expires_at: field("expires_at")?
+            .and_then(|s| s.parse().ok())
+            .map_or(UNIX_EPOCH, at),
+    }))
 }
 
-/// rustls' crypto (pure Rust, so cross-target builds need no C toolchain) and opendal's
-/// HTTP transport, installed once per process.
-fn init() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // Err means another component installed a provider first: use that one.
-        let _ =
-            rustls::crypto::CryptoProvider::install_default(rustls_graviola::default_provider());
-        opendal::install_default();
-    });
+/// CPU features graviola (rustls' crypto here) asserts on first use; see its README.
+#[cfg(target_arch = "x86_64")]
+const CPU_FEATURES: &[&str] = &[
+    "aes",
+    "pclmulqdq",
+    "ssse3",
+    "bmi1",
+    "bmi2",
+    "adx",
+    "avx",
+    "avx2",
+];
+#[cfg(target_arch = "aarch64")]
+const CPU_FEATURES: &[&str] = &["neon", "aes", "pmull", "sha2"];
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const CPU_FEATURES: &[&str] = &[];
+#[cfg(target_arch = "x86_64")]
+fn cpu_has(feature: &str) -> bool {
+    use std::arch::is_x86_feature_detected as has;
+    match feature {
+        "aes" => has!("aes"),
+        "pclmulqdq" => has!("pclmulqdq"),
+        "ssse3" => has!("ssse3"),
+        "bmi1" => has!("bmi1"),
+        "bmi2" => has!("bmi2"),
+        "adx" => has!("adx"),
+        "avx" => has!("avx"),
+        "avx2" => has!("avx2"),
+        _ => false,
+    }
+}
+#[cfg(target_arch = "aarch64")]
+fn cpu_has(feature: &str) -> bool {
+    use std::arch::is_aarch64_feature_detected as has;
+    match feature {
+        "neon" => has!("neon"),
+        "aes" => has!("aes"),
+        "pmull" => has!("pmull"),
+        "sha2" => has!("sha2"),
+        _ => false,
+    }
+}
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn cpu_has(_: &str) -> bool {
+    false
+}
+fn cpu_error(has: impl Fn(&str) -> bool) -> Result<(), CloudError> {
+    let missing: Vec<_> = CPU_FEATURES.iter().copied().filter(|f| !has(f)).collect();
+    match missing.is_empty() {
+        true => Ok(()),
+        false => Err(CloudError::UnsupportedCpu(
+            missing.join(", ").to_uppercase(),
+        )),
+    }
+}
+/// Whether this machine can use cloud accounts at all (the UI may grey out "Add account").
+pub fn check_cpu() -> Result<(), CloudError> {
+    cpu_error(cpu_has)
+}
+
+/// rustls' crypto (graviola: pure Rust, so cross-target builds need no C toolchain) and
+/// opendal's HTTP transport, installed once per process. Every entry point calls this.
+fn init() -> Result<(), CloudError> {
+    static INIT: OnceLock<Result<(), CloudError>> = OnceLock::new();
+    INIT.get_or_init(|| {
+        check_cpu()?;
+        // graviola asserts its CPU features itself: should the check above miss one, the
+        // panic must not take the app down.
+        std::panic::catch_unwind(|| {
+            // Err: another component installed a provider first; use that one.
+            let _ = rustls::crypto::CryptoProvider::install_default(
+                rustls_graviola::default_provider(),
+            );
+        })
+        .map_err(|_| CloudError::UnsupportedCpu("a feature its TLS crypto needs".into()))?;
+        // reqwest's rustls checks certificates with the platform verifier (OS store).
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|_| CloudError::Unavailable("the HTTPS client could not be set up".into()))?;
+        opendal::HttpTransporter::install_default(
+            opendal_http_transport_reqwest::ReqwestTransport::new(client),
+        );
+        Ok(())
+    })
+    .clone()
 }
 /// The HTTP client for OAuth token requests: no redirects (credentials never follow one).
 pub(crate) fn http_client() -> Result<reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    init();
+    init()?;
     if let Some(c) = CLIENT.get() {
         return Ok(c.clone());
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
         .context("HTTP client unavailable")?;
@@ -171,6 +353,22 @@ fn jitter() -> f64 {
     let _ = getrandom::fill(&mut b);
     f64::from(u32::from_le_bytes(b)) / (f64::from(u32::MAX) + 1.0)
 }
+/// For calls nobody can cancel.
+static NEVER: AtomicBool = AtomicBool::new(false);
+/// Waits `delay` in slices of at most 100 ms; ends early, with an error, on `cancel`.
+fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool) -> Result<()> {
+    let end = Instant::now() + delay;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(Duration::from_millis(100)));
+    }
+}
 
 /// The HTTP status opendal recorded for a failed request, if any.
 fn http_status(e: &opendal::Error) -> Option<u16> {
@@ -181,9 +379,15 @@ fn http_status(e: &opendal::Error) -> Option<u16> {
     text.get(at..at + 3)?.parse().ok()
 }
 fn retryable(e: &opendal::Error) -> bool {
+    let status = http_status(e);
     e.is_temporary()
         || e.kind() == ErrorKind::RateLimited
-        || http_status(e).is_some_and(|s| s == 429 || (500..600).contains(&s))
+        || status.is_some_and(|s| s == 429 || (500..600).contains(&s))
+        // Drive answers rate limits with 403 rateLimitExceeded / userRateLimitExceeded.
+        || status == Some(403) && {
+            let text = e.to_string().to_ascii_lowercase();
+            text.contains("ratelimitexceeded") || text.contains("rate limit exceeded")
+        }
 }
 /// Sanitised: the opendal kind and HTTP status only (no server text, URLs or tokens).
 fn wire(e: &opendal::Error, p: &VPath) -> anyhow::Error {
@@ -209,6 +413,19 @@ fn not_found(p: &VPath) -> anyhow::Error {
     )
     .into()
 }
+fn sign_in_again() -> anyhow::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "the cloud sign-in expired or was revoked; sign in again",
+    )
+    .into()
+}
+fn io_kind(e: &anyhow::Error) -> Option<io::ErrorKind> {
+    e.downcast_ref::<io::Error>().map(io::Error::kind)
+}
+
+/// Builds the account's operator for an access token.
+type MakeOp = Box<dyn Fn(&str) -> Result<opendal::Operator> + Send + Sync>;
 
 /// OAuth state of a Drive / Dropbox account.
 struct OAuth {
@@ -217,17 +434,45 @@ struct OAuth {
     expires_at: Mutex<SystemTime>,
     /// One refresh at a time.
     refreshing: Mutex<()>,
+    /// The refresh token the service refused (empty: there was none). Until the store
+    /// holds another one (the user signed in again) every call fails at once, without a
+    /// request.
+    revoked: Mutex<Option<String>>,
+    make_op: MakeOp,
+}
+impl OAuth {
+    fn new(
+        client: OAuthClient,
+        endpoints: oauth::Endpoints,
+        expires_at: SystemTime,
+        make_op: MakeOp,
+    ) -> Self {
+        Self {
+            client,
+            endpoints,
+            expires_at: Mutex::new(expires_at),
+            refreshing: Mutex::new(()),
+            revoked: Mutex::new(None),
+            make_op,
+        }
+    }
 }
 
 struct Core {
     account: CloudAccount,
     op: RwLock<blocking::Operator>,
+    /// Bumped (under the `op` write lock) whenever the operator is replaced: a 401 from an
+    /// older operator only retries, so concurrent 401s refresh the token once.
+    generation: AtomicU64,
     oauth: Option<OAuth>,
     secrets: Arc<dyn SecretStore>,
     events: Sender<RemoteEvent>,
     /// Directory path -> (listed at, entries).
     listings: Mutex<HashMap<String, (Instant, Vec<Entry>)>>,
     ttl: Duration,
+    list_cap: usize,
+    /// For services that take a file in one request (it is held in memory until then).
+    upload_limit: Option<u64>,
 }
 
 /// One cloud account. Cheap to share: the router holds it as `Arc<dyn Provider>`.
@@ -239,7 +484,7 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
 }
 /// opendal wants a runtime handle for its blocking API: the shared SFTP runtime.
 fn blocking_op(op: opendal::Operator) -> Result<blocking::Operator> {
@@ -263,20 +508,61 @@ fn oauth_op(kind: CloudKind, root: Option<&str>, access: &str) -> Result<opendal
     })
 }
 
+/// Static S3 keys for opendal's signer. reqsign logs credential providers with `Debug`
+/// at debug level, so that prints no key.
+struct S3Keys(reqsign_aws_v4::StaticCredentialProvider);
+impl std::fmt::Debug for S3Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("S3Keys(redacted)")
+    }
+}
+impl reqsign_core::ProvideCredential for S3Keys {
+    type Credential = reqsign_aws_v4::Credential;
+    async fn provide_credential(
+        &self,
+        ctx: &reqsign_core::Context,
+    ) -> reqsign_core::Result<Option<Self::Credential>> {
+        self.0.provide_credential(ctx).await
+    }
+}
+fn s3_op(account: &CloudAccount, key_id: &str, secret: &str) -> Result<opendal::Operator> {
+    let cfg = account
+        .s3
+        .as_ref()
+        .context("S3 account without endpoint, region and bucket")?;
+    let keys = S3Keys(reqsign_aws_v4::StaticCredentialProvider::new(
+        key_id, secret,
+    ));
+    let builder = opendal::services::S3::default()
+        .endpoint(&cfg.endpoint)
+        .region(&cfg.region)
+        .bucket(&cfg.bucket)
+        .root(account.root.as_deref().unwrap_or("/"))
+        .credential_provider_chain(reqsign_core::ProvideCredentialChain::new().push(keys))
+        // Never pick up ~/.aws or instance credentials behind the user's back.
+        .disable_config_load()
+        .disable_ec2_metadata();
+    Ok(opendal::Operator::new(builder)?)
+}
+
 impl CloudProvider {
     /// Builds the account's operator from the secret store. Reads the keychain but makes no
     /// network request: an expired access token is refreshed by the first operation.
+    /// Fails with `CloudError::UnsupportedCpu` on a CPU the TLS crypto cannot run on.
     pub fn connect(
         account: &CloudAccount,
         secrets: Arc<dyn SecretStore>,
         events: Sender<RemoteEvent>,
     ) -> Result<Self> {
-        anyhow::ensure!(valid_id(&account.id), "cloud id must be a stable slug");
-        init();
+        anyhow::ensure!(
+            valid_id(&account.id),
+            "cloud id must be a stable lowercase slug"
+        );
+        init()?;
         let key = |field: &str| format!("{}/{field}", account.id);
         let (op, oauth) = match account.kind {
             CloudKind::S3 => {
-                let cfg = account
+                account
                     .s3
                     .as_ref()
                     .context("S3 account without endpoint, region and bucket")?;
@@ -285,39 +571,22 @@ impl CloudProvider {
                 let secret = secrets
                     .get(&key("secret_access_key"))?
                     .ok_or_else(missing)?;
-                let builder = opendal::services::S3::default()
-                    .endpoint(&cfg.endpoint)
-                    .region(&cfg.region)
-                    .bucket(&cfg.bucket)
-                    .root(account.root.as_deref().unwrap_or("/"))
-                    .access_key_id(&id)
-                    .secret_access_key(&secret)
-                    // Never pick up ~/.aws or instance credentials behind the user's back.
-                    .disable_config_load()
-                    .disable_ec2_metadata();
-                (opendal::Operator::new(builder)?, None)
+                (s3_op(account, &id, &secret)?, None)
             }
             kind => {
                 let client = resolve_client(account, &*secrets)?;
-                let access = secrets.get(&key("access_token"))?;
-                let expires_at = secrets
-                    .get(&key("expires_at"))?
-                    .and_then(|s| s.parse().ok())
-                    .map_or(UNIX_EPOCH, |s| UNIX_EPOCH + Duration::from_secs(s));
+                let root = account.root.clone();
+                let make_op: MakeOp =
+                    Box::new(move |access| oauth_op(kind, root.as_deref(), access));
                 // No access token yet: build with a dummy one, already expired, so the first
                 // call refreshes.
-                let (access, expires_at) = match access {
-                    Some(a) if !a.is_empty() => (a, expires_at),
+                let (access, expires_at) = match load_tokens(&*secrets, &account.id)? {
+                    Some(t) if !t.access.is_empty() => (t.access, t.expires_at),
                     _ => ("expired".into(), UNIX_EPOCH),
                 };
-                let op = oauth_op(kind, account.root.as_deref(), &access)?;
-                let oauth = OAuth {
-                    client,
-                    endpoints: oauth::Endpoints::for_kind(kind)?,
-                    expires_at: Mutex::new(expires_at),
-                    refreshing: Mutex::new(()),
-                };
-                (op, Some(oauth))
+                let op = make_op(&access)?;
+                let endpoints = oauth::Endpoints::for_kind(kind)?;
+                (op, Some(OAuth::new(client, endpoints, expires_at, make_op)))
             }
         };
         Self::build(account.clone(), op, oauth, secrets, events)
@@ -328,8 +597,11 @@ impl CloudProvider {
         op: opendal::Operator,
         events: Sender<RemoteEvent>,
     ) -> Result<Self> {
-        anyhow::ensure!(valid_id(&account.id), "cloud id must be a stable slug");
-        init();
+        anyhow::ensure!(
+            valid_id(&account.id),
+            "cloud id must be a stable lowercase slug"
+        );
+        init()?;
         Self::build(account, op, None, Arc::new(MemoryStore::default()), events)
     }
     fn build(
@@ -341,13 +613,16 @@ impl CloudProvider {
     ) -> Result<Self> {
         Ok(Self {
             core: Arc::new(Core {
+                upload_limit: account.kind.upload_limit(),
                 account,
                 op: RwLock::new(blocking_op(op)?),
+                generation: AtomicU64::new(0),
                 oauth,
                 secrets,
                 events,
                 listings: Mutex::default(),
                 ttl: Duration::from_secs(60),
+                list_cap: LIST_CAP,
             }),
         })
     }
@@ -358,13 +633,21 @@ impl CloudProvider {
     pub fn remove_kind(&self) -> RemoveKind {
         self.core.account.kind.remove_kind()
     }
+    /// The service refused the stored sign-in: every operation fails at once until new
+    /// tokens are stored (`oauth_authorize` + `store_tokens`; re-registering also works).
+    pub fn needs_reauth(&self) -> bool {
+        self.core
+            .oauth
+            .as_ref()
+            .is_some_and(|o| o.revoked.lock().is_some())
+    }
     /// Drops cached listings (e.g. a "Refresh" in the UI).
     pub fn invalidate_all(&self) {
         self.core.listings.lock().clear();
     }
     #[cfg(test)]
-    fn set_ttl(&mut self, ttl: Duration) {
-        Arc::get_mut(&mut self.core).expect("unshared").ttl = ttl;
+    fn tune(&mut self, f: impl FnOnce(&mut Core)) {
+        f(Arc::get_mut(&mut self.core).expect("unshared"));
     }
 }
 
@@ -382,6 +665,18 @@ fn parent_path(path: &str) -> String {
         Some(("", _)) | None => "/".into(),
         Some((dir, _)) => dir.into(),
     }
+}
+/// `inner` is `outer` or inside it.
+fn within(inner: &VPath, outer: &VPath) -> bool {
+    let outer = outer.path.trim_end_matches('/');
+    inner.path == outer || inner.path.starts_with(&format!("{outer}/"))
+}
+/// Google Docs, Sheets, ... and Drive shortcuts: no bytes to download (they need an
+/// export), so listings leave them out and a folder copy does not stop at them.
+fn google_native(meta: &opendal::Metadata) -> bool {
+    meta.content_type().is_some_and(|t| {
+        t.starts_with("application/vnd.google-apps.") && t != "application/vnd.google-apps.folder"
+    })
 }
 
 impl Core {
@@ -407,36 +702,71 @@ impl Core {
             detail: detail.into(),
         });
     }
+    /// Puts an operator for `tokens` in place.
+    fn install(&self, oauth: &OAuth, tokens: &OAuthTokens) -> Result<()> {
+        let (access, expires_at) = match tokens.access.as_str() {
+            "" => ("expired", UNIX_EPOCH),
+            access => (access, tokens.expires_at),
+        };
+        let op = blocking_op((oauth.make_op)(access)?)?;
+        {
+            let mut current = self.op.write();
+            *current = op;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        *oauth.expires_at.lock() = expires_at;
+        Ok(())
+    }
+    /// Fails at once while the sign-in is revoked, unless new tokens were stored since.
+    fn ensure_signed_in(&self, oauth: &OAuth) -> Result<()> {
+        let mut revoked = oauth.revoked.lock();
+        let Some(refused) = revoked.as_ref() else {
+            return Ok(());
+        };
+        match load_tokens(&*self.secrets, &self.account.id)? {
+            Some(t) if t.refresh.as_ref().is_some_and(|r| r != refused) => {
+                self.install(oauth, &t)?;
+                *revoked = None;
+                Ok(())
+            }
+            _ => Err(sign_in_again()),
+        }
+    }
     /// New access token from the stored refresh token; the operator is rebuilt with it.
-    /// `force` false: only if still expiring once this thread holds the refresh lock (another
-    /// thread may have just refreshed).
-    fn refresh(&self, force: bool) -> Result<()> {
+    /// `seen`: the operator generation that got a 401 (`None`: the token is expiring). If
+    /// another thread replaced the operator meanwhile, nothing is requested.
+    fn refresh(&self, seen: Option<u64>) -> Result<()> {
         let oauth = self.oauth.as_ref().context("no OAuth for this account")?;
         let _one = oauth.refreshing.lock();
-        if !force && !Self::expiring(oauth) {
+        if oauth.revoked.lock().is_some() {
+            return Err(sign_in_again());
+        }
+        let done = match seen {
+            Some(generation) => generation != self.generation.load(Ordering::SeqCst),
+            None => !Self::expiring(oauth),
+        };
+        if done {
             return Ok(());
         }
         let id = &self.account.id;
+        let mut refused = None;
         let result = (|| {
-            let refresh = self
-                .secrets
-                .get(&format!("{id}/refresh_token"))?
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "not signed in; sign in again",
-                    )
+            let Some(refresh) = load_tokens(&*self.secrets, id)?.and_then(|t| t.refresh) else {
+                refused = Some(String::new());
+                return Err(sign_in_again());
+            };
+            let tokens =
+                oauth::refresh(&oauth.endpoints, &oauth.client, &refresh).inspect_err(|e| {
+                    if io_kind(e) == Some(io::ErrorKind::PermissionDenied) {
+                        refused = Some(refresh.clone());
+                    }
                 })?;
-            let tokens = oauth::refresh(&oauth.endpoints, &oauth.client, &refresh)?;
             store_tokens(&*self.secrets, id, &tokens)?;
-            *self.op.write() = blocking_op(oauth_op(
-                self.account.kind,
-                self.account.root.as_deref(),
-                &tokens.access,
-            )?)?;
-            *oauth.expires_at.lock() = tokens.expires_at;
-            anyhow::Ok(())
+            self.install(oauth, &tokens)
         })();
+        if let Some(refused) = refused {
+            *oauth.revoked.lock() = Some(refused);
+        }
         match &result {
             Ok(()) => self.status(ConnStatus::Connected, "signed in"),
             Err(e) => self.status(ConnStatus::Failed, &format!("{e:#}")),
@@ -450,25 +780,40 @@ impl Core {
         p: &VPath,
         f: impl Fn(&blocking::Operator) -> opendal::Result<T>,
     ) -> Result<T> {
-        if self.oauth.as_ref().is_some_and(Self::expiring) {
-            self.refresh(false)?;
+        self.call_cancellable(p, &NEVER, f)
+    }
+    /// `call` whose retry waits end on `cancel`.
+    fn call_cancellable<T>(
+        &self,
+        p: &VPath,
+        cancel: &AtomicBool,
+        f: impl Fn(&blocking::Operator) -> opendal::Result<T>,
+    ) -> Result<T> {
+        if let Some(oauth) = &self.oauth {
+            self.ensure_signed_in(oauth)?;
+            if Self::expiring(oauth) {
+                self.refresh(None)?;
+            }
         }
         let (mut attempt, mut refreshed) = (0, false);
         loop {
-            let op = self.op.read().clone();
+            let (op, generation) = {
+                let op = self.op.read();
+                (op.clone(), self.generation.load(Ordering::SeqCst))
+            };
             let e = match f(&op) {
                 Ok(v) => return Ok(v),
                 Err(e) => e,
             };
             if http_status(&e) == Some(401) && self.oauth.is_some() && !refreshed {
                 refreshed = true;
-                self.refresh(true)?;
+                self.refresh(Some(generation))?;
                 continue;
             }
             match backoff(attempt, jitter()).filter(|_| retryable(&e)) {
                 Some(delay) => {
                     tracing::debug!(attempt, ?delay, "cloud request retry");
-                    std::thread::sleep(delay);
+                    sleep_unless_cancelled(delay, cancel)?;
                     attempt += 1;
                 }
                 None => return Err(wire(&e, p)),
@@ -515,10 +860,11 @@ impl Core {
             ext: String::new(),
         }
     }
-    fn cached(&self, dir: &str) -> Option<Vec<Entry>> {
+    /// `f` over the folder's listing while it is fresh (under the lock: no copy per lookup).
+    fn cached<R>(&self, dir: &str, f: impl FnOnce(&[Entry]) -> R) -> Option<R> {
         let mut listings = self.listings.lock();
         match listings.get(dir) {
-            Some((at, entries)) if at.elapsed() < self.ttl => Some(entries.clone()),
+            Some((at, entries)) if at.elapsed() < self.ttl => Some(f(entries)),
             Some(_) => {
                 listings.remove(dir);
                 None
@@ -538,11 +884,18 @@ impl Core {
 
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
         self.validate(dir)?;
-        if let Some(hit) = self.cached(&dir.path) {
+        if let Some(hit) = self.cached(&dir.path, <[Entry]>::to_vec) {
             return Ok(hit);
         }
         let own = key(dir, true);
-        let raw = self.call(dir, |op| op.list(&own))?;
+        // Paged lazily: past the cap (plus the folder itself and one more, to notice) no
+        // further page is requested.
+        let take = self.list_cap + 2;
+        let raw = self.call(dir, |op| {
+            op.lister(&own)?
+                .take(take)
+                .collect::<opendal::Result<Vec<_>>>()
+        })?;
         let mut names = HashSet::new();
         let mut entries = Vec::with_capacity(raw.len());
         for item in raw {
@@ -552,10 +905,22 @@ impl Core {
             let name = item.name().trim_end_matches('/');
             // ponytail: Drive allows two items with one name; the first wins here (the
             // path is ambiguous to opendal too). A rename on the web makes both visible.
-            if name.is_empty() || name.contains(['/', '\\']) || !names.insert(name.to_owned()) {
+            if name.is_empty()
+                || name.contains(['/', '\\'])
+                || google_native(item.metadata())
+                || !names.insert(name.to_owned())
+            {
                 continue;
             }
             entries.push(self.entry(dir.join(name), item.metadata()));
+        }
+        if entries.len() > self.list_cap {
+            entries.truncate(self.list_cap);
+            tracing::warn!(
+                folder = %dir.display(),
+                shown = self.list_cap,
+                "cloud folder has more entries than are shown"
+            );
         }
         self.listings
             .lock()
@@ -568,39 +933,62 @@ impl Core {
         let Some(parent) = p.parent() else {
             return Ok(self.root_entry(p));
         };
-        if let Some(listing) = self.cached(&parent.path) {
-            return listing
-                .into_iter()
-                .find(|e| e.name == p.name())
-                .ok_or_else(|| not_found(p));
+        let name = p.name();
+        match self.cached(&parent.path, |entries| {
+            entries.iter().find(|e| e.name == name).cloned()
+        }) {
+            Some(hit) => hit.ok_or_else(|| not_found(p)),
+            None => self.stat_remote(p, &NEVER),
         }
-        self.stat_remote(p)
     }
-    fn stat_remote(&self, p: &VPath) -> Result<Entry> {
+    fn stat_remote(&self, p: &VPath, cancel: &AtomicBool) -> Result<Entry> {
         if p.parent().is_none() {
             return Ok(self.root_entry(p));
         }
         let file = key(p, false);
-        match self.call(p, |op| op.stat(&file)) {
+        match self.call_cancellable(p, cancel, |op| op.stat(&file)) {
             Ok(meta) => Ok(self.entry(p.clone(), &meta)),
             Err(e) if is_not_found(&e) => {
                 let dir = key(p, true);
-                let meta = self.call(p, |op| op.stat(&dir))?;
+                let meta = self.call_cancellable(p, cancel, |op| op.stat(&dir))?;
                 Ok(self.entry(p.clone(), &meta))
             }
             Err(e) => Err(e),
         }
     }
     fn maybe_stat(&self, p: &VPath) -> Result<Option<Entry>> {
-        match self.stat_remote(p) {
+        match self.stat_remote(p, &NEVER) {
             Ok(e) => Ok(Some(e)),
             Err(e) if is_not_found(&e) => Ok(None),
             Err(e) => Err(e),
         }
     }
+    fn read(&self, p: &VPath, cancel: &AtomicBool) -> Result<Box<dyn Read + Send>> {
+        let entry = self.stat(p)?;
+        anyhow::ensure!(entry.kind == Kind::File, "not a file: {}", p.display());
+        let k = key(p, false);
+        let reader = self.call_cancellable(p, cancel, |op| op.reader(&k)?.into_std_read(..))?;
+        Ok(Box::new(CloudReader {
+            inner: reader,
+            path: p.clone(),
+        }))
+    }
+    /// Names (and whether each is a folder) directly in `dir`, from the service.
+    fn children(&self, dir: &VPath) -> Result<Vec<(String, bool)>> {
+        let k = key(dir, true);
+        Ok(self
+            .call(dir, |op| op.list(&k))?
+            .into_iter()
+            .filter(|c| c.path() != k)
+            .map(|c| {
+                (
+                    c.name().trim_end_matches('/').to_owned(),
+                    c.metadata().is_dir(),
+                )
+            })
+            .collect())
+    }
 
-    /// Moves `from` to `to`. Folders move file by file (opendal renames files only);
-    /// files use the service's rename, else a server-side copy, else a stream.
     fn rename(&self, from: &VPath, to: &VPath, replace: bool) -> Result<()> {
         self.validate(from)?;
         self.validate(to)?;
@@ -608,8 +996,14 @@ impl Core {
             from.parent().is_some() && to.parent().is_some(),
             "cannot rename the root"
         );
-        let source = self.stat_remote(from)?;
-        if let Some(existing) = self.maybe_stat(to)? {
+        anyhow::ensure!(
+            !within(to, from),
+            "cannot move {} into itself",
+            from.display()
+        );
+        let source = self.stat_remote(from, &NEVER)?;
+        let existing = self.maybe_stat(to)?;
+        if let Some(existing) = &existing {
             anyhow::ensure!(
                 replace,
                 io::Error::new(
@@ -622,57 +1016,63 @@ impl Core {
                 "only a file can replace a file: {}",
                 to.display()
             );
-            // Drive's rename replaces (trashing the old file); S3 copies over it; Dropbox
-            // refuses, so the old file goes first (restorable there for 30 days).
-            if self.account.kind == CloudKind::Dropbox {
-                let k = key(to, false);
-                self.call(to, |op| op.delete(&k))?;
-            }
         }
-        // ponytail: check-then-rename; a file created at `to` in between is replaced on
+        // ponytail: check-then-move; a file created at `to` in between is replaced on
         // Drive/S3 (Dropbox refuses). Services offer no atomic no-replace move here.
-        let result = self.move_entry(from, to, source.kind == Kind::Dir, 0);
+        let result = match existing {
+            // Drive's rename replaces (trashing the old file) and S3 copies over it;
+            // Dropbox refuses to.
+            Some(_) if self.account.kind == CloudKind::Dropbox => self.replace_aside(from, to),
+            _ => self.move_entry(from, to, source.kind == Kind::Dir, 0),
+        };
         self.invalidate(&from.path);
         self.invalidate(&to.path);
         result
     }
-    fn move_entry(&self, from: &VPath, to: &VPath, dir: bool, depth: usize) -> Result<()> {
-        anyhow::ensure!(depth < 256, "directory nesting limit: {}", from.display());
-        if dir {
-            let (src, dst) = (key(from, true), key(to, true));
-            let children: Vec<_> = self
-                .call(from, |op| op.list(&src))?
-                .into_iter()
-                .filter(|c| c.path() != src)
-                .collect();
-            // Drive allows one name twice; moving both would replace one with the other.
-            let mut seen = HashSet::new();
-            if let Some(twice) = children
-                .iter()
-                .map(|c| c.name().trim_end_matches('/'))
-                .find(|n| !seen.insert(*n))
-            {
-                anyhow::bail!(
-                    "{} holds two items named {twice:?}; rename one of them first",
-                    from.display()
-                );
-            }
-            self.call(to, |op| op.create_dir(&dst))?;
-            for child in children {
-                let name = child.name().trim_end_matches('/');
-                self.move_entry(
-                    &from.join(name),
-                    &to.join(name),
-                    child.metadata().is_dir(),
-                    depth + 1,
-                )?;
-            }
-            return self.call(from, |op| op.delete(&src));
+    /// The old file steps aside before the new one moves in, and comes back if that fails:
+    /// neither copy is deleted before the other is in place.
+    fn replace_aside(&self, from: &VPath, to: &VPath) -> Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let aside = VPath {
+            path: format!(
+                "{}.keel-replaced-{}-{}",
+                to.path,
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ),
+            ..to.clone()
+        };
+        self.move_entry(to, &aside, false, 0)
+            .with_context(|| format!("could not replace {}", to.display()))?;
+        if let Err(e) = self.move_entry(from, to, false, 0) {
+            let old = match self.move_entry(&aside, to, false, 0) {
+                Ok(()) => "the old file is unchanged".to_owned(),
+                Err(_) => format!("the old file is now {}", aside.display()),
+            };
+            return Err(e.context(format!(
+                "could not replace {}: {old}; the new copy is still at {}",
+                to.display(),
+                from.display()
+            )));
         }
-        let (src, dst) = (key(from, false), key(to, false));
+        let k = key(&aside, false);
+        if let Err(e) = self.call(&aside, |op| op.delete(&k)) {
+            tracing::warn!(file = %aside.display(), "replaced file left behind: {e:#}");
+        }
+        Ok(())
+    }
+    /// One request where the service can rename (Drive and Dropbox move a folder with its
+    /// contents); else folders file by file and files by copy (or stream) and delete.
+    fn move_entry(&self, from: &VPath, to: &VPath, dir: bool, depth: usize) -> Result<()> {
         let caps = self.caps();
+        let (src, dst) = (key(from, false), key(to, false));
         if caps.rename {
+            // File-form keys for folders too: opendal forwards only those, and both
+            // services resolve them to the folder.
             return self.call(from, |op| op.rename(&src, &dst));
+        }
+        if dir {
+            return self.move_folder_by_files(from, to, depth);
         }
         if caps.copy {
             self.call(from, |op| op.copy(&src, &dst))?;
@@ -684,10 +1084,52 @@ impl Core {
         }
         self.call(from, |op| op.delete(&src))
     }
+    /// The source folder goes only once empty: anything added to it meanwhile, or not
+    /// moved because of an error, stays there and is named.
+    fn move_folder_by_files(&self, from: &VPath, to: &VPath, depth: usize) -> Result<()> {
+        anyhow::ensure!(depth < 256, "directory nesting limit: {}", from.display());
+        let children = self.children(from)?;
+        // Drive allows one name twice; moving both would replace one with the other.
+        let mut seen = HashSet::new();
+        if let Some((twice, _)) = children.iter().find(|(n, _)| !seen.insert(n)) {
+            anyhow::bail!(
+                "{} holds two items named {twice:?}; rename one of them first",
+                from.display()
+            );
+        }
+        let dst = key(to, true);
+        self.call(to, |op| op.create_dir(&dst))?;
+        let total = children.len();
+        for (moved, (name, is_dir)) in children.iter().enumerate() {
+            self.move_entry(&from.join(name), &to.join(name), *is_dir, depth + 1)
+                .with_context(|| {
+                    format!(
+                        "moved {moved} of {total} items out of {}; the source still holds \
+                         the rest",
+                        from.display()
+                    )
+                })?;
+        }
+        let left = self.children(from)?;
+        if !left.is_empty() {
+            let mut names: Vec<_> = left.iter().take(10).map(|(n, _)| n.as_str()).collect();
+            if left.len() > names.len() {
+                names.push("...");
+            }
+            anyhow::bail!(
+                "moved {total} of {} items out of {}; the source still holds the rest: {}",
+                total + left.len(),
+                from.display(),
+                names.join(", ")
+            );
+        }
+        let src = key(from, true);
+        self.call(from, |op| op.delete(&src))
+    }
     fn remove(&self, p: &VPath) -> Result<()> {
         self.validate(p)?;
         anyhow::ensure!(p.parent().is_some(), "cannot delete the account root");
-        let entry = self.stat_remote(p)?;
+        let entry = self.stat_remote(p, &NEVER)?;
         let k = key(p, entry.kind == Kind::Dir);
         // Drive trashes and Dropbox deletes a folder with its contents in one request;
         // S3 has no folders, so every key under the prefix goes.
@@ -710,13 +1152,12 @@ impl Core {
     fn remove_empty_dir(&self, p: &VPath) -> Result<()> {
         self.validate(p)?;
         anyhow::ensure!(p.parent().is_some(), "cannot delete the account root");
-        let k = key(p, true);
-        let children = self.call(p, |op| op.list(&k))?;
         anyhow::ensure!(
-            children.iter().all(|c| c.path() == k),
+            self.children(p)?.is_empty(),
             "directory not empty: {}",
             p.display()
         );
+        let k = key(p, true);
         let result = self.call(p, |op| op.delete(&k));
         self.invalidate(&p.path);
         result
@@ -738,8 +1179,7 @@ impl Core {
 }
 
 fn is_not_found(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<io::Error>()
-        .is_some_and(|e| e.kind() == io::ErrorKind::NotFound)
+    io_kind(e) == Some(io::ErrorKind::NotFound)
 }
 
 /// A download stream; errors are sanitised like `wire`.
@@ -758,20 +1198,23 @@ impl Read for CloudReader {
     }
 }
 
-/// One upload. Where the service can rename (Drive, Dropbox) it goes to a staging name
-/// beside the target and is renamed into place on `flush()`; S3 writes the key directly
-/// (an object only appears once complete). Dropped without `flush()`: discarded and
-/// logged, never placed. Drive and Dropbox upload in one request at commit (opendal
-/// buffers the file in memory until then).
+/// One upload, written straight to the target: no staging name is needed because the
+/// file (or object) only changes once the upload completes. Services that take a file in
+/// one request (Drive, Dropbox) get it from memory on `flush()`, with the usual retries
+/// and token refresh; S3 streams (multipart past the first part). Dropped without
+/// `flush()`: nothing is written.
 struct CloudUpload {
     core: Arc<Core>,
     target: VPath,
-    staged: Option<VPath>,
-    writer: Option<blocking::Writer>,
     exclusive: bool,
+    sink: Sink,
     written: u64,
     done: bool,
     failed: bool,
+}
+enum Sink {
+    Memory(Vec<u8>),
+    Stream(Option<blocking::Writer>),
 }
 impl CloudUpload {
     fn start(core: Arc<Core>, target: &VPath, exclusive: bool) -> Result<Self> {
@@ -785,28 +1228,26 @@ impl CloudUpload {
             .into());
         }
         let caps = core.caps();
-        let staged = caps.rename.then(|| VPath {
-            path: crate::sftp::partial_path(&target.path),
-            ..target.clone()
-        });
-        let at = staged.as_ref().unwrap_or(target);
-        let k = key(at, false);
-        let if_not_exists = exclusive && staged.is_none() && caps.write_with_if_not_exists;
-        let writer = core.call(at, |op| {
-            op.writer_options(
-                &k,
-                options::WriteOptions {
-                    if_not_exists,
-                    ..Default::default()
-                },
-            )
-        })?;
+        let sink = if caps.write_can_multi {
+            let k = key(target, false);
+            let if_not_exists = exclusive && caps.write_with_if_not_exists;
+            Sink::Stream(Some(core.call(target, |op| {
+                op.writer_options(
+                    &k,
+                    options::WriteOptions {
+                        if_not_exists,
+                        ..Default::default()
+                    },
+                )
+            })?))
+        } else {
+            Sink::Memory(Vec::new())
+        };
         Ok(Self {
             core,
             target: target.clone(),
-            staged,
-            writer: Some(writer),
             exclusive,
+            sink,
             written: 0,
             done: false,
             failed: false,
@@ -817,14 +1258,25 @@ impl CloudUpload {
             return Ok(());
         }
         anyhow::ensure!(!self.failed, "upload failed: {}", self.target.display());
-        let mut writer = self.writer.take().context("upload already closed")?;
-        let result = writer
-            .close()
-            .map_err(|e| wire(&e, &self.target))
-            .and_then(|_| match &self.staged {
-                Some(staged) => self.core.rename(staged, &self.target, !self.exclusive),
-                None => Ok(()),
-            });
+        let result = match &mut self.sink {
+            Sink::Memory(data) => {
+                let data = Buffer::from(std::mem::take(data));
+                let k = key(&self.target, false);
+                let opts = options::WriteOptions {
+                    if_not_exists: self.exclusive && self.core.caps().write_with_if_not_exists,
+                    ..Default::default()
+                };
+                self.core
+                    .call(&self.target, |op| {
+                        op.write_options(&k, data.clone(), opts.clone())
+                    })
+                    .map(drop)
+            }
+            Sink::Stream(writer) => match writer.take() {
+                Some(mut w) => w.close().map(drop).map_err(|e| wire(&e, &self.target)),
+                None => Err(anyhow::anyhow!("upload already closed")),
+            },
+        };
         self.core.invalidate(&self.target.path);
         match result {
             Ok(()) => {
@@ -843,54 +1295,97 @@ impl Write for CloudUpload {
         if self.done || self.failed {
             return Err(io::Error::other("upload finished or failed"));
         }
-        if self.core.account.kind == CloudKind::Dropbox
-            && self.written + bytes.len() as u64 > DROPBOX_UPLOAD_LIMIT
-        {
-            self.failed = true;
-            return Err(io::Error::other(format!(
-                "{}: files over 150 MB cannot be uploaded to Dropbox yet",
-                self.target.display()
-            )));
+        let len = bytes.len() as u64;
+        let result = match &mut self.sink {
+            Sink::Memory(data) => match self.core.upload_limit {
+                Some(limit) if self.written + len > limit => Err(io::Error::other(format!(
+                    "{}: files over {} MB cannot be uploaded to {} yet",
+                    self.target.display(),
+                    limit >> 20,
+                    self.core.account.kind.name()
+                ))),
+                _ => {
+                    data.extend_from_slice(bytes);
+                    Ok(())
+                }
+            },
+            Sink::Stream(writer) => match writer.as_mut() {
+                Some(w) => w
+                    .write(Buffer::from(bytes.to_vec()))
+                    .map_err(|e| io::Error::other(format!("{:#}", wire(&e, &self.target)))),
+                None => Err(io::Error::other("upload closed")),
+            },
+        };
+        match result {
+            Ok(()) => {
+                self.written += len;
+                Ok(bytes.len())
+            }
+            Err(e) => {
+                self.failed = true;
+                Err(e)
+            }
         }
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| io::Error::other("upload closed"))?;
-        if let Err(e) = writer.write(Buffer::from(bytes.to_vec())) {
-            self.failed = true;
-            return Err(io::Error::other(format!("{:#}", wire(&e, &self.target))));
-        }
-        self.written += bytes.len() as u64;
-        Ok(bytes.len())
     }
     /// Commits the upload (see `Provider::write`).
     fn flush(&mut self) -> io::Result<()> {
         self.commit().map_err(|e| {
-            let kind = e
-                .downcast_ref::<io::Error>()
-                .map_or(io::ErrorKind::Other, io::Error::kind);
+            let kind = io_kind(&e).unwrap_or(io::ErrorKind::Other);
             io::Error::new(kind, format!("{e:#}"))
         })
     }
 }
 impl Drop for CloudUpload {
     fn drop(&mut self) {
-        if self.done {
-            return;
-        }
-        if !self.failed {
+        if !self.done && !self.failed {
             tracing::error!(
                 target = %self.target.display(),
                 "cloud upload dropped without flush(); discarding it"
             );
         }
-        // ponytail: dropping the writer leaves an unfinished S3 multipart upload to the
+        // ponytail: dropping an S3 writer leaves an unfinished multipart upload to the
         // bucket's lifecycle rules; opendal's blocking writer has no abort.
-        self.writer = None;
-        if let Some(staged) = &self.staged {
-            let k = key(staged, false);
-            let _ = self.core.op.read().delete(&k);
-        }
+    }
+}
+
+/// What `cached_download` sees: stats straight from the service (so its "source changed"
+/// check compares fresh metadata, not the 60 s listing cache) and retry waits that end on
+/// `cancel`.
+struct Fresh<'a> {
+    cloud: &'a CloudProvider,
+    cancel: &'a AtomicBool,
+}
+impl Provider for Fresh<'_> {
+    fn scheme(&self) -> &'static str {
+        self.cloud.scheme()
+    }
+    fn caps(&self) -> Caps {
+        self.cloud.caps()
+    }
+    fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.cloud.list(dir)
+    }
+    fn stat(&self, p: &VPath) -> Result<Entry> {
+        self.cloud.core.validate(p)?;
+        self.cloud.core.stat_remote(p, self.cancel)
+    }
+    fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
+        self.cloud.core.read(p, self.cancel)
+    }
+    fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        self.cloud.write(p)
+    }
+    fn mkdir(&self, p: &VPath) -> Result<()> {
+        self.cloud.mkdir(p)
+    }
+    fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.cloud.rename(from, to)
+    }
+    fn remove(&self, p: &VPath) -> Result<()> {
+        self.cloud.remove(p)
+    }
+    fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
+        self.cloud.local_copy(p)
     }
 }
 
@@ -913,14 +1408,7 @@ impl Provider for CloudProvider {
         self.core.stat(p)
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
-        let entry = self.core.stat(p)?;
-        anyhow::ensure!(entry.kind == Kind::File, "not a file: {}", p.display());
-        let k = key(p, false);
-        let reader = self.core.call(p, |op| op.reader(&k)?.into_std_read(..))?;
-        Ok(Box::new(CloudReader {
-            inner: reader,
-            path: p.clone(),
-        }))
+        self.core.read(p, &NEVER)
     }
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         Ok(Box::new(CloudUpload::start(self.core.clone(), p, false)?))
@@ -951,7 +1439,8 @@ impl Provider for CloudProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
     }
-    /// Through the same download cache as SFTP (`<cache>/remote/cloud-<id>/`).
+    /// Through the same download cache as SFTP (`<cache>/remote/cloud-<id>/`), with fresh
+    /// stats (not the listing cache) for its "source changed" check.
     fn local_copy_cancellable(
         &self,
         p: &VPath,
@@ -966,7 +1455,10 @@ impl Provider for CloudProvider {
                 .unwrap_or_default();
         let kind = format!("{:?}", a.kind);
         crate::sftp::cached_download(
-            self,
+            &Fresh {
+                cloud: self,
+                cancel,
+            },
             p,
             &format!("cloud-{}", a.id),
             &[&kind, &a.id, a.root.as_deref().unwrap_or(""), &s3],

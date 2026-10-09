@@ -77,7 +77,8 @@ impl Endpoints {
 
 /// Signs in through the system browser and returns the tokens (store them with
 /// `cloud::store_tokens`). Blocks up to `AUTH_TIMEOUT`: call on a worker thread; set
-/// `cancel` to give up early. Progress goes to `events` as `Status` for
+/// `cancel` to give up early. On a CPU the TLS crypto cannot run on it fails with
+/// `CloudError::UnsupportedCpu` before the browser opens. Progress goes to `events` as `Status` for
 /// `cloud-auth:<kind>`.
 pub fn oauth_authorize(
     kind: CloudKind,
@@ -94,13 +95,16 @@ pub fn oauth_authorize(
         });
     };
     status(ConnStatus::Connecting, "waiting for sign-in in the browser");
-    let result = authorize(
-        &Endpoints::for_kind(kind)?,
-        client,
-        cancel,
-        AUTH_TIMEOUT,
-        &|url| open::that_detached(url).context("could not open the browser"),
-    );
+    // Before the browser opens: on an unsupported CPU the token exchange could not run.
+    let result = super::init().map_err(anyhow::Error::from).and_then(|()| {
+        authorize(
+            &Endpoints::for_kind(kind)?,
+            client,
+            cancel,
+            AUTH_TIMEOUT,
+            &|url| open::that_detached(url).context("could not open the browser"),
+        )
+    });
     match &result {
         Ok(_) => status(ConnStatus::Connected, "signed in"),
         Err(e) => status(ConnStatus::Failed, &format!("{e:#}")),
@@ -162,13 +166,19 @@ pub(crate) fn authorize(
         .extend_pairs(endpoints.extra);
     open_browser(url.as_str())?;
     let deadline = Instant::now() + timeout;
+    let mut refused = false;
     let code = loop {
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "sign-in cancelled");
         let left = deadline.saturating_duration_since(Instant::now());
         anyhow::ensure!(
             !left.is_zero(),
-            "sign-in timed out after {} s",
-            timeout.as_secs()
+            "sign-in timed out after {} s{}",
+            timeout.as_secs(),
+            if refused {
+                " (a response that did not match this request's state was refused)"
+            } else {
+                ""
+            }
         );
         let Some(request) = server
             .recv_timeout(left.min(Duration::from_millis(100)))
@@ -187,10 +197,12 @@ pub(crate) fn authorize(
                 continue;
             }
         };
-        // The state is single-use: a mismatch (forged or stale tab) ends the attempt.
+        // A mismatched state (forged, or a stale tab) is refused, and the real answer is
+        // still awaited: a stray request must not end the sign-in.
         if query.get("state") != Some(&state) {
             let _ = request.respond(page(FAILED_PAGE, 400));
-            anyhow::bail!("sign-in response refused: it does not match this request (state)");
+            refused = true;
+            continue;
         }
         let Some(code) = query.get("code").filter(|_| !query.contains_key("error")) else {
             let _ = request.respond(page(FAILED_PAGE, 400));
@@ -421,18 +433,64 @@ mod tests {
     }
 
     #[test]
-    fn forged_state_is_refused_without_a_token_request() {
+    fn a_forged_state_is_refused_and_the_real_answer_still_awaited() {
+        // Only a forged answer ever comes: refused (400), no token request, and the wait
+        // ends at the deadline naming the refusal.
         let fake = fake_auth(true);
         let err = authorize(
             &fake.endpoints,
             &client(),
             &AtomicBool::new(false),
-            Duration::from_secs(10),
+            Duration::from_secs(1),
             &browser,
         )
         .unwrap_err();
-        assert!(format!("{err:#}").contains("state"), "{err:#}");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("timed out") && text.contains("state"),
+            "{text}"
+        );
         assert!(fake.token_requests.lock().unwrap().is_empty());
+        // A stray request with the wrong state first, then the real redirect: signed in.
+        let fake = fake_auth(false);
+        let stray_status = Arc::new(Mutex::new(None));
+        let seen = stray_status.clone();
+        let stray_then_real = move |url: &str| {
+            let url = url.to_owned();
+            let seen = seen.clone();
+            let redirect = url::Url::parse(&url)
+                .unwrap()
+                .query_pairs()
+                .find(|(k, _)| k == "redirect_uri")
+                .unwrap()
+                .1
+                .into_owned();
+            thread::spawn(move || {
+                let http = crate::cloud::http_client().unwrap();
+                let _ = crate::sftp::conn::runtime().block_on(async {
+                    let stray = http
+                        .get(format!("{redirect}?code=stolen&state=forged"))
+                        .send()
+                        .await?;
+                    *seen.lock().unwrap() = Some(stray.status().as_u16());
+                    let reply = http.get(&url).send().await?;
+                    let to = reply.headers()["location"].to_str().unwrap().to_owned();
+                    http.get(to).send().await
+                });
+            });
+            Ok(())
+        };
+        let tokens = authorize(
+            &fake.endpoints,
+            &client(),
+            &AtomicBool::new(false),
+            Duration::from_secs(10),
+            &stray_then_real,
+        )
+        .unwrap();
+        assert_eq!(tokens.access, "at-1");
+        assert_eq!(*stray_status.lock().unwrap(), Some(400));
+        assert_eq!(fake.token_requests.lock().unwrap().len(), 1);
     }
 
     #[test]
