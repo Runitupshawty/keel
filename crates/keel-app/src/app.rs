@@ -428,16 +428,8 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
             }
             if cfg!(windows) {
                 ui.separator();
-                let (text, tip) = match (&s.searcher, &s.search_reason) {
-                    (None, _) => ("Everything: …", "Loading the search backend"),
-                    (Some(_), None) => ("Everything: ok", "Everything search is available"),
-                    (Some(_), Some(_)) => ("Everything: not running", "Click to check again"),
-                };
-                if ui
-                    .add(egui::Button::new(text).frame(false))
-                    .on_hover_text(tip)
-                    .clicked()
-                {
+                // --- Task 24: backend name + its status note ---
+                if crate::index_ui::status_bar(ui, s) {
                     s.probe_search();
                 }
             }

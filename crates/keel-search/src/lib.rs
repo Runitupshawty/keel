@@ -64,6 +64,10 @@ pub trait Searcher: Send + Sync {
     fn status(&self) -> Option<String> {
         None
     }
+    /// The backend's name for the status bar ("Everything", "Keel index", ...).
+    fn name(&self) -> &'static str {
+        "Search"
+    }
 }
 
 /// A soft-failure backend the app falls back to when no search backend works;

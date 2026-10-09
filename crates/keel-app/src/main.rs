@@ -32,6 +32,7 @@ mod worker;
 mod cli;
 mod dragout;
 mod hotkey;
+mod index_ui;
 mod single_instance;
 // --- end Task 24 ---
 
@@ -50,6 +51,24 @@ fn main() -> eframe::Result<()> {
         .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
         .init();
     crash::install_panic_hook();
+    // --- Task 24 ---
+    // `keel --index-service <dir>`: the elevated indexer, no window.
+    if let Some(dir) = &cli.index_service {
+        #[cfg(windows)]
+        let result = keel_search::run_index_service(dir);
+        #[cfg(not(windows))]
+        let result: anyhow::Result<()> = Err(anyhow::anyhow!(
+            "--index-service is Windows only ({})",
+            dir.display()
+        ));
+        std::process::exit(match result {
+            Ok(()) => 0,
+            Err(e) => {
+                tracing::error!("index service: {e:#}");
+                1
+            }
+        });
+    }
     // pdfium sits next to the executable (copied there by build.rs).
     if let Some(dir) = std::env::current_exe()
         .ok()

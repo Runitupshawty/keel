@@ -310,6 +310,7 @@ impl AppState {
             &mut self.remotes,
             &mut self.clouds,
             &self.tx,
+            self.searcher.as_ref().map(|x| x.name()), // Task 24
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;

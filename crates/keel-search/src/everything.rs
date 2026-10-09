@@ -160,6 +160,10 @@ fn search_text(query: &Query) -> (String, bool) {
 }
 
 impl Searcher for EverythingSearcher {
+    fn name(&self) -> &'static str {
+        "Everything"
+    }
+
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         let functions = self.functions;
         let (text, regex) = search_text(query);

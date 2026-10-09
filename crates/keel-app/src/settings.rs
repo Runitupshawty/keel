@@ -353,6 +353,7 @@ pub fn window(
     remotes: &mut crate::remotes::Remotes,
     clouds: &mut crate::clouds::Clouds,
     tx: &Sender<crate::state::Msg>,
+    searcher: Option<&str>, // Task 24: the active search backend's name
 ) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
@@ -419,6 +420,11 @@ pub fn window(
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
                     ui.end_row();
+                    if cfg!(windows) {
+                        ui.label("Search index");
+                        crate::index_ui::full_index_button(ui, searcher, tx);
+                        ui.end_row();
+                    }
                 });
             ui.add_space(4.0);
             ui.weak(format!("Saved to {}", Settings::path().display()));

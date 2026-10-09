@@ -304,6 +304,10 @@ impl Searcher for NtfsSearcher {
     fn status(&self) -> Option<String> {
         self.shared.status.lock().clone()
     }
+
+    fn name(&self) -> &'static str {
+        "Keel index"
+    }
 }
 
 fn hit(found: &Found, stat: bool) -> Hit {

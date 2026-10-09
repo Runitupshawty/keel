@@ -24,6 +24,9 @@ pub struct Cli {
     /// Open a search tab with this query (in FOLDER when given).
     #[arg(long, value_name = "QUERY")]
     pub search: Option<String>,
+    /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
+    #[arg(long, value_name = "DIR", hide = true)]
+    pub index_service: Option<PathBuf>,
 }
 
 /// What to open: from this process's command line, or handed over by a later `keel`.
@@ -123,7 +126,8 @@ mod tests {
                 folder: None,
                 new_window: false,
                 profile: None,
-                search: None
+                search: None,
+                index_service: None,
             }
         );
         let cli = parse(&[
@@ -145,6 +149,18 @@ mod tests {
         // A relative folder is made absolute here, not in the running instance.
         let rel = parse(&["sub"]).unwrap().request().folder.unwrap();
         assert_eq!(rel, std::env::current_dir().unwrap().join("sub"));
+    }
+
+    #[test]
+    fn parses_hidden_index_service() {
+        let cli = parse(&["--index-service", r"C:\cache\index"]).unwrap();
+        assert_eq!(cli.index_service, Some(PathBuf::from(r"C:\cache\index")));
+        assert_eq!(cli.folder, None);
+        assert!(parse(&["--index-service"]).is_err(), "needs a folder");
+        let help = <Cli as clap::CommandFactory>::command()
+            .render_help()
+            .to_string();
+        assert!(!help.contains("index-service"), "hidden from --help");
     }
 
     #[test]
