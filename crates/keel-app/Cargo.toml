@@ -41,3 +41,10 @@ arboard = { version = "3.6", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }
+# examples/gen_icon.rs: assets/keel.svg -> keel.png + keel.ico
+image.workspace = true
+resvg.workspace = true
+
+# Icon + manifest resource, linked only when the target is Windows (checked in build.rs).
+[build-dependencies]
+embed-resource = "3"

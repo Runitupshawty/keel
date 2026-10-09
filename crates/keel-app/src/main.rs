@@ -61,10 +61,14 @@ fn main() -> eframe::Result<()> {
         session.active = 0;
     }
     let missing = session.repair(&home);
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([640.0, 400.0])
         .with_title("Keel");
+    match eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/keel.png")) {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        Err(e) => tracing::warn!("window icon: {e}"),
+    }
     let opts = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -81,4 +85,14 @@ fn main() -> eframe::Result<()> {
         opts,
         Box::new(|cc| Ok(Box::new(app::App::new(cc, boot)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn window_icon_decodes() {
+        let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/keel.png"))
+            .expect("assets/keel.png is a PNG");
+        assert_eq!((icon.width, icon.height), (256, 256));
+    }
 }

@@ -24,7 +24,22 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Icon + manifest (long paths, per-monitor DPI v2) for keel.exe. build.rs runs on the
+/// host, so the target OS comes from Cargo, not `cfg!(windows)`.
+fn windows_resources() {
+    for f in ["keel.rc", "keel.exe.manifest", "../../assets/keel.ico"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    if let Err(e) = embed_resource::compile("keel.rc", embed_resource::NONE).manifest_optional() {
+        println!("cargo:warning=keel.exe built without its icon and manifest ({e})");
+    }
+}
+
 fn main() {
+    windows_resources();
     let (Some(manifest_dir), Some(out_dir)) = (
         env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from),
         env::var_os("OUT_DIR").map(PathBuf::from),
