@@ -88,6 +88,8 @@ pub struct Source {
     pub(crate) pending_gen: AtomicU64,
     /// Serializes generation changes against watcher/executor writes.
     pub(crate) write: Mutex<()>,
+    /// Set by `remove_source`: walks, hashing and watchers of this source stop.
+    pub(crate) removed: AtomicBool,
     dir: PathBuf,
 }
 
@@ -107,6 +109,7 @@ impl Source {
             generation: AtomicU64::new(generation),
             status: RwLock::new(SourceStatus::Online { indexed_at }),
             pending_gen: AtomicU64::new(0),
+            removed: AtomicBool::new(false),
             write: Mutex::new(()),
             dir,
         })
@@ -169,6 +172,9 @@ pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
     shared.db.set_meta("unique_content", &n.to_string())?;
     Ok(n)
 }
+
+/// How long `remove_source` waits for jobs and watchers to close a store it deletes.
+const REMOVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `p` relative to `root` ("" when equal), None when `p` is not inside `root`.
 pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
@@ -419,8 +425,9 @@ impl Library {
         Ok(id)
     }
 
-    /// Forgets a source. `delete_store` also deletes its `source.db` (fails while a watcher
-    /// or job still holds the source on Windows; the source is forgotten either way).
+    /// Forgets a source; its running walk, hashing and watcher stop. `delete_store` also
+    /// deletes its `source.db`, waiting up to 10 s for them to let go of it (the source is
+    /// forgotten either way).
     pub fn remove_source(&self, id: &SourceId, delete_store: bool) -> Result<()> {
         let source = {
             let mut sources = self.shared.sources.write();
@@ -434,12 +441,24 @@ impl Library {
                 .execute("DELETE FROM source WHERE id = ?1", [&id.0])?;
             sources.remove(i)
         };
+        // Its walk, hashing and watcher stop at their next step and let go of the store.
+        source.removed.store(true, Ordering::SeqCst);
         if delete_store {
             let dir = source.dir.clone();
-            source.store.close_idle();
-            drop(source);
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("delete store {}", dir.display()))?;
+            let deadline = std::time::Instant::now() + REMOVE_WAIT;
+            loop {
+                source.store.close_idle();
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => break,
+                    Err(_) if dir.exists() && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(e) if dir.exists() => {
+                        return Err(e).with_context(|| format!("delete store {}", dir.display()))
+                    }
+                    Err(_) => break,
+                }
+            }
         }
         Ok(())
     }

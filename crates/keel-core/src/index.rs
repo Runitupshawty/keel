@@ -344,7 +344,7 @@ impl Walk<'_> {
 
     fn run(&mut self, mut stack: Vec<Pending>) -> Result<()> {
         while let Some(p) = stack.pop() {
-            if self.cancel.load(Ordering::Relaxed) {
+            if self.cancel.load(Ordering::Relaxed) || self.src.removed.load(Ordering::Relaxed) {
                 return Err(Cancelled.into());
             }
             // Never list (slow on remotes and dead drives) while holding the write lock.
@@ -697,9 +697,15 @@ impl Indexer {
                 .name("keel-poll".into())
                 .spawn(move || loop {
                     rescan(&src);
-                    match stop_rx.recv_timeout(cfg.poll) {
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                        _ => break,
+                    let next = Instant::now() + cfg.poll;
+                    while Instant::now() < next {
+                        if src.removed.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        match stop_rx.recv_timeout(TICK) {
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                            _ => return,
+                        }
                     }
                 })?;
             return Ok(WatchHandle {
@@ -773,7 +779,7 @@ fn watch_loop(
     let mut lost = false;
     // (first, last) event of the current burst.
     let mut burst: Option<(Instant, Instant)> = None;
-    while !quit.load(Ordering::SeqCst) {
+    while !quit.load(Ordering::SeqCst) && !src.removed.load(Ordering::SeqCst) {
         match rx.recv_timeout(TICK) {
             Ok(res) => {
                 let now = Instant::now();

@@ -254,6 +254,9 @@ impl HashJob {
                 return Ok(());
             }
             for rec in batch {
+                if src.removed.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
                 self.wait_until_idle(ctx)?;
                 let path = root.join(&rec.path);
                 match hash_one(&ctx.lib, src, &rec, &path) {

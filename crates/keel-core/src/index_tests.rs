@@ -855,6 +855,58 @@ fn watch_polls_at_the_sources_own_interval() {
 }
 
 #[test]
+fn removing_a_source_stops_its_walk_and_watchers() {
+    // A slow remote: 200 folders, 20 ms a listing.
+    let router = Arc::new(Router::new());
+    router.register(Arc::new(fake(|path: &str| {
+        std::thread::sleep(Duration::from_millis(20));
+        Ok(match path {
+            "/" => (0..200).map(|d| (format!("d{d}"), true, 0)).collect(),
+            _ => vec![("f".into(), false, 1)],
+        })
+    })));
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "r").unwrap();
+    lib.set_router(router.clone());
+    let slow = lib
+        .add_source(SourceDef {
+            label: "slow".into(),
+            root: VPath::parse("fake://slow/").unwrap(),
+            kind: SourceKind::Share,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+        })
+        .unwrap();
+    let job = lib.index(&slow).unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let local = lib.add_source(folder("l", files.path())).unwrap();
+    let handle = Indexer::watch(&lib.source(&local).unwrap(), &router).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+
+    let start = Instant::now();
+    lib.remove_source(&slow, true).unwrap();
+    assert_eq!(
+        lib.jobs().wait(job).unwrap().status,
+        crate::JobStatus::Cancelled
+    );
+    lib.remove_source(&local, true).unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(lib.sources().is_empty());
+    assert_eq!(
+        std::fs::read_dir(lib.dir().join("sources"))
+            .unwrap()
+            .count(),
+        0
+    );
+    drop(handle);
+}
+
+#[test]
 fn watch_polls_remote_sources() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
