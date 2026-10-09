@@ -6,6 +6,46 @@ pub struct VPath {
 }
 
 impl VPath {
+    /// `file:///D:/x.zip!/dir/a.txt` => (`file:///D:/x.zip`, `"dir/a.txt"`). Nested chains split
+    /// at the innermost boundary. Only a `!/` right after an archive file name counts, so a
+    /// folder named `Yahoo!` stays an ordinary path.
+    pub fn split_archive(&self) -> Option<(VPath, String)> {
+        let mut end = self.path.len();
+        while let Some(i) = self.path[..end].rfind("!/") {
+            let outer = &self.path[..i];
+            if Self::is_archive_name(outer.rsplit('/').next().unwrap_or("")) {
+                return Some((
+                    Self {
+                        path: outer.into(),
+                        ..self.clone()
+                    },
+                    self.path[i + 2..].trim_start_matches('/').into(),
+                ));
+            }
+            end = i;
+        }
+        None
+    }
+    pub fn join_archive(outer: &VPath, inner: &str) -> VPath {
+        Self {
+            path: format!(
+                "{}!/{}",
+                outer.path,
+                inner.replace('\\', "/").trim_start_matches('/')
+            ),
+            ..outer.clone()
+        }
+    }
+    /// By extension only; `open_archive` itself dispatches on magic bytes.
+    pub fn is_archive_name(name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        [
+            ".zip", ".jar", ".7z", ".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst",
+            ".rar",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+    }
     pub fn local(p: impl AsRef<std::path::Path>) -> Self {
         let mut path = p.as_ref().to_string_lossy().into_owned();
         // Only Windows uses '\' as a separator; on Unix it is a legal filename character.
@@ -53,7 +93,7 @@ impl VPath {
         })
     }
     pub fn to_local_path(&self) -> Option<std::path::PathBuf> {
-        (self.scheme == "file").then(|| {
+        (self.scheme == "file" && self.split_archive().is_none()).then(|| {
             let path = if self.authority.is_empty() {
                 self.path.clone()
             } else {
@@ -67,6 +107,16 @@ impl VPath {
         })
     }
     pub fn parent(&self) -> Option<VPath> {
+        if let Some((outer, inner)) = self.split_archive() {
+            if inner.is_empty() {
+                return outer.parent();
+            }
+            let parent = inner
+                .trim_end_matches('/')
+                .rsplit_once('/')
+                .map_or("", |(p, _)| p);
+            return Some(Self::join_archive(&outer, parent));
+        }
         let path = self.path.trim_end_matches('/');
         if path.is_empty()
             || (self.scheme == "file"
@@ -105,13 +155,18 @@ impl VPath {
         }
     }
     pub fn name(&self) -> &str {
-        self.path
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or("")
+        let path = match self.split_archive() {
+            // An archive root (`x.zip!/`) is named after the archive.
+            Some((outer, inner)) if inner.is_empty() => &self.path[..outer.path.len()],
+            _ => self.path.trim_end_matches('/'),
+        };
+        path.rsplit('/').next().unwrap_or("")
     }
+    /// Archive paths read `D:\x.zip!/dir/a.txt`; `VPath::local` parses that back.
     pub fn display(&self) -> String {
+        if let Some((outer, inner)) = self.split_archive() {
+            return format!("{}!/{inner}", outer.display());
+        }
         match self.to_local_path() {
             Some(p) => p.to_string_lossy().into_owned(),
             None => format!("{}://{}{}", self.scheme, self.authority, self.path),
