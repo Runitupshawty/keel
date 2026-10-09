@@ -2,6 +2,50 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-10-09
+
+Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
+
+### Added
+
+- `keel-core`, a UI-free library crate (typed requests and responses, so a later daemon can wrap it). Each source has its own SQLite store (bundled SQLite, FTS5) under `<data dir>/library/<name>/`; set `KEEL_DATA_DIR` to relocate it.
+- Streaming indexer with stable record identity: a renamed or moved file keeps its record, and a new file never takes over a renamed file's record. Unreadable files are kept with their error. A different or emptied root, or a cut-off cloud listing, never deletes records.
+- Live watching (`notify`) with a full reconcile every 6 hours and after lost events; remote and cloud sources are re-walked on a poll interval (15 minutes by default).
+- Durable jobs: progress is persisted and pending jobs resume after a restart. A step checkpoints before its side effects, so a resumed job checks whether the step already ran.
+- Safe operations: copy, move, delete and rename go through validate, preview, execute. The preview is projected from the index (it works for offline sources) with warnings for the last copy, a permanent delete on SFTP or S3, content that has not been verified, and an offline source. Execute re-validates and refuses a plan that no longer matches its preview. Every operation is written to a per-library log.
+- Content ids: a sampled BLAKE3 hash first, a full hash only on a collision; files up to 192 KiB are hashed whole. Hashing runs at idle priority and pauses on activity or battery.
+- Duplicate finder (window and Overview card) with how much space is reclaimable.
+- Library search with Everything-style syntax (`ext:`, `size:>1mb`, `dm:2026-10`, `tag:`, `in:`, quoted phrases), ranked, in under 50 ms on 2 million rows.
+- Tags (with colors), favorites, recents (from the operation log) and saved views.
+- App: a Library section in the sidebar (Overview, Favorites, Recents, Sources with status, Tags, Views), an Add source wizard, an Overview dashboard, and `library://` tabs that browse the last indexed state when a source is offline.
+- Search backend selector now includes Library. Tag chips on rows, a tag picker (Ctrl+Shift+T) and Ctrl+D to favorite.
+- Preview dialog before copy, move and delete from library views.
+- Settings → Library: enable or disable, hashing policy (idle only, pause on battery, off), rescan interval and rebuild.
+
+### Changed
+
+- New tab stays on Ctrl+T; the tag picker is Ctrl+Shift+T.
+- The cloud provider forwards `list_complete` and `remove_kind`, so a cut-off cloud listing is recognised as incomplete.
+- Roadmap: Phase 6 is released; phases 7 to 9 are planned.
+
+### Fixed
+
+- Library stores open safely in parallel; one process owns a library at a time; ended jobs are pruned and drop their state.
+- Case-insensitive names keep their real casing, including non-ASCII.
+- An operation on an unreachable source fails instead of being skipped.
+- Removing a source stops its walk, hashing and watchers.
+- Shorter write locks during walks, so the UI stays responsive while a big source indexes.
+- Delete previews warn about permanent and unverified deletes; locations in logs are redacted.
+
+### Known limitations
+
+- Hashing skips remote and cloud sources (SFTP, S3, Drive, Dropbox); only sources on a local path are hashed, so duplicates are found among those.
+- Two sources on one physical disk count as two locations for the "last copy" warning. Failure domains come in a later release.
+- The Overview shows library totals but no per-source counts.
+- Remote and cloud sources are found changed by re-walking on a poll interval, not by live events.
+- A folder copy resumed after a crash re-runs as a merge into the half-written target.
+- The library can be turned off in Settings → Library; library tabs, tags and the Library search backend are then unavailable.
+
 ## [0.5.0] - 2026-10-09
 
 Polish release: profiles, icon themes, Miller columns, a drop zone, a command line with single instance and a global hotkey, drag-out to other Windows apps, and Keel's own search index on Windows.
@@ -148,6 +192,7 @@ First release: the Phase 1 core on Windows, macOS and Linux. The Windows build l
 - On macOS/Linux the sidebar lists pseudo and read-only mounts; apps launched from Keel stay as zombie processes until Keel exits.
 - Builds are not code-signed or notarized.
 
+[0.6.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.5.0
 [0.2.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.1.0
