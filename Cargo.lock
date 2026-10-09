@@ -3737,6 +3737,7 @@ dependencies = [
  "keel-search",
  "keel-term",
  "keel-vfs",
+ "libc",
  "natord",
  "open",
  "opendal",
@@ -3750,6 +3751,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vt100",
+ "widestring",
  "zeroize",
  "zip 2.4.2",
 ]

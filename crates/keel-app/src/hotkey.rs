@@ -1,9 +1,13 @@
-//! Global hotkey (Task 24, default Ctrl+Alt+K, Settings → General): brings Keel's window
-//! forward from anywhere, via the `global-hotkey` crate. Its manager lives on the UI
+//! Global hotkey (Task 24, default Ctrl+Shift+Alt+K, Settings → General): brings Keel's
+//! window forward from anywhere, via the `global-hotkey` crate. Its manager lives on the UI
 //! thread (Windows delivers `WM_HOTKEY` through winit's message loop; macOS needs the
 //! main thread); the handler runs there too (on Linux on the crate's X11 thread).
+//!
+//! The default is not Ctrl+Alt+K: on many keyboard layouts (German, Polish, …) AltGr is
+//! Ctrl+Alt, so a Ctrl+Alt hotkey takes an AltGr character from every app. A hotkey needs
+//! at least one modifier besides Shift (Shift+K alone would take capital K).
 
-use global_hotkey::hotkey::HotKey;
+use global_hotkey::hotkey::{HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 pub struct Hotkey {
@@ -12,11 +16,32 @@ pub struct Hotkey {
     current: Option<HotKey>,
     /// The setting text last applied (changes are applied once).
     applied: Option<String>,
+    /// Another Keel is the single instance and holds the hotkey: failing to register it here
+    /// is expected, not worth a toast.
+    quiet: bool,
+}
+
+/// The hotkey in `text` ("" = none), or why it is not one.
+pub fn parse(text: &str) -> Result<Option<HotKey>, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let key = t
+        .parse::<HotKey>()
+        .map_err(|e| format!("Global hotkey \"{t}\": {e}"))?;
+    if (key.mods - Modifiers::SHIFT).is_empty() {
+        return Err(format!(
+            "Global hotkey \"{t}\": add Ctrl, Alt or the Windows/Command key"
+        ));
+    }
+    Ok(Some(key))
 }
 
 impl Hotkey {
     /// None when the OS offers no global hotkeys (logged; e.g. Wayland without X11).
-    pub fn new(ctx: &egui::Context) -> Option<Self> {
+    /// `quiet`: this process is not the single instance (see the field).
+    pub fn new(ctx: &egui::Context, quiet: bool) -> Option<Self> {
         let manager = GlobalHotKeyManager::new()
             .map_err(|e| tracing::warn!("global hotkey: {e}"))
             .ok()?;
@@ -30,6 +55,7 @@ impl Hotkey {
             manager,
             current: None,
             applied: None,
+            quiet,
         })
     }
 
@@ -40,12 +66,9 @@ impl Hotkey {
             return None;
         }
         self.applied = Some(text.to_owned());
-        let wanted = match text.trim() {
-            "" => None,
-            t => match t.parse::<HotKey>() {
-                Ok(key) => Some(key),
-                Err(e) => return Some(format!("Global hotkey \"{t}\": {e}")),
-            },
+        let wanted = match parse(text) {
+            Ok(key) => key,
+            Err(e) => return Some(e),
         };
         if wanted == self.current {
             return None;
@@ -57,6 +80,13 @@ impl Hotkey {
         match self.manager.register(key) {
             Ok(()) => {
                 self.current = Some(key);
+                None
+            }
+            Err(e) if self.quiet => {
+                tracing::debug!(
+                    "global hotkey {}: {e} (the running Keel has it)",
+                    text.trim()
+                );
                 None
             }
             Err(e) => Some(format!("Global hotkey \"{}\": {e}", text.trim())),
@@ -73,7 +103,10 @@ pub fn field(ui: &mut egui::Ui, hotkey: &mut String) {
         .unwrap_or_else(|| hotkey.clone());
     let r = ui
         .add(egui::TextEdit::singleline(&mut draft).hint_text("off"))
-        .on_hover_text("Brings Keel to the front from any app, e.g. Ctrl+Alt+K. Empty = off.");
+        .on_hover_text(
+            "Brings Keel to the front from any app, e.g. Ctrl+Shift+Alt+K. Needs Ctrl, Alt or \
+             Win besides Shift; avoid Ctrl+Alt alone (it is AltGr on many layouts). Empty = off.",
+        );
     if r.has_focus() {
         ui.data_mut(|d| d.insert_temp(id, draft));
     } else {
@@ -86,10 +119,24 @@ pub fn field(ui: &mut egui::Ui, hotkey: &mut String) {
 
 #[cfg(test)]
 mod tests {
+    use super::parse;
+
     #[test]
     fn default_hotkey_parses() {
-        let key: global_hotkey::hotkey::HotKey =
-            crate::settings::Settings::default().hotkey.parse().unwrap();
-        assert_eq!(key.into_string(), "control+alt+KeyK");
+        let key = parse(&crate::settings::Settings::default().hotkey)
+            .unwrap()
+            .unwrap();
+        assert_eq!(key.into_string(), "shift+control+alt+KeyK");
+    }
+
+    #[test]
+    fn needs_a_modifier_besides_shift() {
+        assert_eq!(parse(" "), Ok(None));
+        for bad in ["K", "Shift+K", "shift+F5", "Ctrl+Nope"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        for good in ["Ctrl+K", "Alt+Shift+K", "Super+K", "Ctrl+Shift+Alt+K"] {
+            assert!(parse(good).unwrap().is_some(), "{good}");
+        }
     }
 }

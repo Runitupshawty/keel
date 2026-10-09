@@ -382,6 +382,17 @@ impl AppState {
             themes,
             notices,
         } = loaded;
+        // The single instance answers under the new profile's name from now on; a profile
+        // another Keel already runs is not opened twice.
+        if let Some(server) = &mut self.instance {
+            if let Err(e) = server.rebind(&crate::single_instance::name(&name)) {
+                tracing::info!("single instance for profile {name}: {e}");
+                self.toasts.error(format!(
+                    "Profile \"{name}\" is open in another Keel window: switch to that window"
+                ));
+                return;
+            }
+        }
         set_current(&name);
         let mut session = session.unwrap_or_else(|| Session::single(self.home.clone()));
         session.repair(&self.home);

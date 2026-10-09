@@ -56,11 +56,6 @@ pub fn allow_foreground(pid: u32) {
     let _ = unsafe { AllowSetForegroundWindow(pid) };
 }
 
-/// Lets any process take the foreground (superseded by `allow_foreground`).
-pub fn allow_foreground_any() {
-    let _ = unsafe { AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY) };
-}
-
 /// Attaches to the console of the shell that started a GUI-subsystem build, so `--help`
 /// and `--version` text shows there. Does nothing when there is none.
 pub fn attach_parent_console() {

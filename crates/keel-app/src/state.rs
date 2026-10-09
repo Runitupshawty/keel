@@ -201,6 +201,8 @@ pub struct AppState {
     pub profiles: crate::profiles::Profiles,
     /// Settings → Icons and the active icon theme (`icon_theme.rs`).
     pub icon_themes: crate::icon_theme::IconThemes,
+    /// This process is the single instance (`single_instance`); None in tests.
+    pub instance: Option<crate::single_instance::Server>,
     pub thumbs: Thumbs,
     search: worker::SearchWorker,
     pub tx: Sender<Msg>,
@@ -314,6 +316,7 @@ impl AppState {
             themes,
             profiles: crate::profiles::Profiles::new(ctx.clone()),
             icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
+            instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
             tx,
@@ -1774,7 +1777,7 @@ impl AppState {
     /// Shows folder `dir` in pane `q` (a new tab, or the active one) with `name` selected
     /// and scrolled into view. A folder the tab already shows is not left: its filter is
     /// cleared and the row revealed at once.
-    fn reveal_in(&mut self, q: usize, dir: VPath, name: String, new_tab: bool) {
+    pub(crate) fn reveal_in(&mut self, q: usize, dir: VPath, name: String, new_tab: bool) {
         let here = !new_tab && self.tab(q).dir == dir && !self.tab(q).is_search();
         if new_tab {
             self.open_tab(q, dir);

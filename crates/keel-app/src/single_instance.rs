@@ -1,33 +1,48 @@
 //! One Keel per user (Task 24): the first instance listens on a local socket named
-//! `keel-<user>` (a named pipe on Windows, an abstract socket on Linux, `/tmp/keel-<user>`
-//! on macOS); a later `keel [FOLDER] [--search Q]` sends its request there and exits.
+//! `keel-<hash of user and profile>`; a later `keel [FOLDER] [--search Q]` sends its request
+//! there and exits.
 //!
-//! Protocol: one JSON `Request` line from the client, `ok` back once it was taken.
+//! Only the same user gets through. Windows: a named pipe whose DACL grants only the
+//! user's SID; the client refuses impersonation and checks that the pipe's server runs as
+//! the same user (`keel_vfs::pipe`). Unix: a socket file in a 0700 folder of the user's
+//! (`$XDG_RUNTIME_DIR/keel-<uid>`, else `<temp>/keel-<uid>`), and both ends check the peer's
+//! uid (`SO_PEERCRED` / `LOCAL_PEERCRED`).
+//!
+//! Protocol: one JSON `Request` line (at most `MAX_LINE`) from the client, `ok` back once
+//! it was taken. The server reads each client on its own thread, for at most `READ_WAIT`.
 
 use crate::cli::Request;
 use interprocess::local_socket::{prelude::*, ListenerOptions, Name, Stream};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use interprocess::local_socket::Listener;
 
-/// How long a client waits for a running instance to answer.
+/// How long a client waits for a running instance to answer (connecting included).
 const ANSWER_WAIT: Duration = Duration::from_secs(3);
+/// How long the server waits for a client's request line.
+const READ_WAIT: Duration = Duration::from_secs(2);
 /// Longest request line read (a path and a query).
 const MAX_LINE: u64 = 64 * 1024;
 
-/// The socket name: per user, and per profile when not the default one.
+/// The socket name: per user, and per profile. Both are hashed (FNV-1a, stable across
+/// builds): user names may be anything (non-ASCII, spaces), and a Unix socket path must stay
+/// short.
 pub fn name(profile: &str) -> String {
-    let user: String = std::env::var("USERNAME")
+    let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        .collect();
-    match profile {
-        "default" => format!("keel-{user}"),
-        p => format!("keel-{user}-{p}"),
+        .unwrap_or_default();
+    name_for(&user, profile)
+}
+
+fn name_for(user: &str, profile: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in user.bytes().chain([0]).chain(profile.bytes()) {
+        hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
+    format!("keel-{hash:016x}")
 }
 
 pub enum Claim {
@@ -75,60 +90,133 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
     Claim::Alone
 }
 
-/// Windows (named pipe) and Linux (abstract socket) have a namespace that refuses a second
-/// listener; other Unixes get an explicit socket file under the temp dir so a stale file can be
-/// removed deliberately (never overwritten while an instance is alive).
-fn sock_name(name: &str) -> io::Result<Name<'_>> {
-    #[cfg(any(windows, target_os = "linux"))]
+/// Windows: a named pipe (its namespace refuses a second listener). Unix: a socket file in
+/// the user's private folder; a stale one is removed deliberately (never overwritten while
+/// an instance is alive).
+fn sock_name(name: &str) -> io::Result<Name<'static>> {
+    #[cfg(windows)]
     {
-        name.to_ns_name::<interprocess::local_socket::GenericNamespaced>()
+        use interprocess::local_socket::GenericNamespaced;
+        name.to_owned().to_ns_name::<GenericNamespaced>()
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(unix)]
     {
         use interprocess::local_socket::GenericFilePath;
-        sock_path(name).to_fs_name::<GenericFilePath>()
+        sock_path(name)?.to_fs_name::<GenericFilePath>()
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn sock_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("{name}.sock"))
+/// `<dir>/<name>.sock`, `<dir>` created 0700 when missing and refused unless it is a real
+/// folder of this user that nobody else may enter.
+#[cfg(unix)]
+fn sock_path(name: &str) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let uid = unsafe { libc::geteuid() };
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join(format!("keel-{uid}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(&dir)?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not a private folder of this user", dir.display()),
+        ));
+    }
+    Ok(dir.join(format!("{name}.sock")))
 }
 
-/// Removes a socket file nobody answers on (a crashed instance). No-op elsewhere.
+/// The other end of `conn` runs as this user.
+#[cfg(unix)]
+fn check_peer(conn: &Stream) -> io::Result<()> {
+    let euid = conn.peer_creds()?.euid();
+    match euid == Some(unsafe { libc::geteuid() }) {
+        true => Ok(()),
+        false => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("peer runs as uid {euid:?}"),
+        )),
+    }
+}
+
+/// Removes a socket file nobody answers on (a crashed instance). No-op on Windows.
 fn remove_stale(name: &str) {
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = std::fs::remove_file(sock_path(name));
+    #[cfg(unix)]
+    if let Ok(path) = sock_path(name) {
+        let _ = std::fs::remove_file(path);
     }
-    #[cfg(any(windows, target_os = "linux"))]
-    {
-        let _ = name;
-    }
+    #[cfg(windows)]
+    let _ = name;
 }
 
 fn listen(name: &str) -> io::Result<Listener> {
-    ListenerOptions::new()
+    let options = ListenerOptions::new()
         .name(sock_name(name)?)
         // Never take over a socket another live instance owns.
-        .try_overwrite(false)
-        .create_sync()
+        .try_overwrite(false);
+    #[cfg(windows)]
+    let options = {
+        use interprocess::os::windows::{
+            local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
+        };
+        let sddl = widestring::U16CString::from_str(keel_vfs::pipe::user_only_sddl()?)
+            .map_err(io::Error::other)?;
+        options.security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
+    };
+    options.create_sync()
 }
 
-/// Sends `req` and waits up to `ANSWER_WAIT` for the `ok`.
+/// `listen`, after clearing a stale socket file of a crashed instance.
+fn bind(name: &str) -> io::Result<Listener> {
+    match listen(name) {
+        #[cfg(unix)]
+        Err(e)
+            if e.kind() == io::ErrorKind::AddrInUse
+                && Stream::connect(sock_name(name)?)
+                    .is_err_and(|c| c.kind() == io::ErrorKind::ConnectionRefused) =>
+        {
+            remove_stale(name);
+            listen(name)
+        }
+        listened => listened,
+    }
+}
+
+/// Connects to the instance on `name`, which must run as this user. On Windows it may take
+/// the foreground (this process was just started by the user).
+fn connect(name: &str) -> io::Result<impl Read + Write> {
+    #[cfg(windows)]
+    {
+        let (pipe, server) = keel_vfs::pipe::connect(name, ANSWER_WAIT)?;
+        keel_vfs::desktop::allow_foreground(server);
+        Ok(pipe)
+    }
+    #[cfg(unix)]
+    {
+        let conn = Stream::connect(sock_name(name)?)?;
+        check_peer(&conn)?;
+        Ok(conn)
+    }
+}
+
+/// Sends `req` and waits up to `ANSWER_WAIT` for the `ok`, connecting included (a busy or
+/// hung instance can't hold this process).
 fn send(name: &str, req: &Request) -> io::Result<()> {
     let mut line = serde_json::to_string(req)?;
     line.push('\n');
-    let mut conn = Stream::connect(sock_name(name)?)?;
-    // The running instance may take the foreground (the user just started this one).
-    #[cfg(windows)]
-    keel_vfs::desktop::allow_foreground_any();
+    let name = name.to_owned();
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::spawn(move || {
         let answer = (|| {
+            let mut conn = connect(&name)?;
             conn.write_all(line.as_bytes())?;
             let mut ok = String::new();
-            BufReader::new(conn).read_line(&mut ok)?;
+            BufReader::new(conn).take(16).read_line(&mut ok)?;
             match ok.trim() {
                 "ok" => Ok(()),
                 other => Err(io::Error::other(format!("unexpected answer {other:?}"))),
@@ -140,38 +228,151 @@ fn send(name: &str, req: &Request) -> io::Result<()> {
         .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }
 
-/// Accepts requests on a worker for the life of the process; `on_request` runs there.
-pub fn serve(listener: Listener, on_request: impl Fn(Request) + Send + 'static) {
-    let spawned = std::thread::Builder::new()
-        .name("keel-instance".into())
-        .spawn(move || {
-            // ponytail: one client at a time; a client that connects and never writes
-            // holds the next ones off (same user only), threads per client if that matters.
-            for conn in listener.incoming() {
-                let conn = match conn {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("single instance accept: {e}");
-                        continue;
+type Handler = Arc<dyn Fn(Request) + Send + Sync>;
+
+/// The running listener (see `serve`).
+pub struct Server {
+    name: String,
+    stop: Arc<AtomicBool>,
+    on_request: Handler,
+}
+
+/// Accepts requests on `listener` (bound to `name`) on a worker for the life of the
+/// process; `on_request` runs on a per-client thread.
+pub fn serve(
+    listener: Listener,
+    name: &str,
+    on_request: impl Fn(Request) + Send + Sync + 'static,
+) -> Server {
+    let server = Server {
+        name: name.to_owned(),
+        stop: Arc::new(AtomicBool::new(false)),
+        on_request: Arc::new(on_request),
+    };
+    server.accept(listener);
+    server
+}
+
+impl Server {
+    fn accept(&self, listener: Listener) {
+        let (stop, on_request) = (self.stop.clone(), self.on_request.clone());
+        let spawned = std::thread::Builder::new()
+            .name("keel-instance".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    if stop.load(Ordering::Acquire) {
+                        break; // dropping the listener frees the name
                     }
-                };
-                let mut reader = BufReader::new(conn);
-                let mut line = String::new();
-                if let Err(e) = (&mut reader).take(MAX_LINE).read_line(&mut line) {
-                    tracing::warn!("single instance read: {e}");
-                    continue;
+                    match conn {
+                        Ok(conn) => {
+                            let on_request = on_request.clone();
+                            let spawned = std::thread::Builder::new()
+                                .name("keel-instance-client".into())
+                                .spawn(move || serve_one(conn, &*on_request));
+                            if let Err(e) = spawned {
+                                tracing::warn!("spawn keel-instance-client: {e}");
+                            }
+                        }
+                        Err(e) => tracing::warn!("single instance accept: {e}"),
+                    }
                 }
-                match serde_json::from_str::<Request>(&line) {
-                    Ok(req) => {
-                        let _ = reader.get_mut().write_all(b"ok\n");
-                        on_request(req);
-                    }
-                    Err(e) => tracing::warn!("single instance: bad request: {e}"),
+            });
+        if let Err(e) = spawned {
+            tracing::error!("spawn keel-instance: {e}");
+        }
+    }
+
+    /// Listens on `name` instead (a profile switch): later `keel --profile` runs reach this
+    /// instance under its new profile. When another instance holds `name`, this one keeps its
+    /// old name and the error says so.
+    pub fn rebind(&mut self, name: &str) -> io::Result<()> {
+        if name == self.name {
+            return Ok(());
+        }
+        let listener = bind(name)?;
+        self.stop.store(true, Ordering::Release);
+        // Wakes the old accept loop, which then sees `stop` and lets go of the old name. The
+        // connection stays open until it does (a client gone before the accept would not
+        // wake it on Windows), on a thread of its own.
+        let old = self.name.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut conn) = connect(&old) {
+                let _ = conn.read(&mut [0u8; 1]);
+            }
+        });
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.name = name.to_owned();
+        self.accept(listener);
+        Ok(())
+    }
+}
+
+/// Reads one request line from `conn` (at most `MAX_LINE`, within `READ_WAIT`) and hands it
+/// to `on_request`. Anything else is logged and the connection closed.
+fn serve_one(conn: Stream, on_request: &dyn Fn(Request)) {
+    #[cfg(unix)]
+    if let Err(e) = check_peer(&conn).and_then(|()| conn.set_recv_timeout(Some(READ_WAIT))) {
+        tracing::warn!("single instance: client refused: {e}");
+        return;
+    }
+    // Named pipes have no read timeout: a watchdog cancels the read instead.
+    #[cfg(windows)]
+    let watchdog = Watchdog::arm(&conn);
+    let mut reader = BufReader::new(conn);
+    let mut line = String::new();
+    let read = (&mut reader).take(MAX_LINE).read_line(&mut line);
+    #[cfg(windows)]
+    drop(watchdog);
+    match read {
+        Err(e) => tracing::warn!("single instance read: {e}"),
+        Ok(_) if !line.ends_with('\n') => {
+            tracing::warn!("single instance: request cut off or too long, closed")
+        }
+        Ok(_) => match serde_json::from_str::<Request>(&line) {
+            Ok(req) => {
+                let _ = reader.get_mut().write_all(b"ok\n");
+                on_request(req);
+            }
+            Err(e) => tracing::warn!("single instance: bad request: {e}"),
+        },
+    }
+}
+
+/// Cancels the pending read on a client pipe after `READ_WAIT` unless dropped first.
+#[cfg(windows)]
+struct Watchdog {
+    armed: Arc<parking_lot::Mutex<bool>>,
+    _disarm: crossbeam_channel::Sender<()>,
+}
+
+#[cfg(windows)]
+impl Watchdog {
+    fn arm(conn: &Stream) -> Self {
+        use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle};
+        let Stream::NamedPipe(pipe) = conn;
+        // As an integer: raw handles are not Send. Valid while `armed` (the stream outlives
+        // the watchdog, which is dropped before it).
+        let raw = pipe.inner().as_handle().as_raw_handle() as usize;
+        let armed = Arc::new(parking_lot::Mutex::new(true));
+        let (tx, rx) = crossbeam_channel::bounded::<()>(0);
+        let flag = armed.clone();
+        std::thread::spawn(move || {
+            if rx.recv_timeout(READ_WAIT).is_err_and(|e| e.is_timeout()) {
+                let armed = flag.lock();
+                if *armed {
+                    let pipe = unsafe { BorrowedHandle::borrow_raw(raw as _) };
+                    keel_vfs::pipe::cancel_io(pipe);
                 }
             }
         });
-    if let Err(e) = spawned {
-        tracing::error!("spawn keel-instance: {e}");
+        Self { armed, _disarm: tx }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        *self.armed.lock() = false;
     }
 }
 
@@ -189,20 +390,29 @@ pub fn bring_to_front(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn test_name(what: &str) -> String {
+        format!("keel-test-{what}-{}", std::process::id())
+    }
+
+    fn served(name: &str) -> (Server, crossbeam_channel::Receiver<Request>) {
+        let Claim::Server(listener) = claim(name, &Request::default(), true) else {
+            panic!("{name}: first instance should serve");
+        };
+        let (tx, rx) = crossbeam_channel::unbounded();
+        (serve(listener, name, move |r| tx.send(r).unwrap()), rx)
+    }
 
     #[test]
     fn second_instance_hands_its_request_over() {
-        let name = format!("keel-test-{}", std::process::id());
+        let name = test_name("hand");
         let req = Request {
             folder: Some(std::env::temp_dir()),
             search: Some("needle".into()),
+            select: None,
         };
-        // Nothing listens yet: the first claim becomes the server.
-        let Claim::Server(listener) = claim(&name, &req, true) else {
-            panic!("first instance should serve");
-        };
-        let (tx, rx) = crossbeam_channel::unbounded();
-        serve(listener, move |r| tx.send(r).unwrap());
+        let (_server, rx) = served(&name);
         // A second instance hands over and is told to exit.
         assert!(matches!(claim(&name, &req, true), Claim::Handed));
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), req);
@@ -214,10 +424,121 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// A client that connects and never writes (or writes no newline) holds nobody off, and
+    /// its connection is dropped after `READ_WAIT`.
+    #[test]
+    fn idle_client_does_not_block_others() {
+        let name = test_name("idle");
+        let (_server, rx) = served(&name);
+        let mut idle = connect(&name).unwrap();
+        let mut half = connect(&name).unwrap();
+        half.write_all(b"{\"folder\":").unwrap();
+        let started = Instant::now();
+        let req = Request {
+            search: Some("after idle".into()),
+            ..Request::default()
+        };
+        assert!(matches!(claim(&name, &req, true), Claim::Handed));
+        assert!(started.elapsed() < ANSWER_WAIT);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), req);
+        // The server gives up on both: their reads end without an answer.
+        let mut buf = [0u8; 4];
+        assert!(!matches!(idle.read(&mut buf), Ok(n) if n > 0));
+        assert!(!matches!(half.read(&mut buf), Ok(n) if n > 0));
+        assert!(started.elapsed() >= READ_WAIT - Duration::from_millis(500));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn oversized_or_bad_requests_are_dropped() {
+        let name = test_name("big");
+        let (_server, rx) = served(&name);
+        let mut big = connect(&name).unwrap();
+        // More than MAX_LINE without a newline: refused, nothing taken. The server may close
+        // before all of it is written.
+        let _ = big.write_all(&vec![b'a'; MAX_LINE as usize + 10]);
+        let _ = big.write_all(b"\n");
+        let mut answer = String::new();
+        let _ = BufReader::new(big).read_line(&mut answer);
+        assert_eq!(answer, "");
+        let mut bad = connect(&name).unwrap();
+        bad.write_all(b"{not json}\n").unwrap();
+        let mut answer = String::new();
+        let _ = BufReader::new(bad).read_line(&mut answer);
+        assert_eq!(answer, "");
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    #[test]
+    fn rebind_moves_to_the_new_name() {
+        let (old, new) = (test_name("old"), test_name("new"));
+        let (mut server, rx) = served(&old);
+        server.rebind(&new).unwrap();
+        let req = Request {
+            search: Some("moved".into()),
+            ..Request::default()
+        };
+        assert!(matches!(claim(&new, &req, true), Claim::Handed));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), req);
+        // The old name is free once its accept loop has let go.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match claim(&old, &Request::default(), false) {
+                Claim::Server(_) => break,
+                _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => panic!("old name still held"),
+            }
+        }
+        // A name another instance holds is refused, and this one keeps its own.
+        let (_other, _) = served(&test_name("held"));
+        assert!(server.rebind(&test_name("held")).is_err());
+        assert!(matches!(claim(&new, &req, true), Claim::Handed));
+    }
+
     #[test]
     fn names_are_per_user_and_profile() {
         let default = name("default");
-        assert!(default.starts_with("keel-"));
-        assert_eq!(name("work"), format!("{default}-work"));
+        assert!(
+            default.starts_with("keel-") && default.len() == 21,
+            "{default}"
+        );
+        assert_ne!(name("work"), default);
+        assert_eq!(name_for("james", "default"), name_for("james", "default"));
+        // Non-ASCII users do not collapse to one name.
+        let names = [
+            name_for("jürgen", "default"),
+            name_for("jörg", "default"),
+            name_for("山田", "default"),
+            name_for("", "default"),
+            name_for("a", "bdefault"),
+            name_for("ab", "default"),
+        ];
+        for (i, a) in names.iter().enumerate() {
+            assert!(a.len() == 21 && a.is_ascii(), "{a}");
+            for b in &names[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    /// The pipe only lets this user in, and the client sees the server is this user.
+    #[cfg(windows)]
+    #[test]
+    fn pipe_is_this_users() {
+        let name = test_name("acl");
+        let (_server, _rx) = served(&name);
+        let (_pipe, server) = keel_vfs::pipe::connect(&name, ANSWER_WAIT).unwrap();
+        assert_eq!(server, std::process::id());
+        assert!(keel_vfs::pipe::same_user(server).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_folder_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = sock_path("keel-test").unwrap();
+        let dir = path.parent().unwrap();
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 }

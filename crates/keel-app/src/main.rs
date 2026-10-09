@@ -104,6 +104,11 @@ fn main() -> eframe::Result<()> {
     } else {
         None
     };
+    // FOLDER as this instance opens it (a file: its folder, the file selected).
+    let request = request.checked().unwrap_or_else(|e| {
+        tracing::warn!("{e}");
+        cli::Request::default()
+    });
     // --- end Task 24 ---
     let (saved, session_notice) = Session::load();
     let mut session = saved

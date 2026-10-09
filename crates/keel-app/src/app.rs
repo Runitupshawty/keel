@@ -75,6 +75,8 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, boot: Boot) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        // Another Keel is the single instance (and holds the global hotkey).
+        let not_server = boot.settings.single_instance && boot.server.is_none();
         let persist = boot
             .saved
             .map(|saved| Persist::new(boot.settings.clone(), saved));
@@ -93,15 +95,23 @@ impl App {
         state.external(boot.request);
         if let Some(listener) = boot.server {
             let (tx, ctx) = (state.tx.clone(), cc.egui_ctx.clone());
-            crate::single_instance::serve(listener, move |req| {
-                crate::single_instance::bring_to_front(&ctx);
-                crate::worker::send(&tx, &ctx, crate::state::Msg::External(req));
+            let name = crate::single_instance::name(&crate::cli::profile());
+            let server = crate::single_instance::serve(listener, &name, move |req| {
+                // On the client's thread: `checked` may touch the disk.
+                match req.checked() {
+                    Ok(req) => {
+                        crate::single_instance::bring_to_front(&ctx);
+                        crate::worker::send(&tx, &ctx, crate::state::Msg::External(req));
+                    }
+                    Err(e) => tracing::warn!("single instance: {e}"),
+                }
             });
+            state.instance = Some(server);
         }
         // Not in tests (`persist` is None there): they would grab the real hotkey.
         let hotkey = persist
             .is_some()
-            .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx))
+            .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx, not_server))
             .flatten();
         // --- end Task 24 ---
         Self {

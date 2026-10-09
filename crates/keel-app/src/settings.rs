@@ -41,7 +41,8 @@ pub struct Settings {
     /// keychain only.
     pub clouds: Vec<keel_vfs::CloudAccount>,
     // --- Task 24 ---
-    /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Alt+K".
+    /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Shift+Alt+K" (not
+    /// Ctrl+Alt alone: AltGr on many layouts; see `hotkey`).
     pub hotkey: String,
     /// A second `keel` hands its folder / search to the running one and exits.
     pub single_instance: bool,
@@ -70,7 +71,7 @@ impl Default for Settings {
             one_transfer_per_drive: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
-            hotkey: "Ctrl+Alt+K".into(),
+            hotkey: "Ctrl+Shift+Alt+K".into(),
             single_instance: true,
             column_widths: Vec::new(),
             reduce_motion: false,
