@@ -206,6 +206,74 @@ fn a_plan_that_no_longer_matches_is_not_executed() {
     assert!(!root.join("keep").exists());
 }
 
+/// Runs an op job as if resumed after a crash right after item 0's side effects.
+fn resume_after_crash(lib: &Library, op: Op, target_existed: bool) -> crate::JobInfo {
+    let job = lib
+        .jobs()
+        .spawn(Box::new(ExecJob {
+            op,
+            next: 0,
+            skipped: 0,
+            log_id: None,
+            started: Some(Started {
+                item: 0,
+                target_existed,
+            }),
+        }))
+        .unwrap();
+    lib.jobs().wait(job).unwrap()
+}
+
+#[test]
+fn a_step_that_ran_before_a_crash_is_not_run_again() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    write(&root.join("a.txt"), "a");
+    write(&root.join("b.txt"), "b");
+    std::fs::create_dir_all(root.join("dst")).unwrap();
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+
+    // The move happened, the checkpoint after it did not.
+    std::fs::rename(root.join("a.txt"), root.join("dst/a.txt")).unwrap();
+    let mv = Op::Move {
+        src: vec![v(&root.join("a.txt"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Skip,
+    };
+    let info = resume_after_crash(&lib, mv, false);
+    assert_eq!(info.status, JobStatus::Done);
+    assert!(
+        info.log.contains("resumed after the step had run"),
+        "{}",
+        info.log
+    );
+    assert_eq!(lib.op_log(1).unwrap()[0].result, "ok", "done, not skipped");
+    assert!(id_of(&src, "dst/a.txt").is_some(), "index caught up");
+    assert!(id_of(&src, "a.txt").is_none());
+
+    // A copy that renames on conflict: its target appeared, so no second copy.
+    std::fs::copy(root.join("b.txt"), root.join("dst/b.txt")).unwrap();
+    let copy = Op::Copy {
+        src: vec![v(&root.join("b.txt"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::RenameNew,
+    };
+    assert_eq!(
+        resume_after_crash(&lib, copy.clone(), false).status,
+        JobStatus::Done
+    );
+    let mut names: Vec<_> = std::fs::read_dir(root.join("dst"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+    // The crash came before the copy (its target name was already taken): it runs.
+    assert_eq!(resume_after_crash(&lib, copy, true).status, JobStatus::Done);
+    assert_eq!(std::fs::read_dir(root.join("dst")).unwrap().count(), 3);
+}
+
 #[test]
 fn offline_sources_preview_from_their_last_generation() {
     let state = Arc::new(Mutex::new(State {
@@ -395,6 +463,7 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
             next: 0,
             skipped: 0,
             log_id: None,
+            started: None,
         }))
         .unwrap();
     let info = lib.jobs().wait(job).unwrap();
@@ -423,6 +492,7 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
             next: 1,
             skipped: 0,
             log_id: None,
+            started: None,
         }))
         .unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);

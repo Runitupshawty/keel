@@ -52,10 +52,18 @@ fn migrations(store: Store) -> Vec<(u32, String)> {
     out
 }
 
-fn configure(conn: &Connection) -> Result<()> {
+/// WAL everywhere; `library.db` (jobs, checkpoints, op log) syncs every commit, source stores
+/// (rebuildable by a walk) only at checkpoints.
+fn configure(conn: &Connection, store: Store) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
-    conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA cache_size=-16384;")?;
+    let sync = match store {
+        Store::Library => "FULL",
+        Store::Source => "NORMAL",
+    };
+    conn.execute_batch(&format!(
+        "PRAGMA synchronous={sync}; PRAGMA cache_size=-16384;"
+    ))?;
     Ok(())
 }
 
@@ -87,6 +95,7 @@ pub(crate) struct Pool(Arc<Inner>);
 
 struct Inner {
     path: PathBuf,
+    store: Store,
     idle: Mutex<Vec<Connection>>,
 }
 
@@ -98,10 +107,11 @@ impl Pool {
         }
         let mut conn =
             Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        configure(&conn)?;
+        configure(&conn, store)?;
         migrate(&mut conn, store)?;
         Ok(Pool(Arc::new(Inner {
             path: path.to_owned(),
+            store,
             idle: Mutex::new(vec![conn]),
         })))
     }
@@ -111,7 +121,7 @@ impl Pool {
             Some(conn) => conn,
             None => {
                 let conn = Connection::open(&self.0.path)?;
-                configure(&conn)?;
+                configure(&conn, self.0.store)?;
                 conn
             }
         };
@@ -203,6 +213,12 @@ mod tests {
                 .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(mode, "wal");
+            let sync: i64 = pool
+                .get()
+                .unwrap()
+                .query_row("PRAGMA synchronous", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(sync, if store == Store::Library { 2 } else { 1 });
         }
     }
 

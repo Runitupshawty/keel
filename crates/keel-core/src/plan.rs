@@ -177,6 +177,7 @@ impl Plan {
             next: 0,
             skipped: 0,
             log_id: None,
+            started: None,
         }))
     }
 }
@@ -459,6 +460,42 @@ pub(crate) struct ExecJob {
     next: usize,
     skipped: usize,
     log_id: Option<i64>,
+    /// Checkpointed before item `next`'s side effects: after a crash the step may or may not
+    /// have happened, and the resumed job checks before doing it again.
+    #[serde(default)]
+    started: Option<Started>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Started {
+    item: usize,
+    /// The copy/move/rename target name existed before the step.
+    target_existed: bool,
+}
+
+/// Where `item` ends up (copy, move, rename), None for a delete.
+fn target(op: &Op, item: &VPath) -> Option<VPath> {
+    match op {
+        Op::Copy { dst_dir, .. } | Op::Move { dst_dir, .. } => Some(dst_dir.join(item.name())),
+        Op::Rename { new_name, .. } => item.parent().map(|p| p.join(new_name)),
+        Op::Delete { .. } => None,
+    }
+}
+
+fn live(ctx: &JobCtx, p: &VPath) -> bool {
+    ctx.router()
+        .provider_for(p)
+        .is_some_and(|provider| provider.stat(p).is_ok())
+}
+
+/// After a crash between a step's checkpoint and the next: did the step already happen?
+/// A move, delete or rename did when its source is gone; a copy when its target appeared.
+/// (A copy that renames on conflict onto a name that existed cannot tell; it runs again.)
+fn already_done(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> bool {
+    match op {
+        Op::Copy { .. } => !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t)),
+        _ => !live(ctx, item),
+    }
 }
 
 impl Job for ExecJob {
@@ -484,12 +521,27 @@ impl Job for ExecJob {
                     return Err(Cancelled.into());
                 }
                 let item = &items[self.next];
-                if !step(ctx, &self.op, item)? {
+                let resumed = self.started.filter(|s| s.item == self.next);
+                let ran = if resumed.is_some_and(|s| already_done(ctx, &self.op, item, s)) {
+                    ctx.log("resumed after the step had run")?;
+                    after(ctx, &self.op, item)?;
+                    true
+                } else {
+                    self.started = Some(Started {
+                        item: self.next,
+                        target_existed: target(&self.op, item).is_some_and(|t| live(ctx, &t)),
+                    });
+                    let progress = self.next as f32 / items.len() as f32;
+                    ctx.checkpoint(self.checkpoint(), progress)?;
+                    step(ctx, &self.op, item)?
+                };
+                if !ran {
                     self.skipped += 1;
                     let line = format!("skipped (no longer exists): {}", item.display());
                     ctx.log(&oplog::redact_text(&line, &oplog::roots(&lib)))?;
                 }
                 self.next += 1;
+                self.started = None;
                 ctx.checkpoint(self.checkpoint(), self.next as f32 / items.len() as f32)?;
             }
             Ok(())
@@ -547,28 +599,38 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
                 ctx.stop_flag(),
                 &router,
             )?;
+        }
+        Op::Delete { .. } => provider.remove(item)?,
+        Op::Rename { .. } => {
+            let to =
+                target(op, item).with_context(|| format!("cannot rename {}", item.display()))?;
+            provider.rename(item, &to)?;
+        }
+    }
+    after(ctx, op, item)?;
+    Ok(true)
+}
+
+/// Updates the index for what a step changed.
+fn after(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<()> {
+    match op {
+        Op::Copy { dst_dir, .. } | Op::Move { dst_dir, .. } => {
             // Destination first: a same-volume move is then found by identity.
             reindex(ctx, &dst_dir.join(item.name()), true);
             refresh_children(ctx, dst_dir);
-            if mv {
+            if matches!(op, Op::Move { .. }) {
                 reindex(ctx, item, false);
             }
         }
-        Op::Delete { .. } => {
-            provider.remove(item)?;
-            reindex(ctx, item, false);
-        }
-        Op::Rename { new_name, .. } => {
-            let to = item
-                .parent()
-                .with_context(|| format!("cannot rename {}", item.display()))?
-                .join(new_name);
-            provider.rename(item, &to)?;
+        Op::Delete { .. } => reindex(ctx, item, false),
+        Op::Rename { .. } => {
+            let to =
+                target(op, item).with_context(|| format!("cannot rename {}", item.display()))?;
             reindex(ctx, &to, true);
             reindex(ctx, item, false);
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Brings the index up to date for a local path the job changed (the watcher, if any,
