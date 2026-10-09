@@ -1,6 +1,7 @@
 use super::*;
 use crate::index::tests::{id_of, walk, write};
 use crate::library::tests::folder;
+use crate::SourceDef;
 use keel_search::Searcher;
 use std::time::{Duration, Instant};
 
@@ -292,6 +293,94 @@ fn two_million_row_search_is_fast() {
     }
     eprintln!("2M library search: {timings:?}");
     for ((hits, t), q) in timings.iter().zip(&queries) {
+        assert!(*hits > 0, "{q} found nothing");
+        assert!(*t < Duration::from_millis(50), "{q} took {t:?}");
+    }
+}
+
+/// Review focus 4 with realistic paths: 2,000,000 files five folders deep
+/// (`user3/Documents/client 7/2026-04/invoice budget 042.pdf`), common words in names and
+/// paths; ranked and capped queries answer in < 50 ms.
+/// `cargo test -p keel-core --release -- --ignored realistic_paths`
+#[test]
+#[ignore]
+fn realistic_paths_search_is_fast() {
+    use crate::index::tests::{fake, library_with};
+    const AREAS: [&str; 4] = ["Documents", "Projects", "Pictures", "Downloads"];
+    const WORDS: [&str; 20] = [
+        "invoice", "budget", "report", "notes", "photo", "scan", "contract", "draft", "final",
+        "summary", "meeting", "plan", "receipt", "letter", "quote", "estimate", "backup", "export",
+        "minutes", "review",
+    ];
+    const EXT: [&str; 5] = ["pdf", "docx", "jpg", "txt", "xlsx"];
+    let router = keel_vfs::Router::new();
+    router.register(Arc::new(fake(|path: &str| {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let dirs = |names: Vec<String>| Ok(names.into_iter().map(|n| (n, true, 0)).collect());
+        match segs.len() {
+            0 => dirs((0..10).map(|u| format!("user{u}")).collect()),
+            1 => dirs(AREAS.iter().map(|a| a.to_string()).collect()),
+            2 => dirs((0..10).map(|c| format!("client {c}")).collect()),
+            3 => dirs((1..=5).map(|m| format!("2026-0{m}")).collect()),
+            _ => {
+                let seed = path
+                    .bytes()
+                    .fold(7u64, |h, b| h.wrapping_mul(31) ^ u64::from(b));
+                Ok((0..1_000u64)
+                    .map(|i| {
+                        let n = (seed ^ i).wrapping_mul(2_654_435_761);
+                        // 20 real words plus 180 rarer ones: about 1% of names hold a word.
+                        let word = |k: u64| match k % 200 {
+                            w if w < 20 => WORDS[w as usize].to_owned(),
+                            w => format!("term{w}"),
+                        };
+                        let name = format!(
+                            "{} {} {i:03}.{}",
+                            word(n >> 7),
+                            word(n >> 17),
+                            EXT[(n >> 27) as usize % 5]
+                        );
+                        (name, false, n % 1_000_000)
+                    })
+                    .collect())
+            }
+        }
+    })));
+    let (_data, lib, src) = library_with(SourceDef {
+        label: "home".into(),
+        root: VPath::parse("fake://home/").unwrap(),
+        kind: crate::SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+    });
+    let start = Instant::now();
+    walk(&src, &router).unwrap();
+    eprintln!("realistic 2M index: {:?}", start.elapsed());
+    let queries = [
+        "invoice",
+        "invoice budget",
+        "\"invoice budget\"",
+        "documents invoice",
+        "client 7 report",
+        "2026-03 receipt",
+        "ext:pdf contract",
+        "inv",
+        "documents",
+        "term42 kind:file size:>500kb",
+        "user3 projects final size:<100kb",
+        "client invoice",
+    ];
+    let mut timings = Vec::new();
+    for q in queries {
+        let q = LibraryQuery::parse(q).unwrap();
+        lib.search(&q).unwrap();
+        let start = Instant::now();
+        let hits = lib.search(&q).unwrap();
+        timings.push((hits.len(), start.elapsed()));
+    }
+    eprintln!("realistic 2M search: {timings:?}");
+    for ((hits, t), q) in timings.iter().zip(queries) {
         assert!(*hits > 0, "{q} found nothing");
         assert!(*t < Duration::from_millis(50), "{q} took {t:?}");
     }

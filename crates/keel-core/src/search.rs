@@ -18,6 +18,11 @@ const RECENCY: f64 = 1.0;
 const RECENCY_SCALE: f64 = 2_592_000.0;
 /// Text queries with more matches than this are not ranked by bm25.
 const RANK_CAP: usize = 50_000;
+/// Text queries with at most this many matches score every match after the join (no bm25,
+/// whose document frequencies cost a full read of each word's postings).
+const DIRECT: i64 = 5_000;
+/// Score bonus for each query word found in the name (not only in the path).
+const NAME_BOOST: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KindFilter {
@@ -285,15 +290,25 @@ impl LibraryQuery {
         Ok(q)
     }
 
-    /// The FTS5 MATCH expression for the words and phrases, None when there are none.
-    fn text_match(&self) -> Option<String> {
+    /// The FTS5 MATCH expressions (ANDed) for the words and phrases. Only the last word is a
+    /// prefix (it may be half typed) unless `all_prefix`: a prefix of a
+    /// very common word (one in every path) costs a full read of its postings.
+    fn text_parts(&self, all_prefix: bool) -> Vec<String> {
+        let last = self.terms.len().saturating_sub(1);
         let mut parts: Vec<String> = self
             .terms
             .iter()
-            .map(|t| format!("{}*", quote(t)))
+            .enumerate()
+            .map(|(i, t)| {
+                if all_prefix || i == last {
+                    format!("{}*", quote(t))
+                } else {
+                    quote(t)
+                }
+            })
             .collect();
         parts.extend(self.phrases.iter().map(|p| quote(p)));
-        (!parts.is_empty()).then(|| parts.join(" AND "))
+        parts
     }
 
     /// Extensions are name tokens too: a text-less `ext:` query narrows through the index
@@ -441,22 +456,42 @@ pub(crate) fn hit_of(src: &Source, r: &rusqlite::Row, score: f64) -> rusqlite::R
     })
 }
 
-/// Runs one candidate query (`id`, `rank` columns) through the filters, best first.
+/// Runs one candidate query (`id`, `rank` columns) through the filters, best first: the
+/// candidate's rank, minus [`NAME_BOOST`] for each word found in the name, minus recency.
 fn run(
     src: &Source,
     q: &LibraryQuery,
     now: i64,
     cand: &str,
-    mut args: Vec<Value>,
+    cand_args: Vec<Value>,
+    also: &[String],
 ) -> Result<Vec<LibraryHit>> {
     let Some((filters, filter_args)) = q.filters() else {
         return Ok(Vec::new());
     };
+    // Placeholders in text order: name boost (select list), candidates, filters, limit.
+    let mut args = Vec::new();
+    let mut boost = String::from("0");
+    for w in q.terms.iter().chain(&q.phrases) {
+        boost.push_str(" + (instr(lower(r.name), ?) > 0)");
+        args.push(Value::Text(w.to_lowercase()));
+    }
+    args.extend(cand_args);
     args.extend(filter_args);
+    // Words left out of the candidate query: substrings of the path.
+    let mut filters = filters;
+    for word in also {
+        filters.push_str(" AND lower(r.path) LIKE ? ESCAPE '\\'");
+        args.push(Value::Text(format!(
+            "%{}%",
+            like_escape(&word.to_lowercase())
+        )));
+    }
     args.push(Value::Integer(q.max as i64));
     let sql = format!(
         "SELECT {HIT_COLUMNS},
-                cand.rank - {RECENCY} / (1.0 + max(0, {now} - coalesce(r.mtime, 0)) / {RECENCY_SCALE})
+                cand.rank - {NAME_BOOST} * ({boost})
+                    - {RECENCY} / (1.0 + max(0, {now} - coalesce(r.mtime, 0)) / {RECENCY_SCALE})
                     AS score
          FROM ({cand}) AS cand JOIN record r ON r.id = cand.id
          WHERE 1{filters} ORDER BY score LIMIT ?"
@@ -471,8 +506,8 @@ fn run(
 }
 
 fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
-    let text = |m: &String| Value::Text(m.clone());
-    let Some(m) = q.text_match() else {
+    let parts = q.text_parts(false);
+    if parts.is_empty() {
         // No words: filters only, newest first.
         return match q.ext_match() {
             Some(e) => run(
@@ -480,7 +515,8 @@ fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Library
                 q,
                 now,
                 "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?",
-                vec![text(&e)],
+                vec![Value::Text(e)],
+                &[],
             ),
             None => run(
                 src,
@@ -488,39 +524,94 @@ fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Library
                 now,
                 "SELECT id, 0.0 AS rank FROM record",
                 Vec::new(),
+                &[],
             ),
         };
-    };
-    let matches: i64 = src.store.get()?.query_row(
+    }
+    let hits = search_text(src, q, now, parts)?;
+    if hits.is_empty() && q.terms.len() > 1 {
+        // Nothing with whole earlier words: every word as a prefix.
+        return search_text(src, q, now, q.text_parts(true));
+    }
+    Ok(hits)
+}
+
+/// Matches of `m`, at most `RANK_CAP + 1`.
+fn count(src: &Source, m: &str) -> Result<i64> {
+    Ok(src.store.get()?.query_row(
         "SELECT count(*) FROM (SELECT 1 FROM record_fts WHERE record_fts MATCH ?1 LIMIT ?2)",
         rusqlite::params![m, RANK_CAP as i64 + 1],
         |r| r.get(0),
-    )?;
+    )?)
+}
+
+fn search_text(
+    src: &Source,
+    q: &LibraryQuery,
+    now: i64,
+    parts: Vec<String>,
+) -> Result<Vec<LibraryHit>> {
+    // Extensions are name tokens: narrowing by them in the index keeps candidates relevant.
+    let ext = q.ext_match().map(|e| format!("({e})"));
+    let all_of = |parts: &[String]| -> String {
+        parts
+            .iter()
+            .chain(&ext)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    };
+    let m = all_of(&parts);
+    let matches = count(src, &m)?;
     let candidates = (q.max * 4).max(1_000) as i64;
+    const ALL: &str = "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?";
+    if matches <= DIRECT.max(candidates) {
+        return run(src, q, now, ALL, vec![Value::Text(m)], &[]);
+    }
     if matches as usize > RANK_CAP {
         // ponytail: too broad to rank within budget (about 1 us a match): the first matches
-        // by record id, newest first. A narrower query ranks.
+        // by record id, scored. A narrower query ranks.
         return run(
             src,
             q,
             now,
-            "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ? LIMIT ?",
-            vec![text(&m), Value::Integer(candidates)],
+            &format!("{ALL} LIMIT ?"),
+            vec![Value::Text(m), Value::Integer(candidates)],
+            &[],
         );
     }
-    // The best bm25 candidates (name weighted over path), re-ranked by recency after the join.
+    // bm25 reads every posting of each word to weigh it, and a word in most records weighs
+    // nothing: rank by the rarer words and check the common ones in the candidates' paths
+    // (ponytail: as substrings, so `client` also passes `subclient`; a word that common
+    // matches nearly everything anyway).
+    let words: Vec<&String> = q.terms.iter().chain(&q.phrases).collect();
+    let (mut rare, mut common, mut common_words) = (Vec::new(), Vec::new(), Vec::new());
+    for (part, word) in parts.into_iter().zip(words) {
+        if count(src, &part)? as usize > RANK_CAP {
+            common.push(part);
+            common_words.push(word.clone());
+        } else {
+            rare.push(part);
+        }
+    }
+    if rare.is_empty() {
+        (rare, common_words) = (common, Vec::new());
+    }
+    // The best bm25 candidates (name weighted over path), re-scored after the join.
     const RANKED: &str = "SELECT rowid AS id, bm25(record_fts, 4.0, 1.0) AS rank FROM record_fts
                           WHERE record_fts MATCH ? ORDER BY rank LIMIT ?";
+    let ranked = all_of(&rare);
     let hits = run(
         src,
         q,
         now,
         RANKED,
-        vec![text(&m), Value::Integer(candidates)],
+        vec![Value::Text(ranked), Value::Integer(candidates)],
+        &common_words,
     )?;
-    if hits.len() < q.max && matches > candidates && q.has_filters() {
-        // Selective filters dropped too many candidates: rank every match.
-        return run(src, q, now, RANKED, vec![text(&m), Value::Integer(matches)]);
+    if hits.len() < q.max && (q.has_filters() || !common_words.is_empty()) {
+        // Filters or common words dropped too many candidates: score every match.
+        return run(src, q, now, ALL, vec![Value::Text(m)], &[]);
     }
     Ok(hits)
 }
