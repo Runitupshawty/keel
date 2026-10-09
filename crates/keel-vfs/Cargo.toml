@@ -7,3 +7,20 @@ repository.workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+windows.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+notify = "6"
+notify-debouncer-mini = "0.4"
+natord = "1"
+rayon = "1"
+walkdir = "2"
+same-file = "1"
+
+[dev-dependencies]
+tempfile = "3"
