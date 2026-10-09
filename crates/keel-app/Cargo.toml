@@ -20,7 +20,7 @@ tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 windows.workspace = true
-eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence"] }
+eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
 
