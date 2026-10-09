@@ -254,6 +254,9 @@ impl Provider for LocalProvider {
     fn remove(&self, p: &VPath) -> Result<()> {
         trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
     }
+    fn remove_kind(&self) -> crate::provider::RemoveKind {
+        crate::provider::RemoveKind::Trash
+    }
     fn rename_noreplace(&self, from: &VPath, to: &VPath) -> Result<()> {
         self.rename(from, to)
     }

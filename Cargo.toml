@@ -74,6 +74,10 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 regex = "1"
 notify = "6"
 directories = "5"
+# Library content ids (Phase 6): pure Rust so cross-target checks need no C toolchain.
+blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
+battery = "0.7"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

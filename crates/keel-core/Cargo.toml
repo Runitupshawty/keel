@@ -1,0 +1,45 @@
+[package]
+name = "keel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["power"]
+# Pause hashing on battery power.
+power = ["dep:battery"]
+
+[dependencies]
+anyhow.workspace = true
+keel-vfs = { path = "../keel-vfs", default-features = false }
+keel-search = { path = "../keel-search" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ignore.workspace = true
+getrandom.workspace = true
+directories.workspace = true
+regex.workspace = true
+notify.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+battery = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Security", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Peak working set for the 2M-entry perf test.
+windows = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

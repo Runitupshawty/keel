@@ -6,6 +6,17 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+/// What `Provider::remove` does (for delete confirmations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveKind {
+    /// Local: the OS trash. Google Drive: the Drive trash.
+    Trash,
+    /// Dropbox: deleted, restorable from dropbox.com for about 30 days.
+    RecoverableDelete,
+    /// SFTP, S3: gone (unless the bucket keeps versions).
+    Permanent,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
     pub write: bool,
@@ -20,6 +31,11 @@ pub trait Provider: Send + Sync {
     /// May block on dead network volumes; call off the UI thread.
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>>;
     fn stat(&self, p: &VPath) -> Result<Entry>;
+    /// `list` for indexing: read fresh (no cache), and an error rather than a listing cut
+    /// off at a display cap (an index would take the missing entries as deleted).
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.list(dir)
+    }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
     /// Call `flush()` and check its result when done: providers that stage writes (SFTP)
     /// commit there, and a writer dropped without a successful `flush()` is discarded
@@ -68,6 +84,10 @@ pub trait Provider: Send + Sync {
     }
     /// Local: OS trash only, never a permanent delete.
     fn remove(&self, p: &VPath) -> Result<()>;
+    /// What `remove` does here; permanent unless the provider says otherwise.
+    fn remove_kind(&self) -> RemoveKind {
+        RemoveKind::Permanent
+    }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
     /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
     fn local_copy_cancellable(

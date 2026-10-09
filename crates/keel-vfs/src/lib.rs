@@ -24,12 +24,10 @@ pub mod sftp;
 #[cfg(windows)]
 pub mod shell;
 #[cfg(feature = "cloud")]
-pub use cloud::{
-    CloudAccount, CloudError, CloudKind, CloudProvider, RemoveKind, S3Config, SecretStore,
-};
+pub use cloud::{CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore};
 pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
-pub use provider::{Caps, Provider};
+pub use provider::{Caps, Provider, RemoveKind};
 pub use router::Router;
 pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
 pub mod ops;
