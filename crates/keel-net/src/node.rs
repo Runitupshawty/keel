@@ -1,5 +1,5 @@
 use crate::{
-    store::{Record, Session, State},
+    store::{merge_seen, Data, Record, Session, State, Store},
     *,
 };
 use anyhow::{bail, ensure, Context, Result};
@@ -7,7 +7,7 @@ use iroh::{
     endpoint::{presets, Builder, Connection},
     Endpoint, SecretKey,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::Path,
@@ -82,6 +82,8 @@ pub struct Node {
     pub(crate) options: NodeOptions,
     pub(crate) handler: Arc<dyn Handler>,
     pub(crate) state: Mutex<State>,
+    /// Lock order: `store`, then `state`. `None` once closed.
+    store: Mutex<Option<Store>>,
     pub(crate) stop: CancellationToken,
     pub(crate) tasks: TaskTracker,
     pub(crate) weak: Weak<Node>,
@@ -134,13 +136,17 @@ impl Node {
             Ok(SecretKey::from_bytes(&bytes))
         })
         .await??;
-        let state = State::open(data_dir)?;
+        let (store, data) = Store::open(data_dir)?;
         let endpoint = options.builder(secret)?.bind().await?;
         let node = Arc::new_cyclic(|weak| Self {
             endpoint,
             options,
             handler,
-            state: Mutex::new(state),
+            state: Mutex::new(State {
+                data,
+                ..State::default()
+            }),
+            store: Mutex::new(Some(store)),
             stop: CancellationToken::new(),
             tasks: TaskTracker::new(),
             weak: weak.clone(),
@@ -183,9 +189,11 @@ impl Node {
             s.len() <= 256 && !s.chars().any(char::is_control),
             "invalid label"
         );
-        let mut state = self.state.lock();
-        ensure!(!state.closed, "node closed");
-        state.update(|d| d.label = s.into())
+        drop(self.update(|d| {
+            d.label = s.into();
+            Ok(())
+        })?);
+        Ok(())
     }
     pub fn peers(&self) -> Vec<Peer> {
         self.state
@@ -219,53 +227,50 @@ impl Node {
             !g.source.is_empty() && g.source.len() <= 1024 && scope::valid_path(&g.subtree),
             "invalid grant scope"
         );
-        let mut state = self.state.lock();
-        ensure!(!state.closed, "node closed");
-        ensure!(
-            state.data.peers.iter().any(|r| r.peer.id == g.peer),
-            "unknown peer"
-        );
         let peer = g.peer;
-        let reduces_access = g.access == Access::Read
-            && state.data.grants.iter().any(|old| {
-                old.peer == peer
-                    && old.source == g.source
-                    && old.subtree == g.subtree
-                    && old.access == Access::ReadWrite
-            });
-        state.update(|d| {
-            d.grants.retain(|old| {
-                !(old.peer == peer && old.source == g.source && old.subtree == g.subtree)
-            });
+        let (reduces_access, mut state) = self.update(|d| {
+            ensure!(d.peers.iter().any(|r| r.peer.id == peer), "unknown peer");
+            let same = |old: &Grant| {
+                old.peer == peer && old.source == g.source && old.subtree == g.subtree
+            };
+            let reduces = g.access == Access::Read
+                && d.grants
+                    .iter()
+                    .any(|old| same(old) && old.access == Access::ReadWrite);
+            d.grants.retain(|old| !same(old));
             d.grants.push(g);
+            Ok(reduces)
         })?;
-        if reduces_access {
-            state.disconnect(&peer);
-        }
+        let offline = reduces_access && state.disconnect(&peer);
         drop(state);
+        if offline {
+            self.emit(NetEvent::PeerOffline(peer));
+        }
         self.emit(NetEvent::GrantChanged);
         Ok(())
     }
     pub fn revoke(&self, peer: &PeerId, source: &str, subtree: &str) -> Result<()> {
-        let mut state = self.state.lock();
-        ensure!(!state.closed, "node closed");
-        state.update(|d| {
+        let ((), mut state) = self.update(|d| {
             d.grants
-                .retain(|g| !(&g.peer == peer && g.source == source && g.subtree == subtree))
+                .retain(|g| !(&g.peer == peer && g.source == source && g.subtree == subtree));
+            Ok(())
         })?;
-        state.disconnect(peer);
+        let offline = state.disconnect(peer);
         drop(state);
+        if offline {
+            self.emit(NetEvent::PeerOffline(*peer));
+        }
         self.emit(NetEvent::GrantChanged);
         Ok(())
     }
     pub fn forget_peer(&self, peer: &PeerId) -> Result<()> {
-        let mut state = self.state.lock();
-        ensure!(!state.closed, "node closed");
-        state.update(|d| {
+        let ((), mut state) = self.update(|d| {
             d.peers.retain(|r| &r.peer.id != peer);
             d.grants.retain(|g| &g.peer != peer);
+            Ok(())
         })?;
         state.disconnect(peer);
+        state.dialing.remove(peer);
         drop(state);
         self.emit(NetEvent::PeerOffline(*peer));
         self.emit(NetEvent::GrantChanged);
@@ -284,17 +289,15 @@ impl Node {
             storage: None,
         };
         ensure!(peer.id.0 != self.id(), "cannot pair with self");
-        let mut state = self.state.lock();
-        ensure!(!state.closed, "node closed");
         // Re-pairing never changes grants. Only explicit grant/revoke does that.
-        state.update(|d| {
+        drop(self.update(|d| {
             d.peers.retain(|r| r.peer.id != peer.id);
             d.peers.push(Record {
                 peer: peer.clone(),
                 addr,
             });
-        })?;
-        drop(state);
+            Ok(())
+        })?);
         self.emit(NetEvent::Paired(peer.clone()));
         Ok(peer)
     }
@@ -336,8 +339,7 @@ impl Node {
             if let Some(node) = weak.upgrade() {
                 let mut state = node.state.lock();
                 if let Some(sessions) = state.sessions.get_mut(&peer) { sessions.remove(&conn.stable_id()); }
-                if state.sessions.get(&peer).is_none_or(|s| s.is_empty()) {
-                    if let Some(r) = state.data.peers.iter_mut().find(|r| r.peer.id == peer) { r.peer.link = Link::Offline; }
+                if state.sessions.get(&peer).is_none_or(|s| s.is_empty()) && state.disconnect(&peer) {
                     drop(state); node.emit(NetEvent::PeerOffline(peer));
                 }
             }
@@ -361,10 +363,34 @@ impl Node {
             }
         }
     }
+    /// A live connection to `peer` (in either direction) if one is held.
+    fn held(&self, peer: &PeerId) -> Result<Option<Connection>> {
+        let state = self.state.lock();
+        ensure!(!state.closed, "node closed");
+        ensure!(
+            state.data.peers.iter().any(|r| &r.peer.id == peer),
+            "unknown peer"
+        );
+        Ok(state.sessions.get(peer).and_then(|sessions| {
+            sessions
+                .values()
+                .find(|s| s.conn.close_reason().is_none())
+                .map(|s| s.conn.clone())
+        }))
+    }
+    /// One connection per peer, reused across requests (a stream each). Dials
+    /// only when none is held; concurrent callers wait for the same dial.
     pub(crate) async fn connect(&self, peer: &PeerId) -> Result<Connection> {
+        if let Some(conn) = self.held(peer)? {
+            return Ok(conn);
+        }
+        let dialing = self.state.lock().dialing.entry(*peer).or_default().clone();
+        let _dialing = dialing.lock().await;
+        if let Some(conn) = self.held(peer)? {
+            return Ok(conn);
+        }
         let addr = {
             let state = self.state.lock();
-            ensure!(!state.closed, "node closed");
             let record = state
                 .data
                 .peers
@@ -388,6 +414,28 @@ impl Node {
         });
         Ok(conn)
     }
+    /// Commits `change` against the stored row (disk I/O without the state
+    /// lock held), then installs the result in memory and returns the locked
+    /// state so callers can act on it atomically with the new data.
+    pub(crate) fn update<T>(
+        &self,
+        change: impl FnOnce(&mut Data) -> Result<T>,
+    ) -> Result<(T, MutexGuard<'_, State>)> {
+        let mut store = self.store.lock();
+        let store = store.as_mut().context("node closed")?;
+        let seen = {
+            let state = self.state.lock();
+            ensure!(!state.closed, "node closed");
+            state.last_seen()
+        };
+        let (data, out) = store.update(|d| {
+            merge_seen(d, &seen);
+            change(d)
+        })?;
+        let mut state = self.state.lock();
+        state.replace(data);
+        Ok((out, state))
+    }
     pub async fn close(&self) {
         {
             let mut state = self.state.lock();
@@ -404,5 +452,18 @@ impl Node {
         self.endpoint.close().await;
         self.tasks.close();
         self.tasks.wait().await;
+        // Persist last_seen and release the directory lock.
+        if let Some(mut store) = self.store.lock().take() {
+            let seen = self.state.lock().last_seen();
+            if store
+                .update(|d| {
+                    merge_seen(d, &seen);
+                    Ok(())
+                })
+                .is_err()
+            {
+                tracing::warn!("could not save peer status");
+            }
+        }
     }
 }

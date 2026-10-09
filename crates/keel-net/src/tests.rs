@@ -509,3 +509,53 @@ async fn relay_only_short_code_pairing_and_ping() {
     a.close().await;
     b.close().await;
 }
+
+#[tokio::test]
+async fn second_open_of_a_data_directory_fails_until_closed() {
+    // Only one Node can own a directory, so a second process can never write a
+    // stale copy of the grants (e.g. resurrect a revoked grant).
+    let dir = tempfile::tempdir().unwrap();
+    let a = open(&dir, Arc::default()).await;
+    let second = Node::open_with_options(
+        Arc::new(MemoryStore::default()),
+        dir.path(),
+        Files::fixture(),
+        NodeOptions::offline(),
+    )
+    .await;
+    assert!(second.err().unwrap().to_string().contains("already in use"));
+    a.close().await;
+    open(&dir, Arc::default()).await.close().await;
+}
+
+#[tokio::test]
+async fn requests_share_one_connection_and_link_is_stable() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    let (aid, bid) = pair(&a, &b).await;
+    let events = b.events();
+    for _ in 0..3 {
+        assert!(matches!(
+            b.request(&aid, Request::Ping).await.unwrap(),
+            Response::Pong { .. }
+        ));
+    }
+    let seen: Vec<_> = events.try_iter().collect();
+    let online = seen
+        .iter()
+        .filter(|e| matches!(e, NetEvent::PeerOnline(p, _) if *p == aid))
+        .count();
+    assert_eq!(online, 1, "{seen:?}");
+    assert!(!seen.iter().any(|e| matches!(e, NetEvent::PeerOffline(_))));
+    assert_eq!(b.peers()[0].link, Link::Lan);
+    assert_eq!(a.state.lock().sessions[&bid].len(), 1);
+    // A's requests to B reuse B's connection rather than dialing back.
+    assert!(matches!(
+        a.request(&bid, Request::Ping).await.unwrap(),
+        Response::Pong { .. }
+    ));
+    assert_eq!(a.state.lock().sessions[&bid].len(), 1);
+    a.close().await;
+    b.close().await;
+}

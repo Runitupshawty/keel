@@ -53,11 +53,14 @@ staging file. Operations already committed before revocation cannot be undone.
 
 Grant downgrades, revoke and forget synchronously cancel handlers and close **all**
 of that peer's sessions, including active reads and writes. Each later request
-rechecks current grants, even on existing sessions. Client operations use fresh
-connections, closed when the response/body is dropped, so the next operation
-does not race a cached session's remote close notification. Mutations are never
-automatically retried. Already delivered bytes
-cannot be recalled. Requests are traced at debug with public peer id, operation
+rechecks current grants, even on existing sessions. A node holds one QUIC
+connection per peer (whichever side dialed it) and opens one stream per request;
+concurrent requests share a single dial, and a lost connection is redialed on the
+next request. A read (Ping, ListSources, List, Stat, Read before its body,
+Grants) that fails because the held connection closed under it, for example when
+a revoke's remote close races the send, is retried once on a fresh connection.
+Mutations are retried only when the stream could not even be opened, never after
+their header was sent. Already delivered bytes cannot be recalled. Requests are traced at debug with public peer id, operation
 and authorization result; paths, labels, codes and handler errors are not logged.
 
 ## Persistence, events and API additions
@@ -68,13 +71,23 @@ The supplied data directory must be private to the application user. Reopening
 retains identity, pairing and grants; live links begin Offline. Public discovery
 allows reconnecting after addresses change; offline address hints only remain
 usable while the remote node keeps those addresses.
-Open only one node for a given data directory and secret store at a time; the
-daemon/single-instance layer owns that coordination.
+`Node::open` takes an exclusive OS file lock on `<data_dir>/net/LOCK` (released
+by `close()` or process exit); a second open of the same directory, from this or
+another process, fails with "already in use". Every update re-reads the stored
+row inside `BEGIN IMMEDIATE`, applies the change and commits, and only then
+replaces the in-memory copy, so a stale cache can never overwrite newer rows.
+Consequently a grant cannot be revoked (or resurrected) by a second process: all
+grant changes go through the one node that owns the directory, normally the
+daemon. Disk writes never hold the lock that request checks use.
 
 `events()` returns a new crossbeam subscription each time, capacity 256. Slow
 subscribers may lose events and should refresh `peers()` / `grants()`. Cloning a
-receiver shares its queue, as with any crossbeam receiver. Link updates reflect
-observed connections; `Lan` means a direct IP path (not necessarily the same LAN).
+receiver shares its queue, as with any crossbeam receiver. `peers()[i].link`
+reflects the held connection: `Lan` means a direct IP path (not necessarily the
+same LAN), `Relay` a relayed one. `PeerOnline` is emitted only when the link
+changes (Offline to online, or Relay/Lan switches) and `PeerOffline` only when
+the last connection to that peer closes, not per request. `last_seen` is kept
+current while connected and persisted with the next update and at `close()`.
 There is no unsolicited probing of offline peers. Call `close().await` to stop
 the endpoints and await all server work before dropping the node/runtime.
 

@@ -38,7 +38,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |
 | [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`zeroize`](https://crates.io/crates/zeroize) 1.9 | Wipes secrets from memory | Apache-2.0 OR MIT | Rust crate, compiled in |
-| [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract; keel-net data-directory lock | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`kamadak-exif`](https://crates.io/crates/kamadak-exif) 0.6 | EXIF metadata for media sidecars | BSD-2-Clause | Rust crate, compiled in |
 | [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars | MIT | Rust crate, compiled in |
 | [`wait-timeout`](https://crates.io/crates/wait-timeout) 0.2 | Time limit for `ffmpeg`/`ffprobe` runs (video sidecars; ffmpeg is not shipped, it is used when installed) | MIT OR Apache-2.0 | Rust crate, compiled in |

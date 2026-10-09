@@ -4,18 +4,23 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 
-// A request owns its connection through completion (or the body reader's Drop).
-// A fresh connection avoids racing a locally cached session against a revoke's
-// remote CONNECTION_CLOSE. Mutations are never automatically retried.
-struct RequestConnection(Connection);
-impl Drop for RequestConnection {
-    fn drop(&mut self) {
-        self.0.close(0u8.into(), b"request finished");
-    }
-}
+// Requests share the peer's held connection, one stream each. A request that
+// fails because that connection closed under it (for example a revoke's remote
+// CONNECTION_CLOSE racing the send) is retried once on a fresh connection when
+// it is a read; mutations are retried only if the stream never opened.
 struct BodyReader {
     reader: wire::ExactReader<RecvStream>,
-    _connection: RequestConnection,
+}
+fn idempotent(req: &Request) -> bool {
+    matches!(
+        req,
+        Request::Ping
+            | Request::ListSources
+            | Request::List { .. }
+            | Request::Stat { .. }
+            | Request::Read { .. }
+            | Request::Grants
+    )
 }
 
 async fn upload_response(
@@ -195,23 +200,51 @@ impl Node {
             Err(_) => wire::send(send, &Response::Error("host operation failed".into())).await,
         }
     }
-    async fn start_request(
+    /// Opens a stream on the held connection, dialing if needed. A connection
+    /// found closed before the stream opened (nothing sent yet) is replaced.
+    async fn open_stream(&self, peer: &PeerId) -> Result<(Connection, SendStream, RecvStream)> {
+        let conn = self.connect(peer).await?;
+        if let Ok((send, recv)) = conn.open_bi().await {
+            return Ok((conn, send, recv));
+        }
+        let conn = self.connect(peer).await?;
+        let (send, recv) = conn.open_bi().await?;
+        Ok((conn, send, recv))
+    }
+    /// Sends `req` and runs `exchange`, once more on a fresh connection if that
+    /// failed because the connection closed and `req` is a read.
+    async fn with_retry<T, F: std::future::Future<Output = Result<T>>>(
         &self,
         peer: &PeerId,
         req: &Request,
-    ) -> Result<(RequestConnection, SendStream, RecvStream)> {
-        let conn = RequestConnection(self.connect(peer).await?);
-        let (mut send, recv) = conn.0.open_bi().await?;
-        wire::send(&mut send, req).await?;
-        Ok((conn, send, recv))
+        exchange: impl Fn(SendStream, RecvStream) -> F,
+    ) -> Result<T> {
+        let attempt = || async {
+            let (conn, mut send, recv) = self.open_stream(peer).await?;
+            let result = async {
+                wire::send(&mut send, req).await?;
+                exchange(send, recv).await
+            }
+            .await;
+            Ok::<_, anyhow::Error>((conn, result))
+        };
+        match attempt().await? {
+            (conn, Err(_)) if idempotent(req) && conn.close_reason().is_some() => {
+                attempt().await?.1
+            }
+            (_, result) => result,
+        }
     }
     /// Sends a header-only request. Use `read_stream` to consume a Read body and
     /// `write_stream` for a nonempty Write body. Denials remain `Response::Denied`.
     pub async fn request(&self, peer: &PeerId, req: Request) -> Result<Response> {
         tokio::time::timeout(self.options.request_timeout, async {
-            let (_conn, mut send, mut recv) = self.start_request(peer, &req).await?;
-            send.finish()?;
-            let response: Response = wire::recv(&mut recv).await?;
+            let response = self
+                .with_retry(peer, &req, |mut send, mut recv| async move {
+                    send.finish()?;
+                    wire::recv::<Response>(&mut recv).await
+                })
+                .await?;
             if let Response::Pong { label, storage } = &response {
                 let mut state = self.state.lock();
                 if let Some(r) = state.data.peers.iter_mut().find(|r| &r.peer.id == peer) {
@@ -230,27 +263,24 @@ impl Node {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<impl AsyncRead + Send + Unpin> {
-        tokio::time::timeout(self.options.request_timeout, async {
-            let (conn, mut send, mut recv) = self
-                .start_request(
-                    peer,
-                    &Request::Read {
-                        source: source.into(),
-                        path: path.into(),
-                        range,
-                    },
-                )
-                .await?;
-            send.finish()?;
-            match wire::recv(&mut recv).await? {
-                Response::Read { size } => Ok(BodyReader {
-                    reader: wire::ExactReader::new(recv, size),
-                    _connection: conn,
-                }),
-                Response::Denied(_) => bail!("access denied"),
-                _ => bail!("read failed"),
-            }
-        })
+        let req = Request::Read {
+            source: source.into(),
+            path: path.into(),
+            range,
+        };
+        tokio::time::timeout(
+            self.options.request_timeout,
+            self.with_retry(peer, &req, |mut send, mut recv| async move {
+                send.finish()?;
+                match wire::recv(&mut recv).await? {
+                    Response::Read { size } => Ok(BodyReader {
+                        reader: wire::ExactReader::new(recv, size),
+                    }),
+                    Response::Denied(_) => bail!("access denied"),
+                    _ => bail!("read failed"),
+                }
+            }),
+        )
         .await?
     }
     /// Streams exactly `size` bytes. The body must then reach EOF. A denied request
@@ -263,18 +293,18 @@ impl Node {
         body: Box<dyn AsyncRead + Send + Unpin>,
         size: u64,
     ) -> Result<Response> {
-        let (_conn, mut send, mut recv) = tokio::time::timeout(
-            self.options.request_timeout,
-            self.start_request(
-                peer,
-                &Request::Write {
-                    source: source.into(),
-                    path: path.into(),
-                    size,
-                },
-            ),
-        )
-        .await??;
+        let req = Request::Write {
+            source: source.into(),
+            path: path.into(),
+            size,
+        };
+        let (_conn, mut send, mut recv) =
+            tokio::time::timeout(self.options.request_timeout, async {
+                let (conn, mut send, recv) = self.open_stream(peer).await?;
+                wire::send(&mut send, &req).await?;
+                Ok::<_, anyhow::Error>((conn, send, recv))
+            })
+            .await??;
         let mut body = wire::ExactReader::new(body, size);
         let upload = async {
             tokio::io::copy(&mut body, &mut send).await?;
