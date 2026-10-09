@@ -1,5 +1,6 @@
-//! User settings (`<config dir>/profiles/default/config.toml`), the Settings window, and the
-//! persistence worker that writes settings and the session off the UI thread.
+//! User settings (`<config dir>/profiles/<profile>/config.toml`, see `profiles`), the
+//! Settings window, and the persistence worker that writes settings and the session off the
+//! UI thread.
 
 use crate::session::Session;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
@@ -63,6 +64,10 @@ impl Default for Settings {
     }
 }
 
+/// Tests that set `KEEL_CONFIG_DIR` or switch the profile hold this.
+#[cfg(test)]
+pub static TEST_ENV: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// `KEEL_CONFIG_DIR`, else `%APPDATA%\Keel`, `~/Library/Application Support/Keel`,
 /// `~/.config/keel` (spec 2.9).
 pub fn config_dir() -> Option<PathBuf> {
@@ -94,12 +99,9 @@ fn app_dir() -> &'static str {
 }
 
 impl Settings {
+    /// The current profile's config.toml.
     pub fn path() -> PathBuf {
-        config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("profiles")
-            .join("default")
-            .join("config.toml")
+        crate::profiles::config_path(&crate::profiles::current())
     }
 
     /// Defaults when the file is missing or broken. A broken file is renamed to
@@ -108,14 +110,17 @@ impl Settings {
     /// that entry (`parse_lenient`); the file is copied to `config.toml.bad` first, as the
     /// next save leaves the entry out.
     pub fn load() -> (Settings, Option<String>) {
-        let path = Self::path();
-        match read_config(&path, parse_lenient) {
+        Self::load_from(&Self::path())
+    }
+
+    pub fn load_from(path: &Path) -> (Settings, Option<String>) {
+        match read_config(path, parse_lenient) {
             Ok(None) => (Settings::default(), None),
             Ok(Some((s, dropped))) if dropped.is_empty() => (s, None),
             Ok(Some((s, dropped))) => {
                 let mut bad = path.as_os_str().to_owned();
                 bad.push(".bad");
-                let kept = match std::fs::copy(&path, &bad) {
+                let kept = match std::fs::copy(path, &bad) {
                     Ok(_) => "the original is kept as config.toml.bad".to_owned(),
                     Err(e) => format!("could not keep a copy: {e}"),
                 };
@@ -129,8 +134,8 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
-        write_atomic(&Self::path(), toml::to_string_pretty(self)?.as_bytes())
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        write_atomic(path, toml::to_string_pretty(self)?.as_bytes())
     }
 
     pub fn max_preview_bytes(&self) -> u64 {
@@ -237,9 +242,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(written?)
 }
 
+/// What to write, and where: the path is taken when the change is queued, so a profile
+/// switch can never send one profile's settings into another's folder.
 enum Save {
-    Settings(Settings),
-    Session(Session),
+    Settings(Settings, PathBuf),
+    Session(Session, PathBuf),
 }
 
 /// The persistence worker: keeps the newest settings and session and writes them
@@ -261,30 +268,48 @@ impl Persist {
         let thread = std::thread::Builder::new()
             .name("keel-persist".into())
             .spawn(move || {
-                let (mut settings, mut session) = (None::<Settings>, None::<Session>);
+                let mut settings = None::<(Settings, PathBuf)>;
+                let mut session = None::<(Session, PathBuf)>;
                 let mut reported = false;
-                let mut report = |what: &str, e: anyhow::Error| {
-                    tracing::error!("save {what}: {e:#}");
-                    if !std::mem::replace(&mut reported, true) {
-                        let _ = err_tx.try_send(format!("Could not save {what}: {e:#}"));
-                    }
-                };
+                let mut flush =
+                    |settings: &mut Option<(Settings, PathBuf)>,
+                     session: &mut Option<(Session, PathBuf)>| {
+                        let failed = [
+                            ("settings", settings.take().map(|(s, p)| s.save_to(&p))),
+                            ("the open tabs", session.take().map(|(s, p)| s.save_to(&p))),
+                        ];
+                        for (what, result) in failed {
+                            if let Some(Err(e)) = result {
+                                tracing::error!("save {what}: {e:#}");
+                                if !std::mem::replace(&mut reported, true) {
+                                    let _ =
+                                        err_tx.try_send(format!("Could not save {what}: {e:#}"));
+                                }
+                            }
+                        }
+                    };
                 loop {
                     let msg = if settings.is_some() || session.is_some() {
                         rx.recv_timeout(SAVE_DEBOUNCE)
                     } else {
                         rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
                     };
+                    // A change for another file (a profile switch) writes the pending one now.
                     match msg {
-                        Ok(Save::Settings(s)) => settings = Some(s),
-                        Ok(Save::Session(s)) => session = Some(s),
+                        Ok(Save::Settings(s, p)) => {
+                            if settings.as_ref().is_some_and(|(_, old)| *old != p) {
+                                flush(&mut settings, &mut None);
+                            }
+                            settings = Some((s, p));
+                        }
+                        Ok(Save::Session(s, p)) => {
+                            if session.as_ref().is_some_and(|(_, old)| *old != p) {
+                                flush(&mut None, &mut session);
+                            }
+                            session = Some((s, p));
+                        }
                         Err(why) => {
-                            if let Some(Err(e)) = settings.take().map(|s| s.save()) {
-                                report("settings", e);
-                            }
-                            if let Some(Err(e)) = session.take().map(|s| s.save()) {
-                                report("the open tabs", e);
-                            }
+                            flush(&mut settings, &mut session);
                             if why == RecvTimeoutError::Disconnected {
                                 break;
                             }
@@ -309,10 +334,12 @@ impl Persist {
         let Some(tx) = &self.tx else { return };
         if *settings != self.last_settings {
             self.last_settings = settings.clone();
-            let _ = tx.send(Save::Settings(settings.clone()));
+            let _ = tx.send(Save::Settings(settings.clone(), Settings::path()));
         }
         if let Some(session) = session.filter(|s| self.last_session.as_ref() != Some(s)) {
-            let _ = tx.send(Save::Session(session.clone()));
+            if let Some(path) = Session::path() {
+                let _ = tx.send(Save::Session(session.clone(), path));
+            }
             self.last_session = Some(session);
         }
     }
@@ -338,16 +365,19 @@ pub enum Page {
     General,
     Remotes,
     Cloud,
+    Profiles,
 }
 
-/// The Settings window (Ctrl+,): General, Remotes and Cloud pages. Returns true when the
-/// theme was changed.
+/// The Settings window (Ctrl+,): General, Remotes, Cloud and Profiles pages.
+/// Returns true when the theme was changed.
+#[allow(clippy::too_many_arguments)]
 pub fn window(
     ctx: &egui::Context,
     open: &mut bool,
     s: &mut Settings,
     remotes: &mut crate::remotes::Remotes,
     clouds: &mut crate::clouds::Clouds,
+    profiles: &mut crate::profiles::Profiles,
     tx: &Sender<crate::state::Msg>,
 ) -> bool {
     let mut theme_changed = false;
@@ -360,11 +390,13 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::General, "General");
                 ui.selectable_value(&mut remotes.page, Page::Remotes, "Remotes");
                 ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
+                ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
             });
             ui.separator();
             if remotes.page != Page::General {
                 match remotes.page {
                     Page::Remotes => remotes.settings_page(ui, s, tx),
+                    Page::Profiles => profiles.settings_page(ui, s),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
@@ -466,6 +498,7 @@ label = "nas"
 
     #[test]
     fn round_trip_under_keel_config_dir() {
+        let _env = super::TEST_ENV.lock();
         let dir = std::env::temp_dir().join(format!("keel-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("KEEL_CONFIG_DIR", &dir);
@@ -487,7 +520,7 @@ label = "nas"
             max_preview_mb: 8,
             ..Settings::default()
         };
-        s.save().unwrap();
+        s.save_to(&Settings::path()).unwrap();
         assert_eq!(Settings::load(), (s, None));
         // Missing keys take defaults, unknown keys are ignored, a BOM is skipped.
         let path = Settings::path();

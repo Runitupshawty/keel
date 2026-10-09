@@ -14,6 +14,7 @@ mod palette;
 mod pane;
 mod platform;
 mod preview_panel;
+mod profiles;
 mod remotes;
 mod search_tab;
 mod session;
@@ -52,6 +53,16 @@ fn main() -> eframe::Result<()> {
         .or_else(|| std::env::current_dir().ok())
         .map(VPath::local)
         .unwrap_or_else(|| VPath::local("/"));
+    // `keel [folder] [--profile NAME]`.
+    let (profile, folder) = profiles::parse_args(std::env::args_os().skip(1));
+    let profile_notice = match profile {
+        Some(Ok(name)) => {
+            profiles::set_current(&name);
+            None
+        }
+        Some(Err(why)) => Some(why),
+        None => None,
+    };
     // Startup reads (before the window exists): settings, last session. Both are small
     // local files; saved folders are not checked here (a dead share would block).
     let (settings, settings_notice) = Settings::load();
@@ -60,8 +71,7 @@ fn main() -> eframe::Result<()> {
         .clone()
         .unwrap_or_else(|| Session::single(home.clone()));
     // `keel [folder]` opens the folder in a new tab of the left pane.
-    if let Some(dir) = std::env::args_os()
-        .nth(1)
+    if let Some(dir) = folder
         .map(PathBuf::from)
         .and_then(|p| std::path::absolute(p).ok())
     {
@@ -88,7 +98,11 @@ fn main() -> eframe::Result<()> {
     let boot = app::Boot {
         settings,
         session,
-        notices: settings_notice.into_iter().chain(session_notice).collect(),
+        notices: profile_notice
+            .into_iter()
+            .chain(settings_notice)
+            .chain(session_notice)
+            .collect(),
         home,
         saved: Some(saved),
     };

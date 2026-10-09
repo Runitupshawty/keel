@@ -192,8 +192,10 @@ pub struct AppState {
     pub clouds: crate::clouds::Clouds,
     pub toasts: Toasts,
     pub theme: Theme,
-    /// Every theme, read once at startup.
-    themes: Themes,
+    /// Every theme, read once at startup (and per profile switch).
+    pub(crate) themes: Themes,
+    /// Settings → Profiles (`profiles.rs`).
+    pub profiles: crate::profiles::Profiles,
     pub thumbs: Thumbs,
     search: worker::SearchWorker,
     pub tx: Sender<Msg>,
@@ -301,6 +303,7 @@ impl AppState {
             toasts: Toasts::default(),
             theme,
             themes,
+            profiles: crate::profiles::Profiles::new(ctx.clone()),
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
             tx,
@@ -327,6 +330,7 @@ impl AppState {
     /// Shows the Settings window (when open) on a copy of the live options and applies
     /// what the user changed.
     pub fn settings_ui(&mut self, ctx: &egui::Context) {
+        self.profiles_tick();
         let s = &mut self.settings;
         s.show_hidden = self.show_hidden;
         s.dual = self.dual;
@@ -340,6 +344,7 @@ impl AppState {
             s,
             &mut self.remotes,
             &mut self.clouds,
+            &mut self.profiles,
             &self.tx,
         );
         self.show_hidden = s.show_hidden;
@@ -1276,6 +1281,7 @@ impl AppState {
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
+            Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
                     return self.toasts.error(why);

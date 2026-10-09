@@ -6,7 +6,7 @@ use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
 pub struct Item {
-    pub label: &'static str,
+    pub label: String,
     pub shortcut: &'static str,
     pub action: Action,
 }
@@ -19,6 +19,8 @@ pub struct Palette {
     /// Indices into `items` matching `text`, best first.
     pub shown: Vec<usize>,
     pub cursor: usize,
+    /// Other profiles: "Switch profile: <name>" entries (kept by `AppState::profiles_tick`).
+    pub profiles: Vec<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
 }
@@ -48,7 +50,7 @@ fn context_items() -> Vec<Item> {
         ("Compress to zip…", "", CompressToZip),
     ]
     .map(|(label, shortcut, action)| Item {
-        label,
+        label: label.to_owned(),
         shortcut,
         action,
     })
@@ -90,7 +92,7 @@ fn global_items() -> Vec<Item> {
         ("Settings", "Ctrl+,", Settings),
     ]
     .map(|(label, shortcut, action)| Item {
-        label,
+        label: label.to_owned(),
         shortcut,
         action,
     })
@@ -106,9 +108,12 @@ impl Palette {
             Vec::new()
         };
         items.extend(global_items());
-        self.fuzzy = Some(Fuzzy::new(
-            items.iter().map(|i| i.label.to_owned()).collect(),
-        ));
+        items.extend(self.profiles.iter().map(|name| Item {
+            label: format!("Switch profile: {name}"),
+            shortcut: "",
+            action: Action::SwitchProfile(name.clone()),
+        }));
+        self.fuzzy = Some(Fuzzy::new(items.iter().map(|i| i.label.clone()).collect()));
         self.items = items;
         self.text.clear();
         self.open = true;
@@ -167,7 +172,7 @@ impl Palette {
                 .show(ui, |ui| {
                     for (row, &i) in self.shown.iter().enumerate() {
                         let item = &self.items[i];
-                        let button = egui::Button::new(item.label)
+                        let button = egui::Button::new(item.label.as_str())
                             .shortcut_text(crate::keys::shortcut_label(item.shortcut))
                             .selected(row == self.cursor)
                             .frame(row == self.cursor)
@@ -202,6 +207,22 @@ mod tests {
         p.filter();
         let actions: Vec<&Action> = p.shown.iter().map(|&i| &p.items[i].action).collect();
         assert_eq!(actions.first(), Some(&&Action::ToggleDual));
+    }
+
+    #[test]
+    fn other_profiles_are_listed() {
+        let mut p = Palette {
+            profiles: vec!["work".into()],
+            ..Palette::default()
+        };
+        p.show(false);
+        p.text = "switch profile".into();
+        p.filter();
+        assert_eq!(
+            p.items[p.shown[0]].action,
+            Action::SwitchProfile("work".into())
+        );
+        assert_eq!(p.items[p.shown[0]].label, "Switch profile: work");
     }
 
     #[test]
