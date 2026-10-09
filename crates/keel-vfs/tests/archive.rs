@@ -1322,6 +1322,7 @@ impl keel_vfs::Provider for Remote {
             current: "download".into(),
             done_items: 0,
             total_items: 1,
+            skipped: 0,
         });
         Ok(self.root.join(p.name()))
     }

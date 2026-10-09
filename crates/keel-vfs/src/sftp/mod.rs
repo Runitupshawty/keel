@@ -427,6 +427,7 @@ pub(crate) fn cached_download(
             current: p.display(),
             done_items: 0,
             total_items: 1,
+            skipped: 0,
         });
     }
     let after = provider.stat(p)?;
@@ -446,6 +447,7 @@ pub(crate) fn cached_download(
         current: p.display(),
         done_items: 1,
         total_items: 1,
+        skipped: 0,
     });
     Ok(target)
 }

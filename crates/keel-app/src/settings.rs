@@ -32,6 +32,8 @@ pub struct Settings {
     pub terminal_height: f32,
     /// Grid thumbnails for files on remote hosts (each one is a download).
     pub remote_thumbnails: bool,
+    /// Local copies and moves that touch the same drive run one after another.
+    pub one_transfer_per_drive: bool,
     /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
@@ -54,6 +56,7 @@ impl Default for Settings {
             terminal_follow_cwd: true,
             terminal_height: 220.0,
             remote_thumbnails: false,
+            one_transfer_per_drive: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
         }
@@ -403,6 +406,10 @@ pub fn window(
                         )
                         .suffix(" MB"),
                     );
+                    ui.end_row();
+                    ui.label("Transfers");
+                    ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
+                        .on_hover_text("Copies and moves on the same drive wait for each other");
                     ui.end_row();
                 });
             ui.add_space(4.0);

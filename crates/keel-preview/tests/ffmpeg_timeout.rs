@@ -41,6 +41,7 @@ fn hung_ffmpeg_is_killed_and_reported() {
         bytes_path: video,
         page: 0,
         max_px: 64,
+        fit_width: false,
     };
     let started = Instant::now();
     let result = preview(&req);

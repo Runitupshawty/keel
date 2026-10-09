@@ -14,7 +14,7 @@ pub struct LocalProvider;
 /// Absolute extended-length (`\\?\`, `\\?\UNC\`) path that keeps trailing dots and spaces.
 /// `/` is normalized to `\` first.
 #[cfg(windows)]
-pub(crate) fn long(p: &Path) -> Result<PathBuf> {
+pub fn long(p: &Path) -> Result<PathBuf> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     let p = PathBuf::from(p.as_os_str().to_string_lossy().replace('/', "\\"));
     let absolute = if p.is_absolute() {
@@ -56,7 +56,7 @@ pub(crate) fn long(p: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn long(p: &Path) -> Result<PathBuf> {
+pub fn long(p: &Path) -> Result<PathBuf> {
     Ok(std::path::absolute(p)?)
 }
 
@@ -307,11 +307,20 @@ pub fn watch(dir: &Path, tx: crossbeam_channel::Sender<()>) -> Result<notify::Re
 }
 
 /// Mounted volumes as `(name, label, free bytes, total bytes)`. `name` is `"C:"` on Windows
-/// and the mount point elsewhere.
+/// and the mount point elsewhere, where pseudo, system and read-only image mounts are left
+/// out (see `user_mount`).
 /// May block on dead network volumes; call off the UI thread.
 pub fn drives() -> Vec<(String, String, u64, u64)> {
     sysinfo::Disks::new_with_refreshed_list()
         .iter()
+        .filter(|d| {
+            cfg!(windows)
+                || user_mount(
+                    &d.mount_point().to_string_lossy(),
+                    &d.file_system().to_string_lossy(),
+                    d.is_read_only(),
+                )
+        })
         .map(|d| {
             let mount = d.mount_point().to_string_lossy();
             let name = if cfg!(windows) {
@@ -323,6 +332,91 @@ pub fn drives() -> Vec<(String, String, u64, u64)> {
             (name, label, d.available_space(), d.total_space())
         })
         .collect()
+}
+
+/// macOS/Linux: a mount a user browses (the root, home, data and removable volumes), not
+/// a pseudo filesystem, a system/snap/boot mount or a read-only image (dmg, squashfs).
+pub fn user_mount(mount: &str, fs: &str, read_only: bool) -> bool {
+    const PSEUDO: &[&str] = &[
+        "proc",
+        "sysfs",
+        "devtmpfs",
+        "devpts",
+        "tmpfs",
+        "cgroup",
+        "cgroup2",
+        "overlay",
+        "squashfs",
+        "autofs",
+        "efivarfs",
+        "securityfs",
+        "debugfs",
+        "tracefs",
+        "fusectl",
+        "configfs",
+        "pstore",
+        "bpf",
+        "mqueue",
+        "hugetlbfs",
+        "ramfs",
+        "nsfs",
+        "devfs",
+        "binfmt_misc",
+        "fuse.portal",
+        "fuse.gvfsd-fuse",
+        "nullfs",
+    ];
+    const SYSTEM: &[&str] = &[
+        "/boot",
+        "/dev",
+        "/proc",
+        "/sys",
+        "/run",
+        "/snap",
+        "/var/lib",
+        "/System/Volumes",
+        "/private/var/vm",
+    ];
+    let under = |root: &str| mount == root || mount.starts_with(&format!("{root}/"));
+    if mount == "/" {
+        return true;
+    }
+    if PSEUDO.contains(&fs) || (read_only && mount != "/") {
+        return false;
+    }
+    // Removable media under /run/media stays.
+    under("/run/media") || !SYSTEM.iter().any(|root| under(root))
+}
+
+#[cfg(test)]
+mod mount_tests {
+    use super::user_mount;
+
+    #[test]
+    fn pseudo_system_and_read_only_mounts_are_hidden() {
+        for (mount, fs, ro) in [
+            ("/", "ext4", false),
+            ("/", "apfs", true), // the sealed macOS system volume
+            ("/home", "ext4", false),
+            ("/media/usb", "vfat", false),
+            ("/run/media/me/USB", "exfat", false),
+            ("/Volumes/Backup", "apfs", false),
+            ("/mnt/data", "ntfs3", false),
+        ] {
+            assert!(user_mount(mount, fs, ro), "{mount} shown");
+        }
+        for (mount, fs, ro) in [
+            ("/proc", "proc", false),
+            ("/dev/shm", "tmpfs", false),
+            ("/snap/core/1", "squashfs", true),
+            ("/boot/efi", "vfat", false),
+            ("/System/Volumes/VM", "apfs", false),
+            ("/Volumes/Installer", "hfs", true),
+            ("/run/user/1000/doc", "fuse.portal", false),
+        ] {
+            assert!(!user_mount(mount, fs, ro), "{mount} hidden");
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

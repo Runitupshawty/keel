@@ -67,7 +67,11 @@ fn global_items() -> Vec<Item> {
         ("Toggle dual pane", "Ctrl+Shift+D", ToggleDual),
         ("Switch pane", "F6", SwitchPane),
         ("Toggle preview panel", "F3", TogglePreview),
-        ("Toggle hidden files", "Ctrl+H", ToggleHidden),
+        (
+            "Toggle hidden files",
+            crate::keys::HIDDEN_LABEL,
+            ToggleHidden,
+        ),
         ("Filter this folder", "Ctrl+E", FocusFilter),
         ("Edit path", "Ctrl+L", FocusPath),
         (SEARCH_LABEL, "Ctrl+F", Search),
@@ -164,7 +168,7 @@ impl Palette {
                     for (row, &i) in self.shown.iter().enumerate() {
                         let item = &self.items[i];
                         let button = egui::Button::new(item.label)
-                            .shortcut_text(item.shortcut)
+                            .shortcut_text(crate::keys::shortcut_label(item.shortcut))
                             .selected(row == self.cursor)
                             .frame(row == self.cursor)
                             .min_size(egui::vec2(ui.available_width(), 0.0));

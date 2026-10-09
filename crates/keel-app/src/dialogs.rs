@@ -1,6 +1,8 @@
 //! Modal dialogs: confirm (trash), name conflicts, new folder / new file, zip name. Rename is inline
 //! in the views. Each dialog answers with an `Action` for `AppState::run`.
 
+pub mod properties;
+
 use crate::jobs::Transfer;
 use crate::keys::Action;
 use egui::{Id, Key, Modal};
@@ -30,6 +32,16 @@ pub enum Dialog {
         src: Vec<PathBuf>,
         text: String,
         focus: bool,
+    },
+    /// Properties of `paths`; `info` arrives from a worker.
+    Properties {
+        paths: Vec<VPath>,
+        info: Option<Result<properties::Props, String>>,
+    },
+    /// Linux "Open with": `(name, desktop id)` of the applications for `path`.
+    OpenWith {
+        path: PathBuf,
+        apps: Vec<(String, String)>,
     },
 }
 
@@ -154,6 +166,35 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });
+            }
+            Dialog::Properties { paths, info } => {
+                properties::ui(ui, paths, info, &mut out);
+                ui.add_space(8.0);
+                cancel |= ui.button("Close").clicked();
+            }
+            Dialog::OpenWith { path, apps } => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                ui.label(format!("Open \"{name}\" with"));
+                ui.add_space(4.0);
+                if apps.is_empty() {
+                    ui.weak("No applications are registered for this file type");
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (label, id) in apps.iter() {
+                            let button = egui::Button::new(label.as_str())
+                                .min_size(egui::vec2(ui.available_width(), 0.0));
+                            if ui.add(button).on_hover_text(id.as_str()).clicked() {
+                                out = Some(Action::LaunchWith {
+                                    id: id.clone(),
+                                    path: path.clone(),
+                                });
+                            }
+                        }
+                    });
+                ui.add_space(8.0);
+                cancel |= ui.button("Cancel").clicked();
             }
         }
     });

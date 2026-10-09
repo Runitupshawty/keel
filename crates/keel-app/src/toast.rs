@@ -45,10 +45,6 @@ impl Toasts {
         }
     }
 
-    pub fn not_yet(&mut self, what: &str) {
-        self.info(format!("{what}: not yet"));
-    }
-
     fn push(&mut self, text: String, level: Level, ttl: Duration) {
         // Repeats (e.g. a watcher refresh failing twice) extend the old toast.
         self.list.retain(|t| t.text != text);

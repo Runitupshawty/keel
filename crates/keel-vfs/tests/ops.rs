@@ -348,3 +348,83 @@ fn copies_sweep_day_old_staging_leftovers_only() {
         ]
     );
 }
+
+/// Polish backlog: `.lnk` shortcuts are ordinary files (only symlinks and junctions are
+/// refused), so copy and move take them like any file.
+#[test]
+fn lnk_shortcut_files_copy_and_move() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+    fs::create_dir_all(&dst).unwrap();
+    // Shell link header magic (0x4C) + CLSID bytes: content does not matter to the copy.
+    let body = [
+        0x4C, 0, 0, 0, 1, 0x14, 2, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46,
+    ];
+    fs::write(src.join("App.lnk"), body).unwrap();
+    fs::write(src.join("Other.lnk"), body).unwrap();
+    let none = AtomicBool::new(false);
+    copy_local(&[src.join("App.lnk")], &dst, Conflict::Skip, &|_| {}, &none).unwrap();
+    move_local(
+        &[src.join("Other.lnk")],
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &none,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("App.lnk")).unwrap(), body);
+    assert_eq!(fs::read(dst.join("Other.lnk")).unwrap(), body);
+    assert!(src.join("App.lnk").exists() && !src.join("Other.lnk").exists());
+}
+
+/// Polish backlog: on macOS/Linux a copy tries a reflink first and falls back to a
+/// chunked copy; either way bytes, progress and mtime match.
+#[cfg(unix)]
+#[test]
+fn copy_keeps_bytes_and_mtime_with_or_without_reflink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("big.bin");
+    let dst = tmp.path().join("out");
+    fs::create_dir(&dst).unwrap();
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| i as u8).collect();
+    fs::write(&src, &data).unwrap();
+    let last = RefCell::new(0);
+    copy_local(
+        std::slice::from_ref(&src),
+        &dst,
+        Conflict::Skip,
+        &|p| *last.borrow_mut() = p.done_bytes,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("big.bin")).unwrap(), data);
+    assert_eq!(*last.borrow(), data.len() as u64);
+    let mtime = |p: &std::path::Path| fs::metadata(p).unwrap().modified().unwrap();
+    assert_eq!(mtime(&src), mtime(&dst.join("big.bin")));
+}
+
+/// Polish backlog: a Skip transfer reports how many items it left alone.
+#[test]
+fn skip_reports_skipped_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, dst) = (tmp.path().join("src"), tmp.path().join("dst"));
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::create_dir_all(dst.join("sub")).unwrap();
+    for f in ["a.txt", "b.txt", "sub/c.txt"] {
+        fs::write(src.join(f), "new").unwrap();
+    }
+    fs::write(dst.join("sub/c.txt"), "old").unwrap();
+    let last = RefCell::new(None);
+    copy_local(
+        &[src.join("a.txt"), src.join("b.txt"), src.join("sub")],
+        &dst,
+        Conflict::Skip,
+        &|p| *last.borrow_mut() = Some(p),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(last.borrow().as_ref().unwrap().skipped, 1);
+    assert_eq!(fs::read_to_string(dst.join("sub/c.txt")).unwrap(), "old");
+}

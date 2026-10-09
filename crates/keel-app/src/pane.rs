@@ -66,18 +66,23 @@ impl Pane {
         }
     }
 
+    /// Moves tab `from` to `to`; the active tab stays active (tracked by index: two tabs
+    /// on one folder, or a search tab and its folder, are normal).
     pub fn move_tab(&mut self, from: usize, to: usize) {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
         }
-        let active = self.tabs[self.active].dir.clone();
-        let was_active = from == self.active;
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
-        self.active = if was_active {
+        let a = self.active;
+        self.active = if a == from {
             to
+        } else if from < a && a <= to {
+            a - 1
+        } else if to <= a && a < from {
+            a + 1
         } else {
-            self.tabs.iter().position(|t| t.dir == active).unwrap_or(0)
+            a
         };
     }
 
@@ -87,16 +92,47 @@ impl Pane {
     }
 }
 
-/// Typed path: `scheme://...` or a local path.
-pub fn parse_path(text: &str) -> Option<VPath> {
+/// Typed path: `scheme://...`, an absolute local path, `X:` (that drive's root on
+/// Windows), or a path relative to `base` (the pane's folder; `..` and `.` work, and on
+/// Windows `\dir` means the root of `base`'s drive).
+pub fn parse_path(text: &str, base: &VPath) -> Option<VPath> {
     let text = text.trim().trim_matches('"');
     if text.is_empty() {
-        None
-    } else if text.contains("://") {
-        VPath::parse(text).ok()
-    } else {
-        Some(VPath::local(text))
+        return None;
     }
+    if text.contains("://") {
+        return VPath::parse(text).ok();
+    }
+    let windows = cfg!(windows) && base.scheme == "file";
+    let bytes = text.as_bytes();
+    if windows && bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Some(VPath::local(format!("{text}\\")));
+    }
+    if std::path::Path::new(text).is_absolute() && base.scheme == "file" {
+        return Some(VPath::local(text));
+    }
+    let seps: &[char] = if windows { &['/', '\\'] } else { &['/'] };
+    let mut dir = base.clone();
+    if text.starts_with(seps) {
+        // Root of this location (drive root on Windows, `/` elsewhere).
+        while let Some(parent) = dir.parent() {
+            dir = parent;
+        }
+    }
+    for part in text.split(seps).filter(|p| !p.is_empty() && *p != ".") {
+        if part == ".." {
+            dir = dir.parent().unwrap_or(dir);
+        } else {
+            dir = dir.join(part);
+        }
+    }
+    Some(dir)
+}
+
+/// The drop rule shared by drops and the drag tooltip: an in-app drag (`from` = its pane)
+/// moves with Shift or within its own pane; drops from other apps always copy.
+pub fn drop_moves(from: Option<usize>, to: usize, shift: bool) -> bool {
+    from.is_some_and(|pane| shift || pane == to)
 }
 
 pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: &mut Vec<Action>) {
@@ -264,8 +300,8 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         }
         if r.lost_focus() {
             if ui.input(|i| i.key_pressed(Key::Enter)) {
-                if let Some(to) = parse_path(text) {
-                    out.push(Action::Navigate(to));
+                if let Some(to) = parse_path(text, &pane.tabs[pane.active].dir) {
+                    out.push(Action::OpenPath(to));
                 }
             }
             pane.path_edit = None;
@@ -378,7 +414,7 @@ pub fn context_menu(
     let on_item = entry.is_some();
     let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
-        let button = egui::Button::new(text).shortcut_text(shortcut);
+        let button = egui::Button::new(text).shortcut_text(crate::keys::shortcut_label(shortcut));
         if ui.add(button).clicked() {
             out.push(action);
             ui.close_menu();
@@ -529,5 +565,72 @@ mod tests {
         pane.close_tab(0);
         assert_eq!(pane.tabs.len(), 1);
         assert_eq!(pane.tab().dir, dir("/a"));
+    }
+
+    /// Polish backlog: two tabs on one folder; moving the other one keeps the active one.
+    #[test]
+    fn move_tab_tracks_the_active_tab_by_index() {
+        let d = VPath::parse("mem://t/same").unwrap();
+        let mut pane = Pane::new(d.clone());
+        pane.tabs.push(Tab::new(d.clone()));
+        pane.tabs.push(Tab::new(d.clone()));
+        pane.tabs[1].filter = "active".into();
+        pane.active = 1;
+        let active = |p: &Pane| p.tab().filter.as_str().to_owned();
+        for (from, to) in [(0, 2), (2, 0), (1, 2), (0, 1), (2, 1)] {
+            pane.move_tab(from, to);
+            assert_eq!(active(&pane), "active", "move {from} -> {to}");
+        }
+        // A search tab and a folder tab on the same folder.
+        let mut pane = Pane::new(d.clone());
+        pane.tabs.push(Tab::search(d.clone()));
+        pane.active = 0;
+        pane.move_tab(1, 0);
+        assert!(!pane.tab().is_search());
+    }
+
+    #[test]
+    fn typed_paths_resolve_against_the_pane_folder() {
+        let base = VPath::local(std::env::temp_dir().join("keel-base").join("sub"));
+        let parent = base.parent().unwrap();
+        assert_eq!(parse_path("x/y", &base), Some(base.join("x").join("y")));
+        assert_eq!(parse_path("..", &base), Some(parent.clone()));
+        assert_eq!(parse_path("../other", &base), Some(parent.join("other")));
+        assert_eq!(parse_path(" \"./z\" ", &base), Some(base.join("z")));
+        assert_eq!(parse_path("", &base), None);
+        let remote = VPath::parse("sftp://host/home/me").unwrap();
+        assert_eq!(
+            parse_path("docs", &remote),
+            Some(VPath::parse("sftp://host/home/me/docs").unwrap())
+        );
+        assert_eq!(
+            parse_path("sftp://other/x", &remote),
+            Some(VPath::parse("sftp://other/x").unwrap())
+        );
+        if cfg!(windows) {
+            assert_eq!(parse_path("d:", &base), Some(VPath::local("d:\\")));
+            assert_eq!(
+                parse_path(r"C:\Windows", &base),
+                Some(VPath::local(r"C:\Windows"))
+            );
+            let drive_root = {
+                let mut d = base.clone();
+                while let Some(p) = d.parent() {
+                    d = p;
+                }
+                d
+            };
+            assert_eq!(parse_path(r"\Users", &base), Some(drive_root.join("Users")));
+        } else {
+            assert_eq!(parse_path("/etc", &base), Some(VPath::local("/etc")));
+        }
+    }
+
+    #[test]
+    fn drop_rule_moves_within_a_pane_or_with_shift() {
+        assert!(drop_moves(Some(0), 0, false));
+        assert!(!drop_moves(Some(0), 1, false));
+        assert!(drop_moves(Some(0), 1, true));
+        assert!(!drop_moves(None, 0, true), "drops from other apps copy");
     }
 }

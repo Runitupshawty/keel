@@ -12,9 +12,9 @@ use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::search_tab::DEBOUNCE;
 use crate::session::Session;
 use crate::settings::Settings;
-use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
+use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH, DRIVES_TIMEOUT};
 use crate::tab::{Listing, Tab, TabKind};
-use crate::theme::Theme;
+use crate::theme::{Theme, Themes};
 use crate::toast::Toasts;
 use crate::view_grid::Thumbs;
 use crate::{platform, worker};
@@ -30,6 +30,9 @@ use std::time::{Duration, Instant};
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
 /// Toast for writes (delete, rename, new, paste, drop) inside an archive.
 pub const READ_ONLY: &str = "Archives are read-only in this version";
+/// A listing that has not answered after this long stops its spinner and says so (a
+/// late answer still fills the tab).
+pub const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The outermost archive file of an archive path (`D:/a.zip!/b.7z!/x` -> `D:/a.zip`).
 pub fn outermost_archive(dir: &VPath) -> Option<VPath> {
@@ -132,6 +135,22 @@ pub enum Msg {
     /// A notice for an info toast.
     Info(String),
     // --- end remotes ---
+    /// Path box answer: `path` exists as a file (open its folder, select it) or not.
+    Opened {
+        pane: usize,
+        path: VPath,
+        file: bool,
+    },
+    /// Properties gathered for `paths`.
+    Properties {
+        paths: Vec<VPath>,
+        info: Result<crate::dialogs::properties::Props, String>,
+    },
+    /// Linux "Open with": the applications for `path`.
+    OpenWithApps {
+        path: std::path::PathBuf,
+        apps: Vec<(String, String)>,
+    },
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -173,16 +192,25 @@ pub struct AppState {
     pub clouds: crate::clouds::Clouds,
     pub toasts: Toasts,
     pub theme: Theme,
+    /// Every theme, read once at startup.
+    themes: Themes,
     pub thumbs: Thumbs,
+    search: worker::SearchWorker,
     pub tx: Sender<Msg>,
     pub rx: Receiver<Msg>,
     pub ctx: egui::Context,
     /// One watcher per pane.
     watchers: [WatchSlot; 2],
     pending_refresh: HashMap<VPath, Instant>,
-    /// Folders being listed, with their request number; tabs on them share the answer.
-    inflight: HashMap<VPath, u64>,
+    /// Folders being listed, with their request number and start; tabs on them share the
+    /// answer.
+    inflight: HashMap<VPath, (u64, Instant)>,
+    /// `LIST_TIMEOUT` (shorter in tests).
+    list_timeout: Duration,
     next_req: u64,
+    /// The (tab, folder) each visible pane showed last frame; a change relists a tab
+    /// that was in the background (it had no watcher).
+    shown: [Option<(usize, VPath)>; 2],
 }
 
 impl AppState {
@@ -208,7 +236,8 @@ impl AppState {
         home: VPath,
     ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let theme = Theme::load(&settings.theme);
+        let themes = Themes::load(&settings.theme);
+        let theme = themes.get(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
         // Remote hosts are registered before the restored tabs list (lazily connecting).
         let mut remotes = crate::remotes::Remotes::new(tx.clone(), ctx.clone());
@@ -260,7 +289,7 @@ impl AppState {
             jump,
             palette: Palette::default(),
             jobs: Jobs::new(ctx.clone()),
-            clipboard: Clipboard::default(),
+            clipboard: Clipboard::with_writer(tx.clone(), ctx.clone()),
             paste_pending: false,
             cut_job: None,
             archive_clip: None,
@@ -271,15 +300,20 @@ impl AppState {
             clouds,
             toasts: Toasts::default(),
             theme,
+            themes,
             thumbs,
+            search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
             tx,
             rx,
             ctx,
             watchers: Default::default(),
             pending_refresh: HashMap::new(),
             inflight: HashMap::new(),
+            list_timeout: LIST_TIMEOUT,
             next_req: 0,
+            shown: [None, None],
         };
+        state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
         state.theme.apply(&state.ctx);
         // Tabs are only listed when asked; restored background tabs need it now.
         for p in 0..2 {
@@ -310,6 +344,7 @@ impl AppState {
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
+        self.jobs.one_per_drive = s.one_transfer_per_drive;
         let max = s.max_preview_bytes();
         if self.preview.max_bytes != max {
             self.preview.max_bytes = max;
@@ -320,7 +355,7 @@ impl AppState {
             self.run(self.active, Action::ToggleDual);
         }
         if theme_changed {
-            self.theme = Theme::load(&self.settings.theme);
+            self.theme = self.themes.get(&self.settings.theme);
             self.theme.apply(&self.ctx);
         }
     }
@@ -354,7 +389,8 @@ impl AppState {
             return;
         }
         self.next_req += 1;
-        self.inflight.insert(dir.clone(), self.next_req);
+        self.inflight
+            .insert(dir.clone(), (self.next_req, Instant::now()));
         worker::spawn_list(
             self.router.clone(),
             dir,
@@ -367,6 +403,25 @@ impl AppState {
     fn list_active(&mut self, p: usize) {
         let t = self.panes[p].active;
         self.list(p, t);
+    }
+
+    /// Like `list`, for when the folder's contents may have changed (F5, a rename, a
+    /// finished job): a listing already in flight may predate the change, so another one
+    /// is queued for when it answers.
+    pub fn relist(&mut self, p: usize, t: usize) {
+        let dir = self.panes[p].tabs[t].dir.clone();
+        if self.inflight.contains_key(&dir) && !self.panes[p].tabs[t].is_search() {
+            self.panes[p].tabs[t].refresh();
+            self.pending_refresh.insert(dir, Instant::now());
+            self.ctx.request_repaint();
+        } else {
+            self.list(p, t);
+        }
+    }
+
+    fn relist_active(&mut self, p: usize) {
+        let t = self.panes[p].active;
+        self.relist(p, t);
     }
 
     /// Drains worker messages without blocking.
@@ -405,7 +460,11 @@ impl AppState {
                     self.watchers[pane].1 = Some(watcher);
                 }
             }
-            Msg::Drives(drives) => self.sidebar.drives = drives,
+            Msg::Drives(drives) => {
+                self.sidebar.drives = drives;
+                self.sidebar.drives_pending = None;
+                self.sidebar.drives_stuck = false;
+            }
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
@@ -439,7 +498,7 @@ impl AppState {
                 self.jobs.finish(id, result);
                 // Watchers usually beat us to it; network folders may not have one.
                 for p in 0..2 {
-                    self.list_active(p);
+                    self.relist_active(p);
                 }
             }
             Msg::Planned {
@@ -494,7 +553,8 @@ impl AppState {
                             tab.selected = [name.clone()].into();
                             tab.cursor = Some(name.clone());
                             tab.anchor = Some(name.clone());
-                            self.list(p, t);
+                            tab.reveal = true;
+                            self.relist(p, t);
                         }
                     }
                 }
@@ -519,6 +579,29 @@ impl AppState {
             Msg::Remote(event) => self.remote_event(event),
             Msg::Download { name, done, total } => self.download_progress(name, done, total),
             Msg::Info(text) => self.toasts.info(text),
+            Msg::Opened { pane, path, file } => {
+                let pane = if self.dual { pane } else { 0 };
+                match path.parent().filter(|_| file) {
+                    Some(dir) => self.reveal_in(pane, dir, path.name().to_owned(), false),
+                    None => self.run(pane, Action::Navigate(path)),
+                }
+            }
+            Msg::Properties { paths, info } => {
+                if let Some(Dialog::Properties {
+                    paths: shown,
+                    info: slot,
+                }) = &mut self.dialog
+                {
+                    if *shown == paths {
+                        *slot = Some(info);
+                    }
+                }
+            }
+            Msg::OpenWithApps { path, apps } => {
+                if self.dialog.is_none() {
+                    self.dialog = Some(Dialog::OpenWith { path, apps });
+                }
+            }
         }
     }
 
@@ -572,7 +655,7 @@ impl AppState {
         };
         *due = None;
         self.next_req += 1;
-        *req = self.next_req;
+        let replaces = std::mem::replace(req, self.next_req);
         let text = query.trim().to_owned();
         if text.is_empty() {
             tab.set_listing(Listing::new(Vec::new()));
@@ -582,7 +665,7 @@ impl AppState {
         tab.loading = true;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => worker::spawn_search(searcher, text, self.next_req, tx, ctx),
+            Some(searcher) => self.search.search(searcher, text, self.next_req, replaces),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
@@ -678,7 +761,7 @@ impl AppState {
     }
 
     fn listed(&mut self, dir: VPath, req: u64, gone: bool, result: anyhow::Result<Listing>) {
-        if self.inflight.get(&dir) == Some(&req) {
+        if self.inflight.get(&dir).map(|(r, _)| *r) == Some(req) {
             self.inflight.remove(&dir);
         }
         let still_loading = self.inflight.contains_key(&dir);
@@ -775,6 +858,72 @@ impl AppState {
         }
     }
 
+    /// Listings past `list_timeout`: stop waiting (spinner off, say so). The in-flight
+    /// slot is freed, so a refresh asks again; a late answer still fills the tab.
+    fn expire_listings(&mut self, now: Instant) {
+        let stuck: Vec<VPath> = self
+            .inflight
+            .iter()
+            .filter(|(_, (_, at))| now.saturating_duration_since(*at) >= self.list_timeout)
+            .map(|(d, _)| d.clone())
+            .collect();
+        for dir in stuck {
+            self.inflight.remove(&dir);
+            for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+                if tab.dir == dir && tab.loading && !tab.is_search() {
+                    tab.loading = false;
+                    tab.error = Some(format!("{} is not responding", dir.display()));
+                }
+            }
+        }
+        if let Some(next) = self.inflight.values().map(|(_, at)| *at).min() {
+            self.ctx
+                .request_repaint_after((next + self.list_timeout).saturating_duration_since(now));
+        }
+    }
+
+    /// A tab brought to the front (tab click, dual pane switched back on) had no watcher
+    /// while hidden: relist it.
+    fn refresh_shown_tabs(&mut self) {
+        for p in 0..2 {
+            let now =
+                (p == 0 || self.dual).then(|| (self.panes[p].active, self.tab(p).dir.clone()));
+            if now == self.shown[p] {
+                continue;
+            }
+            self.shown[p] = now.clone();
+            if let Some((t, _)) = now {
+                let tab = &self.panes[p].tabs[t];
+                if !tab.loading && !tab.is_search() && tab.listed_dir.is_some() {
+                    self.relist(p, t);
+                }
+            }
+        }
+    }
+
+    fn tick_drives(&mut self, now: Instant) {
+        let sidebar = &mut self.sidebar;
+        match sidebar.drives_pending {
+            Some(at) if now.saturating_duration_since(at) >= DRIVES_TIMEOUT => {
+                sidebar.drives_stuck = true;
+            }
+            Some(at) => self
+                .ctx
+                .request_repaint_after((at + DRIVES_TIMEOUT).saturating_duration_since(now)),
+            None if sidebar
+                .drives_requested
+                .is_none_or(|at| at.elapsed() >= DRIVES_REFRESH) =>
+            {
+                sidebar.drives_requested = Some(now);
+                if worker::spawn_drives(self.tx.clone(), self.ctx.clone()) {
+                    sidebar.drives_pending = Some(now);
+                }
+                self.ctx.request_repaint_after(DRIVES_REFRESH);
+            }
+            None => {}
+        }
+    }
+
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
         self.remote_tick();
@@ -783,6 +932,8 @@ impl AppState {
         self.terminal
             .follow(cwd, &self.settings, &self.tx, &self.ctx);
         let now = Instant::now();
+        self.expire_listings(now);
+        self.refresh_shown_tabs();
         let due: Vec<VPath> = self
             .pending_refresh
             .iter()
@@ -814,15 +965,7 @@ impl AppState {
             self.ctx
                 .request_repaint_after(next.saturating_duration_since(now));
         }
-        if self
-            .sidebar
-            .drives_requested
-            .is_none_or(|at| at.elapsed() >= DRIVES_REFRESH)
-        {
-            self.sidebar.drives_requested = Some(now);
-            worker::spawn_drives(self.tx.clone(), self.ctx.clone());
-            self.ctx.request_repaint_after(DRIVES_REFRESH);
-        }
+        self.tick_drives(now);
         let mut next_search: Option<Instant> = None;
         for p in 0..2 {
             for t in 0..self.panes[p].tabs.len() {
@@ -842,8 +985,10 @@ impl AppState {
         self.sync_watchers();
     }
 
-    /// One watcher per visible pane, on its active tab's local folder. Created off-thread
-    /// because opening a dead network folder can block.
+    /// One watcher per visible pane, on its active tab's local folder, plus one on its
+    /// parent so a rename or delete of the folder itself is noticed (the folder's own
+    /// watcher does not report that). Created off-thread because opening a dead network
+    /// folder can block.
     fn sync_watchers(&mut self) {
         for p in 0..2 {
             let wanted = (p == 0 || self.dual)
@@ -865,14 +1010,33 @@ impl AppState {
                     let Ok(watcher) = keel_vfs::watch(&local, wtx) else {
                         return;
                     };
+                    let (ptx, prx) = crossbeam_channel::bounded(1);
+                    let parent = local
+                        .parent()
+                        .and_then(|parent| keel_vfs::watch(parent, ptx).ok());
+                    let prx = if parent.is_some() {
+                        prx
+                    } else {
+                        crossbeam_channel::never()
+                    };
                     let _ = tx.send(Msg::Watching {
                         pane: p,
                         dir: dir.clone(),
-                        watcher: Box::new(watcher),
+                        watcher: Box::new((watcher, parent)),
                     });
                     ctx.request_repaint();
-                    // Ends when the UI drops the watcher.
-                    while wrx.recv().is_ok() {
+                    // Ends when the UI drops the watchers.
+                    loop {
+                        crossbeam_channel::select! {
+                            recv(wrx) -> event => if event.is_err() { break },
+                            recv(prx) -> event => {
+                                // Something next to the folder changed: only its own
+                                // disappearance matters here.
+                                if event.is_err() || local.try_exists().unwrap_or(true) {
+                                    continue;
+                                }
+                            }
+                        }
                         let _ = tx.send(Msg::Changed { dir: dir.clone() });
                         ctx.request_repaint();
                     }
@@ -914,10 +1078,28 @@ impl AppState {
                     self.list_active(p);
                 }
             }
-            Action::Refresh => self.list_active(p),
+            Action::Refresh => self.relist_active(p),
             Action::Navigate(to) => {
                 self.tab_mut(p).navigate(to);
                 self.list_active(p);
+            }
+            Action::OpenPath(path) => {
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-stat", move || {
+                    let file = router
+                        .provider_for(&path)
+                        .and_then(|provider| provider.stat(&path).ok())
+                        .is_some_and(|e| e.kind != Kind::Dir);
+                    worker::send(
+                        &tx,
+                        &ctx,
+                        Msg::Opened {
+                            pane: p,
+                            path,
+                            file,
+                        },
+                    );
+                });
             }
             Action::NewTab => {
                 let dir = self.tab(p).dir.clone();
@@ -925,6 +1107,7 @@ impl AppState {
             }
             Action::NewTabAt(dir) => self.open_tab(p, dir),
             Action::CloseTab => self.panes[p].close_tab(self.panes[p].active),
+            // Pane 1 is relisted by `refresh_shown_tabs` when it shows again.
             Action::ToggleDual => {
                 self.dual = !self.dual;
                 if !self.dual {
@@ -1022,8 +1205,34 @@ impl AppState {
             Action::OpenWith => {
                 if let Some(e) = self.tab(p).targets().first() {
                     let path = e.path.clone();
-                    self.launch(path, platform::open_with);
+                    if cfg!(target_os = "linux") {
+                        // No system picker on Linux: list the apps for an in-app one.
+                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                        let router = self.router.clone();
+                        worker::spawn("keel-open-with", move || {
+                            let found = crate::remotes::materialise(&router, &path, &tx, &ctx)
+                                .and_then(|local| {
+                                    let apps = platform::apps_for(&local)?;
+                                    Ok((local, apps))
+                                });
+                            let msg = match found {
+                                Ok((path, apps)) => Msg::OpenWithApps { path, apps },
+                                Err(e) => Msg::Toast(format!("Open with: {e:#}")),
+                            };
+                            worker::send(&tx, &ctx, msg);
+                        });
+                    } else {
+                        self.launch(path, platform::open_with);
+                    }
                 }
+            }
+            Action::LaunchWith { id, path } => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-launch", move || {
+                    if let Err(e) = platform::launch_with(&id, &path) {
+                        worker::send(&tx, &ctx, Msg::Toast(format!("{id}: {e}")));
+                    }
+                });
             }
             Action::RevealInSystem => {
                 let path = self
@@ -1063,7 +1272,7 @@ impl AppState {
             Action::ToggleTheme => {
                 let name = if self.theme.dark { "light" } else { "dark" };
                 self.settings.theme = name.to_owned();
-                self.theme = Theme::load(name);
+                self.theme = self.themes.get(name);
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
@@ -1189,7 +1398,7 @@ impl AppState {
                 // like Explorer. Drops from other apps always copy (winit reports no
                 // modifiers during an OS drag).
                 let shift = self.ctx.input(|i| i.modifiers.shift);
-                let mv = from.is_some_and(|(pane, _)| shift || pane == p);
+                let mv = crate::pane::drop_moves(from.as_ref().map(|(pane, _)| *pane), p, shift);
                 if !jobs::spawn_plan(
                     Source::Paths(paths, mv),
                     dst,
@@ -1222,7 +1431,40 @@ impl AppState {
                     }
                 });
             }
-            Action::Properties => self.toasts.not_yet("Properties"),
+            Action::Properties => {
+                let mut paths = self.target_paths(p);
+                if paths.is_empty() && !self.tab(p).is_search() {
+                    paths.push(self.tab(p).dir.clone());
+                }
+                if paths.is_empty() || self.dialog.is_some() {
+                    return;
+                }
+                self.dialog = Some(Dialog::Properties {
+                    paths: paths.clone(),
+                    info: None,
+                });
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-props", move || {
+                    let info = crate::dialogs::properties::gather(&router, &paths)
+                        .map_err(|e| format!("{e:#}"));
+                    worker::send(&tx, &ctx, Msg::Properties { paths, info });
+                });
+            }
+            Action::ShellProperties(path) => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-shell-props", move || {
+                    #[cfg(windows)]
+                    let result = keel_vfs::shell::properties(&path);
+                    #[cfg(not(windows))]
+                    let result: anyhow::Result<()> = {
+                        let _ = &path;
+                        Err(anyhow::anyhow!("only on Windows"))
+                    };
+                    if let Err(e) = result {
+                        worker::send(&tx, &ctx, Msg::Toast(format!("Properties: {e:#}")));
+                    }
+                });
+            }
             Action::Search => {
                 if !self.tab(p).is_search() {
                     let mut tab = Tab::search(self.tab(p).dir.clone());
@@ -1417,18 +1659,33 @@ impl AppState {
         };
         let Some(dir) = e.path.parent() else { return };
         let q = if self.dual { 1 - p } else { p };
-        if !self.dual || self.tab(q).is_search() {
+        let new_tab = !self.dual || self.tab(q).is_search();
+        self.reveal_in(q, dir, e.path.name().to_owned(), new_tab);
+    }
+
+    /// Shows folder `dir` in pane `q` (a new tab, or the active one) with `name` selected
+    /// and scrolled into view. A folder the tab already shows is not left: its filter is
+    /// cleared and the row revealed at once.
+    fn reveal_in(&mut self, q: usize, dir: VPath, name: String, new_tab: bool) {
+        let here = !new_tab && self.tab(q).dir == dir && !self.tab(q).is_search();
+        if new_tab {
             self.open_tab(q, dir);
-        } else {
+        } else if !here {
             self.tab_mut(q).navigate(dir);
             self.list_active(q);
         }
-        let name = e.path.name().to_owned();
+        let show_hidden = self.show_hidden;
         let tab = self.tab_mut(q);
         tab.selected = [name.clone()].into();
         tab.cursor = Some(name.clone());
         tab.anchor = Some(name);
         tab.reveal = true;
+        if here {
+            tab.filter.clear();
+            tab.filter_open = false;
+            tab.visible(show_hidden);
+            tab.reveal_cursor();
+        }
         self.active = q;
     }
 
@@ -1976,6 +2233,225 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A provider whose listing never comes back (a dead network share).
+    struct Hang;
+    impl Provider for Hang {
+        fn scheme(&self) -> &'static str {
+            "hang"
+        }
+        fn caps(&self) -> Caps {
+            Caps::default()
+        }
+        fn list(&self, _: &VPath) -> anyhow::Result<Vec<Entry>> {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(Vec::new())
+        }
+        fn stat(&self, _: &VPath) -> anyhow::Result<Entry> {
+            anyhow::bail!("hang")
+        }
+        fn read(&self, _: &VPath) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+            anyhow::bail!("hang")
+        }
+        fn write(&self, _: &VPath) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
+            anyhow::bail!("hang")
+        }
+        fn mkdir(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("hang")
+        }
+        fn rename(&self, _: &VPath, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("hang")
+        }
+        fn remove(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("hang")
+        }
+        fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
+            anyhow::bail!("hang")
+        }
+    }
+
+    /// Polish backlog: a listing that never returns stops the spinner and says so.
+    #[test]
+    fn hung_listing_times_out() {
+        let router = Router::new();
+        router.register(Arc::new(Hang));
+        let dir = VPath::parse("hang://nas/share").unwrap();
+        let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir);
+        assert!(state.tab(0).loading);
+        state.list_timeout = Duration::from_millis(50);
+        std::thread::sleep(Duration::from_millis(100));
+        state.tick();
+        let tab = state.tab(0);
+        assert!(!tab.loading, "spinner stopped");
+        assert!(tab.error.as_deref().unwrap().contains("not responding"));
+        assert!(state.inflight.is_empty(), "a refresh may ask again");
+    }
+
+    /// Polish backlog: F5 while the folder is being listed queues another listing.
+    #[test]
+    fn refresh_during_a_listing_lists_again_after_it() {
+        let tmp = tempfile_dir("keel-relist");
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            VPath::local(&tmp),
+        );
+        assert!(state.inflight.contains_key(&VPath::local(&tmp)));
+        state.run(0, Action::Refresh);
+        assert!(state.pending_refresh.contains_key(&VPath::local(&tmp)));
+        // Created after the first listing read the folder: the second one sees it.
+        settle(&mut state, |s| {
+            !s.inflight.contains_key(&VPath::local(&tmp))
+        });
+        std::fs::write(tmp.join("late.txt"), "x").unwrap();
+        state.tick();
+        settle(&mut state, |s| {
+            s.tab(0).entries().iter().any(|e| e.name == "late.txt")
+        });
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Polish backlog: a background tab (no watcher) is relisted when it comes to the
+    /// front, and pane 1 when dual mode comes back.
+    #[test]
+    fn tabs_brought_to_the_front_are_relisted() {
+        let tmp = tempfile_dir("keel-front");
+        std::fs::create_dir_all(tmp.join("other")).unwrap();
+        let home = VPath::local(&tmp);
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            home.clone(),
+        );
+        state.dual = false;
+        state.run(0, Action::NewTabAt(home.join("other")));
+        settle(&mut state, |s| s.panes[0].tabs.iter().all(|t| !t.loading));
+        state.tick();
+        settle(&mut state, |s| s.inflight.is_empty());
+        std::fs::write(tmp.join("new.txt"), "x").unwrap();
+        state.panes[0].active = 0; // tab click
+        state.tick();
+        assert!(state.tab(0).loading, "relisting");
+        settle(&mut state, |s| {
+            s.tab(0).entries().iter().any(|e| e.name == "new.txt")
+        });
+
+        std::fs::write(tmp.join("newer.txt"), "x").unwrap();
+        state.run(0, Action::ToggleDual);
+        state.tick();
+        settle(&mut state, |s| {
+            s.tab(1).entries().iter().any(|e| e.name == "newer.txt")
+        });
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Polish backlog: renaming the open folder itself is noticed (parent watcher).
+    #[test]
+    fn renaming_the_open_folder_is_noticed() {
+        let tmp = tempfile_dir("keel-parent-watch");
+        std::fs::create_dir_all(tmp.join("open")).unwrap();
+        let dir = VPath::local(tmp.join("open"));
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            dir.clone(),
+        );
+        state.dual = false;
+        state.tick();
+        settle(&mut state, |s| {
+            s.watchers[0].1.is_some() && !s.tab(0).loading
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::rename(tmp.join("open"), tmp.join("renamed")).unwrap();
+        settle(&mut state, |s| s.pending_refresh.contains_key(&dir));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Polish backlog: Open location into the folder the other pane already shows
+    /// clears its filter and scrolls to the file at once (no relist wait).
+    #[test]
+    fn open_location_in_the_shown_folder_reveals_at_once() {
+        let dir = VPath::parse("gone://usb/").unwrap();
+        let router = Router::new();
+        router.register(Arc::new(Gone));
+        let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir.clone());
+        let entries: Vec<Entry> = (0..50)
+            .map(|i| test_entry(&dir, &format!("f{i:02}.txt"), Kind::File, 1))
+            .collect();
+        state.panes[1].tabs[0].set_entries(entries);
+        state.panes[1].tabs[0].filter = "zzz".into();
+        state.panes[1].tabs[0].filter_open = true;
+        // Pane 0: a search tab whose cursor is on f40.txt.
+        state.run(0, Action::Search);
+        state
+            .tab_mut(0)
+            .set_listing(crate::tab::hits_listing(vec![keel_search::Hit {
+                path: dir.join("f40.txt"),
+                is_dir: false,
+                size: 1,
+                modified: None,
+            }]));
+        state.tab_mut(0).visible(false);
+        state.tab_mut(0).cursor = Some(dir.join("f40.txt").display());
+        state.run(0, Action::OpenLocation);
+        let tab = state.tab(1);
+        assert_eq!(state.active, 1);
+        assert!(tab.filter.is_empty() && !tab.filter_open);
+        assert_eq!(tab.cursor.as_deref(), Some("f40.txt"));
+        assert_eq!(
+            tab.scroll_to,
+            Some(40),
+            "scrolled without waiting for a listing"
+        );
+    }
+
+    /// Polish backlog: a file path typed in the path box opens its folder with the
+    /// file selected; a folder path navigates.
+    #[test]
+    fn typed_file_path_opens_its_folder_and_selects_it() {
+        let tmp = tempfile_dir("keel-path-box");
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("sub").join("pick.txt"), "x").unwrap();
+        let home = VPath::local(&tmp);
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            home.clone(),
+        );
+        settle(&mut state, |s| !s.tab(0).loading);
+        let typed = crate::pane::parse_path("sub/pick.txt", &home).unwrap();
+        state.run(0, Action::OpenPath(typed));
+        settle(&mut state, |s| {
+            s.tab(0).dir == home.join("sub") && !s.tab(0).loading
+        });
+        assert_eq!(state.tab(0).cursor.as_deref(), Some("pick.txt"));
+        state.run(
+            0,
+            Action::OpenPath(crate::pane::parse_path("..", &home.join("sub")).unwrap()),
+        );
+        settle(&mut state, |s| s.tab(0).dir == home);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Polish backlog: a drive list that never answers is shown as stuck and is not
+    /// asked again until it answers.
+    #[test]
+    fn stuck_drive_list_is_reported_once() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        let long_ago = Instant::now() - DRIVES_TIMEOUT - Duration::from_secs(1);
+        state.sidebar.drives_pending = Some(long_ago);
+        state.sidebar.drives_requested = Some(long_ago - DRIVES_REFRESH);
+        state.tick();
+        assert!(state.sidebar.drives_stuck);
+        assert_eq!(
+            state.sidebar.drives_pending,
+            Some(long_ago),
+            "no second request"
+        );
+        state.apply(Msg::Drives(Vec::new()));
+        assert!(!state.sidebar.drives_stuck && state.sidebar.drives_pending.is_none());
     }
 
     #[test]

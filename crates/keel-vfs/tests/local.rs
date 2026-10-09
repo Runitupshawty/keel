@@ -256,3 +256,28 @@ fn links_are_listed_as_their_target_kind() {
     let e = LocalProvider.stat(&VPath::local(&link)).unwrap();
     assert_eq!(e.kind, Kind::Symlink, "dangling");
 }
+
+/// Polish backlog: a case-only rename is not a clash with itself (case-insensitive
+/// filesystems: NTFS, APFS) and still works where names are case-sensitive.
+#[test]
+fn case_only_rename_is_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = VPath::local(tmp.path());
+    fs::write(tmp.path().join("notes.txt"), b"x").unwrap();
+    LocalProvider
+        .rename(&dir.join("notes.txt"), &dir.join("Notes.TXT"))
+        .unwrap();
+    let names: Vec<String> = LocalProvider
+        .list(&dir)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["Notes.TXT"]);
+    // A real clash with another file is still refused.
+    fs::write(tmp.path().join("other.txt"), b"y").unwrap();
+    assert!(LocalProvider
+        .rename(&dir.join("other.txt"), &dir.join("Notes.TXT"))
+        .is_err());
+    assert_eq!(fs::read(tmp.path().join("Notes.TXT")).unwrap(), b"x");
+}

@@ -7,13 +7,15 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub done_bytes: u64,
     pub total_bytes: u64,
     pub current: String,
     pub done_items: usize,
     pub total_items: usize,
+    /// Items left alone because they already existed (`Conflict::Skip`).
+    pub skipped: usize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Conflict {
@@ -143,6 +145,7 @@ fn transfer_local(
             current: String::new(),
             done_items: 0,
             total_items,
+            skipped: 0,
         },
         conflict,
         progress,
@@ -176,6 +179,8 @@ impl Job<'_> {
         ensure_regular(source, &metadata)?;
         self.state.current = source.to_string_lossy().into_owned();
         let Some(target) = destination(metadata.is_dir(), proposed, self.conflict)? else {
+            self.state.skipped += 1;
+            (self.progress)(self.state.clone());
             return Ok(false);
         };
         if let Ok(target_metadata) = fs::symlink_metadata(&target) {
@@ -350,6 +355,7 @@ pub fn transfer(
         current: String::new(),
         done_items: 0,
         total_items: 0,
+        skipped: 0,
     };
     for source in src {
         let provider = routed(router, source)?;
@@ -493,6 +499,8 @@ impl ProviderJob<'_> {
             if self.conflict == Conflict::Skip
                 && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
             {
+                self.state.skipped += 1;
+                (self.progress)(self.state.clone());
                 return Ok(false);
             }
             if self.conflict == Conflict::RenameNew {
@@ -884,6 +892,7 @@ pub fn extract_under(
         current: String::new(),
         done_items: 0,
         total_items: dirs.len() + files.len(),
+        skipped: 0,
     };
     progress(state.clone());
     for name in &dirs {
@@ -899,7 +908,9 @@ pub fn extract_under(
         let (name, size) = &files[raw];
         state.current = name.clone();
         let proposed = below(&dst, name)?;
-        if let Some(target) = destination(false, &proposed, on_conflict)? {
+        let target = destination(false, &proposed, on_conflict)?;
+        state.skipped += usize::from(target.is_none());
+        if let Some(target) = target {
             let parent = target.parent().context("destination has no parent")?;
             if !ready.contains(parent) {
                 fs::create_dir_all(parent)
@@ -1059,6 +1070,7 @@ pub fn add_to_zip(
         current: String::new(),
         done_items: 0,
         total_items: files.len(),
+        skipped: 0,
     };
     progress(state.clone());
     let parent = zip_path.parent().context("zip has no parent folder")?;

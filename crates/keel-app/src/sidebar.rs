@@ -10,12 +10,19 @@ use std::time::{Duration, Instant};
 pub type Drive = (String, String, u64, u64);
 
 pub const DRIVES_REFRESH: Duration = Duration::from_secs(30);
+/// A drive list that has not answered after this long (a dead network volume) is shown
+/// as not responding; no new request starts until it answers.
+pub const DRIVES_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct Sidebar {
     pub quick: Vec<(String, VPath)>,
     pub drives: Vec<Drive>,
     /// When the last `drives()` request was sent (None = never).
     pub drives_requested: Option<Instant>,
+    /// A `drives()` request is running (since then).
+    pub drives_pending: Option<Instant>,
+    /// The running request passed `DRIVES_TIMEOUT`.
+    pub drives_stuck: bool,
     /// Configured SFTP hosts (`sidebar_remotes`), rebuilt each frame by the state.
     pub remotes: Vec<crate::sidebar_remotes::RemoteRow>,
     /// Configured cloud accounts, rebuilt each frame by the state.
@@ -45,6 +52,8 @@ impl Default for Sidebar {
             quick,
             drives: Vec::new(),
             drives_requested: None,
+            drives_pending: None,
+            drives_stuck: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
         }
@@ -52,12 +61,15 @@ impl Default for Sidebar {
 }
 
 impl Sidebar {
-    /// The drive whose mount point is the longest prefix of `dir`.
+    /// The drive whose mount point holds `dir` (whole path components: `/media/usb` is
+    /// not the drive of `/media/usb2`), the deepest one when mounts nest.
     pub fn drive_of(&self, dir: &VPath) -> Option<&Drive> {
-        let shown = dir.display().to_lowercase();
+        let fold = |s: String| if cfg!(windows) { s.to_lowercase() } else { s };
+        let local = fold(dir.to_local_path()?.to_string_lossy().into_owned());
+        let local = std::path::Path::new(&local);
         self.drives
             .iter()
-            .filter(|(name, ..)| shown.starts_with(&name.to_lowercase()))
+            .filter(|(name, ..)| local.starts_with(fold(name.clone())))
             .max_by_key(|(name, ..)| name.len())
     }
 
@@ -94,7 +106,10 @@ impl Sidebar {
             }
             ui.add_space(8.0);
             section(ui, "Drives", theme);
-            if self.drives.is_empty() {
+            if self.drives_stuck {
+                ui.colored_label(ui.visuals().warn_fg_color, "Drives are not responding")
+                    .on_hover_text("A drive (often a disconnected network drive) is not answering");
+            } else if self.drives.is_empty() {
                 ui.weak("Loading…");
             }
             for (name, label, free, total) in &self.drives {
@@ -174,5 +189,31 @@ fn clicked(r: &egui::Response, path: &VPath, out: &mut Vec<Action>) {
         out.push(Action::Navigate(path.clone()));
     } else if r.middle_clicked() {
         out.push(Action::NewTabAt(path.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_of_matches_whole_path_components() {
+        let mut s = Sidebar::default();
+        let drive = |n: &str| (n.to_owned(), String::new(), 1, 2);
+        if cfg!(windows) {
+            s.drives = vec![drive("C:"), drive("D:")];
+            let of = |p: &str| s.drive_of(&VPath::local(p)).map(|d| d.0.clone());
+            assert_eq!(of(r"c:\Users\x").as_deref(), Some("C:"));
+            assert_eq!(of(r"D:\").as_deref(), Some("D:"));
+            assert_eq!(of(r"E:\x"), None);
+        } else {
+            s.drives = vec![drive("/"), drive("/media/usb"), drive("/media/usb2")];
+            let of = |p: &str| s.drive_of(&VPath::local(p)).map(|d| d.0.clone());
+            assert_eq!(of("/media/usb2/photos").as_deref(), Some("/media/usb2"));
+            assert_eq!(of("/media/usb/x").as_deref(), Some("/media/usb"));
+            assert_eq!(of("/media/usbx").as_deref(), Some("/"));
+        }
+        let remote = VPath::parse("sftp://host/media/usb").unwrap();
+        assert_eq!(s.drive_of(&remote), None);
     }
 }

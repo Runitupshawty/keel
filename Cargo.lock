@@ -3619,6 +3619,7 @@ dependencies = [
  "calamine",
  "csv",
  "docx-rs",
+ "encoding_rs",
  "image",
  "keel-vfs",
  "pdfium-render",
@@ -3684,6 +3685,7 @@ dependencies = [
  "opendal-http-transport-reqwest",
  "parking_lot",
  "rayon",
+ "reflink-copy",
  "reqsign-aws-v4",
  "reqsign-core",
  "reqwest",
@@ -5768,6 +5770,18 @@ checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
 dependencies = [
  "libredox",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "reflink-copy"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9dd7ab4af0363d5ccfd2838d782a28196cf32a5cc2e4fe3c5dc83f2be588b8b"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "rustix 1.1.5",
+ "windows 0.62.2",
 ]
 
 [[package]]

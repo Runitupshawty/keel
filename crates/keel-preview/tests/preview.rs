@@ -36,6 +36,7 @@ fn temp_request(path: &Path, ext: &str, max_px: u32) -> Request {
         bytes_path: path.to_owned(),
         page: 0,
         max_px,
+        fit_width: false,
     }
 }
 

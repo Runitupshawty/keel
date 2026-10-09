@@ -21,7 +21,15 @@ use windows::Win32::{
 /// Open clipboard; closed on drop.
 struct Open;
 impl Open {
+    /// Another app (a clipboard manager, Office) often holds the clipboard for a few ms:
+    /// retry for about half a second before giving up. Workers only.
     fn new() -> Result<Self> {
+        for _ in 0..24 {
+            if unsafe { OpenClipboard(HWND::default()) }.is_ok() {
+                return Ok(Open);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         unsafe { OpenClipboard(HWND::default()) }.context("clipboard is busy")?;
         Ok(Open)
     }
