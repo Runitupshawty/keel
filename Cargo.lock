@@ -3755,6 +3755,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "directories",
+ "getrandom 0.3.4",
+ "ignore",
+ "keel-vfs",
+ "notify",
+ "notify-debouncer-mini",
+ "parking_lot",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "keel-preview"
 version = "0.1.0"
 dependencies = [

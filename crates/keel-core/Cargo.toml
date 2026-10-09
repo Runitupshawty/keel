@@ -1,0 +1,35 @@
+[package]
+name = "keel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+keel-vfs = { path = "../keel-vfs", default-features = false }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ignore.workspace = true
+getrandom.workspace = true
+directories.workspace = true
+regex.workspace = true
+notify.workspace = true
+notify-debouncer-mini = "0.4"
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Peak working set for the 2M-entry perf test.
+windows = { workspace = true, features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

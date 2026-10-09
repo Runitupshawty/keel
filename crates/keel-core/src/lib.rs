@@ -1,0 +1,43 @@
+//! Keel's library layer (spec 2.10): libraries of sources, each with a portable SQLite store,
+//! a streaming indexer with stable record identity, durable jobs and
+//! `validate -> preview -> execute` for mutating operations. No UI types: every call is a
+//! typed request/response so a daemon can wrap it later.
+
+mod db;
+mod library;
+
+pub use library::{
+    Library, LibraryId, LibraryStats, LibrarySummary, Source, SourceDef, SourceId, SourceKind,
+    SourceStatus, SourceSummary,
+};
+
+use std::path::PathBuf;
+
+/// `KEEL_DATA_DIR`, else `%LOCALAPPDATA%\Keel`, `~/Library/Application Support/Keel`,
+/// `~/.local/share/keel`. Libraries live under `<data dir>/library/<name>/`.
+pub fn data_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("KEEL_DATA_DIR").filter(|d| !d.is_empty()) {
+        return Some(dir.into());
+    }
+    let base = directories::BaseDirs::new()?;
+    let app = if cfg!(any(windows, target_os = "macos")) {
+        "Keel"
+    } else {
+        "keel"
+    };
+    Some(base.data_local_dir().join(app))
+}
+
+/// Unix seconds.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// 128 random bits as hex.
+pub(crate) fn random_id() -> anyhow::Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("random id: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
