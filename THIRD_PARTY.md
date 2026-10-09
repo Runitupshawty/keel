@@ -19,6 +19,16 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`russh-sftp`](https://crates.io/crates/russh-sftp) 2.4 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
+| [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`interprocess`](https://crates.io/crates/interprocess) 2.4 | Local socket / named pipe for the single instance | 0BSD OR Apache-2.0 | Rust crate, compiled in |
+| [`global-hotkey`](https://crates.io/crates/global-hotkey) 0.8 | System-wide hotkey | Apache-2.0 OR MIT | Rust crate, compiled in |
+| [`rusqlite`](https://crates.io/crates/rusqlite) 0.37 | Search index storage (bundled SQLite, which is public domain) | MIT | Rust crate, compiled in |
+| [`regex`](https://crates.io/crates/regex) 1.13 | Regex search queries | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`encoding_rs`](https://crates.io/crates/encoding_rs) 0.8 | Windows-1252 text decoding | (Apache-2.0 OR MIT) AND BSD-3-Clause | Rust crate, compiled in |
+| [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |
+| [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`zeroize`](https://crates.io/crates/zeroize) 1.9 | Wipes secrets from memory | Apache-2.0 OR MIT | Rust crate, compiled in |
+| [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract | MIT OR Apache-2.0 | Rust crate, compiled in |
 
 **User-installed icon themes.** Settings → Icons can download a VS Code icon theme extension from the Visual Studio Marketplace at the user's request, after showing the extension's license (from the package when it has one) and asking the user to accept it. The theme is unpacked into the user's own config folder (`<config dir>/icons/<extension id>/`) for that user only. Keel does not bundle, mirror or redistribute these themes; they are not part of Keel's source or release archives, and their licenses are between the user and the theme's author.
 
