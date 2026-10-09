@@ -138,7 +138,8 @@ impl Source {
     }
 }
 
-fn relative(root: &VPath, p: &VPath) -> Option<String> {
+/// `p` relative to `root` ("" when equal), None when `p` is not inside `root`.
+pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
     if p.scheme != root.scheme || p.authority != root.authority || p.split_archive().is_some() {
         return None;
     }
@@ -244,7 +245,7 @@ impl Library {
         db.set_meta("name", name)?;
         let rows: Vec<(String, String)> = {
             let conn = db.get()?;
-            let mut stmt = conn.prepare("SELECT id, def FROM source ORDER BY created, id")?;
+            let mut stmt = conn.prepare("SELECT id, def FROM source ORDER BY rowid")?;
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
@@ -271,6 +272,7 @@ impl Library {
         };
         // Built-in kinds resume here; others when the app registers them.
         lib.jobs.register("index", IndexJob::restore)?;
+        lib.jobs.register("op", crate::plan::ExecJob::restore)?;
         Ok(lib)
     }
 
@@ -387,6 +389,11 @@ impl Library {
     pub fn index(&self, id: &SourceId) -> Result<JobId> {
         anyhow::ensure!(self.source(id).is_some(), "no source {id}");
         self.jobs.spawn(Box::new(IndexJob { source: id.clone() }))
+    }
+
+    /// The newest `limit` operation log entries (redacted when written), newest first.
+    pub fn op_log(&self, limit: usize) -> Result<Vec<crate::OpLogEntry>> {
+        crate::oplog::entries(&self.shared, limit)
     }
 
     pub fn sources(&self) -> Vec<SourceSummary> {

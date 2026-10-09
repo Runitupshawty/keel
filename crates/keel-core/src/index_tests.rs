@@ -8,7 +8,14 @@ use std::{path::Path, sync::atomic::AtomicUsize};
 type Listing = dyn Fn(&str) -> Result<Vec<(String, bool, u64)>> + Send + Sync;
 
 /// A provider serving `fake://<any>/...` from a closure: `(name, is_dir, size)` per folder.
-pub(crate) struct Fake(pub Box<Listing>);
+/// `remove` only records the path.
+pub(crate) struct Fake(pub Box<Listing>, pub Mutex<Vec<String>>);
+
+pub(crate) fn fake(
+    list: impl Fn(&str) -> Result<Vec<(String, bool, u64)>> + Send + Sync + 'static,
+) -> Fake {
+    Fake(Box::new(list), Mutex::new(Vec::new()))
+}
 
 impl Provider for Fake {
     fn scheme(&self) -> &'static str {
@@ -34,18 +41,24 @@ impl Provider for Fake {
             .collect())
     }
     fn stat(&self, p: &VPath) -> Result<Entry> {
-        (self.0)(&p.path)?;
-        Ok(Entry {
-            path: p.clone(),
-            name: p.name().into(),
-            kind: Kind::Dir,
-            size: 0,
-            modified: None,
-            hidden: false,
-            is_link: false,
-            encrypted: false,
-            ext: String::new(),
-        })
+        if (self.0)(&p.path).is_ok() {
+            return Ok(Entry {
+                path: p.clone(),
+                name: p.name().into(),
+                kind: Kind::Dir,
+                size: 0,
+                modified: None,
+                hidden: false,
+                is_link: false,
+                encrypted: false,
+                ext: String::new(),
+            });
+        }
+        let parent = p.parent().context("no parent")?;
+        self.list(&parent)?
+            .into_iter()
+            .find(|e| e.name == p.name())
+            .with_context(|| format!("no such entry {}", p.display()))
     }
     fn read(&self, _: &VPath) -> Result<Box<dyn std::io::Read + Send>> {
         anyhow::bail!("fake")
@@ -59,8 +72,9 @@ impl Provider for Fake {
     fn rename(&self, _: &VPath, _: &VPath) -> Result<()> {
         anyhow::bail!("fake")
     }
-    fn remove(&self, _: &VPath) -> Result<()> {
-        anyhow::bail!("fake")
+    fn remove(&self, p: &VPath) -> Result<()> {
+        self.1.lock().push(p.path.clone());
+        Ok(())
     }
     fn local_copy(&self, _: &VPath) -> Result<std::path::PathBuf> {
         anyhow::bail!("fake")
@@ -246,7 +260,7 @@ pub(crate) struct State {
 }
 
 pub(crate) fn fake_tree(state: Arc<Mutex<State>>) -> Fake {
-    Fake(Box::new(move |path: &str| {
+    fake(move |path: &str| {
         let mut s = state.lock();
         if let Some(left) = s.lists_left.as_mut() {
             anyhow::ensure!(*left > 0, "host unreachable");
@@ -261,10 +275,14 @@ pub(crate) fn fake_tree(state: Arc<Mutex<State>>) -> Fake {
             "/b" => vec![f("y")],
             _ => anyhow::bail!("no such folder {path}"),
         })
-    }))
+    })
 }
 
-fn fake_source(router: &Router, state: &Arc<Mutex<State>>, kind: SourceKind) -> SourceDef {
+pub(crate) fn fake_source(
+    router: &Router,
+    state: &Arc<Mutex<State>>,
+    kind: SourceKind,
+) -> SourceDef {
     router.register(Arc::new(fake_tree(state.clone())));
     SourceDef {
         label: "box".into(),
@@ -485,7 +503,7 @@ fn two_million_entries_index_fast_in_bounded_memory() {
     const DIRS: u64 = 2_000;
     const FILES: u64 = 1_000;
     let router = Router::new();
-    router.register(Arc::new(Fake(Box::new(|path: &str| {
+    router.register(Arc::new(fake(|path: &str| {
         if path == "/" {
             return Ok((0..DIRS).map(|d| (format!("d{d:04}"), true, 0)).collect());
         }
@@ -497,7 +515,7 @@ fn two_million_entries_index_fast_in_bounded_memory() {
                 (format!("f{i:04} w{word}.dat"), false, n % 100_000)
             })
             .collect())
-    }))));
+    })));
     let (_data, _lib, src) = library_with(SourceDef {
         label: "perf".into(),
         root: VPath::parse("fake://perf/").unwrap(),

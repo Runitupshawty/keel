@@ -82,6 +82,7 @@ pub struct JobInfo {
 pub struct JobCtx {
     pub id: JobId,
     stop: Arc<AtomicBool>,
+    closing: Arc<AtomicBool>,
     db: Pool,
     pub(crate) lib: Arc<Shared>,
 }
@@ -94,6 +95,11 @@ impl JobCtx {
 
     pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    /// The stop is the library closing (the job resumes later), not a cancel.
+    pub fn closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
     }
 
     /// Persists `state` (and progress 0..=1). The step it describes is durable: a restart
@@ -215,6 +221,7 @@ impl Jobs {
         let ctx = JobCtx {
             id,
             stop: stop.clone(),
+            closing: self.closing.clone(),
             db: self.lib.db.clone(),
             lib: self.lib.clone(),
         };
