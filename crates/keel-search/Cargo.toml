@@ -11,7 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 ignore.workspace = true
-keel-vfs = { path = "../keel-vfs" }
+keel-vfs = { path = "../keel-vfs", default-features = false }
 nucleo.workspace = true
 
 [target.'cfg(windows)'.dependencies]

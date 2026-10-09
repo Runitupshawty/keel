@@ -1,10 +1,11 @@
-//! Modal dialogs: confirm (trash), name conflicts, new folder / new file. Rename is inline
+//! Modal dialogs: confirm (trash), name conflicts, new folder / new file, zip name. Rename is inline
 //! in the views. Each dialog answers with an `Action` for `AppState::run`.
 
 use crate::jobs::Transfer;
 use crate::keys::Action;
 use egui::{Id, Key, Modal};
 use keel_vfs::{Conflict, VPath};
+use std::path::PathBuf;
 
 pub enum Dialog {
     Confirm {
@@ -20,6 +21,13 @@ pub enum Dialog {
     NewItem {
         dir: VPath,
         folder: bool,
+        text: String,
+        focus: bool,
+    },
+    /// Compress to zip…: the zip's name (in `dir`) for `src`.
+    ZipName {
+        dir: PathBuf,
+        src: Vec<PathBuf>,
         text: String,
         focus: bool,
     },
@@ -107,6 +115,36 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             dir: dir.clone(),
                             name: text.trim().to_owned(),
                             folder: *folder,
+                        });
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            }
+            Dialog::ZipName {
+                dir,
+                src,
+                text,
+                focus,
+            } => {
+                ui.label(format!("Compress {} to", crate::jobs::items(src.len())));
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if (ui.button("Compress").clicked() || enter) && !text.trim().is_empty() {
+                        let name = text.trim();
+                        let has_ext = name.to_ascii_lowercase().ends_with(".zip");
+                        let name = if has_ext {
+                            name.to_owned()
+                        } else {
+                            format!("{name}.zip")
+                        };
+                        out = Some(Action::ZipTo {
+                            zip: dir.join(name),
+                            src: src.clone(),
                         });
                     }
                     cancel |= ui.button("Cancel").clicked();

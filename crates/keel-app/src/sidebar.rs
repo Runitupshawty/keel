@@ -1,4 +1,4 @@
-//! Left sidebar: Quick access, Drives, Remotes (Phase 3), Cloud (Phase 4).
+//! Left sidebar: Quick access, Drives, Open archives, Remotes (Phase 3), Cloud (Phase 4).
 
 use crate::keys::Action;
 use crate::theme::Theme;
@@ -55,8 +55,16 @@ impl Sidebar {
             .max_by_key(|(name, ..)| name.len())
     }
 
-    /// Draws the sidebar; clicks become `Navigate`, middle-clicks `NewTabAt`.
-    pub fn ui(&self, ui: &mut egui::Ui, theme: &Theme, current: &VPath, out: &mut Vec<Action>) {
+    /// Draws the sidebar; clicks become `Navigate`, middle-clicks `NewTabAt`. `archives`:
+    /// the archive each (pane, tab) is browsing; a click shows that tab.
+    pub fn ui(
+        &self,
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        current: &VPath,
+        archives: &[(usize, usize, VPath)],
+        out: &mut Vec<Action>,
+    ) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.style_mut().interaction.selectable_labels = false;
             let item = |ui: &mut egui::Ui, path: &VPath, text: &str| {
@@ -112,6 +120,28 @@ impl Sidebar {
                         format_size(*free, DECIMAL),
                         format_size(*total, DECIMAL)
                     ));
+                }
+            }
+            if !archives.is_empty() {
+                ui.add_space(8.0);
+                section(ui, "Open archives", theme);
+                for (pane, tab, archive) in archives {
+                    let r = ui
+                        .add(
+                            egui::Button::image_and_text(
+                                egui::Image::new(crate::icons::archive())
+                                    .fit_to_exact_size([16.0, 16.0].into()),
+                                archive.name(),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text(archive.display());
+                    if r.clicked() {
+                        out.push(Action::FocusTab {
+                            pane: *pane,
+                            tab: *tab,
+                        });
+                    }
                 }
             }
             ui.add_space(8.0);

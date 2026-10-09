@@ -3,7 +3,7 @@
 
 use crate::clipboard::Clipboard;
 use crate::dialogs::{self, Dialog};
-use crate::jobs::{self, Jobs, Source, Transfer};
+use crate::jobs::{self, ArchiveSrc, Jobs, Source, Transfer};
 use crate::jump::Jump;
 use crate::keys::Action;
 use crate::palette::Palette;
@@ -29,6 +29,17 @@ use std::time::{Duration, Instant};
 
 /// Watcher events for a folder are coalesced for this long before relisting.
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
+/// Toast for writes (delete, rename, new, paste, drop) inside an archive.
+pub const READ_ONLY: &str = "Archives are read-only in this version";
+
+/// The outermost archive file of an archive path (`D:/a.zip!/b.7z!/x` -> `D:/a.zip`).
+pub fn outermost_archive(dir: &VPath) -> Option<VPath> {
+    let mut outer = dir.split_archive()?.0;
+    while let Some((parent, _)) = outer.split_archive() {
+        outer = parent;
+    }
+    Some(outer)
+}
 
 pub enum Msg {
     TerminalReady {
@@ -138,6 +149,9 @@ pub struct AppState {
     pub paste_pending: bool,
     /// The move job started from a cut, and its sources (put back as a cut if it fails).
     cut_job: Option<(u64, Vec<PathBuf>)>,
+    /// Entries copied inside an archive: Ctrl+V extracts them (until files are copied,
+    /// here or, on Windows, in another app).
+    pub archive_clip: Option<ArchiveSrc>,
     pub dialog: Option<Dialog>,
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
@@ -223,6 +237,7 @@ impl AppState {
             clipboard: Clipboard::default(),
             paste_pending: false,
             cut_job: None,
+            archive_clip: None,
             dialog: None,
             settings,
             settings_open: false,
@@ -559,7 +574,7 @@ impl AppState {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
-        let id = self.jobs.start(op, conflict, self.tx.clone());
+        let id = self.jobs.start(op, conflict, &self.router, self.tx.clone());
         if let Some(src) = cut {
             self.cut_job = Some((id, src));
         }
@@ -658,8 +673,10 @@ impl AppState {
                     // A tab that never listed (restored from the session, or opened on a
                     // stale path) whose local folder is gone: open home instead. Network
                     // and unreachable folders keep their tab and only show the error.
+                    // An archive that is gone falls back to its folder.
                     if gone && tab.listed_dir.is_none() && !tab.is_search() {
-                        *tab = Tab::new(self.home.clone());
+                        let to = outermost_archive(&dir).and_then(|a| a.parent());
+                        *tab = Tab::new(to.unwrap_or_else(|| self.home.clone()));
                         moved.push((p, t));
                         continue;
                     }
@@ -684,6 +701,11 @@ impl AppState {
                 }
                 if moved.is_empty() {
                     self.toasts.error(text);
+                } else if let Some(archive) = outermost_archive(&dir) {
+                    self.toasts.error(format!(
+                        "{} no longer exists; opened its folder",
+                        archive.display()
+                    ));
                 } else {
                     self.toasts.error(format!(
                         "{} no longer exists; opened your home folder",
@@ -807,6 +829,9 @@ impl AppState {
         // Targets come from the visible rows; make sure they match this listing.
         let show_hidden = self.show_hidden;
         self.tab_mut(p).visible(show_hidden);
+        if self.writes_into_archive(p, &action) {
+            return self.toasts.error(READ_ONLY);
+        }
         match action {
             Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
@@ -1006,9 +1031,27 @@ impl AppState {
                 self.jobs
                     .delete(paths, self.router.clone(), self.tx.clone());
             }
+            Action::Copy if self.tab(p).dir.split_archive().is_some() => {
+                let paths: Vec<VPath> = self
+                    .tab(p)
+                    .targets()
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
+                if let Some(src) = ArchiveSrc::picked(&self.tab(p).dir, &paths) {
+                    if !src.entries.is_empty() {
+                        // Nothing stale for Explorer to paste; our paste extracts.
+                        self.clipboard.set(Vec::new(), false);
+                        self.toasts
+                            .info(format!("Copied {}", jobs::items(src.entries.len())));
+                        self.archive_clip = Some(src);
+                    }
+                }
+            }
             Action::Copy | Action::Cut => {
                 let cut = action == Action::Cut;
                 if let Some(paths) = self.local_targets(p) {
+                    self.archive_clip = None;
                     let n = paths.len();
                     self.clipboard.set(paths, cut);
                     let verb = if cut { "Cut" } else { "Copied" };
@@ -1024,12 +1067,19 @@ impl AppState {
             }
             Action::Paste => match self.tab(p).dir.to_local_path() {
                 Some(dst) => {
-                    self.paste_pending = jobs::spawn_plan(
-                        Source::Clipboard(self.clipboard.clone()),
-                        dst,
-                        self.tx.clone(),
-                        self.ctx.clone(),
-                    );
+                    if self.clipboard.changed_outside() {
+                        self.archive_clip = None;
+                    }
+                    let source = match &self.archive_clip {
+                        Some(src) => Source::Archive {
+                            src: src.clone(),
+                            router: self.router.clone(),
+                            clipboard: true,
+                        },
+                        None => Source::Clipboard(self.clipboard.clone()),
+                    };
+                    self.paste_pending =
+                        jobs::spawn_plan(source, dst, self.tx.clone(), self.ctx.clone());
                     if !self.paste_pending {
                         self.toasts.error("Could not start the paste");
                     }
@@ -1117,7 +1167,163 @@ impl AppState {
                 self.palette.show(selection);
             }
             Action::TogglePreview => self.preview.open = !self.preview.open,
+            Action::ExtractHere | Action::ExtractToFolder | Action::ExtractTo => {
+                self.extract_targets(p, action)
+            }
+            Action::Extract { src, dst } => {
+                // A drag that ends where it started (inside the archive): nothing to do.
+                if dst.split_archive().is_some() {
+                    return;
+                }
+                match dst.to_local_path() {
+                    Some(dst) => self.plan_extract(src, dst),
+                    None => self
+                        .toasts
+                        .error("Extract into remote folders is not supported yet"),
+                }
+            }
+            Action::AddToZip | Action::CompressToZip => {
+                let Some(dir) = self.tab(p).dir.to_local_path() else {
+                    return self.toasts.error("Zips can only be made in local folders");
+                };
+                let Some(src) = self.local_targets(p) else {
+                    return;
+                };
+                let name = jobs::zip_name(self.tab(p));
+                if action == Action::AddToZip {
+                    self.run(
+                        p,
+                        Action::ZipTo {
+                            zip: dir.join(name),
+                            src,
+                        },
+                    );
+                } else {
+                    self.dialog = Some(Dialog::ZipName {
+                        dir,
+                        src,
+                        text: name,
+                        focus: true,
+                    });
+                }
+            }
+            Action::ZipTo { zip, src } => {
+                let name = zip.file_name().map(|n| n.to_string_lossy().into_owned());
+                if let Some(why) = dialogs::invalid_name(&name.unwrap_or_default()) {
+                    return self.toasts.error(why);
+                }
+                self.jobs.add_to_zip(zip, src, self.tx.clone());
+            }
+            Action::FocusTab { pane, tab } => {
+                if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
+                    self.active = pane;
+                    self.panes[pane].active = tab;
+                }
+            }
         }
+    }
+
+    /// Writes refused inside archives (read-only in this version). A drag out of an
+    /// archive that ends back in its own folder is not a write.
+    fn writes_into_archive(&self, p: usize, action: &Action) -> bool {
+        let inside = |dir: &VPath| dir.split_archive().is_some();
+        match action {
+            Action::Rename
+            | Action::Delete
+            | Action::Cut
+            | Action::Paste
+            | Action::NewFolder
+            | Action::NewFile
+            | Action::AddToZip
+            | Action::CompressToZip => inside(&self.tab(p).dir),
+            Action::RenameTo { from: dir, .. }
+            | Action::Create { dir, .. }
+            | Action::Drop { dst: dir, .. } => inside(dir),
+            Action::Trash(paths) => paths.iter().any(inside),
+            Action::Extract { src, dst } => {
+                inside(dst) && *dst != VPath::join_archive(&src.archive, &src.base)
+            }
+            _ => false,
+        }
+    }
+
+    /// Extract here / to folder / to… for the archive targets.
+    fn extract_targets(&mut self, p: usize, action: Action) {
+        let archives: Vec<VPath> = self
+            .tab(p)
+            .targets()
+            .into_iter()
+            .filter(|e| jobs::is_archive_file(e))
+            .map(|e| e.path.clone())
+            .collect();
+        if archives.is_empty() {
+            return self.toasts.error("Select an archive to extract");
+        }
+        // Next to each archive (search results live in many folders).
+        let Some(folders) = archives
+            .iter()
+            .map(|a| a.parent().and_then(|d| d.to_local_path()))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.toasts.error(READ_ONLY);
+        };
+        if action == Action::ExtractTo {
+            let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
+            let start = folders[0].clone();
+            // The OS dialog blocks: never on the UI thread.
+            worker::spawn("keel-pick", move || {
+                let Some(dst) = rfd::FileDialog::new()
+                    .set_title("Extract to")
+                    .set_directory(&start)
+                    .pick_folder()
+                else {
+                    return;
+                };
+                for archive in archives {
+                    let source = Source::Archive {
+                        src: ArchiveSrc::whole(archive),
+                        router: router.clone(),
+                        clipboard: false,
+                    };
+                    jobs::plan(source, dst.clone(), &tx, &ctx);
+                }
+            });
+            return;
+        }
+        for (archive, folder) in archives.into_iter().zip(folders) {
+            let dst = if action == Action::ExtractToFolder {
+                folder.join(jobs::archive_stem(archive.name()))
+            } else {
+                folder
+            };
+            self.plan_extract(ArchiveSrc::whole(archive), dst);
+        }
+    }
+
+    fn plan_extract(&mut self, src: ArchiveSrc, dst: PathBuf) {
+        let source = Source::Archive {
+            src,
+            router: self.router.clone(),
+            clipboard: false,
+        };
+        if !jobs::spawn_plan(source, dst, self.tx.clone(), self.ctx.clone()) {
+            self.toasts.error("Could not start the extraction");
+        }
+    }
+
+    /// The archive each visible tab browses, once per archive, for the sidebar.
+    pub fn open_archives(&self) -> Vec<(usize, usize, VPath)> {
+        let mut seen: Vec<(usize, usize, VPath)> = Vec::new();
+        for p in 0..if self.dual { 2 } else { 1 } {
+            for (t, tab) in self.panes[p].tabs.iter().enumerate() {
+                if let Some((archive, _)) = tab.dir.split_archive() {
+                    if !seen.iter().any(|(_, _, a)| *a == archive) {
+                        seen.push((p, t, archive));
+                    }
+                }
+            }
+        }
+        seen
     }
 
     /// Opens the cursor entry's folder with the entry selected: in the other pane, or a
@@ -1150,13 +1356,17 @@ impl AppState {
         self.list_active(p);
     }
 
-    /// Folders (and links, which usually point at folders) navigate; files open in
-    /// the OS default app.
+    /// Folders (and links, which usually point at folders) and archives navigate; files
+    /// open in the OS default app.
     pub fn open_entry(&mut self, p: usize, e: Entry) {
         // Links carry their target's kind; a dangling link opens like a file (and fails
-        // with the OS message).
-        if e.kind == Kind::Dir {
+        // with the OS message). Archives open as folders, in this tab.
+        if e.encrypted {
+            self.toasts.error(crate::preview_panel::LOCKED);
+        } else if e.kind == Kind::Dir {
             self.run(p, Action::Navigate(e.path));
+        } else if jobs::is_archive_file(&e) {
+            self.run(p, Action::Navigate(VPath::join_archive(&e.path, "")));
         } else {
             self.launch(e.path, platform::open);
         }
@@ -1385,6 +1595,245 @@ mod tests {
         state.run(0, Action::Up);
         assert_eq!(query(&state).as_deref(), Some("a"));
         assert!(state.tab(0).is_search());
+    }
+
+    /// `<tmp>/demo.zip` holding `a.txt` and `dir/b.txt`.
+    pub(crate) fn demo_zip(tmp: &std::path::Path) -> std::path::PathBuf {
+        use std::io::Write;
+        let file = tmp.join("demo.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+        for (name, body) in [("a.txt", "alpha"), ("dir/b.txt", "beta")] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        file
+    }
+
+    /// Applies worker messages until `done` holds (or 10 s pass).
+    fn settle(state: &mut AppState, done: impl Fn(&AppState) -> bool) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !done(state) && Instant::now() < until {
+            if let Ok(msg) = state.rx.recv_timeout(Duration::from_millis(50)) {
+                state.apply(msg);
+            }
+        }
+        assert!(done(state), "timed out waiting for workers");
+    }
+
+    fn names(state: &mut AppState) -> Vec<String> {
+        let tab = state.tab_mut(0);
+        let rows = tab.visible(false).to_vec();
+        rows.iter()
+            .map(|&i| tab.entries()[i].name.clone())
+            .collect()
+    }
+
+    fn open(state: &mut AppState, name: &str) {
+        let e = state
+            .tab(0)
+            .entries()
+            .iter()
+            .find(|e| e.name == name)
+            .cloned()
+            .unwrap();
+        state.open_entry(0, e);
+    }
+
+    #[test]
+    fn archive_opens_as_folder_up_returns_and_writes_are_refused() {
+        let tmp = tempfile_dir("keel-archive-browse");
+        let file = demo_zip(&tmp);
+        let folder = VPath::local(&tmp);
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            folder.clone(),
+        );
+        settle(&mut state, |s| !s.tab(0).loading);
+        open(&mut state, "demo.zip");
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        assert_eq!(state.tab(0).dir, root);
+        assert_eq!(state.tab(0).title(), "demo.zip");
+        settle(&mut state, |s| !s.tab(0).loading);
+        assert_eq!(names(&mut state), ["dir", "a.txt"]);
+        assert_eq!(state.open_archives(), [(0, 0, VPath::local(&file))]);
+
+        open(&mut state, "dir");
+        settle(&mut state, |s| !s.tab(0).loading);
+        assert_eq!(names(&mut state), ["b.txt"]);
+        // Breadcrumb chain: folder › demo.zip › dir.
+        let parent = state.tab(0).dir.parent().unwrap();
+        assert_eq!(
+            (parent.name(), parent.parent()),
+            ("demo.zip", Some(folder.clone()))
+        );
+
+        // Writes inside the archive are refused with one toast.
+        state.tab_mut(0).cursor = Some("b.txt".into());
+        for action in [
+            Action::Delete,
+            Action::Rename,
+            Action::NewFolder,
+            Action::NewFile,
+            Action::Paste,
+            Action::Cut,
+            Action::AddToZip,
+        ] {
+            state.toasts.list.clear();
+            state.run(0, action.clone());
+            let texts: Vec<&str> = state.toasts.list.iter().map(|t| t.text.as_str()).collect();
+            assert_eq!(texts, [READ_ONLY], "{action:?}");
+        }
+        assert!(state.dialog.is_none() && state.tab(0).renaming.is_none());
+
+        state.run(0, Action::Up);
+        state.run(0, Action::Up);
+        assert_eq!(state.tab(0).dir, folder);
+        assert_eq!(state.tab(0).cursor.as_deref(), Some("demo.zip"));
+        settle(&mut state, |s| !s.tab(0).loading);
+        assert!(state.open_archives().is_empty());
+        state.run(0, Action::Back);
+        assert_eq!(state.tab(0).dir, root);
+        state.run(0, Action::Forward);
+        assert_eq!(state.tab(0).dir, folder);
+
+        // A password-protected entry is refused, never opened.
+        let mut locked = crate::tab::test_entry(&root, "secret.txt", Kind::File, 1);
+        locked.encrypted = true;
+        state.toasts.list.clear();
+        state.open_entry(0, locked);
+        assert_eq!(state.toasts.list[0].text, crate::preview_panel::LOCKED);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_plans_conflicts_and_lands_files() {
+        let tmp = tempfile_dir("keel-archive-extract");
+        let file = demo_zip(&tmp);
+        let out = tmp.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("a.txt"), "mine").unwrap();
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            VPath::local(&tmp),
+        );
+        settle(&mut state, |s| !s.tab(0).loading);
+        // Ctrl+C inside the archive, Ctrl+V in `out`: planned on a worker.
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        let src = ArchiveSrc::picked(&root, &[root.join("a.txt"), root.join("dir")]).unwrap();
+        assert_eq!(src.entries, ["a.txt", "dir"]);
+        jobs::plan(
+            Source::Archive {
+                src,
+                router: state.router.clone(),
+                clipboard: true,
+            },
+            out.clone(),
+            &state.tx,
+            &state.ctx,
+        );
+        settle(&mut state, |s| s.dialog.is_some());
+        let Some(Dialog::Conflict { names, op, .. }) = state.dialog.take() else {
+            panic!("conflict dialog");
+        };
+        assert_eq!(names, ["a.txt"]);
+        state.run(
+            0,
+            Action::StartTransfer {
+                op,
+                conflict: keel_vfs::Conflict::RenameNew,
+                from_clipboard: true,
+            },
+        );
+        assert_eq!(state.jobs.list[0].title, "Extracting demo.zip");
+        settle(&mut state, |s| s.jobs.list[0].done.is_some());
+        assert!(state.jobs.list[0].done.as_ref().unwrap().is_ok());
+        assert_eq!(std::fs::read_to_string(out.join("a.txt")).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(out.join("a (2).txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("dir/b.txt")).unwrap(),
+            "beta"
+        );
+
+        // Extract to folder "demo": a new folder next to the archive, no clashes.
+        state.tab_mut(0).cursor = Some("demo.zip".into());
+        state.run(0, Action::ExtractToFolder);
+        settle(&mut state, |s| {
+            s.jobs.list.len() == 2 && s.jobs.list[1].done.is_some()
+        });
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("demo/dir/b.txt")).unwrap(),
+            "beta"
+        );
+
+        // Add to "a.zip" from the extracted file, then browse it.
+        state.tab_mut(0).cursor = None;
+        state.run(
+            0,
+            Action::ZipTo {
+                zip: tmp.join("new.zip"),
+                src: vec![out.join("a.txt")],
+            },
+        );
+        assert_eq!(state.jobs.list[2].title, "Adding to new.zip");
+        settle(&mut state, |s| s.jobs.list[2].done.is_some());
+        let listed = state
+            .router
+            .provider_for(&VPath::join_archive(&VPath::local(tmp.join("new.zip")), ""))
+            .unwrap()
+            .list(&VPath::join_archive(&VPath::local(tmp.join("new.zip")), ""))
+            .unwrap();
+        assert_eq!(listed[0].name, "a.txt");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn session_reopens_archive_tabs_or_falls_back_to_their_folder() {
+        let tmp = tempfile_dir("keel-archive-session");
+        let file = demo_zip(&tmp);
+        let folder = VPath::local(&tmp);
+        let inside = VPath::join_archive(&VPath::local(&file), "dir");
+        let saved = Session {
+            panes: vec![vec![inside.clone()], vec![folder.clone()]],
+            active: 0,
+            active_tab: [0, 0],
+        };
+        let json = tmp.join("session.json");
+        saved.save_to(&json).unwrap();
+        let restore = || {
+            let mut session = Session::load_from(&json).0.unwrap();
+            session.repair(&folder);
+            AppState::restore(
+                egui::Context::default(),
+                Arc::new(Router::new()),
+                session,
+                Settings::default(),
+                folder.clone(),
+            )
+        };
+        let mut state = restore();
+        assert_eq!(Session::of(&state), saved);
+        settle(&mut state, |s| !s.tab(0).loading);
+        assert_eq!(names(&mut state), ["b.txt"]);
+
+        std::fs::remove_file(&file).unwrap();
+        let mut state = restore();
+        settle(&mut state, |s| s.tab(0).dir == folder && !s.tab(0).loading);
+        assert!(state.toasts.list[0].text.contains("opened its folder"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn tempfile_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]

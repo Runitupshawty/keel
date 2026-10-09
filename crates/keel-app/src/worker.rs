@@ -35,8 +35,10 @@ pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ct
                 c.downcast_ref::<std::io::Error>()
                     .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
             });
+            // Inside an archive: the archive file itself is what is gone.
+            let file = crate::state::outermost_archive(&dir).unwrap_or_else(|| dir.clone());
             not_found
-                && dir
+                && file
                     .to_local_path()
                     .is_some_and(|d| keel_vfs::is_fixed_disk(&d))
         });

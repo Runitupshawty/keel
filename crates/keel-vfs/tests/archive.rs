@@ -762,3 +762,44 @@ fn add_to_zip_creates_and_recurses_into_folders() {
         ]
     );
 }
+
+#[test]
+fn extract_under_strips_the_base_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("source.zip");
+    zip_file(
+        &file,
+        &[
+            ("top.txt", b"top"),
+            ("dir/a.txt", b"a"),
+            ("dir/sub/b.txt", b"b"),
+        ],
+    );
+    let (router, cancel) = (router(&tmp), AtomicBool::new(false));
+    let run = |entries: &[String], dst: &Path| {
+        fs::create_dir_all(dst).unwrap();
+        keel_vfs::extract_under(
+            &VPath::local(&file),
+            "dir",
+            entries,
+            dst,
+            Conflict::Skip,
+            &|_| {},
+            &cancel,
+            &router,
+        )
+    };
+    let all = tmp.path().join("all");
+    run(&[], &all).unwrap();
+    assert_eq!(fs::read(all.join("a.txt")).unwrap(), b"a");
+    assert_eq!(fs::read(all.join("sub/b.txt")).unwrap(), b"b");
+    assert!(!all.join("top.txt").exists() && !all.join("dir").exists());
+    let picked = tmp.path().join("picked");
+    run(&["dir/sub".into()], &picked).unwrap();
+    assert_eq!(fs::read(picked.join("sub/b.txt")).unwrap(), b"b");
+    assert!(!picked.join("a.txt").exists());
+    assert!(
+        run(&["top.txt".into()], &picked).is_err(),
+        "outside the base"
+    );
+}

@@ -13,6 +13,8 @@ use keel_vfs::{Entry, Kind, VPath};
 use std::collections::HashMap;
 
 pub const CACHE: usize = 64;
+/// Shown (and toasted) for password-protected archive entries.
+pub const LOCKED: &str = "Password-protected archive entries cannot be opened";
 /// base16-ocean.dark background: the text previewer's span colours are made for it.
 const CODE_BG: Color32 = Color32::from_rgb(0x2b, 0x30, 0x3b);
 
@@ -87,29 +89,36 @@ impl PreviewPanel {
     }
 
     /// Shows `entry` (the active pane's cursor): from the cache, or asks the worker.
-    pub fn follow(&mut self, ctx: &egui::Context, entry: Option<&Entry>) {
+    /// True when it just refused a password-protected entry (once per selection).
+    pub fn follow(&mut self, ctx: &egui::Context, entry: Option<&Entry>) -> bool {
         let Some(e) = entry else {
             self.entry = None;
             self.key = None;
             self.set(ctx, None);
-            return;
+            return false;
         };
         if self.entry.as_ref().map(|x| &x.path) != Some(&e.path) {
             self.page = 0;
         }
         let key = PreviewKey::of(e, self.page);
         if self.key.as_ref() == Some(&key) {
-            return;
+            return false;
         }
         self.key = Some(key.clone());
         self.entry = Some(e.clone());
         self.set(ctx, None);
         if e.kind == Kind::Dir {
-            return;
+            return false;
         }
+        if e.encrypted {
+            self.set(ctx, Some(Preview::Error(LOCKED.into())));
+            return true;
+        }
+        // `max_bytes` is at most 64 MB, so archive entries over the 1 GiB materialise
+        // limit never reach `local_copy` either.
         if e.size > self.max_bytes {
             self.set(ctx, Some(Preview::TooLarge(e.size)));
-            return;
+            return false;
         }
         self.clock += 1;
         let cached = self.cache.get_mut(&key).map(|(p, used)| {
@@ -122,6 +131,7 @@ impl PreviewPanel {
                 let _ = self.jobs.send((key, e.clone(), self.width_px.max(64)));
             }
         }
+        false
     }
 
     /// A worker answer: cached, and shown if it is still the one wanted.

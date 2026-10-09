@@ -107,6 +107,7 @@ fn entry(path: VPath, local: &Path, metadata: fs::Metadata) -> Entry {
     Entry {
         hidden,
         is_link,
+        encrypted: false,
         path,
         name,
         kind,

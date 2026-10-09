@@ -659,8 +659,46 @@ pub fn extract(
     cancel: &AtomicBool,
     router: &crate::Router,
 ) -> Result<()> {
+    extract_under(
+        archive,
+        "",
+        entries,
+        dst_dir,
+        on_conflict,
+        progress,
+        cancel,
+        router,
+    )
+}
+
+/// `extract` with names taken relative to the archive folder `base` (empty = the root):
+/// `base/a.txt` lands at `dst_dir/a.txt`; names outside `base` are left out. This is what a
+/// copy out of a folder inside an archive does.
+#[allow(clippy::too_many_arguments)]
+pub fn extract_under(
+    archive: &crate::VPath,
+    base: &str,
+    entries: &[String],
+    dst_dir: &Path,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+) -> Result<()> {
     use crate::archive::safe_name;
     check_cancel(cancel)?;
+    let base = if base.trim_matches('/').is_empty() {
+        String::new()
+    } else {
+        safe_name(base)?
+    };
+    let relative = |name: &str| -> Option<String> {
+        if base.is_empty() {
+            return Some(name.to_owned());
+        }
+        let rest = name.strip_prefix(&base)?.strip_prefix('/')?;
+        Some(rest.to_owned())
+    };
     let archive = match archive.split_archive() {
         Some((outer, inner)) if inner.trim_matches('/').is_empty() => outer,
         _ => archive.clone(),
@@ -700,6 +738,9 @@ pub fn extract(
         if !selection.is_empty() && !selection.iter().any(|s| under(&name, s)) {
             continue;
         }
+        let Some(name) = relative(&name) else {
+            continue;
+        };
         anyhow::ensure!(
             !entry.encrypted,
             "password-protected archive entry: {}",
@@ -716,7 +757,8 @@ pub fn extract(
     }
     for wanted in &selection {
         anyhow::ensure!(
-            dirs.iter().chain(files.values()).any(|n| under(n, wanted)),
+            relative(wanted)
+                .is_some_and(|w| dirs.iter().chain(files.values()).any(|n| under(n, &w))),
             "not in the archive: {wanted}"
         );
     }

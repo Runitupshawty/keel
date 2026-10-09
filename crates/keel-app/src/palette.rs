@@ -41,6 +41,11 @@ fn context_items() -> Vec<Item> {
         ("Rename", "F2", Rename),
         ("Move to trash", "Del", Delete),
         ("Properties", "", Properties),
+        ("Extract here", "", ExtractHere),
+        ("Extract to folder", "", ExtractToFolder),
+        ("Extract to…", "", ExtractTo),
+        ("Add to zip", "", AddToZip),
+        ("Compress to zip…", "", CompressToZip),
     ]
     .map(|(label, shortcut, action)| Item {
         label,

@@ -30,6 +30,7 @@ fn temp_request(path: &Path, ext: &str, max_px: u32) -> Request {
             modified: None,
             hidden: false,
             is_link: false,
+            encrypted: false,
             ext: ext.into(),
         },
         bytes_path: path.to_owned(),

@@ -142,7 +142,8 @@ impl App {
             .show(ctx, |ui| {
                 let mut acts = Vec::new();
                 let current = s.panes[s.active].tab().dir.clone();
-                s.sidebar.ui(ui, &s.theme, &current, &mut acts);
+                let archives = s.open_archives();
+                s.sidebar.ui(ui, &s.theme, &current, &archives, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
         let w = sidebar.response.rect.width().round();
@@ -152,7 +153,9 @@ impl App {
         self.seen_widths.0 = Some(w);
         if s.preview.open {
             let target = s.preview_target();
-            s.preview.follow(ctx, target.as_ref());
+            if s.preview.follow(ctx, target.as_ref()) {
+                s.toasts.error(crate::preview_panel::LOCKED);
+            }
             let panel = egui::SidePanel::right("preview")
                 .resizable(true)
                 .default_width(s.settings.preview_width)
@@ -262,14 +265,7 @@ impl App {
                     // An in-app drag released over the pane but not on a folder row.
                     if released.is_some_and(|pos| rect.contains(pos)) {
                         if let Some(drag) = egui::DragAndDrop::take_payload::<DragPayload>(ctx) {
-                            out.push((
-                                p,
-                                Action::Drop {
-                                    paths: drag.local_paths(),
-                                    from: Some((drag.pane, drag.dir.clone())),
-                                    dst: s.tab(p).dir.clone(),
-                                },
-                            ));
+                            out.push((p, drag.action(s.tab(p).dir.clone())));
                         }
                     }
                 }
@@ -555,6 +551,77 @@ mod tests {
         harness.press_key_modifiers(egui::Modifiers::COMMAND, Key::Comma);
         harness.run_steps(2);
         assert!(harness.state().state.settings_open);
+    }
+
+    /// Manual end-to-end check on a real zip (GPU): `KEEL_DEMO_ZIP=C:\\x\\demo.zip
+    /// KEEL_SHOT=out.png cargo test -p keel-app -- --ignored archive_live`. Opens the zip
+    /// with the keyboard, previews its first text file, renders the window to `KEEL_SHOT`,
+    /// then runs Extract here and checks the files landed next to the zip.
+    #[test]
+    #[ignore]
+    fn archive_live() {
+        let Some(zip) = std::env::var_os("KEEL_DEMO_ZIP").map(PathBuf::from) else {
+            return;
+        };
+        let folder = VPath::local(zip.parent().unwrap());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 720.0))
+            .wgpu()
+            .build_eframe(|cc| App::new(cc, Boot::at(folder)));
+        wait_listed(&mut harness);
+        let name = zip.file_name().unwrap().to_string_lossy().into_owned();
+        harness.state_mut().state.tab_mut(0).cursor = Some(name.clone());
+        harness.press_key(Key::Enter);
+        harness.run_steps(2);
+        wait_listed(&mut harness);
+        let tab = harness.state().state.tab(0);
+        assert_eq!(tab.title(), name);
+        let text = tab
+            .entries()
+            .iter()
+            .find(|e| e.ext == "txt")
+            .expect("a .txt in the demo zip")
+            .name
+            .clone();
+        harness.state_mut().state.tab_mut(0).cursor = Some(text);
+        harness.press_key(Key::F3);
+        for _ in 0..250 {
+            harness.step();
+            if matches!(
+                harness.state().state.preview.current,
+                Some(keel_preview::Preview::Text { .. })
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        harness.run_steps(4);
+        assert!(matches!(
+            harness.state().state.preview.current,
+            Some(keel_preview::Preview::Text { .. })
+        ));
+        if let Some(shot) = std::env::var_os("KEEL_SHOT") {
+            harness.render().unwrap().save(shot).unwrap();
+        }
+        // Up selects the zip in its folder; Extract here lands its files beside it.
+        harness.press_key_modifiers(egui::Modifiers::ALT, Key::ArrowUp);
+        wait_listed(&mut harness);
+        assert_eq!(
+            harness.state().state.tab(0).cursor.as_deref(),
+            Some(name.as_str())
+        );
+        harness.state_mut().state.run(0, Action::ExtractHere);
+        for _ in 0..250 {
+            harness.step();
+            let jobs = &harness.state().state.jobs.list;
+            if jobs.first().is_some_and(|j| j.done.is_some()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let job = &harness.state().state.jobs.list[0];
+        assert_eq!(job.title, format!("Extracting {name}"));
+        assert!(job.done.as_ref().unwrap().is_ok(), "{:?}", job.done);
     }
 
     /// GPU-dependent: run locally with `cargo test -p keel-app -- --ignored`
