@@ -3201,6 +3201,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bzip2",
+ "chrono",
  "crossbeam-channel",
  "directories",
  "dirs",
@@ -3226,11 +3227,10 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 1.0.69",
- "time",
  "tokio",
  "toml 0.8.23",
  "trash",
- "unrar",
+ "unrar_sys",
  "walkdir",
  "windows 0.58.0",
  "zip 2.4.2",
@@ -5123,18 +5123,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "regex-automata"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6672,18 +6660,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unrar"
-version = "0.5.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ec61343a630d2b50d13216dea5125e157d3fc180a7d3f447d22fe146b648fc"
-dependencies = [
- "bitflags 2.13.2",
- "regex",
- "unrar_sys",
- "widestring",
-]
-
-[[package]]
 name = "unrar_sys"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7258,12 +7234,6 @@ dependencies = [
  "log",
  "web-sys",
 ]
-
-[[package]]
-name = "widestring"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi"

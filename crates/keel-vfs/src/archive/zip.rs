@@ -1,8 +1,8 @@
 use super::{ArchiveEntry, ArchiveReader};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::{
     fs::File,
-    io::{self, BufReader, Read},
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -19,45 +19,63 @@ impl Reader {
         })
     }
 }
+fn regular(file: &::zip::read::ZipFile<'_>) -> bool {
+    !file.is_symlink() && (file.is_dir() || file.is_file())
+}
+/// Zip stores local wall-clock time without a zone.
+fn local_time(stamp: ::zip::DateTime) -> Option<SystemTime> {
+    use chrono::TimeZone;
+    let naive = chrono::NaiveDate::from_ymd_opt(
+        stamp.year().into(),
+        stamp.month().into(),
+        stamp.day().into(),
+    )?
+    .and_hms_opt(
+        stamp.hour().into(),
+        stamp.minute().into(),
+        stamp.second().into(),
+    )?;
+    Some(chrono::Local.from_local_datetime(&naive).earliest()?.into())
+}
 impl ArchiveReader for Reader {
     fn entries(&mut self) -> Result<Vec<ArchiveEntry>> {
         let mut entries = Vec::with_capacity(self.archive.len());
         for i in 0..self.archive.len() {
             // `by_index_raw` decodes nothing (it only locates the local header).
             let file = self.archive.by_index_raw(i)?;
-            if file.is_symlink() || !(file.is_dir() || file.is_file()) {
+            if !regular(&file) {
                 continue;
             }
             entries.push(ArchiveEntry {
                 inner: file.name().into(),
                 is_dir: file.is_dir(),
                 size: file.size(),
-                modified: file
-                    .last_modified()
-                    .and_then(|t| time::OffsetDateTime::try_from(t).ok())
-                    .map(SystemTime::from),
+                modified: file.last_modified().and_then(local_time),
                 encrypted: file.encrypted(),
             });
         }
         Ok(entries)
     }
-    fn read(&mut self, inner: &str) -> Result<Box<dyn Read + Send>> {
-        let index = self
-            .archive
-            .index_for_name(inner)
-            .context("archive entry not found")?;
-        {
-            let file = self.archive.by_index_raw(index)?;
-            anyhow::ensure!(file.enclosed_name().is_some(), "unsafe zip entry name");
-            anyhow::ensure!(file.is_file() && !file.is_symlink(), "not a regular file");
-            anyhow::ensure!(!file.encrypted(), "password-protected archive entry");
+    fn local(&self) -> &Path {
+        &self.path
+    }
+    /// One open archive, entries read by index in order.
+    fn each_file(
+        &mut self,
+        want: &dyn Fn(&str) -> bool,
+        each: &mut dyn FnMut(&str, u64, &mut dyn Read) -> Result<()>,
+    ) -> Result<()> {
+        for i in 0..self.archive.len() {
+            let (name, size) = {
+                let file = self.archive.by_index_raw(i)?;
+                if !regular(&file) || file.is_dir() || !want(file.name()) {
+                    continue;
+                }
+                anyhow::ensure!(!file.encrypted(), "password-protected archive entry");
+                (file.name().to_owned(), file.size())
+            };
+            each(&name, size, &mut self.archive.by_index(i)?)?;
         }
-        // `ZipFile` borrows its archive, so the body streams from a second handle.
-        let path = self.path.clone();
-        Ok(super::stream(move |out| {
-            let mut archive = ::zip::ZipArchive::new(BufReader::new(File::open(path)?))?;
-            io::copy(&mut archive.by_index(index)?, out)?;
-            Ok(())
-        }))
+        Ok(())
     }
 }

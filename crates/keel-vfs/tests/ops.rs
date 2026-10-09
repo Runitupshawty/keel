@@ -302,3 +302,49 @@ fn cross_volume_move_copies_then_deletes_each_source() {
     // Copied with per-chunk progress, not renamed in one step.
     assert!(updates.borrow().iter().any(|&b| b > 0 && b < 3 << 20));
 }
+
+/// Backdates `path` by two days.
+fn age(path: &std::path::Path) {
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+}
+
+#[test]
+fn copies_sweep_day_old_staging_leftovers_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("a.txt");
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    fs::write(&src, b"new").unwrap();
+    for name in [
+        "a.txt.keel-partial",
+        "b.keel-partial-12-3",
+        "fresh.keel-partial-12-4",
+        "notes.keel-partial-draft.txt",
+    ] {
+        fs::write(dst.join(name), b"left").unwrap();
+        if !name.starts_with("fresh") {
+            age(&dst.join(name));
+        }
+    }
+    let cancel = AtomicBool::new(false);
+    copy_local(&[src], &dst, Conflict::Skip, &|_| {}, &cancel).unwrap();
+    let mut left: Vec<_> = fs::read_dir(&dst)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            "a.txt",
+            "fresh.keel-partial-12-4",
+            "notes.keel-partial-draft.txt"
+        ]
+    );
+}

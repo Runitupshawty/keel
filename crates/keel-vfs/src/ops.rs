@@ -148,6 +148,7 @@ fn transfer_local(
         progress,
         cancel,
         moving,
+        swept: Default::default(),
     };
     for source in sources {
         check_cancel(cancel)?;
@@ -163,6 +164,8 @@ struct Job<'a> {
     progress: &'a dyn Fn(Progress),
     cancel: &'a AtomicBool,
     moving: bool,
+    /// Folders already swept for stale staging files.
+    swept: std::collections::HashSet<PathBuf>,
 }
 
 impl Job<'_> {
@@ -226,6 +229,11 @@ impl Job<'_> {
             (self.progress)(self.state.clone());
             return Ok(complete);
         }
+        if let Some(parent) = target.parent() {
+            if self.swept.insert(parent.to_path_buf()) {
+                sweep_local(parent);
+            }
+        }
         self.copy_file(source, &target, metadata.len())?;
         if self.moving {
             // The verified copy is in place at `target`; only now drop the source.
@@ -238,12 +246,11 @@ impl Job<'_> {
         Ok(true)
     }
 
-    /// Copies to `<target>.keel-partial`, then renames into place. On cancel or error the
-    /// partial is deleted and an existing `target` is untouched.
+    /// Copies to a unique `<target>.keel-partial-<pid>-<n>`, then renames into place. On
+    /// cancel or error the partial is deleted and an existing `target` is untouched.
     fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<()> {
-        let mut partial = target.as_os_str().to_owned();
-        partial.push(".keel-partial");
-        let partial = PathBuf::from(partial);
+        let name = target.file_name().context("target has no name")?;
+        let partial = target.with_file_name(partial_name(&name.to_string_lossy()));
         anyhow::ensure!(
             fs::symlink_metadata(&partial).is_err(),
             "leftover partial copy exists: {}",
@@ -303,14 +310,12 @@ pub fn transfer(
     cancel: &AtomicBool,
     router: &crate::Router,
 ) -> Result<()> {
-    if dst_dir.scheme == "file" && src.iter().all(|p| p.scheme == "file") {
-        let paths = src
-            .iter()
-            .map(|p| p.to_local_path().context("invalid local source"))
-            .collect::<Result<Vec<_>>>()?;
-        let dst = dst_dir
-            .to_local_path()
-            .context("invalid local destination")?;
+    // Paths inside a local archive are `file:` too, but have no local path of their own.
+    let local_paths = src
+        .iter()
+        .map(crate::VPath::to_local_path)
+        .collect::<Option<Vec<_>>>();
+    if let (Some(paths), Some(dst)) = (local_paths, dst_dir.to_local_path()) {
         return if mv {
             move_local(&paths, &dst, on_conflict, progress, cancel)
         } else {
@@ -318,6 +323,15 @@ pub fn transfer(
         };
     }
     check_cancel(cancel)?;
+    if mv {
+        for source in src {
+            anyhow::ensure!(
+                routed(router, source)?.caps().delete,
+                "cannot move out of a read-only location (copy instead): {}",
+                source.display()
+            );
+        }
+    }
     let target_provider = routed(router, dst_dir)?;
     let dst = target_provider.stat(dst_dir)?;
     anyhow::ensure!(
@@ -364,6 +378,7 @@ pub fn transfer(
         progress,
         cancel,
         moving: mv,
+        swept: Default::default(),
     };
     for source in src {
         job.node(source, &dst_dir.join(source.name()), 0)?;
@@ -440,6 +455,8 @@ struct ProviderJob<'a> {
     progress: &'a dyn Fn(Progress),
     cancel: &'a AtomicBool,
     moving: bool,
+    /// Destination folders already swept for stale staging files.
+    swept: std::collections::HashSet<String>,
 }
 impl ProviderJob<'_> {
     fn node(
@@ -520,10 +537,11 @@ impl ProviderJob<'_> {
             (self.progress)(self.state.clone());
             return Ok(complete);
         }
-        let partial = target
-            .parent()
-            .context("missing parent")?
-            .join(&format!("{}.keel-partial", target.name()));
+        let folder = target.parent().context("missing parent")?;
+        if self.swept.insert(folder.display()) {
+            sweep_provider(&*dst, &folder);
+        }
+        let partial = folder.join(&partial_name(target.name()));
         let mut reader = src.read(source)?;
         let mut writer = dst.create_new(&partial)?;
         let mut guard = ProviderPartial {
@@ -588,6 +606,70 @@ impl ProviderJob<'_> {
         Ok(true)
     }
 }
+/// Staging files are `<name>.keel-partial-<pid>-<n>` (the SFTP provider stages uploads the
+/// same way): unique per attempt, so a crashed run's leftover never blocks a retry.
+const PARTIAL: &str = ".keel-partial";
+/// Staging files older than this are leftovers of a crash or a lost connection.
+const STALE_PARTIAL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// A staging name for `name`, unique to this attempt and at most 255 bytes (NAME_MAX).
+fn partial_name(name: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let suffix = format!(
+        "{PARTIAL}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut keep = name.len().min(255 - suffix.len());
+    while !name.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    format!("{}{suffix}", &name[..keep])
+}
+/// `<stem>.keel-partial` (older builds) or `<stem>.keel-partial-<digits>-<digits>`.
+fn is_partial(name: &str) -> bool {
+    name.rsplit_once(PARTIAL).is_some_and(|(stem, rest)| {
+        let digits = |n: &str| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit());
+        !stem.is_empty()
+            && (rest.is_empty()
+                || rest
+                    .strip_prefix('-')
+                    .and_then(|r| r.split_once('-'))
+                    .is_some_and(|(a, b)| digits(a) && digits(b)))
+    })
+}
+fn stale(modified: Option<std::time::SystemTime>) -> bool {
+    modified
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > STALE_PARTIAL)
+}
+/// Deletes day-old staging files (never links) from the local folder `dir`. Best effort.
+fn sweep_local(dir: &Path) {
+    for item in fs::read_dir(dir).into_iter().flatten().flatten() {
+        // `DirEntry::metadata` does not follow links.
+        let Ok(meta) = item.metadata() else { continue };
+        let name = item.file_name();
+        if meta.is_file() && name.to_str().is_some_and(is_partial) && stale(meta.modified().ok()) {
+            let _ = fs::remove_file(item.path());
+        }
+    }
+}
+/// `sweep_local` for any provider; a local folder is swept directly (no trash).
+fn sweep_provider(provider: &dyn crate::Provider, dir: &crate::VPath) {
+    if let Some(local) = dir.to_local_path() {
+        return sweep_local(&local);
+    }
+    for item in provider.list(dir).into_iter().flatten() {
+        if item.kind == crate::Kind::File
+            && !item.is_link
+            && is_partial(&item.name)
+            && stale(item.modified)
+        {
+            let _ = provider.remove(&item.path);
+        }
+    }
+}
+
 /// This job's own staged file; removed on every early exit, disarmed once renamed into place.
 struct ProviderPartial {
     provider: std::sync::Arc<dyn crate::Provider>,
@@ -706,7 +788,7 @@ pub fn extract_under(
     let local = router
         .provider_for(&archive)
         .with_context(|| format!("no provider for {}", archive.display()))?
-        .local_copy(&archive)?;
+        .local_copy_cancellable(&archive, progress, cancel)?;
     let mut reader = crate::archive::open_archive(&local)?;
     let dst = long(dst_dir)?;
     anyhow::ensure!(
@@ -752,14 +834,23 @@ pub fn extract_under(
             total_bytes = total_bytes
                 .checked_add(entry.size)
                 .context("archive size overflow")?;
-            files.insert(entry.inner, name);
+            files.insert(entry.inner, (name, entry.size));
         }
     }
     for wanted in &selection {
         anyhow::ensure!(
-            relative(wanted)
-                .is_some_and(|w| dirs.iter().chain(files.values()).any(|n| under(n, &w))),
+            relative(wanted).is_some_and(|w| dirs
+                .iter()
+                .chain(files.values().map(|(n, _)| n))
+                .any(|n| under(n, &w))),
             "not in the archive: {wanted}"
+        );
+    }
+    if let Some(free) = free_space(&dst) {
+        anyhow::ensure!(
+            total_bytes <= free,
+            "not enough free space in {}: extracting needs {total_bytes} bytes, {free} are free",
+            dst_dir.display()
         );
     }
     let mut state = Progress {
@@ -776,28 +867,37 @@ pub fn extract_under(
         fs::create_dir_all(&target).with_context(|| format!("create {}", target.display()))?;
         state.done_items += 1;
     }
+    // Parent folders already created and re-checked during this extraction.
+    let mut ready = std::collections::HashSet::new();
     reader.visit(&|raw| files.contains_key(raw), &mut |raw, input| {
         check_cancel(cancel)?;
-        let name = &files[raw];
+        let (name, size) = &files[raw];
         state.current = name.clone();
         let proposed = below(&dst, name)?;
         if let Some(target) = destination(false, &proposed, on_conflict)? {
             let parent = target.parent().context("destination has no parent")?;
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-            // Re-check: nothing on the way down may have become a link meanwhile.
-            below(&dst, name)?;
+            if !ready.contains(parent) {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
+                // Re-check: nothing on the way down may have become a link meanwhile.
+                below(&dst, name)?;
+                ready.insert(parent.to_path_buf());
+            }
             let mut partial = tempfile::NamedTempFile::new_in(parent)?;
-            copy_archive_bytes(input, &mut partial, &mut state, progress, cancel)?;
-            if let Ok(existing) = fs::symlink_metadata(&target) {
+            let copied = copy_archive_bytes(input, &mut partial, &mut state, progress, cancel)?;
+            // Readers already hold bodies to their declared size; never persist a short file.
+            anyhow::ensure!(copied == *size, "archive entry is truncated: {name}");
+            // A file that appeared at `target` meanwhile is replaced only under Overwrite.
+            if let Err(e) = partial.persist_noclobber(&target) {
                 anyhow::ensure!(
-                    on_conflict == Conflict::Overwrite && existing.is_file(),
-                    "refusing to replace {}",
-                    target.display()
+                    on_conflict == Conflict::Overwrite
+                        && e.error.kind() == io::ErrorKind::AlreadyExists
+                        && fs::symlink_metadata(&target)?.is_file(),
+                    "refusing to replace {}: {}",
+                    target.display(),
+                    e.error
                 );
-                partial.persist(&target)?;
-            } else {
-                // A file that appeared at `target` meanwhile is never replaced.
-                partial.persist_noclobber(&target)?;
+                e.file.persist(&target)?;
             }
         }
         state.done_items += 1;
@@ -827,14 +927,28 @@ fn below(dst: &Path, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Free bytes on the volume holding `dir`, if it can be told.
+fn free_space(dir: &Path) -> Option<u64> {
+    let dir = fs::canonicalize(dir).ok()?;
+    // A verbatim `\\?\C:\x` would not match the `C:\` mount point component-wise.
+    let dir = PathBuf::from(dir.to_str()?.trim_start_matches(r"\\?\"));
+    sysinfo::Disks::new_with_refreshed_list()
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
+}
+
+/// Copies `input` to `output`, returning the byte count.
 fn copy_archive_bytes(
     input: &mut dyn io::Read,
     output: &mut dyn io::Write,
     state: &mut Progress,
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
-) -> Result<()> {
+) -> Result<u64> {
     let mut buffer = vec![0; 64 << 10];
+    let mut copied = 0u64;
     loop {
         check_cancel(cancel)?;
         let n = match input.read(&mut buffer) {
@@ -842,9 +956,10 @@ fn copy_archive_bytes(
             result => result?,
         };
         if n == 0 {
-            return Ok(());
+            return Ok(copied);
         }
         output.write_all(&buffer[..n])?;
+        copied += n as u64;
         state.done_bytes = state.done_bytes.saturating_add(n as u64);
         progress(state.clone());
     }
@@ -927,10 +1042,24 @@ pub fn add_to_zip(
     };
     progress(state.clone());
     let parent = zip_path.parent().context("zip has no parent folder")?;
-    let mut partial = tempfile::NamedTempFile::new_in(parent)?;
+    // A new zip gets the usual umask-filtered mode, not the temp file's private 0600.
+    #[cfg(unix)]
+    let partial = tempfile::Builder::new()
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666))
+        .tempfile_in(parent);
+    #[cfg(not(unix))]
+    let partial = tempfile::NamedTempFile::new_in(parent);
+    let mut partial = partial?;
+    // An existing zip keeps its mode bits (only those: ACLs and xattrs are not copied).
+    #[cfg(unix)]
+    if exists {
+        let mode = fs::metadata(&zip_path)?.permissions();
+        partial.as_file().set_permissions(mode)?;
+    }
     let mut output = zip::ZipWriter::new(io::BufWriter::new(partial.as_file_mut()));
     if exists {
         let mut old = zip::ZipArchive::new(io::BufReader::new(fs::File::open(&zip_path)?))?;
+        output.set_raw_comment(old.comment().into());
         for index in 0..old.len() {
             check_cancel(cancel)?;
             let entry = old.by_index_raw(index)?;
@@ -944,12 +1073,13 @@ pub fn add_to_zip(
         state.current = name.clone();
         let mut options =
             zip::write::SimpleFileOptions::default().large_file(meta.len() >= u32::MAX as u64);
-        if let Some(time) = meta
-            .modified()
-            .ok()
-            .and_then(|t| zip::DateTime::try_from(time::OffsetDateTime::from(t)).ok())
-        {
+        if let Some(time) = meta.modified().ok().and_then(zip_time) {
             options = options.last_modified_time(time);
+        }
+        #[cfg(unix)]
+        {
+            options = options
+                .unix_permissions(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()));
         }
         if meta.is_dir() {
             output.add_directory(name.as_str(), options)?;
@@ -971,4 +1101,42 @@ pub fn add_to_zip(
     partial.as_file().sync_all()?;
     partial.persist(&zip_path)?;
     Ok(())
+}
+
+/// Zip timestamps are local wall-clock time (two-second resolution, 1980 onwards).
+#[cfg(feature = "zip")]
+fn zip_time(time: std::time::SystemTime) -> Option<zip::DateTime> {
+    use chrono::{Datelike, Timelike};
+    let local = chrono::DateTime::<chrono::Local>::from(time);
+    zip::DateTime::from_date_and_time(
+        u16::try_from(local.year()).ok()?,
+        local.month() as u8,
+        local.day() as u8,
+        local.hour() as u8,
+        local.minute() as u8,
+        local.second() as u8,
+    )
+    .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_partial, partial_name};
+    #[test]
+    fn partial_names_are_unique_bounded_and_recognised() {
+        let (a, b) = (partial_name("report.pdf"), partial_name("report.pdf"));
+        assert_ne!(a, b);
+        assert!(a.starts_with("report.pdf.keel-partial-") && is_partial(&a));
+        let long = partial_name(&"\u{e9}".repeat(200));
+        assert!(long.len() <= 255 && is_partial(&long), "{}", long.len());
+        assert!(is_partial("x.bin.keel-partial"));
+        for not in [
+            "notes.keel-partial-draft.txt",
+            ".keel-partial",
+            "x.keel-partial-1-",
+            "x.keel-partial-1",
+        ] {
+            assert!(!is_partial(not), "{not}");
+        }
+    }
 }

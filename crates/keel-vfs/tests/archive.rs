@@ -171,6 +171,14 @@ fn rar_fixture_lists_reads_and_extracts() {
         .map(|e| e.inner)
         .collect();
     assert_eq!(names, ["a.txt", "b.txt"]);
+    // Header times come through (2001-09-09 onwards rules out a misread layout).
+    assert!(archive
+        .entries()
+        .unwrap()
+        .iter()
+        .all(|e| e.modified.is_some_and(
+            |t| t > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000)
+        )));
     let tmp = tempfile::tempdir().unwrap();
     extract_all(&VPath::local(&path), tmp.path(), &router(&tmp)).unwrap();
     assert_eq!(fs::read(tmp.path().join("a.txt")).unwrap(), b"rar hello\n");
@@ -221,22 +229,28 @@ fn cache_evicts_by_bytes_and_recency_and_cleans_failures() {
         size: 100,
         inner: inner.into(),
     };
+    // Pins are dropped at once, so everything here is evictable.
     let first = cache
         .get_or_extract(&key("a"), |p| {
             fs::write(p, b"1234")?;
             Ok(())
         })
-        .unwrap();
+        .unwrap()
+        .path()
+        .to_path_buf();
     let second = cache
         .get_or_extract(&key("b"), |p| {
             fs::write(p, b"5678")?;
             Ok(())
         })
-        .unwrap();
+        .unwrap()
+        .path()
+        .to_path_buf();
     assert_eq!(
         cache
             .get_or_extract(&key("a"), |_| panic!("cache miss"))
-            .unwrap(),
+            .unwrap()
+            .path(),
         first
     );
     cache
@@ -304,6 +318,10 @@ fn extract_rejects_slip_before_writing_and_handles_conflicts_and_selection() {
         "dir/../../escape",
         "..\\escape",
         "dir/file:stream",
+        "dir/con .txt",
+        "COM\u{b9}.log",
+        "tab\there",
+        "what?",
     ] {
         zip_file(&file, &[("good", b"good"), (bad, b"bad")]);
         assert!(extract(
@@ -802,4 +820,462 @@ fn extract_under_strips_the_base_folder() {
         run(&["top.txt".into()], &picked).is_err(),
         "outside the base"
     );
+}
+
+#[cfg(feature = "rar")]
+#[test]
+fn rar_file_reference_entries_are_never_resolved() {
+    // reference.rar (WinRAR `a -oi:1 -ep`): `Cargo.toml` ("fixture body\n"), then `evil.txt`,
+    // a file reference to `Cargo.toml`. unrar resolved such references against the process
+    // CWD (here the crate folder, whose real Cargo.toml differs) and copied that file out.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference.rar");
+    assert!(fs::metadata(&path).unwrap().len() < 4096);
+    let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
+    let names: Vec<_> = archive
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.inner)
+        .collect();
+    assert_eq!(names, ["Cargo.toml"]);
+    assert!(archive.read("evil.txt").is_err());
+    let mut body = String::new();
+    archive
+        .read("Cargo.toml")
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "fixture body\n");
+    let tmp = tempfile::tempdir().unwrap();
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&VPath::local(&path), &dst, &router(&tmp)).unwrap();
+    assert_eq!(fs::read(dst.join("Cargo.toml")).unwrap(), b"fixture body\n");
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+    let root = VPath::join_archive(&VPath::local(&path), "");
+    let router = router(&tmp);
+    let listed = router.provider_for(&root).unwrap().list(&root).unwrap();
+    assert_eq!(listed.len(), 1);
+}
+
+/// 7-Zip's default: every file in one solid block.
+fn solid_7z(tmp: &Path) -> std::path::PathBuf {
+    let src = tmp.join("solid-src");
+    fs::create_dir(&src).unwrap();
+    for (name, n) in [("f1.txt", 1), ("f2.txt", 2), ("f3.txt", 3)] {
+        fs::write(src.join(name), format!("file {n} ").repeat(1000)).unwrap();
+    }
+    let path = tmp.join("solid.7z");
+    let mut writer = sevenz_rust::SevenZWriter::create(&path).unwrap();
+    writer.push_source_path(&src, |_| true).unwrap();
+    writer.finish().unwrap();
+    path
+}
+
+#[test]
+fn solid_7z_reads_and_extracts_any_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = solid_7z(tmp.path());
+    let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
+    for (name, n) in [("f2.txt", 2), ("f3.txt", 3)] {
+        let mut body = String::new();
+        archive
+            .read(name)
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, format!("file {n} ").repeat(1000));
+    }
+    let router = router(&tmp);
+    let dst = tmp.path().join("only-f2");
+    fs::create_dir(&dst).unwrap();
+    let cancel = AtomicBool::new(false);
+    let path = VPath::local(&path);
+    extract(
+        &path,
+        &["f2.txt".into()],
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(dst.join("f2.txt")).unwrap(),
+        "file 2 ".repeat(1000).as_bytes()
+    );
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+    // A conflict-skipped entry must still be decoded past.
+    let dst = tmp.path().join("skip-f1");
+    fs::create_dir(&dst).unwrap();
+    fs::write(dst.join("f1.txt"), b"keep").unwrap();
+    extract(&path, &[], &dst, Conflict::Skip, &|_| {}, &cancel, &router).unwrap();
+    assert_eq!(fs::read(dst.join("f1.txt")).unwrap(), b"keep");
+    assert_eq!(
+        fs::read(dst.join("f3.txt")).unwrap(),
+        "file 3 ".repeat(1000).as_bytes()
+    );
+}
+
+#[test]
+#[ignore = "3,000-entry ZIP extraction timing; run in release mode"]
+fn perf_zip_extract_3k_under_2s() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("many.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    for i in 0..3000 {
+        zip.start_file(
+            format!("file-{i}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(format!("body {i}").as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let start = std::time::Instant::now();
+    extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap();
+    eprintln!("3,000-entry zip extracted in {:?}", start.elapsed());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 3000);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+/// Rewrites the uncompressed size in both the local and the central header of the only entry.
+fn patch_zip_size(file: &Path, size: u32) {
+    let mut bytes = fs::read(file).unwrap();
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    let pos = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    bytes[pos + 24..pos + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(file, bytes).unwrap();
+}
+
+#[test]
+fn entry_longer_than_its_header_is_an_error_everywhere() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("liar.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("a.txt", stored).unwrap();
+    zip.write_all(&[b'x'; 2000]).unwrap();
+    zip.finish().unwrap();
+    patch_zip_size(&file, 1000);
+    let mut body = Vec::new();
+    assert!(keel_vfs::archive::open_archive(&file)
+        .unwrap()
+        .read("a.txt")
+        .unwrap()
+        .read_to_end(&mut body)
+        .is_err());
+    let router = router(&tmp);
+    let path = VPath::join_archive(&VPath::local(&file), "a.txt");
+    assert!(router
+        .provider_for(&path)
+        .unwrap()
+        .local_copy(&path)
+        .is_err());
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    assert!(extract_all(&VPath::local(&file), &dst, &router).is_err());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+}
+
+#[test]
+fn extract_checks_free_space_before_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut header = tar::Header::new_gnu();
+    header.set_path("huge.bin").unwrap();
+    header.set_size(1 << 60);
+    header.set_mode(0o644);
+    header.set_cksum();
+    let mut bytes = tar_bytes("small.txt", b"small");
+    bytes.truncate(1024); // drop the end-of-archive blocks
+    bytes.extend_from_slice(header.as_bytes());
+    let file = tmp.path().join("huge.tar");
+    fs::write(&file, bytes).unwrap();
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let error = extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap_err();
+    assert!(format!("{error:#}").contains("free space"), "{error:#}");
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+}
+
+#[test]
+fn truncated_tar_entry_is_an_error_and_never_lands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut bytes = tar_bytes("big.bin", &[7; 10000]);
+    bytes.truncate(512 + 5000);
+    let file = tmp.path().join("cut.tar");
+    fs::write(&file, bytes).unwrap();
+    let mut body = Vec::new();
+    assert!(keel_vfs::archive::open_archive(&file)
+        .unwrap()
+        .read("big.bin")
+        .unwrap()
+        .read_to_end(&mut body)
+        .is_err());
+    let router = router(&tmp);
+    let path = VPath::join_archive(&VPath::local(&file), "big.bin");
+    assert!(router
+        .provider_for(&path)
+        .unwrap()
+        .local_copy(&path)
+        .is_err());
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    assert!(extract_all(&VPath::local(&file), &dst, &router).is_err());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+}
+
+#[test]
+fn transfer_copies_out_of_an_archive_and_refuses_to_move_out_of_one() {
+    use keel_vfs::ops::transfer;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("source.zip");
+    zip_file(&file, &[("dir/a.txt", b"hello")]);
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let router = router(&tmp);
+    let cancel = AtomicBool::new(false);
+    let source = VPath::join_archive(&VPath::local(&file), "dir/a.txt");
+    let error = transfer(
+        std::slice::from_ref(&source),
+        &VPath::local(&dst),
+        true,
+        Conflict::Skip,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error:#}");
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+    for source in [source, VPath::join_archive(&VPath::local(&file), "dir")] {
+        transfer(
+            &[source],
+            &VPath::local(&dst),
+            false,
+            Conflict::RenameNew,
+            &|_| {},
+            &cancel,
+            &router,
+        )
+        .unwrap();
+    }
+    assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"hello");
+    assert_eq!(fs::read(dst.join("dir/a.txt")).unwrap(), b"hello");
+    assert_eq!(
+        fs::read_dir(&dst).unwrap().count(),
+        2,
+        "no staging files left"
+    );
+}
+
+/// Serves `sftp://remote/<name>` from a local folder and only through
+/// `local_copy_cancellable`, recording the call.
+struct Remote {
+    root: std::path::PathBuf,
+    downloads: std::sync::Mutex<usize>,
+}
+impl keel_vfs::Provider for Remote {
+    fn scheme(&self) -> &'static str {
+        "sftp"
+    }
+    fn caps(&self) -> keel_vfs::Caps {
+        keel_vfs::Caps::default()
+    }
+    fn list(&self, _: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        unimplemented!()
+    }
+    fn stat(&self, p: &VPath) -> anyhow::Result<keel_vfs::Entry> {
+        let local = VPath::local(self.root.join(p.name()));
+        Ok(keel_vfs::Entry {
+            path: p.clone(),
+            ..keel_vfs::LocalProvider.stat(&local)?
+        })
+    }
+    fn read(&self, _: &VPath) -> anyhow::Result<Box<dyn Read + Send>> {
+        unimplemented!()
+    }
+    fn write(&self, _: &VPath) -> anyhow::Result<Box<dyn Write + Send>> {
+        unimplemented!()
+    }
+    fn mkdir(&self, _: &VPath) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn rename(&self, _: &VPath, _: &VPath) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn remove(&self, _: &VPath) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
+        panic!("remote archives must be fetched with local_copy_cancellable")
+    }
+    fn local_copy_cancellable(
+        &self,
+        p: &VPath,
+        progress: &dyn Fn(keel_vfs::Progress),
+        cancel: &AtomicBool,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        anyhow::ensure!(
+            !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "cancelled"
+        );
+        *self.downloads.lock().unwrap() += 1;
+        progress(keel_vfs::Progress {
+            done_bytes: 1,
+            total_bytes: 1,
+            current: "download".into(),
+            done_items: 0,
+            total_items: 1,
+        });
+        Ok(self.root.join(p.name()))
+    }
+}
+
+#[test]
+fn remote_archives_are_fetched_cancellably() {
+    let tmp = tempfile::tempdir().unwrap();
+    zip_file(&tmp.path().join("r.zip"), &[("a.txt", b"remote")]);
+    let remote = Arc::new(Remote {
+        root: tmp.path().into(),
+        downloads: Default::default(),
+    });
+    let mut router = router(&tmp);
+    router.register_remote_provider("remote".into(), remote.clone());
+    let archive = VPath::parse("sftp://remote/r.zip").unwrap();
+    let root = VPath::join_archive(&archive, "");
+    assert_eq!(
+        router
+            .provider_for(&root)
+            .unwrap()
+            .list(&root)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(*remote.downloads.lock().unwrap(), 1);
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let seen = std::cell::Cell::new(false);
+    extract(
+        &archive,
+        &[],
+        &dst,
+        Conflict::Skip,
+        &|p| seen.set(seen.get() || p.current == "download"),
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    assert!(seen.get(), "extract forwards the download's progress");
+    assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"remote");
+}
+
+#[test]
+fn cache_keeps_one_file_per_key_under_races_and_never_evicts_pinned_files() {
+    use keel_vfs::archive::cache::{CacheKey, MaterialiseCache};
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = MaterialiseCache::new(tmp.path().into(), 8);
+    let key = |inner: &str| CacheKey {
+        outer: VPath::local("outer.zip"),
+        modified: None,
+        size: 100,
+        inner: inner.into(),
+    };
+    let barrier = std::sync::Barrier::new(2);
+    let pins: Vec<_> = std::thread::scope(|s| {
+        let racers: Vec<_> = (0..2)
+            .map(|_| {
+                s.spawn(|| {
+                    cache
+                        .get_or_extract(&key("a"), |p| {
+                            fs::write(p, b"1234")?;
+                            barrier.wait();
+                            Ok(())
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        racers.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(pins[0].path(), pins[1].path());
+    assert!(pins[0].path().exists());
+    // Both callers hold pins: going over budget must not delete the file under them.
+    for (name, body) in [("b", b"5678"), ("c", b"9012")] {
+        cache
+            .get_or_extract(&key(name), |p| {
+                fs::write(p, body)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    assert_eq!(fs::read(pins[0].path()).unwrap(), b"1234");
+    let a = pins[0].path().to_path_buf();
+    drop(pins);
+    // Released, it is the least recently used entry again.
+    cache
+        .get_or_extract(&key("d"), |p| {
+            fs::write(p, b"3456")?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!a.exists());
+}
+
+#[test]
+fn add_to_zip_keeps_the_comment_and_mode_and_writes_local_time() {
+    use chrono::{Datelike, Timelike};
+    use keel_vfs::ops::add_to_zip;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("commented.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    zip.set_comment("keep me");
+    zip.start_file("old.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.finish().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+    }
+    let src = tmp.path().join("new.txt");
+    fs::write(&src, b"new").unwrap();
+    let cancel = AtomicBool::new(false);
+    add_to_zip(&file, std::slice::from_ref(&src), "", &|_| {}, &cancel).unwrap();
+    let mut archive = zip::ZipArchive::new(fs::File::open(&file).unwrap()).unwrap();
+    assert_eq!(archive.comment(), b"keep me");
+    let stamp = archive.by_name("new.txt").unwrap().last_modified().unwrap();
+    let local: chrono::DateTime<chrono::Local> =
+        fs::metadata(&src).unwrap().modified().unwrap().into();
+    assert_eq!(
+        (
+            stamp.year(),
+            stamp.month(),
+            stamp.day(),
+            stamp.hour(),
+            stamp.minute()
+        ),
+        (
+            local.year() as u16,
+            local.month() as u8,
+            local.day() as u8,
+            local.hour() as u8,
+            local.minute() as u8
+        )
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
+    }
 }

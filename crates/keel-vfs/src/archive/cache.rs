@@ -5,6 +5,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -23,6 +24,18 @@ struct Cached {
     path: tempfile::TempPath,
     size: u64,
     used: u64,
+    /// Every `Pinned` handed out holds a clone; eviction skips entries still pinned.
+    pin: Arc<()>,
+}
+/// A materialised file that is not evicted while this lives.
+pub struct Pinned {
+    path: PathBuf,
+    _pin: Arc<()>,
+}
+impl Pinned {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 #[derive(Default)]
 struct State {
@@ -72,17 +85,18 @@ impl MaterialiseCache {
             state: Mutex::new(State::default()),
         }
     }
-    /// Returned paths belong to the cache and stay valid until evicted: open them promptly,
-    /// never persist them. `extract` runs unlocked (a 1 GiB entry must not stall other
-    /// previews, and nested archives re-enter the cache from inside it); a failed or
-    /// over-budget extraction leaves nothing behind.
+    /// The returned file belongs to the cache and is never evicted while the `Pinned` lives;
+    /// drop it when done reading. `extract` runs unlocked (a 1 GiB entry must not stall
+    /// other previews, and nested archives re-enter the cache from inside it); a failed or
+    /// over-budget extraction leaves nothing behind. When two callers race on one key, the
+    /// first insert wins and the loser's copy is discarded.
     pub fn get_or_extract(
         &self,
         key: &CacheKey,
         extract: impl FnOnce(&Path) -> Result<()>,
-    ) -> Result<PathBuf> {
-        if let Some(path) = self.hit(key) {
-            return Ok(path);
+    ) -> Result<Pinned> {
+        if let Some(pinned) = hit(&mut self.state.lock(), key) {
+            return Ok(pinned);
         }
         fs::create_dir_all(&self.root)?;
         let ext = Path::new(&key.inner)
@@ -101,57 +115,70 @@ impl MaterialiseCache {
             size <= self.budget,
             "TooLarge: entry exceeds the archive cache budget"
         );
-        // Another thread may have materialised the same key meanwhile: keep theirs.
-        if let Some(path) = self.hit(key) {
-            return Ok(path);
-        }
         let mut state = self.state.lock();
+        // Re-checked under the same lock as the insert: another thread may have won.
+        if let Some(pinned) = hit(&mut state, key) {
+            return Ok(pinned);
+        }
         evict(&mut state, self.budget - size);
         state.clock += 1;
+        let pin = Arc::new(());
+        let pinned = Pinned {
+            path: temp.to_path_buf(),
+            _pin: pin.clone(),
+        };
         let used = state.clock;
-        let path = temp.to_path_buf();
         state.entries.insert(
             key.clone(),
             Cached {
                 path: temp,
                 size,
                 used,
+                pin,
             },
         );
-        Ok(path)
+        Ok(pinned)
     }
     pub fn evict_to_budget(&self) {
         evict(&mut self.state.lock(), self.budget);
     }
-    fn hit(&self, key: &CacheKey) -> Option<PathBuf> {
-        let mut state = self.state.lock();
-        state.clock += 1;
-        let now = state.clock;
-        match state.entries.get_mut(key) {
-            Some(entry) if entry.path.is_file() => {
-                entry.used = now;
-                Some(entry.path.to_path_buf())
-            }
-            Some(_) => {
-                state.entries.remove(key);
-                None
-            }
-            None => None,
+}
+fn hit(state: &mut State, key: &CacheKey) -> Option<Pinned> {
+    state.clock += 1;
+    let now = state.clock;
+    match state.entries.get_mut(key) {
+        Some(entry) if entry.path.is_file() => {
+            entry.used = now;
+            Some(Pinned {
+                path: entry.path.to_path_buf(),
+                _pin: entry.pin.clone(),
+            })
         }
+        Some(_) => {
+            state.entries.remove(key);
+            None
+        }
+        None => None,
     }
 }
-/// Drops least-recently-used entries until the total is within `budget`.
+/// Drops least-recently-used unpinned entries until the total is within `budget` (pinned
+/// ones can keep it over budget until they are released).
 fn evict(state: &mut State, budget: u64) {
     let mut total: u64 = state.entries.values().map(|e| e.size).sum();
-    while total > budget {
-        let Some(key) = state
-            .entries
-            .iter()
-            .min_by_key(|(_, e)| e.used)
-            .map(|(key, _)| key.clone())
-        else {
+    if total <= budget {
+        return;
+    }
+    let mut idle: Vec<_> = state
+        .entries
+        .iter()
+        .filter(|(_, e)| Arc::strong_count(&e.pin) == 1)
+        .map(|(key, e)| (e.used, key.clone()))
+        .collect();
+    idle.sort_unstable_by_key(|(used, _)| *used);
+    for (_, key) in idle {
+        if total <= budget {
             break;
-        };
+        }
         if let Some(gone) = state.entries.remove(&key) {
             total -= gone.size;
         }

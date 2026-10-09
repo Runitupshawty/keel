@@ -1,8 +1,9 @@
-use crate::{Entry, VPath};
+use crate::{Entry, Progress, VPath};
 use anyhow::Result;
 use std::{
     io::{Read, Write},
     path::PathBuf,
+    sync::atomic::AtomicBool,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,4 +51,14 @@ pub trait Provider: Send + Sync {
     /// Local: OS trash only, never a permanent delete.
     fn remove(&self, p: &VPath) -> Result<()>;
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
+    /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
+    fn local_copy_cancellable(
+        &self,
+        p: &VPath,
+        progress: &dyn Fn(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf> {
+        let _ = (progress, cancel);
+        self.local_copy(p)
+    }
 }
