@@ -471,6 +471,20 @@ impl Indexer {
                 "" => src.def.label.clone(),
                 name => name.to_owned(),
             };
+            // A different volume or folder at the root (an unmounted mount point, a reassigned
+            // drive letter) must not replace the snapshot: it reads as offline.
+            let adopt = src.store.meta("adopt_root")?.is_some();
+            if let (Some(now_id), Some(was), false) =
+                (&root.fs_id, src.store.meta("root_id")?, adopt)
+            {
+                if *now_id != was {
+                    return Err(Offline(format!(
+                        "{} is a different folder than the one indexed",
+                        src.def.root.display()
+                    ))
+                    .into());
+                }
+            }
             let root_fs = root.fs_id.clone().unwrap_or_else(|| name_hash("", ""));
             let mut walk = Walk {
                 src,
@@ -499,8 +513,24 @@ impl Indexer {
             // What was written stays, also after a cancel or an outage.
             walk.commit()?;
             walked?;
+            // An empty root that had entries is more likely unmounted than emptied.
+            if walk.done == 1 && total > 1 && !adopt {
+                return Err(Offline(format!(
+                    "{} is empty but had {} entries",
+                    src.def.root.display(),
+                    total - 1
+                ))
+                .into());
+            }
             let tx = conn.unchecked_transaction()?;
             tx.execute("DELETE FROM record WHERE gen < ?1", [gen as i64])?;
+            match &root.fs_id {
+                Some(id) => crate::db::set_meta(&tx, "root_id", id)?,
+                None => {
+                    tx.execute("DELETE FROM meta WHERE key = 'root_id'", [])?;
+                }
+            }
+            tx.execute("DELETE FROM meta WHERE key = 'adopt_root'", [])?;
             crate::db::set_meta(&tx, "generation", &gen.to_string())?;
             crate::db::set_meta(&tx, "last_full_walk", &crate::now().to_string())?;
             tx.commit()?;
@@ -536,6 +566,12 @@ impl Indexer {
                 Err(e)
             }
         }
+    }
+
+    /// Accepts whatever is at the source's root now: the next full walk replaces the snapshot
+    /// even when the root is a different folder or volume than the one indexed, or empty.
+    pub fn adopt_root(src: &Source) -> Result<()> {
+        src.store.set_meta("adopt_root", "1")
     }
 
     /// Reconciles one local path with the store: stats it and inserts, updates, moves (by

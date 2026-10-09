@@ -294,6 +294,65 @@ pub(crate) fn fake_source(
 }
 
 #[test]
+fn a_different_folder_at_the_root_reads_as_offline() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("drive");
+    write(&root.join("a.txt"), "a");
+    write(&root.join("sub/b.txt"), "b");
+    let (_data, lib, src) = library_with(folder("d", &root));
+    walk(&src, &lib.router()).unwrap();
+    let before = records(&src);
+    assert_eq!(before.len(), 4);
+    // Unplugged and something else mounted at the same place.
+    std::fs::rename(&root, files.path().join("unplugged")).unwrap();
+    write(&root.join("other.txt"), "o");
+    let err = walk(&src, &lib.router()).unwrap_err();
+    assert!(err.is::<Offline>(), "{err:#}");
+    assert!(matches!(*src.status.read(), SourceStatus::Offline { .. }));
+    assert_eq!(
+        paths(&src),
+        ["", "a.txt", "sub", "sub/b.txt"],
+        "snapshot kept"
+    );
+    // Taken as the new root on request.
+    Indexer::adopt_root(&src).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(paths(&src), ["", "other.txt"]);
+    walk(&src, &lib.router()).unwrap();
+}
+
+#[test]
+fn an_emptied_root_reads_as_offline() {
+    let empty = Arc::new(AtomicBool::new(false));
+    let router = Router::new();
+    let flag = empty.clone();
+    router.register(Arc::new(fake(move |path: &str| {
+        Ok(match path {
+            "/" if flag.load(Ordering::SeqCst) => Vec::new(),
+            "/" => vec![("a".into(), true, 0), ("f.txt".into(), false, 3)],
+            "/a" => vec![("x".into(), false, 1)],
+            _ => anyhow::bail!("no such folder {path}"),
+        })
+    })));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "nas".into(),
+        root: VPath::parse("fake://nas/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+    });
+    walk(&src, &router).unwrap();
+    assert_eq!(paths(&src).len(), 4);
+    empty.store(true, Ordering::SeqCst);
+    let err = walk(&src, &router).unwrap_err();
+    assert!(err.is::<Offline>(), "{err:#}");
+    assert_eq!(paths(&src).len(), 4, "snapshot kept");
+    Indexer::adopt_root(&src).unwrap();
+    walk(&src, &router).unwrap();
+    assert_eq!(paths(&src), [""]);
+}
+
+#[test]
 fn unreadable_offline_and_cancelled_walks_keep_the_snapshot() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
