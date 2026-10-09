@@ -30,6 +30,21 @@ pub trait Provider: Send + Sync {
     fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         anyhow::bail!("create_new is not supported for {}", p.display())
     }
+    /// `create_new` for transfers: a provider whose upload happens on `flush()` ends its
+    /// retries there when `cancel` is set.
+    fn create_new_cancellable<'a>(
+        &self,
+        p: &VPath,
+        cancel: &'a AtomicBool,
+    ) -> Result<Box<dyn Write + Send + 'a>> {
+        let _ = cancel;
+        self.create_new(p)
+    }
+    /// `Some(service)`: writers hold the whole file and send it on `flush()`, so a transfer
+    /// reports "Uploading to <service>…" instead of counting bytes that are only buffered.
+    fn uploads_on_flush(&self) -> Option<&'static str> {
+        None
+    }
     fn mkdir(&self, p: &VPath) -> Result<()>;
     fn rename(&self, from: &VPath, to: &VPath) -> Result<()>;
     /// Atomically place a completed upload without replacing an existing entry.

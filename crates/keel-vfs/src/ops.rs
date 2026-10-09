@@ -547,7 +547,8 @@ impl ProviderJob<'_> {
         }
         let partial = folder.join(&partial_name(target.name()));
         let mut reader = src.read(source)?;
-        let mut writer = dst.create_new(&partial)?;
+        let mut writer = dst.create_new_cancellable(&partial, self.cancel)?;
+        let uploading = dst.uploads_on_flush();
         let mut guard = ProviderPartial {
             provider: dst.clone(),
             path: Some(partial.clone()),
@@ -563,8 +564,16 @@ impl ProviderJob<'_> {
             writer.write_all(&buffer[..n])?;
             copied += n as u64;
             let mut progress = self.state.clone();
-            progress.done_bytes += copied;
-            progress.current = source.display();
+            match uploading {
+                // Only buffered so far: the bytes count once `flush()` has sent them.
+                Some(service) => {
+                    progress.current = format!("Uploading to {service}… {}", source.display())
+                }
+                None => {
+                    progress.done_bytes += copied;
+                    progress.current = source.display();
+                }
+            }
             (self.progress)(progress);
         }
         check_cancel(self.cancel)?;

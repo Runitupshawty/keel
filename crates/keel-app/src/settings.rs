@@ -108,12 +108,27 @@ impl Settings {
 
     /// Defaults when the file is missing or broken. A broken file is renamed to
     /// `config.toml.bad` first (so saving defaults cannot destroy it) and reported in the
-    /// returned notice, for a toast.
+    /// returned notice, for a toast. A bad `[[clouds]]` / `[[remotes]]` entry only drops
+    /// that entry (`parse_lenient`); the file is copied to `config.toml.bad` first, as the
+    /// next save leaves the entry out.
     pub fn load() -> (Settings, Option<String>) {
-        match read_config(&Self::path(), |t| {
-            toml::from_str(t).map_err(|e| e.to_string())
-        }) {
-            Ok(s) => (s.unwrap_or_default(), None),
+        let path = Self::path();
+        match read_config(&path, parse_lenient) {
+            Ok(None) => (Settings::default(), None),
+            Ok(Some((s, dropped))) if dropped.is_empty() => (s, None),
+            Ok(Some((s, dropped))) => {
+                let mut bad = path.as_os_str().to_owned();
+                bad.push(".bad");
+                let kept = match std::fs::copy(&path, &bad) {
+                    Ok(_) => "the original is kept as config.toml.bad".to_owned(),
+                    Err(e) => format!("could not keep a copy: {e}"),
+                };
+                let notice = format!(
+                    "config.toml: skipped invalid {} ({kept})",
+                    dropped.join(", ")
+                );
+                (s, Some(notice))
+            }
             Err(notice) => (Settings::default(), Some(notice)),
         }
     }
@@ -127,6 +142,55 @@ impl Settings {
             .clamp(1, keel_preview::MAX_PREVIEW_BYTES / MB)
             * MB
     }
+}
+
+/// Parses config.toml with each `[[clouds]]` / `[[remotes]]` entry on its own: an invalid
+/// one is left out and named in the returned list instead of failing the whole file.
+pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
+    let mut table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut dropped = Vec::new();
+    let clouds = entries(&mut table, "clouds", &mut dropped);
+    let remotes = entries(&mut table, "remotes", &mut dropped);
+    let mut s: Settings = toml::Value::Table(table)
+        .try_into()
+        .map_err(|e: toml::de::Error| e.to_string())?;
+    s.clouds = clouds;
+    s.remotes = remotes;
+    Ok((s, dropped))
+}
+
+/// The valid entries of the array `key`; the others are named in `dropped`.
+fn entries<T: serde::de::DeserializeOwned>(
+    table: &mut toml::Table,
+    key: &str,
+    dropped: &mut Vec<String>,
+) -> Vec<T> {
+    let items = match table.remove(key) {
+        None => return Vec::new(),
+        Some(toml::Value::Array(items)) => items,
+        Some(_) => {
+            dropped.push(format!("[[{key}]]"));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for (n, item) in items.into_iter().enumerate() {
+        let label = item
+            .get("label")
+            .and_then(|l| l.as_str())
+            .map(str::to_owned);
+        match item.try_into() {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                tracing::warn!("config.toml [[{key}]] #{}: {e}", n + 1);
+                dropped.push(match label {
+                    Some(label) => format!("[[{key}]] \"{label}\""),
+                    None => format!("[[{key}]] #{}", n + 1),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Reads and parses a config file (a leading UTF-8 BOM is ignored). `Ok(None)` when there
@@ -367,6 +431,31 @@ mod tests {
     use super::Settings;
 
     #[test]
+    fn a_bad_cloud_or_remote_entry_drops_only_itself() {
+        let text = r#"
+theme = "light"
+[[clouds]]
+id = "drive"
+label = "Drive"
+kind = "GoogleDrive"
+[[clouds]]
+id = "box"
+label = "My Box"
+kind = "Box"
+[[remotes]]
+label = "nas"
+"#;
+        let (s, dropped) = super::parse_lenient(text).unwrap();
+        assert_eq!(s.theme, "light");
+        assert_eq!(s.clouds.len(), 1);
+        assert_eq!(s.clouds[0].id, "drive");
+        assert!(s.remotes.is_empty());
+        assert_eq!(dropped, [r#"[[clouds]] "My Box""#, r#"[[remotes]] "nas""#]);
+        // Broken TOML is still an error for the whole file.
+        assert!(super::parse_lenient("theme = [").is_err());
+    }
+
+    #[test]
     fn terminal_settings_upgrade_and_round_trip() {
         let defaults: Settings = toml::from_str("theme = 'light'").unwrap();
         assert!(defaults.terminal_follow_cwd);
@@ -424,6 +513,16 @@ mod tests {
             std::fs::read_to_string(path.with_file_name("config.toml.bad")).unwrap(),
             "theme = ["
         );
+        // One bad cloud entry drops only itself; the original is kept for the user.
+        std::fs::write(
+            &path,
+            "theme = \"light\"\n[[clouds]]\nid = \"x\"\nlabel = \"Old\"\nkind = \"Box\"\n",
+        )
+        .unwrap();
+        let (loaded, notice) = Settings::load();
+        assert_eq!(loaded.theme, "light");
+        assert!(notice.unwrap().contains("\"Old\""));
+        assert!(path.with_file_name("config.toml.bad").exists());
         // session.json and crash.log follow KEEL_CONFIG_DIR.
         assert_eq!(super::cache_dir(), Some(dir.clone()));
         std::env::remove_var("KEEL_CONFIG_DIR");

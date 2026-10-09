@@ -1247,6 +1247,50 @@ fn transfer_between_local_and_cloud_with_conflicts_and_cancel() {
     assert!(router.provider_for(&vp("cloud://mem/")).is_none());
 }
 
+/// Drive / Dropbox take a file in one request on `flush()`: the job says "Uploading to …"
+/// instead of standing at 100 % while that runs, and a cancelled job uploads nothing.
+#[test]
+fn single_request_uploads_say_so_and_stop_on_cancel() {
+    let router = Router::new();
+    let dbx = Arc::new(memory_cloud_of("dbx", CloudKind::Dropbox));
+    router.register_cloud_provider("dbx".into(), dbx);
+    let cloud = router.provider_for(&vp("cloud://dbx/")).unwrap();
+    assert_eq!(cloud.uploads_on_flush(), Some("Dropbox"));
+    let local = tempfile::tempdir().unwrap();
+    fs::write(local.path().join("a.bin"), vec![1u8; 3_000_000]).unwrap();
+    let src = [VPath::local(local.path().join("a.bin"))];
+    let seen = Mutex::new(Vec::<Progress>::new());
+    let report = |p: Progress| seen.lock().push(p);
+    let no = AtomicBool::new(false);
+    ops::transfer(
+        &src,
+        &vp("cloud://dbx/"),
+        false,
+        Conflict::Skip,
+        &report,
+        &no,
+        &router,
+    )
+    .unwrap();
+    let seen = seen.into_inner();
+    let uploading: Vec<_> = seen
+        .iter()
+        .filter(|p| p.current.starts_with("Uploading to Dropbox…"))
+        .collect();
+    assert!(!uploading.is_empty());
+    assert!(uploading.iter().all(|p| p.done_bytes == 0));
+    assert_eq!(seen.last().unwrap().done_bytes, 3_000_000);
+    // A commit after the job was cancelled sends nothing.
+    let cancel = AtomicBool::new(false);
+    let target = vp("cloud://dbx/b.txt");
+    let mut w = cloud.create_new_cancellable(&target, &cancel).unwrap();
+    w.write_all(b"data").unwrap();
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(w.flush().unwrap_err().kind(), io::ErrorKind::Interrupted);
+    drop(w);
+    assert!(cloud.stat(&target).is_err());
+}
+
 // --- Real opendal services against local fakes ----------------------------------------
 
 /// opendal's real S3 service over the HTTP transport `init` installs.
@@ -1500,8 +1544,24 @@ fn keyring_store_round_trip() {
     store.delete(&key).unwrap();
 }
 
+/// A revoke endpoint logging the token of each call (Drive: the form field; Dropbox: the
+/// bearer).
+fn revoke_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let base = serve(move |req| {
+        let token = match req.headers.get("authorization") {
+            Some(bearer) => bearer.trim_start_matches("Bearer ").to_owned(),
+            None => String::from_utf8_lossy(&req.body).replace("token=", ""),
+        };
+        log.lock().push(token);
+        (200, vec![], vec![])
+    });
+    (format!("{base}/revoke"), seen)
+}
+
 #[test]
-fn sign_out_revokes_the_right_token_and_forgets_everything() {
+fn sign_out_forgets_the_keys_before_revoking_with_the_right_token() {
     let store = MemoryStore::default();
     let tokens = OAuthTokens {
         access: "at".into(),
@@ -1509,21 +1569,52 @@ fn sign_out_revokes_the_right_token_and_forgets_everything() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
     };
     store_tokens(&store, "drive", &tokens).unwrap();
-    store_tokens(&store, "dbx", &tokens).unwrap();
-    let (drive, dbx) = (
-        account("drive", CloudKind::GoogleDrive),
-        account("dbx", CloudKind::Dropbox),
-    );
-    assert_eq!(revoke_token(&drive, &store).as_deref(), Some("rt"));
-    assert_eq!(revoke_token(&dbx, &store).as_deref(), Some("at"));
-    // S3 has nothing to revoke (no request): its keys just go.
+    store.set("drive/client_secret", "cs").unwrap();
+    let mut drive = account("drive", CloudKind::GoogleDrive);
+    drive.client_id_override = Some("app".into());
+    // The entries are gone before the (maybe slow, offline) revoke starts: a new account
+    // reusing the id meanwhile keeps its secrets. The revoke gets what was read before.
+    let err = sign_out_with(&drive, &store, |t, c| {
+        assert!(store.keys().is_empty(), "{:?}", store.keys());
+        let got = (t.access.as_str(), t.refresh.as_deref(), c.secret.as_deref());
+        assert_eq!(got, ("at", Some("rt"), Some("cs")));
+        anyhow::bail!("offline")
+    })
+    .unwrap_err();
+    assert_eq!(err.to_string(), "offline");
+    assert!(store.keys().is_empty());
+    // Drive revokes the refresh token, Dropbox a live access token.
+    let (url, seen) = revoke_server();
+    let client = OAuthClient {
+        id: "app".into(),
+        secret: None,
+    };
+    let endpoints = |kind| oauth::Endpoints::for_kind(kind).unwrap();
+    let drive_kind = CloudKind::GoogleDrive;
+    revoke_at(drive_kind, &tokens, &client, &endpoints(drive_kind), &url).unwrap();
+    let dbx = CloudKind::Dropbox;
+    revoke_at(dbx, &tokens, &client, &endpoints(dbx), &url).unwrap();
+    // An expired Dropbox access token (4 h) would get a 401: it is refreshed first.
+    let (token_url, refreshes) =
+        token_server(200, r#"{"access_token":"at-new","expires_in":14400}"#);
+    let mut dbx_endpoints = endpoints(dbx);
+    dbx_endpoints.token = token_url;
+    let expired = OAuthTokens {
+        expires_at: UNIX_EPOCH,
+        ..tokens.clone()
+    };
+    revoke_at(dbx, &expired, &client, &dbx_endpoints, &url).unwrap();
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(*seen.lock(), ["rt", "at", "at-new"]);
+    // A grant already revoked has nothing left to revoke.
+    let (token_url, _) = token_server(400, r#"{"error":"invalid_grant"}"#);
+    dbx_endpoints.token = token_url;
+    revoke_at(dbx, &expired, &client, &dbx_endpoints, &url).unwrap();
+    assert_eq!(seen.lock().len(), 3);
+    // S3 has nothing to revoke (no request): its keys just go. Nothing stored: no request.
     store.set("b2/access_key_id", "AKID").unwrap();
     store.set("b2/secret_access_key", "SECRET").unwrap();
     sign_out(&account("b2", CloudKind::S3), &store).unwrap();
-    assert_eq!(store.get("b2/secret_access_key").unwrap(), None);
-    // Nothing stored: no request either.
-    forget_account(&store, "drive");
-    assert_eq!(revoke_token(&drive, &store), None);
+    assert!(store.keys().is_empty());
     sign_out(&drive, &store).unwrap();
-    assert_eq!(store.get("drive/tokens").unwrap(), None);
 }

@@ -42,6 +42,8 @@ natord = "1"
 egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
 ignore.workspace = true
 serde_json = "1"
+# Wipes typed cloud secrets from memory (already in the tree through rustls / russh).
+zeroize = "1"
 # Folder picker (Extract to…) and SSH key file picker (Settings → Remotes); always called on
 # a worker thread. GTK on Linux (eframe already needs libgtk-3-dev there).
 rfd = { version = "0.15", default-features = false, features = ["gtk3"] }

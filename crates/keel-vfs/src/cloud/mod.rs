@@ -231,20 +231,70 @@ fn load_tokens(secrets: &dyn SecretStore, id: &str) -> Result<Option<OAuthTokens
     }))
 }
 
-/// Signs an account out: revokes its grant where the service allows it (Drive: the refresh
-/// token; Dropbox: the access token), then deletes its keychain entries whatever the
-/// service answered. S3 keys are only revocable in the provider's console. Blocks on the
-/// network: workers only. The error is the revoke's (the entries are gone either way).
+/// Signs an account out: deletes its keychain entries first (so a slow or offline revoke
+/// can never delete the secrets of a new account that reuses the id), then revokes the
+/// grant with the tokens read before (`revoke_tokens`). S3 keys are only revocable in the
+/// provider's console. Blocks on the network: workers only. The error is the revoke's (the
+/// entries are gone either way).
 pub fn sign_out(account: &CloudAccount, secrets: &dyn SecretStore) -> Result<()> {
-    let revoked = match (
-        oauth::revoke_url(account.kind),
-        revoke_token(account, secrets),
-    ) {
-        (Some(url), Some(token)) => oauth::revoke(account.kind, url, &token),
-        _ => Ok(()),
-    };
+    sign_out_with(account, secrets, |tokens, client| {
+        revoke_tokens(account.kind, tokens, client)
+    })
+}
+/// `sign_out` with its own revoke (called with the tokens and client read before the
+/// entries were deleted).
+pub fn sign_out_with(
+    account: &CloudAccount,
+    secrets: &dyn SecretStore,
+    revoke: impl FnOnce(&OAuthTokens, &OAuthClient) -> Result<()>,
+) -> Result<()> {
+    let tokens = load_tokens(secrets, &account.id).ok().flatten();
+    // Only a Dropbox refresh needs the client; Drive revokes without one.
+    let client = resolve_client(account, secrets).unwrap_or(OAuthClient {
+        id: String::new(),
+        secret: None,
+    });
     forget_account(secrets, &account.id);
-    revoked
+    match tokens {
+        Some(tokens) if account.kind != CloudKind::S3 => revoke(&tokens, &client),
+        _ => Ok(()),
+    }
+}
+
+/// Revokes a grant from tokens in memory (no keychain access): Drive's refresh token ends
+/// the whole grant; Dropbox revokes through an access token, refreshed first when expired.
+/// For a sign-out, and for a sign-in cancelled after the tokens arrived. Blocks on the
+/// network: workers only.
+pub fn revoke_tokens(kind: CloudKind, tokens: &OAuthTokens, client: &OAuthClient) -> Result<()> {
+    match (oauth::revoke_url(kind), oauth::Endpoints::for_kind(kind)) {
+        (Some(url), Ok(endpoints)) => revoke_at(kind, tokens, client, &endpoints, url),
+        _ => Ok(()),
+    }
+}
+fn revoke_at(
+    kind: CloudKind,
+    tokens: &OAuthTokens,
+    client: &OAuthClient,
+    endpoints: &oauth::Endpoints,
+    url: &str,
+) -> Result<()> {
+    let fresh = !tokens.access.is_empty()
+        && tokens.expires_at > SystemTime::now() + Duration::from_secs(60);
+    let token = match (kind, &tokens.refresh) {
+        (CloudKind::GoogleDrive, refresh) => refresh.clone(),
+        _ if fresh => Some(tokens.access.clone()),
+        (_, Some(refresh)) => match oauth::refresh(endpoints, client, refresh) {
+            Ok(t) => Some(t.access),
+            // The grant is already gone: nothing left to revoke.
+            Err(e) if io_kind(&e) == Some(io::ErrorKind::PermissionDenied) => None,
+            Err(e) => return Err(e),
+        },
+        (_, None) => Some(tokens.access.clone()).filter(|a| !a.is_empty()),
+    };
+    match token {
+        Some(token) => oauth::revoke(kind, url, &token),
+        None => Ok(()),
+    }
 }
 
 /// CPU features graviola (rustls' crypto here) asserts on first use; see its README.
@@ -305,15 +355,6 @@ fn cpu_error(has: impl Fn(&str) -> bool) -> Result<(), CloudError> {
 /// Whether this machine can use cloud accounts at all (the UI may grey out "Add account").
 pub fn check_cpu() -> Result<(), CloudError> {
     cpu_error(cpu_has)
-}
-
-/// The token `sign_out` revokes: Drive's refresh token, Dropbox's access token.
-fn revoke_token(account: &CloudAccount, secrets: &dyn SecretStore) -> Option<String> {
-    let t = load_tokens(secrets, &account.id).ok().flatten()?;
-    match account.kind {
-        CloudKind::GoogleDrive => t.refresh,
-        _ => Some(t.access).filter(|a| !a.is_empty()),
-    }
 }
 
 /// rustls' crypto (graviola: pure Rust, so cross-target builds need no C toolchain) and
@@ -1235,12 +1276,13 @@ impl Read for CloudReader {
 /// One upload, written straight to the target: no staging name is needed because the
 /// file (or object) only changes once the upload completes. Services that take a file in
 /// one request (Drive, Dropbox) get it from memory on `flush()`, with the usual retries
-/// and token refresh; S3 streams (multipart past the first part). Dropped without
-/// `flush()`: nothing is written.
-struct CloudUpload {
+/// and token refresh, whose waits end on `cancel`; S3 streams (multipart past the first
+/// part). Dropped without `flush()`: nothing is written.
+struct CloudUpload<'c> {
     core: Arc<Core>,
     target: VPath,
     exclusive: bool,
+    cancel: &'c AtomicBool,
     sink: Sink,
     written: u64,
     done: bool,
@@ -1250,8 +1292,13 @@ enum Sink {
     Memory(Vec<u8>),
     Stream(Option<blocking::Writer>),
 }
-impl CloudUpload {
-    fn start(core: Arc<Core>, target: &VPath, exclusive: bool) -> Result<Self> {
+impl<'c> CloudUpload<'c> {
+    fn start(
+        core: Arc<Core>,
+        target: &VPath,
+        exclusive: bool,
+        cancel: &'c AtomicBool,
+    ) -> Result<Self> {
         core.validate(target)?;
         anyhow::ensure!(target.parent().is_some(), "cannot write the account root");
         if exclusive && core.maybe_stat(target)?.is_some() {
@@ -1265,7 +1312,7 @@ impl CloudUpload {
         let sink = if caps.write_can_multi {
             let k = key(target, false);
             let if_not_exists = exclusive && caps.write_with_if_not_exists;
-            Sink::Stream(Some(core.call(target, |op| {
+            Sink::Stream(Some(core.call_cancellable(target, cancel, |op| {
                 op.writer_options(
                     &k,
                     options::WriteOptions {
@@ -1281,6 +1328,7 @@ impl CloudUpload {
             core,
             target: target.clone(),
             exclusive,
+            cancel,
             sink,
             written: 0,
             done: false,
@@ -1292,6 +1340,10 @@ impl CloudUpload {
             return Ok(());
         }
         anyhow::ensure!(!self.failed, "upload failed: {}", self.target.display());
+        if self.cancel.load(Ordering::Relaxed) {
+            self.failed = true;
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
+        }
         let result = match &mut self.sink {
             Sink::Memory(data) => {
                 let data = Buffer::from(std::mem::take(data));
@@ -1300,8 +1352,9 @@ impl CloudUpload {
                     if_not_exists: self.exclusive && self.core.caps().write_with_if_not_exists,
                     ..Default::default()
                 };
+                // ponytail: cancel ends the retry waits, not a request already in flight.
                 self.core
-                    .call(&self.target, |op| {
+                    .call_cancellable(&self.target, self.cancel, |op| {
                         op.write_options(&k, data.clone(), opts.clone())
                     })
                     .map(drop)
@@ -1324,7 +1377,7 @@ impl CloudUpload {
         }
     }
 }
-impl Write for CloudUpload {
+impl Write for CloudUpload<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.done || self.failed {
             return Err(io::Error::other("upload finished or failed"));
@@ -1369,7 +1422,7 @@ impl Write for CloudUpload {
         })
     }
 }
-impl Drop for CloudUpload {
+impl Drop for CloudUpload<'_> {
     fn drop(&mut self) {
         if !self.done && !self.failed {
             tracing::error!(
@@ -1445,10 +1498,30 @@ impl Provider for CloudProvider {
         self.core.read(p, &NEVER)
     }
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
-        Ok(Box::new(CloudUpload::start(self.core.clone(), p, false)?))
+        Ok(Box::new(CloudUpload::start(
+            self.core.clone(),
+            p,
+            false,
+            &NEVER,
+        )?))
     }
     fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
-        Ok(Box::new(CloudUpload::start(self.core.clone(), p, true)?))
+        self.create_new_cancellable(p, &NEVER)
+    }
+    fn create_new_cancellable<'a>(
+        &self,
+        p: &VPath,
+        cancel: &'a AtomicBool,
+    ) -> Result<Box<dyn Write + Send + 'a>> {
+        Ok(Box::new(CloudUpload::start(
+            self.core.clone(),
+            p,
+            true,
+            cancel,
+        )?))
+    }
+    fn uploads_on_flush(&self) -> Option<&'static str> {
+        (!self.core.caps().write_can_multi).then(|| self.core.account.kind.name())
     }
     fn mkdir(&self, p: &VPath) -> Result<()> {
         self.core.mkdir(p)
