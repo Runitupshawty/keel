@@ -5,7 +5,7 @@
 //! Protocol: one JSON `Request` line from the client, `ok` back once it was taken.
 
 use crate::cli::Request;
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Name, Stream};
+use interprocess::local_socket::{prelude::*, ListenerOptions, Name, Stream};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::time::Duration;
 
@@ -78,10 +78,10 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
 /// Windows (named pipe) and Linux (abstract socket) have a namespace that refuses a second
 /// listener; other Unixes get an explicit socket file under the temp dir so a stale file can be
 /// removed deliberately (never overwritten while an instance is alive).
-fn sock_name(name: &str) -> io::Result<Name<'static>> {
+fn sock_name(name: &str) -> io::Result<Name<'_>> {
     #[cfg(any(windows, target_os = "linux"))]
     {
-        name.to_ns_name::<GenericNamespaced>()
+        name.to_ns_name::<interprocess::local_socket::GenericNamespaced>()
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
