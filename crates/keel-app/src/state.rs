@@ -73,7 +73,10 @@ pub enum Msg {
         from_clipboard: bool,
     },
     /// Planning a transfer found nothing to do (or no files on the clipboard).
-    PlanFailed(String),
+    PlanFailed {
+        text: String,
+        from_clipboard: bool,
+    },
     /// Sources of a failed cut-move that still exist: the cut to put back.
     RestoreCut(Vec<PathBuf>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
@@ -385,8 +388,14 @@ impl AppState {
                     self.clipboard.set(paths, true);
                 }
             }
-            Msg::PlanFailed(text) => {
-                self.paste_pending = false;
+            Msg::PlanFailed {
+                text,
+                from_clipboard,
+            } => {
+                // A failed drop must not unblock a clipboard paste still being planned.
+                if from_clipboard {
+                    self.paste_pending = false;
+                }
                 self.toasts.error(text);
             }
             Msg::Select { dir, name } => {
@@ -773,13 +782,16 @@ impl AppState {
         let show_hidden = self.show_hidden;
         self.tab_mut(p).visible(show_hidden);
         match action {
-            Action::Up => {
+            Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
-                    // Backspace in a search tab edits the query.
+                    // Backspace in a search tab edits the query (Alt+Up does not).
                     query.pop();
                     *due = Some(Instant::now() + DEBOUNCE);
                     self.ctx.request_repaint_after(DEBOUNCE);
-                } else if self.tab_mut(p).up() {
+                }
+            }
+            Action::Up | Action::Backspace => {
+                if !self.tab(p).is_search() && self.tab_mut(p).up() {
                     self.list_active(p);
                 }
             }
@@ -1264,7 +1276,16 @@ mod tests {
             .list
             .iter()
             .any(|t| t.text == "Paste already in progress"));
-        state.apply(Msg::PlanFailed("The clipboard holds no files".into()));
+        // A drop whose planning fails does not unblock the paste.
+        state.apply(Msg::PlanFailed {
+            text: "Already in this folder".into(),
+            from_clipboard: false,
+        });
+        assert!(state.paste_pending);
+        state.apply(Msg::PlanFailed {
+            text: "The clipboard holds no files".into(),
+            from_clipboard: true,
+        });
         assert!(!state.paste_pending);
     }
 
@@ -1312,9 +1333,12 @@ mod tests {
         assert_eq!(query(&state).as_deref(), Some("ab"));
         assert_eq!(state.tab(0).dir, home);
 
-        // Backspace edits the query instead of leaving the search.
+        // Backspace edits the query instead of leaving the search; Alt+Up does neither.
+        state.run(0, Action::Backspace);
+        assert_eq!(query(&state).as_deref(), Some("a"));
         state.run(0, Action::Up);
         assert_eq!(query(&state).as_deref(), Some("a"));
+        assert!(state.tab(0).is_search());
     }
 
     #[test]

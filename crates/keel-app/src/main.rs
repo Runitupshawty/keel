@@ -48,8 +48,8 @@ fn main() -> eframe::Result<()> {
         .unwrap_or_else(|| VPath::local("/"));
     // Startup reads (before the window exists): settings, last session. Both are small
     // local files; saved folders are not checked here (a dead share would block).
-    let settings = Settings::load();
-    let saved = Session::load();
+    let (settings, settings_notice) = Settings::load();
+    let (saved, session_notice) = Session::load();
     let mut session = saved
         .clone()
         .unwrap_or_else(|| Session::single(home.clone()));
@@ -82,6 +82,7 @@ fn main() -> eframe::Result<()> {
     let boot = app::Boot {
         settings,
         session,
+        notices: settings_notice.into_iter().chain(session_notice).collect(),
         home,
         saved: Some(saved),
     };

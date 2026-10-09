@@ -8,8 +8,10 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Parent folder.
+    /// Parent folder (Alt+Up, toolbar).
     Up,
+    /// Parent folder, or in a search tab: delete the last query character.
+    Backspace,
     Back,
     Forward,
     Refresh,
@@ -111,7 +113,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::ALT, Key::ArrowUp, Action::Up),
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
     (Modifiers::ALT, Key::ArrowRight, Action::Forward),
-    (Modifiers::NONE, Key::Backspace, Action::Up),
+    (Modifiers::NONE, Key::Backspace, Action::Backspace),
     (Modifiers::NONE, Key::F2, Action::Rename),
     (Modifiers::NONE, Key::F3, Action::TogglePreview),
     (Modifiers::NONE, Key::F5, Action::Refresh),
@@ -210,16 +212,21 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
 /// clipboard holds text. So a V release whose press never arrived as a key event was a
 /// paste press, whatever the modifiers are by the time of the release. egui-winit treats
 /// Ctrl+Shift+V as a paste too: a V release or `Event::Paste` with Shift and Command held
-/// is ignored (Shift+Insert, Shift without Command, still pastes).
+/// is ignored (Shift+Insert, Shift without Command, still pastes). The swallowed press
+/// carries no modifiers, so Command+Shift seen in any frame since Command went down (and
+/// since the last V release) marks the coming V release as Ctrl+Shift+V even when Shift is
+/// released first. Known ceiling: Ctrl+Shift held, Shift released, then V does not paste.
 fn paste_pressed(ctx: &egui::Context) -> bool {
     let id = egui::Id::new("keel-paste-keys");
-    // (a V/Insert press arrived as a plain key event, an Event::Paste already fired)
-    let (mut press_seen, mut pasted) = ctx
-        .data(|d| d.get_temp::<(bool, bool)>(id))
+    // (a V/Insert press arrived as a plain key event, an Event::Paste already fired,
+    // Command+Shift was held since Command went down)
+    let (mut press_seen, mut pasted, mut shift_armed) = ctx
+        .data(|d| d.get_temp::<(bool, bool, bool)>(id))
         .unwrap_or_default();
     let mut paste = false;
     ctx.input(|i| {
         let shift_cmd = i.modifiers.shift && i.modifiers.command;
+        shift_armed = i.modifiers.command && (shift_armed || shift_cmd);
         for event in &i.events {
             match event {
                 Event::Paste(_) if !pasted => {
@@ -235,8 +242,8 @@ fn paste_pressed(ctx: &egui::Context) -> bool {
                     if *pressed {
                         press_seen = true;
                     } else {
-                        paste |= !press_seen && !pasted && !modifiers.shift;
-                        (press_seen, pasted) = (false, false);
+                        paste |= !press_seen && !pasted && !modifiers.shift && !shift_armed;
+                        (press_seen, pasted, shift_armed) = (false, false, false);
                     }
                 }
                 // Shift+Insert pastes only through `Event::Paste` (text clipboards); an
@@ -250,7 +257,7 @@ fn paste_pressed(ctx: &egui::Context) -> bool {
             }
         }
     });
-    ctx.data_mut(|d| d.insert_temp(id, (press_seen, pasted)));
+    ctx.data_mut(|d| d.insert_temp(id, (press_seen, pasted, shift_armed)));
     paste
 }
 
@@ -259,10 +266,16 @@ mod tests {
     use super::*;
 
     fn frame(ctx: &egui::Context, events: Vec<Event>) -> bool {
+        frame_with(ctx, Modifiers::NONE, events)
+    }
+
+    /// One frame with `modifiers` held (egui-winit's modifier state for that frame).
+    fn frame_with(ctx: &egui::Context, modifiers: Modifiers, events: Vec<Event>) -> bool {
         let mut paste = false;
         let _ = ctx.run(
             egui::RawInput {
                 events,
+                modifiers,
                 ..Default::default()
             },
             |ctx| paste = paste_pressed(ctx),
@@ -299,6 +312,18 @@ mod tests {
             ..Modifiers::COMMAND
         };
         assert!(!frame(&ctx, vec![v(false, cmd_shift)]));
+
+        // Ctrl+Shift+V with Shift released before V: the press frame saw Command+Shift.
+        assert!(!frame_with(&ctx, cmd_shift, vec![]));
+        assert!(!frame_with(&ctx, CMD, vec![]));
+        assert!(!frame_with(&ctx, CMD, vec![v(false, CMD)]));
+        // Ctrl still held: the next Ctrl+V pastes again.
+        assert!(frame_with(&ctx, CMD, vec![v(false, CMD)]));
+        // Command released in between clears it too.
+        assert!(!frame_with(&ctx, cmd_shift, vec![]));
+        assert!(!frame_with(&ctx, Modifiers::NONE, vec![]));
+        assert!(!frame_with(&ctx, CMD, vec![]));
+        assert!(frame_with(&ctx, CMD, vec![v(false, CMD)]));
     }
 
     #[test]

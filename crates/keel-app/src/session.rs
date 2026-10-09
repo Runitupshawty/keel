@@ -40,15 +40,22 @@ impl Session {
         crate::settings::cache_dir().map(|d| d.join("session.json"))
     }
 
-    pub fn load() -> Option<Session> {
-        Self::load_from(&Self::path()?)
+    /// The saved session (None when there is none) and, when session.json could not be
+    /// read, a notice for a toast (the file is kept as `session.json.bad`).
+    pub fn load() -> (Option<Session>, Option<String>) {
+        match Self::path() {
+            Some(path) => Self::load_from(&path),
+            None => (None, None),
+        }
     }
 
-    pub fn load_from(path: &Path) -> Option<Session> {
-        let text = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&text)
-            .map_err(|e| tracing::warn!("{}: {e}", path.display()))
-            .ok()
+    pub fn load_from(path: &Path) -> (Option<Session>, Option<String>) {
+        match crate::settings::read_config(path, |t| {
+            serde_json::from_str(t).map_err(|e| e.to_string())
+        }) {
+            Ok(session) => (session, None),
+            Err(notice) => (None, Some(notice)),
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -94,20 +101,34 @@ mod tests {
             active_tab: [1, 7],
         };
         let file = tmp.join("session.json");
+        assert_eq!(
+            Session::load_from(&file),
+            (None, None),
+            "no file, no notice"
+        );
         saved.save_to(&file).unwrap();
 
-        let mut loaded = Session::load_from(&file).expect("session loads");
-        assert_eq!(loaded, saved);
+        let (loaded, notice) = Session::load_from(&file);
+        let mut loaded = loaded.expect("session loads");
+        assert_eq!((&loaded, notice), (&saved, None));
         loaded.repair(&home);
         // A missing folder is not checked here (no disk access before the window opens).
         assert_eq!(loaded.panes, vec![vec![home.clone(), gone], vec![home]]);
         assert_eq!(loaded.active, 1);
         assert_eq!(loaded.active_tab, [1, 0], "out-of-range tab index clamped");
 
+        // A BOM is tolerated; a broken file is set aside and reported.
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, format!("\u{feff}{text}")).unwrap();
+        assert_eq!(Session::load_from(&file).0, Some(saved));
         std::fs::write(&file, "{ not json").unwrap();
-        assert!(
-            Session::load_from(&file).is_none(),
-            "broken file = no session"
+        let (none, notice) = Session::load_from(&file);
+        assert!(none.is_none(), "broken file = no session");
+        assert!(notice.unwrap().contains("session.json.bad"));
+        assert!(!file.exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("session.json.bad")).unwrap(),
+            "{ not json"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }

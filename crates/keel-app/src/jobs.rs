@@ -340,12 +340,16 @@ pub fn plan_conflicts(src: &[PathBuf], dst: &Path) -> Vec<String> {
 /// when planning panics). False when the thread could not start.
 pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Context) -> bool {
     spawn("keel-plan", move || {
+        let from_clipboard = matches!(source, Source::Clipboard(_));
         let planned = std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &tx, &ctx)));
         if planned.is_err() {
             send(
                 &tx,
                 &ctx,
-                Msg::PlanFailed("Planning the transfer failed (see crash.log)".into()),
+                Msg::PlanFailed {
+                    text: "Planning the transfer failed (see crash.log)".into(),
+                    from_clipboard,
+                },
             );
         }
     })
@@ -360,7 +364,10 @@ fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
                 send(
                     tx,
                     ctx,
-                    Msg::PlanFailed("The clipboard holds no files".into()),
+                    Msg::PlanFailed {
+                        text: "The clipboard holds no files".into(),
+                        from_clipboard: true,
+                    },
                 );
                 return;
             }
@@ -376,7 +383,14 @@ fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
         } else {
             "Copying into the same folder is not supported yet"
         };
-        send(tx, ctx, Msg::PlanFailed(text.into()));
+        send(
+            tx,
+            ctx,
+            Msg::PlanFailed {
+                text: text.into(),
+                from_clipboard,
+            },
+        );
         return;
     }
     let conflicts = plan_conflicts(&src, &dst);

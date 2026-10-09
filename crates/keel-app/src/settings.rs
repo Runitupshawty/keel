@@ -2,7 +2,7 @@
 //! persistence worker that writes settings and the session off the UI thread.
 
 use crate::session::Session;
-use crossbeam_channel::{RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -54,8 +54,14 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(base.config_dir().join(app_dir()))
 }
 
-/// `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel`, `~/.cache/keel` (spec 2.9).
+/// Where session.json and crash.log live: `KEEL_CONFIG_DIR` too when set (one folder for a
+/// portable or test setup), else `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel`,
+/// `~/.cache/keel` (spec 2.9). eframe keeps its own window state (`app.ron`) in its
+/// storage folder; `KEEL_CONFIG_DIR` does not move that.
 pub fn cache_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(dir.into());
+    }
     let base = directories::BaseDirs::new()?;
     Some(base.cache_dir().join(app_dir()))
 }
@@ -77,15 +83,15 @@ impl Settings {
             .join("config.toml")
     }
 
-    /// Defaults when the file is missing or broken (a broken file is logged and only
-    /// overwritten after the next change).
-    pub fn load() -> Settings {
-        let path = Self::path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| tracing::warn!("{}: {e}", path.display()))
-                .unwrap_or_default(),
-            Err(_) => Settings::default(),
+    /// Defaults when the file is missing or broken. A broken file is renamed to
+    /// `config.toml.bad` first (so saving defaults cannot destroy it) and reported in the
+    /// returned notice, for a toast.
+    pub fn load() -> (Settings, Option<String>) {
+        match read_config(&Self::path(), |t| {
+            toml::from_str(t).map_err(|e| e.to_string())
+        }) {
+            Ok(s) => (s.unwrap_or_default(), None),
+            Err(notice) => (Settings::default(), Some(notice)),
         }
     }
 
@@ -100,16 +106,52 @@ impl Settings {
     }
 }
 
-/// Writes a sibling temp file, then renames it over the target, so a crash mid-write
-/// never leaves a truncated file.
+/// Reads and parses a config file (a leading UTF-8 BOM is ignored). `Ok(None)` when there
+/// is no file. A file that cannot be read or parsed is renamed to `<name>.bad` and the
+/// error is a notice for the user.
+pub fn read_config<T>(
+    path: &Path,
+    parse: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let why = match std::fs::read_to_string(path) {
+        Ok(text) => match parse(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
+            Ok(value) => return Ok(Some(value)),
+            Err(e) => e,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => e.to_string(),
+    };
+    tracing::warn!("{}: {why}", path.display());
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mut bad = path.as_os_str().to_owned();
+    bad.push(".bad");
+    Err(match std::fs::rename(path, &bad) {
+        Ok(()) => format!("{name} could not be read; kept as {name}.bad, using defaults"),
+        Err(e) => format!("{name} could not be read ({why}); using defaults: {e}"),
+    })
+}
+
+/// Writes a per-process temp file next to `path`, flushes it to disk, then renames it over
+/// the target, so a crash or power loss mid-write never leaves a truncated file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(written?)
 }
 
 enum Save {
@@ -121,6 +163,8 @@ enum Save {
 /// `SAVE_DEBOUNCE` after the last change, and once more when the app exits.
 pub struct Persist {
     tx: Option<Sender<Save>>,
+    /// The first failed write of the run, for a toast.
+    errors: Receiver<String>,
     thread: Option<JoinHandle<()>>,
     last_settings: Settings,
     last_session: Option<Session>,
@@ -130,10 +174,18 @@ impl Persist {
     /// `settings` and `session` are what is on disk already (nothing to write yet).
     pub fn new(settings: Settings, session: Option<Session>) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded::<Save>();
+        let (err_tx, errors) = crossbeam_channel::bounded::<String>(1);
         let thread = std::thread::Builder::new()
             .name("keel-persist".into())
             .spawn(move || {
                 let (mut settings, mut session) = (None::<Settings>, None::<Session>);
+                let mut reported = false;
+                let mut report = |what: &str, e: anyhow::Error| {
+                    tracing::error!("save {what}: {e:#}");
+                    if !std::mem::replace(&mut reported, true) {
+                        let _ = err_tx.try_send(format!("Could not save {what}: {e:#}"));
+                    }
+                };
                 loop {
                     let msg = if settings.is_some() || session.is_some() {
                         rx.recv_timeout(SAVE_DEBOUNCE)
@@ -145,10 +197,10 @@ impl Persist {
                         Ok(Save::Session(s)) => session = Some(s),
                         Err(why) => {
                             if let Some(Err(e)) = settings.take().map(|s| s.save()) {
-                                tracing::error!("save settings: {e:#}");
+                                report("settings", e);
                             }
                             if let Some(Err(e)) = session.take().map(|s| s.save()) {
-                                tracing::error!("save session: {e:#}");
+                                report("the open tabs", e);
                             }
                             if why == RecvTimeoutError::Disconnected {
                                 break;
@@ -161,6 +213,7 @@ impl Persist {
             .ok();
         Self {
             tx: Some(tx),
+            errors,
             thread,
             last_settings: settings,
             last_session: session,
@@ -179,6 +232,11 @@ impl Persist {
             let _ = tx.send(Save::Session(session.clone()));
             self.last_session = Some(session);
         }
+    }
+
+    /// A failed write, once per run.
+    pub fn error(&self) -> Option<String> {
+        self.errors.try_recv().ok()
     }
 
     /// On exit: queue the final state, then wait for the worker to write it.
@@ -257,7 +315,7 @@ mod tests {
         );
         assert_eq!(
             Settings::load(),
-            Settings::default(),
+            (Settings::default(), None),
             "missing file = defaults"
         );
         let s = Settings {
@@ -270,12 +328,25 @@ mod tests {
             ..Settings::default()
         };
         s.save().unwrap();
-        assert_eq!(Settings::load(), s);
-        // Missing keys take defaults and unknown keys are ignored.
-        std::fs::write(Settings::path(), "theme = \"light\"\nfuture_key = 1\n").unwrap();
-        let loaded = Settings::load();
-        assert_eq!(loaded.theme, "light");
+        assert_eq!(Settings::load(), (s, None));
+        // Missing keys take defaults, unknown keys are ignored, a BOM is skipped.
+        let path = Settings::path();
+        std::fs::write(&path, "\u{feff}theme = \"light\"\nfuture_key = 1\n").unwrap();
+        let (loaded, notice) = Settings::load();
+        assert_eq!((loaded.theme.as_str(), notice), ("light", None));
         assert!(loaded.dual);
+        // A broken file is set aside before anything can overwrite it.
+        std::fs::write(&path, "theme = [").unwrap();
+        let (loaded, notice) = Settings::load();
+        assert_eq!(loaded, Settings::default());
+        assert!(notice.unwrap().contains("config.toml.bad"));
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("config.toml.bad")).unwrap(),
+            "theme = ["
+        );
+        // session.json and crash.log follow KEEL_CONFIG_DIR.
+        assert_eq!(super::cache_dir(), Some(dir.clone()));
         std::env::remove_var("KEEL_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

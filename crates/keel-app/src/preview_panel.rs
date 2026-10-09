@@ -270,6 +270,7 @@ impl PreviewPanel {
                 muted,
             ),
             Preview::Unsupported => centered(ui, "No preview for this file", muted),
+            Preview::Missing(why) => centered(ui, why, muted),
             Preview::Error(e) => centered(ui, &format!("Preview failed: {e}"), muted),
         }
     }

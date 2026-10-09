@@ -60,6 +60,8 @@ pub enum Preview {
     },
     TooLarge(u64),
     Unsupported,
+    /// A helper this file type needs is not installed; the text says what to do.
+    Missing(&'static str),
     Error(String),
 }
 

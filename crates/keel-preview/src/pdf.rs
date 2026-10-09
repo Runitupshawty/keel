@@ -10,7 +10,7 @@ pub(crate) fn accepts(ext: &str) -> bool {
 }
 
 pub(crate) fn init(dll_dir: &Path) {
-    // pdfium.dll / libpdfium.dylib / libpdfium.so; a failed bind leaves PDFs Unsupported.
+    // pdfium.dll / libpdfium.dylib / libpdfium.so; a failed bind leaves PDFs `Missing`.
     PDFIUM.get_or_init(|| {
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dll_dir))
             .ok()
@@ -20,7 +20,11 @@ pub(crate) fn init(dll_dir: &Path) {
 
 pub(crate) fn render(req: &Request) -> Preview {
     let Some(pdfium) = PDFIUM.get().and_then(Option::as_ref) else {
-        return Preview::Unsupported;
+        return Preview::Missing(if cfg!(windows) {
+            "PDF previews need pdfium next to keel.exe (run scripts/fetch-deps)"
+        } else {
+            "PDF previews need pdfium next to keel (run scripts/fetch-deps)"
+        });
     };
     match render_inner(req, pdfium) {
         Ok(preview) => preview,

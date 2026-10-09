@@ -16,7 +16,7 @@ pub(crate) fn accepts(ext: &str) -> bool {
 
 pub(crate) fn render(req: &Request) -> Preview {
     let Some(ffmpeg) = find_tool("ffmpeg") else {
-        return Preview::Unsupported;
+        return Preview::Missing("Install ffmpeg for video thumbnails");
     };
     // `-ss 1` before `-i` yields no frame for clips shorter than a second: retry at 0.
     let mut last_error = String::from("ffmpeg produced no frame");

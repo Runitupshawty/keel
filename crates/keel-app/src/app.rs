@@ -22,6 +22,8 @@ pub struct Boot {
     pub settings: Settings,
     /// Repaired (`Session::repair`).
     pub session: Session,
+    /// Startup problems for toasts (a broken config.toml or session.json).
+    pub notices: Vec<String>,
     pub home: VPath,
     /// The session as found on disk; `Some` turns saving on (off in tests).
     pub saved: Option<Option<Session>>,
@@ -34,6 +36,7 @@ impl Boot {
         Self {
             settings: Settings::default(),
             session: Session::single(start.clone()),
+            notices: Vec::new(),
             home: start,
             saved: None,
         }
@@ -52,6 +55,8 @@ pub struct App {
     pub crashed: bool,
     /// False after a crash reset the panes: the saved session keeps the tabs from before.
     pub save_session: bool,
+    /// Panel widths seen last frame; a change after the first frame is the user's resize.
+    seen_widths: (Option<f32>, Option<f32>),
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -62,13 +67,16 @@ impl App {
         let persist = boot
             .saved
             .map(|saved| Persist::new(boot.settings.clone(), saved));
-        let state = AppState::restore(
+        let mut state = AppState::restore(
             cc.egui_ctx.clone(),
             Arc::new(Router::new()),
             boot.session,
             boot.settings,
             boot.home,
         );
+        for notice in boot.notices {
+            state.toasts.error(notice);
+        }
         state.load_searcher();
         Self {
             state,
@@ -77,6 +85,7 @@ impl App {
             persist,
             crashed: false,
             save_session: true,
+            seen_widths: (None, None),
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -134,7 +143,11 @@ impl App {
                 s.sidebar.ui(ui, &s.theme, &current, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
-        s.settings.sidebar_width = sidebar.response.rect.width().round();
+        let w = sidebar.response.rect.width().round();
+        if self.seen_widths.0.is_some_and(|seen| seen != w) {
+            s.settings.sidebar_width = w;
+        }
+        self.seen_widths.0 = Some(w);
         if s.preview.open {
             let target = s.preview_target();
             s.preview.follow(ctx, target.as_ref());
@@ -147,7 +160,13 @@ impl App {
                         (ui.available_width() * ctx.pixels_per_point()).round() as u32;
                     s.preview.ui(ui, s.theme.muted());
                 });
-            s.settings.preview_width = panel.response.rect.width().round();
+            let w = panel.response.rect.width().round();
+            if self.seen_widths.1.is_some_and(|seen| seen != w) {
+                s.settings.preview_width = w;
+            }
+            self.seen_widths.1 = Some(w);
+        } else {
+            self.seen_widths.1 = None;
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(4.0))
@@ -305,6 +324,9 @@ impl eframe::App for App {
         if let Some(persist) = &mut self.persist {
             let session = self.save_session.then(|| Session::of(&self.state));
             persist.update(&self.state.settings, session);
+            if let Some(e) = persist.error() {
+                self.state.toasts.error(e);
+            }
         }
     }
 
@@ -452,6 +474,8 @@ mod tests {
             .build_eframe(|cc| App::new(cc, Boot::at(start)));
         wait_listed(&mut harness);
         assert_eq!(harness.state().state.tab(0).entries().len(), 8);
+        // Opening the window changes no setting (nothing to save).
+        assert_eq!(harness.state().state.settings, Settings::default());
 
         harness.press_key(Key::ArrowDown);
         harness.press_key(Key::ArrowDown);
