@@ -76,9 +76,43 @@ impl Theme {
     }
 }
 
+/// Every theme the app can switch to, read once at startup (the user's theme files are
+/// config reads): switching themes later never touches the disk on the UI thread.
+pub struct Themes(Vec<(String, Theme)>);
+
+impl Themes {
+    /// The built-ins plus `current` (a user theme named in the settings).
+    pub fn load(current: &str) -> Self {
+        let mut names: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).collect();
+        if !names.contains(&current) {
+            names.push(current);
+        }
+        Self(
+            names
+                .into_iter()
+                .map(|n| (n.to_owned(), Theme::load(n)))
+                .collect(),
+        )
+    }
+
+    /// The theme loaded under `name` (the settings value), else the first (dark).
+    pub fn get(&self, name: &str) -> Theme {
+        let found = self.0.iter().find(|(n, _)| n == name);
+        found.unwrap_or(&self.0[0]).1.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Theme;
+    use super::{Theme, Themes};
+
+    #[test]
+    fn themes_are_cached_once() {
+        let themes = Themes::load("no-such-theme");
+        assert!(!themes.get("light").dark);
+        assert!(themes.get("dark").dark);
+        assert_eq!(themes.get("unknown").name, "dark");
+    }
 
     #[test]
     fn builtin_themes_load() {

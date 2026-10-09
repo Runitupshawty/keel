@@ -27,6 +27,11 @@ pub struct Thumbs {
     /// `None` = no image could be made; not retried until the file changes.
     cache: HashMap<PreviewKey, (Option<TextureHandle>, u64)>,
     pending: HashSet<PreviewKey>,
+    /// Keys asked for during the current pass, and that pass's number: a pending key not
+    /// asked for in a whole pass belongs to a tile that left the view.
+    seen: HashSet<PreviewKey>,
+    pass: u64,
+    ctx: egui::Context,
     clock: u64,
     /// Thumbnails for remote and cloud files (setting `remote_thumbnails`): each one is a
     /// download.
@@ -36,9 +41,12 @@ pub struct Thumbs {
 impl Thumbs {
     pub fn new(tx: Sender<Msg>, ctx: egui::Context, router: Arc<Router>) -> Self {
         Self {
-            pool: ThumbPool::new(tx, ctx, router),
+            pool: ThumbPool::new(tx, ctx.clone(), router),
             cache: HashMap::new(),
             pending: HashSet::new(),
+            seen: HashSet::new(),
+            pass: 0,
+            ctx,
             clock: 0,
             remote: false,
         }
@@ -56,7 +64,9 @@ impl Thumbs {
         if e.size > keel_preview::MAX_PREVIEW_BYTES && e.path.split_archive().is_some() {
             return None;
         }
-        let key = PreviewKey::of(e, 0);
+        let key = PreviewKey::of(e, 0, 0);
+        self.next_pass(self.ctx.cumulative_pass_nr());
+        self.seen.insert(key.clone());
         self.clock += 1;
         if let Some((tex, used)) = self.cache.get_mut(&key) {
             *used = self.clock;
@@ -66,6 +76,29 @@ impl Thumbs {
             self.pending.insert(key);
         }
         None
+    }
+
+    /// On the first request of a new pass: requests still queued for tiles that were not
+    /// drawn in the previous pass are cancelled (scrolled away, folder left).
+    fn next_pass(&mut self, pass: u64) {
+        if pass == self.pass {
+            return;
+        }
+        self.pass = pass;
+        let gone: Vec<PreviewKey> = self
+            .pending
+            .iter()
+            .filter(|k| !self.seen.contains(*k))
+            .cloned()
+            .collect();
+        if !gone.is_empty() {
+            let mut cancelled = self.pool.cancelled.lock();
+            for key in gone {
+                self.pending.remove(&key);
+                cancelled.insert(key);
+            }
+        }
+        self.seen.clear();
     }
 
     pub fn insert(&mut self, ctx: &egui::Context, key: PreviewKey, preview: Preview) {
@@ -166,6 +199,8 @@ pub fn ui(
                             );
                             match cx.thumbs.get(e) {
                                 Some((tex, size)) => {
+                                    // Rendered in physical pixels (HiDPI): show in points.
+                                    let size = size / ui.ctx().pixels_per_point();
                                     let scale = (img_box.width() / size.x)
                                         .min(img_box.height() / size.y)
                                         .min(1.0);
@@ -190,7 +225,17 @@ pub fn ui(
                             );
                             match &mut renaming {
                                 Some((name, text)) if *name == e.name => {
-                                    let r = ui.put(label_rect, egui::TextEdit::singleline(text));
+                                    // A child Ui: the edit box never moves the layout
+                                    // cursor, so the tiles after it stay in place.
+                                    let mut child = ui.new_child(
+                                        egui::UiBuilder::new()
+                                            .max_rect(label_rect)
+                                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                                    );
+                                    let r = child.add(
+                                        egui::TextEdit::singleline(text)
+                                            .desired_width(label_rect.width()),
+                                    );
                                     if r.lost_focus() {
                                         rename_done = true;
                                         if ui.input(|i| i.key_pressed(Key::Enter))
@@ -272,11 +317,80 @@ mod tests {
             mtime: 0,
             size: 0,
             page: 0,
+            width: 0,
         };
         for i in 0..=THUMB_CACHE {
             thumbs.insert(&ctx, key(i), Preview::Unsupported);
         }
         assert_eq!(thumbs.len(), THUMB_CACHE);
         assert!(!thumbs.cache.contains_key(&key(0)), "oldest evicted");
+    }
+
+    /// Polish backlog: queued thumbnails for tiles that scrolled away are dropped.
+    #[test]
+    fn queued_thumbnails_of_hidden_tiles_are_cancelled() {
+        let ctx = egui::Context::default();
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut thumbs = Thumbs::new(tx, ctx.clone(), Arc::new(Router::new()));
+        let dir = keel_vfs::VPath::parse("mem://t/").unwrap();
+        let e = |n: &str| crate::tab::test_entry(&dir, n, keel_vfs::Kind::File, 1);
+        let (a, b) = (e("a.png"), e("b.png"));
+        let key = |e: &Entry| PreviewKey::of(e, 0, 0);
+        // Pass 1 draws both tiles; pass 2 only `a` (b scrolled away); pass 3 sweeps.
+        for (pass, tiles) in [(1, vec![&a, &b]), (2, vec![&a]), (3, vec![&a])] {
+            thumbs.next_pass(pass);
+            for t in tiles {
+                thumbs.seen.insert(key(t));
+                thumbs.pending.insert(key(t));
+            }
+        }
+        assert!(thumbs.pending.contains(&key(&a)));
+        assert!(!thumbs.pending.contains(&key(&b)));
+        assert!(thumbs.pool.cancelled.lock().contains(&key(&b)));
+        // Back in view: asked again, no longer cancelled.
+        assert!(thumbs.pool.request(key(&b), b.clone()));
+        assert!(!thumbs.pool.cancelled.lock().contains(&key(&b)));
+    }
+
+    /// Polish backlog: the inline rename box does not shift the tiles after it.
+    #[test]
+    fn grid_rename_keeps_later_tiles_in_place() {
+        let dir = keel_vfs::VPath::local(std::env::temp_dir());
+        let x_of = |renaming: bool| {
+            let ctx = egui::Context::default();
+            let (tx, _rx) = crossbeam_channel::unbounded();
+            let mut thumbs = Thumbs::new(tx, ctx.clone(), Arc::new(Router::new()));
+            let theme = crate::theme::Theme::load("dark");
+            let mut tab = Tab::new(dir.clone());
+            tab.set_entries(
+                ["a.txt", "b.txt", "c.txt"]
+                    .map(|n| crate::tab::test_entry(&dir, n, keel_vfs::Kind::File, 1))
+                    .into(),
+            );
+            if renaming {
+                tab.renaming = Some(("a.txt".into(), "a.txt".into()));
+            }
+            let mut x = None;
+            for _ in 0..2 {
+                let out = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |p| {
+                        let mut cx = ViewCx {
+                            theme: &theme,
+                            show_hidden: false,
+                            thumbs: &mut thumbs,
+                            active: false,
+                            banner: None,
+                        };
+                        super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
+                    });
+                });
+                x = out.shapes.iter().find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "c.txt" => Some(t.pos.x),
+                    _ => None,
+                });
+            }
+            x.expect("c.txt tile drawn")
+        };
+        assert_eq!(x_of(true), x_of(false));
     }
 }

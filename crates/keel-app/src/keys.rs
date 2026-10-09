@@ -81,13 +81,22 @@ pub enum Action {
     NewFile,
     CopyPath,
     OpenWith,
+    /// Linux "Open with": launch the picked application (desktop id) on `path`.
+    LaunchWith {
+        id: String,
+        path: PathBuf,
+    },
     Properties,
+    /// Explorer's own Properties sheet (Windows).
+    ShellProperties(PathBuf),
     RevealInSystem,
     OpenTerminal,
     ToggleTerminal,
     LeaveTerminal,
     ToggleTheme,
     Navigate(VPath),
+    /// Path box: a folder navigates; a file opens its folder with the file selected.
+    OpenPath(VPath),
     NewTabAt(VPath),
     /// Open the cursor entry's folder with the entry selected (other pane, or a new tab
     /// when single-pane).
@@ -132,6 +141,30 @@ const CMD_SHIFT: Modifiers = Modifiers {
     ..Modifiers::COMMAND
 };
 
+/// Show / hide hidden files: Finder's Cmd+Shift+. on macOS (Cmd+H hides the app there).
+#[cfg(target_os = "macos")]
+const HIDDEN: (Modifiers, Key) = (CMD_SHIFT, Key::Period);
+#[cfg(not(target_os = "macos"))]
+const HIDDEN: (Modifiers, Key) = (CMD, Key::H);
+pub const HIDDEN_LABEL: &str = if cfg!(target_os = "macos") {
+    "Ctrl+Shift+."
+} else {
+    "Ctrl+H"
+};
+
+/// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.
+pub fn shortcut_label(text: &str) -> String {
+    label_for(text, cfg!(target_os = "macos"))
+}
+
+fn label_for(text: &str, mac: bool) -> String {
+    if mac {
+        text.replace("Ctrl+", "Cmd+")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// Shortcut table; more specific modifier sets come first because egui ignores
 /// unrequested Shift/Alt when matching.
 const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
@@ -139,6 +172,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
+    (HIDDEN.0, HIDDEN.1, Action::ToggleHidden),
     (CMD, Key::P, Action::JumpFolder),
     (CMD, Key::Enter, Action::OpenLocation),
     (CMD, Key::F, Action::Search),
@@ -147,7 +181,6 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::T, Action::NewTab),
     (CMD, Key::W, Action::CloseTab),
     (CMD, Key::A, Action::SelectAll),
-    (CMD, Key::H, Action::ToggleHidden),
     (CMD, Key::Comma, Action::Settings),
     (Modifiers::ALT, Key::ArrowUp, Action::Up),
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
@@ -249,7 +282,10 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
                 out.push(Action::Move(*nav, extend));
             }
         }
-        let typing_allowed = !i.modifiers.command && !i.modifiers.alt;
+        // AltGr arrives as Ctrl+Alt (Windows): its characters (@, €, \ on many layouts)
+        // start the filter like any other text.
+        let altgr = i.modifiers.ctrl && i.modifiers.alt && !i.modifiers.mac_cmd;
+        let typing_allowed = altgr || (!i.modifiers.command && !i.modifiers.alt);
         for event in &i.events {
             match event {
                 Event::Copy => out.push(Action::Copy),
@@ -444,6 +480,47 @@ mod tests {
         assert!(!frame_with(&ctx, Modifiers::NONE, vec![]));
         assert!(!frame_with(&ctx, CMD, vec![]));
         assert!(frame_with(&ctx, CMD, vec![v(false, CMD)]));
+    }
+
+    fn typed(modifiers: Modifiers, text: &str) -> Vec<Action> {
+        let ctx = egui::Context::default();
+        let mut out = Vec::new();
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![Event::Text(text.into())],
+                modifiers,
+                ..Default::default()
+            },
+            |ctx| out = actions(ctx, true),
+        );
+        out
+    }
+
+    #[test]
+    fn altgr_text_starts_the_filter_but_ctrl_and_alt_alone_do_not() {
+        let ctrl_alt = Modifiers {
+            alt: true,
+            ..Modifiers::CTRL
+        };
+        assert_eq!(typed(ctrl_alt, "@"), [Action::Type("@".into())]);
+        assert_eq!(typed(Modifiers::NONE, "a"), [Action::Type("a".into())]);
+        assert!(typed(Modifiers::ALT, "x").is_empty());
+        if !cfg!(target_os = "macos") {
+            assert!(typed(Modifiers::COMMAND, "x").is_empty());
+        }
+    }
+
+    #[test]
+    fn hidden_files_shortcut_and_labels_follow_the_os() {
+        let (mods, key) = HIDDEN;
+        if cfg!(target_os = "macos") {
+            assert_eq!((mods, key), (CMD_SHIFT, Key::Period));
+        } else {
+            assert_eq!((mods, key), (CMD, Key::H));
+        }
+        assert_eq!(label_for("Ctrl+Shift+P", true), "Cmd+Shift+P");
+        assert_eq!(label_for("Ctrl+Shift+P", false), "Ctrl+Shift+P");
+        assert_eq!(label_for("F5", true), "F5");
     }
 
     #[test]

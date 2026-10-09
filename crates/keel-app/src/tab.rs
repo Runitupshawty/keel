@@ -5,18 +5,30 @@ use keel_vfs::{Entry, Kind, VPath};
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
 
-/// A folder listing plus each name lowercased (computed on the listing worker, so the
-/// UI thread never case-folds 100k names).
+/// A folder listing plus each name lowercased and the default (Name) order, both computed
+/// on the listing worker, so the UI thread never case-folds or sorts 100k names on a
+/// refresh.
 #[derive(Clone)]
 pub struct Listing {
     pub entries: Vec<Entry>,
     pub lower: Vec<String>,
+    /// Indices of `entries`: folders first, then natural name order.
+    pub order: Vec<usize>,
 }
 
 impl Listing {
     pub fn new(entries: Vec<Entry>) -> Self {
         let lower = entries.iter().map(|e| e.name.to_lowercase()).collect();
-        Self { entries, lower }
+        Self::with_lower(entries, lower)
+    }
+
+    fn with_lower(entries: Vec<Entry>, lower: Vec<String>) -> Self {
+        let order = sorted(&entries, &lower, (SortKey::Name, true));
+        Self {
+            entries,
+            lower,
+            order,
+        }
     }
 }
 
@@ -61,6 +73,12 @@ pub struct Tab {
     pub dir: VPath,
     entries: Vec<Entry>,
     lower: Vec<String>,
+    /// The listing's Name order (see `Listing::order`).
+    order: Vec<usize>,
+    /// Every entry in the current sort order, for (generation, sort); filtering is a
+    /// linear pass over it, so a keystroke never sorts.
+    sorted: Vec<usize>,
+    sorted_key: Option<(u64, (SortKey, bool))>,
     /// Entry names (names survive a refresh, indices do not).
     pub selected: BTreeSet<String>,
     pub cursor: Option<String>,
@@ -103,6 +121,9 @@ impl Tab {
             dir,
             entries: Vec::new(),
             lower: Vec::new(),
+            order: Vec::new(),
+            sorted: Vec::new(),
+            sorted_key: None,
             selected: BTreeSet::new(),
             cursor: None,
             anchor: None,
@@ -178,12 +199,31 @@ impl Tab {
 
     /// Replaces the listing; selection names that no longer exist are dropped.
     pub fn set_listing(&mut self, listing: Listing) {
-        self.entries = listing.entries;
-        self.lower = listing.lower;
+        let old = std::mem::replace(&mut self.entries, listing.entries);
+        let old_lower = std::mem::replace(&mut self.lower, listing.lower);
+        self.order = listing.order;
         self.generation += 1;
-        let names: BTreeSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
-        self.selected.retain(|n| names.contains(n.as_str()));
-        if self.cursor.as_deref().is_some_and(|c| !names.contains(c)) {
+        if old.len() > 10_000 {
+            // Freeing 100k entries takes milliseconds: not on the UI thread.
+            std::thread::spawn(move || drop((old, old_lower)));
+        }
+        // The usual selection is a few names: look them up instead of indexing 100k names.
+        let kept = self.selected.len() + usize::from(self.cursor.is_some());
+        let entries = &self.entries;
+        let names: HashSet<&str> = if kept > 16 {
+            entries.iter().map(|e| e.name.as_str()).collect()
+        } else {
+            HashSet::new()
+        };
+        let has = |n: &str| {
+            if kept > 16 {
+                names.contains(n)
+            } else {
+                entries.iter().any(|e| e.name == n)
+            }
+        };
+        self.selected.retain(|n| has(n));
+        if self.cursor.as_deref().is_some_and(|c| !has(c)) {
             self.cursor = None;
         }
     }
@@ -204,13 +244,32 @@ impl Tab {
                 self.cache.retain(|&i| lower[i].contains(&needle));
             }
             _ => {
-                self.cache = compute_visible(
-                    &self.entries,
-                    &self.lower,
-                    &self.filter,
-                    self.sort,
-                    show_hidden,
-                )
+                let sort_key = (self.generation, self.sort);
+                if self.sorted_key != Some(sort_key) {
+                    self.sorted = match self.sort {
+                        (SortKey::Name, true) => self.order.clone(),
+                        (SortKey::Name, false) => {
+                            // Folders stay first; each group reversed.
+                            let dirs = self
+                                .order
+                                .iter()
+                                .take_while(|&&i| self.entries[i].kind == Kind::Dir)
+                                .count();
+                            let (d, f) = self.order.split_at(dirs);
+                            d.iter().rev().chain(f.iter().rev()).copied().collect()
+                        }
+                        sort => sorted(&self.entries, &self.lower, sort),
+                    };
+                    self.sorted_key = Some(sort_key);
+                }
+                let needle = self.filter.to_lowercase();
+                let (entries, lower) = (&self.entries, &self.lower);
+                self.cache = self
+                    .sorted
+                    .iter()
+                    .copied()
+                    .filter(|&i| (show_hidden || !entries[i].hidden) && lower[i].contains(&needle))
+                    .collect();
             }
         }
         self.cache_key = Some(key);
@@ -466,23 +525,12 @@ pub fn hits_listing(hits: Vec<keel_search::Hit>) -> Listing {
         .iter()
         .map(|e| e.path.name().to_lowercase())
         .collect();
-    Listing { entries, lower }
+    Listing::with_lower(entries, lower)
 }
 
-fn compute_visible(
-    entries: &[Entry],
-    lower: &[String],
-    filter: &str,
-    (key, asc): (SortKey, bool),
-    show_hidden: bool,
-) -> Vec<usize> {
-    let needle = filter.to_lowercase();
-    let mut keyed: Vec<(usize, &str)> = entries
-        .iter()
-        .enumerate()
-        .filter(|(i, e)| (show_hidden || !e.hidden) && lower[*i].contains(&needle))
-        .map(|(i, _)| (i, lower[i].as_str()))
-        .collect();
+/// Every index of `entries` in `(key, asc)` order, folders first.
+fn sorted(entries: &[Entry], lower: &[String], (key, asc): (SortKey, bool)) -> Vec<usize> {
+    let mut keyed: Vec<(usize, &str)> = lower.iter().map(String::as_str).enumerate().collect();
     keyed.sort_by(|(ai, an), (bi, bn)| {
         let (a, b) = (&entries[*ai], &entries[*bi]);
         let by_name = || natord::compare(an, bn);
@@ -550,6 +598,26 @@ mod tests {
         assert_eq!(names(&mut tab), ["alpha.txt"]);
     }
 
+    /// Name order comes from the listing worker; descending keeps folders first.
+    #[test]
+    fn name_order_from_the_listing_matches_a_full_sort() {
+        let mut tab = tab();
+        tab.set_entries(vec![
+            test_entry(&tab.dir, "b10.txt", Kind::File, 1),
+            test_entry(&tab.dir, "zeta", Kind::Dir, 0),
+            test_entry(&tab.dir, "b9.txt", Kind::File, 2),
+            test_entry(&tab.dir, "alpha", Kind::Dir, 0),
+        ]);
+        assert_eq!(names(&mut tab), ["alpha", "zeta", "b9.txt", "b10.txt"]);
+        tab.sort = (SortKey::Name, false);
+        assert_eq!(names(&mut tab), ["zeta", "alpha", "b10.txt", "b9.txt"]);
+        tab.filter = "B".into();
+        assert_eq!(names(&mut tab), ["b10.txt", "b9.txt"]);
+        tab.filter.clear();
+        tab.sort = (SortKey::Size, true);
+        assert_eq!(names(&mut tab), ["alpha", "zeta", "b10.txt", "b9.txt"]);
+    }
+
     #[test]
     fn visible_is_cached_until_inputs_change() {
         let mut tab = tab();
@@ -599,6 +667,65 @@ mod tests {
         tab.filter = "beta".into();
         tab.visible(false);
         assert!(tab.targets().is_empty(), "invisible cursor is not a target");
+    }
+
+    /// Polish backlog: per-keystroke and per-refresh cost on a 100,000-entry folder.
+    /// Release only (the < 16 ms budget is checked there):
+    /// `cargo test -p keel-app --release -- --ignored perf_100k --nocapture`.
+    #[test]
+    #[ignore]
+    fn perf_100k() {
+        use std::time::{Duration, Instant};
+        let dir = VPath::parse("mem://t/").unwrap();
+        let entries: Vec<Entry> = (0..100_000)
+            .map(|i| {
+                let kind = if i % 10 == 0 { Kind::Dir } else { Kind::File };
+                test_entry(&dir, &format!("File {i} report-{}.txt", i % 977), kind, i)
+            })
+            .collect();
+        let median = |mut runs: Vec<Duration>| {
+            runs.sort();
+            runs[runs.len() / 2]
+        };
+        let mut tab = Tab::new(dir.clone());
+        let t = Instant::now();
+        let listing = Listing::new(entries.clone());
+        let lower = t.elapsed();
+        // Refresh: a new listing arrives (watcher), sorted and filtered again.
+        let mut refresh = Vec::new();
+        for _ in 0..5 {
+            let listing = listing.clone();
+            let t = Instant::now();
+            tab.set_listing(listing);
+            tab.visible(false);
+            refresh.push(t.elapsed());
+        }
+        // Keystrokes: typing narrows the cached rows; Backspace recomputes.
+        let (mut narrow, mut widen) = (Vec::new(), Vec::new());
+        for _ in 0..5 {
+            tab.filter.clear();
+            tab.visible(false);
+            for c in "report-9".chars() {
+                tab.filter.push(c);
+                let t = Instant::now();
+                tab.visible(false);
+                narrow.push(t.elapsed());
+            }
+            while tab.filter.pop().is_some() {
+                let t = Instant::now();
+                tab.visible(false);
+                widen.push(t.elapsed());
+            }
+        }
+        let (refresh, narrow, widen) = (median(refresh), median(narrow), median(widen));
+        eprintln!(
+            "100k entries: lowercase (worker) {lower:?}, refresh {refresh:?}, \
+             keystroke typing {narrow:?}, keystroke backspace {widen:?}"
+        );
+        if !cfg!(debug_assertions) {
+            let budget = Duration::from_millis(16);
+            assert!(refresh < budget && narrow < budget && widen < budget);
+        }
     }
 
     #[test]

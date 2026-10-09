@@ -14,8 +14,12 @@ pub fn size_text(e: &Entry) -> String {
     if e.kind == Kind::Dir {
         String::new()
     } else {
-        humansize::format_size(e.size, humansize::DECIMAL)
+        size_text_of(e.size)
     }
+}
+
+pub fn size_text_of(bytes: u64) -> String {
+    humansize::format_size(bytes, humansize::DECIMAL)
 }
 
 pub fn date_text(e: &Entry) -> String {

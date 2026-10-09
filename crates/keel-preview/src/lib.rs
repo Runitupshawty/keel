@@ -70,6 +70,16 @@ pub struct Request {
     pub bytes_path: PathBuf,
     pub page: u32,
     pub max_px: u32,
+    /// PDF pages: `max_px` is the page width (the preview panel) instead of a fit box for
+    /// the longer side (thumbnails).
+    pub fit_width: bool,
+}
+
+/// Formats whose renderer reads only what it needs (a PDF page, one video frame), so the
+/// `MAX_PREVIEW_BYTES` cap does not apply to them.
+pub fn streams(ext: &str) -> bool {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    pdf::accepts(&ext) || video::accepts(&ext)
 }
 
 pub fn accepts(ext: &str) -> bool {
@@ -110,7 +120,7 @@ fn preview_inner(req: &Request) -> Preview {
         return Preview::Unsupported;
     }
     let size = metadata.len();
-    if size > MAX_PREVIEW_BYTES {
+    if size > MAX_PREVIEW_BYTES && !streams(&req.entry.ext) {
         return Preview::TooLarge(size);
     }
 
@@ -165,7 +175,18 @@ mod tests {
             bytes_path: path,
             page: 0,
             max_px: 1,
+            fit_width: false,
         };
         assert!(matches!(preview(&req), Preview::Error(message) if message.contains("panicked")));
+    }
+
+    #[test]
+    fn only_pdf_and_video_skip_the_size_cap() {
+        for ext in ["pdf", "PDF", "mp4", ".mkv"] {
+            assert!(streams(ext), "{ext}");
+        }
+        for ext in ["txt", "png", "csv", "docx", ""] {
+            assert!(!streams(ext), "{ext}");
+        }
     }
 }

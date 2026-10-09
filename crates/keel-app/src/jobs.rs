@@ -6,7 +6,7 @@ use crate::state::Msg;
 use crate::worker::{send, spawn};
 use crossbeam_channel::Sender;
 use keel_vfs::{Conflict, Progress, Router, VPath};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,10 +38,11 @@ impl Job {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// Finished and nothing to report: Ok, or stopped by Cancel. Real errors stay.
+    /// Finished and nothing to report: Ok with nothing skipped, or stopped by Cancel.
+    /// Real errors and skipped items stay until dismissed.
     fn clears(&self) -> bool {
         match &self.done {
-            Some(Ok(())) => true,
+            Some(Ok(())) => self.progress.skipped == 0,
             Some(Err(e)) => is_cancel(e),
             None => false,
         }
@@ -119,6 +120,8 @@ pub struct Jobs {
     pub list: Vec<Job>,
     next_id: u64,
     ctx: egui::Context,
+    /// Setting: local transfers touching the same drive run one after another.
+    pub one_per_drive: bool,
 }
 
 impl Jobs {
@@ -127,6 +130,7 @@ impl Jobs {
             list: Vec::new(),
             next_id: 1,
             ctx,
+            one_per_drive: false,
         }
     }
 
@@ -145,7 +149,19 @@ impl Jobs {
         let verb = if t.mv { "Moving" } else { "Copying" };
         let title = format!("{verb} {} to {}", items(t.src.len()), t.dst.display());
         let remote = t.src.iter().chain([&t.dst]).any(crate::remotes::is_network);
+        let queue = self.one_per_drive;
         let id = self.spawn(title, tx, move |report, cancel| {
+            let _drives = if queue {
+                let keys = t
+                    .src
+                    .iter()
+                    .chain([&t.dst])
+                    .filter_map(volume_key)
+                    .collect();
+                Some(DriveLock::acquire(keys, report, cancel)?)
+            } else {
+                None
+            };
             keel_vfs::ops::transfer(&t.src, &t.dst, t.mv, conflict, report, cancel, &router)
         });
         self.mark_remote(id, remote);
@@ -219,6 +235,7 @@ impl Jobs {
                 current: String::new(),
                 done_items: 0,
                 total_items: paths.len(),
+                skipped: 0,
             };
             for path in &paths {
                 if cancel.load(Ordering::Relaxed) {
@@ -271,6 +288,7 @@ impl Jobs {
                 current: String::new(),
                 done_items: 0,
                 total_items: 0,
+                skipped: 0,
             },
             cancel: cancel.clone(),
             done: None,
@@ -280,10 +298,16 @@ impl Jobs {
         let ctx = self.ctx.clone();
         let started = spawn("keel-job", move || {
             let last = Cell::new(None::<Instant>);
+            // The newest report held back by the throttle; sent before JobDone so the
+            // final counts (skipped items) always arrive.
+            let held = RefCell::new(None::<Progress>);
             let report = |p: Progress| {
                 if last.get().is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
                     last.set(Some(Instant::now()));
+                    held.borrow_mut().take();
                     send(&tx, &ctx, Msg::JobProgress { id, p });
+                } else {
+                    *held.borrow_mut() = Some(p);
                 }
             };
             // A panicking job still answers, so its Cancel button never hangs around.
@@ -296,6 +320,9 @@ impl Jobs {
                         .unwrap_or_else(|| "unknown panic".into());
                     Err(anyhow::anyhow!("internal error: {why}"))
                 });
+            if let Some(p) = held.take() {
+                send(&tx, &ctx, Msg::JobProgress { id, p });
+            }
             send(&tx, &ctx, Msg::JobDone { id, result });
         });
         if !started {
@@ -386,6 +413,13 @@ fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
                         Some(Ok(())) if job.cancelled() => {
                             ("Done (cancel too late)".to_owned(), false)
                         }
+                        Some(Ok(())) if job.progress.skipped > 0 => (
+                            format!(
+                                "Done; skipped {} already there",
+                                items(job.progress.skipped)
+                            ),
+                            false,
+                        ),
                         Some(Ok(())) => ("Done".to_owned(), false),
                         Some(Err(e)) if is_cancel(e) => ("Cancelled".to_owned(), false),
                         Some(Err(e)) => (format!("{e:#}"), true),
@@ -445,11 +479,84 @@ pub fn items(n: usize) -> String {
     }
 }
 
+/// The drive a local path is on: the path prefix on Windows (`c:`, `\\server\share`),
+/// the device number elsewhere. None for remote paths. May touch the disk: workers only.
+pub fn volume_key(p: &VPath) -> Option<String> {
+    let local = p.to_local_path()?;
+    #[cfg(windows)]
+    {
+        match local.components().next()? {
+            std::path::Component::Prefix(pre) => {
+                Some(pre.as_os_str().to_string_lossy().to_lowercase())
+            }
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mut probe = local.as_path();
+        loop {
+            if let Ok(m) = std::fs::metadata(probe) {
+                return Some(m.dev().to_string());
+            }
+            probe = probe.parent()?;
+        }
+    }
+}
+
+/// Drives held by running transfers (setting "one transfer per drive").
+static BUSY_DRIVES: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Holds `keys` (drives) for a transfer; released on drop.
+pub struct DriveLock(Vec<String>);
+
+impl DriveLock {
+    /// Waits until no other transfer holds any of `keys`, showing that it waits, then
+    /// takes them all. Cancel stops the wait.
+    pub fn acquire(
+        mut keys: Vec<String>,
+        report: &dyn Fn(Progress),
+        cancel: &AtomicBool,
+    ) -> anyhow::Result<Self> {
+        keys.sort();
+        keys.dedup();
+        let mut told = false;
+        loop {
+            {
+                let mut busy = BUSY_DRIVES.lock();
+                if !keys.iter().any(|k| busy.contains(k)) {
+                    busy.extend(keys.iter().cloned());
+                    return Ok(Self(keys));
+                }
+            }
+            anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
+            if !told {
+                told = true;
+                report(Progress {
+                    current: "Waiting for another transfer on this drive…".into(),
+                    ..Progress::default()
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for DriveLock {
+    fn drop(&mut self) {
+        BUSY_DRIVES.lock().retain(|k| !self.0.contains(k));
+    }
+}
+
 /// Top-level names in `src` that already exist in `dst` (a stat on the remote host when
-/// `dst` is remote). Blocks: workers only.
+/// `dst` is remote). Local names go through the extended-length form, so long paths and
+/// names ending in a dot or space are found too. Blocks: workers only.
 pub fn plan_conflicts(src: &[VPath], dst: &VPath, router: &Router) -> Vec<String> {
     let exists = |name: &str| match dst.to_local_path() {
-        Some(dir) => std::fs::symlink_metadata(dir.join(name)).is_ok(),
+        Some(dir) => {
+            keel_vfs::long(&dir.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
+        }
         None => router
             .provider_for(dst)
             .is_some_and(|p| p.stat(&dst.join(name)).is_ok()),
@@ -482,7 +589,9 @@ fn archive_conflicts(
     };
     Ok(names
         .into_iter()
-        .filter(|name| std::fs::symlink_metadata(dst.join(name)).is_ok())
+        .filter(|name| {
+            keel_vfs::long(&dst.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
+        })
         .collect())
 }
 
@@ -694,6 +803,93 @@ mod tests {
         ];
         let dst = VPath::local(root.join("dst"));
         assert_eq!(plan_conflicts(&src, &dst, &Router::new()), ["a.txt"]);
+    }
+
+    /// Polish backlog: clashes past MAX_PATH and names with a trailing dot are found.
+    #[test]
+    fn plan_conflicts_sees_long_and_trailing_dot_names() {
+        let root = tree("keel-job-plan-long");
+        let mut deep = root.join("dst");
+        while deep.as_os_str().len() < 300 {
+            deep = deep.join("a-rather-long-folder-name");
+        }
+        let long = |p: &std::path::Path| keel_vfs::long(p).unwrap();
+        std::fs::create_dir_all(long(&deep)).unwrap();
+        for name in ["x.txt", "dot."] {
+            std::fs::write(long(&deep.join(name)), "old").unwrap();
+        }
+        let src = vec![
+            VPath::local(root.join("src/x.txt")),
+            VPath::local(root.join("src/dot.")),
+            VPath::local(root.join("src/new.txt")),
+        ];
+        let found = plan_conflicts(&src, &VPath::local(&deep), &Router::new());
+        assert_eq!(found, ["x.txt", "dot."]);
+        let _ = std::fs::remove_dir_all(long(&root));
+    }
+
+    /// Polish backlog: a job's last progress (with its skipped count) always arrives,
+    /// and a job that skipped items stays in the panel.
+    #[test]
+    fn skipped_items_are_reported_and_kept() {
+        let mut jobs = Jobs::new(egui::Context::default());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let id = jobs.spawn("copy".into(), tx, |report, _| {
+            for skipped in 1..=3 {
+                report(Progress {
+                    skipped,
+                    ..Progress::default()
+                });
+            }
+            Ok(())
+        });
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Msg::JobProgress { id, p } => jobs.progress(id, p),
+                Msg::JobDone { id, result } => {
+                    jobs.finish(id, result);
+                    break;
+                }
+                _ => panic!("unexpected message"),
+            }
+        }
+        let job = jobs.list.iter().find(|j| j.id == id).unwrap();
+        assert_eq!(job.progress.skipped, 3, "the throttled last report arrived");
+        assert!(!job.clears());
+    }
+
+    #[test]
+    fn drive_lock_serialises_transfers_on_one_drive() {
+        let none = AtomicBool::new(false);
+        let first = DriveLock::acquire(vec!["test-drive-q".into()], &|_| {}, &none).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let waiter = std::thread::spawn(move || {
+            let waited = AtomicBool::new(false);
+            let lock = DriveLock::acquire(
+                vec!["test-drive-q".into(), "test-drive-r".into()],
+                &|p| waited.store(p.current.contains("Waiting"), Ordering::Relaxed),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            tx.send(waited.load(Ordering::Relaxed)).unwrap();
+            drop(lock);
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "waits"
+        );
+        drop(first);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "said it waited"
+        );
+        waiter.join().unwrap();
+        // Cancel stops a wait.
+        let _held = DriveLock::acquire(vec!["test-drive-s".into()], &|_| {}, &none).unwrap();
+        let cancelled = AtomicBool::new(true);
+        assert!(DriveLock::acquire(vec!["test-drive-s".into()], &|_| {}, &cancelled).is_err());
+        assert!(volume_key(&VPath::local(std::env::temp_dir())).is_some());
+        assert!(volume_key(&VPath::parse("sftp://h/x").unwrap()).is_none());
     }
 
     #[test]

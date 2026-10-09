@@ -273,20 +273,14 @@ impl App {
                 }
             });
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
-            // Same rule as `Action::Drop`: Shift or a drop inside the source pane moves.
             let (shift, hover) = ctx.input(|i| (i.modifiers.shift, i.pointer.hover_pos()));
             let over = hover.and_then(|pos| pane_rects.iter().position(|r| r.contains(pos)));
-            let verb = if shift || over == Some(drag.pane) {
-                "Move"
-            } else {
-                "Copy"
-            };
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
             egui::show_tooltip_at_pointer(
                 ctx,
                 egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("keel-drag")),
                 egui::Id::new("keel-drag-tip"),
-                |ui| ui.label(format!("{verb} {}", crate::jobs::items(drag.paths.len()))),
+                |ui| ui.label(drag_verb(&drag, over, shift)),
             );
         }
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
@@ -342,7 +336,25 @@ impl eframe::App for App {
     }
 }
 
+/// The drag tooltip: exactly what a drop over pane `over` would do, by the same rule as
+/// `Action::Drop` (entries dragged out of an archive are extracted: a copy).
+fn drag_verb(drag: &DragPayload, over: Option<usize>, shift: bool) -> &'static str {
+    let extract = drag.dir.split_archive().is_some();
+    let moves = over.is_some_and(|p| pane::drop_moves(Some(drag.pane), p, shift));
+    if moves && !extract {
+        "Move"
+    } else {
+        "Copy"
+    }
+}
+
+/// Below this width the status bar's left group (counts, size, filter) is one line that
+/// truncates, so it never runs under the right group.
+const NARROW_STATUS: f32 = 800.0;
+
 fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)>) {
+    let narrow = ui.available_width() < NARROW_STATUS;
+    let left_max = ui.available_width() * 0.4;
     ui.horizontal(|ui| {
         let show_hidden = s.show_hidden;
         let p = s.active;
@@ -358,16 +370,28 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .map(|&i| tab.entries()[i].size)
                 .sum()
         };
-        ui.label(format!("{n} items"));
+        let mut left = vec![format!("{n} items")];
         if picked {
-            ui.separator();
-            ui.label(format!("{} selected", tab.selected.len()));
+            left.push(format!("{} selected", tab.selected.len()));
         }
-        ui.separator();
-        ui.label(format_size(bytes, DECIMAL));
+        left.push(format_size(bytes, DECIMAL));
         if !tab.filter.is_empty() {
-            ui.separator();
-            ui.label(format!("filter: {}", tab.filter));
+            left.push(format!("filter: {}", tab.filter));
+        }
+        if narrow {
+            let text = left.join("  ·  ");
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_max, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| ui.add(egui::Label::new(text).truncate()),
+            );
+        } else {
+            for (i, part) in left.into_iter().enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                ui.label(part);
+            }
         }
         let dir = tab.dir.clone();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -515,6 +539,40 @@ mod tests {
         harness.press_key(Key::F6);
         harness.step();
         assert_eq!(harness.state().state.active, 1);
+    }
+
+    #[test]
+    fn drag_tooltip_says_move_or_copy_by_the_drop_rule() {
+        let dir = VPath::parse("mem://t/").unwrap();
+        let drag = DragPayload {
+            pane: 0,
+            dir: dir.clone(),
+            paths: vec![dir.join("a")],
+        };
+        assert_eq!(drag_verb(&drag, Some(0), false), "Move");
+        assert_eq!(drag_verb(&drag, Some(1), false), "Copy");
+        assert_eq!(drag_verb(&drag, Some(1), true), "Move");
+        assert_eq!(drag_verb(&drag, None, false), "Copy");
+        let zip = VPath::join_archive(&VPath::local(std::env::temp_dir().join("a.zip")), "");
+        let out_of_zip = DragPayload { dir: zip, ..drag };
+        assert_eq!(drag_verb(&out_of_zip, Some(0), true), "Copy", "extracts");
+    }
+
+    /// Polish backlog: in a narrow window the status bar's left group is one truncated
+    /// line inside 40 % of the width.
+    #[test]
+    fn narrow_status_bar_truncates_its_left_group() {
+        let start = fixture("keel-status-fixture");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(640.0, 400.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        wait_listed(&mut harness);
+        harness.state_mut().state.tab_mut(0).filter = "a-very-long-filter-text-".repeat(8);
+        harness.run_steps(2);
+        let node =
+            egui_kittest::kittest::Queryable::get_by_label_contains(&harness, "filter: a-very");
+        let width = node.raw_bounds().map(|b| b.x1 - b.x0).unwrap_or_default();
+        assert!(width > 0.0 && width <= 640.0 * 0.4 + 1.0, "{width}");
     }
 
     #[test]

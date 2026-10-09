@@ -404,3 +404,27 @@ fn copy_keeps_bytes_and_mtime_with_or_without_reflink() {
     let mtime = |p: &std::path::Path| fs::metadata(p).unwrap().modified().unwrap();
     assert_eq!(mtime(&src), mtime(&dst.join("big.bin")));
 }
+
+/// Polish backlog: a Skip transfer reports how many items it left alone.
+#[test]
+fn skip_reports_skipped_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, dst) = (tmp.path().join("src"), tmp.path().join("dst"));
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::create_dir_all(dst.join("sub")).unwrap();
+    for f in ["a.txt", "b.txt", "sub/c.txt"] {
+        fs::write(src.join(f), "new").unwrap();
+    }
+    fs::write(dst.join("sub/c.txt"), "old").unwrap();
+    let last = RefCell::new(None);
+    copy_local(
+        &[src.join("a.txt"), src.join("b.txt"), src.join("sub")],
+        &dst,
+        Conflict::Skip,
+        &|p| *last.borrow_mut() = Some(p),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(last.borrow().as_ref().unwrap().skipped, 1);
+    assert_eq!(fs::read_to_string(dst.join("sub/c.txt")).unwrap(), "old");
+}

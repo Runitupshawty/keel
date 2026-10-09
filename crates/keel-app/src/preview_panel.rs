@@ -13,6 +13,13 @@ use keel_vfs::{Entry, Kind, VPath};
 use std::collections::HashMap;
 
 pub const CACHE: usize = 64;
+/// The cache also stays under this many bytes of decoded previews.
+pub const CACHE_BYTES: usize = 256 * 1024 * 1024;
+/// PDF pages render at the panel width rounded up to this step, so widening the panel
+/// re-renders them sharp while small drags reuse the cached page.
+pub const WIDTH_STEP: u32 = 256;
+/// Table previews show at most this many columns.
+pub const MAX_TABLE_COLS: usize = 64;
 /// Shown (and toasted) for password-protected archive entries.
 pub const LOCKED: &str = "Password-protected archive entries cannot be opened";
 /// base16-ocean.dark background: the text previewer's span colours are made for it.
@@ -24,10 +31,12 @@ pub struct PreviewKey {
     pub mtime: u64,
     pub size: u64,
     pub page: u32,
+    /// Render width bucket (PDF pages in the panel); 0 when the width does not matter.
+    pub width: u32,
 }
 
 impl PreviewKey {
-    pub fn of(entry: &Entry, page: u32) -> Self {
+    pub fn of(entry: &Entry, page: u32, width: u32) -> Self {
         Self {
             path: entry.path.clone(),
             mtime: entry
@@ -36,7 +45,47 @@ impl PreviewKey {
                 .map_or(0, |d| d.as_secs()),
             size: entry.size,
             page,
+            width,
         }
+    }
+}
+
+/// The render width bucket for `entry` at a panel `width_px` wide (see `WIDTH_STEP`).
+pub fn width_bucket(entry: &Entry, width_px: u32) -> u32 {
+    if entry.ext.eq_ignore_ascii_case("pdf") {
+        width_px.max(1).div_ceil(WIDTH_STEP) * WIDTH_STEP
+    } else {
+        0
+    }
+}
+
+/// Rough decoded size of a preview, for the cache budget.
+fn weight(p: &Preview) -> usize {
+    let rgba = |r: &Rgba| r.data.len();
+    match p {
+        Preview::Image(r) | Preview::Pdf { image: r, .. } | Preview::Video { thumb: r, .. } => {
+            rgba(r)
+        }
+        Preview::Text { lines, .. } => lines
+            .iter()
+            .flat_map(|l| l.iter().map(|(_, s)| s.len() + 8))
+            .sum(),
+        Preview::Markdown(s) => s.len(),
+        Preview::Table { headers, rows, .. } => rows
+            .iter()
+            .chain([headers])
+            .flat_map(|r| r.iter().map(|c| c.len() + 24))
+            .sum(),
+        Preview::Doc { blocks } => blocks
+            .iter()
+            .map(|b| match b {
+                DocBlock::Image(r) => rgba(r),
+                DocBlock::Heading(_, s) | DocBlock::Para(s) => s.len(),
+                DocBlock::Table(t) => t.iter().flatten().map(String::len).sum(),
+            })
+            .sum(),
+        Preview::Hex { head, .. } => head.len(),
+        _ => 0,
     }
 }
 
@@ -53,7 +102,9 @@ pub struct PreviewPanel {
     pub max_bytes: u64,
     entry: Option<Entry>,
     doc_tex: Vec<TextureHandle>,
-    cache: HashMap<PreviewKey, (Preview, u64)>,
+    /// Preview, last use, weight.
+    cache: HashMap<PreviewKey, (Preview, u64, usize)>,
+    cache_bytes: usize,
     clock: u64,
     jobs: Sender<PreviewJob>,
 }
@@ -68,6 +119,7 @@ impl PreviewPanel {
         self.entry = None;
         self.doc_tex.clear();
         self.cache.clear();
+        self.cache_bytes = 0;
     }
 
     pub fn new(jobs: Sender<PreviewJob>) -> Self {
@@ -83,6 +135,7 @@ impl PreviewPanel {
             entry: None,
             doc_tex: Vec::new(),
             cache: HashMap::new(),
+            cache_bytes: 0,
             clock: 0,
             jobs,
         }
@@ -100,7 +153,8 @@ impl PreviewPanel {
         if self.entry.as_ref().map(|x| &x.path) != Some(&e.path) {
             self.page = 0;
         }
-        let key = PreviewKey::of(e, self.page);
+        let width = width_bucket(e, self.width_px);
+        let key = PreviewKey::of(e, self.page, width);
         if self.key.as_ref() == Some(&key) {
             return false;
         }
@@ -115,20 +169,27 @@ impl PreviewPanel {
             return true;
         }
         // `max_bytes` is at most 64 MB, so archive entries over the 1 GiB materialise
-        // limit never reach `local_copy` either.
-        if e.size > self.max_bytes {
+        // limit never reach `local_copy` either. PDFs and videos outside archives read
+        // only a page or a frame, so their size does not matter.
+        let streams = keel_preview::streams(&e.ext) && e.path.split_archive().is_none();
+        if e.size > self.max_bytes && !streams {
             self.set(ctx, Some(Preview::TooLarge(e.size)));
             return false;
         }
         self.clock += 1;
-        let cached = self.cache.get_mut(&key).map(|(p, used)| {
+        let cached = self.cache.get_mut(&key).map(|(p, used, _)| {
             *used = self.clock;
             p.clone()
         });
         match cached {
             Some(p) => self.set(ctx, Some(p)),
             None => {
-                let _ = self.jobs.send((key, e.clone(), self.width_px.max(64)));
+                let px = if width > 0 {
+                    width
+                } else {
+                    self.width_px.max(64)
+                };
+                let _ = self.jobs.send((key, e.clone(), px));
             }
         }
         false
@@ -140,16 +201,24 @@ impl PreviewPanel {
             self.set(ctx, Some(preview.clone()));
         }
         self.clock += 1;
-        self.cache.insert(key, (preview, self.clock));
-        if self.cache.len() > CACHE {
-            // ponytail: O(n) scan over 64 entries.
-            if let Some(oldest) = self
+        let w = weight(&preview);
+        if let Some((_, _, old)) = self.cache.insert(key, (preview, self.clock, w)) {
+            self.cache_bytes -= old;
+        }
+        self.cache_bytes += w;
+        // Evict least recently used past 64 entries or 256 MB; the newest always stays.
+        while self.cache.len() > 1 && (self.cache.len() > CACHE || self.cache_bytes > CACHE_BYTES) {
+            // ponytail: O(n) scan over at most 64 entries.
+            let Some(oldest) = self
                 .cache
                 .iter()
-                .min_by_key(|(_, (_, used))| *used)
+                .min_by_key(|(_, (_, used, _))| *used)
                 .map(|(k, _)| k.clone())
-            {
-                self.cache.remove(&oldest);
+            else {
+                break;
+            };
+            if let Some((_, _, w)) = self.cache.remove(&oldest) {
+                self.cache_bytes -= w;
             }
         }
     }
@@ -215,7 +284,12 @@ impl PreviewPanel {
             return;
         };
         match current {
-            Preview::Text { lines, .. } => text(ui, lines),
+            Preview::Text { lines, .. } => {
+                // Selection highlight from a light theme under the dark code colours is
+                // unreadable; code previews are not selectable.
+                ui.style_mut().interaction.selectable_labels = false;
+                text(ui, lines)
+            }
             Preview::Markdown(md) => {
                 // Keyed by path + mtime + size: parsed once, only visible blocks laid out.
                 CommonMarkViewer::new().show_scrollable(
@@ -372,13 +446,32 @@ fn hex(ui: &mut egui::Ui, head: &[u8], size: u64) {
     });
 }
 
-fn table(ui: &mut egui::Ui, headers: &[String], rows: &[Vec<String>], truncated: bool) {
-    if truncated {
-        ui.weak(format!("Showing the first {} rows", rows.len()));
-    }
-    let cols = headers
+/// Columns shown (at most `MAX_TABLE_COLS`) and the note above the table, if any.
+fn table_shape(headers: &[String], rows: &[Vec<String>], truncated: bool) -> (usize, String) {
+    let all = headers
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    let cols = all.min(MAX_TABLE_COLS);
+    let mut note = Vec::new();
+    if truncated {
+        note.push(format!("the first {} rows", rows.len()));
+    }
+    if all > cols {
+        note.push(format!("the first {cols} of {all} columns"));
+    }
+    let note = if note.is_empty() {
+        String::new()
+    } else {
+        format!("Showing {}", note.join(" and "))
+    };
+    (cols, note)
+}
+
+fn table(ui: &mut egui::Ui, headers: &[String], rows: &[Vec<String>], truncated: bool) {
+    let (cols, note) = table_shape(headers, rows, truncated);
+    if !note.is_empty() {
+        ui.weak(note);
+    }
     if cols == 0 {
         ui.weak("Empty table");
         return;
@@ -539,6 +632,102 @@ mod tests {
             state.preview.set(&ctx, Some(p));
             draw(&mut state);
         }
+    }
+
+    #[test]
+    fn tables_cap_columns_with_a_note() {
+        let wide: Vec<String> = (0..100).map(|i| format!("c{i}")).collect();
+        assert_eq!(
+            table_shape(&wide, &[], false),
+            (64, "Showing the first 64 of 100 columns".into())
+        );
+        let row = vec![vec!["x".to_owned(); 3]];
+        assert_eq!(
+            table_shape(&[], &row, true),
+            (3, "Showing the first 1 rows".into())
+        );
+        assert_eq!(table_shape(&[], &[], false), (0, String::new()));
+    }
+
+    /// Polish backlog: a PDF widened past its width bucket renders again; other files
+    /// keep their cached preview whatever the width.
+    #[test]
+    fn widening_the_panel_rerenders_pdfs_only() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (jobs, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(jobs);
+        let ctx = egui::Context::default();
+        for (name, rerender) in [("doc.pdf", true), ("notes.txt", false)] {
+            let e = crate::tab::test_entry(&dir, name, Kind::File, 10);
+            panel.width_px = 400;
+            panel.follow(&ctx, Some(&e));
+            let (key, _, px) = rx.try_recv().expect("first render");
+            if rerender {
+                assert_eq!(px, 512, "PDFs render at the bucket width");
+            }
+            panel.insert(&ctx, key, Preview::Unsupported);
+            panel.width_px = 450; // same bucket
+            panel.follow(&ctx, Some(&e));
+            assert!(rx.try_recv().is_err(), "{name}: same bucket is cached");
+            panel.width_px = 900;
+            panel.follow(&ctx, Some(&e));
+            assert_eq!(rx.try_recv().is_ok(), rerender, "{name}");
+        }
+    }
+
+    /// Polish backlog: PDFs and videos are not refused by the size limit (outside archives).
+    #[test]
+    fn big_videos_and_pdfs_still_preview() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (jobs, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(jobs);
+        let ctx = egui::Context::default();
+        let huge = 4 << 30;
+        for name in ["movie.mp4", "scan.pdf"] {
+            panel.follow(
+                &ctx,
+                Some(&crate::tab::test_entry(&dir, name, Kind::File, huge)),
+            );
+            assert!(rx.try_recv().is_ok(), "{name} is rendered");
+        }
+        panel.follow(
+            &ctx,
+            Some(&crate::tab::test_entry(&dir, "log.txt", Kind::File, huge)),
+        );
+        assert!(matches!(panel.current, Some(Preview::TooLarge(_))));
+        let zip = VPath::join_archive(&dir.join("a.zip"), "");
+        panel.follow(
+            &ctx,
+            Some(&crate::tab::test_entry(&zip, "m.mp4", Kind::File, huge)),
+        );
+        assert!(
+            matches!(panel.current, Some(Preview::TooLarge(_))),
+            "archive entry"
+        );
+    }
+
+    #[test]
+    fn cache_stays_under_its_byte_budget() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (jobs, _rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(jobs);
+        let ctx = egui::Context::default();
+        let big = |i: u64| {
+            let e = crate::tab::test_entry(&dir, &format!("{i}.png"), Kind::File, i);
+            let image = Rgba {
+                w: 4096,
+                h: 2560,
+                data: vec![0; 4096 * 2560 * 4],
+            };
+            (PreviewKey::of(&e, 0, 0), Preview::Image(image))
+        };
+        for i in 0..10 {
+            let (key, p) = big(i);
+            panel.insert(&ctx, key, p);
+        }
+        assert!(panel.cache_bytes <= CACHE_BYTES);
+        assert_eq!(panel.cache.len(), CACHE_BYTES / (4096 * 2560 * 4));
+        assert!(panel.cache.contains_key(&big(9).0), "newest kept");
     }
 
     #[test]

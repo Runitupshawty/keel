@@ -44,11 +44,15 @@ fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
         .pages()
         .get(req.page as u16)
         .map_err(|error| error.to_string())?;
-    // Fit box: the page's longer side lands on max_px.
+    // Fit box: the page's longer side lands on max_px; panel previews fit the width.
     let max_px = req.max_px.max(1) as f32;
-    let longest = page.width().value.max(page.height().value).max(1.0);
+    let side = if req.fit_width {
+        page.width().value
+    } else {
+        page.width().value.max(page.height().value)
+    };
     let bitmap = page
-        .render_with_config(&PdfRenderConfig::new().scale_page_by_factor(max_px / longest))
+        .render_with_config(&PdfRenderConfig::new().scale_page_by_factor(max_px / side.max(1.0)))
         .map_err(|error| error.to_string())?;
     let image = bitmap.as_image().to_rgba8();
     Ok(Preview::Pdf {
