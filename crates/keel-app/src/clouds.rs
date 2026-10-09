@@ -198,6 +198,8 @@ pub struct Clouds {
     pub secrets: Arc<dyn SecretStore>,
     pub wizard: Option<Wizard>,
     confirm_remove: Option<String>,
+    /// `cloud::check_cpu`: Err(why) when this CPU cannot run the TLS crypto at all.
+    pub cpu: Result<(), String>,
 }
 
 impl Clouds {
@@ -215,6 +217,7 @@ impl Clouds {
             secrets,
             wizard: None,
             confirm_remove: None,
+            cpu: cloud::check_cpu().map_err(|e| e.to_string()),
         }
     }
 
@@ -313,8 +316,12 @@ impl Clouds {
             sign_out(a, self.secrets.clone(), tx.clone(), ui.ctx().clone());
         }
         ui.add_space(6.0);
-        if ui.button("Add account…").clicked() {
+        let add = ui.add_enabled(self.cpu.is_ok(), egui::Button::new("Add account…"));
+        if add.clicked() {
             self.wizard = Some(Wizard::default());
+        }
+        if let Err(why) = &self.cpu {
+            ui.colored_label(ui.visuals().error_fg_color, why);
         }
     }
 }
@@ -450,6 +457,13 @@ impl Wizard {
         let bad_segment = |s: &str| s.is_empty() || s == "." || s == "..";
         if root.contains('\\') || (!root.is_empty() && root.split('/').any(bad_segment)) {
             return Err("The root folder must be a plain path like Photos/2026".into());
+        }
+        if let Some(id) = &self.id {
+            if !cloud::valid_id(id) {
+                return Err(format!(
+                    "The id \"{id}\" in config.toml must be lowercase letters, digits, - or _;                      remove this account and add it again"
+                ));
+            }
         }
         let new = self.id.is_none();
         let taken: Vec<String> = existing.iter().map(|a| a.id.clone()).collect();
@@ -841,7 +855,10 @@ impl AppState {
 
     pub fn cloud_cmd(&mut self, id: String, cmd: CloudCmd) {
         if cmd == CloudCmd::Add {
-            self.clouds.wizard = Some(Wizard::default());
+            match &self.clouds.cpu {
+                Ok(()) => self.clouds.wizard = Some(Wizard::default()),
+                Err(why) => self.toasts.error(why.clone()),
+            }
             return;
         }
         let Some(account) = self.clouds.account(&id).cloned() else {
@@ -1029,6 +1046,16 @@ mod tests {
         let mut w = Wizard::default();
         w.choose(CloudKind::GoogleDrive);
         assert!(w.build(&[]).unwrap_err().contains("client id"));
+        // Ids are lowercase (the keychain ignores case): generated so, refused otherwise.
+        w.label = "My Drive".into();
+        w.client_id = "123.apps.googleusercontent.com".into();
+        assert_eq!(w.build(&[]).unwrap().0.id, "my-drive");
+        let mut upper = Wizard::edit(&CloudAccount {
+            id: "Drive".into(),
+            ..account
+        });
+        upper.client_id = "123.apps.googleusercontent.com".into();
+        assert!(upper.build(&[]).unwrap_err().contains("lowercase"));
     }
 
     #[test]
@@ -1247,6 +1274,16 @@ mod tests {
             "{:?}",
             w.error
         );
+        // A CPU the TLS crypto cannot run on: "Add" says why instead of opening the wizard.
+        state.clouds.wizard = None;
+        state.clouds.cpu = Err("cloud accounts need a CPU with AES".into());
+        state.cloud_cmd(String::new(), CloudCmd::Add);
+        assert!(state.clouds.wizard.is_none());
+        assert!(state
+            .toasts
+            .list
+            .iter()
+            .any(|t| t.text.contains("need a CPU")));
         // Other failures are plain error toasts; connection comes back with an info toast.
         state.apply(Msg::Remote(RemoteEvent::Status {
             host_id: "cloud:drive".into(),

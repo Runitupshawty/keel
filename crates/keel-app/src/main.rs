@@ -35,7 +35,9 @@ use settings::Settings;
 use std::path::{Path, PathBuf};
 
 fn main() -> eframe::Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    tracing_subscriber::fmt()
+        .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
+        .init();
     crash::install_panic_hook();
     // pdfium sits next to the executable (copied there by build.rs).
     if let Some(dir) = std::env::current_exe()
