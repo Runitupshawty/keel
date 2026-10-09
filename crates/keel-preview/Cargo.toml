@@ -7,3 +7,20 @@ repository.workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[features]
+test-hooks = []
+
+[dependencies]
+syntect.workspace = true
+pulldown-cmark.workspace = true
+image.workspace = true
+resvg.workspace = true
+calamine.workspace = true
+csv.workspace = true
+pdfium-render.workspace = true
+docx-rs.workspace = true
+keel-vfs = { path = "../keel-vfs" }
+
+[dev-dependencies]
+tempfile = "3"

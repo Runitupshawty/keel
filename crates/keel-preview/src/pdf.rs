@@ -1,0 +1,55 @@
+use crate::{Preview, Request, Rgba};
+use pdfium_render::prelude::*;
+use std::path::Path;
+use std::sync::OnceLock;
+
+static PDFIUM: OnceLock<Option<Pdfium>> = OnceLock::new();
+
+pub(crate) fn accepts(ext: &str) -> bool {
+    ext == "pdf"
+}
+
+pub(crate) fn init(dll_dir: &Path) {
+    PDFIUM.get_or_init(|| {
+        Pdfium::bind_to_library(dll_dir.join("pdfium.dll"))
+            .ok()
+            .map(Pdfium::new)
+    });
+}
+
+pub(crate) fn render(req: &Request) -> Preview {
+    let Some(pdfium) = PDFIUM.get().and_then(Option::as_ref) else {
+        return Preview::Unsupported;
+    };
+    match render_inner(req, pdfium) {
+        Ok(preview) => preview,
+        Err(error) => Preview::Error(error),
+    }
+}
+
+fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
+    let document = pdfium
+        .load_pdf_from_file(&req.bytes_path, None)
+        .map_err(|error| error.to_string())?;
+    let pages = document.pages().len() as u32;
+    if req.page >= pages {
+        return Err(format!("page {} is out of range", req.page));
+    }
+    let page = document
+        .pages()
+        .get(req.page as u16)
+        .map_err(|error| error.to_string())?;
+    let bitmap = page
+        .render_with_config(&PdfRenderConfig::new().set_target_width(req.max_px.max(1) as i32))
+        .map_err(|error| error.to_string())?;
+    let image = bitmap.as_image().to_rgba8();
+    Ok(Preview::Pdf {
+        pages,
+        page: req.page,
+        image: Rgba {
+            w: image.width(),
+            h: image.height(),
+            data: image.into_raw(),
+        },
+    })
+}
