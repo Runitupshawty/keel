@@ -231,6 +231,9 @@ pub struct AppState {
     pub dropzone: crate::dropzone::DropZone,
     /// Task 29: the library (opened by the app, see `library.rs`).
     pub library: crate::library::LibraryUi,
+    // --- Task 32 ---
+    /// Media view sidecar textures and their workers (`media.rs`).
+    pub media: crate::media::Media,
 }
 
 impl AppState {
@@ -259,6 +262,9 @@ impl AppState {
         let themes = Themes::load(&settings.theme);
         let theme = themes.get(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
+        let mut media = crate::media::Media::new(ctx.clone(), router.clone());
+        media.tile = settings.media_tile;
+        media.dates = settings.media_dates;
         // Remote hosts are registered before the restored tabs list (lazily connecting).
         let mut remotes = crate::remotes::Remotes::new(tx.clone(), ctx.clone());
         remotes.sync(&router, &settings.remotes);
@@ -340,6 +346,7 @@ impl AppState {
             shown: [None, None],
             dropzone: Default::default(),
             library,
+            media,
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -1093,6 +1100,7 @@ impl AppState {
 
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
+        self.media_tick(); // Task 32
         self.remote_tick();
         self.cloud_tick();
         let cwd = self.panes[self.active].tab().dir.to_local_path();

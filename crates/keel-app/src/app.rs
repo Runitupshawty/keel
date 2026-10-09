@@ -377,6 +377,7 @@ impl App {
                         drives: &s.sidebar.drives,
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: s.settings.library.tags_column,
+                        media: &mut s.media,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {
