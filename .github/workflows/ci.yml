@@ -47,6 +47,8 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: win64
             libs: Everything64.dll pdfium.dll
+            # Static CRT: keel.exe runs without the VC++ redistributable (VCRUNTIME140.dll).
+            rustflags: -C target-feature=+crt-static
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
@@ -57,7 +59,8 @@ jobs:
             name: macos-x64
             pdfium: pdfium-mac-x64
             libs: libpdfium.dylib
-          - os: ubuntu-latest
+          # Oldest supported glibc (2.35): the binary runs on Ubuntu 22.04 and Debian 12.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             name: linux-x64
             pdfium: pdfium-linux-x64
@@ -84,6 +87,8 @@ jobs:
           KEEL_PDFIUM_ASSET: ${{ matrix.pdfium }}
         run: ./scripts/fetch-deps.sh
       - name: Build release
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --locked -p keel-app --target ${{ matrix.target }}
       - name: Package release
         shell: bash
@@ -130,6 +135,8 @@ jobs:
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # v0.1.0-rc1 and other tags with a "-" publish as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.zip
             dist/*.tar.gz
