@@ -259,7 +259,7 @@ fn chip(ui: &mut egui::Ui, path: &VPath, missing: bool) -> Option<Action> {
             };
             ui.label(name).on_hover_text(tip);
             if ui
-                .add(egui::Button::new("✕").frame(false).small())
+                .add(egui::Button::new("×").frame(false).small())
                 .on_hover_text("Remove from the drop zone")
                 .clicked()
             {

@@ -119,6 +119,7 @@ impl App {
             panic!("test panic inside a frame");
         }
         let s = &mut self.state;
+        crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
         s.drain();
         s.tick();
         s.jobs.tick();
@@ -163,16 +164,16 @@ impl App {
                 s.toasts.error(crate::preview_panel::LOCKED);
             }
         }
-        if s.preview.open {
-            let panel = egui::SidePanel::right("preview")
-                .resizable(true)
-                .default_width(s.settings.preview_width)
-                .width_range(200.0..=1000.0)
-                .show(ctx, |ui| {
-                    s.preview.width_px =
-                        (ui.available_width() * ctx.pixels_per_point()).round() as u32;
-                    s.preview.ui(ui, s.theme.muted());
-                });
+        // Slides open and shut (Task 23); the width is the user's once fully open.
+        let panel = egui::SidePanel::right("preview")
+            .resizable(true)
+            .default_width(s.settings.preview_width)
+            .width_range(200.0..=1000.0)
+            .show_animated(ctx, s.preview.open, |ui| {
+                s.preview.width_px = (ui.available_width() * ctx.pixels_per_point()).round() as u32;
+                s.preview.ui(ui, s.theme.muted());
+            });
+        if let Some(panel) = panel {
             let w = panel.response.rect.width().round();
             if self.seen_widths.1.is_some_and(|seen| seen != w) {
                 s.settings.preview_width = w;
@@ -185,14 +186,20 @@ impl App {
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(4.0))
             .show(ctx, |ui| {
                 let full = ui.available_rect_before_wrap();
-                let rects = if s.dual {
-                    let x = full.left() + full.width() * self.split;
+                // --- Task 23 ---: the split slides when dual pane is toggled; a drag
+                // follows the pointer.
+                let split_id = egui::Id::new("keel-split");
+                let share =
+                    crate::anim::value(ctx, split_id, if s.dual { self.split } else { 1.0 });
+                let rects = if share < 0.999 {
+                    let x = full.left() + full.width() * share;
                     let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, full.y_range());
                     let r = ui
                         .interact(handle, ui.id().with("split"), Sense::drag())
                         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                     if let Some(p) = r.dragged().then(|| r.interact_pointer_pos()).flatten() {
                         self.split = ((p.x - full.left()) / full.width()).clamp(0.15, 0.85);
+                        crate::anim::snap(ctx, split_id, self.split);
                     }
                     ui.painter().vline(
                         x,
@@ -233,6 +240,7 @@ impl App {
                             rects
                                 .iter()
                                 .position(|r| r.contains(pos))
+                                .filter(|&p| p == 0 || s.dual)
                                 .unwrap_or(s.active),
                         ),
                         None if at.elapsed() >= DROP_WAIT => Some(s.active),
@@ -255,7 +263,9 @@ impl App {
                 }
                 pane_rects = rects.clone();
                 for (p, rect) in rects.into_iter().enumerate() {
-                    if pressed.is_some_and(|pos| rect.contains(pos)) {
+                    // Pane 1 still sliding shut after dual pane was turned off: shown only.
+                    let live = p == 0 || s.dual;
+                    if live && pressed.is_some_and(|pos| rect.contains(pos)) {
                         s.active = p;
                     }
                     let mut child =
@@ -273,6 +283,9 @@ impl App {
                         column_widths: &mut s.settings.column_widths,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
+                    if !live {
+                        continue;
+                    }
                     out.extend(acts.into_iter().map(|a| (p, a)));
                     // An in-app drag released over the pane but not on a folder row.
                     if released.is_some_and(|pos| rect.contains(pos)) {

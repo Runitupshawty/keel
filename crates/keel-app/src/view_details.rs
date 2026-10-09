@@ -50,6 +50,13 @@ pub fn ui(
     let mut rename_done = false;
     let mut sort_click = None;
     let mut clicks: Vec<(egui::Response, Entry)> = Vec::new();
+    // The row that just got the cursor fades its highlight in (Task 23).
+    let fade = crate::anim::fade_in(
+        ui.ctx(),
+        egui::Id::new(("keel-fade", id)),
+        tab.cursor.as_deref(),
+    );
+    let selection = ui.visuals().selection.bg_fill;
 
     let mut table = TableBuilder::new(ui)
         .id_salt(id)
@@ -101,9 +108,19 @@ pub fn ui(
             body.rows(ROW_H, vis.len(), |mut row| {
                 let e = &tab.entries()[vis[row.index()]];
                 let shown = tab.shown_name(e);
-                row.set_selected(tab.selected.contains(&e.name));
+                let selected = tab.selected.contains(&e.name);
+                let fading = selected && fade < 1.0 && tab.cursor.as_deref() == Some(&e.name);
+                row.set_selected(selected && !fading);
+                let tint = |ui: &mut egui::Ui| {
+                    if fading {
+                        let r = ui.max_rect().expand2(0.5 * ui.spacing().item_spacing);
+                        ui.painter()
+                            .rect_filled(r, 0.0, selection.gamma_multiply(fade));
+                    }
+                };
                 let color = (e.hidden).then_some(muted);
                 row.col(|ui| {
+                    tint(ui);
                     ui.add(
                         egui::Image::new(crate::icons::icon_for(e))
                             .fit_to_exact_size(egui::vec2(16.0, 16.0)),
@@ -140,6 +157,7 @@ pub fn ui(
                     }
                 });
                 row.col(|ui| {
+                    tint(ui);
                     if search {
                         let folder = e.path.parent().map(|d| d.display()).unwrap_or_default();
                         ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate())
@@ -149,11 +167,13 @@ pub fn ui(
                     }
                 });
                 row.col(|ui| {
+                    tint(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(cell(&size_text(e), color));
                     });
                 });
                 row.col(|ui| {
+                    tint(ui);
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
                 let r = row.response();

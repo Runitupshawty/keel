@@ -521,9 +521,14 @@ impl TermPane {
         text
     }
     pub fn panel(&mut self, ctx: &egui::Context, settings: &mut Settings, tx: &Sender<Msg>) {
+        // --- Task 23 ---: slides shut; opening is instant, so the shell has the
+        // keyboard at once (egui drops focus from a widget missing for a frame).
+        let anim = egui::Id::new("terminal").with("animation");
         if !self.open {
+            egui::TopBottomPanel::bottom("terminal").show_animated(ctx, false, |_| {});
             return;
         }
+        ctx.animate_bool_responsive(anim, true);
         let mut restart = false;
         let mut close = false;
         let panel = egui::TopBottomPanel::bottom("terminal")

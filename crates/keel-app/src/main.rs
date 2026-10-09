@@ -1,6 +1,7 @@
 // Release builds on Windows open no console window (debug builds keep it for logs).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod anim;
 mod app;
 mod clipboard;
 mod clouds;

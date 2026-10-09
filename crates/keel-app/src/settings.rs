@@ -42,6 +42,8 @@ pub struct Settings {
     // --- Task 23 ---
     /// Columns view: width of each column (0 or missing = default).
     pub column_widths: Vec<f32>,
+    /// No transitions (panels, pane split, highlight, toasts).
+    pub reduce_motion: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +65,7 @@ impl Default for Settings {
             remotes: Vec::new(),
             clouds: Vec::new(),
             column_widths: Vec::new(),
+            reduce_motion: false,
         }
     }
 }
@@ -401,6 +404,10 @@ pub fn window(
                     ui.end_row();
                     ui.label("");
                     ui.checkbox(&mut s.preview_open, "Preview panel");
+                    ui.end_row();
+                    // --- Task 23 ---
+                    ui.label("Motion");
+                    ui.checkbox(&mut s.reduce_motion, "Reduce motion");
                     ui.end_row();
                     ui.label("Max preview size");
                     ui.add(

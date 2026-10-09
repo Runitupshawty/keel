@@ -354,12 +354,15 @@ pub fn ui(
     root.columns.focus = root.columns.focus.min(n - 1);
     let focus = root.columns.focus;
     let height = ui.available_height();
-    // Scroll the keyboard column into view when it changes.
+    // Scroll the keyboard column (and the preview right of it) into view when they change.
     let seen_id = ui.id().with(("columns-focus", id));
-    let moved = ui.data(|d| d.get_temp::<(usize, usize)>(seen_id)) != Some((focus, n));
-    ui.data_mut(|d| d.insert_temp(seen_id, (focus, n)));
+    let seen = (focus, n, root.columns.file.is_some());
+    let moved = ui.data(|d| d.get_temp(seen_id)) != Some(seen);
+    ui.data_mut(|d| d.insert_temp(seen_id, seen));
+    let mut target: Option<Rect> = None;
     let mut clicked = None;
     let mut resized = None;
+    let down = egui::Layout::top_down(egui::Align::Min);
     egui::ScrollArea::horizontal()
         .id_salt(("columns", id))
         .auto_shrink([false, false])
@@ -369,14 +372,11 @@ pub fn ui(
                 for i in 0..n {
                     let w = width(cx.column_widths, i, DEFAULT_WIDTH);
                     let (rect, _) = ui.allocate_exact_size(vec2(w, height), Sense::hover());
-                    if moved && i == focus {
-                        ui.scroll_to_rect_animation(
-                            rect,
-                            None,
-                            egui::style::ScrollAnimation::none(),
-                        );
+                    if i == focus {
+                        target = Some(rect);
                     }
-                    let mut child = ui.new_child(UiBuilder::new().max_rect(rect).id_salt(i));
+                    let mut child =
+                        ui.new_child(UiBuilder::new().max_rect(rect).id_salt(i).layout(down));
                     child.set_clip_rect(rect.intersect(ui.clip_rect()));
                     let col = col_mut(root, i).expect("column in range");
                     if column(&mut child, (id.0, id.1, i), col, i == focus, cx, out) {
@@ -392,13 +392,20 @@ pub fn ui(
                     let mut child = ui.new_child(
                         UiBuilder::new()
                             .max_rect(rect.shrink2(vec2(6.0, 2.0)))
-                            .id_salt("preview"),
+                            .id_salt("preview")
+                            .layout(down),
                     );
                     child.set_clip_rect(rect.intersect(ui.clip_rect()));
                     preview(&mut child, &file, cx);
+                    if focus == n - 1 {
+                        target = target.map(|t| t.union(rect));
+                    }
                     if let Some(dx) = handle(ui, height) {
                         resized = Some((n, (w + dx).max(MIN_WIDTH)));
                     }
+                }
+                if let Some(rect) = target.filter(|_| moved) {
+                    ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
                 }
             });
         });
@@ -443,7 +450,7 @@ fn column(
     let rect = ui.max_rect();
     if focused && cx.active {
         ui.painter()
-            .rect_filled(rect, 0.0, ui.visuals().faint_bg_color.gamma_multiply(1.5));
+            .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
     }
     // Empty space: click clears the selection (closing the columns right of it).
     let bg = ui.interact(rect, ui.id().with("bg"), Sense::click());
@@ -477,10 +484,17 @@ fn column(
             area = area.vertical_scroll_offset(top + ROW_H - viewport);
         }
     }
+    // Selections outside the keyboard column are dimmed (Finder).
     let selection = ui.visuals().selection.bg_fill;
+    let selection = if focused {
+        selection
+    } else {
+        selection.gamma_multiply(0.55)
+    };
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
     let muted = cx.theme.muted();
-    let fade = 1.0;
+    // The row that just got the cursor fades its highlight in.
+    let fade = crate::anim::fade_in(ui.ctx(), ui.id().with("fade"), col.cursor.as_deref());
     let mut renaming = col.renaming.take();
     let mut rename_done = false;
     let mut rows: Vec<(egui::Response, Entry)> = Vec::new();
@@ -494,7 +508,16 @@ fn column(
                         vec2(ui.available_width(), ROW_H),
                         Sense::click_and_drag(),
                     );
-                    if col.selected.contains(&e.name) {
+                    let selected = col.selected.contains(&e.name);
+                    r.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            selected,
+                            &e.name,
+                        )
+                    });
+                    if selected {
                         let t = if col.cursor.as_deref() == Some(&e.name) {
                             fade
                         } else {
@@ -825,6 +848,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("a").join("b")).unwrap();
         std::fs::write(tmp.join("a").join("b").join("c.txt"), "hello").unwrap();
+        std::fs::write(tmp.join("tmp-sibling.txt"), "x").unwrap();
+        std::fs::write(tmp.join("zz-other.txt"), "x").unwrap();
         let start = VPath::local(&tmp);
         let mut h = Harness::builder()
             .with_size(egui::vec2(1280.0, 720.0))
@@ -846,19 +871,26 @@ mod tests {
         };
         h.state_mut().state.panes[0].view = ViewMode::Columns;
         h.state_mut().state.panes[1].view = ViewMode::Columns;
+        h.state_mut().state.dual = false;
         wait(&mut h, &|a| !a.state.tab(0).loading);
-        for key in [Key::ArrowDown, Key::ArrowRight] {
-            h.press_key(key);
-            wait(&mut h, &|a| {
-                !a.state.tab(0).loading && a.state.tab(0).entries().len() == 1
-            });
-        }
+        h.press_key(Key::ArrowDown);
+        wait(&mut h, &|a| {
+            a.state.panes[0].tabs[0].columns.cols.len() == 1
+        });
+        h.press_key(Key::ArrowRight);
+        wait(&mut h, &|a| a.state.tab(0).entries().len() == 1);
         assert_eq!(h.state().state.tab(0).dir, start.join("a"));
         h.press_key(Key::ArrowRight);
         wait(&mut h, &|a| a.state.tab(0).dir == start.join("a").join("b"));
         wait(&mut h, &|a| a.state.panes[0].tabs[0].columns.file.is_some());
         h.run_steps(3);
         assert_eq!(chain(&h.state().state.panes[0].tabs[0]).len(), 2);
+        // Rows stack down their column (not across it).
+        let left = |label: &str| {
+            let node = egui_kittest::kittest::Queryable::get_by_label(&h, label);
+            node.raw_bounds().expect("row bounds").x0
+        };
+        assert_eq!(left("tmp-sibling.txt"), left("zz-other.txt"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
