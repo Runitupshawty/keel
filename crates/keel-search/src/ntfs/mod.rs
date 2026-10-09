@@ -44,14 +44,36 @@ const STAT_LIMIT: usize = 2_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
 const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
 
-/// `KEEL_CONFIG_DIR` (portable and test setups) or `%LOCALAPPDATA%\Keel`, then
-/// `index`: the app's cache folder.
+/// Where the index lives: `KEEL_INDEX_DIR`, else `KEEL_CONFIG_DIR\index` (portable
+/// and test setups), else `%TEMP%\keel-test-index` inside a cargo test binary, else
+/// `%LOCALAPPDATA%\Keel\index`.
 pub fn index_dir() -> Option<PathBuf> {
-    let base = match std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => directories::BaseDirs::new()?.cache_dir().join("Keel"),
-    };
-    Some(base.join("index"))
+    let var = |name| std::env::var_os(name).filter(|d| !d.is_empty());
+    if let Some(dir) = var("KEEL_INDEX_DIR") {
+        return Some(dir.into());
+    }
+    if let Some(dir) = var("KEEL_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("index"));
+    }
+    if in_test_binary() {
+        return Some(std::env::temp_dir().join("keel-test-index"));
+    }
+    Some(
+        directories::BaseDirs::new()?
+            .cache_dir()
+            .join("Keel")
+            .join("index"),
+    )
+}
+
+// ponytail: cargo puts test binaries in `target\<profile>\deps`, so no test (here or
+// in keel-app, which builds whole Apps) can reach the real index; an explicit
+// `KEEL_INDEX_DIR` still wins.
+fn in_test_binary() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.file_name().map(|d| d == "deps"))
+        .unwrap_or(false)
 }
 
 /// Relaunches this executable as `keel --index-service <index dir>` through the UAC
@@ -649,6 +671,17 @@ mod tests {
         let mut removes: Vec<u64> = changes.removes.iter().copied().collect();
         removes.sort();
         assert_eq!(removes, [12, 30]);
+    }
+
+    #[test]
+    fn tests_never_use_the_real_index_folder() {
+        let dir = index_dir().unwrap();
+        let real = directories::BaseDirs::new().map(|b| b.cache_dir().join("Keel"));
+        assert!(
+            real.is_none_or(|real| !dir.starts_with(real)),
+            "{}",
+            dir.display()
+        );
     }
 
     #[test]
