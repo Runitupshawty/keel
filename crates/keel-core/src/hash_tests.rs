@@ -222,7 +222,7 @@ fn a_shared_unconfirmed_sampled_hash_is_never_a_duplicate() {
 
 #[test]
 fn hashing_resumes_from_its_checkpoint() {
-    const FILES: usize = 3_000;
+    const FILES: usize = super::CHECKPOINT_EVERY * 3;
     let files = tempfile::tempdir().unwrap();
     for i in 0..FILES {
         std::fs::write(files.path().join(format!("{i}.txt")), i.to_string()).unwrap();
@@ -241,7 +241,7 @@ fn hashing_resumes_from_its_checkpoint() {
         serde_json::from_str(&state).unwrap()
     };
     eventually("a checkpoint", || {
-        state(&lib)["done"].as_u64() >= Some(1_000)
+        state(&lib)["done"].as_u64() >= Some(super::CHECKPOINT_EVERY as u64)
     });
     lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
     let src_dir = s[0].store_dir().to_owned();

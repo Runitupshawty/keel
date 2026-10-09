@@ -31,8 +31,9 @@ use std::{
 pub const SAMPLE: u64 = 64 * 1024;
 /// Files up to this size are hashed whole: their content id is known at once.
 pub const WHOLE: u64 = 3 * SAMPLE;
-/// Files per checkpoint.
-const CHECKPOINT_EVERY: usize = 1_000;
+/// Files per checkpoint (small under test: the resume test reaches one on a slow CI
+/// runner before its wait runs out, and the logic is the same).
+const CHECKPOINT_EVERY: usize = if cfg!(test) { 100 } else { 1_000 };
 /// How often a paused job looks again.
 const PAUSE_POLL: Duration = Duration::from_millis(200);
 /// How long a battery reading is trusted.
