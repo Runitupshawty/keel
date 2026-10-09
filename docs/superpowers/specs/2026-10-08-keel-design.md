@@ -1,11 +1,12 @@
-# Keel — Windows file manager in Rust
+# Keel — cross-platform file manager in Rust
 
 Date: 2026-10-08. Owner: James King. Status: draft for review.
 
 ## 1. Purpose
 
 Replace day-to-day use of Windows Explorer on JAMES-DESKTOP with a faster, previews-everything
-file manager that also reaches every other machine James owns. Reference for feature parity and
+file manager that also reaches every other machine James owns, and that runs the same on Windows,
+macOS and Linux (James's Macs and laptopserver, friends on anything). Reference for feature parity and
 feel: Atlas (https://atlasfm.modhyt.org). Keel is open source: public GitHub repo so James's friends
 can use it, fork it, open issues and PRs. No telemetry.
 
@@ -13,7 +14,7 @@ Success = James opens Keel instead of Explorer for a normal week and does not go
 
 ### What James said (requirements)
 
-- Windows, Rust, fully native UI (no web view).
+- Rust, fully native UI (no web view). Runs on Windows, macOS and Linux (added 2026-10-08).
 - Preview: code, images, video, Word, CSV, PDF, "etc."
 - Open `.rar` and `.zip` as folders.
 - Everything-class instant search (same as the Everything shortcut he uses today).
@@ -28,6 +29,7 @@ Success = James opens Keel instead of Explorer for a normal week and does not go
 | Topic | Decision |
 |---|---|
 | UI toolkit | egui (eframe), wgpu backend |
+| Platforms | Windows 10/11 x64 is the daily driver and ships first; macOS (arm64 + x64) and Linux (x64, X11 + Wayland) are first-class: same features except the OS-specific rows in 2.9, CI builds and tests all three |
 | Build order | MVP first, then phases |
 | Search | Everything SDK over IPC now; own MFT/USN indexer behind the same trait later |
 | Remotes | SFTP everywhere (all four machines run SSH) |
@@ -89,7 +91,7 @@ Providers:
   drop. Hosts configured in profile (see 2.6). Also used for iCloud Drive on the Mac mini
   (`~/Library/Mobile Documents/com~apple~CloudDocs`) which is where the iPhone's files appear.
 - `gdrive`, `dropbox`, `s3`: `reqwest` + OAuth (loopback redirect) / static keys. Listing cached,
-  downloads streamed, uploads on write. Credentials in Windows Credential Manager via `keyring`
+  downloads streamed, uploads on write. Credentials in the OS keychain (Credential Manager / Keychain / Secret Service) via `keyring`
   (Bitwarden is the source of truth; Keel stores a copy, per James's credential rule).
 
 ### 2.2 Search (`keel-search`)
@@ -153,7 +155,7 @@ eframe window. State lives in one `AppState` struct; panes hold a `VPath` + list
 
 ### 2.6 Profiles and themes
 
-`%APPDATA%\Keel\profiles\<name>\config.toml` holds: remotes, cloud accounts (refs into Credential
+`<config dir>/profiles/<name>/config.toml` (per-OS path in 2.9) holds: remotes, cloud accounts (refs into Credential
 Manager), layout, theme, icon theme, key bindings, terminal shells. Profiles switch from the
 command palette. Default profile `james`.
 
@@ -167,9 +169,36 @@ Code icon-theme JSON + SVG folders dropped into `assets/icons/<theme>`, rendered
 - Remote disconnects: pane shows "reconnecting" and retries with backoff; never loses the tab.
 - Long operations (copy/move/extract/upload) run on a job queue with progress, cancel, and
   conflict prompts (skip / overwrite / rename).
-- Destructive ops: delete goes to Recycle Bin locally; remote delete asks once per batch.
-- Crashes: `panic = "unwind"` + a top-level catch writes `%LOCALAPPDATA%\Keel\crash.log` and
+- Destructive ops: delete goes to the OS trash (Recycle Bin / macOS Trash / freedesktop Trash) locally; remote delete asks once per batch.
+- Crashes: `panic = "unwind"` + a top-level catch writes `<cache dir>/crash.log` (see 2.9) and
   restores open tabs on next start.
+
+### 2.9 Platforms
+
+One codebase, three targets. Every OS-specific piece sits behind a `cfg` module with one shared
+interface; nothing OS-specific leaks into `keel-app`.
+
+| Concern | Windows | macOS | Linux |
+|---|---|---|---|
+| Search backend | Everything SDK over IPC (`Everything64.dll`) | `mdfind` (Spotlight) via `std::process` | `plocate`/`locate` if present, else `fd`-style walk with `ignore` crate; own indexer in Phase 5 covers all three |
+| Delete | Recycle Bin via `trash` crate | Trash via `trash` crate | freedesktop Trash via `trash` crate |
+| Copy with progress | `CopyFileExW` fast path | chunked `std::io::copy` with progress (`fs::copy` fallback, clonefile via `reflink-copy` when available) | same as macOS (`reflink-copy` on btrfs/xfs) |
+| Clipboard files | `CF_HDROP` | NSPasteboard `public.file-url` | `text/uri-list` (GNOME/KDE) via `arboard` + custom MIME |
+| Open / open-with / properties | `ShellExecuteW`, `openas`, `properties` verbs | `open -a`, `open -R`, Get Info via `osascript` | `xdg-open`, `gio open`, "Properties" = in-app dialog |
+| Drives / volumes | `GetLogicalDrives` + volume info | `/Volumes/*` + `statfs` | `/proc/mounts` + `statvfs` (`sysinfo::Disks` wraps all three) |
+| Long paths | `\\?\` prefix, `longPathAware` manifest | n/a | n/a |
+| Terminal shells | PowerShell, cmd, WSL distros | zsh, bash | user `$SHELL` |
+| Config dir | `%APPDATA%\Keel` | `~/Library/Application Support/Keel` | `~/.config/keel` (via `directories`) |
+| Cache / logs | `%LOCALAPPDATA%\Keel` | `~/Library/Caches/Keel` | `~/.cache/keel` |
+| Bundled binaries | `Everything64.dll`, `pdfium.dll` | `libpdfium.dylib` | `libpdfium.so` (pdfium-binaries ships all) |
+| ffmpeg | PATH or winget | PATH or brew | PATH or distro package |
+| Packaging | zip of exe + dlls (Phase 1), MSIX later | `.app` via `cargo-bundle` (Phase 5), zip of binary in Phase 1 | tar.gz of binary (Phase 1), AppImage later |
+| Icon / manifest | `embed-resource` (`cfg(windows)` only) | `Info.plist` via cargo-bundle | `.desktop` file in release tarball |
+| Keyboard | Ctrl | Cmd (egui `Modifiers::command` maps both) | Ctrl |
+
+CI matrix: `windows-latest`, `macos-latest`, `ubuntu-latest`; every PR must pass all three.
+Ubuntu runner installs `libgtk-3-dev libxkbcommon-dev libwayland-dev` for eframe. Tests that need
+an OS-specific service (Everything, Spotlight) are `#[ignore]` unless the service is present.
 
 ### 2.8 Testing
 
