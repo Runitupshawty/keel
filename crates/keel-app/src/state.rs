@@ -158,6 +158,8 @@ pub enum Msg {
     External(crate::cli::Request),
     // --- Task 29 ---
     Library(crate::library::LibMsg),
+    // --- Task 36 ---
+    Devices(crate::devices::DevMsg),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -231,6 +233,8 @@ pub struct AppState {
     pub dropzone: crate::dropzone::DropZone,
     /// Task 29: the library (opened by the app, see `library.rs`).
     pub library: crate::library::LibraryUi,
+    /// Task 36: paired devices, shares and Spacedrop (`devices.rs`).
+    pub devices: crate::devices::Devices,
 }
 
 impl AppState {
@@ -273,6 +277,7 @@ impl AppState {
         let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
         let library = crate::library::LibraryUi::new(&router, tx.clone(), ctx.clone());
+        let devices = crate::devices::Devices::new(tx.clone(), ctx.clone());
         let mut panes = session
             .panes
             .into_iter()
@@ -340,6 +345,7 @@ impl AppState {
             shown: [None, None],
             dropzone: Default::default(),
             library,
+            devices,
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -377,6 +383,7 @@ impl AppState {
             &self.tx,
             self.searcher.as_ref().map(|x| x.name()), // Task 24
             &mut self.library,
+            &self.devices,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -734,6 +741,7 @@ impl AppState {
             // --- Task 24 ---
             Msg::External(req) => self.external(req),
             Msg::Library(msg) => self.library_msg(msg),
+            Msg::Devices(msg) => self.devices_msg(msg),
         }
     }
 
@@ -1095,6 +1103,7 @@ impl AppState {
     pub fn tick(&mut self) {
         self.remote_tick();
         self.cloud_tick();
+        self.devices_tick();
         let cwd = self.panes[self.active].tab().dir.to_local_path();
         self.terminal
             .follow(cwd, &self.settings, &self.tx, &self.ctx);
@@ -1764,6 +1773,7 @@ impl AppState {
             | Action::ClearStash => crate::dropzone::run(self, p, action),
             // Handled by `library_intercept`.
             Action::Library(cmd) => self.library_cmd(p, cmd),
+            Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

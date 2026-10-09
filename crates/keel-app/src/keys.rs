@@ -151,6 +151,9 @@ pub enum Action {
     // --- Task 29 ---
     /// Library sidebar, overview, dialogs, tags (`library.rs`).
     Library(crate::library::LibCmd),
+    // --- Task 36 ---
+    /// Devices sidebar, pair / shares dialogs, Spacedrop (`devices.rs`).
+    Devices(crate::devices::DevCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;

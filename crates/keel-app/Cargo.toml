@@ -35,6 +35,10 @@ keel-search = { path = "../keel-search" }
 keel-core = { path = "../keel-core" }
 keel-preview = { path = "../keel-preview" }
 keel-term = { path = "../keel-term" }
+keel-net = { path = "../keel-net" }
+# The keel-net node's runtime; pairing QR codes (no image/svg renderers).
+tokio.workspace = true
+qrcode = { version = "0.14", default-features = false }
 vt100.workspace = true
 directories = "5"
 open = "5"

@@ -506,6 +506,12 @@ pub fn context_menu(
         item(ui, "Rename", "F2", Action::Rename);
         item(ui, "Delete", "Del", Action::Delete);
         ui.separator();
+        item(
+            ui,
+            "Send with Spacedrop…",
+            "",
+            Action::Devices(crate::devices::DevCmd::SendSelection),
+        );
         let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
         item(ui, &add, "", Action::AddToZip);
         item(ui, "Compress to zip…", "", Action::CompressToZip);

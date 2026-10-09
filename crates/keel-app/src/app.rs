@@ -414,6 +414,7 @@ impl App {
         // --- Task 29 ---
         let mut acts = Vec::new();
         crate::library_ui::windows(ctx, s, &mut acts);
+        crate::devices::windows(ctx, s, &mut acts); // Task 36
         out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {
@@ -468,6 +469,8 @@ impl eframe::App for App {
             let session = self.save_session.then(|| Session::of(&self.state));
             persist.finish(&self.state.settings, session);
         }
+        // Task 36: the node first (it serves the library).
+        self.state.devices.close_now();
         // Task 29: jobs checkpoint and resume next time.
         self.state.library.close_now();
     }

@@ -4317,6 +4317,7 @@ dependencies = [
  "image",
  "interprocess",
  "keel-core",
+ "keel-net",
  "keel-preview",
  "keel-search",
  "keel-term",
@@ -4326,12 +4327,14 @@ dependencies = [
  "open",
  "opendal",
  "parking_lot",
+ "qrcode",
  "resvg 0.44.0",
  "rfd",
  "roxmltree 0.19.0",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
@@ -6819,6 +6822,12 @@ checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

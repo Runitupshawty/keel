@@ -6,6 +6,7 @@ mod app;
 mod clipboard;
 mod clouds;
 mod crash;
+mod devices;
 mod dialogs;
 mod dropzone;
 mod icon_theme;

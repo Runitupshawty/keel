@@ -54,6 +54,9 @@ pub struct Settings {
     // --- Task 29 ---
     /// `[library]`: the library layer (on by default).
     pub library: crate::library::LibrarySettings,
+    // --- Task 36 ---
+    /// `[devices]`: pairing, shares and Spacedrop (on by default; needs the library).
+    pub devices: crate::devices::DeviceSettings,
 }
 
 impl Default for Settings {
@@ -79,6 +82,7 @@ impl Default for Settings {
             column_widths: Vec::new(),
             reduce_motion: false,
             library: Default::default(),
+            devices: Default::default(),
         }
     }
 }
@@ -264,7 +268,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// What to write, and where: the path is taken when the change is queued, so a profile
 /// switch can never send one profile's settings into another's folder.
 enum Save {
-    Settings(Settings, PathBuf),
+    Settings(Box<Settings>, PathBuf),
     Session(Session, PathBuf),
 }
 
@@ -319,7 +323,7 @@ impl Persist {
                             if settings.as_ref().is_some_and(|(_, old)| *old != p) {
                                 flush(&mut settings, &mut None);
                             }
-                            settings = Some((s, p));
+                            settings = Some((*s, p));
                         }
                         Ok(Save::Session(s, p)) => {
                             if session.as_ref().is_some_and(|(_, old)| *old != p) {
@@ -353,7 +357,7 @@ impl Persist {
         let Some(tx) = &self.tx else { return };
         if *settings != self.last_settings {
             self.last_settings = settings.clone();
-            let _ = tx.send(Save::Settings(settings.clone(), Settings::path()));
+            let _ = tx.send(Save::Settings(Box::new(settings.clone()), Settings::path()));
         }
         if let Some(session) = session.filter(|s| self.last_session.as_ref() != Some(s)) {
             if let Some(path) = Session::path() {
@@ -387,6 +391,7 @@ pub enum Page {
     Profiles,
     Icons,
     Library,
+    Devices,
 }
 
 /// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
@@ -403,6 +408,7 @@ pub fn window(
     tx: &Sender<crate::state::Msg>,
     searcher: Option<&str>, // Task 24: the active search backend's name
     library: &mut crate::library::LibraryUi, // Task 29
+    devices: &crate::devices::Devices, // Task 36
 ) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
@@ -417,6 +423,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
+                ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -425,6 +432,7 @@ pub fn window(
                     Page::Profiles => profiles.settings_page(ui, s),
                     Page::Icons => icons.settings_page(ui, s),
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
+                    Page::Devices => crate::devices::settings_page(ui, s, devices),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

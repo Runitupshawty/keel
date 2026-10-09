@@ -477,6 +477,7 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                                 "file" if root.parent().is_none() => SourceKind::Drive,
                                 "file" => SourceKind::Folder,
                                 "cloud" => SourceKind::Cloud,
+                                "node" => SourceKind::Device,
                                 _ => SourceKind::Share,
                             },
                             root,

@@ -201,6 +201,7 @@ impl JobRow {
             "index" => "Library: indexing",
             "hash" => "Library: hashing contents",
             "op" => "Library: file operation",
+            keel_net::spacedrop::KIND => "Spacedrop: sending",
             _ => "Library job",
         }
     }
@@ -641,6 +642,7 @@ impl LibraryUi {
                 let first_run = !root.join("library").join(&name).exists();
                 let lib = Library::open(&root, &name)?;
                 lib.set_router(router);
+                keel_net::spacedrop::register(&lib); // Task 36
                 lib.set_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
                 lib.jobs().resume_all()?;
                 let jobs = lib.jobs().list()?;
@@ -774,6 +776,16 @@ impl LibraryUi {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         worker::spawn("keel-library-list", move || {
             worker::send(&tx, &ctx, Msg::Library(LibMsg::Libraries(Library::list())));
+        });
+    }
+
+    /// Task 36: sends `paths` to `peer` as a Spacedrop job (a row in the jobs panel).
+    pub fn send_drop(&self, node: Arc<keel_net::Node>, peer: keel_net::PeerId, paths: Vec<VPath>) {
+        self.spawn("keel-drop-send", move |lib| {
+            let id = keel_net::spacedrop::send(&node, lib, peer, paths)
+                .map_err(|e| tracing::warn!("spacedrop: {e:#}"))
+                .ok();
+            Some(LibMsg::Spawned { kind: "drop", id })
         });
     }
 

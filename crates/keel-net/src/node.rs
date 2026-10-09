@@ -39,6 +39,15 @@ impl Default for NodeOptions {
     }
 }
 impl NodeOptions {
+    /// Turns the default (public) relays off, or back on (for a settings toggle).
+    pub fn with_relay(mut self, on: bool) -> Self {
+        self.relay_mode = if on {
+            iroh::RelayMode::Default
+        } else {
+            iroh::RelayMode::Disabled
+        };
+        self
+    }
     /// No DNS, public relay, port mapping or non-loopback socket.
     pub fn offline() -> Self {
         Self {
