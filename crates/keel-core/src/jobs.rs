@@ -549,6 +549,7 @@ impl Job for IndexJob {
             },
             ctx.stop_flag(),
         )?;
+        crate::protect::after_walk(&ctx.lib, &src);
         crate::hash::after_walk(&ctx.lib, &src);
         Ok(())
     }

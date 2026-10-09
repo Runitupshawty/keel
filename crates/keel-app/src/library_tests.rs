@@ -20,6 +20,8 @@ fn fixture(name: &str, hash: bool) -> (PathBuf, Arc<Library>, SourceId) {
     std::fs::write(src.join("sub").join("b.txt"), "same").unwrap();
     std::fs::write(src.join("c.txt"), "other").unwrap();
     let lib = Library::open(&tmp.join("data"), "test").unwrap();
+    // Deterministic stores: no hashing writes behind a test's back unless asked for.
+    lib.set_hash_after_walk(hash);
     let id = lib
         .add_source(SourceDef {
             label: "Docs".into(),
@@ -579,4 +581,255 @@ fn library_live() {
     });
     shot(&mut h, "duplicates");
     h.state_mut().state.library.close_now();
+}
+
+// --- Task 33 ---
+
+fn volume(id: &str, state: VolumeState, backup: bool, capacity: Option<(u64, u64)>) -> Volume {
+    Volume {
+        id: id.into(),
+        label: id.to_uppercase(),
+        kind: VolumeKind::Removable,
+        failure_domain: format!("disk:{id}"),
+        state,
+        last_seen: if capacity.is_some() { 1_700_000_000 } else { 0 },
+        backup,
+        capacity,
+    }
+}
+
+#[test]
+fn volume_table_and_protection_card_models() {
+    let rows = volume_rows(&[
+        volume("a", VolumeState::Online, true, Some((1_000_000, 4_000_000))),
+        volume("b", VolumeState::Lost, false, None),
+    ]);
+    assert_eq!(
+        (rows[0].label.as_str(), rows[0].kind, rows[0].backup),
+        ("A", "Removable", true)
+    );
+    assert_eq!(rows[0].usage, "1 MB / 4 MB");
+    assert_eq!(rows[0].domain, "disk:a");
+    assert_ne!(rows[0].last_seen, "never");
+    assert_eq!(
+        (rows[1].usage.as_str(), rows[1].last_seen.as_str()),
+        ("", "never")
+    );
+    assert_eq!(state_text(rows[1].state), "lost");
+
+    let lines = protection_lines(&ProtectionSummary {
+        single_copy: 1,
+        single_domain: 1_200,
+        unbacked: 3,
+        drifted: 0,
+        offline_volumes: 2,
+        capacity: Vec::new(),
+    });
+    let texts: Vec<&str> = lines.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "1 file with one copy only",
+            "1,200 files with every copy on one disk",
+            "3 files not backed up",
+            "0 files changed since last check",
+            "2 volumes offline",
+        ]
+    );
+    // Every number says how it was computed.
+    assert!(lines.iter().all(|(_, how)| how.len() > 40));
+}
+
+#[test]
+fn copies_badge_model() {
+    let copy = |label: &str, state: VolumeState, backup: bool| keel_core::CopyAt {
+        record: RecordRef {
+            source: SourceId("s".into()),
+            id: 1,
+        },
+        path: VPath::local(std::env::temp_dir().join(label).join("x.jpg")),
+        source_label: label.into(),
+        volume: volume(label, state, backup, None),
+    };
+    let b = badge_of(&Redundancy {
+        copies: 2,
+        failure_domains: 1,
+        backed_up: false,
+        offline_copies: 0,
+        locations: vec![
+            copy("c", VolumeState::Online, false),
+            copy("d", VolumeState::Online, false),
+        ],
+    });
+    assert_eq!(b.text, "2× · 1");
+    assert!(b.risk, "one domain");
+    assert!(
+        b.hover
+            .starts_with("2 copies in 1 failure domain; not backed up"),
+        "{}",
+        b.hover
+    );
+    assert!(b.hover.contains("x.jpg on C (disk:c)"), "{}", b.hover);
+    let b = badge_of(&Redundancy {
+        copies: 3,
+        failure_domains: 2,
+        backed_up: true,
+        offline_copies: 1,
+        locations: vec![copy("e", VolumeState::Archived, true)],
+    });
+    assert_eq!(b.text, "3× · 2");
+    assert!(!b.risk);
+    assert!(b
+        .hover
+        .starts_with("3 copies in 2 failure domains (1 offline); backed up"));
+    assert!(b.hover.contains("[archived] [backup]"), "{}", b.hover);
+    // The preview dialog's failure-domain warning.
+    let text = warning_text(
+        &Warning::SingleDomain {
+            path: VPath::local(std::env::temp_dir().join("x.jpg")),
+            files: 2,
+        },
+        &[],
+    );
+    assert!(
+        text.starts_with("2 files are the only copy outside one failure domain"),
+        "{text}"
+    );
+}
+
+#[test]
+fn overview_reads_protection_and_volumes_and_badges_load_off_the_ui_thread() {
+    let (tmp, lib, _) = fixture("protection", true);
+    let mut s = state_with(&lib, &tmp);
+    s.library.refresh_stats();
+    pump_until(&mut s, "protection", |s| s.library.protection.is_some());
+    let p = s.library.protection.clone().unwrap();
+    // a.txt and sub/b.txt share content on one disk; c.txt is alone.
+    assert_eq!((p.single_copy, p.single_domain, p.unbacked), (1, 1, 2));
+    assert_eq!(s.library.volumes.len(), 1);
+    let vol = s.library.volumes[0].id.clone();
+
+    // Badges: none at first (the folder is asked for), then from a worker.
+    let a = VPath::local(tmp.join("docs").join("a.txt"));
+    assert!(s.library.badge(&a).is_none());
+    s.library.ask_badges();
+    pump_until(&mut s, "badges", |s| s.library.badges.contains_key(&a));
+    let b = s.library.badges[&a].clone();
+    assert_eq!((b.text.as_str(), b.risk), ("2× · 1", true));
+    assert_eq!(
+        s.library.badges[&VPath::local(tmp.join("docs").join("c.txt"))].text,
+        "1× · 1"
+    );
+
+    // State and backup edits go through workers and come back on the next read.
+    s.library_cmd(
+        0,
+        LibCmd::SetVolumeState {
+            volume: vol.clone(),
+            state: VolumeState::Archived,
+        },
+    );
+    s.library_cmd(
+        0,
+        LibCmd::SetBackup {
+            volume: vol,
+            on: true,
+        },
+    );
+    assert!(s.library.badges.is_empty(), "badges are read again");
+    let end = Instant::now() + Duration::from_secs(20);
+    while !s
+        .library
+        .volumes
+        .first()
+        .is_some_and(|v| v.state == VolumeState::Archived && v.backup)
+    {
+        assert!(Instant::now() < end, "timed out: volume edits");
+        s.library.refresh_stats();
+        std::thread::sleep(Duration::from_millis(50));
+        while let Ok(m) = s.rx.try_recv() {
+            s.apply(m);
+        }
+        s.drain();
+    }
+}
+
+/// Manual end-to-end check (GPU), like `library_live`: `KEEL_LIVE_ROOT=C:\KeelDemo
+/// KEEL_LIVE_DATA=<data dir> KEEL_SHOT_DIR=<dir> KEEL_CONFIG_DIR=<config dir> cargo test -p
+/// keel-app -- --ignored protection_live --nocapture`. Adds the folder as a source, waits for
+/// indexing and hashing, renders the Overview (protection card, volume table) to
+/// `protection-harness.png`, and leaves a session that opens the Overview for a release run.
+#[test]
+#[ignore]
+fn protection_live() {
+    use crate::app::{App, Boot};
+    use egui_kittest::Harness;
+    let (Some(root), Some(data), Some(shots)) = (
+        std::env::var_os("KEEL_LIVE_ROOT").map(PathBuf::from),
+        std::env::var_os("KEEL_LIVE_DATA").map(PathBuf::from),
+        std::env::var_os("KEEL_SHOT_DIR").map(PathBuf::from),
+    ) else {
+        return;
+    };
+    let lib = Arc::new(Library::open(&data, "james").unwrap());
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1400.0, 900.0))
+        .wgpu()
+        .build_eframe(|cc| App::new(cc, Boot::at(VPath::local(&root))));
+    lib.set_router(h.state().state.router.clone());
+    h.state_mut().state.library.set_open(lib.clone());
+    let wait = |h: &mut Harness<App>, what: &str, done: &dyn Fn(&AppState) -> bool| {
+        let end = Instant::now() + Duration::from_secs(60);
+        while !done(&h.state().state) {
+            assert!(Instant::now() < end, "timed out: {what}");
+            h.step();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        h.run_steps(3);
+    };
+    let run = |h: &mut Harness<App>, a: Action| h.state_mut().state.run(0, a);
+    run(
+        &mut h,
+        Action::Library(LibCmd::Register(SourceDef {
+            label: "KeelDemo".into(),
+            root: VPath::local(&root),
+            kind: SourceKind::Folder,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })),
+    );
+    wait(&mut h, "indexed and hashed", &|s| {
+        s.library.jobs.values().any(|j| j.kind == "hash")
+            && !s.library.jobs.values().any(|j| j.active())
+            && s.library.stats.files > 0
+    });
+    run(&mut h, Action::Library(LibCmd::Overview));
+    wait(&mut h, "protection", &|s| {
+        s.library
+            .protection
+            .as_ref()
+            .is_some_and(|p| p.single_copy + p.single_domain > 0)
+            && !s.library.volumes.is_empty()
+    });
+    let p = h.state().state.library.protection.clone().unwrap();
+    println!("protection: {p:?}");
+    println!("volumes: {:?}", h.state().state.library.volumes);
+    h.run_steps(3);
+    h.render()
+        .unwrap()
+        .save(shots.join("protection-harness.png"))
+        .unwrap();
+    h.state_mut().state.library.close_now();
+    // A release run opens on the Overview (pane 1) beside the folder.
+    if let Some(path) = crate::session::Session::path() {
+        let session = crate::session::Session {
+            panes: vec![vec![overview_path()], vec![VPath::local(&root)]],
+            ..crate::session::Session::single(VPath::local(&root))
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string(&session).unwrap()).unwrap();
+        println!("session: {}", path.display());
+    }
 }

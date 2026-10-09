@@ -20,7 +20,8 @@ use std::{
 };
 
 /// Records per checkpoint.
-const CHECKPOINT_EVERY: usize = 500;
+// Small under test: the resume test reaches a checkpoint on a slow CI runner in time.
+const CHECKPOINT_EVERY: usize = if cfg!(test) { 50 } else { 500 };
 /// Errors written to the job log (the rest are only counted).
 const LOGGED_ERRORS: u64 = 20;
 const PAUSE_POLL: Duration = Duration::from_millis(200);

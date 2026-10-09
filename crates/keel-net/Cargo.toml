@@ -24,6 +24,7 @@ async-trait = "0.1"
 ciborium = "0.2"
 data-encoding = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
+fs4 = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

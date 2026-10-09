@@ -1,5 +1,6 @@
 use crate::{
     node::{now, random},
+    scope::valid_label,
     wire, Node, Peer, ALPN,
 };
 use anyhow::{ensure, Context, Result};
@@ -110,23 +111,38 @@ pub(crate) struct Invitation {
     pub endpoint: Endpoint,
     pub stop: CancellationToken,
 }
+/// Unauthenticated pairing handshakes in progress at once; more are refused.
+const MAX_PAIRING_ATTEMPTS: usize = 4;
 #[derive(Clone, Serialize, Deserialize)]
 struct Identity {
     addr: EndpointAddr,
     label: String,
     nonce: [u8; 32],
 }
+/// The host's first message: a fresh nonce and the expiry, nothing identifying.
 #[derive(Serialize, Deserialize)]
-struct Challenge {
-    host: Identity,
+struct Offer {
+    nonce: [u8; 32],
     expires: i64,
+}
+/// Sent only after the joiner proved it knows the code; the proof also confirms
+/// that the host committed the pairing.
+#[derive(Serialize, Deserialize)]
+struct Accepted {
+    host: Identity,
     proof: [u8; 32],
 }
 #[derive(Serialize)]
 struct Transcript<'a> {
     joiner: &'a Identity,
-    host: &'a Identity,
+    offer: &'a [u8; 32],
+    host: Option<&'a Identity>,
     expires: i64,
+}
+impl Transcript<'_> {
+    fn bytes(&self) -> Result<Vec<u8>> {
+        wire::encode(self)
+    }
 }
 
 fn proof(secret: &[u8; 16], role: &[u8], transcript: &[u8]) -> [u8; 32] {
@@ -155,20 +171,24 @@ impl Node {
 
     pub async fn pair_code(&self) -> Result<PairCode> {
         ensure!(!self.stop.is_cancelled(), "node closed");
-        let mut active = self.pairing.lock().await;
-        if let Some(old) = active.take() {
+        // Never hold the pairing lock across network waits: close() needs it.
+        let old = self.pairing.lock().await.take();
+        if let Some(old) = old {
             old.stop.cancel();
             old.endpoint.close().await;
         }
         let secret = random()?;
         let endpoint = self.options.builder(key(&secret))?.bind().await?;
-        if !matches!(self.options.relay_mode, iroh::RelayMode::Disabled)
-            && tokio::time::timeout(self.options.request_timeout, endpoint.online())
-                .await
-                .is_err()
-        {
-            endpoint.close().await;
-            anyhow::bail!("pairing relay unavailable");
+        if !matches!(self.options.relay_mode, iroh::RelayMode::Disabled) {
+            let online = tokio::select! {
+                _ = self.stop.cancelled() => false,
+                online = tokio::time::timeout(self.options.request_timeout, endpoint.online()) => online.is_ok(),
+            };
+            if !online {
+                endpoint.close().await;
+                ensure!(!self.stop.is_cancelled(), "node closed");
+                anyhow::bail!("pairing relay unavailable");
+            }
         }
         let expires = now() + LIFETIME.as_secs() as i64;
         let deadline = tokio::time::Instant::now() + LIFETIME;
@@ -178,13 +198,24 @@ impl Node {
             expires,
         })?;
         let stop = self.stop.child_token();
-        *active = Some(Invitation {
+        let mut active = self.pairing.lock().await;
+        if self.stop.is_cancelled() {
+            drop(active);
+            endpoint.close().await;
+            anyhow::bail!("node closed");
+        }
+        // A concurrent pair_code may have installed one; its loop closes it.
+        if let Some(old) = active.replace(Invitation {
             endpoint: endpoint.clone(),
             stop: stop.clone(),
-        });
+        }) {
+            old.stop.cancel();
+        }
+        drop(active);
         let weak = self.weak.clone();
         // The mutex serializes successful proofs/commit, not network handshakes.
         let consumed = Arc::new(tokio::sync::Mutex::new(false));
+        let attempts = Arc::new(tokio::sync::Semaphore::new(MAX_PAIRING_ATTEMPTS));
         let timeout = self.options.request_timeout;
         self.tasks.spawn(async move {
             loop {
@@ -193,9 +224,14 @@ impl Node {
                     _ = tokio::time::sleep_until(deadline) => break,
                     incoming = endpoint.accept() => match incoming { Some(i) => i, None => break }
                 };
+                let Ok(permit) = attempts.clone().try_acquire_owned() else {
+                    incoming.refuse();
+                    continue;
+                };
                 let Some(node) = weak.upgrade() else { break };
                 let consumed = consumed.clone(); let stop = stop.clone(); let weak = weak.clone();
                 node.tasks.spawn(async move {
+                    let _permit = permit;
                     let exchange = async {
                         let conn = incoming.await?;
                         let result = if let Some(node) = weak.upgrade() { node.accept_pair(&conn,secret,expires,deadline,consumed).await } else { anyhow::bail!("node closed") };
@@ -204,7 +240,8 @@ impl Node {
                     };
                     tokio::select! { biased;
                         _ = stop.cancelled() => {},
-                        _ = tokio::time::timeout_at(deadline.min(tokio::time::Instant::now()+timeout),exchange) => {},
+                        // Single use: once a pairing completed, close the endpoint.
+                        result = tokio::time::timeout_at(deadline.min(tokio::time::Instant::now()+timeout),exchange) => if matches!(result, Ok(Ok(()))) { stop.cancel(); },
                     }
                 });
             }
@@ -213,6 +250,8 @@ impl Node {
         Ok(code)
     }
 
+    /// Host side. The rendezvous id is public (address lookup), so nothing about
+    /// this device is sent until the joiner has proved it knows the code.
     async fn accept_pair(
         &self,
         conn: &Connection,
@@ -226,46 +265,51 @@ impl Node {
         ensure!(
             joiner.addr.id == conn.remote_id()
                 && joiner.addr.addrs.len() <= 32
-                && joiner.label.len() <= 256,
+                && valid_label(&joiner.label),
             "invalid peer identity"
         );
         ensure!(
             !*consumed.lock().await && tokio::time::Instant::now() < deadline,
             "invitation unavailable"
         );
-        let host = self.identity()?;
-        let transcript = wire::encode(&Transcript {
-            joiner: &joiner,
-            host: &host,
-            expires,
-        })?;
+        let offer: [u8; 32] = random()?;
         wire::send(
             &mut send,
-            &Challenge {
-                host,
+            &Offer {
+                nonce: offer,
                 expires,
-                proof: proof(&secret, b"host", &transcript),
             },
         )
         .await?;
         let tag: [u8; 32] = wire::recv(&mut recv).await?;
-        verify(&secret, b"joiner", &transcript, &tag)?;
+        let mut transcript = Transcript {
+            joiner: &joiner,
+            offer: &offer,
+            host: None,
+            expires,
+        };
+        verify(&secret, b"joiner", &transcript.bytes()?, &tag)?;
+        let host = self.identity()?;
         {
             let mut used = consumed.lock().await;
             ensure!(
                 !*used && tokio::time::Instant::now() < deadline,
                 "invitation unavailable"
             );
-            self.paired(joiner.addr, joiner.label)?;
+            self.paired(joiner.addr.clone(), joiner.label.clone())?;
             *used = true;
         }
-        wire::send(&mut send, &proof(&secret, b"committed", &transcript)).await?;
+        transcript.host = Some(&host);
+        let proof = proof(&secret, b"committed", &transcript.bytes()?);
+        wire::send(&mut send, &Accepted { host, proof }).await?;
         send.finish()?;
         // Keep the QUIC handle alive until the joiner receives the final proof.
         let _ = send.stopped().await;
         Ok(())
     }
 
+    /// Joiner side. The joiner proves first: the rendezvous endpoint's TLS key
+    /// is derived from the code, so only a code holder can be on the other end.
     pub async fn pair_with(&self, code: &PairCode) -> Result<Peer> {
         ensure!(!self.stop.is_cancelled(), "node closed");
         let ticket = code.decode()?;
@@ -275,24 +319,30 @@ impl Node {
                 let (mut send, mut recv) = conn.open_bi().await?;
                 let joiner = self.identity()?;
                 wire::send(&mut send, &joiner).await?;
-                let challenge: Challenge = wire::recv(&mut recv).await?;
+                let offer: Offer = wire::recv(&mut recv).await?;
                 ensure!(
-                    (ticket.expires == 0 || ticket.expires == challenge.expires)
-                        && challenge.host.addr.addrs.len() <= 32
-                        && challenge.host.label.len() <= 256,
+                    ticket.expires == 0 || ticket.expires == offer.expires,
                     "invalid invitation"
                 );
-                let transcript = wire::encode(&Transcript {
+                let mut transcript = Transcript {
                     joiner: &joiner,
-                    host: &challenge.host,
-                    expires: challenge.expires,
-                })?;
-                verify(&ticket.secret, b"host", &transcript, &challenge.proof)?;
-                wire::send(&mut send, &proof(&ticket.secret, b"joiner", &transcript)).await?;
+                    offer: &offer.nonce,
+                    host: None,
+                    expires: offer.expires,
+                };
+                let tag = proof(&ticket.secret, b"joiner", &transcript.bytes()?);
+                wire::send(&mut send, &tag).await?;
                 send.finish()?;
-                let committed: [u8; 32] = wire::recv(&mut recv).await?;
-                verify(&ticket.secret, b"committed", &transcript, &committed)?;
-                self.paired(challenge.host.addr, challenge.host.label)
+                let accepted: Accepted = wire::recv(&mut recv).await?;
+                ensure!(accepted.host.addr.addrs.len() <= 32, "invalid invitation");
+                transcript.host = Some(&accepted.host);
+                verify(
+                    &ticket.secret,
+                    b"committed",
+                    &transcript.bytes()?,
+                    &accepted.proof,
+                )?;
+                self.paired(accepted.host.addr.clone(), accepted.host.label.clone())
             }
             .await;
             conn.close(0u8.into(), b"pairing finished");
@@ -393,6 +443,58 @@ mod tests {
         ep.close().await;
         assert!(a.peers().is_empty());
         assert!(b.peers().is_empty());
+        a.close().await;
+        b.close().await;
+    }
+
+    #[tokio::test]
+    async fn host_reveals_nothing_before_the_joiner_proves_the_code() {
+        let da = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let a = crate::tests::open(&da, Arc::default()).await;
+        let b = crate::tests::open(&db, Arc::default()).await;
+        a.set_label("Hidden host");
+        let secret = random().unwrap();
+        let ep = a
+            .options
+            .builder(key(&secret))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let serving = ep.clone();
+        let host = a.clone();
+        let server = tokio::spawn(async move {
+            let conn = serving.accept().await.unwrap().await.unwrap();
+            let result = host
+                .accept_pair(
+                    &conn,
+                    secret,
+                    now() + 600,
+                    tokio::time::Instant::now() + LIFETIME,
+                    Arc::new(tokio::sync::Mutex::new(false)),
+                )
+                .await;
+            conn.close(1u8.into(), b"failed");
+            result
+        });
+        // A joiner without the code: it can reach the public rendezvous id.
+        let conn = b.endpoint.connect(ep.addr(), ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        wire::send(&mut send, &b.identity().unwrap()).await.unwrap();
+        let first: ciborium::Value = wire::recv(&mut recv).await.unwrap();
+        let keys: Vec<_> = first
+            .as_map()
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.as_text().unwrap().to_string())
+            .collect();
+        assert_eq!(keys, ["nonce", "expires"]);
+        wire::send(&mut send, &[0u8; 32]).await.unwrap();
+        assert!(wire::recv::<ciborium::Value>(&mut recv).await.is_err());
+        assert!(server.await.unwrap().is_err());
+        assert!(a.peers().is_empty());
+        ep.close().await;
         a.close().await;
         b.close().await;
     }
