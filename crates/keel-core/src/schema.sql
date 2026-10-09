@@ -44,7 +44,9 @@ CREATE TABLE record(
     gen INTEGER NOT NULL,
     flags INTEGER NOT NULL DEFAULT 0,
     error TEXT);
-CREATE INDEX record_fs_id ON record(fs_id);
+-- Only native ids are looked up by fs_id; a parent+name hash ('h:...') is found by
+-- parent+name (indexing random hashes would cost a 2M-row walk dearly).
+CREATE INDEX record_fs_id ON record(fs_id) WHERE substr(fs_id, 1, 2) <> 'h:';
 CREATE INDEX record_parent ON record(parent, name);
 CREATE INDEX record_cas ON record(cas_id) WHERE cas_id IS NOT NULL;
 CREATE VIRTUAL TABLE record_fts USING fts5(
@@ -54,6 +56,7 @@ CREATE TRIGGER record_ai AFTER INSERT ON record BEGIN
 END;
 CREATE TRIGGER record_ad AFTER DELETE ON record BEGIN
     INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
+    DELETE FROM record_tag WHERE record = old.id;
 END;
 CREATE TRIGGER record_au AFTER UPDATE OF name, path ON record BEGIN
     INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);

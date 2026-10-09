@@ -3764,7 +3764,6 @@ dependencies = [
  "getrandom 0.3.4",
  "ignore",
  "keel-vfs",
- "notify",
  "notify-debouncer-mini",
  "parking_lot",
  "regex",

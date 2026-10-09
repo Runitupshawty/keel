@@ -20,7 +20,6 @@ ignore.workspace = true
 getrandom.workspace = true
 directories.workspace = true
 regex.workspace = true
-notify.workspace = true
 notify-debouncer-mini = "0.4"
 tracing.workspace = true
 

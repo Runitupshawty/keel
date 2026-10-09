@@ -4,7 +4,7 @@
 use crate::db::{Pool, Store};
 use anyhow::{Context, Result};
 use keel_vfs::{Router, VPath};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -72,6 +72,10 @@ pub struct Source {
     /// The last completed full walk (records of older generations were removed by it).
     pub generation: AtomicU64,
     pub status: RwLock<SourceStatus>,
+    /// Generation a running full walk writes (0 = no walk running).
+    pub(crate) pending_gen: AtomicU64,
+    /// Serializes generation changes against watcher/executor writes.
+    pub(crate) write: Mutex<()>,
     dir: PathBuf,
 }
 
@@ -90,6 +94,8 @@ impl Source {
             store,
             generation: AtomicU64::new(generation),
             status: RwLock::new(SourceStatus::Online { indexed_at }),
+            pending_gen: AtomicU64::new(0),
+            write: Mutex::new(()),
             dir,
         })
     }
@@ -98,6 +104,11 @@ impl Source {
     /// is not inside it.
     pub fn relative(&self, p: &VPath) -> Option<String> {
         relative(&self.def.root, p)
+    }
+
+    /// Local Windows names compare case-insensitively.
+    pub(crate) fn nocase(&self) -> bool {
+        cfg!(windows) && self.def.root.scheme == "file"
     }
 
     /// The absolute path of a record path relative to the root.

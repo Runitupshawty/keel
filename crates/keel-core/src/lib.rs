@@ -4,14 +4,29 @@
 //! typed request/response so a daemon can wrap it later.
 
 mod db;
+mod fsid;
+mod index;
 mod library;
 
+pub use index::{ChangeEvent, IndexProgress, Indexer, WatchHandle, BATCH, POLL_INTERVAL};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, Source, SourceDef, SourceId, SourceKind,
     SourceStatus, SourceSummary,
 };
 
 use std::path::PathBuf;
+
+/// The error a cancelled walk or job ends with (`err.is::<Cancelled>()`).
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
 
 /// `KEEL_DATA_DIR`, else `%LOCALAPPDATA%\Keel`, `~/Library/Application Support/Keel`,
 /// `~/.local/share/keel`. Libraries live under `<data dir>/library/<name>/`.
