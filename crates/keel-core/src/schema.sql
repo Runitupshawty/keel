@@ -128,3 +128,26 @@ CREATE TRIGGER record_count_au AFTER UPDATE OF kind, size ON record
         bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END)
             + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
 END;
+
+-- @source 5
+-- Media facts from sidecars (SidecarJob), one row per image/video record. `key` and `pkey` are
+-- its sidecar folder names (by content id when known; by path + mtime + size).
+CREATE TABLE media(
+    record INTEGER PRIMARY KEY,
+    key TEXT NOT NULL,
+    pkey TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    orientation INTEGER,
+    taken_at INTEGER,
+    duration_ms INTEGER,
+    camera TEXT,
+    gps_lat REAL,
+    gps_lon REAL);
+CREATE INDEX media_taken ON media(taken_at) WHERE taken_at IS NOT NULL;
+-- Camera and XMP keywords, searchable (rowid = record).
+CREATE VIRTUAL TABLE media_fts USING fts5(camera, keywords, tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER record_media_ad AFTER DELETE ON record BEGIN
+    DELETE FROM media WHERE record = old.id;
+    DELETE FROM media_fts WHERE rowid = old.id;
+END;

@@ -20,6 +20,7 @@ mod media;
 mod oplog;
 mod plan;
 mod search;
+mod sidecar_job;
 mod sidecars;
 mod tags;
 
@@ -39,6 +40,7 @@ pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
 };
 pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
+pub use sidecar_job::SidecarJob;
 pub use sidecars::{
     Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars,
     DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET,
