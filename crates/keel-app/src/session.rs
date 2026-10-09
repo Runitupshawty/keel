@@ -41,6 +41,14 @@ impl Session {
 
     pub fn of(state: &AppState) -> Self {
         Self {
+            stash: state.dropzone.items().to_vec(),
+            ..Self::of_tabs(state)
+        }
+    }
+
+    /// `of` without the stash (cheap enough to compare every frame).
+    pub fn of_tabs(state: &AppState) -> Self {
+        Self {
             panes: state
                 .panes
                 .iter()
@@ -50,7 +58,7 @@ impl Session {
             active_tab: [state.panes[0].active, state.panes[1].active],
             views: [state.panes[0].view, state.panes[1].view],
             columns: crate::view_columns::session_chains(&state.panes),
-            stash: state.dropzone.items.clone(),
+            stash: Vec::new(),
         }
     }
 

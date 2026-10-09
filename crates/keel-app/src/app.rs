@@ -62,6 +62,8 @@ pub struct App {
     pub crashed: bool,
     /// False after a crash reset the panes: the saved session keeps the tabs from before.
     pub save_session: bool,
+    /// The session (without its stash) and stash version handed to `persist` last.
+    seen_session: Option<(Session, u64)>,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
     // --- Task 24 ---
@@ -111,12 +113,37 @@ impl App {
             persist,
             crashed: false,
             save_session: true,
+            seen_session: None,
             seen_widths: (None, None),
             drag_out: Default::default(),
             hotkey,
             #[cfg(test)]
             panic_next_frame: false,
         }
+    }
+
+    /// The session to save, when it changed since it was last handed over (None: keep
+    /// what was saved). The tabs are compared every frame; the stash (up to 50k paths)
+    /// only by its version, and copied only when that moved.
+    fn changed_session(&mut self) -> Option<Session> {
+        if !self.save_session {
+            return None;
+        }
+        let s = &self.state;
+        let tabs = Session::of_tabs(s);
+        let version = s.dropzone.version;
+        if self
+            .seen_session
+            .as_ref()
+            .is_some_and(|(seen, v)| *seen == tabs && *v == version)
+        {
+            return None;
+        }
+        self.seen_session = Some((tabs.clone(), version));
+        Some(Session {
+            stash: s.dropzone.items().to_vec(),
+            ..tabs
+        })
     }
 
     /// A frame panicked (the hook wrote crash.log): drop popups, reset both panes to one
@@ -392,8 +419,9 @@ impl eframe::App for App {
         if self.crashed {
             crate::crash::modal(ctx, &mut self.crashed);
         }
-        if let Some(persist) = &mut self.persist {
-            let session = self.save_session.then(|| Session::of(&self.state));
+        if self.persist.is_some() {
+            let session = self.changed_session();
+            let persist = self.persist.as_mut().expect("checked");
             persist.update(&self.state.settings, session);
             if let Some(e) = persist.error() {
                 self.state.toasts.error(e);

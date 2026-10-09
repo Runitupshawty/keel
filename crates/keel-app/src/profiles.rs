@@ -409,6 +409,10 @@ impl AppState {
                 self.list(p, t);
             }
         }
+        // Task 23: its views, column chains (listed by the next tick) and stash too;
+        // else the old ones would be saved into its session.json.
+        crate::view_columns::restore_session(&mut self.panes, &session.views, &session.columns);
+        self.dropzone.set_items(session.stash);
         self.active = if self.dual { session.active } else { 0 };
         for notice in notices {
             self.toasts.error(notice);
@@ -464,6 +468,7 @@ mod tests {
             dir.join("profiles").join("work").join("session.json")
         );
         assert_eq!(session_path(DEFAULT).unwrap(), dir.join("session.json"));
+        // Views, column chains and the stash are the profile's too.
         let tabs = Session {
             panes: vec![
                 vec![VPath::local(&dir)],
@@ -471,7 +476,12 @@ mod tests {
             ],
             active: 1,
             active_tab: [0, 0],
-            ..Session::single(VPath::local(&dir))
+            views: [
+                crate::pane::ViewMode::Columns,
+                crate::pane::ViewMode::Details,
+            ],
+            columns: vec![vec![vec![VPath::local(dir.join("profiles"))]], vec![vec![]]],
+            stash: vec![VPath::local(dir.join("stashed.txt"))],
         };
         tabs.save_to(&work_session).unwrap();
 
@@ -503,9 +513,16 @@ mod tests {
         assert!(delete("job").is_err(), "in use");
 
         // Back to the default profile: the other one can go.
+        state
+            .dropzone
+            .missing
+            .insert(VPath::local(dir.join("stashed.txt")));
         state.apply_profile(load(DEFAULT));
         assert_eq!(current(), DEFAULT);
         assert_eq!(state.settings, mine, "default saved the same settings");
+        assert_eq!(state.panes[0].view, crate::pane::ViewMode::Details);
+        assert!(state.panes[0].tabs[0].columns.cols.is_empty());
+        assert!(state.dropzone.items().is_empty() && state.dropzone.missing.is_empty());
         delete("job").unwrap();
         assert_eq!(list(), ["default"]);
         assert!(!dir.join("profiles").join("job").exists());

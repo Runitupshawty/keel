@@ -102,6 +102,8 @@ pub enum Msg {
     },
     /// Sources of a failed cut-move that still exist: the cut to put back.
     RestoreCut(Vec<VPath>),
+    /// Stashed items a Move here job moved away: they leave the drop zone.
+    StashMoved(Vec<VPath>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
     Select {
         dir: VPath,
@@ -330,7 +332,7 @@ impl AppState {
             shown: [None, None],
             dropzone: Default::default(),
         };
-        state.dropzone.items = session.stash; // Task 23
+        state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
         state.theme.apply(&state.ctx);
         // Tabs are only listed when asked; restored background tabs need it now.
@@ -587,6 +589,7 @@ impl AppState {
                         self.toasts.error(format!("{e:#}"));
                     }
                 }
+                self.stash_job_done(id); // Task 23
                 self.jobs.finish(id, result);
                 // Watchers usually beat us to it; network folders may not have one.
                 let since = self.next_req;
@@ -616,6 +619,7 @@ impl AppState {
                     });
                 }
             }
+            Msg::StashMoved(paths) => self.dropzone.remove_all(&paths),
             Msg::RestoreCut(paths) => {
                 // Only when nothing was copied since, here or in another app.
                 if !paths.is_empty()
@@ -831,12 +835,14 @@ impl AppState {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
+        let stashed = self.dropzone.claim(&op, from_clipboard); // Task 23
         let id = self
             .jobs
             .start(op, conflict, self.router.clone(), self.tx.clone());
         if let Some(src) = cut {
             self.cut_job = Some((id, src));
         }
+        self.stash_job_started(id, stashed);
     }
 
     fn target_paths(&self, p: usize) -> Vec<VPath> {
