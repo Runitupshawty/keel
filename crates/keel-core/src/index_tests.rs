@@ -766,8 +766,16 @@ fn lost_events_trigger_a_full_walk() {
         walks.fetch_add(1, Ordering::SeqCst);
         walk(s, &router).unwrap();
     };
+    /// Stops the loop even when an assertion below fails (else the scope never ends).
+    struct Quit<'a>(&'a AtomicBool);
+    impl Drop for Quit<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     std::thread::scope(|scope| {
         scope.spawn(|| watch_loop(&src, &rx, Duration::from_secs(3600), &quit, &rescan));
+        let _quit = Quit(&quit);
         eventually("start-up walk", || walks.load(Ordering::SeqCst) == 1);
         write(&files.path().join("lost.txt"), "l");
         tx.send(Ok(

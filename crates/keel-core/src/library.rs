@@ -411,6 +411,14 @@ impl Library {
         &self.jobs
     }
 
+    /// Closes the library: stops its jobs at their next checkpoint (they resume on the next
+    /// open) and waits up to `timeout`. False when a job was still in an uninterruptible
+    /// step (a slow listing or transfer); it finishes that step on its own. Dropping the
+    /// library does the same with a 30 s timeout.
+    pub fn close(self, timeout: std::time::Duration) -> bool {
+        self.jobs.shutdown(timeout)
+    }
+
     /// Indexes a source as a durable job (resumed after a restart).
     pub fn index(&self, id: &SourceId) -> Result<JobId> {
         anyhow::ensure!(self.source(id).is_some(), "no source {id}");

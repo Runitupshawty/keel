@@ -17,6 +17,7 @@ use std::{
         Arc,
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 pub type JobId = i64;
@@ -363,18 +364,34 @@ fn finish(
     Ok(())
 }
 
-impl Drop for Jobs {
-    /// Stops every job at its next checkpoint and waits; they stay `running` in the
-    /// database and resume on the next open.
-    fn drop(&mut self) {
+impl Jobs {
+    /// Stops every job at its next checkpoint (they stay `running` in the database and
+    /// resume on the next open) and waits up to `timeout`; false when some job is still busy
+    /// (a step such as a slow listing or transfer cannot be interrupted): it is left to
+    /// finish its step on its own.
+    pub(crate) fn shutdown(&self, timeout: Duration) -> bool {
         self.closing.store(true, Ordering::SeqCst);
         let running: Vec<_> = self.running.lock().drain().collect();
         for (_, r) in &running {
             r.stop.store(true, Ordering::SeqCst);
         }
-        for (_, r) in running {
-            let _ = r.thread.join();
+        let deadline = Instant::now() + timeout;
+        while running.iter().any(|(_, r)| !r.thread.is_finished()) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
+        true
+    }
+}
+
+/// How long dropping a library waits for its jobs.
+pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+impl Drop for Jobs {
+    fn drop(&mut self) {
+        self.shutdown(CLOSE_TIMEOUT);
     }
 }
 
@@ -421,7 +438,7 @@ mod tests {
     use super::*;
     use crate::library::tests::folder;
     use crate::Library;
-    use std::{path::PathBuf, time::Duration};
+    use std::path::PathBuf;
 
     #[derive(Serialize, Deserialize)]
     struct Count {
@@ -579,6 +596,44 @@ mod tests {
         let info = lib.jobs().wait(id).unwrap();
         assert_eq!(info.status, JobStatus::Done, "{}", info.log);
         assert_eq!(lib.stats().records, 2);
+    }
+
+    /// Sleeps in one step without checkpoints (an uninterruptible listing).
+    #[derive(Serialize, Deserialize)]
+    struct Stuck;
+    impl Job for Stuck {
+        fn kind(&self) -> &'static str {
+            "stuck"
+        }
+        fn run(&mut self, _: &JobCtx) -> Result<()> {
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        }
+        fn checkpoint(&self) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+        fn restore(_: serde_json::Value) -> Result<Box<dyn Job>> {
+            Ok(Box::new(Stuck))
+        }
+    }
+
+    #[test]
+    fn close_waits_for_jobs_up_to_a_timeout() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "j").unwrap();
+        lib.jobs()
+            .spawn(count(&data.path().join("c.txt"), 100_000))
+            .unwrap();
+        assert!(
+            lib.close(Duration::from_secs(10)),
+            "a checkpointing job stops"
+        );
+
+        let lib = Library::open(data.path(), "j").unwrap();
+        lib.jobs().spawn(Box::new(Stuck)).unwrap();
+        let start = Instant::now();
+        assert!(!lib.close(Duration::from_millis(100)));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
