@@ -1,0 +1,22 @@
+# OAuth app registrations Keel uses to sign in to Google Drive and Dropbox.
+#
+# Keel ships NO client ids: bring your own. Register a free app with each provider and put
+# its id here (or per account in Settings -> Cloud, which overrides this file):
+#
+# - Google Drive: Google Cloud console -> APIs & Services -> Credentials -> OAuth client ID,
+#   type "Desktop app"; enable the Google Drive API. Desktop clients also get a
+#   "client secret" that Google documents as not confidential; Keel sends it on token
+#   requests if you set it (here, or in Settings where it goes to the OS keychain).
+# - Dropbox: dropbox.com/developers -> Create app (scoped access, full Dropbox or app
+#   folder), permissions files.content.read, files.content.write, files.metadata.read;
+#   add the redirect URI http://127.0.0.1 . Only the "App key" is needed (PKCE, no secret).
+#
+# Sign-in uses the loopback redirect (http://127.0.0.1:<random port>/) with PKCE.
+# Values containing YOUR_ are placeholders and are ignored.
+
+[google_drive]
+client_id = "YOUR_CLIENT_ID.apps.googleusercontent.com"
+client_secret = "YOUR_CLIENT_SECRET"
+
+[dropbox]
+client_id = "YOUR_DROPBOX_APP_KEY"
