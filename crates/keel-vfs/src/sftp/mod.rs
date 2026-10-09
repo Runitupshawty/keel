@@ -153,7 +153,7 @@ fn is_partial(name: &str) -> bool {
     })
 }
 /// A staging path unique to this attempt, its name capped at 255 bytes (NAME_MAX).
-fn partial_path(target: &str) -> String {
+pub(crate) fn partial_path(target: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let (dir, name) = target.rsplit_once('/').unwrap_or(("", target));
     let suffix = format!(
@@ -364,88 +364,102 @@ impl SftpProvider {
         progress: &dyn Fn(Progress),
         cancel: &AtomicBool,
     ) -> Result<PathBuf> {
-        let before = self.stat(p)?;
-        anyhow::ensure!(
-            before.kind == Kind::File,
-            "not a regular file: {}",
-            p.display()
-        );
-        let mut hash = Sha256::new();
-        for part in [
-            &self.host.host,
-            &self.host.user,
-            &self.host.port.to_string(),
-            &p.path,
-            &format!("{:?}:{}", before.modified, before.size),
-        ] {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part.as_bytes());
-        }
-        let root = dirs::cache_dir()
-            .context("cache directory unavailable")?
-            // Spec 2.9 cache folder: `Keel` on Windows/macOS, `keel` on Linux.
-            .join(if cfg!(target_os = "linux") {
-                "keel"
-            } else {
-                "Keel"
-            })
-            .join("remote");
-        let cache = root
-            .join(&self.host.id)
-            .join(format!("{:x}", hash.finalize()));
-        fs::create_dir_all(&cache)?;
-        let target = cache.join(local_name(p.name()));
-        if before.modified.is_some() && fs::metadata(&target).is_ok_and(|m| m.len() == before.size)
-        {
-            DOWNLOADS
-                .lock()
-                .record(&root, &cache, before.size, DOWNLOAD_BUDGET);
-            return Ok(target);
-        }
-        let mut temp = tempfile::NamedTempFile::new_in(&cache)?;
-        let mut reader = self.read(p)?;
-        let mut buf = vec![0; 1024 * 1024];
-        let mut done = 0;
-        loop {
-            anyhow::ensure!(
-                !cancel.load(Ordering::Relaxed),
-                "download cancelled: {}",
-                p.display()
-            );
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            temp.write_all(&buf[..n])?;
-            done += n as u64;
-            progress(Progress {
-                done_bytes: done,
-                total_bytes: before.size,
-                current: p.display(),
-                done_items: 0,
-                total_items: 1,
-            });
-        }
-        let after = self.stat(p)?;
-        anyhow::ensure!(
-            done == before.size && before.size == after.size && before.modified == after.modified,
-            "source changed during download: {}",
-            p.display()
-        );
-        temp.as_file().sync_all()?;
-        temp.persist(&target).map_err(|e| e.error)?;
+        let port = self.host.port.to_string();
+        cached_download(
+            self,
+            p,
+            &self.host.id,
+            &[&self.host.host, &self.host.user, &port],
+            progress,
+            cancel,
+        )
+    }
+}
+
+/// Materialises `p` under `<cache>/remote/<namespace>/<hash>/` (LRU by bytes over all
+/// remotes, `DOWNLOAD_BUDGET`). The hash covers `identity` (where the file lives), the path,
+/// mtime and size, so a changed file downloads again. Shared by the SFTP and cloud providers.
+pub(crate) fn cached_download(
+    provider: &dyn Provider,
+    p: &VPath,
+    namespace: &str,
+    identity: &[&str],
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+) -> Result<PathBuf> {
+    let before = provider.stat(p)?;
+    anyhow::ensure!(
+        before.kind == Kind::File,
+        "not a regular file: {}",
+        p.display()
+    );
+    let mut hash = Sha256::new();
+    let stamp = format!("{:?}:{}", before.modified, before.size);
+    for part in identity.iter().copied().chain([p.path.as_str(), &stamp]) {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    let root = dirs::cache_dir()
+        .context("cache directory unavailable")?
+        // Spec 2.9 cache folder: `Keel` on Windows/macOS, `keel` on Linux.
+        .join(if cfg!(target_os = "linux") {
+            "keel"
+        } else {
+            "Keel"
+        })
+        .join("remote");
+    let cache = root.join(namespace).join(format!("{:x}", hash.finalize()));
+    fs::create_dir_all(&cache)?;
+    let target = cache.join(local_name(p.name()));
+    if before.modified.is_some() && fs::metadata(&target).is_ok_and(|m| m.len() == before.size) {
         DOWNLOADS
             .lock()
-            .record(&root, &cache, done, DOWNLOAD_BUDGET);
+            .record(&root, &cache, before.size, DOWNLOAD_BUDGET);
+        return Ok(target);
+    }
+    let mut temp = tempfile::NamedTempFile::new_in(&cache)?;
+    let mut reader = provider.read(p)?;
+    let mut buf = vec![0; 1024 * 1024];
+    let mut done = 0;
+    loop {
+        anyhow::ensure!(
+            !cancel.load(Ordering::Relaxed),
+            "download cancelled: {}",
+            p.display()
+        );
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        temp.write_all(&buf[..n])?;
+        done += n as u64;
         progress(Progress {
             done_bytes: done,
-            total_bytes: done,
+            total_bytes: before.size,
             current: p.display(),
-            done_items: 1,
+            done_items: 0,
             total_items: 1,
         });
-        Ok(target)
     }
+    let after = provider.stat(p)?;
+    anyhow::ensure!(
+        done == before.size && before.size == after.size && before.modified == after.modified,
+        "source changed during download: {}",
+        p.display()
+    );
+    temp.as_file().sync_all()?;
+    temp.persist(&target).map_err(|e| e.error)?;
+    DOWNLOADS
+        .lock()
+        .record(&root, &cache, done, DOWNLOAD_BUDGET);
+    progress(Progress {
+        done_bytes: done,
+        total_bytes: done,
+        current: p.display(),
+        done_items: 1,
+        total_items: 1,
+    });
+    Ok(target)
 }
 
 impl Provider for SftpProvider {

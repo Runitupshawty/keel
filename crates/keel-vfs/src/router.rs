@@ -6,11 +6,12 @@ use std::sync::{
     Arc,
 };
 
-/// Providers by scheme plus remote providers by host id. Shared weakly with the archive
+/// Providers by scheme plus remote providers by host id and cloud providers by account id. Shared weakly with the archive
 /// provider so it can resolve an archive's OUTER path, including a remote one.
 pub(crate) struct Table {
     providers: Vec<Arc<dyn Provider>>,
     remotes: HashMap<String, Arc<dyn Provider>>,
+    clouds: HashMap<String, Arc<dyn Provider>>,
 }
 pub(crate) type Registry = RwLock<Table>;
 
@@ -38,6 +39,7 @@ impl Router {
         let registry: Arc<Registry> = Arc::new(RwLock::new(Table {
             providers: vec![Arc::new(crate::LocalProvider)],
             remotes: HashMap::new(),
+            clouds: HashMap::new(),
         }));
         let archive = crate::archive::ArchiveProvider::new(cache, Arc::downgrade(&registry));
         registry.write().providers.push(Arc::new(archive));
@@ -49,7 +51,7 @@ impl Router {
         }
     }
     /// Paths with a `!/` archive boundary go to the archive provider, `sftp://<id>/...` to that
-    /// host's provider, the rest by scheme.
+    /// host's provider, `cloud://<id>/...` to that account's, the rest by scheme.
     pub fn provider_for(&self, p: &VPath) -> Option<Arc<dyn Provider>> {
         find(&self.registry, p)
     }
@@ -79,6 +81,24 @@ impl Router {
     pub fn unregister_remote(&self, id: &str) {
         self.registry.write().remotes.remove(id);
     }
+    /// Connects (keychain only, no network) and adds or replaces `cloud://<account id>/`.
+    /// Status events go to `remote_events()` as host id `cloud:<account id>`.
+    pub fn register_cloud(
+        &self,
+        account: &crate::CloudAccount,
+        secrets: Arc<dyn crate::SecretStore>,
+    ) -> anyhow::Result<()> {
+        let provider = crate::CloudProvider::connect(account, secrets, self.remote_events.clone())?;
+        self.register_cloud_provider(account.id.clone(), Arc::new(provider));
+        Ok(())
+    }
+    /// Adds or replaces the provider for `cloud://<id>/...`.
+    pub fn register_cloud_provider(&self, id: String, provider: Arc<dyn Provider>) {
+        self.registry.write().clouds.insert(id, provider);
+    }
+    pub fn unregister_cloud(&self, id: &str) {
+        self.registry.write().clouds.remove(id);
+    }
     pub fn remote_events(&self) -> crossbeam_channel::Receiver<crate::RemoteEvent> {
         self.events.clone()
     }
@@ -104,6 +124,9 @@ pub(crate) fn find(registry: &Registry, p: &VPath) -> Option<Arc<dyn Provider>> 
     }
     if p.scheme == "sftp" {
         return table.remotes.get(&p.authority).cloned();
+    }
+    if p.scheme == "cloud" {
+        return table.clouds.get(&p.authority).cloned();
     }
     table
         .providers

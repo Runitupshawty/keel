@@ -13,7 +13,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-pub(super) fn runtime() -> &'static tokio::runtime::Runtime {
+/// The tokio runtime shared by the SFTP and cloud providers.
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
