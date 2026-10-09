@@ -5,9 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::index::Index;
 
+pub(crate) const REASON_FILE_CREATE: u32 = 0x0000_0100;
 pub(crate) const REASON_FILE_DELETE: u32 = 0x0000_0200;
 pub(crate) const REASON_RENAME_OLD_NAME: u32 = 0x0000_1000;
 pub(crate) const REASON_RENAME_NEW_NAME: u32 = 0x0000_2000;
+pub(crate) const REASON_HARD_LINK_CHANGE: u32 = 0x0001_0000;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 /// One MFT entry or journal record, reduced to what the index keeps.
@@ -123,9 +125,25 @@ pub(crate) fn fill_names(
     });
 }
 
+/// Hard links: a delete record names one link of a file. Turns the deletes of files
+/// that `exists` (opened by id) still finds, through another link, into link changes.
+/// Blocks on the file system: call it before taking the index lock.
+pub(crate) fn keep_linked(records: &mut [Record], exists: impl Fn(u64) -> bool) {
+    let mut alive: HashMap<u64, bool> = HashMap::new();
+    for r in records.iter_mut() {
+        if r.reason & REASON_FILE_DELETE != 0
+            && *alive.entry(r.frn).or_insert_with(|| exists(r.frn))
+        {
+            r.reason = r.reason & !REASON_FILE_DELETE | REASON_HARD_LINK_CHANGE;
+        }
+    }
+}
+
 /// Applies journal records in order: a delete removes the entry, the old-name half
-/// of a rename is skipped (its new-name record follows), anything else (create,
-/// new name, data or attribute change) upserts the entry's current name and parent.
+/// of a rename is skipped (its new-name record follows), a create or new name
+/// upserts the entry's name and parent. Any other record (data, attributes, a hard
+/// link added or removed) only adds a missing entry: it may name another hard link
+/// of the file, which must not move the indexed one.
 pub(crate) fn apply(index: &mut Index, records: &[Record], changes: &mut Changes) {
     for r in records {
         if r.reason & REASON_FILE_DELETE != 0 {
@@ -133,7 +151,12 @@ pub(crate) fn apply(index: &mut Index, records: &[Record], changes: &mut Changes
                 changes.upserts.remove(&r.frn);
                 changes.removes.insert(r.frn);
             }
-        } else if r.reason & REASON_RENAME_OLD_NAME == 0
+            continue;
+        }
+        let moves = r.reason & (REASON_FILE_CREATE | REASON_RENAME_NEW_NAME) != 0;
+        if r.reason & REASON_RENAME_OLD_NAME == 0
+            && !r.name.is_empty()
+            && (moves || index.get(r.frn).is_none())
             && index.upsert(r.frn, r.parent, &r.name, r.is_dir)
         {
             changes.removes.remove(&r.frn);
@@ -288,6 +311,44 @@ pub(crate) mod tests {
         apply(&mut index, &records, &mut changes);
         assert_eq!(index.path(11).unwrap(), r"C:\after-rename.txt");
         assert_eq!(index.path(12).unwrap(), r"C:\new.txt");
+    }
+
+    #[test]
+    fn hard_links_neither_move_nor_drop_the_entry() {
+        let mut index = Index::new("C:", 5);
+        index.upsert(10, 5, "a", true);
+        index.upsert(20, 5, "b", true);
+        index.upsert(50, 10, "file.txt", false);
+        let rec = |reason, parent, name: &str| Record {
+            frn: 50,
+            parent,
+            usn: 0,
+            reason,
+            is_dir: false,
+            name: name.into(),
+        };
+        // A write through the second link (b\link.txt), a new link, then the
+        // first link removed while the file lives on as b\link.txt.
+        let mut records = vec![
+            rec(0x1, 20, "link.txt"),
+            rec(REASON_HARD_LINK_CHANGE, 20, "link.txt"),
+            rec(REASON_FILE_DELETE | 0x8000_0000, 10, "file.txt"),
+        ];
+        keep_linked(&mut records, |frn| frn == 50);
+        let mut changes = Changes::default();
+        apply(&mut index, &records, &mut changes);
+        assert_eq!(index.path(50).unwrap(), r"C:\a\file.txt");
+        assert!(changes.upserts.is_empty() && changes.removes.is_empty());
+
+        // The last link goes: the file is gone.
+        let mut records = vec![rec(REASON_FILE_DELETE, 20, "link.txt")];
+        keep_linked(&mut records, |_| false);
+        apply(&mut index, &records, &mut changes);
+        assert!(index.get(50).is_none());
+
+        // A data record for a file the index never saw still adds it.
+        apply(&mut index, &[rec(0x1, 20, "link.txt")], &mut changes);
+        assert_eq!(index.path(50).unwrap(), r"C:\b\link.txt");
     }
 
     #[test]

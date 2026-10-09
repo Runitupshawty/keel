@@ -540,6 +540,7 @@ impl Worker {
                     usn::fill_names(&mut records, part.index(), |frn| volume.name_of(frn));
                 }
             }
+            usn::keep_linked(&mut records, |frn| volume.name_of(frn).is_some());
             let mut changes = Changes::default();
             if let Some(Part::Volume { index, meta, .. }) = shared
                 .parts
