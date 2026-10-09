@@ -187,6 +187,18 @@ impl Provider for LazyCloud {
         }
         result
     }
+    /// Fresh and uncapped for the library indexer (a capped listing would drop records).
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.get()?.list_complete(dir)
+    }
+    /// The inner provider's answer; before it exists, the same from the account kind (no
+    /// keychain read just to word a warning).
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        match &*self.inner.lock() {
+            Some(p) => Provider::remove_kind(p.as_ref()),
+            None => self.account.kind.remove_kind(),
+        }
+    }
     fn stat(&self, p: &VPath) -> anyhow::Result<Entry> {
         self.get()?.stat(p)
     }
@@ -1386,6 +1398,50 @@ mod tests {
             .list
             .iter()
             .any(|t| t.text == "cloud://ghost/a.txt: unknown cloud account"));
+    }
+
+    /// keel-core review: the library's previews ask the router's provider what a delete
+    /// does; the lazy wrapper answers like the inner provider (Drive/Dropbox are not
+    /// "permanent"), before and after connecting.
+    #[test]
+    fn lazy_cloud_reports_the_inner_remove_kind() {
+        let lazy = |a: CloudAccount, store: MemoryStore| {
+            let (events, _rx) = crossbeam_channel::unbounded();
+            LazyCloud {
+                account: a,
+                secrets: Arc::new(store),
+                events,
+                inner: Mutex::default(),
+                last: Mutex::default(),
+            }
+        };
+        for (kind, want) in [
+            (CloudKind::GoogleDrive, keel_vfs::RemoveKind::Trash),
+            (CloudKind::Dropbox, keel_vfs::RemoveKind::RecoverableDelete),
+            (CloudKind::S3, keel_vfs::RemoveKind::Permanent),
+        ] {
+            let p = lazy(account("x", kind), MemoryStore::default());
+            assert_eq!(
+                Provider::remove_kind(&p),
+                want,
+                "{kind:?} before connecting"
+            );
+        }
+        let store = MemoryStore::default();
+        store.set("b2/access_key_id", "AK").unwrap();
+        store.set("b2/secret_access_key", "SK").unwrap();
+        let mut b2 = account("b2", CloudKind::S3);
+        b2.s3 = Some(S3Config {
+            endpoint: "https://s3.example.invalid".into(),
+            region: "us-east-1".into(),
+            bucket: "bucket".into(),
+        });
+        let p = lazy(b2, store);
+        let inner = p.get().expect("connects without network");
+        assert_eq!(
+            Provider::remove_kind(&p),
+            Provider::remove_kind(inner.as_ref())
+        );
     }
 
     /// Nothing reaches the keychain before the sign-in (or the S3 save) went through; a new
