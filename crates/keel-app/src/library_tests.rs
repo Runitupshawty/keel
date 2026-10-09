@@ -20,6 +20,8 @@ fn fixture(name: &str, hash: bool) -> (PathBuf, Arc<Library>, SourceId) {
     std::fs::write(src.join("sub").join("b.txt"), "same").unwrap();
     std::fs::write(src.join("c.txt"), "other").unwrap();
     let lib = Library::open(&tmp.join("data"), "test").unwrap();
+    // Deterministic stores: no hashing writes behind a test's back unless asked for.
+    lib.set_hash_after_walk(hash);
     let id = lib
         .add_source(SourceDef {
             label: "Docs".into(),
