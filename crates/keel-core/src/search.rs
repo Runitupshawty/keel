@@ -580,6 +580,9 @@ fn search_filters(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Librar
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+// Not yet: `media_fts` (camera, XMP keywords; rowid = record, filled by `SidecarJob`). Words
+// would have to match across `record_fts` and `media_fts` (a word in the name AND one in the
+// keywords) and be ranked together, so it waits for the media view's query design.
 fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
     let parts = q.text_parts(false);
     if parts.is_empty() {

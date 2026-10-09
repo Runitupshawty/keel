@@ -604,6 +604,10 @@ impl Library {
         lib.jobs.register("index", IndexJob::restore);
         lib.jobs.register("op", crate::plan::ExecJob::restore);
         lib.jobs.register("hash", crate::HashJob::restore);
+        lib.jobs.register(
+            crate::SidecarJob::KIND,
+            <crate::SidecarJob as crate::Job>::restore,
+        );
         // Stores that came back with tags this library does not know.
         lib.reconcile_tags()?;
         Ok(lib)

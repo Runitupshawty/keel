@@ -12,6 +12,8 @@ path = "src/lib.rs"
 default = ["power"]
 # Pause hashing on battery power.
 power = ["dep:battery"]
+# HEIC/HEIF thumbnails through libheif (a C library; off by default).
+heic = ["dep:libheif-rs"]
 
 [dependencies]
 anyhow.workspace = true
@@ -30,6 +32,12 @@ notify.workspace = true
 tracing.workspace = true
 blake3.workspace = true
 battery = { workspace = true, optional = true }
+image.workspace = true
+kamadak-exif.workspace = true
+quick-xml.workspace = true
+libheif-rs = { workspace = true, optional = true }
+# ffmpeg/ffprobe run with a hard timeout.
+wait-timeout = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

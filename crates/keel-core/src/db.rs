@@ -243,6 +243,20 @@ mod tests {
         }
     }
 
+    /// Branches that each added a migration must not share (or reorder) a version number:
+    /// the runner applies them in file order and takes the last as the newest.
+    #[test]
+    fn migration_versions_ascend() {
+        for store in [Store::Library, Store::Source] {
+            let versions: Vec<u32> = migrations(store).iter().map(|m| m.0).collect();
+            assert!(
+                versions.windows(2).all(|w| w[0] < w[1]),
+                "{}: {versions:?}",
+                store.tag()
+            );
+        }
+    }
+
     #[test]
     fn concurrent_opens_migrate_once() {
         let dir = tempfile::tempdir().unwrap();

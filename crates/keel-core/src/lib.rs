@@ -17,9 +17,12 @@ mod hash;
 mod index;
 mod jobs;
 mod library;
+mod media;
 mod oplog;
 mod plan;
 mod search;
+mod sidecar_job;
+mod sidecars;
 mod tags;
 
 pub use hash::{
@@ -35,11 +38,17 @@ pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, OfflineReason, RecordRef, Source, SourceDef,
     SourceId, SourceKind, SourceStatus, SourceSummary,
 };
+pub use media::{ffmpeg_available, read_meta, MediaMeta, MAX_PIXELS};
 pub use oplog::OpLogEntry;
 pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
 };
 pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
+pub use sidecar_job::SidecarJob;
+pub use sidecars::{
+    Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars,
+    DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET,
+};
 pub use tags::{Tag, TagId, View, FAVORITES};
 
 use std::path::PathBuf;
