@@ -61,6 +61,8 @@ pub fn ui(
     // --- Task 29 ---: tags and favorites (library on), offline badges.
     let lib = cx.library;
     let tags_col = cx.tags_column && lib.is_open();
+    // --- Task 33 ---: copies badge (library on).
+    let copies_col = lib.is_open();
 
     let mut table = TableBuilder::new(ui)
         .id_salt(id)
@@ -78,6 +80,9 @@ pub fn ui(
         )
         .column(Column::initial(80.0).at_least(50.0))
         .column(Column::initial(124.0).at_least(60.0).clip(true));
+    if copies_col {
+        table = table.column(Column::initial(64.0).at_least(40.0).clip(true));
+    }
     if tags_col {
         table = table.column(Column::initial(120.0).at_least(40.0).clip(true));
     }
@@ -107,6 +112,13 @@ pub fn ui(
                     if ui.add(egui::Button::new(text).frame(false)).clicked() {
                         sort_click = Some(key);
                     }
+                });
+            }
+            if copies_col {
+                header.col(|ui| {
+                    ui.strong("Copies").on_hover_text(
+                        "Copies of the content and the failure domains they span (hashed files)",
+                    );
                 });
             }
             if tags_col {
@@ -212,6 +224,23 @@ pub fn ui(
                     tint(ui);
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
+                if copies_col {
+                    row.col(|ui| {
+                        tint(ui);
+                        let badge = real
+                            .as_ref()
+                            .filter(|_| source.is_some() && e.kind != Kind::Dir)
+                            .and_then(|r| lib.badge(r));
+                        if let Some(b) = badge {
+                            let color = if b.risk {
+                                ui.visuals().warn_fg_color
+                            } else {
+                                muted
+                            };
+                            ui.label(cell(&b.text, Some(color))).on_hover_text(&b.hover);
+                        }
+                    });
+                }
                 if tags_col {
                     row.col(|ui| {
                         tint(ui);

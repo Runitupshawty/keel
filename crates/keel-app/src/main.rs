@@ -15,6 +15,8 @@ mod jump;
 mod keys;
 mod library;
 mod library_ui;
+mod media;
+mod media_viewer;
 mod palette;
 mod pane;
 mod platform;
@@ -34,6 +36,7 @@ mod toast;
 mod view_columns;
 mod view_details;
 mod view_grid;
+mod view_media;
 mod worker;
 // --- Task 24 ---
 mod cli;

@@ -4,15 +4,15 @@
 
 use crate::keys::Action;
 use crate::library::{
-    count, plan_summary, reclaimable, source_rows, warning_text, Dot, Hashing, LibCmd, LibraryUi,
-    FAVORITES_QUERY, RECENTS_QUERY,
+    count, plan_summary, protection_lines, reclaimable, source_rows, state_text, volume_rows,
+    warning_text, Dot, Hashing, LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
 };
 use crate::pane::ViewCx;
 use crate::state::AppState;
 use crate::theme::Theme;
 use egui::{Color32, RichText};
 use humansize::{format_size, DECIMAL};
-use keel_core::{Action as PlanAction, JobStatus, SourceDef, SourceKind, Tag};
+use keel_core::{Action as PlanAction, JobStatus, SourceDef, SourceKind, Tag, VolumeState};
 use keel_vfs::VPath;
 
 fn lib(cmd: LibCmd) -> Action {
@@ -291,6 +291,38 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                         }
                     }),
                 ),
+                // --- Task 33 ---
+                (
+                    "Protection",
+                    Box::new(|ui: &mut egui::Ui| {
+                        let Some(p) = &l.protection else {
+                            ui.weak("Counting…");
+                            return;
+                        };
+                        for (i, (text, how)) in protection_lines(p).into_iter().enumerate() {
+                            let warn = match i {
+                                0 => p.single_copy > 0,
+                                1 => p.single_domain > 0,
+                                3 => p.drifted > 0,
+                                4 => p.offline_volumes > 0,
+                                _ => false,
+                            };
+                            let text = if warn {
+                                RichText::new(text).color(ui.visuals().warn_fg_color)
+                            } else {
+                                RichText::new(text)
+                            };
+                            ui.label(text).on_hover_text(how);
+                        }
+                        if ui
+                            .small_button("Check integrity now")
+                            .on_hover_text("Re-hash a sample of hashed files (Settings → Library)")
+                            .clicked()
+                        {
+                            push(lib(LibCmd::CheckIntegrity));
+                        }
+                    }),
+                ),
             ],
         );
         out.extend(acts.into_inner());
@@ -319,6 +351,9 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                 );
             });
         }
+        // --- Task 33 ---
+        ui.add_space(8.0);
+        volume_table(ui, l, out);
         ui.add_space(8.0);
         ui.label(RichText::new("Running jobs").strong());
         let running: Vec<_> = l.jobs.iter().filter(|(_, j)| j.active()).collect();
@@ -336,6 +371,84 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
             });
         }
     });
+}
+
+// --- Task 33 ---
+/// The drive inventory: one row per volume with its state menu and backup checkbox.
+fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
+    ui.label(RichText::new("Volumes").strong()).on_hover_text(
+        "Every drive, share, cloud account or host a source was seen on. Copies on one \
+             failure domain (one physical disk, account or host) count as one for protection.",
+    );
+    let rows = volume_rows(&l.volumes);
+    if rows.is_empty() {
+        ui.weak("None yet (sources are placed on their volume when indexed)");
+        return;
+    }
+    egui::Grid::new("keel-volumes")
+        .num_columns(7)
+        .striped(true)
+        .spacing([14.0, 6.0])
+        .show(ui, |ui| {
+            for h in [
+                "Volume",
+                "Kind",
+                "State",
+                "Failure domain",
+                "Backup",
+                "Used / total",
+                "Last seen",
+            ] {
+                ui.label(RichText::new(h).small().strong());
+            }
+            ui.end_row();
+            for r in rows {
+                ui.label(&r.label).on_hover_text(&r.id);
+                ui.label(r.kind);
+                let warn = matches!(r.state, VolumeState::Offline | VolumeState::Lost);
+                let text = RichText::new(state_text(r.state));
+                let text = if warn {
+                    text.color(ui.visuals().warn_fg_color)
+                } else {
+                    text
+                };
+                ui.menu_button(text, |ui| {
+                    for (state, what) in [
+                        (VolumeState::Online, "Automatic (online / offline)"),
+                        (VolumeState::Archived, "Archived (on a shelf; copies count)"),
+                        (VolumeState::Lost, "Lost (copies no longer count)"),
+                        (VolumeState::Retired, "Retired (copies no longer count)"),
+                    ] {
+                        if ui.button(what).clicked() {
+                            out.push(lib(LibCmd::SetVolumeState {
+                                volume: r.id.clone(),
+                                state,
+                            }));
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.add_sized(
+                    [150.0, 16.0],
+                    egui::Label::new(RichText::new(&r.domain).small().weak()).truncate(),
+                )
+                .on_hover_text(&r.domain);
+                let mut backup = r.backup;
+                if ui
+                    .checkbox(&mut backup, "")
+                    .on_hover_text("Mark as backup")
+                    .changed()
+                {
+                    out.push(lib(LibCmd::SetBackup {
+                        volume: r.id.clone(),
+                        on: backup,
+                    }));
+                }
+                ui.label(&r.usage);
+                ui.label(RichText::new(&r.last_seen).small());
+                ui.end_row();
+            }
+        });
 }
 
 /// The library rows of the jobs panel (progress, pause/resume for hashing, cancel).
@@ -764,6 +877,35 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             ui.end_row();
             ui.label("Details view");
             ui.checkbox(&mut lib_settings.tags_column, "Tags column");
+            ui.end_row();
+            // --- Task 33 ---
+            ui.label("Integrity check");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("settings-library-integrity")
+                    .selected_text(match lib_settings.integrity_days {
+                        0 => "Off".to_owned(),
+                        1 => "Daily".to_owned(),
+                        7 => "Weekly".to_owned(),
+                        30 => "Monthly".to_owned(),
+                        d => format!("Every {d} days"),
+                    })
+                    .show_ui(ui, |ui| {
+                        for (days, text) in
+                            [(0, "Off"), (1, "Daily"), (7, "Weekly"), (30, "Monthly")]
+                        {
+                            ui.selectable_value(&mut lib_settings.integrity_days, days, text);
+                        }
+                    });
+                ui.add(
+                    egui::Slider::new(&mut lib_settings.integrity_pct, 0.1..=10.0)
+                        .logarithmic(true)
+                        .suffix(" % of files"),
+                )
+                .on_hover_text(
+                    "Each check re-hashes this share of every source's hashed files, at idle \
+                     priority, and marks files whose bytes changed under the same size and times",
+                );
+            });
             ui.end_row();
             ui.label("Index");
             if ui

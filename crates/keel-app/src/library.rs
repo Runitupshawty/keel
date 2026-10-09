@@ -13,15 +13,15 @@ use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
 use keel_core::{
     Indexer, JobEvent, JobId, JobInfo, JobStatus, Library, LibraryHit, LibraryStats,
-    LibrarySummary, OfflineReason, OnConflict, Op, Plan, PlanChanged, RecordRef, SourceDef,
-    SourceId, SourceKind, SourceStatus, SourceSummary, Tag, TagId, View, Warning, WatchConfig,
-    WatchHandle, FAVORITES,
+    LibrarySummary, OfflineReason, OnConflict, Op, Plan, PlanChanged, ProtectionSummary, RecordRef,
+    Redundancy, SourceDef, SourceId, SourceKind, SourceStatus, SourceSummary, Tag, TagId, View,
+    Volume, VolumeKind, VolumeState, Warning, WatchConfig, WatchHandle, FAVORITES,
 };
 use keel_search::{Hit, Query, Searcher};
 use keel_vfs::library as vlib;
 use keel_vfs::{Entry, Kind, Router, VPath};
 use parking_lot::RwLock;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,11 @@ pub struct LibrarySettings {
     pub rescan_minutes: u64,
     /// Details view: the Tags column.
     pub tags_column: bool,
+    // --- Task 33 ---
+    /// Integrity checks re-hash this percentage of each source's hashed files.
+    pub integrity_pct: f64,
+    /// Days between integrity checks (0: off).
+    pub integrity_days: u32,
 }
 
 impl Default for LibrarySettings {
@@ -94,6 +99,8 @@ impl Default for LibrarySettings {
             hashing: Hashing::default(),
             rescan_minutes: 15,
             tags_column: true,
+            integrity_pct: keel_core::DEFAULT_SAMPLE_PCT,
+            integrity_days: 7,
         }
     }
 }
@@ -149,6 +156,19 @@ pub enum LibCmd {
     Switch(String),
     /// Toggle `library.enabled`.
     Enable(bool),
+    // --- Task 33 ---
+    /// Drive inventory: Archived / Lost / Retired, or Online/Offline (automatic again).
+    SetVolumeState {
+        volume: String,
+        state: VolumeState,
+    },
+    /// "Mark as backup".
+    SetBackup {
+        volume: String,
+        on: bool,
+    },
+    /// Overview → Protection: re-hash a sample now.
+    CheckIntegrity,
 }
 
 /// Answers from library workers (`Msg::Library`).
@@ -180,6 +200,10 @@ pub enum LibMsg {
     /// Job kinds by id (for rows that arrived as bare events).
     Kinds(Vec<(JobId, String)>),
     Closed,
+    // --- Task 33 ---
+    Protection(ProtectionSummary, Vec<Volume>),
+    /// Copies badges of the files in some folders (by real path).
+    Badges(HashMap<VPath, Badge>),
 }
 
 /// One library job in the jobs panel.
@@ -201,6 +225,8 @@ impl JobRow {
             "index" => "Library: indexing",
             "hash" => "Library: hashing contents",
             "op" => "Library: file operation",
+            "sidecar" => "Library: media thumbnails",
+            "integrity" => "Library: checking integrity",
             _ => "Library job",
         }
     }
@@ -477,6 +503,13 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             files(*n, "is", "are"),
             path.name()
         ),
+        // --- Task 33 ---
+        Warning::SingleDomain { path, files: n } => format!(
+            "{} the only copy outside one failure domain: every copy left would be on one \
+             disk, account or host ({})",
+            files(*n, "is", "are"),
+            path.name()
+        ),
     }
 }
 
@@ -576,6 +609,14 @@ pub struct LibraryUi {
     pub pending: Vec<LibCmd>,
     /// The hashing policy last applied.
     policy: Hashing,
+    // --- Task 33 ---
+    /// The Overview's protection card and volume table (None until first read).
+    pub protection: Option<ProtectionSummary>,
+    pub volumes: Vec<Volume>,
+    /// Details view copies badges by real path; folders wanted (`badge`), and asked for.
+    pub badges: HashMap<VPath, Badge>,
+    badge_wanted: parking_lot::Mutex<HashSet<VPath>>,
+    badge_asked: HashSet<VPath>,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -617,6 +658,11 @@ impl LibraryUi {
             new_name: String::new(),
             pending: Vec::new(),
             policy: Hashing::default(),
+            protection: None,
+            volumes: Vec::new(),
+            badges: HashMap::new(),
+            badge_wanted: parking_lot::Mutex::new(HashSet::new()),
+            badge_asked: HashSet::new(),
             tx,
             ctx,
         }
@@ -668,6 +714,9 @@ impl LibraryUi {
         *self.slot.write() = None;
         self.events = None;
         self.sources.clear();
+        self.protection = None;
+        self.volumes.clear();
+        self.forget_badges();
         self.jobs.clear();
         self.tagged.clear();
         self.tags.clear();
@@ -760,6 +809,19 @@ impl LibraryUi {
     fn refresh_stats(&mut self) {
         self.next_stats = Instant::now() + STATS_EVERY;
         self.spawn("keel-library-stats", |lib| Some(LibMsg::Stats(lib.stats())));
+        // --- Task 33 ---
+        self.spawn("keel-library-protection", |lib| {
+            match lib
+                .protection_summary()
+                .and_then(|p| Ok((p, lib.volumes()?)))
+            {
+                Ok((p, v)) => Some(LibMsg::Protection(p, v)),
+                Err(e) => {
+                    tracing::warn!("protection: {e:#}");
+                    None
+                }
+            }
+        });
     }
 
     pub fn refresh_dups(&mut self) {
@@ -822,6 +884,34 @@ impl LibraryUi {
                 kind: "hash",
                 id: lib.hash().ok(),
             })
+        });
+    }
+
+    /// Task 32: thumbnails and metadata for every source's photos and videos (the sidecar
+    /// job, idle priority), unless one is already running.
+    fn start_media(&mut self) {
+        if self
+            .jobs
+            .values()
+            .any(|j| j.kind == "sidecar" && j.active())
+        {
+            return;
+        }
+        let ids: Vec<SourceId> = (self.sources.iter())
+            .filter(|s| s.root.scheme == "file")
+            .map(|s| s.id.clone())
+            .collect();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.spawn("keel-library-media", move |lib| {
+            for id in ids {
+                let id = lib.media_job(&id).ok();
+                let msg = Msg::Library(LibMsg::Spawned {
+                    kind: "sidecar",
+                    id,
+                });
+                worker::send(&tx, &ctx, msg);
+            }
+            None
         });
     }
 
@@ -996,6 +1086,7 @@ impl AppState {
                         l.refresh_libraries();
                         self.library.policy = self.settings.library.hashing;
                         self.library.sync_hashing();
+                        self.library.start_media(); // Task 32
                         if first_run {
                             self.toasts.offer(
                                 "Keel can index your files into a library, even offline",
@@ -1048,7 +1139,9 @@ impl AppState {
                             ended: None,
                         });
                     }
-                    None if kind != "hash" => self.toasts.error(format!("Could not start {kind}")),
+                    None if kind != "hash" && kind != "sidecar" => {
+                        self.toasts.error(format!("Could not start {kind}"))
+                    }
                     None => {}
                 }
             }
@@ -1092,6 +1185,11 @@ impl AppState {
                     }
                 }
             }
+            LibMsg::Protection(p, v) => {
+                l.protection = Some(p);
+                l.volumes = v;
+            }
+            LibMsg::Badges(b) => l.badges.extend(b),
             LibMsg::Closed => {
                 if self.settings.library.enabled && !l.is_open() {
                     let name = self.settings.library.name.clone();
@@ -1162,10 +1260,18 @@ impl AppState {
             l.refresh_stats();
             if ended.iter().any(|k| k == "index") {
                 l.start_hashing();
+                l.start_media(); // Task 32
             }
             // The Overview's duplicate summary (and an open finder) follow new content ids.
             if ended.iter().any(|k| k == "hash") {
                 l.refresh_dups();
+            }
+            // --- Task 33 ---: copies badges follow content ids, volumes and drift.
+            if ended
+                .iter()
+                .any(|k| matches!(k.as_str(), "hash" | "integrity" | "index"))
+            {
+                l.forget_badges();
             }
             self.relist_library_tabs();
         }
@@ -1183,7 +1289,23 @@ impl AppState {
         if now >= l.next_status {
             l.next_status = now + STATUS_EVERY;
             drop(lib.refresh_status());
+            // --- Task 33 ---
+            let (pct, days) = (
+                self.settings.library.integrity_pct,
+                self.settings.library.integrity_days,
+            );
+            if days > 0 && !l.jobs.values().any(|j| j.kind == "integrity" && j.active()) {
+                let every = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+                l.spawn("keel-library-integrity", move |lib| {
+                    let id = lib.schedule_integrity(pct, every).ok().flatten()?;
+                    Some(LibMsg::Spawned {
+                        kind: "integrity",
+                        id: Some(id),
+                    })
+                });
+            }
         }
+        l.ask_badges();
         l.sync_watchers(rescan);
         let indexing = l
             .sources
@@ -1645,6 +1767,32 @@ impl AppState {
                     self.library.open(&name, self.router.clone());
                 }
             }
+            // --- Task 33 ---
+            LibCmd::SetVolumeState { volume, state } => {
+                self.library
+                    .spawn_try("keel-library-volume", "Volume", move |lib| {
+                        lib.set_volume_state(&volume, state)?;
+                        Ok(None)
+                    });
+                self.library.protection_changed();
+            }
+            LibCmd::SetBackup { volume, on } => {
+                self.library
+                    .spawn_try("keel-library-volume", "Volume", move |lib| {
+                        lib.set_backup(&volume, on)?;
+                        Ok(None)
+                    });
+                self.library.protection_changed();
+            }
+            LibCmd::CheckIntegrity => {
+                let pct = self.settings.library.integrity_pct;
+                self.library.spawn("keel-library-integrity", move |lib| {
+                    Some(LibMsg::Spawned {
+                        kind: "integrity",
+                        id: lib.integrity(None, pct).ok(),
+                    })
+                });
+            }
             LibCmd::Enable(on) => {
                 self.settings.library.enabled = on;
                 if on && !self.library.is_open() {
@@ -1733,3 +1881,222 @@ pub fn label_for(root: &str) -> String {
 #[cfg(test)]
 #[path = "library_tests.rs"]
 mod tests;
+
+// --- Task 33 ---: protection card, volume table and copies badges.
+
+impl LibraryUi {
+    /// The copies badge of a file (real path); asks for its folder's badges when missing.
+    pub fn badge(&self, real: &VPath) -> Option<&Badge> {
+        let b = self.badges.get(real);
+        if b.is_none() {
+            if let Some(dir) = real.parent().filter(|d| !self.badge_asked.contains(d)) {
+                self.badge_wanted.lock().insert(dir);
+            }
+        }
+        b
+    }
+
+    /// Reads the badges of the folders the details view asked for, on a worker.
+    fn ask_badges(&mut self) {
+        let wanted: Vec<VPath> = self.badge_wanted.lock().drain().collect();
+        let dirs: Vec<VPath> = wanted
+            .into_iter()
+            .filter(|d| self.badge_asked.insert(d.clone()))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        let sources = self.sources.clone();
+        self.spawn("keel-library-badges", move |lib| {
+            let mut out = HashMap::new();
+            for dir in dirs {
+                let Some((source, rel)) = locate(&sources, &dir) else {
+                    continue;
+                };
+                let Ok(children) = lib.list_children(&source, &rel) else {
+                    continue;
+                };
+                for h in children.into_iter().filter(|h| !h.is_dir).take(MAX_BADGES) {
+                    if let Ok(r) = lib.redundancy(&h.record) {
+                        out.insert(h.path, badge_of(&r));
+                    }
+                }
+            }
+            Some(LibMsg::Badges(out))
+        });
+    }
+
+    fn forget_badges(&mut self) {
+        self.badges.clear();
+        self.badge_asked.clear();
+        self.badge_wanted.lock().clear();
+    }
+
+    /// A volume changed: counts and badges are read again.
+    fn protection_changed(&mut self) {
+        self.forget_badges();
+        self.next_stats = Instant::now() + Duration::from_millis(300);
+        self.ctx.request_repaint_after(Duration::from_millis(300));
+    }
+}
+
+/// Files per folder that get a copies badge (the rest show none).
+const MAX_BADGES: usize = 5_000;
+
+/// The details view's copies badge: copies and failure domains, a risk when one domain
+/// holds them all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Badge {
+    pub text: String,
+    /// How it was computed, and where the copies are.
+    pub hover: String,
+    /// Every copy in one failure domain.
+    pub risk: bool,
+}
+
+pub fn badge_of(r: &Redundancy) -> Badge {
+    let plural = |n: u64, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    let mut hover = format!(
+        "{} in {}",
+        plural(r.copies, "copy", "copies"),
+        plural(r.failure_domains, "failure domain", "failure domains")
+    );
+    if r.offline_copies > 0 {
+        hover += &format!(" ({} offline)", r.offline_copies);
+    }
+    hover += if r.backed_up {
+        "; backed up"
+    } else {
+        "; not backed up"
+    };
+    for c in &r.locations {
+        let mut flags = String::new();
+        if c.volume.state != VolumeState::Online {
+            flags = format!(" [{}]", state_text(c.volume.state));
+        }
+        if c.volume.backup {
+            flags += " [backup]";
+        }
+        hover += &format!(
+            "\n• {} on {} ({}){flags}",
+            c.path.display(),
+            c.volume.label,
+            c.volume.failure_domain
+        );
+    }
+    hover += "\nCopies count files with the same content (hard links once) on volumes that are \
+              not lost or retired; volumes on one disk, cloud account or host are one failure \
+              domain. Files not hashed yet show 1.";
+    Badge {
+        text: format!("{}× · {}", r.copies, r.failure_domains),
+        hover,
+        risk: r.failure_domains <= 1,
+    }
+}
+
+pub fn state_text(s: VolumeState) -> &'static str {
+    match s {
+        VolumeState::Online => "online",
+        VolumeState::Offline => "offline",
+        VolumeState::Archived => "archived",
+        VolumeState::Lost => "lost",
+        VolumeState::Retired => "retired",
+    }
+}
+
+pub fn kind_text(k: VolumeKind) -> &'static str {
+    match k {
+        VolumeKind::Fixed => "Disk",
+        VolumeKind::Removable => "Removable",
+        VolumeKind::Network => "Network",
+        VolumeKind::Cloud => "Cloud",
+        VolumeKind::Device => "Device",
+    }
+}
+
+/// One row of the Overview's volume table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeRow {
+    pub id: String,
+    pub label: String,
+    pub kind: &'static str,
+    pub state: VolumeState,
+    pub domain: String,
+    pub backup: bool,
+    /// "120 GB / 250 GB", or "" when unknown.
+    pub usage: String,
+    pub last_seen: String,
+}
+
+pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
+    volumes
+        .iter()
+        .map(|v| VolumeRow {
+            id: v.id.clone(),
+            label: v.label.clone(),
+            kind: kind_text(v.kind),
+            state: v.state,
+            domain: v.failure_domain.clone(),
+            backup: v.backup,
+            usage: v
+                .capacity
+                .map(|(used, total)| {
+                    format!(
+                        "{} / {}",
+                        humansize::format_size(used, humansize::DECIMAL),
+                        humansize::format_size(total, humansize::DECIMAL)
+                    )
+                })
+                .unwrap_or_default(),
+            last_seen: when((v.last_seen > 0).then_some(v.last_seen)),
+        })
+        .collect()
+}
+
+/// The protection card's lines: (text, how it is computed), so every number is explained.
+pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
+    let files = |n: u64| {
+        if n == 1 {
+            "1 file".to_owned()
+        } else {
+            format!("{} files", count(n))
+        }
+    };
+    vec![
+        (
+            format!("{} with one copy only", files(p.single_copy)),
+            "Hashed contents held by a single file (hard links count once; copies on lost or \
+             retired volumes do not count). Files not hashed yet are not counted.",
+        ),
+        (
+            format!("{} with every copy on one disk", files(p.single_domain)),
+            "Contents with two or more copies, all in one failure domain: one physical disk, \
+             cloud account or host. One failure loses them all.",
+        ),
+        (
+            format!("{} not backed up", files(p.unbacked)),
+            "Contents without a copy on a volume marked as backup in a second failure domain. \
+             Mark backup drives in the volume table below.",
+        ),
+        (
+            format!("{} changed since last check", files(p.drifted)),
+            "Integrity checks re-hash a sample of files; drift is a file whose bytes changed \
+             although its size and times did not (bit rot, or a tool restoring timestamps).",
+        ),
+        (
+            if p.offline_volumes == 1 {
+                "1 volume offline".to_owned()
+            } else {
+                format!("{} volumes offline", p.offline_volumes)
+            },
+            "Volumes none of whose sources can be reached now. Their copies still count; mark \
+             a drive Archived, Lost or Retired in the volume table.",
+        ),
+    ]
+}

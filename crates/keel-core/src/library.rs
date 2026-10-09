@@ -137,11 +137,18 @@ pub struct Source {
     /// A root mismatch or empty root, persisted in the store: changes are not applied and
     /// the status stays offline until a full walk succeeds again (or adopts the new root).
     held: RwLock<Option<OfflineReason>>,
+    /// The volume the root was last seen on (`library.db` `source.volume_id`).
+    pub(crate) volume_id: RwLock<Option<String>>,
     dir: PathBuf,
 }
 
 impl Source {
-    fn open(dir: PathBuf, id: SourceId, def: SourceDef) -> Result<Source> {
+    fn open(
+        dir: PathBuf,
+        id: SourceId,
+        def: SourceDef,
+        volume_id: Option<String>,
+    ) -> Result<Source> {
         let store = Pool::open(&dir.join("source.db"), Store::Source)
             .with_context(|| format!("source store {}", def.label))?;
         let generation = store
@@ -169,6 +176,7 @@ impl Source {
             removed: AtomicBool::new(false),
             write: Mutex::new(()),
             held: RwLock::new(held),
+            volume_id: RwLock::new(volume_id),
             dir,
         })
     }
@@ -388,6 +396,10 @@ pub(crate) struct Shared {
     pub(crate) hash_job: Mutex<Option<JobId>>,
     /// Set when hashing was asked for while a hash job ran: it goes round once more.
     pub(crate) hash_again: AtomicBool,
+    /// The hash job past its last look at `hash_again` (ending): never handed new work.
+    pub(crate) hash_finishing: AtomicI64,
+    /// Protection recounts read and write as one (the last to start writes last).
+    pub(crate) recounting: Mutex<()>,
     /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
     pub(crate) utc_offset: AtomicI64,
     /// `Jobs::subscribe` receivers.
@@ -443,6 +455,7 @@ impl Shared {
         let weak = Arc::downgrade(self);
         let after_walk = move |s: &Source| {
             if let Some(lib) = Weak::upgrade(&weak) {
+                crate::protect::after_walk(&lib, s);
                 crate::hash::after_walk(&lib, s);
             }
         };
@@ -491,6 +504,12 @@ impl Shared {
                 (false, _) => Some(OfflineReason::Unreachable),
                 (true, held) => held,
             };
+            // The volume it is on (its capacity and last-seen time too).
+            if reachable && s.held().is_none() {
+                if let Err(e) = crate::protect::observe(self, &s, true) {
+                    tracing::debug!("volume of {}: {e:#}", s.def.label);
+                }
+            }
             let indexed_at = s.store.meta("last_full_walk").ok().flatten();
             let indexed_at = indexed_at.and_then(|t| t.parse().ok());
             let was_offline = {
@@ -562,19 +581,20 @@ impl Library {
             }
         };
         db.set_meta("name", name)?;
-        let rows: Vec<(String, String)> = {
+        let rows: Vec<(String, String, Option<String>)> = {
             let conn = db.get()?;
-            let mut stmt = conn.prepare("SELECT id, def FROM source ORDER BY rowid")?;
-            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let mut stmt = conn.prepare("SELECT id, def, volume_id FROM source ORDER BY rowid")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut sources = Vec::new();
-        for (id, def) in rows {
+        for (id, def, volume) in rows {
             let def: SourceDef = serde_json::from_str(&def)?;
             sources.push(Arc::new(Source::open(
                 dir.join("sources").join(&id),
                 SourceId(id),
                 def,
+                volume,
             )?));
         }
         let shared = Arc::new(Shared {
@@ -586,6 +606,8 @@ impl Library {
             hash_after_walk: AtomicBool::new(true),
             hash_job: Mutex::new(None),
             hash_again: AtomicBool::new(false),
+            hash_finishing: AtomicI64::new(0),
+            recounting: Mutex::new(()),
             utc_offset: AtomicI64::new(0),
             job_events: Mutex::new(Vec::new()),
             jobs: JobState::default(),
@@ -607,6 +629,10 @@ impl Library {
         lib.jobs.register(
             crate::SidecarJob::KIND,
             <crate::SidecarJob as crate::Job>::restore,
+        );
+        lib.jobs.register(
+            crate::IntegrityJob::KIND,
+            <crate::IntegrityJob as crate::Job>::restore,
         );
         // Stores that came back with tags this library does not know.
         lib.reconcile_tags()?;
@@ -684,7 +710,7 @@ impl Library {
             );
         }
         let id = SourceId(crate::random_id()?);
-        let source = Source::open(self.root.join("sources").join(&id.0), id.clone(), def)?;
+        let source = Source::open(self.root.join("sources").join(&id.0), id.clone(), def, None)?;
         self.shared.db.get()?.execute(
             "INSERT INTO source(id, def, created) VALUES (?1, ?2, ?3)",
             rusqlite::params![id.0, serde_json::to_string(&source.def)?, crate::now()],
