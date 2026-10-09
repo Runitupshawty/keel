@@ -1,0 +1,25 @@
+[package]
+name = "keel-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "keel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+windows.workspace = true
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts", "persistence"] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["all_loaders"] }
