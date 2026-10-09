@@ -3,3 +3,7 @@ target/
 *.zip
 *.tar.gz
 target/deps/
+# egui_kittest snapshot by-products
+*.diff.png
+*.old.png
+*.new.png
