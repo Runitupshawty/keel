@@ -69,6 +69,11 @@ base64 = "0.22"
 getrandom = "0.3"
 url = "2"
 serde_json = "1"
+# Own NTFS indexer (keel-search, Windows): index db, query patterns, fallback watcher.
+rusqlite = { version = "0.37", features = ["bundled"] }
+regex = "1"
+notify = "6"
+directories = "5"
 
 [profile.release]
 opt-level = 3
