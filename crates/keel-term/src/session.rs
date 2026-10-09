@@ -29,6 +29,7 @@ pub struct Session {
     idle: IdleCell,
     alive: Arc<AtomicBool>,
     kind: ShellKind,
+    program: std::path::PathBuf,
     resources: Option<Resources>,
 }
 impl Session {
@@ -194,6 +195,7 @@ impl Session {
             idle,
             alive,
             kind: shell.kind,
+            program: shell.program.clone(),
             resources: Some(Resources {
                 master,
                 writer,
@@ -210,8 +212,10 @@ impl Session {
             .resources
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("terminal closed"))?;
-        self.idle.0.lock().input(bytes);
+        // Writer first, then idle (the cd flusher's order): a keystroke and a queued `cd`
+        // are never interleaved, and a `cd` found due is written before any later key.
         let mut writer = r.writer.lock();
+        self.idle.0.lock().input(bytes);
         writer.write_all(bytes)?;
         writer.flush()?;
         Ok(())
@@ -232,7 +236,7 @@ impl Session {
     /// Queues a `cd` line (latest wins); it is typed once the shell is idle (see
     /// `grid::Idle`). Paths that cannot be quoted safely for the shell are ignored.
     pub fn cd(&self, dir: &Path) {
-        let Some(line) = cd_line(self.kind, dir) else {
+        let Some(line) = cd_line(self.kind, &self.program, dir) else {
             return;
         };
         self.idle.0.lock().pending = Some(line);
@@ -274,7 +278,9 @@ impl Drop for Session {
         self.kill();
     }
 }
-/// Types queued `cd` lines once the shell has been idle for `grid::QUIET`.
+/// Types queued `cd` lines once the shell has been idle for `grid::QUIET`. The writer lock
+/// is taken before the idle check and held across the write (`Session::write` locks in the
+/// same order), so a keystroke can neither land between the check and the `cd` nor split it.
 fn flush_cds(
     idle: &IdleCell,
     alive: &AtomicBool,
@@ -282,21 +288,21 @@ fn flush_cds(
     in_front: impl Fn() -> bool,
 ) {
     let (state, wake) = &**idle;
-    let mut guard = state.lock();
     while alive.load(Ordering::Acquire) {
+        let mut w = writer.lock();
+        let mut guard = state.lock();
         match guard.due(Instant::now()) {
             Ok(line) if in_front() => {
+                // The reader may record output meanwhile; only input needs the writer.
                 drop(guard);
-                let mut w = writer.lock();
                 let _ = w.write_all(line.as_bytes()).and_then(|_| w.flush());
-                drop(w);
-                guard = state.lock();
             }
             // A foreground job owns the terminal: keep the line for the next prompt.
             Ok(line) => {
                 guard.pending.get_or_insert(line);
             }
             Err(wait) => {
+                drop(w);
                 // The timeout also re-checks `alive` should a wake-up be missed.
                 wake.wait_for(&mut guard, wait.unwrap_or(Duration::from_secs(1)));
             }
@@ -390,25 +396,45 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn cd_reaches_an_idle_cmd_prompt() {
+        // Folders left by earlier runs (before the shell was stopped ahead of the cleanup).
+        for item in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
+            let name = item.file_name().to_string_lossy().into_owned();
+            let ours = name
+                .strip_prefix("keel-cd-")
+                .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+            if ours && item.path().is_dir() {
+                let _ = std::fs::remove_dir_all(item.path());
+            }
+        }
         let dir = std::env::temp_dir().join(format!("keel-cd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let shell = available_shells()
             .into_iter()
             .find(|s| s.kind == ShellKind::Cmd)
             .unwrap();
-        let session =
+        let mut session =
             Session::spawn(&shell, &std::env::temp_dir(), 120, 24, Arc::new(|| {})).unwrap();
-        let wait = |needle: &str| {
+        let wait = |session: &Session, needle: &str| {
             let start = Instant::now();
             while !session.grid().screen().contents().contains(needle) {
                 assert!(start.elapsed() < Duration::from_secs(10), "no {needle:?}");
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
-        wait(">");
+        wait(&session, ">");
         session.cd(&dir); // sent now or queued until the first prompt is seen
-        wait(&format!("{}>", dir.display()));
-        let _ = std::fs::remove_dir(&dir);
+        wait(&session, &format!("{}>", dir.display()));
+        // The shell's cwd keeps the folder in use until the process has gone.
+        session.kill();
+        let start = Instant::now();
+        while std::fs::remove_dir(&dir).is_err() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{} still in use",
+                dir.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     #[test]
     fn fifty_mb_burst_keeps_grid_lock_under_fifty_ms() {

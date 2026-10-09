@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 const PS_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
 
 /// A `cd` line that cannot run any part of the path as code, or `None` when the path
-/// cannot be quoted safely for this shell (it is then never sent).
-pub(crate) fn cd_line(kind: ShellKind, dir: &Path) -> Option<String> {
+/// cannot be quoted safely for this shell (it is then never sent). `program` is the shell
+/// executable; for `Posix` its name tells csh/tcsh apart (see `posix_cd`).
+pub(crate) fn cd_line(kind: ShellKind, program: &Path, dir: &Path) -> Option<String> {
     let path = dir.to_string_lossy();
     if path.chars().any(char::is_control) {
         return None;
@@ -29,15 +30,28 @@ pub(crate) fn cd_line(kind: ShellKind, dir: &Path) -> Option<String> {
         ShellKind::Cmd if path.contains(['%', '!', '"']) => return None,
         ShellKind::Cmd => format!("cd /d \"{path}\"\r"),
         // Translated here, never by running `wslpath` inside the shell.
-        ShellKind::Wsl => posix_cd(&crate::wslpath(dir))?,
-        ShellKind::Posix => posix_cd(&path)?,
+        // The distro's login shell is not known here (the program is wsl.exe).
+        ShellKind::Wsl => posix_cd(&crate::wslpath(dir), false)?,
+        ShellKind::Posix => posix_cd(&path, is_csh(program))?,
     })
 }
 
 /// fish reads `\'` as an escape even inside single quotes, so no one quoting works for
 /// sh, bash, zsh and fish alike: paths containing `'` or `\` are refused.
-fn posix_cd(path: &str) -> Option<String> {
-    (!path.contains(['\'', '\\'])).then(|| format!("cd '{path}'\r"))
+///
+/// Csh: csh and tcsh expand `!` history references even inside single quotes, so for them
+/// (`csh`) paths containing `!` are refused too.
+fn posix_cd(path: &str, csh: bool) -> Option<String> {
+    let unquotable = path.contains(['\'', '\\']) || (csh && path.contains('!'));
+    (!unquotable).then(|| format!("cd '{path}'\r"))
+}
+
+/// Whether the shell executable is csh or tcsh (by file stem, so `tcsh.exe` counts).
+fn is_csh(program: &Path) -> bool {
+    program
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("csh") || stem.eq_ignore_ascii_case("tcsh"))
 }
 
 /// Whether the text left of the cursor looks like this shell's default LOCAL prompt.
@@ -191,15 +205,27 @@ mod tests {
     #[test]
     fn cd_quotes_paths_without_executing_path_text() {
         assert_eq!(
-            cd_line(ShellKind::PowerShell, Path::new("a'b")),
+            cd_line(
+                ShellKind::PowerShell,
+                Path::new("/bin/bash"),
+                Path::new("a'b")
+            ),
             Some("Set-Location -LiteralPath 'a''b'\r".into())
         );
         assert_eq!(
-            cd_line(ShellKind::Cmd, Path::new(r"D:\a & b")),
+            cd_line(
+                ShellKind::Cmd,
+                Path::new("/bin/bash"),
+                Path::new(r"D:\a & b")
+            ),
             Some("cd /d \"D:\\a & b\"\r".into())
         );
         assert_eq!(
-            cd_line(ShellKind::Posix, Path::new("/home/a b")),
+            cd_line(
+                ShellKind::Posix,
+                Path::new("/bin/bash"),
+                Path::new("/home/a b")
+            ),
             Some("cd '/home/a b'\r".into())
         );
         for kind in [
@@ -208,16 +234,25 @@ mod tests {
             ShellKind::Wsl,
             ShellKind::Posix,
         ] {
-            assert!(cd_line(kind, Path::new("a\nb")).is_none());
+            assert!(cd_line(kind, Path::new("/bin/bash"), Path::new("a\nb")).is_none());
         }
-        assert!(cd_line(ShellKind::Cmd, Path::new(r"D:\%TEMP%")).is_none());
+        assert!(cd_line(
+            ShellKind::Cmd,
+            Path::new("/bin/bash"),
+            Path::new(r"D:\%TEMP%")
+        )
+        .is_none());
     }
     /// B1: PowerShell also ends single-quoted strings at U+2018..U+201B.
     #[test]
     fn powershell_doubles_every_quote_character() {
         let name = "x\u{2019};New-Item pwned;\u{2018}\u{201A}\u{201B}'";
         assert_eq!(
-            cd_line(ShellKind::PowerShell, Path::new(name)),
+            cd_line(
+                ShellKind::PowerShell,
+                Path::new("/bin/bash"),
+                Path::new(name)
+            ),
             Some(
                 "Set-Location -LiteralPath 'x\u{2019}\u{2019};New-Item pwned;\
                  \u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}'''\r"
@@ -225,15 +260,59 @@ mod tests {
             )
         );
     }
+    /// csh and tcsh expand `!` inside single quotes; other shells take it literally.
+    #[test]
+    fn csh_and_tcsh_refuse_bangs() {
+        let dir = Path::new("/tmp/a!b");
+        for program in ["/bin/csh", "/usr/bin/tcsh", "tcsh.exe", "/bin/TCSH"] {
+            assert!(
+                cd_line(ShellKind::Posix, Path::new(program), dir).is_none(),
+                "{program}"
+            );
+        }
+        for program in [
+            "/bin/bash",
+            "/bin/zsh",
+            "/usr/bin/fish",
+            "/opt/csh-tools/sh",
+        ] {
+            assert_eq!(
+                cd_line(ShellKind::Posix, Path::new(program), dir),
+                Some("cd '/tmp/a!b'\r".into()),
+                "{program}"
+            );
+        }
+        assert!(cd_line(
+            ShellKind::Posix,
+            Path::new("/bin/tcsh"),
+            Path::new("/tmp/ab")
+        )
+        .is_some());
+    }
     /// M8: fish treats `\'` as an escape inside single quotes; WSL paths are translated in
     /// Rust, never by `$(wslpath ...)` in the shell.
     #[test]
     fn posix_and_wsl_refuse_quotes_and_backslashes() {
-        assert!(cd_line(ShellKind::Posix, Path::new("/tmp/it's")).is_none());
-        assert!(cd_line(ShellKind::Posix, Path::new(r"/tmp/a\")).is_none());
-        assert!(cd_line(ShellKind::Wsl, Path::new(r"C:\a\it's")).is_none());
+        assert!(cd_line(
+            ShellKind::Posix,
+            Path::new("/bin/bash"),
+            Path::new("/tmp/it's")
+        )
+        .is_none());
+        assert!(cd_line(
+            ShellKind::Posix,
+            Path::new("/bin/bash"),
+            Path::new(r"/tmp/a\")
+        )
+        .is_none());
+        assert!(cd_line(
+            ShellKind::Wsl,
+            Path::new("/bin/bash"),
+            Path::new(r"C:\a\it's")
+        )
+        .is_none());
         assert_eq!(
-            cd_line(ShellKind::Wsl, Path::new(r"D:\a b")),
+            cd_line(ShellKind::Wsl, Path::new("/bin/bash"), Path::new(r"D:\a b")),
             Some("cd '/mnt/d/a b'\r".into())
         );
     }
@@ -261,7 +340,7 @@ mod tests {
         for name in names {
             let dir = base.join(name);
             std::fs::create_dir_all(&dir).unwrap();
-            let line = cd_line(ShellKind::PowerShell, &dir).unwrap();
+            let line = cd_line(ShellKind::PowerShell, Path::new("/bin/bash"), &dir).unwrap();
             // The cwd is printed as UTF-8 byte values so the console code page cannot
             // garble it.
             let script = format!(
