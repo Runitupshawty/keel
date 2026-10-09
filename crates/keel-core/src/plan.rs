@@ -122,7 +122,7 @@ pub struct Change {
 pub enum Warning {
     /// Deleting `path` removes the only indexed copy of `files` files' content.
     LastCopy { path: VPath, files: u64 },
-    /// Projected from the source's last generation; execution waits for it to come back.
+    /// Projected from the source's last generation; executing fails while it is offline.
     OfflineSource { source: SourceId, label: String },
     /// Not in the index: projected from the live filesystem.
     NotIndexed { path: VPath },
@@ -569,13 +569,28 @@ impl Job for ExecJob {
     }
 }
 
-/// One top-level path; false when it no longer exists (skipped).
+/// One top-level path; false when it no longer exists (skipped). Fails when the path's
+/// source cannot be reached (the rest of the operation is not run against it).
 fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
     let router = ctx.router();
     let provider = router
         .provider_for(item)
         .with_context(|| format!("no provider for {}", item.display()))?;
     if provider.stat(item).is_err() {
+        if let Some((src, _)) = ctx.lib.source_for(item) {
+            let reachable = router
+                .provider_for(&src.def.root)
+                .is_some_and(|p| p.stat(&src.def.root).is_ok());
+            if !reachable {
+                *src.status.write() = SourceStatus::Offline {
+                    last_seen: src
+                        .store
+                        .meta("last_full_walk")?
+                        .and_then(|t| t.parse().ok()),
+                };
+                anyhow::bail!("source {} is offline", src.def.label);
+            }
+        }
         return Ok(false);
     }
     match op {

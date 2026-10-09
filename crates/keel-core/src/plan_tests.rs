@@ -275,6 +275,31 @@ fn a_step_that_ran_before_a_crash_is_not_run_again() {
 }
 
 #[test]
+fn an_operation_on_an_unreachable_source_fails_instead_of_skipping() {
+    let state = Arc::new(Mutex::new(State {
+        fail: None,
+        lists_left: None,
+    }));
+    let router = Arc::new(Router::new());
+    let fake = Arc::new(fake_tree(state.clone()));
+    let (_data, lib, src) = library_with(fake_source(&router, &state, SourceKind::Share));
+    router.register(fake.clone());
+    lib.set_router(router.clone());
+    walk(&src, &router).unwrap();
+    let f = VPath::parse("fake://box/f.txt").unwrap();
+    let plan = validate_preview_execute(&lib, Op::Delete { paths: vec![f] }).unwrap();
+    state.lock().lists_left = Some(0); // the host went away
+    let job = plan.execute(&lib).unwrap();
+    let info = lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, JobStatus::Failed);
+    assert!(info.log.contains("source box is offline"), "{}", info.log);
+    let entry = &lib.op_log(1).unwrap()[0];
+    assert_eq!(entry.ok, Some(false));
+    assert!(fake.1.lock().is_empty(), "nothing removed");
+    assert!(matches!(*src.status.read(), SourceStatus::Offline { .. }));
+}
+
+#[test]
 fn offline_sources_preview_from_their_last_generation() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
