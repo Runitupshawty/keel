@@ -1,17 +1,25 @@
-//! File search backends (Everything on Windows, Spotlight on macOS, locate or
-//! a home-directory walk on Linux) and folder-path fuzzy matching for Keel.
+//! File search backends (Everything or Keel's own NTFS index on Windows, Spotlight
+//! on macOS, locate or a home-directory walk on Linux) and folder-path fuzzy
+//! matching for Keel.
 
 #[cfg(windows)]
 mod everything;
 mod fuzzy;
 #[cfg(target_os = "linux")]
 mod locate;
+#[cfg(windows)]
+mod ntfs;
 #[cfg(target_os = "macos")]
 mod spotlight;
 
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
 pub use fuzzy::Fuzzy;
+#[cfg(windows)]
+pub use ntfs::{
+    index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
+    FROZEN_STATUS,
+};
 
 use std::path::Path;
 use std::time::SystemTime;
@@ -51,6 +59,11 @@ pub struct Hit {
 pub trait Searcher: Send + Sync {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
     fn available(&self) -> bool;
+    /// A note for the status bar about what the backend covers (e.g. "user folders
+    /// only"), None when there is nothing to say.
+    fn status(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A soft-failure backend the app falls back to when no search backend works;
@@ -79,12 +92,19 @@ impl Searcher for Unavailable {
 }
 
 /// The best search backend for this OS, or [`Unavailable`] when none works.
-/// Probes the backend (IPC or a child process), so call it off the UI thread.
+/// Probes the backend (IPC or a child process) and may load a saved index, so call
+/// it off the UI thread.
+///
+/// Windows: Everything when it is running, else Keel's own index ([`NtfsSearcher`]:
+/// the saved drive index, or the user-folder walk when there is none and Keel is
+/// not elevated).
 pub fn default_searcher() -> Box<dyn Searcher> {
     #[cfg(windows)]
-    return match EverythingSearcher::load() {
-        Ok(searcher) => Box::new(searcher),
-        Err(error) => Box::new(Unavailable::new(format!(
+    return match (EverythingSearcher::load(), ntfs::index_dir()) {
+        (Ok(everything), _) if everything.available() => Box::new(everything),
+        (_, Some(dir)) => Box::new(NtfsSearcher::open(dir)),
+        (Ok(everything), None) => Box::new(everything),
+        (Err(error), None) => Box::new(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
     };

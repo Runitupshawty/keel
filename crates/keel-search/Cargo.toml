@@ -17,3 +17,8 @@ nucleo.workspace = true
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
 parking_lot.workspace = true
+directories.workspace = true
+notify.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
