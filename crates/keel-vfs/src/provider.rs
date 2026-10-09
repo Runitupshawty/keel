@@ -21,6 +21,11 @@ pub trait Provider: Send + Sync {
     fn stat(&self, p: &VPath) -> Result<Entry>;
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>>;
+    /// Creates `p` only if it does not exist yet (no check-then-create race); the default
+    /// refuses so a provider never silently truncates.
+    fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        anyhow::bail!("create_new is not supported for {}", p.display())
+    }
     fn mkdir(&self, p: &VPath) -> Result<()>;
     fn rename(&self, from: &VPath, to: &VPath) -> Result<()>;
     /// Local: OS trash only, never a permanent delete.

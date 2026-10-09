@@ -128,9 +128,39 @@ fn trash_path(path: &Path) -> Result<()> {
             std::path::Component::Normal(n) if n.to_string_lossy().ends_with(['.', ' ']))),
         "name ends with a dot or space"
     );
+    #[cfg(windows)]
+    anyhow::ensure!(
+        has_recycle_bin(path),
+        "This location has no Recycle Bin; nothing deleted"
+    );
     trash::delete(path)?;
     anyhow::ensure!(!path.try_exists()?, "still present after trash");
     Ok(())
+}
+
+/// True only for fixed local drives. The Shell silently deletes *permanently* on UNC shares,
+/// mapped network drives, removable media and optical/RAM disks (no Recycle Bin there), so
+/// `trash_path` refuses those instead of trusting `trash::delete`.
+#[cfg(windows)]
+fn has_recycle_bin(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
+    let letter = match path.components().next() {
+        Some(Component::Prefix(pre)) => match pre.kind() {
+            Prefix::Disk(l) | Prefix::VerbatimDisk(l) => l,
+            _ => return false, // UNC, VerbatimUNC, DeviceNS, Verbatim
+        },
+        _ => return false,
+    };
+    let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", letter as char))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `root` is a valid NUL-terminated UTF-16 string that outlives the call.
+    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
 }
 
 impl Provider for LocalProvider {
@@ -191,6 +221,15 @@ impl Provider for LocalProvider {
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         Ok(Box::new(
             fs::File::create(local(p)?).with_context(|| format!("write {}", p.display()))?,
+        ))
+    }
+    fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        Ok(Box::new(
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(local(p)?)
+                .with_context(|| format!("create {}", p.display()))?,
         ))
     }
     fn mkdir(&self, p: &VPath) -> Result<()> {
@@ -282,5 +321,28 @@ mod tests {
             long(Path::new(r"\\?\C:\a\b.")).unwrap(),
             PathBuf::from(r"\\?\C:\a\b.")
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod recycle_bin_tests {
+    use super::trash_path;
+
+    #[test]
+    fn unc_path_is_refused_and_file_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("victim.txt");
+        std::fs::write(&file, b"keep me").unwrap();
+        // Admin-share spelling of the same temp file: \\localhost\C$\Users\...
+        let local = file.to_string_lossy().replace(r"\\?\", "");
+        let Some(rest) = local.get(2..) else { return };
+        let unc = format!(r"\\localhost\{}${}", &local[..1], rest);
+        if std::fs::metadata(&unc).is_err() {
+            eprintln!("skipping: admin share {unc} not reachable");
+            return;
+        }
+        let err = trash_path(std::path::Path::new(&unc)).unwrap_err();
+        assert!(err.to_string().contains("no Recycle Bin"), "{err}");
+        assert!(file.exists(), "file must survive a refused delete");
     }
 }
