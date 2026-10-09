@@ -2488,6 +2488,7 @@ dependencies = [
  "open",
  "parking_lot",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "toml",
  "tracing",

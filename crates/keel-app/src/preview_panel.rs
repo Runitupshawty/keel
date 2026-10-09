@@ -47,6 +47,8 @@ pub struct PreviewPanel {
     pub md_cache: CommonMarkCache,
     /// Panel width in physical pixels (last frame): the render size of new requests.
     pub width_px: u32,
+    /// Larger files show "too large" without being read (Settings, max preview size).
+    pub max_bytes: u64,
     entry: Option<Entry>,
     doc_tex: Vec<TextureHandle>,
     cache: HashMap<PreviewKey, (Preview, u64)>,
@@ -64,6 +66,7 @@ impl PreviewPanel {
             tex: None,
             md_cache: CommonMarkCache::default(),
             width_px: 480,
+            max_bytes: keel_preview::MAX_PREVIEW_BYTES,
             entry: None,
             doc_tex: Vec::new(),
             cache: HashMap::new(),
@@ -91,6 +94,10 @@ impl PreviewPanel {
         self.entry = Some(e.clone());
         self.set(ctx, None);
         if e.kind == Kind::Dir {
+            return;
+        }
+        if e.size > self.max_bytes {
+            self.set(ctx, Some(Preview::TooLarge(e.size)));
             return;
         }
         self.clock += 1;

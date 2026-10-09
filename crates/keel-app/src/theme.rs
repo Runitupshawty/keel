@@ -1,7 +1,7 @@
 //! Color themes: TOML files mapped onto `egui::Visuals`.
 
+use crate::settings::config_dir;
 use egui::Color32;
-use std::path::PathBuf;
 
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct Theme {
@@ -19,16 +19,6 @@ const BUILTIN: &[(&str, &str)] = &[
     ("dark", include_str!("../../../assets/themes/dark.toml")),
     ("light", include_str!("../../../assets/themes/light.toml")),
 ];
-
-/// `%APPDATA%\Keel`, `~/Library/Application Support/Keel`, `~/.config/keel` (spec 2.9).
-pub fn config_dir() -> Option<PathBuf> {
-    let base = directories::BaseDirs::new()?;
-    Some(base.config_dir().join(if cfg!(target_os = "linux") {
-        "keel"
-    } else {
-        "Keel"
-    }))
-}
 
 pub fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)

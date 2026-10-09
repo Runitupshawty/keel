@@ -3,6 +3,8 @@
 
 use crate::keys::{self, Action};
 use crate::pane::{self, DragPayload, ViewCx};
+use crate::session::Session;
+use crate::settings::{Persist, Settings};
 use crate::state::AppState;
 use egui::{pos2, Rect, Sense, UiBuilder};
 use humansize::{format_size, DECIMAL};
@@ -14,29 +16,72 @@ use std::time::{Duration, Instant};
 /// How long an OS drop waits for a pointer position before landing in the active pane.
 const DROP_WAIT: Duration = Duration::from_millis(1000);
 
+/// What `main` loaded before the window opened.
+pub struct Boot {
+    pub settings: Settings,
+    /// Repaired (`Session::repair`); `missing` lists the folders it replaced.
+    pub session: Session,
+    pub missing: Vec<VPath>,
+    /// The session as found on disk; `Some` turns saving on (off in tests).
+    pub saved: Option<Option<Session>>,
+}
+
+impl Boot {
+    /// Defaults on `start`, nothing saved: for tests.
+    #[cfg(test)]
+    pub fn at(start: VPath) -> Self {
+        Self {
+            settings: Settings::default(),
+            session: Session::single(start.clone()),
+            missing: Vec::new(),
+            saved: None,
+        }
+    }
+}
+
 pub struct App {
     pub state: AppState,
     /// Left pane share of the central area in dual mode.
     split: f32,
     /// Files dropped from another app, waiting for a pointer position (see `update`).
     pending_drop: Option<(Vec<PathBuf>, Instant)>,
+    /// Settings + session writer; None in tests.
+    persist: Option<Persist>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, start: VPath) -> Self {
+    pub fn new(cc: &eframe::CreationContext, boot: Boot) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        let state = AppState::new(cc.egui_ctx.clone(), Arc::new(Router::new()), start);
+        let persist = boot
+            .saved
+            .map(|saved| Persist::new(boot.settings.clone(), saved));
+        let mut state = AppState::restore(
+            cc.egui_ctx.clone(),
+            Arc::new(Router::new()),
+            boot.session,
+            boot.settings,
+        );
+        match boot.missing.as_slice() {
+            [] => {}
+            [one] => state.toasts.error(format!(
+                "{} no longer exists; opened your home folder",
+                one.display()
+            )),
+            many => state.toasts.error(format!(
+                "{} saved folders no longer exist; opened your home folder",
+                many.len()
+            )),
+        }
         state.load_searcher();
         Self {
             state,
             split: 0.5,
             pending_drop: None,
+            persist,
         }
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn frame(&mut self, ctx: &egui::Context) {
         let s = &mut self.state;
         s.drain();
         s.tick();
@@ -52,9 +97,9 @@ impl eframe::App for App {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
         egui::TopBottomPanel::bottom("jobs")
             .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
-        egui::SidePanel::left("sidebar")
+        let sidebar = egui::SidePanel::left("sidebar")
             .resizable(true)
-            .default_width(210.0)
+            .default_width(s.settings.sidebar_width)
             .width_range(140.0..=420.0)
             .show(ctx, |ui| {
                 let mut acts = Vec::new();
@@ -62,18 +107,20 @@ impl eframe::App for App {
                 s.sidebar.ui(ui, &s.theme, &current, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
+        s.settings.sidebar_width = sidebar.response.rect.width().round();
         if s.preview.open {
             let target = s.preview_target();
             s.preview.follow(ctx, target.as_ref());
-            egui::SidePanel::right("preview")
+            let panel = egui::SidePanel::right("preview")
                 .resizable(true)
-                .default_width(380.0)
+                .default_width(s.settings.preview_width)
                 .width_range(200.0..=1000.0)
                 .show(ctx, |ui| {
                     s.preview.width_px =
                         (ui.available_width() * ctx.pixels_per_point()).round() as u32;
                     s.preview.ui(ui, s.theme.muted());
                 });
+            s.settings.preview_width = panel.response.rect.width().round();
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(4.0))
@@ -212,8 +259,24 @@ impl eframe::App for App {
         for (p, action) in out {
             s.run(p, action);
         }
+        s.settings_ui(ctx);
         let error = ctx.style().visuals.error_fg_color;
         s.toasts.show(ctx, error);
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame(ctx);
+        if let Some(persist) = &mut self.persist {
+            persist.update(&self.state.settings, Session::of(&self.state));
+        }
+    }
+
+    fn on_exit(&mut self) {
+        if let Some(persist) = &mut self.persist {
+            persist.finish(&self.state.settings, Session::of(&self.state));
+        }
     }
 }
 
@@ -350,7 +413,7 @@ mod tests {
         let start = fixture("keel-keys-fixture");
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
-            .build_eframe(|cc| App::new(cc, start));
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
         wait_listed(&mut harness);
         assert_eq!(harness.state().state.tab(0).entries().len(), 8);
 
@@ -399,7 +462,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .wgpu()
-            .build_eframe(|cc| App::new(cc, start));
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
         harness.state_mut().state.panes[1].view = crate::pane::ViewMode::Grid;
         wait_listed(&mut harness);
         harness.run_steps(4);

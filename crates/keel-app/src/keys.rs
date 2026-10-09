@@ -82,6 +82,8 @@ pub enum Action {
     ReindexFolders,
     Palette,
     TogglePreview,
+    /// Settings window (Ctrl+,).
+    Settings,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -106,6 +108,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::W, Action::CloseTab),
     (CMD, Key::A, Action::SelectAll),
     (CMD, Key::H, Action::ToggleHidden),
+    (CMD, Key::Comma, Action::Settings),
     (Modifiers::ALT, Key::ArrowUp, Action::Up),
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
     (Modifiers::ALT, Key::ArrowRight, Action::Forward),
@@ -129,6 +132,7 @@ const WHILE_TYPING: &[Action] = &[
     Action::TogglePreview,
     Action::NewTab,
     Action::CloseTab,
+    Action::Settings,
 ];
 
 const MOVES: &[(Key, Nav)] = &[

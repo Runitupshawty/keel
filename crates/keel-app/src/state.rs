@@ -10,6 +10,8 @@ use crate::palette::Palette;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::search_tab::DEBOUNCE;
+use crate::session::Session;
+use crate::settings::Settings;
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
 use crate::tab::{Listing, Tab, TabKind};
 use crate::theme::Theme;
@@ -117,6 +119,9 @@ pub struct AppState {
     /// The move job started from a cut, and the cut to put back if that job fails.
     cut_job: Option<(u64, Clipboard)>,
     pub dialog: Option<Dialog>,
+    /// Theme, layout and preview options; saved by `settings::Persist`.
+    pub settings: Settings,
+    pub settings_open: bool,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -132,24 +137,55 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// One tab on `start` per pane, default settings (tests).
+    #[cfg(test)]
     pub fn new(ctx: egui::Context, router: Arc<Router>, start: VPath) -> Self {
+        Self::restore(ctx, router, Session::single(start), Settings::default())
+    }
+
+    /// Opens the tabs of `session` (already repaired, see `Session::repair`) with
+    /// `settings` applied, and lists every tab.
+    pub fn restore(
+        ctx: egui::Context,
+        router: Arc<Router>,
+        session: Session,
+        settings: Settings,
+    ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let theme = Theme::load(if ctx.style().visuals.dark_mode {
-            "dark"
-        } else {
-            "light"
-        });
+        let theme = Theme::load(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
         let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
+        let mut panes = session
+            .panes
+            .into_iter()
+            .zip(session.active_tab)
+            .map(|(dirs, active)| {
+                let mut dirs = dirs.into_iter();
+                let mut pane = Pane::new(dirs.next().expect("repaired session has a tab per pane"));
+                pane.tabs.extend(dirs.map(Tab::new));
+                pane.active = active.min(pane.tabs.len() - 1);
+                pane
+            });
+        let panes = [
+            panes.next().expect("two panes"),
+            panes.next().expect("two panes"),
+        ];
+        let mut preview = PreviewPanel::new(previewer);
+        preview.open = settings.preview_open;
+        preview.max_bytes = settings.max_preview_bytes();
         let mut state = Self {
             router,
-            panes: [Pane::new(start.clone()), Pane::new(start)],
-            active: 0,
-            dual: true,
-            show_hidden: false,
+            panes,
+            active: if settings.dual {
+                session.active.min(1)
+            } else {
+                0
+            },
+            dual: settings.dual,
+            show_hidden: settings.show_hidden,
             sidebar: Sidebar::default(),
-            preview: PreviewPanel::new(previewer),
+            preview,
             searcher: None,
             search_reason: None,
             jump,
@@ -159,6 +195,8 @@ impl AppState {
             paste_pending: false,
             cut_job: None,
             dialog: None,
+            settings,
+            settings_open: false,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -171,9 +209,41 @@ impl AppState {
             next_req: 0,
         };
         state.theme.apply(&state.ctx);
-        state.list(0, 0);
-        state.list(1, 0);
+        // Tabs are only listed when asked; restored background tabs need it now.
+        for p in 0..2 {
+            for t in 0..state.panes[p].tabs.len() {
+                state.list(p, t);
+            }
+        }
         state
+    }
+
+    /// Shows the Settings window (when open) on a copy of the live options and applies
+    /// what the user changed.
+    pub fn settings_ui(&mut self, ctx: &egui::Context) {
+        let s = &mut self.settings;
+        s.show_hidden = self.show_hidden;
+        s.dual = self.dual;
+        s.preview_open = self.preview.open;
+        if !self.settings_open {
+            return;
+        }
+        let theme_changed = crate::settings::window(ctx, &mut self.settings_open, s);
+        self.show_hidden = s.show_hidden;
+        self.preview.open = s.preview_open;
+        let max = s.max_preview_bytes();
+        if self.preview.max_bytes != max {
+            self.preview.max_bytes = max;
+            // Re-evaluate the shown file against the new limit.
+            self.preview.key = None;
+        }
+        if self.dual != s.dual {
+            self.run(self.active, Action::ToggleDual);
+        }
+        if theme_changed {
+            self.theme = Theme::load(&self.settings.theme);
+            self.theme.apply(&self.ctx);
+        }
     }
 
     /// Loads the platform searcher off the UI thread (the Everything DLL load may block).
@@ -780,9 +850,12 @@ impl AppState {
                 self.launch(dir, platform::terminal);
             }
             Action::ToggleTheme => {
-                self.theme = Theme::load(if self.theme.dark { "light" } else { "dark" });
+                let name = if self.theme.dark { "light" } else { "dark" };
+                self.settings.theme = name.to_owned();
+                self.theme = Theme::load(name);
                 self.theme.apply(&self.ctx);
             }
+            Action::Settings => self.settings_open = !self.settings_open,
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
                     return self.toasts.error(why);
