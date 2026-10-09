@@ -386,3 +386,20 @@ fn video_thumbnail_when_ffmpeg_is_available() {
     };
     assert_eq!(thumb.w, 32);
 }
+
+#[test]
+fn crlf_lines_keep_their_colours() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.toml");
+    std::fs::write(&path, "x = [\r\n    \"inner\",\r\n]\r\n").unwrap();
+    let Preview::Text { lines, .. } = preview(&temp_request(&path, "toml", 256)) else {
+        panic!("text expected");
+    };
+    let (color, _) = lines[1].iter().find(|(_, t)| t.contains("inner")).unwrap();
+    assert_ne!(
+        color[..3],
+        [43, 48, 59],
+        "string drawn in the background colour"
+    );
+    assert!(lines.iter().flatten().all(|(_, t)| !t.contains('\r')));
+}

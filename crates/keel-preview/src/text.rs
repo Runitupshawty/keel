@@ -46,6 +46,12 @@ pub(crate) fn render(req: &Request, ext: &str, size: u64) -> Preview {
     if ext == "md" {
         return Preview::Markdown(source);
     }
+    // syntect's newline grammars choke on a trailing '\r' (strings turn background-coloured).
+    let source = if source.contains('\r') {
+        source.replace("\r\n", "\n")
+    } else {
+        source
+    };
 
     let syntaxes = syntaxes();
     let syntax = syntaxes
