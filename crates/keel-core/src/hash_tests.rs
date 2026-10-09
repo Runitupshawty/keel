@@ -224,7 +224,7 @@ fn hashing_resumes_from_its_checkpoint() {
 
     let lib = Library::open(data.path(), "h").unwrap();
     lib.set_pause_on_battery(false);
-    // Resumed on open (a built-in kind).
+    assert_eq!(lib.jobs().resume_all().unwrap(), [id]);
     let info = lib.jobs().wait(id).unwrap();
     assert_eq!(info.status, JobStatus::Done, "{}", info.log);
     assert!(info.log.contains("resumed"));

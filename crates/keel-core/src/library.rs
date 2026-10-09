@@ -239,7 +239,8 @@ fn check_name(name: &str) -> Result<()> {
 
 impl Library {
     /// Opens (creating if needed) the library `name` under `<root>/library/<name>/`; `root` is
-    /// normally [`crate::data_dir`].
+    /// normally [`crate::data_dir`]. Jobs left by an earlier session wait for
+    /// `jobs().resume_all()` (call it after `set_router` and registering app job kinds).
     pub fn open(root: &Path, name: &str) -> Result<Library> {
         check_name(name)?;
         let dir = root.join("library").join(name);
@@ -282,10 +283,10 @@ impl Library {
             jobs: Jobs::new(shared.clone()),
             shared,
         };
-        // Built-in kinds resume here; others when the app registers them.
-        lib.jobs.register("index", IndexJob::restore)?;
-        lib.jobs.register("op", crate::plan::ExecJob::restore)?;
-        lib.jobs.register("hash", crate::HashJob::restore)?;
+        // Resumed by `jobs().resume_all()` once the app has set the router.
+        lib.jobs.register("index", IndexJob::restore);
+        lib.jobs.register("op", crate::plan::ExecJob::restore);
+        lib.jobs.register("hash", crate::HashJob::restore);
         Ok(lib)
     }
 

@@ -164,20 +164,28 @@ impl Jobs {
         }
     }
 
-    /// Makes `kind` restorable and resumes its queued/running jobs; returns their ids.
-    pub fn register(&self, kind: &str, restore: Restore) -> Result<Vec<JobId>> {
+    /// Makes `kind` restorable by `resume_all`.
+    pub fn register(&self, kind: &str, restore: Restore) {
         self.kinds.lock().insert(kind.to_owned(), restore);
-        let pending: Vec<(JobId, String)> = {
+    }
+
+    /// Resumes the queued and running jobs (left by an earlier session) of every registered
+    /// kind; returns their ids. Call it once the library is set up (router set, app kinds
+    /// registered): a job resumed earlier would run without them.
+    pub fn resume_all(&self) -> Result<Vec<JobId>> {
+        let pending: Vec<(JobId, String, String)> = {
             let conn = self.lib.db.get()?;
             let mut stmt = conn.prepare(
-                "SELECT id, state FROM job WHERE kind = ?1 AND status IN ('queued', 'running')
-                 ORDER BY id",
+                "SELECT id, kind, state FROM job WHERE status IN ('queued', 'running') ORDER BY id",
             )?;
-            let rows = stmt.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut resumed = Vec::new();
-        for (id, state) in pending {
+        for (id, kind, state) in pending {
+            let Some(restore) = self.kinds.lock().get(&kind).copied() else {
+                continue;
+            };
             if self.running.lock().contains_key(&id) {
                 continue;
             }
@@ -472,7 +480,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let out = data.path().join("out.txt");
         let lib = Library::open(data.path(), "j").unwrap();
-        lib.jobs().register("count", Count::restore).unwrap();
+        lib.jobs().register("count", Count::restore);
         let id = lib.jobs().spawn(count(&out, 300)).unwrap();
         crate::index::tests::eventually("some progress", || lines(&out).len() >= 30);
         drop(lib); // the "kill": stops at the next checkpoint
@@ -481,7 +489,8 @@ mod tests {
 
         let lib = Library::open(data.path(), "j").unwrap();
         assert_eq!(lib.jobs().info(id).unwrap().status, JobStatus::Running);
-        assert_eq!(lib.jobs().register("count", Count::restore).unwrap(), [id]);
+        lib.jobs().register("count", Count::restore);
+        assert_eq!(lib.jobs().resume_all().unwrap(), [id]);
         let info = lib.jobs().wait(id).unwrap();
         assert_eq!(info.status, JobStatus::Done);
         assert_eq!(info.progress, 1.0);
@@ -495,7 +504,7 @@ mod tests {
     fn cancelled_and_failed_jobs_end_and_stay_ended() {
         let data = tempfile::tempdir().unwrap();
         let lib = Library::open(data.path(), "j").unwrap();
-        lib.jobs().register("count", Count::restore).unwrap();
+        lib.jobs().register("count", Count::restore);
         let out = data.path().join("c.txt");
         let id = lib.jobs().spawn(count(&out, 100_000)).unwrap();
         crate::index::tests::eventually("started", || !lines(&out).is_empty());
@@ -517,12 +526,58 @@ mod tests {
         drop(lib);
 
         let lib = Library::open(data.path(), "j").unwrap();
-        assert!(lib
-            .jobs()
-            .register("count", Count::restore)
-            .unwrap()
-            .is_empty());
+        lib.jobs().register("count", Count::restore);
+        assert!(lib.jobs().resume_all().unwrap().is_empty());
         assert_eq!(lib.jobs().list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pending_jobs_wait_for_resume_all() {
+        let data = tempfile::tempdir().unwrap();
+        let router = Arc::new(Router::new());
+        router.register(Arc::new(crate::index::tests::fake(|path: &str| {
+            Ok(match path {
+                "/" => vec![("x.txt".into(), false, 1)],
+                _ => anyhow::bail!("no such folder {path}"),
+            })
+        })));
+        let def = crate::SourceDef {
+            label: "nas".into(),
+            root: keel_vfs::VPath::parse("fake://nas/").unwrap(),
+            kind: crate::SourceKind::Share,
+            include_hidden: false,
+            ignore: Vec::new(),
+        };
+        let lib = Library::open(data.path(), "j").unwrap();
+        let source = lib.add_source(def).unwrap();
+        // An index job left running by an earlier session.
+        let state = serde_json::to_string(&IndexJob {
+            source: source.clone(),
+        })
+        .unwrap();
+        lib.shared
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO job(kind, state, status, created, updated)
+                 VALUES ('index', ?1, 'running', 0, 0)",
+                [state],
+            )
+            .unwrap();
+        drop(lib);
+
+        let lib = Library::open(data.path(), "j").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let id = lib.jobs().list().unwrap()[0].id;
+        assert_eq!(lib.jobs().running(), 0, "nothing runs before resume_all");
+        assert!(lib.jobs().info(id).unwrap().log.is_empty());
+        // With the router the remote source needs, it resumes and succeeds.
+        lib.set_router(router);
+        assert_eq!(lib.jobs().resume_all().unwrap(), [id]);
+        let info = lib.jobs().wait(id).unwrap();
+        assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+        assert_eq!(lib.stats().records, 2);
     }
 
     #[test]
