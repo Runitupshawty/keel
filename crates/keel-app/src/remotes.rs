@@ -1120,8 +1120,23 @@ mod tests {
                 detail: "TCP connect failed".into(),
             })
             .unwrap();
-        let msg = state.rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        state.apply(msg);
+        // A real connect attempt started by `remote_tick` may race its own status events in
+        // ahead of the fake one; apply everything until the fake event has been seen.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let msg = state
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("fake status event never arrived");
+            let done = matches!(
+                &msg,
+                Msg::Remote(RemoteEvent::Status { detail, .. }) if detail == "TCP connect failed"
+            );
+            state.apply(msg);
+            if done {
+                break;
+            }
+        }
         assert_eq!(state.remotes.state("nas"), Some(ConnStatus::Failed));
         assert!(state
             .toasts
