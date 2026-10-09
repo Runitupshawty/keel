@@ -739,12 +739,15 @@ fn apply_change_creates_moves_and_removes() {
 }
 
 pub(crate) fn eventually(what: &str, check: impl Fn() -> bool) {
+    // Idle-priority jobs crawl on shared CI runners; 15 s is the target on a developer box.
+    let limit = if std::env::var_os("CI").is_some() {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(15)
+    };
     let start = Instant::now();
     while !check() {
-        assert!(
-            start.elapsed() < Duration::from_secs(15),
-            "timed out: {what}"
-        );
+        assert!(start.elapsed() < limit, "timed out: {what}");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
