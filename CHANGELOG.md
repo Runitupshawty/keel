@@ -2,13 +2,68 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-09
+
+Polish release: profiles, icon themes, Miller columns, a drop zone, a command line with single instance and a global hotkey, drag-out to other Windows apps, and Keel's own search index on Windows.
+
+### Added
+
+- Columns view (per pane): column 0 is the tab's folder, a selected folder opens in the next column and a selected file is previewed in the last. Left/Right move between columns, Enter opens a folder, Up and Backspace step back; column widths are draggable and saved in settings.
+- Drop zone: a strip above the status bar (Ctrl+Shift+Z) that holds a list of paths across navigation. Drop rows on it or press Ctrl+Shift+S to stash the selection; Paste here, Move here and Clear act on it. The stash is saved with the session (50,000 items at most).
+- Profiles: Settings → Profiles creates (a copy of the current settings), renames, deletes (to the OS trash) and switches profiles; the command palette offers "Switch profile: <name>". Each profile has its own `config.toml` and session (tabs, views, column chains, drop zone).
+- Icon themes: Settings → Icons lists the built-in icons and installed themes, previews them, switches at runtime and removes them. "Install from VS Code Marketplace…" downloads an icon theme extension by id (`publisher.name`), shows its license and installs only after "I accept".
+- Command line: `keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]`, plus `--version` and `--help`.
+- Single instance per user and profile: a later `keel` hands its folder or search to the running window and exits (setting "Reuse the running window", on by default; `--new-window` opts out).
+- Global hotkey (default Ctrl+Shift+Alt+K, Settings → General, empty = off) brings Keel to the front from any app, including a minimized window.
+- Drag-out (Windows): dragging rows out of the Keel window onto Explorer or another app starts a native file drag (copy by default).
+- Own search index (Windows): NTFS MFT and USN journal indexer used when Everything is not running; substring, glob and `regex:` queries, `folder:` and `in:<path>` filters. "Index all drives (administrator)" in Settings → General builds the full index through a one-off elevated helper (`keel --index-service`, hidden); the index files stay owned by the user. The status bar names the active search backend.
+- Animations (pane split, preview panel, drop zone, toasts, selection highlight) with a "Reduce motion" setting that makes them instant.
+- Optional "One at a time per drive" transfer queue (Settings → General).
+- Properties dialog on every OS (plus Explorer's sheet on Windows) and an Open with picker on Linux.
+- Path box: relative paths, `~` and `~/x` (home folder), `X:dir` (means `X:\dir`) and file paths (opens the folder with the file selected).
+- Copies use reflinks (APFS, Btrfs, XFS clones) before the chunked copy on macOS and Linux.
+
+### Changed
+
+- The folder-walk search (Linux, and Windows home-folder walk) matches regex queries with a real regex instead of plain text.
+- Text previews decode non-UTF-8 files as Windows-1252 instead of showing U+FFFD.
+- Thumbnails render at physical pixels (sharp on high-DPI screens); queued thumbnails that scroll away are cancelled; PDF and video thumbnails skip the 64 MiB preview cap.
+- Name-sorted listings are sorted on the listing worker: refreshing a 100,000-entry folder went from 48 ms to about 1 ms (release build).
+- AltGr text starts the filter; the hidden-files shortcut on macOS is Cmd+Shift+. and labels say Cmd there.
+- The sidebar hides pseudo and read-only mounts on macOS and Linux. Drive and folder listings time out instead of spinning forever.
+- Jobs report skipped items. Clipboard writes run on a worker with retries and a toast on failure.
+- Preview renders that hang are abandoned after 15 s; the preview cache has a 256 MB budget; PDFs re-render sharp when the panel is widened; tables show at most 64 columns.
+- `THIRD_PARTY.md` lists the new dependencies.
+
+### Fixed
+
+- Hidden tabs and pane 1 refresh when shown; renaming the open folder is noticed; `move_tab` keeps the right tab active.
+- Case-only renames work on case-insensitive filesystems on macOS and Linux.
+- The one-transfer-per-drive queue is first-in first-out and keys drives by their real volume (subst drives, junctions and mount points included), so no waiter starves.
+- Columns view: each folder is listed once per change however many columns and tabs show it; a hung listing stops with an error instead of being asked again; every visible column is watched; context menus act on their own column.
+- Drop zone: Move here removes only the items that actually moved (a cancelled conflict, Skip or a failed job keeps them); a stash mixing archive entries and plain files pastes correctly; a hung stat no longer freezes the missing-item check.
+- Switching profiles applies the target profile's views, column chains and drop zone instead of writing the old ones into its session.
+- Global hotkey: needs a modifier besides Shift, and the default no longer uses Ctrl+Alt alone (that is AltGr on many keyboard layouts). No "hotkey taken" toast from a process that is not the single instance.
+- Drag-out validates the data object and never starts a drag whose mouse button is already up; the main window is found by its own window class, not the first titled window.
 
 ### Security
 
 - Icon themes: SVG icons from the VS Code Marketplace are checked when a theme is installed and again when it loads. An icon is refused (and the number skipped is reported) when it has `<image>`, `<script>` or `<foreignObject>`, an entity declaration, an `href` that is not `#id` or `data:`, CSS `@import`, a `url()` to anything but `#id`, or CSS escapes. Before, an icon could make the SVG renderer read a local file or a `\\server\share` path, leaking the Windows NTLM hash and freezing the window. A theme may hold at most 10,000 icons and 64 MB of them; the license shown is cut at 64 KB.
 - Single instance: only the same user can hand Keel a folder or search. On Windows the pipe's access list grants only the current user, the client refuses impersonation and checks that the pipe is served by a process of the same user (and lets only that process take the foreground). On macOS and Linux the socket lives in a folder only the user can enter (`$XDG_RUNTIME_DIR/keel-<uid>` or `<temp>/keel-<uid>`, mode 0700), and both ends check the peer's user id. Socket names hash the user name, so non-ASCII user names no longer share one name. Relative paths sent by another process are refused.
 - Single instance: a second `keel` no longer hangs, with no window, when the running instance is busy or another client connected and sent nothing. Connecting and the answer share a 3 s limit; the running instance reads each client on its own thread, for at most 2 s and 64 KiB.
+
+### Known limitations
+
+- Drag-out to other apps works on Windows only; on macOS and Linux dragging out of the window does nothing yet.
+- The single-instance code for macOS and Linux (socket in a private folder, peer user check) and the global hotkey on those systems compile and pass CI, but have not been run on real hardware. The Spotlight and `locate` search backends are still unverified there too.
+- The own search index is Windows-only and needs NTFS volumes. Without a saved full index and without administrator rights it indexes the home folder (recursively) plus one level of each drive's root; run "Index all drives (administrator)" to cover everything.
+- Everything, when running, is still preferred over Keel's own index; the "Index all drives" button is greyed out then.
+- A stat on a hung network, SFTP or cloud path runs on its own thread that is given up on after a timeout; while a host stays dead, abandoned threads can accumulate until the calls return.
+- Switching profile at runtime does rebind the single-instance name to the new profile, so a later `keel --profile <name>` reaches the right window. If another Keel already holds that profile's name, the switch is refused with a toast.
+- Icon themes: only SVG and PNG icons are used, and an SVG that references anything outside itself is refused, so a theme can show fewer icons than in VS Code (the number skipped is reported on install). Font-based icon themes are not supported.
+- The Linux "cut" flag for the file clipboard is still not set (other apps see a copy).
+- Builds are not code-signed or notarized.
+- Earlier known limitations still apply unless listed here.
 
 ## [0.3.0] - 2026-10-09
 
@@ -87,5 +142,6 @@ First release: the Phase 1 core on Windows, macOS and Linux. The Windows build l
 - On macOS/Linux the sidebar lists pseudo and read-only mounts; apps launched from Keel stay as zombie processes until Keel exits.
 - Builds are not code-signed or notarized.
 
+[0.5.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.5.0
 [0.2.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Runitupshawty/keel/releases/tag/v0.1.0

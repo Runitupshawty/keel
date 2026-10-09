@@ -6,11 +6,11 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.2.0)
+## What works (v0.5.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
-- **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running (optional: without it Keel works, only the search tab is unavailable and Ctrl+P walks your home folder), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
-- **Fuzzy folder jump**: Ctrl+P matches against every folder Everything knows (or a walk of your home folder).
+- **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
+- **Fuzzy folder jump**: Ctrl+P matches against every folder the search index knows (or a walk of your home folder).
 - **Command palette**: Ctrl+Shift+P lists every action by name with its shortcut.
 - **Filter by typing**: start typing in a list to filter it; Esc clears.
 - **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb, ods), Word documents (docx), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
@@ -19,12 +19,68 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](#remotes-over-ssh).
+- **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets) as folders; sign in with your own OAuth client id; tokens stay in the OS keychain. See [Cloud accounts](#cloud-accounts-bring-your-own-client-id).
+- **Columns view**: Miller columns per pane, plus a **drop zone** strip that carries files across navigation. See [Columns view and drop zone](#columns-view-and-drop-zone).
+- **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](#profiles).
+- **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](#icon-themes).
+- **Command line, single instance and a global hotkey**: `keel <folder>` opens in the running window; Ctrl+Shift+Alt+K brings Keel forward. See [Command line](#command-line).
+- **Drag out** of Keel onto other apps (Windows).
+- **Own search index** on Windows, so search works without Everything. See [Search without Everything](#search-without-everything).
 - **Open, open with, reveal** in the system file manager, open a terminal in the current folder.
 - **Themes**: dark and light (a TOML file in `<config>/themes/dark.toml` or `light.toml` overrides the built-in colours). One built-in file icon theme.
 - **Settings** (Ctrl+,): theme, hidden files, dual pane, preview panel, maximum preview size. Open tabs are restored on the next start; a local folder that was deleted falls back to your home folder, while a tab on an unreachable network share stays open and shows the error. A `config.toml` or `session.json` that cannot be read is kept as `config.toml.bad` / `session.json.bad`.
 - **Crash safety**: a bug inside the UI is written to `crash.log`, the panes are reset and Keel keeps running.
 
 Settings live in `%APPDATA%\Keel` (Windows), `~/Library/Application Support/Keel` (macOS) or `~/.config/keel` (Linux); session and `crash.log` in `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel` or `~/.cache/keel`. Set `KEEL_CONFIG_DIR` to keep settings, session and `crash.log` in one folder instead (the window size and position that eframe saves in `app.ron` stay in eframe's own folder).
+
+## Columns view and drop zone
+
+Switch a pane to **Columns** from the view buttons in the pane header. Column 0 is the tab's folder; selecting a folder lists it in the next column, and selecting a file shows its preview in the last one. Left/Right move between columns, Enter opens a folder, Up or Backspace step back one column, and the column dividers can be dragged (widths are saved). All file actions work on the column you are in.
+
+The **drop zone** is a strip above the status bar (Ctrl+Shift+Z shows or hides it; it also appears while you drag rows). Drop rows on it, or press Ctrl+Shift+S to stash the selection, then navigate anywhere and use **Paste here** (copy) or **Move here** into the active pane's folder; **Clear** empties it. Items that no longer exist are greyed and skipped, and moved items leave the strip only once they have really moved. The stash is saved with the session. "Reduce motion" in Settings → General turns off the animations.
+
+## Profiles
+
+A profile is a separate settings file and session (tabs, views, drop zone). Settings → Profiles creates one (a copy of the current settings), renames, deletes (to the OS trash) and switches; the command palette has "Switch profile: <name>". `keel --profile <name>` starts in a profile. Files: `<config>/profiles/<name>/config.toml`; the session is in the cache folder (`profiles/<name>/session.json`, or `session.json` for `default`).
+
+## Icon themes
+
+Settings → Icons lists the built-in icons and any installed theme, previews them and switches at runtime. To install one, type the extension id from the Visual Studio Marketplace (`publisher.name`, for example `PKief.material-icon-theme`) and press **Install from VS Code Marketplace…**. Keel downloads the package, shows its license and installs only after you press **I accept**. Themes are unpacked into your own config folder; Keel does not bundle or redistribute them.
+
+Only SVG and PNG icons are used. An SVG that references anything outside itself (an `<image>`, `<script>` or `<foreignObject>`, an external `href` or `url()`, CSS `@import`, entities) is refused, both at install time and when the theme loads, and the number skipped is reported. This stops a theme from making Keel read local files or network shares. A theme holds at most 10,000 icons and 64 MB.
+
+## Search without Everything
+
+On Windows, when Everything is not running, Keel uses its own index: it reads the NTFS file table and keeps it current from the USN journal, and stores it in the cache folder. Queries are substring, glob (`*.pdf`) or `regex:`, with `folder:` and `in:<path>` filters.
+
+Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out. macOS and Linux keep Spotlight, `locate` and the folder walk.
+
+## Command line
+
+```
+keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `FOLDER` | Open this folder (a file opens its folder with the file selected). Relative paths are resolved against where you ran `keel` |
+| `--new-window` | Start a separate window even if Keel is already running |
+| `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
+| `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
+| `--version`, `--help` | Print and exit |
+
+By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| Ctrl+, | Settings |
+| Ctrl+Shift+Z | Show or hide the drop zone |
+| Ctrl+Shift+S | Stash the selection in the drop zone |
+| Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
+
+The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
 
 ## Archives
 
@@ -136,16 +192,14 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 3 are released (the usable core, archives and terminal, SFTP remotes). Next:
+Phases 1 to 5 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish). Next:
 
-4. Cloud storage: Google Drive, Dropbox, S3/B2.
-5. Polish: profiles, icon-theme manager, Miller columns, drag-out to other apps, global hotkey, own indexer.
 6. Library core: an index of every file across sources, content hashes, duplicate finder, tags and saved views.
 7. Media and protection: fast photo grid, video scrubbing, EXIF, redundancy and backup state per file.
 8. Devices: pairing and file transfer between your machines, a headless daemon and CLI.
 9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
 
-Known limitations of v0.2.0 are listed in [CHANGELOG.md](CHANGELOG.md).
+Known limitations of v0.5.0 are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
