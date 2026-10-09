@@ -2,6 +2,7 @@
 //! `source.db` per source under `<library>/sources/<source id>/`.
 
 use crate::db::{Pool, Store};
+use crate::jobs::{IndexJob, Job, JobId, Jobs};
 use anyhow::{Context, Result};
 use keel_vfs::{Router, VPath};
 use parking_lot::{Mutex, RwLock};
@@ -186,6 +187,7 @@ pub struct LibraryStats {
     pub bytes: u64,
     /// Distinct content ids across sources (filled by hashing).
     pub unique_content: u64,
+    pub running_jobs: usize,
 }
 
 /// State shared with jobs and watchers.
@@ -209,6 +211,7 @@ pub struct Library {
     pub name: String,
     root: PathBuf,
     pub(crate) shared: Arc<Shared>,
+    jobs: Jobs,
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -254,16 +257,21 @@ impl Library {
                 def,
             )?));
         }
-        Ok(Library {
+        let shared = Arc::new(Shared {
+            db,
+            sources: RwLock::new(sources),
+            router: RwLock::new(Arc::new(Router::new())),
+        });
+        let lib = Library {
             id: LibraryId(id),
             name: name.to_owned(),
             root: dir,
-            shared: Arc::new(Shared {
-                db,
-                sources: RwLock::new(sources),
-                router: RwLock::new(Arc::new(Router::new())),
-            }),
-        })
+            jobs: Jobs::new(shared.clone()),
+            shared,
+        };
+        // Built-in kinds resume here; others when the app registers them.
+        lib.jobs.register("index", IndexJob::restore)?;
+        Ok(lib)
     }
 
     /// Libraries under [`crate::data_dir`].
@@ -371,6 +379,16 @@ impl Library {
         Ok(())
     }
 
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
+    }
+
+    /// Indexes a source as a durable job (resumed after a restart).
+    pub fn index(&self, id: &SourceId) -> Result<JobId> {
+        anyhow::ensure!(self.source(id).is_some(), "no source {id}");
+        self.jobs.spawn(Box::new(IndexJob { source: id.clone() }))
+    }
+
     pub fn sources(&self) -> Vec<SourceSummary> {
         self.shared
             .sources
@@ -403,6 +421,7 @@ impl Library {
                 .iter()
                 .filter(|s| matches!(*s.status.read(), SourceStatus::Offline { .. }))
                 .count(),
+            running_jobs: self.jobs.running(),
             ..LibraryStats::default()
         };
         let counts = |s: &Source| -> Result<(u64, u64, u64)> {

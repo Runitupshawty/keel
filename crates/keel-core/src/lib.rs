@@ -6,9 +6,11 @@
 mod db;
 mod fsid;
 mod index;
+mod jobs;
 mod library;
 
 pub use index::{ChangeEvent, IndexProgress, Indexer, WatchHandle, BATCH, POLL_INTERVAL};
+pub use jobs::{Job, JobCtx, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, Source, SourceDef, SourceId, SourceKind,
     SourceStatus, SourceSummary,
