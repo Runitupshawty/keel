@@ -67,6 +67,12 @@ Polish release: profiles, icon themes, Miller columns, a drop zone, a command li
 
 ## [0.3.0] - 2026-10-09
 
+### Added
+- Cloud accounts as folders: Google Drive, Dropbox and any S3-compatible bucket (Backblaze B2, AWS, MinIO). Sign in with your own OAuth client id (PKCE loopback flow); tokens and S3 keys live only in the OS keychain.
+- Settings → Cloud: add/edit/remove accounts, per-account client id override, "Sign in again".
+- Sidebar "Cloud" section with status dots; copy, move and delete between local, SFTP and cloud through the normal paste flow; per-service delete semantics (Drive trash, Dropbox recoverable delete, S3 permanent) with matching confirm dialogs.
+- Google Docs-native files and Drive shortcuts are skipped in listings; rate limits are retried with backoff; uploads to Drive/Dropbox are single requests capped at 256 MB / 150 MB.
+
 ### Known limitations
 
 - Cloud accounts show no storage quota or free space anywhere yet.
