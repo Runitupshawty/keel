@@ -234,6 +234,8 @@ pub struct AppState {
     // --- Task 32 ---
     /// Media view sidecar textures and their workers (`media.rs`).
     pub media: crate::media::Media,
+    /// The full-window media viewer, while open.
+    pub viewer: Option<crate::media_viewer::Viewer>,
 }
 
 impl AppState {
@@ -347,6 +349,7 @@ impl AppState {
             dropzone: Default::default(),
             library,
             media,
+            viewer: None,
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -1265,6 +1268,10 @@ impl AppState {
         if self.writes_into_archive(p, &action) {
             return self.toasts.error(READ_ONLY);
         }
+        // --- Task 32 ---: Space / Enter on a photo or video in the media view.
+        let Some(action) = crate::media_viewer::intercept(self, p, action) else {
+            return;
+        };
         // --- Task 23 ---: columns view navigation.
         let Some(action) = crate::view_columns::intercept(self, p, action) else {
             return;
@@ -1946,7 +1953,7 @@ impl AppState {
         }
     }
 
-    fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
+    pub(crate) fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
         worker::spawn_local(
             self.router.clone(),
             path,

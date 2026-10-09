@@ -111,7 +111,7 @@ fn queue_drops_requests_that_scrolled_away() {
     assert_eq!(q.queued(), 1);
     // Two views (pane grid and viewer) want x; one drops it, the other keeps it.
     q.want(0, vec![("x", 3, ())]);
-    q.want(2, vec![("x", 0, ())]);
+    q.want(VIEWER_SLOT, vec![("x", 0, ())]);
     q.want(0, vec![]);
     assert_eq!(q.try_pop(Stage::Load).unwrap().0, "x");
     // Closing wakes and ends the workers.
@@ -152,6 +152,12 @@ fn cover_crops_to_the_centred_square() {
     );
     let uv = cover_uv(vec2_(100.0, 400.0), FULL_UV);
     assert_eq!((uv.min.y, uv.max.y), (0.375, 0.625));
+    assert_eq!(fit_scale(vec2_(4000.0, 3000.0), vec2_(800.0, 800.0)), 0.2);
+    assert_eq!(
+        fit_scale(vec2_(40.0, 30.0), vec2_(800.0, 800.0)),
+        1.0,
+        "never enlarged"
+    );
 }
 
 #[test]

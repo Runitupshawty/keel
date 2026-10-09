@@ -28,7 +28,8 @@ pub const TEXTURE_CACHE: usize = 4000;
 pub const LOADERS: usize = 2;
 /// Threads making missing sidecars (decode, ffmpeg).
 pub const MAKERS: usize = 4;
-/// `Media::want` slots: pane 0's grid, pane 1's grid, the viewer (next commit).
+/// `Media::want` slots: pane 0's grid, pane 1's grid, the viewer.
+pub const VIEWER_SLOT: usize = 2;
 const SLOTS: usize = 3;
 /// Frames per video strip (keel-core's `media::STRIP_FRAMES`, not exported).
 pub const STRIP_FRAMES: u32 = 20;
@@ -996,6 +997,11 @@ pub fn cover_uv(size: Vec2, uv: Rect) -> Rect {
             pos2(uv.max.x, uv.max.y - cut),
         )
     }
+}
+
+/// Fits `size` into `area` without enlarging.
+pub fn fit_scale(size: Vec2, area: Vec2) -> f32 {
+    (area.x / size.x).min(area.y / size.y).min(1.0)
 }
 
 pub const FULL_UV: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
