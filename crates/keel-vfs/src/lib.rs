@@ -13,7 +13,7 @@ pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, watch, LocalProvider};
 pub use provider::{Caps, Provider};
 pub use router::Router;
-pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost};
+pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
 pub mod ops;
 #[cfg(not(windows))]
 mod ops_unix;

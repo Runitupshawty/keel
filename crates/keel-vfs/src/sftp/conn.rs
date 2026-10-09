@@ -91,6 +91,7 @@ impl client::Handler for Client {
 pub(super) struct Session {
     pub raw: RawSftpSession,
     pub ssh: client::Handle<Client>,
+    pub posix_rename: bool,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -244,8 +245,12 @@ impl ConnPool {
             channel.request_subsystem(true, "sftp").await?;
             let raw = RawSftpSession::new(channel.into_stream());
             raw.set_timeout(timeout.as_secs().max(1));
-            raw.init().await?;
-            Ok(Arc::new(Session { raw, ssh }))
+            let version = raw.init().await?;
+            Ok(Arc::new(Session {
+                raw,
+                ssh,
+                posix_rename: version.extensions.contains_key("posix-rename@openssh.com"),
+            }))
         })
         .await
         .context("SSH authentication or SFTP start timed out")?

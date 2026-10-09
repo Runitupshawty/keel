@@ -59,7 +59,7 @@ pub fn copy_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer(src, dst_dir, on_conflict, progress, cancel, false)
+    transfer_local(src, dst_dir, on_conflict, progress, cancel, false)
 }
 
 /// Same volume: rename. Other volume: per file, copy with progress, then delete that source
@@ -71,7 +71,7 @@ pub fn move_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer(src, dst_dir, on_conflict, progress, cancel, true)
+    transfer_local(src, dst_dir, on_conflict, progress, cancel, true)
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
@@ -87,7 +87,7 @@ fn canonical_key(path: &Path) -> Result<PathBuf> {
     Ok(p)
 }
 
-fn transfer(
+fn transfer_local(
     src: &[PathBuf],
     dst_dir: &Path,
     conflict: Conflict,
@@ -290,6 +290,317 @@ struct Partial(PathBuf);
 impl Drop for Partial {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Worker-thread transfer with a 1 MiB buffer, staged writes and verified moves.
+pub fn transfer(
+    src: &[crate::VPath],
+    dst_dir: &crate::VPath,
+    mv: bool,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+) -> Result<()> {
+    if dst_dir.scheme == "file" && src.iter().all(|p| p.scheme == "file") {
+        let paths = src
+            .iter()
+            .map(|p| p.to_local_path().context("invalid local source"))
+            .collect::<Result<Vec<_>>>()?;
+        let dst = dst_dir
+            .to_local_path()
+            .context("invalid local destination")?;
+        return if mv {
+            move_local(&paths, &dst, on_conflict, progress, cancel)
+        } else {
+            copy_local(&paths, &dst, on_conflict, progress, cancel)
+        };
+    }
+    check_cancel(cancel)?;
+    let target_provider = routed(router, dst_dir)?;
+    let dst = target_provider.stat(dst_dir)?;
+    anyhow::ensure!(
+        dst.kind == crate::Kind::Dir && !dst.is_link,
+        "destination must be a real directory: {}",
+        dst_dir.display()
+    );
+    let dst_key = target_provider.canonicalize(dst_dir)?;
+    let mut roots = Vec::new();
+    let mut state = Progress {
+        done_bytes: 0,
+        total_bytes: 0,
+        current: String::new(),
+        done_items: 0,
+        total_items: 0,
+    };
+    for source in src {
+        let provider = routed(router, source)?;
+        let entry = provider.stat(source)?;
+        anyhow::ensure!(
+            !source.name().is_empty() && !entry.is_link && entry.kind != crate::Kind::Symlink,
+            "unsupported source: {}",
+            source.display()
+        );
+        let key = provider.canonicalize(source)?;
+        anyhow::ensure!(
+            !within(&dst_key, &key),
+            "cannot transfer a folder into itself: {}",
+            source.display()
+        );
+        for previous in &roots {
+            anyhow::ensure!(
+                !within(&key, previous) && !within(previous, &key),
+                "overlapping source selection"
+            );
+        }
+        roots.push(key);
+        scan_remote(&*provider, source, &mut state, cancel, 0)?;
+    }
+    let mut job = ProviderJob {
+        router,
+        state,
+        conflict: on_conflict,
+        progress,
+        cancel,
+        moving: mv,
+    };
+    for source in src {
+        job.node(source, &dst_dir.join(source.name()), 0)?;
+    }
+    Ok(())
+}
+
+fn routed(
+    router: &crate::Router,
+    path: &crate::VPath,
+) -> Result<std::sync::Arc<dyn crate::Provider>> {
+    router
+        .provider_for(path)
+        .with_context(|| format!("no provider: {}", path.display()))
+}
+fn within(path: &crate::VPath, root: &crate::VPath) -> bool {
+    if path.scheme != root.scheme || path.authority != root.authority {
+        return false;
+    }
+    let (mut p, mut r) = (
+        path.path.clone(),
+        root.path.trim_end_matches('/').to_owned(),
+    );
+    if cfg!(windows) && path.scheme == "file" {
+        p.make_ascii_lowercase();
+        r.make_ascii_lowercase();
+    }
+    p == r || p.starts_with(&format!("{r}/"))
+}
+fn scan_remote(
+    provider: &dyn crate::Provider,
+    p: &crate::VPath,
+    state: &mut Progress,
+    cancel: &AtomicBool,
+    depth: usize,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    anyhow::ensure!(depth < 256, "directory nesting limit: {}", p.display());
+    let e = provider.stat(p)?;
+    anyhow::ensure!(
+        !e.is_link && e.kind != crate::Kind::Symlink,
+        "copy/move of links unsupported: {}",
+        p.display()
+    );
+    state.total_items = state.total_items.checked_add(1).context("too many items")?;
+    if e.kind == crate::Kind::Dir {
+        for child in provider.list(p)? {
+            scan_remote(provider, &child.path, state, cancel, depth + 1)?;
+        }
+    } else {
+        state.total_bytes = state
+            .total_bytes
+            .checked_add(e.size)
+            .context("size overflow")?;
+    }
+    Ok(())
+}
+fn maybe_stat(provider: &dyn crate::Provider, p: &crate::VPath) -> Result<Option<crate::Entry>> {
+    match provider.stat(p) {
+        Ok(e) => Ok(Some(e)),
+        Err(e)
+            if e.downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+struct ProviderJob<'a> {
+    router: &'a crate::Router,
+    state: Progress,
+    conflict: Conflict,
+    progress: &'a dyn Fn(Progress),
+    cancel: &'a AtomicBool,
+    moving: bool,
+}
+impl ProviderJob<'_> {
+    fn node(
+        &mut self,
+        source: &crate::VPath,
+        proposed: &crate::VPath,
+        depth: usize,
+    ) -> Result<bool> {
+        use crate::Kind;
+        check_cancel(self.cancel)?;
+        anyhow::ensure!(depth < 256, "directory nesting limit");
+        let src = routed(self.router, source)?;
+        let dst = routed(self.router, proposed)?;
+        let before = src.stat(source)?;
+        anyhow::ensure!(
+            !before.is_link && before.kind != Kind::Symlink,
+            "source is a link: {}",
+            source.display()
+        );
+        let mut target = proposed.clone();
+        let existing = maybe_stat(&*dst, &target)?;
+        if let Some(e) = &existing {
+            let key = src.canonicalize(source)?;
+            let target_key = dst.canonicalize(&target)?;
+            anyhow::ensure!(
+                key != target_key,
+                "cannot copy onto itself: {}",
+                source.display()
+            );
+            if self.conflict == Conflict::Skip
+                && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
+            {
+                return Ok(false);
+            }
+            if self.conflict == Conflict::RenameNew {
+                let parent = target.parent().context("target has no parent")?;
+                let (stem, ext) = if before.kind == Kind::Dir {
+                    (target.name(), None)
+                } else {
+                    target
+                        .name()
+                        .rsplit_once('.')
+                        .filter(|(s, _)| !s.is_empty())
+                        .map(|(s, e)| (s, Some(e)))
+                        .unwrap_or((target.name(), None))
+                };
+                for n in 2u64.. {
+                    let name = match ext {
+                        Some(ext) => format!("{stem} ({n}).{ext}"),
+                        None => format!("{stem} ({n})"),
+                    };
+                    let candidate = parent.join(&name);
+                    if maybe_stat(&*dst, &candidate)?.is_none() {
+                        target = candidate;
+                        break;
+                    }
+                }
+            } else {
+                anyhow::ensure!(
+                    !e.is_link && (e.kind == Kind::Dir) == (before.kind == Kind::Dir),
+                    "unsafe destination: {}",
+                    target.display()
+                );
+            }
+        }
+        if before.kind == Kind::Dir {
+            if maybe_stat(&*dst, &target)?.is_none() {
+                dst.mkdir(&target)?;
+            }
+            let mut complete = true;
+            for child in src.list(source)? {
+                complete &= self.node(&child.path, &target.join(&child.name), depth + 1)?;
+            }
+            if self.moving && complete {
+                src.remove_empty_dir(source)?;
+            }
+            self.state.done_items += 1;
+            (self.progress)(self.state.clone());
+            return Ok(complete);
+        }
+        let partial = target
+            .parent()
+            .context("missing parent")?
+            .join(&format!("{}.keel-partial", target.name()));
+        let mut reader = src.read(source)?;
+        let mut writer = dst.create_new(&partial)?;
+        let mut guard = ProviderPartial {
+            provider: dst.clone(),
+            path: Some(partial.clone()),
+        };
+        let mut buffer = vec![0; 1024 * 1024];
+        let mut copied = 0u64;
+        loop {
+            check_cancel(self.cancel)?;
+            let n = reader.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buffer[..n])?;
+            copied += n as u64;
+            let mut progress = self.state.clone();
+            progress.done_bytes += copied;
+            progress.current = source.display();
+            (self.progress)(progress);
+        }
+        check_cancel(self.cancel)?;
+        writer.flush()?;
+        drop(writer);
+        let after = src.stat(source)?;
+        anyhow::ensure!(
+            copied == before.size
+                && after.size == before.size
+                && after.modified == before.modified
+                && !after.is_link
+                && dst.stat(&partial)?.size == copied,
+            "source changed or copy size mismatch: {}",
+            source.display()
+        );
+        check_cancel(self.cancel)?;
+        if self.conflict == Conflict::Overwrite {
+            if let Some(e) = maybe_stat(&*dst, &target)? {
+                anyhow::ensure!(
+                    !e.is_link && e.kind == Kind::File,
+                    "unsafe overwrite: {}",
+                    target.display()
+                );
+            }
+            dst.rename_replace(&partial, &target)?;
+        } else {
+            dst.rename_noreplace(&partial, &target)?;
+        }
+        guard.path = None;
+        anyhow::ensure!(
+            dst.stat(&target)?.size == copied,
+            "destination verification failed: {}",
+            target.display()
+        );
+        if self.moving {
+            check_cancel(self.cancel)?;
+            src.remove(source)?;
+        }
+        self.state.done_bytes += copied;
+        self.state.done_items += 1;
+        self.state.current = source.display();
+        (self.progress)(self.state.clone());
+        Ok(true)
+    }
+}
+/// This job's own staged file; removed on every early exit, disarmed once renamed into place.
+struct ProviderPartial {
+    provider: std::sync::Arc<dyn crate::Provider>,
+    path: Option<crate::VPath>,
+}
+impl Drop for ProviderPartial {
+    fn drop(&mut self) {
+        match self.path.as_ref().map(|p| (p, p.to_local_path())) {
+            // A local partial is permanently deleted, not sent to the trash.
+            Some((_, Some(local))) => drop(fs::remove_file(local)),
+            Some((p, None)) => drop(self.provider.remove(p)),
+            None => {}
+        }
     }
 }
 
