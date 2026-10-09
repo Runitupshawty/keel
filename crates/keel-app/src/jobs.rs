@@ -8,7 +8,7 @@ use crossbeam_channel::Sender;
 use keel_vfs::{Conflict, Progress, Router, VPath};
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +25,7 @@ pub struct Job {
     pub cancel: Arc<AtomicBool>,
     pub done: Option<anyhow::Result<()>>,
     finished: Option<Instant>,
+    remote: bool,
 }
 
 /// The error a job returns when its Cancel flag stopped it.
@@ -57,11 +58,12 @@ impl Job {
     }
 }
 
-/// A copy, move or extraction waiting for its conflict policy.
+/// A copy, move or extraction waiting for its conflict policy (local or remote on either
+/// side; extraction only into local folders).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
-    pub src: Vec<PathBuf>,
-    pub dst: PathBuf,
+    pub src: Vec<VPath>,
+    pub dst: VPath,
     pub mv: bool,
     /// Extract from this archive instead of copying `src` (then empty).
     pub extract: Option<ArchiveSrc>,
@@ -105,16 +107,12 @@ impl ArchiveSrc {
 /// Where a transfer's sources come from.
 pub enum Source {
     /// Dropped or dragged paths; `true` = move.
-    Paths(Vec<PathBuf>, bool),
+    Paths(Vec<VPath>, bool),
     /// Ctrl+V: resolved against the system clipboard on the planning thread.
     Clipboard(Clipboard),
     /// Extract (Ctrl+V of entries copied inside an archive when `clipboard`, else a
     /// context-menu extract or a drag out of an archive). Clashes are listed from the archive.
-    Archive {
-        src: ArchiveSrc,
-        router: Arc<Router>,
-        clipboard: bool,
-    },
+    Archive { src: ArchiveSrc, clipboard: bool },
 }
 
 pub struct Jobs {
@@ -132,59 +130,42 @@ impl Jobs {
         }
     }
 
-    pub fn copy(
-        &mut self,
-        src: Vec<PathBuf>,
-        dst: PathBuf,
-        conflict: Conflict,
-        tx: Sender<Msg>,
-    ) -> u64 {
-        let title = format!("Copying {} to {}", items(src.len()), dst.display());
-        self.spawn(title, tx, move |report, cancel| {
-            keel_vfs::copy_local(&src, &dst, conflict, report, cancel)
-        })
-    }
-
-    pub fn mv(
-        &mut self,
-        src: Vec<PathBuf>,
-        dst: PathBuf,
-        conflict: Conflict,
-        tx: Sender<Msg>,
-    ) -> u64 {
-        let title = format!("Moving {} to {}", items(src.len()), dst.display());
-        self.spawn(title, tx, move |report, cancel| {
-            keel_vfs::move_local(&src, &dst, conflict, report, cancel)
-        })
-    }
-
+    /// Copy or move through `ops::transfer`: local to local takes the OS fast path, anything
+    /// involving a remote host streams with staged writes. Extractions go through `extract`.
     pub fn start(
         &mut self,
         t: Transfer,
         conflict: Conflict,
-        router: &Arc<Router>,
+        router: Arc<Router>,
         tx: Sender<Msg>,
     ) -> u64 {
         if let Some(src) = t.extract {
-            self.extract(src, t.dst, conflict, router.clone(), tx)
-        } else if t.mv {
-            self.mv(t.src, t.dst, conflict, tx)
-        } else {
-            self.copy(t.src, t.dst, conflict, tx)
+            return self.extract(src, t.dst, conflict, router, tx);
         }
+        let verb = if t.mv { "Moving" } else { "Copying" };
+        let title = format!("{verb} {} to {}", items(t.src.len()), t.dst.display());
+        let remote = t.src.iter().chain([&t.dst]).any(|p| p.scheme == "sftp");
+        let id = self.spawn(title, tx, move |report, cancel| {
+            keel_vfs::ops::transfer(&t.src, &t.dst, t.mv, conflict, report, cancel, &router)
+        });
+        self.mark_remote(id, remote);
+        id
     }
 
     /// Extracts into `dst`, creating it first (Extract to folder).
     pub fn extract(
         &mut self,
         src: ArchiveSrc,
-        dst: PathBuf,
+        dst: VPath,
         conflict: Conflict,
         router: Arc<Router>,
         tx: Sender<Msg>,
     ) -> u64 {
         let title = format!("Extracting {}", src.archive.name());
         self.spawn(title, tx, move |report, cancel| {
+            let dst = dst.to_local_path().ok_or_else(|| {
+                anyhow::anyhow!("Extract into remote folders is not supported yet")
+            })?;
             std::fs::create_dir_all(&dst)?;
             keel_vfs::extract_under(
                 &src.archive,
@@ -208,10 +189,30 @@ impl Jobs {
         })
     }
 
-    /// Sends each path to the OS trash; stops at the first failure.
+    fn mark_remote(&mut self, id: u64, remote: bool) {
+        if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
+            job.remote = remote;
+        }
+    }
+
+    /// A job that touched a remote host (its failure is also toasted).
+    pub fn is_remote(&self, id: u64) -> bool {
+        self.list.iter().any(|j| j.id == id && j.remote)
+    }
+
+    /// Sends each path to the OS trash (remote: deletes it; the user confirmed that); stops
+    /// at the first failure.
     pub fn delete(&mut self, paths: Vec<VPath>, router: Arc<Router>, tx: Sender<Msg>) -> u64 {
-        let title = format!("Moving {} to the trash", items(paths.len()));
-        self.spawn(title, tx, move |report, cancel| {
+        let remote = paths.first().is_some_and(|p| p.scheme == "sftp");
+        let (title, did) = if remote {
+            (format!("Deleting {}", items(paths.len())), "deleted")
+        } else {
+            (
+                format!("Moving {} to the trash", items(paths.len())),
+                "moved to trash",
+            )
+        };
+        let id = self.spawn(title, tx, move |report, cancel| {
             let mut p = Progress {
                 done_bytes: 0,
                 total_bytes: 0,
@@ -222,11 +223,7 @@ impl Jobs {
             for path in &paths {
                 if cancel.load(Ordering::Relaxed) {
                     anyhow::ensure!(p.done_items > 0, "operation cancelled");
-                    anyhow::bail!(
-                        "Cancelled: {} of {} moved to trash",
-                        p.done_items,
-                        paths.len()
-                    );
+                    anyhow::bail!("Cancelled: {} of {} {did}", p.done_items, paths.len());
                 }
                 p.current = path.display();
                 report(p.clone());
@@ -241,7 +238,7 @@ impl Jobs {
                     // "nothing deleted" is about this item only; earlier ones are gone.
                     let why = format!("{e:#}").replace("; nothing deleted", "");
                     anyhow::bail!(
-                        "{} of {} moved to trash; stopped at {}: {why}",
+                        "{} of {} {did}; stopped at {}: {why}",
                         p.done_items,
                         paths.len(),
                         path.display()
@@ -251,7 +248,9 @@ impl Jobs {
             }
             report(p);
             Ok(())
-        })
+        });
+        self.mark_remote(id, remote);
+        id
     }
 
     fn spawn(
@@ -276,6 +275,7 @@ impl Jobs {
             cancel: cancel.clone(),
             done: None,
             finished: None,
+            remote: false,
         });
         let ctx = self.ctx.clone();
         let started = spawn("keel-job", move || {
@@ -445,17 +445,31 @@ pub fn items(n: usize) -> String {
     }
 }
 
-/// Top-level names in `src` that already exist in `dst`.
-pub fn plan_conflicts(src: &[PathBuf], dst: &Path) -> Vec<String> {
+/// Top-level names in `src` that already exist in `dst` (a stat on the remote host when
+/// `dst` is remote). Blocks: workers only.
+pub fn plan_conflicts(src: &[VPath], dst: &VPath, router: &Router) -> Vec<String> {
+    let exists = |name: &str| match dst.to_local_path() {
+        Some(dir) => std::fs::symlink_metadata(dir.join(name)).is_ok(),
+        None => router
+            .provider_for(dst)
+            .is_some_and(|p| p.stat(&dst.join(name)).is_ok()),
+    };
     src.iter()
-        .filter_map(|p| p.file_name())
-        .filter(|name| std::fs::symlink_metadata(dst.join(name)).is_ok())
-        .map(|name| name.to_string_lossy().into_owned())
+        .map(VPath::name)
+        .filter(|name| exists(name))
+        .map(str::to_owned)
         .collect()
 }
 
 /// Top-level names an extraction of `src` would create that already exist in `dst`.
-fn archive_conflicts(src: &ArchiveSrc, dst: &Path, router: &Router) -> anyhow::Result<Vec<String>> {
+fn archive_conflicts(
+    src: &ArchiveSrc,
+    dst: &VPath,
+    router: &Router,
+) -> anyhow::Result<Vec<String>> {
+    let dst = dst
+        .to_local_path()
+        .ok_or_else(|| anyhow::anyhow!("Extract into remote folders is not supported yet"))?;
     let names: Vec<String> = if src.entries.is_empty() {
         let dir = VPath::join_archive(&src.archive, &src.base);
         let provider = router
@@ -472,10 +486,24 @@ fn archive_conflicts(src: &ArchiveSrc, dst: &Path, router: &Router) -> anyhow::R
         .collect())
 }
 
+/// Same folder: local paths compare as paths (separators, trailing slash), others as VPaths.
+fn same_dir(a: &VPath, b: &VPath) -> bool {
+    match (a.to_local_path(), b.to_local_path()) {
+        (Some(a), Some(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Resolves the sources (reading the system clipboard for a paste) and scans `dst` for
 /// name clashes off the UI thread, then answers with `Msg::Planned` (or `PlanFailed`, also
 /// when planning panics). False when the thread could not start.
-pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Context) -> bool {
+pub fn spawn_plan(
+    source: Source,
+    dst: VPath,
+    router: Arc<Router>,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+) -> bool {
     spawn("keel-plan", move || {
         let from_clipboard = matches!(
             source,
@@ -485,7 +513,8 @@ pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Cont
                     ..
                 }
         );
-        let planned = std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &tx, &ctx)));
+        let planned =
+            std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &router, &tx, &ctx)));
         if planned.is_err() {
             send(
                 &tx,
@@ -500,14 +529,10 @@ pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Cont
 }
 
 /// `spawn_plan`'s body, for callers already on a worker (the folder picker).
-pub fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
+pub fn plan(source: Source, dst: VPath, router: &Router, tx: &Sender<Msg>, ctx: &egui::Context) {
     let (src, mv, from_clipboard) = match source {
-        Source::Archive {
-            src,
-            router,
-            clipboard,
-        } => {
-            let msg = match archive_conflicts(&src, &dst, &router) {
+        Source::Archive { src, clipboard } => {
+            let msg = match archive_conflicts(&src, &dst, router) {
                 Ok(conflicts) => Msg::Planned {
                     op: Transfer {
                         src: Vec::new(),
@@ -541,9 +566,18 @@ pub fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context)
             }
         },
     };
-    let src: Vec<PathBuf> = src
+    // ops::transfer cannot read archives yet: entries from inside one are extracted.
+    if let Some(src) = src
+        .first()
+        .and_then(VPath::parent)
+        .and_then(|dir| ArchiveSrc::picked(&dir, &src))
+    {
+        let clipboard = from_clipboard;
+        return plan(Source::Archive { src, clipboard }, dst, router, tx, ctx);
+    }
+    let src: Vec<VPath> = src
         .into_iter()
-        .filter(|p| p.parent() != Some(dst.as_path()))
+        .filter(|p| !p.parent().is_some_and(|parent| same_dir(&parent, &dst)))
         .collect();
     if src.is_empty() {
         let text = if mv {
@@ -561,7 +595,7 @@ pub fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context)
         );
         return;
     }
-    let conflicts = plan_conflicts(&src, &dst);
+    let conflicts = plan_conflicts(&src, &dst, router);
     send(
         tx,
         ctx,
@@ -598,7 +632,13 @@ mod tests {
         let root = tree("keel-job-copy");
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut jobs = Jobs::new(egui::Context::default());
-        let id = jobs.copy(vec![root.join("src")], root.join("dst"), Conflict::Skip, tx);
+        let op = Transfer {
+            src: vec![VPath::local(root.join("src"))],
+            dst: VPath::local(root.join("dst")),
+            mv: false,
+            extract: None,
+        };
+        let id = jobs.start(op, Conflict::Skip, Arc::new(Router::new()), tx);
         loop {
             match rx
                 .recv_timeout(Duration::from_secs(10))
@@ -648,8 +688,12 @@ mod tests {
     fn plan_conflicts_finds_existing_names() {
         let root = tree("keel-job-plan");
         std::fs::write(root.join("dst/a.txt"), "old").unwrap();
-        let src = vec![root.join("src/a.txt"), root.join("src/b.txt")];
-        assert_eq!(plan_conflicts(&src, &root.join("dst")), ["a.txt"]);
+        let src = vec![
+            VPath::local(root.join("src/a.txt")),
+            VPath::local(root.join("src/b.txt")),
+        ];
+        let dst = VPath::local(root.join("dst"));
+        assert_eq!(plan_conflicts(&src, &dst, &Router::new()), ["a.txt"]);
     }
 
     #[test]

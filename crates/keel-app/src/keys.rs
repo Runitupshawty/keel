@@ -43,6 +43,13 @@ pub enum Action {
     Delete,
     /// Confirmed: send these to the OS trash.
     Trash(Vec<VPath>),
+    /// Confirmed: delete these on their remote host (no trash there).
+    DeleteRemote(Vec<VPath>),
+    /// Sidebar command on a configured remote host (by id).
+    Remote {
+        host: String,
+        cmd: crate::remotes::RemoteCmd,
+    },
     /// A transfer whose conflict policy is decided.
     StartTransfer {
         op: Transfer,
@@ -52,7 +59,7 @@ pub enum Action {
     /// Files dropped on `dst`: from another app (`from` None) or dragged from a pane
     /// (`from` = that pane and its folder).
     Drop {
-        paths: Vec<PathBuf>,
+        paths: Vec<VPath>,
         from: Option<(usize, VPath)>,
         dst: VPath,
     },

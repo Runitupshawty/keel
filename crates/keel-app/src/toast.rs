@@ -28,6 +28,12 @@ impl Toasts {
         self.push(text.into(), Level::Error, Duration::from_secs(6));
     }
 
+    /// Replaces the toast starting with `prefix` (a progress line) with `text`.
+    pub fn replace(&mut self, prefix: &str, text: String) {
+        self.list.retain(|t| !t.text.starts_with(prefix));
+        self.info(text);
+    }
+
     pub fn not_yet(&mut self, what: &str) {
         self.info(format!("{what}: not yet"));
     }

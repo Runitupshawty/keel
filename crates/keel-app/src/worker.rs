@@ -2,6 +2,7 @@
 //! nothing here runs on the UI thread.
 
 use crate::preview_panel::PreviewKey;
+use crate::remotes::SftpMap;
 use crate::state::Msg;
 use crate::tab::Listing;
 use crossbeam_channel::{Sender, TrySendError};
@@ -62,19 +63,18 @@ pub fn spawn_drives(tx: Sender<Msg>, ctx: egui::Context) {
     });
 }
 
-/// Materialises `path` (may be remote) and runs `f` on the local copy; errors become toasts.
+/// Materialises `path` (may be remote: progress toast when large) and runs `f` on the
+/// local copy; errors become toasts.
 pub fn spawn_local(
     router: Arc<Router>,
+    sftp: SftpMap,
     path: VPath,
     tx: Sender<Msg>,
     ctx: egui::Context,
     f: impl FnOnce(&std::path::Path) -> std::io::Result<()> + Send + 'static,
 ) {
     spawn("keel-launch", move || {
-        let result = router
-            .provider_for(&path)
-            .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))
-            .and_then(|p| p.local_copy(&path))
+        let result = crate::remotes::materialise(&router, &sftp, &path, &tx, &ctx)
             .and_then(|local| Ok(f(&local)?));
         if let Err(e) = result {
             send(&tx, &ctx, Msg::Toast(format!("{}: {e:#}", path.display())));
@@ -84,11 +84,20 @@ pub fn spawn_local(
 
 /// Materialises `entry` and renders it into a fit box of `max_px`. Blocks: workers only.
 pub fn render(router: &Router, entry: Entry, page: u32, max_px: u32) -> Preview {
-    match router
+    let local = router
         .provider_for(&entry.path)
         .ok_or_else(|| anyhow::anyhow!("no provider for {}", entry.path.display()))
-        .and_then(|p| p.local_copy(&entry.path))
-    {
+        .and_then(|p| p.local_copy(&entry.path));
+    render_local(local, entry, page, max_px)
+}
+
+fn render_local(
+    local: anyhow::Result<std::path::PathBuf>,
+    entry: Entry,
+    page: u32,
+    max_px: u32,
+) -> Preview {
+    match local {
         Ok(bytes_path) => keel_preview::preview(&keel_preview::Request {
             entry,
             bytes_path,
@@ -106,6 +115,7 @@ pub type PreviewJob = (PreviewKey, Entry, u32);
 /// except the newest, so fast cursor movement never queues a backlog of renders.
 pub fn spawn_previewer(
     router: Arc<Router>,
+    sftp: SftpMap,
     tx: Sender<Msg>,
     ctx: egui::Context,
 ) -> Sender<PreviewJob> {
@@ -113,7 +123,8 @@ pub fn spawn_previewer(
     spawn("keel-preview", move || {
         while let Ok(first) = rx.recv() {
             let (key, entry, max_px) = rx.try_iter().last().unwrap_or(first);
-            let preview = render(&router, entry, key.page, max_px);
+            let local = crate::remotes::materialise(&router, &sftp, &entry.path, &tx, &ctx);
+            let preview = render_local(local, entry, key.page, max_px);
             send(&tx, &ctx, Msg::Preview { key, preview });
         }
     });

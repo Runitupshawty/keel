@@ -32,6 +32,8 @@ pub struct ViewCx<'a> {
     pub thumbs: &'a mut Thumbs,
     /// Highlight as the keyboard target (dual mode only).
     pub active: bool,
+    /// Remote connection / remote search note above the listing.
+    pub banner: Option<String>,
 }
 
 impl Pane {
@@ -118,6 +120,14 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
+    if let Some(banner) = &cx.banner {
+        ui.horizontal(|ui| {
+            if tab.loading {
+                ui.spinner();
+            }
+            ui.weak(banner);
+        });
+    }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
             if ui.small_button("✕").clicked() {
@@ -455,7 +465,7 @@ impl DragPayload {
         match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
             Some(src) => Action::Extract { src, dst },
             None => Action::Drop {
-                paths: self.paths.iter().filter_map(VPath::to_local_path).collect(),
+                paths: self.paths.clone(),
                 from: Some((self.pane, self.dir.clone())),
                 dst,
             },

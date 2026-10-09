@@ -28,6 +28,8 @@ pub struct Thumbs {
     cache: HashMap<PreviewKey, (Option<TextureHandle>, u64)>,
     pending: HashSet<PreviewKey>,
     clock: u64,
+    /// Thumbnails for remote files (setting `remote_thumbnails`): each one is a download.
+    pub remote: bool,
 }
 
 impl Thumbs {
@@ -37,12 +39,16 @@ impl Thumbs {
             cache: HashMap::new(),
             pending: HashSet::new(),
             clock: 0,
+            remote: false,
         }
     }
 
     /// The cached thumbnail, or None while it is (re)queued.
     pub fn get(&mut self, e: &Entry) -> Option<(egui::TextureId, egui::Vec2)> {
-        if !THUMB_EXTS.contains(&e.ext.as_str()) || e.encrypted {
+        if !THUMB_EXTS.contains(&e.ext.as_str())
+            || e.encrypted
+            || (!self.remote && e.path.scheme == "sftp")
+        {
             return None;
         }
         // Bounded like the preview: never materialise what the previewer would refuse.

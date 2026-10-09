@@ -51,14 +51,18 @@ impl Router {
             .retain(|existing| existing.scheme() != p.scheme());
         table.providers.push(p);
     }
-    pub fn register_remote(&mut self, host: crate::RemoteHost) {
+    pub fn register_remote(&self, host: crate::RemoteHost) {
         self.register_remote_provider(
             host.id.clone(),
             Arc::new(crate::SftpProvider::new(host, self.remote_events.clone())),
         );
     }
-    pub fn register_remote_provider(&mut self, id: String, provider: Arc<dyn Provider>) {
+    /// Adds or replaces the provider for `sftp://<id>/...` (callable through an `Arc<Router>`).
+    pub fn register_remote_provider(&self, id: String, provider: Arc<dyn Provider>) {
         self.registry.write().remotes.insert(id, provider);
+    }
+    pub fn unregister_remote(&self, id: &str) {
+        self.registry.write().remotes.remove(id);
     }
     pub fn remote_events(&self) -> crossbeam_channel::Receiver<crate::RemoteEvent> {
         self.events.clone()

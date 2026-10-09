@@ -23,7 +23,6 @@ use keel_search::Searcher;
 use keel_vfs::{Entry, Kind, Router, VPath};
 use std::any::Any;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -99,7 +98,7 @@ pub enum Msg {
         from_clipboard: bool,
     },
     /// Sources of a failed cut-move that still exist: the cut to put back.
-    RestoreCut(Vec<PathBuf>),
+    RestoreCut(Vec<VPath>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
     Select {
         dir: VPath,
@@ -121,6 +120,18 @@ pub enum Msg {
         id: u64,
         results: Vec<String>,
     },
+    // --- remotes (Task 16) ---
+    /// A connection status change or host-key prompt from an SFTP provider.
+    Remote(keel_vfs::RemoteEvent),
+    /// Progress of a large remote file being downloaded for preview / open.
+    Download {
+        name: String,
+        done: u64,
+        total: u64,
+    },
+    /// A notice for an info toast.
+    Info(String),
+    // --- end remotes ---
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -148,7 +159,7 @@ pub struct AppState {
     /// A clipboard paste is being planned; further Ctrl+V wait (no double move of a cut).
     pub paste_pending: bool,
     /// The move job started from a cut, and its sources (put back as a cut if it fails).
-    cut_job: Option<(u64, Vec<PathBuf>)>,
+    cut_job: Option<(u64, Vec<VPath>)>,
     /// Entries copied inside an archive: Ctrl+V extracts them (until files are copied,
     /// here or, on Windows, in another app).
     pub archive_clip: Option<ArchiveSrc>,
@@ -156,6 +167,8 @@ pub struct AppState {
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
+    /// SFTP hosts: providers, status, host-key prompts, host editor (`remotes.rs`).
+    pub remotes: crate::remotes::Remotes,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -195,7 +208,15 @@ impl AppState {
         let (tx, rx) = crossbeam_channel::unbounded();
         let theme = Theme::load(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
-        let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
+        // Remote hosts are registered before the restored tabs list (lazily connecting).
+        let mut remotes = crate::remotes::Remotes::new(tx.clone(), ctx.clone());
+        remotes.sync(&router, &settings.remotes);
+        let previewer = worker::spawn_previewer(
+            router.clone(),
+            remotes.sftp.clone(),
+            tx.clone(),
+            ctx.clone(),
+        );
         let jump = Jump::new(tx.clone(), ctx.clone());
         let mut panes = session
             .panes
@@ -241,6 +262,7 @@ impl AppState {
             dialog: None,
             settings,
             settings_open: false,
+            remotes,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -272,7 +294,8 @@ impl AppState {
         if !self.settings_open {
             return;
         }
-        let theme_changed = crate::settings::window(ctx, &mut self.settings_open, s);
+        let theme_changed =
+            crate::settings::window(ctx, &mut self.settings_open, s, &mut self.remotes, &self.tx);
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
         let max = s.max_preview_bytes();
@@ -382,11 +405,23 @@ impl AppState {
                         // The move failed or was cancelled: what was not moved can be
                         // pasted again (checked on a worker: stat may block).
                         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                        let router = self.router.clone();
                         worker::spawn("keel-recut", move || {
-                            let left: Vec<PathBuf> =
-                                src.into_iter().filter(|p| p.exists()).collect();
+                            let exists = |p: &VPath| match p.to_local_path() {
+                                Some(local) => local.exists(),
+                                None => router
+                                    .provider_for(p)
+                                    .is_some_and(|provider| provider.stat(p).is_ok()),
+                            };
+                            let left: Vec<VPath> = src.into_iter().filter(exists).collect();
                             worker::send(&tx, &ctx, Msg::RestoreCut(left));
                         });
+                    }
+                }
+                // Remote failures also toast (the job row may be scrolled away).
+                if let Err(e) = &result {
+                    if self.jobs.is_remote(id) && !jobs::is_cancel(e) {
+                        self.toasts.error(format!("{e:#}"));
                     }
                 }
                 self.jobs.finish(id, result);
@@ -420,10 +455,10 @@ impl AppState {
             Msg::RestoreCut(paths) => {
                 // Only when nothing was copied since, here or in another app.
                 if !paths.is_empty()
-                    && self.clipboard.paths.is_empty()
+                    && self.clipboard.is_empty()
                     && !self.clipboard.changed_outside()
                 {
-                    self.clipboard.set(paths, true);
+                    self.clipboard.set_paths(paths, true);
                 }
             }
             Msg::PlanFailed {
@@ -469,6 +504,9 @@ impl AppState {
             }
             Msg::JumpIndexed(items) => self.jump.indexed(items),
             Msg::Jump { id, results } => self.jump.results(id, results),
+            Msg::Remote(event) => self.remote_event(event),
+            Msg::Download { name, done, total } => self.download_progress(name, done, total),
+            Msg::Info(text) => self.toasts.info(text),
         }
     }
 
@@ -482,16 +520,19 @@ impl AppState {
             return;
         };
         tab.loading = false;
+        let remote = tab.dir.scheme == "sftp";
         match result {
             Ok(hits) => {
                 tab.set_listing(crate::tab::hits_listing(hits));
                 tab.error = None;
-                self.search_reason = None;
+                if !remote {
+                    self.search_reason = None;
+                }
             }
             Err(e) => {
                 let text = crate::search_tab::banner(&format!("{e:#}"));
                 // Only "not running" is global; a bad query stays on its tab.
-                if text == crate::search_tab::NOT_RUNNING {
+                if text == crate::search_tab::NOT_RUNNING && !remote {
                     self.search_reason = Some(text.clone());
                 }
                 tab.error = Some(text);
@@ -505,11 +546,17 @@ impl AppState {
         let TabKind::Search { query, due, req } = &mut tab.kind else {
             return;
         };
-        let Some(searcher) = self.searcher.clone() else {
-            // Still loading: try again shortly.
-            *due = Some(Instant::now() + DEBOUNCE);
-            self.ctx.request_repaint_after(DEBOUNCE);
-            return;
+        // A remote tab searches names on its host (remotes.rs); Everything stays local.
+        let remote = tab.dir.scheme == "sftp";
+        let searcher = match self.searcher.clone() {
+            _ if remote => None,
+            Some(s) => Some(s),
+            None => {
+                // Still loading: try again shortly.
+                *due = Some(Instant::now() + DEBOUNCE);
+                self.ctx.request_repaint_after(DEBOUNCE);
+                return;
+            }
         };
         *due = None;
         self.next_req += 1;
@@ -521,13 +568,19 @@ impl AppState {
             return;
         }
         tab.loading = true;
-        worker::spawn_search(
-            searcher,
-            text,
-            self.next_req,
-            self.tx.clone(),
-            self.ctx.clone(),
-        );
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        match searcher {
+            Some(searcher) => worker::spawn_search(searcher, text, self.next_req, tx, ctx),
+            None => crate::remotes::spawn_search(
+                self.router.clone(),
+                tab.dir.clone(),
+                text,
+                self.next_req,
+                self.remotes.search_gen.clone(),
+                tx,
+                ctx,
+            ),
+        }
     }
 
     /// Builds the Ctrl+P folder index on a worker (or once the searcher has loaded).
@@ -574,29 +627,20 @@ impl AppState {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
-        let id = self.jobs.start(op, conflict, &self.router, self.tx.clone());
+        let id = self
+            .jobs
+            .start(op, conflict, self.router.clone(), self.tx.clone());
         if let Some(src) = cut {
             self.cut_job = Some((id, src));
         }
     }
 
-    /// Local paths of the targets, or a toast when some are remote (Phase 2+).
-    fn local_targets(&mut self, p: usize) -> Option<Vec<PathBuf>> {
-        let targets: Vec<VPath> = self
-            .tab(p)
+    fn target_paths(&self, p: usize) -> Vec<VPath> {
+        self.tab(p)
             .targets()
             .iter()
             .map(|e| e.path.clone())
-            .collect();
-        if targets.is_empty() {
-            return None;
-        }
-        let local: Option<Vec<PathBuf>> = targets.iter().map(VPath::to_local_path).collect();
-        if local.is_none() {
-            self.toasts
-                .error("Only local files can be copied or moved for now");
-        }
-        local
+            .collect()
     }
 
     /// Runs a provider call for `dir` off the UI thread; success selects `name`.
@@ -721,6 +765,7 @@ impl AppState {
 
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
+        self.remote_tick();
         let cwd = self.panes[self.active].tab().dir.to_local_path();
         self.terminal
             .follow(cwd, &self.settings, &self.tx, &self.ctx);
@@ -977,9 +1022,12 @@ impl AppState {
             }
             Action::OpenTerminal => {
                 self.active = p;
-                if let Some(dir) = self.tab(p).dir.to_local_path() {
+                let dir = self.tab(p).dir.clone();
+                if let Some(local) = dir.to_local_path() {
                     self.terminal
-                        .open_at(dir, &self.settings, &self.tx, &self.ctx);
+                        .open_at(local, &self.settings, &self.tx, &self.ctx);
+                } else if dir.scheme == "sftp" {
+                    self.remote_cmd(dir.authority, crate::remotes::RemoteCmd::Terminal);
                 } else {
                     self.toasts.error("Terminal requires a local folder");
                 }
@@ -1014,19 +1062,27 @@ impl AppState {
                 self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
             }
             Action::Delete => {
-                let paths: Vec<VPath> = self
-                    .tab(p)
-                    .targets()
-                    .iter()
-                    .map(|e| e.path.clone())
-                    .collect();
-                if !paths.is_empty() {
+                let paths = self.target_paths(p);
+                let remote = paths.first().filter(|p| p.scheme == "sftp");
+                if let Some(host) = remote.map(|p| p.authority.clone()) {
+                    // No trash on a remote host: say so, once per batch.
+                    let label = self.remotes.label(&host).to_owned();
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::remotes::delete_text(paths.len(), &label),
+                        on_yes: Action::DeleteRemote(paths),
+                    });
+                } else if !paths.is_empty() {
                     self.dialog = Some(Dialog::Confirm {
                         text: format!("Move {} to the trash?", jobs::items(paths.len())),
                         on_yes: Action::Trash(paths),
                     });
                 }
             }
+            Action::DeleteRemote(paths) => {
+                self.jobs
+                    .delete(paths, self.router.clone(), self.tx.clone());
+            }
+            Action::Remote { host, cmd } => self.remote_cmd(host, cmd),
             Action::Trash(paths) => {
                 self.jobs
                     .delete(paths, self.router.clone(), self.tx.clone());
@@ -1050,10 +1106,11 @@ impl AppState {
             }
             Action::Copy | Action::Cut => {
                 let cut = action == Action::Cut;
-                if let Some(paths) = self.local_targets(p) {
+                let paths = self.target_paths(p);
+                if !paths.is_empty() {
                     self.archive_clip = None;
                     let n = paths.len();
-                    self.clipboard.set(paths, cut);
+                    self.clipboard.set_paths(paths, cut);
                     let verb = if cut { "Cut" } else { "Copied" };
                     self.toasts.info(format!("{verb} {}", jobs::items(n)));
                 }
@@ -1065,40 +1122,34 @@ impl AppState {
             Action::Paste if self.paste_pending => {
                 self.toasts.info("Paste already in progress");
             }
-            Action::Paste => match self.tab(p).dir.to_local_path() {
-                Some(dst) => {
-                    if self.clipboard.changed_outside() {
-                        self.archive_clip = None;
-                    }
-                    let source = match &self.archive_clip {
-                        Some(src) => Source::Archive {
-                            src: src.clone(),
-                            router: self.router.clone(),
-                            clipboard: true,
-                        },
-                        None => Source::Clipboard(self.clipboard.clone()),
-                    };
-                    self.paste_pending =
-                        jobs::spawn_plan(source, dst, self.tx.clone(), self.ctx.clone());
-                    if !self.paste_pending {
-                        self.toasts.error("Could not start the paste");
-                    }
+            Action::Paste => {
+                if self.clipboard.changed_outside() {
+                    self.archive_clip = None;
                 }
-                None => self
-                    .toasts
-                    .error("Paste into remote folders is not supported yet"),
-            },
+                let source = match &self.archive_clip {
+                    Some(src) => Source::Archive {
+                        src: src.clone(),
+                        clipboard: true,
+                    },
+                    None => Source::Clipboard(self.clipboard.clone()),
+                };
+                self.paste_pending = jobs::spawn_plan(
+                    source,
+                    self.tab(p).dir.clone(),
+                    self.router.clone(),
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                );
+                if !self.paste_pending {
+                    self.toasts.error("Could not start the paste");
+                }
+            }
             Action::StartTransfer {
                 op,
                 conflict,
                 from_clipboard,
             } => self.start_transfer(op, conflict, from_clipboard),
             Action::Drop { paths, from, dst } => {
-                let Some(dst_local) = dst.to_local_path() else {
-                    return self
-                        .toasts
-                        .error("Drop into remote folders is not supported yet");
-                };
                 if paths.is_empty() || from.as_ref().is_some_and(|(_, dir)| *dir == dst) {
                     return;
                 }
@@ -1114,7 +1165,8 @@ impl AppState {
                 let mv = from.is_some_and(|(pane, _)| shift || pane == p);
                 if !jobs::spawn_plan(
                     Source::Paths(paths, mv),
-                    dst_local,
+                    dst,
+                    self.router.clone(),
                     self.tx.clone(),
                     self.ctx.clone(),
                 ) {
@@ -1147,7 +1199,9 @@ impl AppState {
             Action::Search => {
                 if !self.tab(p).is_search() {
                     let mut tab = Tab::search(self.tab(p).dir.clone());
-                    tab.error = self.search_reason.clone();
+                    if tab.dir.scheme != "sftp" {
+                        tab.error = self.search_reason.clone();
+                    }
                     let pane = &mut self.panes[p];
                     pane.tabs.push(tab);
                     pane.active = pane.tabs.len() - 1;
@@ -1175,20 +1229,23 @@ impl AppState {
                 if dst.split_archive().is_some() {
                     return;
                 }
-                match dst.to_local_path() {
-                    Some(dst) => self.plan_extract(src, dst),
-                    None => self
-                        .toasts
-                        .error("Extract into remote folders is not supported yet"),
-                }
+                self.plan_extract(src, dst);
             }
             Action::AddToZip | Action::CompressToZip => {
                 let Some(dir) = self.tab(p).dir.to_local_path() else {
                     return self.toasts.error("Zips can only be made in local folders");
                 };
-                let Some(src) = self.local_targets(p) else {
-                    return;
+                let Some(src) = self
+                    .target_paths(p)
+                    .iter()
+                    .map(VPath::to_local_path)
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return self.toasts.error("Only local files can be zipped for now");
                 };
+                if src.is_empty() {
+                    return;
+                }
                 let name = jobs::zip_name(self.tab(p));
                 if action == Action::AddToZip {
                     self.run(
@@ -1282,10 +1339,9 @@ impl AppState {
                 for archive in archives {
                     let source = Source::Archive {
                         src: ArchiveSrc::whole(archive),
-                        router: router.clone(),
                         clipboard: false,
                     };
-                    jobs::plan(source, dst.clone(), &tx, &ctx);
+                    jobs::plan(source, VPath::local(&dst), &router, &tx, &ctx);
                 }
             });
             return;
@@ -1296,17 +1352,17 @@ impl AppState {
             } else {
                 folder
             };
-            self.plan_extract(ArchiveSrc::whole(archive), dst);
+            self.plan_extract(ArchiveSrc::whole(archive), VPath::local(dst));
         }
     }
 
-    fn plan_extract(&mut self, src: ArchiveSrc, dst: PathBuf) {
+    fn plan_extract(&mut self, src: ArchiveSrc, dst: VPath) {
         let source = Source::Archive {
             src,
-            router: self.router.clone(),
             clipboard: false,
         };
-        if !jobs::spawn_plan(source, dst, self.tx.clone(), self.ctx.clone()) {
+        let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+        if !jobs::spawn_plan(source, dst, router, tx, ctx) {
             self.toasts.error("Could not start the extraction");
         }
     }
@@ -1375,6 +1431,7 @@ impl AppState {
     fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
         worker::spawn_local(
             self.router.clone(),
+            self.remotes.sftp.clone(),
             path,
             self.tx.clone(),
             self.ctx.clone(),
@@ -1709,6 +1766,40 @@ mod tests {
     }
 
     #[test]
+    fn archive_entries_as_plain_paths_plan_an_extraction() {
+        // ops::transfer cannot read archives: a paste or drop of in-archive paths extracts.
+        let tmp = tempfile_dir("keel-archive-paths");
+        let file = demo_zip(&tmp);
+        let out = tmp.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("a.txt"), "mine").unwrap();
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            VPath::local(&tmp),
+        );
+        settle(&mut state, |s| !s.tab(0).loading);
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        jobs::plan(
+            Source::Paths(vec![root.join("a.txt")], false),
+            VPath::local(&out),
+            &state.router,
+            &state.tx,
+            &state.ctx,
+        );
+        settle(&mut state, |s| s.dialog.is_some());
+        let Some(Dialog::Conflict { names, op, .. }) = state.dialog.take() else {
+            panic!("conflict dialog");
+        };
+        assert_eq!(names, ["a.txt"]);
+        assert_eq!(
+            op.extract.map(|e| e.entries),
+            Some(vec!["a.txt".to_owned()])
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn extract_plans_conflicts_and_lands_files() {
         let tmp = tempfile_dir("keel-archive-extract");
         let file = demo_zip(&tmp);
@@ -1728,10 +1819,10 @@ mod tests {
         jobs::plan(
             Source::Archive {
                 src,
-                router: state.router.clone(),
                 clipboard: true,
             },
-            out.clone(),
+            VPath::local(&out),
+            &state.router,
             &state.tx,
             &state.ctx,
         );
