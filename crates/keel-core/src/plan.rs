@@ -654,10 +654,8 @@ impl ExecJob {
         // Marks left by an earlier session: their items may have begun, each is settled
         // on its own.
         if !marked {
-            for s in std::mem::take(&mut self.marks) {
-                if s.item != self.next {
-                    break;
-                }
+            // Settled marks go one by one: a stop here keeps the rest for the next resume.
+            while let Some(s) = self.marks.first().copied().filter(|s| s.item == self.next) {
                 if ctx.stopping() {
                     return Err(Cancelled.into());
                 }
@@ -675,6 +673,7 @@ impl ExecJob {
                     Resume::Run => step(ctx, &self.op, item, None)?,
                 };
                 self.count(ctx, item, ran)?;
+                self.marks.remove(0);
                 self.next += 1;
             }
         }
