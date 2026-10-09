@@ -1,6 +1,6 @@
 //! Keyboard map: one pass over the frame's input producing `Action`s.
 
-use crate::jobs::Transfer;
+use crate::jobs::{ArchiveSrc, Transfer};
 use crate::tab::Nav;
 use egui::{Event, Key, Modifiers};
 use keel_vfs::{Conflict, VPath};
@@ -88,6 +88,30 @@ pub enum Action {
     TogglePreview,
     /// Settings window (Ctrl+,).
     Settings,
+    /// Archive targets: extract next to the archive.
+    ExtractHere,
+    /// Archive targets: extract into a new `<name>/` folder next to each archive.
+    ExtractToFolder,
+    /// Archive targets: extract into a folder picked with the OS dialog.
+    ExtractTo,
+    /// Extract entries dragged out of an archive onto `dst`.
+    Extract {
+        src: ArchiveSrc,
+        dst: VPath,
+    },
+    /// Targets: add to `<name>.zip` in this folder.
+    AddToZip,
+    /// Targets: ask for a zip name, then `ZipTo`.
+    CompressToZip,
+    ZipTo {
+        zip: PathBuf,
+        src: Vec<PathBuf>,
+    },
+    /// Show tab `tab` of pane `pane` (sidebar "Open archives").
+    FocusTab {
+        pane: usize,
+        tab: usize,
+    },
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;

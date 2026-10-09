@@ -42,7 +42,11 @@ impl Thumbs {
 
     /// The cached thumbnail, or None while it is (re)queued.
     pub fn get(&mut self, e: &Entry) -> Option<(egui::TextureId, egui::Vec2)> {
-        if !THUMB_EXTS.contains(&e.ext.as_str()) {
+        if !THUMB_EXTS.contains(&e.ext.as_str()) || e.encrypted {
+            return None;
+        }
+        // Bounded like the preview: never materialise what the previewer would refuse.
+        if e.size > keel_preview::MAX_PREVIEW_BYTES && e.path.split_archive().is_some() {
             return None;
         }
         let key = PreviewKey::of(e, 0);
@@ -218,8 +222,15 @@ pub fn ui(
                                     );
                                 }
                             }
+                            if e.encrypted {
+                                let badge = Rect::from_min_size(
+                                    img_box.right_top() - vec2(16.0, 0.0),
+                                    vec2(16.0, 16.0),
+                                );
+                                egui::Image::new(crate::icons::lock()).paint_at(ui, badge);
+                            }
                             let resp = resp.on_hover_text(&e.name);
-                            resp.context_menu(|ui| context_menu(ui, true, false, out));
+                            resp.context_menu(|ui| context_menu(ui, tab, Some(e), out));
                             clicks.push((resp, e.clone()));
                         }
                     });

@@ -357,9 +357,16 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
     });
 }
 
-/// Context menu shared by both views. `on_item`: opened on an entry, not empty space;
-/// `search`: a search results row (adds Open location).
-pub fn context_menu(ui: &mut egui::Ui, on_item: bool, search: bool, out: &mut Vec<Action>) {
+/// Context menu shared by both views. `entry`: opened on this entry, not empty space;
+/// search result rows add Open location; archive files add the extract items.
+pub fn context_menu(
+    ui: &mut egui::Ui,
+    tab: &Tab,
+    entry: Option<&keel_vfs::Entry>,
+    out: &mut Vec<Action>,
+) {
+    let on_item = entry.is_some();
+    let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
         let button = egui::Button::new(text).shortcut_text(shortcut);
         if ui.add(button).clicked() {
@@ -373,6 +380,16 @@ pub fn context_menu(ui: &mut egui::Ui, on_item: bool, search: bool, out: &mut Ve
         if search {
             item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
         }
+        if let Some(e) = entry.filter(|e| crate::jobs::is_archive_file(e)) {
+            ui.separator();
+            item(ui, "Extract here", "", Action::ExtractHere);
+            let folder = format!(
+                "Extract to folder \"{}\"",
+                crate::jobs::archive_stem(&e.name)
+            );
+            item(ui, &folder, "", Action::ExtractToFolder);
+            item(ui, "Extract to…", "", Action::ExtractTo);
+        }
         ui.separator();
         item(ui, "Copy", "Ctrl+C", Action::Copy);
         item(ui, "Cut", "Ctrl+X", Action::Cut);
@@ -383,6 +400,10 @@ pub fn context_menu(ui: &mut egui::Ui, on_item: bool, search: bool, out: &mut Ve
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);
         item(ui, "Delete", "Del", Action::Delete);
+        ui.separator();
+        let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
+        item(ui, &add, "", Action::AddToZip);
+        item(ui, "Compress to zip…", "", Action::CompressToZip);
     }
     ui.separator();
     item(ui, "New folder", "Ctrl+Shift+N", Action::NewFolder);
@@ -429,8 +450,16 @@ pub struct DragPayload {
 }
 
 impl DragPayload {
-    pub fn local_paths(&self) -> Vec<std::path::PathBuf> {
-        self.paths.iter().filter_map(VPath::to_local_path).collect()
+    /// Dropping this on `dst`: entries dragged out of an archive extract, others copy/move.
+    pub fn action(&self, dst: VPath) -> Action {
+        match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
+            Some(src) => Action::Extract { src, dst },
+            None => Action::Drop {
+                paths: self.paths.iter().filter_map(VPath::to_local_path).collect(),
+                from: Some((self.pane, self.dir.clone())),
+                dst,
+            },
+        }
     }
 }
 
@@ -467,11 +496,7 @@ pub fn drag_and_drop(
     }
     if let Some(p) = r.dnd_release_payload::<DragPayload>() {
         if !p.paths.contains(&entry.path) {
-            out.push(Action::Drop {
-                paths: p.local_paths(),
-                from: Some((p.pane, p.dir.clone())),
-                dst: entry.path.clone(),
-            });
+            out.push(p.action(entry.path.clone()));
         }
     }
 }

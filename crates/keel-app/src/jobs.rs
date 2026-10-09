@@ -1,5 +1,5 @@
-//! File operation jobs: copy / move / trash on worker threads with progress and cancel,
-//! shown in a panel at the bottom of the window.
+//! File operation jobs: copy / move / trash / extract / add to zip on worker threads with
+//! progress and cancel, shown in a panel at the bottom of the window.
 
 use crate::clipboard::Clipboard;
 use crate::state::Msg;
@@ -57,12 +57,49 @@ impl Job {
     }
 }
 
-/// A copy or move waiting for its conflict policy.
+/// A copy, move or extraction waiting for its conflict policy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
     pub src: Vec<PathBuf>,
     pub dst: PathBuf,
     pub mv: bool,
+    /// Extract from this archive instead of copying `src` (then empty).
+    pub extract: Option<ArchiveSrc>,
+}
+
+/// Entries of one archive to extract: `archive` is the archive file (possibly itself
+/// inside an archive), `base` the folder inside it they are taken relative to, `entries`
+/// normalised inner names (empty = everything under `base`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArchiveSrc {
+    pub archive: VPath,
+    pub base: String,
+    pub entries: Vec<String>,
+}
+
+impl ArchiveSrc {
+    /// The whole archive file `archive`.
+    pub fn whole(archive: VPath) -> Self {
+        Self {
+            archive,
+            base: String::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    /// `paths` inside the archive folder `dir` (`x.zip!/sub`); None outside archives.
+    pub fn picked(dir: &VPath, paths: &[VPath]) -> Option<Self> {
+        let (archive, base) = dir.split_archive()?;
+        let entries = paths
+            .iter()
+            .map(|p| p.split_archive().map(|(_, inner)| inner))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            archive,
+            base,
+            entries,
+        })
+    }
 }
 
 /// Where a transfer's sources come from.
@@ -71,6 +108,13 @@ pub enum Source {
     Paths(Vec<PathBuf>, bool),
     /// Ctrl+V: resolved against the system clipboard on the planning thread.
     Clipboard(Clipboard),
+    /// Extract (Ctrl+V of entries copied inside an archive when `clipboard`, else a
+    /// context-menu extract or a drag out of an archive). Clashes are listed from the archive.
+    Archive {
+        src: ArchiveSrc,
+        router: Arc<Router>,
+        clipboard: bool,
+    },
 }
 
 pub struct Jobs {
@@ -114,12 +158,54 @@ impl Jobs {
         })
     }
 
-    pub fn start(&mut self, t: Transfer, conflict: Conflict, tx: Sender<Msg>) -> u64 {
-        if t.mv {
+    pub fn start(
+        &mut self,
+        t: Transfer,
+        conflict: Conflict,
+        router: &Arc<Router>,
+        tx: Sender<Msg>,
+    ) -> u64 {
+        if let Some(src) = t.extract {
+            self.extract(src, t.dst, conflict, router.clone(), tx)
+        } else if t.mv {
             self.mv(t.src, t.dst, conflict, tx)
         } else {
             self.copy(t.src, t.dst, conflict, tx)
         }
+    }
+
+    /// Extracts into `dst`, creating it first (Extract to folder).
+    pub fn extract(
+        &mut self,
+        src: ArchiveSrc,
+        dst: PathBuf,
+        conflict: Conflict,
+        router: Arc<Router>,
+        tx: Sender<Msg>,
+    ) -> u64 {
+        let title = format!("Extracting {}", src.archive.name());
+        self.spawn(title, tx, move |report, cancel| {
+            std::fs::create_dir_all(&dst)?;
+            keel_vfs::extract_under(
+                &src.archive,
+                &src.base,
+                &src.entries,
+                &dst,
+                conflict,
+                report,
+                cancel,
+                &router,
+            )
+        })
+    }
+
+    /// Adds `src` to `zip` (created when missing; same-named entries are replaced).
+    pub fn add_to_zip(&mut self, zip: PathBuf, src: Vec<PathBuf>, tx: Sender<Msg>) -> u64 {
+        let name = zip.file_name().map(|n| n.to_string_lossy().into_owned());
+        let title = format!("Adding to {}", name.unwrap_or_default());
+        self.spawn(title, tx, move |report, cancel| {
+            keel_vfs::ops::add_to_zip(&zip, &src, "", report, cancel)
+        })
     }
 
     /// Sends each path to the OS trash; stops at the first failure.
@@ -319,6 +405,39 @@ fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
     }
 }
 
+/// A file that opens as a folder (by name: `open_archive` checks the bytes later).
+pub fn is_archive_file(e: &keel_vfs::Entry) -> bool {
+    e.kind != keel_vfs::Kind::Dir && VPath::is_archive_name(&e.name)
+}
+
+/// `photos.tar.gz` -> `photos`: the folder Extract to folder creates.
+pub fn archive_stem(name: &str) -> &str {
+    let lower = name.to_ascii_lowercase();
+    [
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".zip", ".jar", ".7z", ".tar", ".rar",
+    ]
+    .iter()
+    .find(|ext| lower.ends_with(*ext) && lower.len() > ext.len())
+    .map_or(name, |ext| &name[..name.len() - ext.len()])
+}
+
+/// Add to "<name>.zip": one target names it (a file without its extension), several take
+/// the folder's name.
+pub fn zip_name(tab: &crate::tab::Tab) -> String {
+    let stem = match tab.targets().as_slice() {
+        [one] if one.kind == keel_vfs::Kind::Dir => one.name.clone(),
+        [one] => match one.name.rsplit_once('.') {
+            Some((stem, _)) if !stem.is_empty() => stem.to_owned(),
+            _ => one.name.clone(),
+        },
+        _ => match tab.dir.name() {
+            "" => "Archive".to_owned(),
+            name => name.trim_end_matches(':').to_owned(),
+        },
+    };
+    format!("{stem}.zip")
+}
+
 pub fn items(n: usize) -> String {
     match n {
         1 => "1 item".to_owned(),
@@ -335,12 +454,37 @@ pub fn plan_conflicts(src: &[PathBuf], dst: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Top-level names an extraction of `src` would create that already exist in `dst`.
+fn archive_conflicts(src: &ArchiveSrc, dst: &Path, router: &Router) -> anyhow::Result<Vec<String>> {
+    let names: Vec<String> = if src.entries.is_empty() {
+        let dir = VPath::join_archive(&src.archive, &src.base);
+        let provider = router
+            .provider_for(&dir)
+            .ok_or_else(|| anyhow::anyhow!("no provider for {}", dir.display()))?;
+        provider.list(&dir)?.into_iter().map(|e| e.name).collect()
+    } else {
+        let last = |e: &String| e.rsplit('/').next().unwrap_or(e).to_owned();
+        src.entries.iter().map(last).collect()
+    };
+    Ok(names
+        .into_iter()
+        .filter(|name| std::fs::symlink_metadata(dst.join(name)).is_ok())
+        .collect())
+}
+
 /// Resolves the sources (reading the system clipboard for a paste) and scans `dst` for
 /// name clashes off the UI thread, then answers with `Msg::Planned` (or `PlanFailed`, also
 /// when planning panics). False when the thread could not start.
 pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Context) -> bool {
     spawn("keel-plan", move || {
-        let from_clipboard = matches!(source, Source::Clipboard(_));
+        let from_clipboard = matches!(
+            source,
+            Source::Clipboard(_)
+                | Source::Archive {
+                    clipboard: true,
+                    ..
+                }
+        );
         let planned = std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &tx, &ctx)));
         if planned.is_err() {
             send(
@@ -355,8 +499,32 @@ pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Cont
     })
 }
 
-fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
+/// `spawn_plan`'s body, for callers already on a worker (the folder picker).
+pub fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
     let (src, mv, from_clipboard) = match source {
+        Source::Archive {
+            src,
+            router,
+            clipboard,
+        } => {
+            let msg = match archive_conflicts(&src, &dst, &router) {
+                Ok(conflicts) => Msg::Planned {
+                    op: Transfer {
+                        src: Vec::new(),
+                        dst,
+                        mv: false,
+                        extract: Some(src),
+                    },
+                    conflicts,
+                    from_clipboard: clipboard,
+                },
+                Err(e) => Msg::PlanFailed {
+                    text: format!("{e:#}"),
+                    from_clipboard: clipboard,
+                },
+            };
+            return send(tx, ctx, msg);
+        }
         Source::Paths(src, mv) => (src, mv, false),
         Source::Clipboard(clip) => match clip.resolve() {
             Some((src, cut)) => (src, cut, true),
@@ -398,7 +566,12 @@ fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
         tx,
         ctx,
         Msg::Planned {
-            op: Transfer { src, dst, mv },
+            op: Transfer {
+                src,
+                dst,
+                mv,
+                extract: None,
+            },
             conflicts,
             from_clipboard,
         },
@@ -448,6 +621,27 @@ mod tests {
             assert_eq!(std::fs::read_to_string(copied).unwrap(), format!("src/{f}"));
         }
         assert!(root.join("src/a.txt").exists(), "copy keeps the source");
+    }
+
+    #[test]
+    fn archive_names() {
+        assert_eq!(archive_stem("Photos.TAR.GZ"), "Photos");
+        assert_eq!(archive_stem("a.b.zip"), "a.b");
+        assert_eq!(archive_stem(".zip"), ".zip");
+        let dir = VPath::parse("mem://t/work").unwrap();
+        let mut tab = crate::tab::Tab::new(dir.clone());
+        tab.set_entries(vec![
+            crate::tab::test_entry(&dir, "notes.txt", keel_vfs::Kind::File, 1),
+            crate::tab::test_entry(&dir, "src", keel_vfs::Kind::Dir, 0),
+        ]);
+        tab.visible(false);
+        tab.cursor = Some("notes.txt".into());
+        assert_eq!(zip_name(&tab), "notes.zip");
+        tab.cursor = Some("src".into());
+        assert_eq!(zip_name(&tab), "src.zip");
+        tab.select_all();
+        assert_eq!(zip_name(&tab), "work.zip");
+        assert_eq!(ArchiveSrc::picked(&dir, &[dir.join("src")]), None);
     }
 
     #[test]

@@ -104,6 +104,13 @@ pub fn ui(
                         egui::Image::new(crate::icons::icon_for(e))
                             .fit_to_exact_size(egui::vec2(16.0, 16.0)),
                     );
+                    if e.encrypted {
+                        ui.add(
+                            egui::Image::new(crate::icons::lock())
+                                .fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                        )
+                        .on_hover_text("Password-protected");
+                    }
                     match &mut renaming {
                         Some((name, text)) if *name == e.name => {
                             let r = ui
@@ -146,7 +153,7 @@ pub fn ui(
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
                 let r = row.response();
-                r.context_menu(|ui| context_menu(ui, true, search, out));
+                r.context_menu(|ui| context_menu(ui, tab, Some(e), out));
                 clicks.push((r, e.clone()));
             });
         });
@@ -182,5 +189,5 @@ pub fn empty_area(ui: &mut egui::Ui, tab: &mut Tab, out: &mut Vec<Action>) {
     if r.clicked() || r.secondary_clicked() {
         tab.selected.clear();
     }
-    r.context_menu(|ui| context_menu(ui, false, false, out));
+    r.context_menu(|ui| context_menu(ui, tab, None, out));
 }

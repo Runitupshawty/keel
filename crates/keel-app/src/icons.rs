@@ -21,6 +21,15 @@ pub fn generic() -> ImageSource<'static> {
     icon!("file")
 }
 
+/// Badge for password-protected archive entries.
+pub fn lock() -> ImageSource<'static> {
+    icon!("lock")
+}
+
+pub fn archive() -> ImageSource<'static> {
+    icon!("zip")
+}
+
 /// The same icon under a distinct URI: egui caches one texture per URI at the first
 /// size it was drawn, so large tiles need their own entry to rasterize sharply.
 pub fn large(src: ImageSource<'static>) -> ImageSource<'static> {
@@ -36,6 +45,10 @@ pub fn large(src: ImageSource<'static>) -> ImageSource<'static> {
 pub fn icon_for(entry: &Entry) -> ImageSource<'static> {
     if entry.kind == Kind::Dir {
         return folder();
+    }
+    // `.tar.gz` and friends, and archives nested inside archives, open as folders.
+    if keel_vfs::VPath::is_archive_name(&entry.name) {
+        return archive();
     }
     icon_for_ext(&entry.ext)
 }
@@ -101,5 +114,7 @@ mod tests {
         assert_eq!(uri(icon_for_ext("unknownext")), uri(generic()));
         let d = crate::tab::test_entry(&dir, "src", Kind::Dir, 0);
         assert_eq!(uri(icon_for(&d)), uri(folder()));
+        let tgz = crate::tab::test_entry(&dir, "logs.tar.zst", Kind::File, 1);
+        assert_eq!(uri(icon_for(&tgz)), uri(archive()));
     }
 }
