@@ -1,8 +1,8 @@
 use super::{ArchiveEntry, ArchiveReader};
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::{
     fs::File,
-    io::{self, BufReader, Read},
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     time::{Duration, UNIX_EPOCH},
 };
@@ -80,30 +80,20 @@ impl ArchiveReader for Reader {
         // it, but no body is kept.
         metadata(::tar::Archive::new(self.input()?).entries()?)
     }
-    fn read(&mut self, inner: &str) -> Result<Box<dyn Read + Send>> {
-        let input = self.input()?;
-        let inner = inner.to_owned();
-        Ok(super::stream(move |out| {
-            for entry in ::tar::Archive::new(input).entries()? {
-                let mut entry = entry?;
-                if entry.header().entry_type().is_file() && name(&entry) == inner {
-                    io::copy(&mut entry, out)?;
-                    return Ok(());
-                }
-            }
-            bail!("archive entry not found: {inner}")
-        }))
+    fn local(&self) -> &Path {
+        &self.path
     }
-    fn visit(
+    /// One sequential pass; the tar crate skips unread bodies itself.
+    fn each_file(
         &mut self,
         want: &dyn Fn(&str) -> bool,
-        each: &mut dyn FnMut(&str, &mut dyn Read) -> Result<()>,
+        each: &mut dyn FnMut(&str, u64, &mut dyn Read) -> Result<()>,
     ) -> Result<()> {
         for entry in ::tar::Archive::new(self.input()?).entries()? {
             let mut entry = entry?;
             let name = name(&entry);
             if entry.header().entry_type().is_file() && want(&name) {
-                each(&name, &mut entry)?;
+                each(&name, entry.size(), &mut entry)?;
             }
         }
         Ok(())

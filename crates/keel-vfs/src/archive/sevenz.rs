@@ -11,41 +11,19 @@ const AES: [u8; 4] = [0x06, 0xf1, 0x07, 0x01];
 
 pub(super) struct Reader {
     path: PathBuf,
-    archive: sevenz_rust::SevenZReader<File>,
+    archive: sevenz_rust::Archive,
 }
 impl Reader {
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             path: path.into(),
-            archive: sevenz_rust::SevenZReader::open(path, Default::default())?,
+            archive: sevenz_rust::Archive::open(path)?,
         })
     }
 }
-/// Calls `each` for every regular file `want` accepts, decoding the archive once.
-fn visit(
-    path: &Path,
-    want: &dyn Fn(&str) -> bool,
-    each: &mut dyn FnMut(&str, &mut dyn Read) -> Result<()>,
-) -> Result<()> {
-    let mut archive = sevenz_rust::SevenZReader::open(path, Default::default())?;
-    let mut failure = None;
-    archive.for_each_entries(|entry, input| {
-        if entry.is_directory() || entry.is_anti_item() || !want(&entry.name) {
-            return Ok(true);
-        }
-        match each(&entry.name, input) {
-            Ok(()) => Ok(true),
-            Err(e) => {
-                failure = Some(e);
-                Ok(false)
-            }
-        }
-    })?;
-    failure.map_or(Ok(()), Err)
-}
 impl ArchiveReader for Reader {
     fn entries(&mut self) -> Result<Vec<ArchiveEntry>> {
-        let archive = self.archive.archive();
+        let archive = &self.archive;
         Ok(archive
             .files
             .iter()
@@ -77,31 +55,50 @@ impl ArchiveReader for Reader {
             })
             .collect())
     }
-    fn read(&mut self, inner: &str) -> Result<Box<dyn Read + Send>> {
-        let path = self.path.clone();
-        let inner = inner.to_owned();
-        Ok(super::stream(move |out| {
-            let found = std::cell::Cell::new(false);
-            // ponytail: decodes earlier folders too; seek straight to the entry's folder
-            // if previews of large non-solid 7z archives get slow.
-            visit(
-                &path,
-                &|name| !found.get() && name == inner,
-                &mut |_, input| {
-                    io::copy(input, out)?;
-                    found.set(true);
-                    Ok(())
-                },
-            )?;
-            anyhow::ensure!(found.get(), "archive entry not found: {inner}");
-            Ok(())
-        }))
+    fn local(&self) -> &Path {
+        &self.path
     }
-    fn visit(
+    /// Decodes only the folders (blocks) holding a wanted file. Inside a block every file
+    /// is read to its end, wanted or not, because the next one starts where it stops: in a
+    /// solid archive (7-Zip's default) one block holds many files.
+    fn each_file(
         &mut self,
         want: &dyn Fn(&str) -> bool,
-        each: &mut dyn FnMut(&str, &mut dyn Read) -> Result<()>,
+        each: &mut dyn FnMut(&str, u64, &mut dyn Read) -> Result<()>,
     ) -> Result<()> {
-        visit(&self.path, want, each)
+        let wanted = |file: &sevenz_rust::SevenZArchiveEntry| {
+            !file.is_directory() && !file.is_anti_item() && want(&file.name)
+        };
+        let mut source = File::open(&self.path)?;
+        let mut failure = None;
+        for folder in 0..self.archive.folders.len() {
+            let block = sevenz_rust::BlockDecoder::new(folder, &self.archive, &[], &mut source);
+            if !block.entries().iter().any(wanted) {
+                continue;
+            }
+            let finished = block.for_each_entries(&mut |file, input| {
+                if wanted(file) {
+                    if let Err(e) = each(&file.name, file.size, input) {
+                        failure = Some(e);
+                        return Ok(false);
+                    }
+                }
+                io::copy(input, &mut io::sink()).map_err(sevenz_rust::Error::io)?;
+                Ok(true)
+            })?;
+            if !finished {
+                break;
+            }
+        }
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        // Empty files belong to no block.
+        for (i, file) in self.archive.files.iter().enumerate() {
+            if self.archive.stream_map.file_folder_index[i].is_none() && wanted(file) {
+                each(&file.name, 0, &mut io::empty())?;
+            }
+        }
+        Ok(())
     }
 }
