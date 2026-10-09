@@ -26,6 +26,8 @@ parking_lot.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
+# Icon theme SVGs are checked with the parser usvg uses (egui_extras 0.31 -> usvg 0.37).
+roxmltree = "0.19"
 # rar (C++ via `cc`) is its own feature so cross-target checks can leave it out:
 # `cargo check -p keel-app --target x86_64-unknown-linux-gnu --no-default-features`.
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }

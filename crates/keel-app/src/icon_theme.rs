@@ -19,6 +19,12 @@ pub const BUILTIN: &str = "default";
 const MAX_DOWNLOAD: u64 = 200 << 20;
 /// One file inside the .vsix (theme JSON, an icon, the license).
 const MAX_ENTRY: u64 = 16 << 20;
+/// All icons of a theme together.
+const MAX_THEME_BYTES: u64 = 64 << 20;
+/// Icons in a theme.
+const MAX_ICONS: usize = 10_000;
+/// License text shown in the dialog.
+const MAX_LICENSE: usize = 64 << 10;
 
 /// Which icon (an `iconDefinitions` id) a name gets. Keys are lowercase once loaded.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
@@ -237,6 +243,85 @@ impl Loaded {
     }
 }
 
+/// Why an icon theme's SVG is refused, or None when it is self-contained. Themes come from
+/// the Marketplace, and egui_extras renders SVGs with usvg's default options, which load an
+/// `<image href>` (or `<feImage>`) from disk or a UNC path: a leaked NTLM hash, a frozen UI,
+/// local files shown. Refused: `<image>`, `<script>`, `<foreignObject>`, entity
+/// declarations (they could hide any of these, or expand without end), an `href` that is not
+/// `#id` or `data:`, CSS `@import`, `url()` to anything but `#id`, CSS escapes in styles,
+/// and anything that is not well-formed UTF-8 XML (usvg would also inflate gzip).
+pub fn svg_unsafe(bytes: &[u8]) -> Option<&'static str> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Some("not UTF-8 text");
+    };
+    let raw = text.to_ascii_lowercase();
+    for (needle, why) in [
+        ("<image", "an <image>"),
+        ("<script", "a <script>"),
+        ("<foreignobject", "a <foreignObject>"),
+        ("<!entity", "an entity declaration"),
+        ("@import", "a CSS @import"),
+    ] {
+        if raw.contains(needle) {
+            return Some(why);
+        }
+    }
+    // As usvg parses it.
+    let opts = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    let Ok(doc) = roxmltree::Document::parse_with_options(text, opts) else {
+        return Some("not well-formed XML");
+    };
+    let in_style = |n: roxmltree::Node| n.parent().is_some_and(|p| p.has_tag_name("style"));
+    for node in doc.descendants() {
+        if node.is_text() {
+            let text = node.text().unwrap_or_default();
+            if let Some(why) = css_unsafe(text, in_style(node)) {
+                return Some(why);
+            }
+            continue;
+        }
+        let tag = node.tag_name().name().to_ascii_lowercase();
+        if matches!(tag.as_str(), "image" | "script" | "foreignobject") {
+            return Some("a forbidden element");
+        }
+        for attr in node.attributes() {
+            let value = attr.value().trim_start();
+            if attr.name().eq_ignore_ascii_case("href")
+                && !value.starts_with('#')
+                && !value.to_ascii_lowercase().starts_with("data:")
+            {
+                return Some("an external href");
+            }
+            if let Some(why) = css_unsafe(value, attr.name() == "style") {
+                return Some(why);
+            }
+        }
+    }
+    None
+}
+
+/// `@import`, a `url()` to anything but `#id`, and (in a stylesheet) escapes, which could
+/// spell either.
+fn css_unsafe(text: &str, stylesheet: bool) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("@import") {
+        return Some("a CSS @import");
+    }
+    if stylesheet && text.contains('\\') {
+        return Some("a CSS escape");
+    }
+    for (i, _) in lower.match_indices("url(") {
+        let target = lower[i + 4..].trim_start().trim_start_matches(['"', '\'']);
+        if !target.starts_with('#') {
+            return Some("a url() outside the file");
+        }
+    }
+    None
+}
+
 /// "svg" or "png" for an icon path; other formats are skipped.
 fn icon_ext(path: &str) -> Option<&'static str> {
     let lower = path.to_ascii_lowercase();
@@ -267,6 +352,12 @@ pub fn load(dir: &Path, generation: u64) -> Result<Loaded> {
         let bytes = match files.get(rel) {
             Some(b) => b.clone(),
             None => match std::fs::read(dir.join(rel)) {
+                // Themes installed before the checks existed are checked here too.
+                Ok(b) if icon_ext(rel) == Some("svg") && svg_unsafe(&b).is_some() => {
+                    let why = svg_unsafe(&b).unwrap_or_default();
+                    tracing::warn!("icon theme {}: {rel} skipped: {why}", dir.display());
+                    continue;
+                }
                 Ok(b) => files.entry(rel.to_owned()).or_insert(b.into()).clone(),
                 Err(e) => {
                     tracing::warn!("icon theme {}: {rel}: {e}", dir.display());
@@ -363,6 +454,19 @@ pub struct Vsix {
     bytes: Arc<Vec<u8>>,
 }
 
+/// `text` cut to at most `max` bytes (on a character boundary), with a note when cut.
+fn truncated(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n\n[… cut here: the full text is in the package]");
+    }
+    text
+}
+
 /// Reads `extension/package.json` and the license of a .vsix (gzip-wrapped or not).
 pub fn inspect(id: &str, bytes: Vec<u8>) -> Result<Vsix> {
     let bytes = gunzip_if_needed(bytes)?;
@@ -408,16 +512,22 @@ pub fn inspect(id: &str, bytes: Vec<u8>) -> Result<Vsix> {
     Ok(Vsix {
         id: id.to_owned(),
         label,
-        license,
+        license: truncated(license, MAX_LICENSE),
         theme_path,
         bytes: Arc::new(bytes),
     })
 }
 
 /// Unpacks the icon theme of `v` into `<root>/<id>/`: a normalized theme.json (label added,
-/// icon paths `icons/<n>.svg|png`) and only the icon files it uses. Replaces an older install;
-/// a failure leaves the old one alone.
-pub fn install(v: &Vsix, root: &Path) -> Result<()> {
+/// icon paths `icons/<n>.svg|png`) and only the icon files it uses, without the SVGs
+/// `svg_unsafe` refuses. Returns how many icon files were refused. At most `MAX_ICONS`
+/// icons, `MAX_THEME_BYTES` in all. Replaces an older install; a failure leaves the old one
+/// alone.
+pub fn install(v: &Vsix, root: &Path) -> Result<usize> {
+    install_capped(v, root, MAX_THEME_BYTES, MAX_ICONS)
+}
+
+fn install_capped(v: &Vsix, root: &Path, max_bytes: u64, max_icons: usize) -> Result<usize> {
     ensure!(split_id(&v.id).is_some(), "invalid extension id {}", v.id);
     let mut zip = zip::ZipArchive::new(Cursor::new(&v.bytes[..]))?;
     let theme_entry = zip_join("extension", &v.theme_path).context("bad icon theme path")?;
@@ -430,18 +540,35 @@ pub fn install(v: &Vsix, root: &Path) -> Result<()> {
     let tmp = root.join(format!(".{}.partial", v.id));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join("icons"))?;
-    let written = (|| -> Result<()> {
+    let written = (|| -> Result<usize> {
         let mut stored: HashMap<String, String> = HashMap::new();
+        let mut refused = std::collections::HashSet::new();
+        let mut total = 0;
         for def in json.icon_definitions.values_mut() {
             let src = def.icon_path.take().and_then(|rel| {
                 let ext = icon_ext(&rel)?;
                 Some((zip_join(&theme_dir, &rel)?, ext))
             });
             let Some((src, ext)) = src else { continue };
-            if !stored.contains_key(&src) {
+            if !stored.contains_key(&src) && !refused.contains(&src) {
                 let Ok(bytes) = read_entry(&mut zip, &src) else {
                     continue;
                 };
+                if let Some(why) = (ext == "svg").then(|| svg_unsafe(&bytes)).flatten() {
+                    tracing::warn!("icon theme {}: {src} refused: {why}", v.id);
+                    refused.insert(src);
+                    continue;
+                }
+                ensure!(
+                    stored.len() < max_icons,
+                    "the theme has more than {max_icons} icons"
+                );
+                total += bytes.len() as u64;
+                ensure!(
+                    total <= max_bytes,
+                    "the theme's icons take more than {} MB",
+                    max_bytes >> 20
+                );
                 let name = format!("icons/{}.{ext}", stored.len());
                 std::fs::write(tmp.join(&name), bytes)?;
                 stored.insert(src.clone(), name);
@@ -460,7 +587,7 @@ pub fn install(v: &Vsix, root: &Path) -> Result<()> {
             std::fs::remove_dir_all(&dest).context("replace the installed theme")?;
         }
         std::fs::rename(&tmp, &dest)?;
-        Ok(())
+        Ok(refused.len())
     })();
     if written.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -506,7 +633,8 @@ enum Done {
     Listed(Vec<(String, String)>),
     Progress(u64, Option<u64>),
     Downloaded(Result<Box<Vsix>, String>),
-    Installed(Result<String, String>),
+    /// (id, icons refused) or why not.
+    Installed(Result<(String, usize), String>),
     Loaded(String, Result<Arc<Loaded>, String>),
     Removed(Result<String, String>),
 }
@@ -588,8 +716,14 @@ impl IconThemes {
                 Done::Installed(result) => {
                     self.busy = false;
                     match result {
-                        Ok(id) => {
-                            toasts.info(format!("Icon theme {id} installed"));
+                        Ok((id, refused)) => {
+                            match refused {
+                                0 => toasts.info(format!("Icon theme {id} installed")),
+                                n => toasts.info(format!(
+                                    "Icon theme {id} installed without {n} icon(s) that could \
+                                     load files from disk or the network"
+                                )),
+                            }
                             settings.icon_theme = id;
                             self.applied = None; // reload even when reinstalled
                             self.relist();
@@ -603,9 +737,11 @@ impl IconThemes {
                     }
                     match result {
                         Ok(theme) => self.activate(Some(theme)),
+                        // For this run only: the setting stays, so a theme that failed for
+                        // a passing reason (a locked file) is back next time.
                         Err(e) => {
                             toasts.error(format!("Icon theme {id}: {e}; using the built-in icons"));
-                            settings.icon_theme = BUILTIN.into();
+                            self.activate(None);
                         }
                     }
                 }
@@ -808,7 +944,7 @@ impl IconThemes {
                     let id = v.id.clone();
                     Done::Installed(
                         install(&v, &root())
-                            .map(|()| id)
+                            .map(|refused| (id, refused))
                             .map_err(|e| format!("{e:#}")),
                     )
                 });
@@ -1033,6 +1169,181 @@ mod tests {
         assert!(list_installed(&root).is_empty());
         assert!(remove(&root, "../x").is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unsafe_svgs_are_refused() {
+        let gz = {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(b"<svg/>").unwrap();
+            gz.finish().unwrap()
+        };
+        let bad: &[(&[u8], &str)] = &[
+            (br#"<svg><image href="C:\x.png"/></svg>"#, "<image>"),
+            (br#"<svg><IMAGE href="x.png"/></svg>"#, "<image>, any case"),
+            (br#"<svg><script>alert(1)</script></svg>"#, "<script>"),
+            (br#"<svg><foreignObject/></svg>"#, "<foreignObject>"),
+            (br#"<svg><use href="file:///etc/passwd"/></svg>"#, "file href"),
+            (
+                br#"<svg xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="\\host\share\x.svg"/></svg>"#,
+                "UNC xlink:href",
+            ),
+            (br#"<svg><filter><feImage href="//host/x.png"/></filter></svg>"#, "feImage href"),
+            (br#"<svg><a href="https://example.com"/></svg>"#, "web href"),
+            (br#"<svg><style>@import url(x.css);</style></svg>"#, "@import"),
+            (br#"<svg><style>rect { fill: url(x.svg#a) }</style></svg>"#, "url() in a stylesheet"),
+            (br#"<svg><rect fill="url(http://x/#a)"/></svg>"#, "url() attribute"),
+            (br#"<svg><rect style="fill: URL( 'file:x' )"/></svg>"#, "url() in style"),
+            (br#"<svg><style>rect { fill: u\72l(x) }</style></svg>"#, "CSS escape"),
+            (
+                br#"<!DOCTYPE svg [<!ENTITY i "&#60;image href='x.png'/&#62;">]><svg>&i;</svg>"#,
+                "entity",
+            ),
+            (&gz, "gzip"),
+            (b"<svg><rect></svg>", "not well-formed"),
+            (b"<svg>\xff</svg>", "not UTF-8"),
+        ];
+        for (svg, what) in bad {
+            assert!(svg_unsafe(svg).is_some(), "{what} should be refused");
+        }
+        let good: &[&[u8]] = &[
+            b"<svg id='x'/>",
+            br##"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs>
+                <use href="#a"/><rect fill="url(#g)" style="fill: url( '#g' )"/></svg>"##,
+            br#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x.dtd"><svg/>"#,
+            br#"<svg><use href="data:image/png;base64,AAAA"/><style>rect{fill:#fff}</style></svg>"#,
+        ];
+        for svg in good {
+            assert_eq!(svg_unsafe(svg), None, "{}", String::from_utf8_lossy(svg));
+        }
+    }
+
+    /// A theme package whose icons are `icons` (name, body), all used by one definition each.
+    fn vsix_with(icons: &[(&str, &[u8])]) -> Vsix {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        let defs: Vec<String> = icons
+            .iter()
+            .map(|(n, _)| format!(r#""{n}": {{"iconPath": "./icons/{n}"}}"#))
+            .collect();
+        let theme = format!(
+            r#"{{"iconDefinitions": {{{}}}, "file": "{}"}}"#,
+            defs.join(","),
+            icons[0].0
+        );
+        zip.start_file("extension/package.json", opts).unwrap();
+        zip.write_all(br#"{"contributes":{"iconThemes":[{"label":"T","path":"./theme.json"}]}}"#)
+            .unwrap();
+        zip.start_file("extension/theme.json", opts).unwrap();
+        zip.write_all(theme.as_bytes()).unwrap();
+        for (name, body) in icons {
+            zip.start_file(format!("extension/icons/{name}"), opts)
+                .unwrap();
+            zip.write_all(body).unwrap();
+        }
+        inspect("test.caps", zip.finish().unwrap().into_inner()).unwrap()
+    }
+
+    #[test]
+    fn install_refuses_unsafe_icons_and_load_skips_them() {
+        let root = std::env::temp_dir().join(format!("keel-icon-unsafe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let v = vsix_with(&[
+            ("ok.svg", b"<svg id='ok'/>"),
+            (
+                "bad.svg",
+                br#"<svg><image href="\\host\share\x.png"/></svg>"#,
+            ),
+            ("bad2.svg", br#"<svg><style>@import "x.css";</style></svg>"#),
+            ("raw.png", b"\x89PNG <image href='x'>"),
+        ]);
+        assert_eq!(install(&v, &root).unwrap(), 2, "two SVGs refused");
+        let dir = root.join("test.caps");
+        let stored = parse(&std::fs::read_to_string(dir.join("theme.json")).unwrap()).unwrap();
+        let mut ids: Vec<_> = stored.icon_definitions.keys().cloned().collect();
+        ids.sort();
+        assert_eq!(ids, ["ok.svg", "raw.png"], "PNGs are not SVG-checked");
+        // An install from before the check: load skips the unsafe file.
+        let path = dir.join(
+            stored.icon_definitions["ok.svg"]
+                .icon_path
+                .as_ref()
+                .unwrap(),
+        );
+        std::fs::write(&path, br#"<svg><image href="C:\secret.png"/></svg>"#).unwrap();
+        let t = load(&dir, 1).unwrap();
+        assert!(t.icons.contains_key("raw.png"));
+        assert!(!t.icons.contains_key("ok.svg"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_caps_icon_count_and_bytes() {
+        let root = std::env::temp_dir().join(format!("keel-icon-caps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let v = vsix_with(&[
+            ("a.svg", b"<svg id='a'/>"),
+            ("b.svg", b"<svg id='b'/>"),
+            ("c.svg", b"<svg id='c'/>"),
+        ]);
+        let err = install_capped(&v, &root, MAX_THEME_BYTES, 2).unwrap_err();
+        assert!(format!("{err:#}").contains("more than 2 icons"), "{err:#}");
+        let err = install_capped(&v, &root, 30, MAX_ICONS).unwrap_err();
+        assert!(format!("{err:#}").contains("MB"), "{err:#}");
+        assert!(!root.join("test.caps").exists(), "nothing left behind");
+        assert!(!root.join(".test.caps.partial").exists());
+        // At the limits it installs.
+        assert_eq!(install_capped(&v, &root, 39, 3).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn license_text_is_capped() {
+        assert_eq!(truncated("MIT".into(), 10), "MIT");
+        let long = "ä".repeat(40_000); // 80,000 bytes
+        let cut = truncated(long, MAX_LICENSE);
+        let (text, note) = cut.split_once("\n\n[").unwrap();
+        assert!(text.len() <= MAX_LICENSE && text.len() > MAX_LICENSE - 2);
+        assert!(text.chars().all(|c| c == 'ä'));
+        assert!(note.contains("cut"));
+    }
+
+    /// A theme that fails to load falls back to the built-in icons for this run only.
+    #[test]
+    fn failed_load_keeps_the_setting() {
+        let _env = crate::settings::TEST_ENV.lock();
+        let cfg = std::env::temp_dir().join(format!("keel-icon-fail-{}", std::process::id()));
+        let before = std::env::var_os("KEEL_CONFIG_DIR");
+        std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+        let mut themes = IconThemes::new(egui::Context::default());
+        let mut settings = Settings {
+            icon_theme: "missing.theme".into(),
+            ..Settings::default()
+        };
+        let mut toasts = Toasts::default();
+        for _ in 0..500 {
+            themes.tick(&mut settings, &mut toasts);
+            if !toasts.list.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        match before {
+            Some(dir) => std::env::set_var("KEEL_CONFIG_DIR", dir),
+            None => std::env::remove_var("KEEL_CONFIG_DIR"),
+        }
+        assert!(toasts
+            .list
+            .iter()
+            .any(|t| t.text.contains("built-in icons")));
+        assert_eq!(settings.icon_theme, "missing.theme");
+        assert_eq!(
+            themes.applied.as_deref(),
+            Some("missing.theme"),
+            "not retried"
+        );
+        assert!(!crate::icons::has_theme());
+        let _ = std::fs::remove_dir_all(&cfg);
     }
 
     /// Live, with network and a GPU: `KEEL_CONFIG_DIR=<empty temp dir> KEEL_SHOT=<png>
