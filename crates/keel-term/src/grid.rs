@@ -284,9 +284,20 @@ mod tests {
                 assert!(!base.join(marker).exists(), "{name}: code ran");
                 assert!(!dir.join(marker).exists(), "{name}: code ran");
             }
+            // Canonicalize both sides: CI runners put TEMP under an 8.3 short name
+            // (RUNNER~1) while PowerShell reports the long one.
+            let canon = |p: &std::path::Path| {
+                std::fs::canonicalize(p)
+                    .map(|c| {
+                        c.to_string_lossy()
+                            .trim_start_matches(r"\?\")
+                            .to_lowercase()
+                    })
+                    .unwrap_or_else(|_| p.to_string_lossy().to_lowercase())
+            };
             assert_eq!(
-                landed,
-                dir.to_str().unwrap(),
+                canon(std::path::Path::new(&landed)),
+                canon(&dir),
                 "stderr: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
