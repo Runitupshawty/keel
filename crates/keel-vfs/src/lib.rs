@@ -10,6 +10,7 @@ pub mod cloud;
 pub mod desktop;
 pub mod drag_out;
 // --- end Task 24 ---
+pub mod library;
 pub mod path;
 /// Per-user named pipe security (single instance, Windows).
 #[cfg(windows)]
