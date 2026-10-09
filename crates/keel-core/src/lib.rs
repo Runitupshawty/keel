@@ -25,6 +25,7 @@ mod sidecar_job;
 mod sidecars;
 mod tags;
 
+pub use fsid::unix_ns;
 pub use hash::{
     on_battery, Copies, DupGroup, HashJob, HashResult, Location, SkipReason, SkippedSource, SAMPLE,
     WHOLE,
@@ -39,7 +40,6 @@ pub use library::{
     SourceId, SourceKind, SourceStatus, SourceSummary,
 };
 pub use media::{ffmpeg_available, read_meta, MediaMeta, MAX_PIXELS};
-pub use fsid::unix_ns;
 pub use oplog::OpLogEntry;
 pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
