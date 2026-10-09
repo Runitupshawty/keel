@@ -156,6 +156,7 @@ mod tests {
                 size: 1,
                 modified: None,
                 hidden: false,
+                is_link: false,
                 ext: "keel-panic".into(),
             },
             bytes_path: path,

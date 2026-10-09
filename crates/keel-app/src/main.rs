@@ -1,5 +1,8 @@
 mod app;
+mod clipboard;
+mod dialogs;
 mod icons;
+mod jobs;
 mod keys;
 mod pane;
 mod platform;

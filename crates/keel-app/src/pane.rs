@@ -235,6 +235,15 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         );
         if std::mem::take(&mut pane.focus_path) {
             r.request_focus();
+            // Select all, so typing replaces the shown path.
+            let mut state = egui::TextEdit::load_state(ui.ctx(), r.id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(text.chars().count()),
+                )));
+            state.store(ui.ctx(), r.id);
         }
         if r.lost_focus() {
             if ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -396,8 +405,63 @@ pub fn handle_click(
         tab.click(&entry.name, mods.command, mods.shift);
     } else if r.secondary_clicked() && !tab.selected.contains(&entry.name) {
         tab.click(&entry.name, false, false);
-    } else if r.middle_clicked() && entry.kind != keel_vfs::Kind::File {
+    } else if r.middle_clicked() && entry.kind == keel_vfs::Kind::Dir {
         out.push(Action::NewTabAt(entry.path.clone()));
+    }
+}
+
+/// In-app drag payload: entries dragged out of pane `pane` showing folder `dir`.
+pub struct DragPayload {
+    pub pane: usize,
+    pub dir: VPath,
+    pub paths: Vec<VPath>,
+}
+
+impl DragPayload {
+    pub fn local_paths(&self) -> Vec<std::path::PathBuf> {
+        self.paths.iter().filter_map(VPath::to_local_path).collect()
+    }
+}
+
+/// Shared row/tile drag handling: a drag starts with the row's selection (selecting the
+/// row first if needed); folders accept drops.
+pub fn drag_and_drop(
+    r: &egui::Response,
+    pane: usize,
+    tab: &mut Tab,
+    entry: &keel_vfs::Entry,
+    out: &mut Vec<Action>,
+) {
+    if r.drag_started() {
+        if !tab.selected.contains(&entry.name) {
+            tab.click(&entry.name, false, false);
+        }
+        let paths = tab.targets().iter().map(|e| e.path.clone()).collect();
+        r.dnd_set_drag_payload(DragPayload {
+            pane,
+            dir: tab.dir.clone(),
+            paths,
+        });
+    }
+    if entry.kind != keel_vfs::Kind::Dir {
+        return;
+    }
+    if let Some(p) = r.dnd_hover_payload::<DragPayload>() {
+        if !p.paths.contains(&entry.path) {
+            let stroke = r.ctx.style().visuals.selection.stroke;
+            r.ctx
+                .layer_painter(egui::LayerId::new(egui::Order::Foreground, r.id))
+                .rect_stroke(r.rect, 3.0, stroke, egui::StrokeKind::Inside);
+        }
+    }
+    if let Some(p) = r.dnd_release_payload::<DragPayload>() {
+        if !p.paths.contains(&entry.path) {
+            out.push(Action::Drop {
+                paths: p.local_paths(),
+                from: Some((p.pane, p.dir.clone())),
+                dst: entry.path.clone(),
+            });
+        }
     }
 }
 

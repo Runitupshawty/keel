@@ -78,14 +78,23 @@ fn local(p: &VPath) -> Result<PathBuf> {
         .and_then(|p| long(&p))
 }
 
-fn entry(path: VPath, metadata: fs::Metadata) -> Entry {
+/// `metadata` is the entry's own (not followed); links are described by their target.
+fn entry(path: VPath, local: &Path, metadata: fs::Metadata) -> Entry {
     let name = path.name().to_owned();
-    let kind = if metadata.is_symlink() {
-        Kind::Symlink
-    } else if metadata.is_dir() {
-        Kind::Dir
-    } else {
-        Kind::File
+    let hidden = is_hidden(&name, &metadata);
+    let is_link = metadata.is_symlink();
+    let (kind, metadata) = match is_link.then(|| fs::metadata(local)) {
+        Some(Ok(target)) => (
+            if target.is_dir() {
+                Kind::Dir
+            } else {
+                Kind::File
+            },
+            target,
+        ),
+        Some(Err(_)) => (Kind::Symlink, metadata),
+        None if metadata.is_dir() => (Kind::Dir, metadata),
+        None => (Kind::File, metadata),
     };
     let ext = if kind == Kind::Dir {
         String::new()
@@ -96,7 +105,8 @@ fn entry(path: VPath, metadata: fs::Metadata) -> Entry {
             .unwrap_or_default()
     };
     Entry {
-        hidden: is_hidden(&name, &metadata),
+        hidden,
+        is_link,
         path,
         name,
         kind,
@@ -146,6 +156,7 @@ impl Provider for LocalProvider {
                     let metadata = item.metadata()?;
                     Ok(entry(
                         dir.join(&item.file_name().to_string_lossy()),
+                        &item.path(),
                         metadata,
                     ))
                 })
@@ -167,8 +178,9 @@ impl Provider for LocalProvider {
         .with_context(|| format!("list {}", dir.display()))
     }
     fn stat(&self, p: &VPath) -> Result<Entry> {
-        fs::symlink_metadata(local(p)?)
-            .map(|m| entry(p.clone(), m))
+        let path = local(p)?;
+        fs::symlink_metadata(&path)
+            .map(|m| entry(p.clone(), &path, m))
             .with_context(|| format!("stat {}", p.display()))
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {

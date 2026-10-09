@@ -218,3 +218,31 @@ fn perf_list_50k() {
         "listing took {elapsed:?}"
     );
 }
+
+#[test]
+fn links_are_listed_as_their_target_kind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("real");
+    fs::create_dir(&target).unwrap();
+    let link = tmp.path().join("link");
+    // A junction needs no privilege on Windows (symlinks do).
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&target)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let entries = LocalProvider.list(&VPath::local(tmp.path())).unwrap();
+    let e = entries.iter().find(|e| e.name == "link").unwrap();
+    assert_eq!(e.kind, Kind::Dir);
+    assert!(e.is_link);
+    assert!(!entries.iter().find(|e| e.name == "real").unwrap().is_link);
+    fs::remove_dir(&target).unwrap();
+    let e = LocalProvider.stat(&VPath::local(&link)).unwrap();
+    assert_eq!(e.kind, Kind::Symlink, "dangling");
+}

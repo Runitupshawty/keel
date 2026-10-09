@@ -29,6 +29,7 @@ fn temp_request(path: &Path, ext: &str, max_px: u32) -> Request {
             size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
             modified: None,
             hidden: false,
+            is_link: false,
             ext: ext.into(),
         },
         bytes_path: path.to_owned(),

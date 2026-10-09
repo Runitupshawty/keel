@@ -3,44 +3,29 @@
 
 use crate::preview_panel::PreviewKey;
 use crate::state::Msg;
+use crate::tab::Listing;
 use crossbeam_channel::{Sender, TrySendError};
 use keel_vfs::{Entry, Router, VPath};
 use std::sync::Arc;
 
-fn send(tx: &Sender<Msg>, ctx: &egui::Context, msg: Msg) {
+pub fn send(tx: &Sender<Msg>, ctx: &egui::Context, msg: Msg) {
     let _ = tx.send(msg);
     ctx.request_repaint();
 }
 
-fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
+pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
     if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(f) {
         tracing::error!("spawn {name}: {e}");
     }
 }
 
-pub fn spawn_list(
-    router: Arc<Router>,
-    dir: VPath,
-    pane: usize,
-    tab: usize,
-    tx: Sender<Msg>,
-    ctx: egui::Context,
-) {
+pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ctx: egui::Context) {
     spawn("keel-list", move || {
         let result = match router.provider_for(&dir) {
-            Some(p) => p.list(&dir),
+            Some(p) => p.list(&dir).map(Listing::new),
             None => Err(anyhow::anyhow!("no provider for {}", dir.display())),
         };
-        send(
-            &tx,
-            &ctx,
-            Msg::Listed {
-                pane,
-                tab,
-                dir,
-                result,
-            },
-        );
+        send(&tx, &ctx, Msg::Listed { dir, req, result });
     });
 }
 

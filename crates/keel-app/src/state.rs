@@ -1,11 +1,14 @@
 //! Application state and the message loop. All IO happens in `worker`; this file only
 //! reacts to messages and user actions.
 
+use crate::clipboard::Clipboard;
+use crate::dialogs::{self, Dialog};
+use crate::jobs::{self, Jobs, Source, Transfer};
 use crate::keys::Action;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
-use crate::tab::Tab;
+use crate::tab::{Listing, Tab};
 use crate::theme::Theme;
 use crate::toast::Toasts;
 use crate::view_grid::Thumbs;
@@ -14,6 +17,7 @@ use crossbeam_channel::{Receiver, Sender};
 use keel_vfs::{Entry, Kind, Router, VPath};
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,11 +25,11 @@ use std::time::{Duration, Instant};
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
 
 pub enum Msg {
+    /// Answer to listing request `req` (numbers only grow; older answers lose).
     Listed {
-        pane: usize,
-        tab: usize,
         dir: VPath,
-        result: anyhow::Result<Vec<Entry>>,
+        req: u64,
+        result: anyhow::Result<Listing>,
     },
     Changed {
         dir: VPath,
@@ -48,16 +52,24 @@ pub enum Msg {
         key: PreviewKey,
         preview: keel_preview::Preview,
     },
-    /// Task 6: file operation jobs.
-    #[allow(dead_code)]
     JobProgress {
         id: u64,
         p: keel_vfs::Progress,
     },
-    #[allow(dead_code)]
     JobDone {
         id: u64,
         result: anyhow::Result<()>,
+    },
+    /// Sources resolved and `dst` scanned for name clashes; start or ask.
+    Planned {
+        op: Transfer,
+        conflicts: Vec<String>,
+        from_clipboard: bool,
+    },
+    /// `name` was created or renamed in `dir`: relist and put the cursor on it.
+    Select {
+        dir: VPath,
+        name: String,
     },
     /// Task 7: search tab results.
     #[allow(dead_code)]
@@ -70,10 +82,6 @@ pub enum Msg {
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
 type WatchSlot = (Option<VPath>, Option<Box<dyn Any + Send>>);
 
-/// Task 6 replaces this with the job queue (`jobs.rs`).
-#[derive(Default)]
-pub struct Jobs;
-
 pub struct AppState {
     pub router: Arc<Router>,
     pub panes: [Pane; 2],
@@ -83,8 +91,9 @@ pub struct AppState {
     pub sidebar: Sidebar,
     #[allow(dead_code)]
     pub preview: PreviewPanel,
-    #[allow(dead_code)]
     pub jobs: Jobs,
+    pub clipboard: Clipboard,
+    pub dialog: Option<Dialog>,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -94,6 +103,9 @@ pub struct AppState {
     /// One watcher per pane.
     watchers: [WatchSlot; 2],
     pending_refresh: HashMap<VPath, Instant>,
+    /// Folders being listed, with their request number; tabs on them share the answer.
+    inflight: HashMap<VPath, u64>,
+    next_req: u64,
 }
 
 impl AppState {
@@ -113,7 +125,9 @@ impl AppState {
             show_hidden: false,
             sidebar: Sidebar::default(),
             preview: PreviewPanel::default(),
-            jobs: Jobs,
+            jobs: Jobs::new(ctx.clone()),
+            clipboard: Clipboard::default(),
+            dialog: None,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -122,6 +136,8 @@ impl AppState {
             ctx,
             watchers: Default::default(),
             pending_refresh: HashMap::new(),
+            inflight: HashMap::new(),
+            next_req: 0,
         };
         state.theme.apply(&state.ctx);
         state.list(0, 0);
@@ -138,14 +154,20 @@ impl AppState {
     }
 
     /// (Re)lists tab `t` of pane `p` on a worker; the old entries stay until it answers.
+    /// A folder already being listed is not listed twice: the tab waits for that answer.
     pub fn list(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
         tab.refresh();
+        let dir = tab.dir.clone();
+        if self.inflight.contains_key(&dir) {
+            return;
+        }
+        self.next_req += 1;
+        self.inflight.insert(dir.clone(), self.next_req);
         worker::spawn_list(
             self.router.clone(),
-            tab.dir.clone(),
-            p,
-            t,
+            dir,
+            self.next_req,
             self.tx.clone(),
             self.ctx.clone(),
         );
@@ -165,12 +187,7 @@ impl AppState {
 
     pub fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Listed {
-                pane,
-                tab,
-                dir,
-                result,
-            } => self.listed(pane, tab, dir, result),
+            Msg::Listed { dir, req, result } => self.listed(dir, req, result),
             Msg::Changed { dir } => {
                 self.pending_refresh
                     .entry(dir)
@@ -184,44 +201,147 @@ impl AppState {
             Msg::Drives(drives) => self.sidebar.drives = drives,
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
-            Msg::Preview { .. }
-            | Msg::JobProgress { .. }
-            | Msg::JobDone { .. }
-            | Msg::Search { .. } => {}
+            Msg::JobProgress { id, p } => self.jobs.progress(id, p),
+            Msg::JobDone { id, result } => {
+                self.jobs.finish(id, result);
+                // Watchers usually beat us to it; network folders may not have one.
+                for p in 0..2 {
+                    self.list_active(p);
+                }
+            }
+            Msg::Planned {
+                op,
+                conflicts,
+                from_clipboard,
+            } => {
+                if conflicts.is_empty() {
+                    // Skip: a clash that appeared since the scan is never overwritten.
+                    self.start_transfer(op, keel_vfs::Conflict::Skip, from_clipboard);
+                } else {
+                    self.dialog = Some(Dialog::Conflict {
+                        names: conflicts,
+                        op,
+                        from_clipboard,
+                    });
+                }
+            }
+            Msg::Select { dir, name } => {
+                for p in 0..2 {
+                    for t in 0..self.panes[p].tabs.len() {
+                        let tab = &mut self.panes[p].tabs[t];
+                        if tab.dir == dir {
+                            tab.selected = [name.clone()].into();
+                            tab.cursor = Some(name.clone());
+                            tab.anchor = Some(name.clone());
+                            self.list(p, t);
+                        }
+                    }
+                }
+            }
+            Msg::Preview { .. } | Msg::Search { .. } => {}
         }
     }
 
-    fn listed(&mut self, pane: usize, tab: usize, dir: VPath, result: anyhow::Result<Vec<Entry>>) {
-        // Tabs may have been reordered or closed since the request: match by folder.
-        let tabs = &mut self.panes[pane].tabs;
-        let mut hits: Vec<usize> = (0..tabs.len()).filter(|&i| tabs[i].dir == dir).collect();
-        if hits.contains(&tab) {
-            hits.retain(|&i| i != tab);
-            hits.insert(0, tab);
+    fn start_transfer(&mut self, op: Transfer, conflict: keel_vfs::Conflict, from_clipboard: bool) {
+        if from_clipboard && op.mv {
+            // A cut pastes once, as in Explorer.
+            self.clipboard.set(Vec::new(), false);
         }
+        self.jobs.start(op, conflict, self.tx.clone());
+    }
+
+    /// Local paths of the targets, or a toast when some are remote (Phase 2+).
+    fn local_targets(&mut self, p: usize) -> Option<Vec<PathBuf>> {
+        let targets: Vec<VPath> = self
+            .tab(p)
+            .targets()
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        if targets.is_empty() {
+            return None;
+        }
+        let local: Option<Vec<PathBuf>> = targets.iter().map(VPath::to_local_path).collect();
+        if local.is_none() {
+            self.toasts
+                .error("Only local files can be copied or moved for now");
+        }
+        local
+    }
+
+    /// Runs a provider call for `dir` off the UI thread; success selects `name`.
+    fn spawn_in_dir(
+        &self,
+        dir: VPath,
+        name: String,
+        f: impl FnOnce(&dyn keel_vfs::Provider, &VPath) -> anyhow::Result<()> + Send + 'static,
+    ) {
+        let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-io", move || {
+            let target = dir.join(&name);
+            let msg = match router
+                .provider_for(&dir)
+                .ok_or_else(|| anyhow::anyhow!("no provider for {}", dir.display()))
+                .and_then(|p| f(p.as_ref(), &target))
+            {
+                Ok(()) => Msg::Select { dir, name },
+                Err(e) => Msg::Toast(format!("{e:#}")),
+            };
+            worker::send(&tx, &ctx, msg);
+        });
+    }
+
+    fn listed(&mut self, dir: VPath, req: u64, result: anyhow::Result<Listing>) {
+        if self.inflight.get(&dir) == Some(&req) {
+            self.inflight.remove(&dir);
+        }
+        let still_loading = self.inflight.contains_key(&dir);
+        // Tabs may have been reordered or closed since the request: match by folder, and
+        // never let an older answer replace a newer one (A -> B -> A).
+        let hits: Vec<(usize, usize)> = (0..2)
+            .flat_map(|p| (0..self.panes[p].tabs.len()).map(move |t| (p, t)))
+            .filter(|&(p, t)| {
+                let tab = &self.panes[p].tabs[t];
+                tab.dir == dir && req > tab.listed_req
+            })
+            .collect();
+        let Some((&last, rest)) = hits.split_last() else {
+            return;
+        };
         match result {
-            Ok(entries) => {
-                for i in hits {
-                    let t = &mut tabs[i];
-                    t.set_entries(entries.clone());
-                    t.listed_dir = Some(dir.clone());
-                    t.loading = false;
-                    t.error = None;
+            Ok(listing) => {
+                let mut fill = |(p, t): (usize, usize), listing: Listing| {
+                    let tab = &mut self.panes[p].tabs[t];
+                    tab.set_listing(listing);
+                    tab.listed_dir = Some(dir.clone());
+                    tab.listed_req = req;
+                    tab.loading = still_loading;
+                    tab.error = None;
+                };
+                for &hit in rest {
+                    fill(hit, listing.clone());
                 }
+                // 100k entries: the last (usually only) tab takes the listing itself.
+                fill(last, listing);
             }
             Err(e) => {
                 // Review Focus 2: keep the last good listing, say why.
                 let text = format!("{e:#}");
-                for i in hits {
-                    let t = &mut tabs[i];
-                    t.loading = false;
-                    t.error = Some(text.clone());
-                    // A folder we could not enter: stay where the entries came from.
-                    if let Some(prev) = t.listed_dir.clone().filter(|p| *p != dir) {
-                        if t.history.last() == Some(&prev) {
-                            t.history.pop();
+                for &(p, t) in &hits {
+                    let tab = &mut self.panes[p].tabs[t];
+                    tab.loading = still_loading;
+                    tab.listed_req = req;
+                    tab.error = Some(text.clone());
+                    // A folder we could not enter: stay where the entries came from and
+                    // undo the history step (navigate/forward push history, back pushes
+                    // future).
+                    if let Some(prev) = tab.listed_dir.clone().filter(|p| *p != dir) {
+                        if tab.history.last() == Some(&prev) {
+                            tab.history.pop();
+                        } else if tab.future.last() == Some(&prev) {
+                            tab.future.pop();
                         }
-                        t.dir = prev;
+                        tab.dir = prev;
                     }
                 }
                 self.toasts.error(text);
@@ -239,6 +359,10 @@ impl AppState {
             .map(|(d, _)| d.clone())
             .collect();
         for dir in due {
+            if self.inflight.contains_key(&dir) {
+                // Relisted once the running listing answers (its repaint runs this again).
+                continue;
+            }
             self.pending_refresh.remove(&dir);
             for p in 0..2 {
                 for t in 0..self.panes[p].tabs.len() {
@@ -248,7 +372,13 @@ impl AppState {
                 }
             }
         }
-        if let Some(next) = self.pending_refresh.values().min() {
+        if let Some(next) = self
+            .pending_refresh
+            .iter()
+            .filter(|(d, _)| !self.inflight.contains_key(*d))
+            .map(|(_, at)| at)
+            .min()
+        {
             self.ctx
                 .request_repaint_after(next.saturating_duration_since(now));
         }
@@ -304,6 +434,9 @@ impl AppState {
 
     pub fn run(&mut self, p: usize, action: Action) {
         let p = if self.dual { p } else { 0 };
+        // Targets come from the visible rows; make sure they match this listing.
+        let show_hidden = self.show_hidden;
+        self.tab_mut(p).visible(show_hidden);
         match action {
             Action::Up => {
                 if self.tab_mut(p).up() {
@@ -436,13 +569,102 @@ impl AppState {
                 self.theme = Theme::load(if self.theme.dark { "light" } else { "dark" });
                 self.theme.apply(&self.ctx);
             }
-            Action::RenameTo { .. } => self.toasts.not_yet("Rename"),
-            Action::Delete => self.toasts.not_yet("Delete"),
-            Action::Copy => self.toasts.not_yet("Copy"),
-            Action::Cut => self.toasts.not_yet("Cut"),
-            Action::Paste => self.toasts.not_yet("Paste"),
-            Action::NewFolder => self.toasts.not_yet("New folder"),
-            Action::NewFile => self.toasts.not_yet("New file"),
+            Action::RenameTo { from, to } => {
+                if let Some(why) = dialogs::invalid_name(&to) {
+                    return self.toasts.error(why);
+                }
+                let Some(dir) = from.parent() else { return };
+                self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
+            }
+            Action::Delete => {
+                let paths: Vec<VPath> = self
+                    .tab(p)
+                    .targets()
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
+                if !paths.is_empty() {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: format!("Move {} to the trash?", jobs::items(paths.len())),
+                        on_yes: Action::Trash(paths),
+                    });
+                }
+            }
+            Action::Trash(paths) => {
+                self.jobs
+                    .delete(paths, self.router.clone(), self.tx.clone());
+            }
+            Action::Copy | Action::Cut => {
+                let cut = action == Action::Cut;
+                if let Some(paths) = self.local_targets(p) {
+                    let n = paths.len();
+                    self.clipboard.set(paths, cut);
+                    let verb = if cut { "Cut" } else { "Copied" };
+                    self.toasts.info(format!("{verb} {}", jobs::items(n)));
+                }
+            }
+            Action::Paste => match self.tab(p).dir.to_local_path() {
+                Some(dst) => jobs::spawn_plan(
+                    Source::Clipboard(self.clipboard.clone()),
+                    dst,
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                ),
+                None => self
+                    .toasts
+                    .error("Paste into remote folders is not supported yet"),
+            },
+            Action::StartTransfer {
+                op,
+                conflict,
+                from_clipboard,
+            } => self.start_transfer(op, conflict, from_clipboard),
+            Action::Drop { paths, from, dst } => {
+                let Some(dst_local) = dst.to_local_path() else {
+                    return self
+                        .toasts
+                        .error("Drop into remote folders is not supported yet");
+                };
+                if paths.is_empty() || from.as_ref().is_some_and(|(_, dir)| *dir == dst) {
+                    return;
+                }
+                // Shift = move; within one pane a drag into a subfolder moves, like Explorer.
+                let shift = self.ctx.input(|i| i.modifiers.shift);
+                let mv = shift || from.is_some_and(|(pane, _)| pane == p);
+                jobs::spawn_plan(
+                    Source::Paths(paths, mv),
+                    dst_local,
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                );
+            }
+            Action::NewFolder | Action::NewFile => {
+                let folder = action == Action::NewFolder;
+                self.dialog = Some(Dialog::NewItem {
+                    dir: self.tab(p).dir.clone(),
+                    folder,
+                    text: if folder { "New folder" } else { "New file.txt" }.to_owned(),
+                    focus: true,
+                });
+            }
+            Action::Create { dir, name, folder } => {
+                if let Some(why) = dialogs::invalid_name(&name) {
+                    return self.toasts.error(why);
+                }
+                self.spawn_in_dir(dir, name, move |p, target| {
+                    // ponytail: stat-then-create race; Provider has no create_new yet.
+                    anyhow::ensure!(
+                        p.stat(target).is_err(),
+                        "{} already exists",
+                        target.display()
+                    );
+                    if folder {
+                        p.mkdir(target)
+                    } else {
+                        p.write(target).map(drop)
+                    }
+                });
+            }
             Action::Properties => self.toasts.not_yet("Properties"),
             Action::Search => self.toasts.not_yet("Search"),
             Action::JumpFolder => self.toasts.not_yet("Jump to folder"),
@@ -461,10 +683,12 @@ impl AppState {
     /// Folders (and links, which usually point at folders) navigate; files open in
     /// the OS default app.
     pub fn open_entry(&mut self, p: usize, e: Entry) {
-        if e.kind == Kind::File {
-            self.launch(e.path, platform::open);
-        } else {
+        // Links carry their target's kind; a dangling link opens like a file (and fails
+        // with the OS message).
+        if e.kind == Kind::Dir {
             self.run(p, Action::Navigate(e.path));
+        } else {
+            self.launch(e.path, platform::open);
         }
     }
 
@@ -526,14 +750,13 @@ mod tests {
         router.register(Arc::new(Gone));
         let dir = VPath::parse("gone://usb/photos").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir.clone());
-        // Both panes' initial listings fail against the vanished folder.
-        for _ in 0..2 {
-            let msg = state
-                .rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("worker answers");
-            state.apply(msg);
-        }
+        // Both panes start on the vanished folder: one shared listing, one toast.
+        let msg = state
+            .rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker answers");
+        state.apply(msg);
+        assert!(state.rx.recv_timeout(Duration::from_millis(200)).is_err());
         assert_eq!(state.toasts.list.len(), 1, "same error is one toast");
         state.toasts.list.clear();
 
@@ -541,11 +764,19 @@ mod tests {
             test_entry(&dir, "a.jpg", Kind::File, 1),
             test_entry(&dir, "b.jpg", Kind::File, 2),
         ];
+        state.next_req += 10;
+        let good_req = state.next_req;
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
             dir: dir.clone(),
-            result: Ok(good),
+            req: good_req,
+            result: Ok(Listing::new(good)),
+        });
+        assert_eq!(state.tab(0).entries().len(), 2);
+        // An older answer (A -> B -> A) never replaces it.
+        state.apply(Msg::Listed {
+            dir: dir.clone(),
+            req: good_req - 1,
+            result: Ok(Listing::new(Vec::new())),
         });
         assert_eq!(state.tab(0).entries().len(), 2);
 
@@ -569,22 +800,37 @@ mod tests {
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
             dir: home.clone(),
-            result: Ok(vec![test_entry(&home, "locked", Kind::Dir, 0)]),
+            req: 100,
+            result: Ok(Listing::new(vec![test_entry(
+                &home,
+                "locked",
+                Kind::Dir,
+                0,
+            )])),
         });
         let locked = home.join("locked");
         state.tab_mut(0).navigate(locked.clone());
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
-            dir: locked,
+            dir: locked.clone(),
+            req: 101,
             result: Err(anyhow::anyhow!("access denied")),
         });
         let tab = state.tab(0);
         assert_eq!(tab.dir, home);
         assert!(tab.history.is_empty());
         assert_eq!(tab.entries().len(), 1);
+
+        // A failed Back leaves no stray Forward entry.
+        state.tab_mut(0).history.push(locked.clone());
+        assert!(state.tab_mut(0).back());
+        state.apply(Msg::Listed {
+            dir: locked,
+            req: 102,
+            result: Err(anyhow::anyhow!("access denied")),
+        });
+        let tab = state.tab(0);
+        assert_eq!(tab.dir, home);
+        assert!(tab.future.is_empty());
     }
 }

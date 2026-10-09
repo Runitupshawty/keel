@@ -1,7 +1,7 @@
 //! Grid view: virtual rows of tiles with image / PDF / video thumbnails.
 
 use crate::keys::Action;
-use crate::pane::{context_menu, handle_click, ViewCx};
+use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::preview_panel::PreviewKey;
 use crate::state::Msg;
 use crate::tab::Tab;
@@ -141,7 +141,8 @@ pub fn ui(
                                 break;
                             };
                             let e = &tab.entries()[i];
-                            let (rect, resp) = ui.allocate_exact_size(TILE, Sense::click());
+                            let (rect, resp) =
+                                ui.allocate_exact_size(TILE, Sense::click_and_drag());
                             let tile = rect.shrink(3.0);
                             if tab.selected.contains(&e.name) {
                                 ui.painter().rect_filled(tile, 4.0, selection);
@@ -230,6 +231,7 @@ pub fn ui(
 
     for (r, e) in clicks {
         handle_click(&r, tab, &e, out);
+        drag_and_drop(&r, id.0, tab, &e, out);
     }
     if !rename_done {
         tab.renaming = renaming;

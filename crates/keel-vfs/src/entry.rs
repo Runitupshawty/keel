@@ -4,6 +4,7 @@ use crate::VPath;
 pub enum Kind {
     File,
     Dir,
+    /// A link whose target cannot be read (dangling or inaccessible).
     Symlink,
 }
 
@@ -15,6 +16,8 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<std::time::SystemTime>,
     pub hidden: bool,
+    /// A symlink or junction; `kind`, `size` and `modified` describe its target.
+    pub is_link: bool,
     /// Lowercase extension without the dot.
     pub ext: String,
 }
