@@ -648,9 +648,13 @@ impl Indexer {
         walked
     }
 
-    /// `watch_with(src, router, WatchConfig::default())`.
+    /// `watch_with` with the defaults and the source's own poll interval.
     pub fn watch(src: &Arc<Source>, router: &Arc<Router>) -> Result<WatchHandle> {
-        Self::watch_with(src, router, WatchConfig::default())
+        let mut cfg = WatchConfig::default();
+        if let Some(secs) = src.def.poll_secs {
+            cfg.poll = Duration::from_secs(secs);
+        }
+        Self::watch_with(src, router, cfg)
     }
 
     /// Keeps a source current until the handle is dropped, starting with a full walk (what

@@ -53,6 +53,10 @@ pub struct SourceDef {
     pub include_hidden: bool,
     /// gitignore-style patterns, matched against paths relative to `root`.
     pub ignore: Vec<String>,
+    /// Remote and cloud sources: seconds between polls by `Indexer::watch` (None: every
+    /// `POLL_INTERVAL`).
+    #[serde(default)]
+    pub poll_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -512,6 +516,7 @@ pub(crate) mod tests {
             kind: SourceKind::Folder,
             include_hidden: false,
             ignore: Vec::new(),
+            poll_secs: None,
         }
     }
 
@@ -549,6 +554,14 @@ pub(crate) mod tests {
             Library::open(data.path(), "james").unwrap().sources().len(),
             1
         );
+    }
+
+    #[test]
+    fn source_definitions_without_a_poll_interval_still_load() {
+        let old = r#"{"label":"x","root":{"scheme":"file","authority":"","path":"/x"},
+                      "kind":"Folder","include_hidden":false,"ignore":[]}"#;
+        let def: SourceDef = serde_json::from_str(old).unwrap();
+        assert_eq!(def.poll_secs, None);
     }
 
     #[test]

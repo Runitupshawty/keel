@@ -547,6 +547,7 @@ mod tests {
             kind: crate::SourceKind::Share,
             include_hidden: false,
             ignore: Vec::new(),
+            poll_secs: None,
         };
         let lib = Library::open(data.path(), "j").unwrap();
         let source = lib.add_source(def).unwrap();

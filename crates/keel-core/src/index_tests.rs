@@ -290,6 +290,7 @@ pub(crate) fn fake_source(
         kind,
         include_hidden: false,
         ignore: Vec::new(),
+        poll_secs: None,
     }
 }
 
@@ -474,6 +475,7 @@ fn a_cut_off_listing_keeps_the_folder_as_unreadable() {
         kind: SourceKind::Cloud,
         include_hidden: false,
         ignore: Vec::new(),
+        poll_secs: None,
     });
     walk(&src, &router).unwrap();
     assert_eq!(paths(&src).len(), 6);
@@ -511,6 +513,7 @@ fn folders_are_never_listed_while_holding_the_write_lock() {
         kind: SourceKind::Share,
         include_hidden: false,
         ignore: Vec::new(),
+        poll_secs: None,
     });
     *db.lock() = Some(src.store_dir().join("source.db"));
     walk(&src, &router).unwrap();
@@ -555,6 +558,7 @@ fn an_emptied_root_reads_as_offline() {
         kind: SourceKind::Share,
         include_hidden: false,
         ignore: Vec::new(),
+        poll_secs: None,
     });
     walk(&src, &router).unwrap();
     assert_eq!(paths(&src).len(), 4);
@@ -790,6 +794,23 @@ fn lost_events_trigger_a_full_walk() {
 }
 
 #[test]
+fn watch_polls_at_the_sources_own_interval() {
+    let state = Arc::new(Mutex::new(State {
+        fail: None,
+        lists_left: None,
+    }));
+    let router = Arc::new(Router::new());
+    let mut def = fake_source(&router, &state, SourceKind::Cloud);
+    def.poll_secs = Some(1);
+    let (_data, _lib, src) = library_with(def);
+    let start = Instant::now();
+    let handle = Indexer::watch(&src, &router).unwrap();
+    eventually("two polls", || src.generation.load(Ordering::SeqCst) >= 2);
+    assert!(start.elapsed() >= Duration::from_secs(1));
+    drop(handle);
+}
+
+#[test]
 fn watch_polls_remote_sources() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
@@ -858,6 +879,7 @@ pub(crate) fn two_million() -> (Router, tempfile::TempDir, Library, Arc<Source>)
         kind: SourceKind::Share,
         include_hidden: false,
         ignore: Vec::new(),
+        poll_secs: None,
     });
     (router, data, lib, src)
 }
