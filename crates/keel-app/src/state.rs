@@ -2786,6 +2786,15 @@ mod tests {
             })
     }
 
+    /// The real watcher on the test folder may still report the files the test just wrote
+    /// (FSEvents delivers late): let those listings happen before counting.
+    fn drain_watcher(s: &mut AppState) {
+        if cfg!(target_os = "macos") {
+            pump(s, Duration::from_millis(2500));
+            pump_until(s, idle);
+        }
+    }
+
     #[test]
     fn a_change_lists_a_folder_once_however_many_columns_show_it() {
         use crate::pane::ViewMode;
@@ -2803,6 +2812,7 @@ mod tests {
         crate::view_columns::restore(&mut s.panes[0].tabs[0], std::slice::from_ref(&a));
         s.run(1, Action::Navigate(a.clone()));
         pump_until(&mut s, idle);
+        drain_watcher(&mut s);
         let before = s.next_req;
         s.apply(Msg::Changed { dir: a.clone() });
         pump(&mut s, Duration::from_millis(1200));
@@ -2825,6 +2835,7 @@ mod tests {
             crate::view_columns::restore(&mut s.panes[p].tabs[0], std::slice::from_ref(&a));
         }
         pump_until(&mut s, idle);
+        drain_watcher(&mut s);
         let before = s.next_req;
         s.apply(Msg::Changed { dir: a.clone() });
         pump(&mut s, Duration::from_millis(1200));

@@ -224,7 +224,9 @@ fn a_shared_unconfirmed_sampled_hash_is_never_a_duplicate() {
 
 #[test]
 fn hashing_resumes_from_its_checkpoint() {
-    const FILES: usize = super::CHECKPOINT_EVERY * 3;
+    // Many files past the first checkpoint: the job must still be running when the test
+    // reads the checkpoint (a fast runner hashes hundreds of tiny files in milliseconds).
+    const FILES: usize = super::CHECKPOINT_EVERY * 30;
     let files = tempfile::tempdir().unwrap();
     for i in 0..FILES {
         std::fs::write(files.path().join(format!("{i}.txt")), i.to_string()).unwrap();
