@@ -991,7 +991,9 @@ fn extract_checks_free_space_before_writing() {
     let tmp = tempfile::tempdir().unwrap();
     let mut header = tar::Header::new_gnu();
     header.set_path("huge.bin").unwrap();
-    header.set_size(1 << 60);
+    // 8 TiB: more than any CI runner has free, but within what `lseek` accepts on ext4
+    // (a 1 EiB offset fails with EINVAL on Linux before the free-space check runs).
+    header.set_size(1 << 43);
     header.set_mode(0o644);
     header.set_cksum();
     let mut bytes = tar_bytes("small.txt", b"small");
