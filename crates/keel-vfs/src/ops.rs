@@ -937,16 +937,11 @@ fn below(dst: &Path, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Free bytes on the volume holding `dir`, if it can be told.
+/// Free bytes on the volume holding `dir`, if it can be told (`statvfs` / `GetDiskFreeSpaceExW`
+/// on the path itself, so tmpfs and bind mounts count too).
 fn free_space(dir: &Path) -> Option<u64> {
     let dir = fs::canonicalize(dir).ok()?;
-    // A verbatim `\\?\C:\x` would not match the `C:\` mount point component-wise.
-    let dir = PathBuf::from(dir.to_str()?.trim_start_matches(r"\\?\"));
-    sysinfo::Disks::new_with_refreshed_list()
-        .iter()
-        .filter(|d| dir.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map(|d| d.available_space())
+    fs4::available_space(&dir).ok()
 }
 
 /// Copies `input` to `output`, returning the byte count.

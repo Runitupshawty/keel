@@ -28,6 +28,7 @@ lzma-rs = { workspace = true, optional = true }
 ruzstd = { workspace = true, optional = true }
 unrar_sys = { version = "0.5", optional = true }
 tempfile = "3"
+fs4 = "0.13"
 directories = "5"
 anyhow.workspace = true
 tracing.workspace = true
