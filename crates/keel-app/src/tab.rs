@@ -2,7 +2,22 @@
 //! Pure state; `AppState` spawns the listing workers.
 
 use keel_vfs::{Entry, Kind, VPath};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
+
+/// A folder listing plus each name lowercased (computed on the listing worker, so the
+/// UI thread never case-folds 100k names).
+#[derive(Clone)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    pub lower: Vec<String>,
+}
+
+impl Listing {
+    pub fn new(entries: Vec<Entry>) -> Self {
+        let lower = entries.iter().map(|e| e.name.to_lowercase()).collect();
+        Self { entries, lower }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortKey {
@@ -40,6 +55,7 @@ pub enum Nav {
 pub struct Tab {
     pub dir: VPath,
     entries: Vec<Entry>,
+    lower: Vec<String>,
     /// Entry names (names survive a refresh, indices do not).
     pub selected: BTreeSet<String>,
     pub cursor: Option<String>,
@@ -55,6 +71,8 @@ pub struct Tab {
     pub error: Option<String>,
     /// The folder `entries` were listed from (lags `dir` while a navigation loads).
     pub listed_dir: Option<VPath>,
+    /// Request number of the listing shown; older answers are ignored.
+    pub listed_req: u64,
     pub kind: TabKind,
     /// Inline rename: (original name, edited text).
     pub renaming: Option<(String, String)>,
@@ -75,6 +93,7 @@ impl Tab {
         Self {
             dir,
             entries: Vec::new(),
+            lower: Vec::new(),
             selected: BTreeSet::new(),
             cursor: None,
             anchor: None,
@@ -86,6 +105,7 @@ impl Tab {
             loading: true,
             error: None,
             listed_dir: None,
+            listed_req: 0,
             kind: TabKind::Dir,
             renaming: None,
             scroll_to: None,
@@ -112,9 +132,15 @@ impl Tab {
         &self.entries
     }
 
-    /// Replaces the listing; selection names that no longer exist are dropped.
+    #[cfg(test)]
     pub fn set_entries(&mut self, entries: Vec<Entry>) {
-        self.entries = entries;
+        self.set_listing(Listing::new(entries));
+    }
+
+    /// Replaces the listing; selection names that no longer exist are dropped.
+    pub fn set_listing(&mut self, listing: Listing) {
+        self.entries = listing.entries;
+        self.lower = listing.lower;
         self.generation += 1;
         let names: BTreeSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
         self.selected.retain(|n| names.contains(n.as_str()));
@@ -124,12 +150,38 @@ impl Tab {
     }
 
     /// Indices into `entries()` after hidden/filter/sort, dirs first. Cached until the
-    /// entries, filter, sort or `show_hidden` change.
+    /// entries, filter, sort or `show_hidden` change; a filter that only grew narrows the
+    /// cached rows instead of sorting again. Selection is trimmed to the visible rows.
     pub fn visible(&mut self, show_hidden: bool) -> &[usize] {
         let key = (self.generation, self.filter.clone(), self.sort, show_hidden);
-        if self.cache_key.as_ref() != Some(&key) {
-            self.cache = compute_visible(&self.entries, &self.filter, self.sort, show_hidden);
-            self.cache_key = Some(key);
+        match &self.cache_key {
+            Some(old) if *old == key => return &self.cache,
+            Some((g, f, s, h))
+                if (*g, *s, *h) == (key.0, key.2, key.3)
+                    && key.1.to_lowercase().starts_with(&f.to_lowercase()) =>
+            {
+                let needle = key.1.to_lowercase();
+                let lower = &self.lower;
+                self.cache.retain(|&i| lower[i].contains(&needle));
+            }
+            _ => {
+                self.cache = compute_visible(
+                    &self.entries,
+                    &self.lower,
+                    &self.filter,
+                    self.sort,
+                    show_hidden,
+                )
+            }
+        }
+        self.cache_key = Some(key);
+        if !self.selected.is_empty() {
+            let shown: HashSet<&str> = self
+                .cache
+                .iter()
+                .map(|&i| self.entries[i].name.as_str())
+                .collect();
+            self.selected.retain(|n| shown.contains(n.as_str()));
         }
         &self.cache
     }
@@ -137,10 +189,6 @@ impl Tab {
     /// The cached result of the last `visible()` call (empty before the first call).
     pub fn visible_cached(&self) -> &[usize] {
         &self.cache
-    }
-
-    pub fn entry(&self, name: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.name == name)
     }
 
     /// Changes directory: pushes history, clears selection/filter, marks loading.
@@ -306,17 +354,26 @@ impl Tab {
         }
     }
 
-    /// Selected entries, or the cursor entry when nothing is selected.
+    /// Visible selected entries, or the cursor entry when nothing is selected. Rows
+    /// hidden by the filter or hide-hidden are never targets. Empty until `visible()`
+    /// has run for the current listing.
     pub fn targets(&self) -> Vec<&Entry> {
+        if self
+            .cache_key
+            .as_ref()
+            .is_none_or(|k| k.0 != self.generation)
+        {
+            return Vec::new();
+        }
         let picked: Vec<&Entry> = self
-            .entries
+            .cache
             .iter()
+            .map(|&i| &self.entries[i])
             .filter(|e| self.selected.contains(&e.name))
             .collect();
         if picked.is_empty() {
-            self.cursor
-                .as_deref()
-                .and_then(|c| self.entry(c))
+            self.cursor_pos()
+                .map(|pos| &self.entries[self.cache[pos]])
                 .into_iter()
                 .collect()
         } else {
@@ -327,17 +384,17 @@ impl Tab {
 
 fn compute_visible(
     entries: &[Entry],
+    lower: &[String],
     filter: &str,
     (key, asc): (SortKey, bool),
     show_hidden: bool,
 ) -> Vec<usize> {
     let needle = filter.to_lowercase();
-    let mut keyed: Vec<(usize, String)> = entries
+    let mut keyed: Vec<(usize, &str)> = entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| show_hidden || !e.hidden)
-        .map(|(i, e)| (i, e.name.to_lowercase()))
-        .filter(|(_, lower)| lower.contains(&needle))
+        .filter(|(i, e)| (show_hidden || !e.hidden) && lower[*i].contains(&needle))
+        .map(|(i, _)| (i, lower[i].as_str()))
         .collect();
     keyed.sort_by(|(ai, an), (bi, bn)| {
         let (a, b) = (&entries[*ai], &entries[*bi]);
@@ -363,6 +420,7 @@ pub(crate) fn test_entry(dir: &VPath, name: &str, kind: Kind, size: u64) -> Entr
         size,
         modified: None,
         hidden: false,
+        is_link: false,
         ext: name
             .rsplit_once('.')
             .map(|(_, e)| e.into())
@@ -431,6 +489,28 @@ mod tests {
         assert!(tab.selected.is_empty());
         tab.move_cursor(Nav::End, false);
         assert_eq!(tab.cursor.as_deref(), Some("beta.rs"));
+    }
+
+    #[test]
+    fn filtered_out_rows_are_never_targets() {
+        let mut tab = tab();
+        tab.visible(false);
+        tab.select_all();
+        tab.filter = "a".into();
+        tab.visible(false);
+        tab.filter = "al".into();
+        // Narrowed from the "a" rows, still in sort order.
+        assert_eq!(names(&mut tab), ["alpha.txt"]);
+        let targets: Vec<&str> = tab.targets().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(targets, ["alpha.txt"]);
+        tab.filter.clear();
+        tab.visible(false);
+        assert_eq!(tab.selected.len(), 1, "selection was trimmed by the filter");
+        tab.cursor = Some("gamma.md".into());
+        tab.selected.clear();
+        tab.filter = "beta".into();
+        tab.visible(false);
+        assert!(tab.targets().is_empty(), "invisible cursor is not a target");
     }
 
     #[test]

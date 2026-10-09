@@ -126,9 +126,13 @@ const MOVES: &[(Key, Nav)] = &[
     (Key::End, Nav::End),
 ];
 
-/// Actions for this frame. Empty while a text field has focus (rename, filter, path box).
+/// Actions for this frame. Empty while a text field has focus (rename, filter, path box);
+/// a focused button (after Tab) does not block the key map.
 pub fn actions(ctx: &egui::Context) -> Vec<Action> {
-    if ctx.wants_keyboard_input() {
+    let typing = ctx
+        .memory(|m| m.focused())
+        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+    if typing {
         return Vec::new();
     }
     let (mut out, paste_event, v_released) = ctx.input_mut(|i| {

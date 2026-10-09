@@ -3,6 +3,7 @@
 
 use crate::preview_panel::PreviewKey;
 use crate::state::Msg;
+use crate::tab::Listing;
 use crossbeam_channel::{Sender, TrySendError};
 use keel_vfs::{Entry, Router, VPath};
 use std::sync::Arc;
@@ -18,29 +19,13 @@ pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
     }
 }
 
-pub fn spawn_list(
-    router: Arc<Router>,
-    dir: VPath,
-    pane: usize,
-    tab: usize,
-    tx: Sender<Msg>,
-    ctx: egui::Context,
-) {
+pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ctx: egui::Context) {
     spawn("keel-list", move || {
         let result = match router.provider_for(&dir) {
-            Some(p) => p.list(&dir),
+            Some(p) => p.list(&dir).map(Listing::new),
             None => Err(anyhow::anyhow!("no provider for {}", dir.display())),
         };
-        send(
-            &tx,
-            &ctx,
-            Msg::Listed {
-                pane,
-                tab,
-                dir,
-                result,
-            },
-        );
+        send(&tx, &ctx, Msg::Listed { dir, req, result });
     });
 }
 

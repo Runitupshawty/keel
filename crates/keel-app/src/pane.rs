@@ -235,6 +235,15 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         );
         if std::mem::take(&mut pane.focus_path) {
             r.request_focus();
+            // Select all, so typing replaces the shown path.
+            let mut state = egui::TextEdit::load_state(ui.ctx(), r.id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(text.chars().count()),
+                )));
+            state.store(ui.ctx(), r.id);
         }
         if r.lost_focus() {
             if ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -396,7 +405,7 @@ pub fn handle_click(
         tab.click(&entry.name, mods.command, mods.shift);
     } else if r.secondary_clicked() && !tab.selected.contains(&entry.name) {
         tab.click(&entry.name, false, false);
-    } else if r.middle_clicked() && entry.kind != keel_vfs::Kind::File {
+    } else if r.middle_clicked() && entry.kind == keel_vfs::Kind::Dir {
         out.push(Action::NewTabAt(entry.path.clone()));
     }
 }
@@ -434,7 +443,7 @@ pub fn drag_and_drop(
             paths,
         });
     }
-    if entry.kind == keel_vfs::Kind::File {
+    if entry.kind != keel_vfs::Kind::Dir {
         return;
     }
     if let Some(p) = r.dnd_hover_payload::<DragPayload>() {

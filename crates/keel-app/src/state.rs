@@ -8,7 +8,7 @@ use crate::keys::Action;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
-use crate::tab::Tab;
+use crate::tab::{Listing, Tab};
 use crate::theme::Theme;
 use crate::toast::Toasts;
 use crate::view_grid::Thumbs;
@@ -25,11 +25,11 @@ use std::time::{Duration, Instant};
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
 
 pub enum Msg {
+    /// Answer to listing request `req` (numbers only grow; older answers lose).
     Listed {
-        pane: usize,
-        tab: usize,
         dir: VPath,
-        result: anyhow::Result<Vec<Entry>>,
+        req: u64,
+        result: anyhow::Result<Listing>,
     },
     Changed {
         dir: VPath,
@@ -103,6 +103,9 @@ pub struct AppState {
     /// One watcher per pane.
     watchers: [WatchSlot; 2],
     pending_refresh: HashMap<VPath, Instant>,
+    /// Folders being listed, with their request number; tabs on them share the answer.
+    inflight: HashMap<VPath, u64>,
+    next_req: u64,
 }
 
 impl AppState {
@@ -133,6 +136,8 @@ impl AppState {
             ctx,
             watchers: Default::default(),
             pending_refresh: HashMap::new(),
+            inflight: HashMap::new(),
+            next_req: 0,
         };
         state.theme.apply(&state.ctx);
         state.list(0, 0);
@@ -149,14 +154,20 @@ impl AppState {
     }
 
     /// (Re)lists tab `t` of pane `p` on a worker; the old entries stay until it answers.
+    /// A folder already being listed is not listed twice: the tab waits for that answer.
     pub fn list(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
         tab.refresh();
+        let dir = tab.dir.clone();
+        if self.inflight.contains_key(&dir) {
+            return;
+        }
+        self.next_req += 1;
+        self.inflight.insert(dir.clone(), self.next_req);
         worker::spawn_list(
             self.router.clone(),
-            tab.dir.clone(),
-            p,
-            t,
+            dir,
+            self.next_req,
             self.tx.clone(),
             self.ctx.clone(),
         );
@@ -176,12 +187,7 @@ impl AppState {
 
     pub fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Listed {
-                pane,
-                tab,
-                dir,
-                result,
-            } => self.listed(pane, tab, dir, result),
+            Msg::Listed { dir, req, result } => self.listed(dir, req, result),
             Msg::Changed { dir } => {
                 self.pending_refresh
                     .entry(dir)
@@ -285,37 +291,57 @@ impl AppState {
         });
     }
 
-    fn listed(&mut self, pane: usize, tab: usize, dir: VPath, result: anyhow::Result<Vec<Entry>>) {
-        // Tabs may have been reordered or closed since the request: match by folder.
-        let tabs = &mut self.panes[pane].tabs;
-        let mut hits: Vec<usize> = (0..tabs.len()).filter(|&i| tabs[i].dir == dir).collect();
-        if hits.contains(&tab) {
-            hits.retain(|&i| i != tab);
-            hits.insert(0, tab);
+    fn listed(&mut self, dir: VPath, req: u64, result: anyhow::Result<Listing>) {
+        if self.inflight.get(&dir) == Some(&req) {
+            self.inflight.remove(&dir);
         }
+        let still_loading = self.inflight.contains_key(&dir);
+        // Tabs may have been reordered or closed since the request: match by folder, and
+        // never let an older answer replace a newer one (A -> B -> A).
+        let hits: Vec<(usize, usize)> = (0..2)
+            .flat_map(|p| (0..self.panes[p].tabs.len()).map(move |t| (p, t)))
+            .filter(|&(p, t)| {
+                let tab = &self.panes[p].tabs[t];
+                tab.dir == dir && req > tab.listed_req
+            })
+            .collect();
+        let Some((&last, rest)) = hits.split_last() else {
+            return;
+        };
         match result {
-            Ok(entries) => {
-                for i in hits {
-                    let t = &mut tabs[i];
-                    t.set_entries(entries.clone());
-                    t.listed_dir = Some(dir.clone());
-                    t.loading = false;
-                    t.error = None;
+            Ok(listing) => {
+                let mut fill = |(p, t): (usize, usize), listing: Listing| {
+                    let tab = &mut self.panes[p].tabs[t];
+                    tab.set_listing(listing);
+                    tab.listed_dir = Some(dir.clone());
+                    tab.listed_req = req;
+                    tab.loading = still_loading;
+                    tab.error = None;
+                };
+                for &hit in rest {
+                    fill(hit, listing.clone());
                 }
+                // 100k entries: the last (usually only) tab takes the listing itself.
+                fill(last, listing);
             }
             Err(e) => {
                 // Review Focus 2: keep the last good listing, say why.
                 let text = format!("{e:#}");
-                for i in hits {
-                    let t = &mut tabs[i];
-                    t.loading = false;
-                    t.error = Some(text.clone());
-                    // A folder we could not enter: stay where the entries came from.
-                    if let Some(prev) = t.listed_dir.clone().filter(|p| *p != dir) {
-                        if t.history.last() == Some(&prev) {
-                            t.history.pop();
+                for &(p, t) in &hits {
+                    let tab = &mut self.panes[p].tabs[t];
+                    tab.loading = still_loading;
+                    tab.listed_req = req;
+                    tab.error = Some(text.clone());
+                    // A folder we could not enter: stay where the entries came from and
+                    // undo the history step (navigate/forward push history, back pushes
+                    // future).
+                    if let Some(prev) = tab.listed_dir.clone().filter(|p| *p != dir) {
+                        if tab.history.last() == Some(&prev) {
+                            tab.history.pop();
+                        } else if tab.future.last() == Some(&prev) {
+                            tab.future.pop();
                         }
-                        t.dir = prev;
+                        tab.dir = prev;
                     }
                 }
                 self.toasts.error(text);
@@ -333,6 +359,10 @@ impl AppState {
             .map(|(d, _)| d.clone())
             .collect();
         for dir in due {
+            if self.inflight.contains_key(&dir) {
+                // Relisted once the running listing answers (its repaint runs this again).
+                continue;
+            }
             self.pending_refresh.remove(&dir);
             for p in 0..2 {
                 for t in 0..self.panes[p].tabs.len() {
@@ -342,7 +372,13 @@ impl AppState {
                 }
             }
         }
-        if let Some(next) = self.pending_refresh.values().min() {
+        if let Some(next) = self
+            .pending_refresh
+            .iter()
+            .filter(|(d, _)| !self.inflight.contains_key(*d))
+            .map(|(_, at)| at)
+            .min()
+        {
             self.ctx
                 .request_repaint_after(next.saturating_duration_since(now));
         }
@@ -398,6 +434,9 @@ impl AppState {
 
     pub fn run(&mut self, p: usize, action: Action) {
         let p = if self.dual { p } else { 0 };
+        // Targets come from the visible rows; make sure they match this listing.
+        let show_hidden = self.show_hidden;
+        self.tab_mut(p).visible(show_hidden);
         match action {
             Action::Up => {
                 if self.tab_mut(p).up() {
@@ -644,10 +683,12 @@ impl AppState {
     /// Folders (and links, which usually point at folders) navigate; files open in
     /// the OS default app.
     pub fn open_entry(&mut self, p: usize, e: Entry) {
-        if e.kind == Kind::File {
-            self.launch(e.path, platform::open);
-        } else {
+        // Links carry their target's kind; a dangling link opens like a file (and fails
+        // with the OS message).
+        if e.kind == Kind::Dir {
             self.run(p, Action::Navigate(e.path));
+        } else {
+            self.launch(e.path, platform::open);
         }
     }
 
@@ -709,14 +750,13 @@ mod tests {
         router.register(Arc::new(Gone));
         let dir = VPath::parse("gone://usb/photos").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir.clone());
-        // Both panes' initial listings fail against the vanished folder.
-        for _ in 0..2 {
-            let msg = state
-                .rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("worker answers");
-            state.apply(msg);
-        }
+        // Both panes start on the vanished folder: one shared listing, one toast.
+        let msg = state
+            .rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker answers");
+        state.apply(msg);
+        assert!(state.rx.recv_timeout(Duration::from_millis(200)).is_err());
         assert_eq!(state.toasts.list.len(), 1, "same error is one toast");
         state.toasts.list.clear();
 
@@ -724,11 +764,19 @@ mod tests {
             test_entry(&dir, "a.jpg", Kind::File, 1),
             test_entry(&dir, "b.jpg", Kind::File, 2),
         ];
+        state.next_req += 10;
+        let good_req = state.next_req;
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
             dir: dir.clone(),
-            result: Ok(good),
+            req: good_req,
+            result: Ok(Listing::new(good)),
+        });
+        assert_eq!(state.tab(0).entries().len(), 2);
+        // An older answer (A -> B -> A) never replaces it.
+        state.apply(Msg::Listed {
+            dir: dir.clone(),
+            req: good_req - 1,
+            result: Ok(Listing::new(Vec::new())),
         });
         assert_eq!(state.tab(0).entries().len(), 2);
 
@@ -752,22 +800,37 @@ mod tests {
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
             dir: home.clone(),
-            result: Ok(vec![test_entry(&home, "locked", Kind::Dir, 0)]),
+            req: 100,
+            result: Ok(Listing::new(vec![test_entry(
+                &home,
+                "locked",
+                Kind::Dir,
+                0,
+            )])),
         });
         let locked = home.join("locked");
         state.tab_mut(0).navigate(locked.clone());
         state.apply(Msg::Listed {
-            pane: 0,
-            tab: 0,
-            dir: locked,
+            dir: locked.clone(),
+            req: 101,
             result: Err(anyhow::anyhow!("access denied")),
         });
         let tab = state.tab(0);
         assert_eq!(tab.dir, home);
         assert!(tab.history.is_empty());
         assert_eq!(tab.entries().len(), 1);
+
+        // A failed Back leaves no stray Forward entry.
+        state.tab_mut(0).history.push(locked.clone());
+        assert!(state.tab_mut(0).back());
+        state.apply(Msg::Listed {
+            dir: locked,
+            req: 102,
+            result: Err(anyhow::anyhow!("access denied")),
+        });
+        let tab = state.tab(0);
+        assert_eq!(tab.dir, home);
+        assert!(tab.future.is_empty());
     }
 }
