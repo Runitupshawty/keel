@@ -13,6 +13,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use keel_vfs::{Provider, Router, VPath};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
+    collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -146,6 +147,10 @@ enum Outcome {
 
 /// Writes `item` at `rel` (under `parent`), reusing the record with the same identity that
 /// this walk has not seen yet (`gen < unseen_below`), else the one at the same parent+name.
+/// For an item with a native id, a parent+name match with a different native id is reused
+/// only when `gone(that id)`: the file it described is no longer in this folder (a file
+/// replaced on save), not merely renamed next to the new one.
+#[allow(clippy::too_many_arguments)]
 fn upsert(
     c: &Connection,
     gen: i64,
@@ -154,11 +159,13 @@ fn upsert(
     rel: &str,
     item: &Item,
     fs_id: &str,
+    gone: &dyn Fn(&str) -> bool,
 ) -> Result<(i64, Outcome)> {
     type Found = (i64, Option<i64>, String, String, i64);
     let row = |r: &rusqlite::Row| -> rusqlite::Result<Found> {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     };
+    let native = |id: &str| !id.starts_with("h:");
     // A hash identity is parent+name itself: the second lookup finds it.
     let mut found = None;
     if !fs_id.starts_with("h:") {
@@ -172,13 +179,18 @@ fn upsert(
             .optional()?;
     }
     if found.is_none() {
-        found = c
+        let by_name: Option<(Found, String)> = c
             .prepare_cached(
-                "SELECT id, parent, name, path, kind FROM record
+                "SELECT id, parent, name, path, kind, fs_id FROM record
                  WHERE parent IS ?1 AND name = ?2 AND kind = ?3 AND gen < ?4 LIMIT 1",
             )?
-            .query_row(params![parent, item.name, item.kind, unseen_below], row)
+            .query_row(params![parent, item.name, item.kind, unseen_below], |r| {
+                Ok((row(r)?, r.get(5)?))
+            })
             .optional()?;
+        found = by_name
+            .filter(|(_, old)| !(native(fs_id) && native(old) && old != fs_id) || gone(old))
+            .map(|(f, _)| f);
     }
     let flags = if item.hidden { HIDDEN } else { 0 }
         | if item.link { LINK } else { 0 }
@@ -362,6 +374,8 @@ impl Walk<'_> {
             } else {
                 format!("{}/", p.rel)
             };
+            let listed: HashSet<String> = items.iter().filter_map(|i| i.fs_id.clone()).collect();
+            let gone = |id: &str| !listed.contains(id);
             for item in items {
                 if item.hidden && !self.src.def.include_hidden {
                     continue;
@@ -383,6 +397,7 @@ impl Walk<'_> {
                     &rel,
                     &item,
                     &fs_id,
+                    &gone,
                 )?;
                 if item.kind == DIR && !item.link {
                     stack.push(Pending {
@@ -503,7 +518,16 @@ impl Indexer {
                 cancel,
             };
             walk.begin()?;
-            let (id, _) = upsert(&conn, gen as i64, gen as i64, None, "", &root, &root_fs)?;
+            let (id, _) = upsert(
+                &conn,
+                gen as i64,
+                gen as i64,
+                None,
+                "",
+                &root,
+                &root_fs,
+                &|_| true,
+            )?;
             let walked = walk.run(vec![Pending {
                 dir: src.def.root.clone(),
                 id,
@@ -728,6 +752,7 @@ fn apply(
             "",
             &item,
             &item.fs_id.clone().unwrap_or(fs_id),
+            &|_| true,
         )?;
         return Ok(());
     }
@@ -751,14 +776,43 @@ fn apply(
         .fs_id
         .clone()
         .unwrap_or_else(|| name_hash(&parent_fs, name));
-    let (id, outcome) = upsert(c, gen, i64::MAX, Some(parent_id), rel, &item, &fs_id)?;
-    // Whatever else sat at this path was replaced.
-    let others: Vec<i64> = c
-        .prepare_cached("SELECT id FROM record WHERE parent = ?1 AND name = ?2 AND id != ?3")?
-        .query_map(params![parent_id, name, id], |r| r.get(0))?
+    // The native ids in the parent folder, listed only when a name is contested.
+    let listed: std::cell::OnceCell<HashSet<String>> = std::cell::OnceCell::new();
+    let in_folder = |id: &str| {
+        listed
+            .get_or_init(|| {
+                local
+                    .parent()
+                    .and_then(|dir| fsid::list(dir).ok())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|i| i.fs_id)
+                    .collect()
+            })
+            .contains(id)
+    };
+    let (id, outcome) = upsert(
+        c,
+        gen,
+        i64::MAX,
+        Some(parent_id),
+        rel,
+        &item,
+        &fs_id,
+        &|old| !in_folder(old),
+    )?;
+    // Whatever else sat at this path was replaced, unless it was renamed within the folder
+    // (its own event moves it).
+    let others: Vec<(i64, String)> = c
+        .prepare_cached(
+            "SELECT id, fs_id FROM record WHERE parent = ?1 AND name = ?2 AND id != ?3",
+        )?
+        .query_map(params![parent_id, name, id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for other in others {
-        delete_subtree(c, other)?;
+    for (other, other_fs) in others {
+        if other_fs.starts_with("h:") || !in_folder(&other_fs) {
+            delete_subtree(c, other)?;
+        }
     }
     if item.kind == DIR && !item.link && outcome == Outcome::Inserted {
         let lister = Lister::Local;

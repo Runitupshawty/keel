@@ -293,6 +293,79 @@ pub(crate) fn fake_source(
     }
 }
 
+/// Tags `rel`'s record with tag 7; returns its id.
+fn tagged(src: &Source, rel: &str) -> i64 {
+    let id = id_of(src, rel).unwrap();
+    src.store
+        .get()
+        .unwrap()
+        .execute("INSERT INTO record_tag(record, tag) VALUES (?1, 7)", [id])
+        .unwrap();
+    id
+}
+
+fn tag_holder(src: &Source) -> Vec<String> {
+    let c = src.store.get().unwrap();
+    let mut stmt = c
+        .prepare("SELECT r.path FROM record_tag t JOIN record r ON r.id = t.record")
+        .unwrap();
+    let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+#[test]
+fn a_new_file_never_takes_over_a_renamed_files_record() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    write(&root.join("a.txt"), "a");
+    write(&root.join("s.txt"), "s");
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    let a = tagged(&src, "a.txt");
+    let s = tagged(&src, "s.txt");
+
+    // Rename a -> b, then a new a.txt appears: seen by a full walk.
+    std::fs::rename(root.join("a.txt"), root.join("b.txt")).unwrap();
+    write(&root.join("a.txt"), "new");
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(
+        id_of(&src, "b.txt"),
+        Some(a),
+        "the renamed file keeps its record"
+    );
+    assert_ne!(id_of(&src, "a.txt"), Some(a));
+    // Rename b -> c, then a new b.txt, applied in the unlucky order (new name first).
+    std::fs::rename(root.join("b.txt"), root.join("c.txt")).unwrap();
+    write(&root.join("b.txt"), "newer");
+    for p in ["b.txt", "c.txt"] {
+        Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join(p)))).unwrap();
+    }
+    assert_eq!(id_of(&src, "c.txt"), Some(a));
+    assert_ne!(id_of(&src, "b.txt"), Some(a));
+    // A swap through a temporary name, applied without the temporary.
+    std::fs::rename(root.join("c.txt"), root.join("tmp")).unwrap();
+    std::fs::rename(root.join("s.txt"), root.join("c.txt")).unwrap();
+    std::fs::rename(root.join("tmp"), root.join("s.txt")).unwrap();
+    for p in ["c.txt", "s.txt"] {
+        Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join(p)))).unwrap();
+    }
+    assert_eq!(
+        (id_of(&src, "s.txt"), id_of(&src, "c.txt")),
+        (Some(a), Some(s))
+    );
+    let mut holders = tag_holder(&src);
+    holders.sort();
+    assert_eq!(holders, ["c.txt", "s.txt"], "tags followed both files");
+    // A file replaced on save (new id, same name, old one gone) keeps its record.
+    std::fs::remove_file(root.join("s.txt")).unwrap();
+    write(&root.join("s.txt"), "saved");
+    Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join("s.txt")))).unwrap();
+    assert_eq!(id_of(&src, "s.txt"), Some(a));
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(id_of(&src, "s.txt"), Some(a));
+    assert_eq!(records(&src).len(), 5);
+}
+
 #[test]
 fn a_different_folder_at_the_root_reads_as_offline() {
     let files = tempfile::tempdir().unwrap();
