@@ -8,9 +8,11 @@ use std::{
 };
 
 /// Rename that fails instead of replacing an existing `to`; EXDEV maps to `CrossesDevices`.
+/// A case-only rename on a case-insensitive filesystem (`a.txt` -> `A.txt` on APFS) finds
+/// `to` already there as the same file, and is allowed.
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     // ponytail: check-then-rename can race; use renameat2(RENAME_NOREPLACE) if that matters.
-    if fs::symlink_metadata(to).is_ok() {
+    if fs::symlink_metadata(to).is_ok() && !same_file::is_same_file(from, to)? {
         return Err(io::ErrorKind::AlreadyExists.into());
     }
     fs::rename(from, to)
@@ -24,6 +26,19 @@ pub(crate) fn copy_file(
     cancel: &AtomicBool,
 ) -> Result<()> {
     let ctx = || format!("copy {} to {}", src.display(), dst.display());
+    // Copy-on-write clone (APFS, Btrfs, XFS): instant, no data read. `dst` is a fresh
+    // staging name, so reflink's "target must not exist" always holds.
+    if reflink_copy::reflink(src, dst).is_ok() {
+        let meta = fs::metadata(src).with_context(ctx)?;
+        fs::set_permissions(dst, meta.permissions()).with_context(ctx)?;
+        fs::File::options()
+            .write(true)
+            .open(dst)
+            .and_then(|f| f.set_modified(meta.modified()?))
+            .with_context(ctx)?;
+        on_bytes(meta.len());
+        return Ok(());
+    }
     let mut input = fs::File::open(src).with_context(ctx)?;
     let mut output = fs::File::create(dst).with_context(ctx)?;
     let mut buf = vec![0; 1 << 20];
