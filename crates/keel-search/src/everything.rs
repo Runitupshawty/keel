@@ -231,6 +231,10 @@ impl Searcher for EverythingSearcher {
     fn available(&self) -> bool {
         self.available.load(Ordering::Relaxed)
     }
+
+    fn probe(&self) -> bool {
+        EverythingSearcher::probe(self)
+    }
 }
 
 unsafe fn result_path(

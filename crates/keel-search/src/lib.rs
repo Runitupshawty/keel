@@ -3,6 +3,8 @@
 //! matching for Keel.
 
 #[cfg(windows)]
+mod composite;
+#[cfg(windows)]
 mod everything;
 mod fuzzy;
 #[cfg(target_os = "linux")]
@@ -64,7 +66,13 @@ pub struct Hit {
 /// A pluggable file search backend.
 pub trait Searcher: Send + Sync {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
+    /// The last known state; never blocks.
     fn available(&self) -> bool;
+    /// Checks again whether the backend works (e.g. Everything started since) and
+    /// returns `available()`. May block on IPC: worker threads only.
+    fn probe(&self) -> bool {
+        self.available()
+    }
     /// A note for the status bar about what the backend covers (e.g. "user folders
     /// only"), None when there is nothing to say.
     fn status(&self) -> Option<String> {
@@ -105,15 +113,20 @@ impl Searcher for Unavailable {
 /// Probes the backend (IPC or a child process) and may load a saved index, so call
 /// it off the UI thread.
 ///
-/// Windows: Everything when it is running, else Keel's own index ([`NtfsSearcher`]:
-/// the saved drive index, or the user-folder walk when there is none and Keel is
-/// not elevated).
+/// Windows: Everything whenever it is running (checked per query, re-probed every
+/// 30 s while it is down), else Keel's own index ([`NtfsSearcher`]: the saved drive
+/// index, or the user-folder walk when there is none and Keel is not elevated).
 pub fn default_searcher() -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
-        (Ok(everything), _) if everything.available() => Box::new(everything),
-        (_, Some(dir)) => Box::new(NtfsSearcher::open(dir)),
-        (Ok(everything), None) => Box::new(everything),
+        (Ok(everything), dir) => Box::new(composite::Composite::new(
+            Box::new(everything),
+            dir.map(|dir| -> Box<dyn Fn() -> Box<dyn Searcher> + Send + Sync> {
+                Box::new(move || Box::new(NtfsSearcher::open(dir.clone())))
+            }),
+            composite::REPROBE,
+        )),
+        (Err(_), Some(dir)) => Box::new(NtfsSearcher::open(dir)),
         (Err(error), None) => Box::new(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
