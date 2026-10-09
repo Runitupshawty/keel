@@ -449,6 +449,15 @@ impl Indexer {
             src.pending_gen.store(gen, Ordering::SeqCst);
             gen
         };
+        // Cleared however the walk ends, a panic included (else the source would stay
+        // "already being indexed").
+        struct PendingGen<'a>(&'a Source);
+        impl Drop for PendingGen<'_> {
+            fn drop(&mut self) {
+                self.0.pending_gen.store(0, Ordering::SeqCst);
+            }
+        }
+        let pending = PendingGen(src);
         let last_walk: Option<i64> = src
             .store
             .meta("last_full_walk")
@@ -457,8 +466,16 @@ impl Indexer {
             .and_then(|t| t.parse().ok());
         let result = (|| -> Result<IndexProgress> {
             let conn = src.store.get()?;
-            // Identity lookups touch the fs_id index at random: give the walk a bigger cache.
+            // Identity lookups touch the fs_id index at random: give the walk a bigger cache,
+            // and the pooled connection its normal one back afterwards.
             conn.execute_batch("PRAGMA cache_size=-65536")?;
+            struct Cache<'a>(&'a Connection);
+            impl Drop for Cache<'_> {
+                fn drop(&mut self) {
+                    let _ = self.0.execute_batch(crate::db::CACHE_SIZE);
+                }
+            }
+            let _cache = Cache(&conn);
             let total: i64 = conn.query_row("SELECT count(*) FROM record", [], |r| r.get(0))?;
             *src.status.write() = SourceStatus::Indexing {
                 done: 0,
@@ -563,7 +580,7 @@ impl Indexer {
             })
         })();
         let _w = src.write.lock();
-        src.pending_gen.store(0, Ordering::SeqCst);
+        drop(pending);
         match result {
             Ok(done) => {
                 src.generation.store(gen, Ordering::SeqCst);

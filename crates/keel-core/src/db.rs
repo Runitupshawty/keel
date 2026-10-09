@@ -11,6 +11,8 @@ use std::{
 };
 
 const SCHEMA: &str = include_str!("schema.sql");
+/// A pooled connection's page cache (16 MB).
+pub(crate) const CACHE_SIZE: &str = "PRAGMA cache_size=-16384;";
 /// Idle connections kept per store; more are opened on demand and closed when returned.
 const MAX_IDLE: usize = 4;
 
@@ -61,9 +63,7 @@ fn configure(conn: &Connection, store: Store) -> Result<()> {
         Store::Library => "FULL",
         Store::Source => "NORMAL",
     };
-    conn.execute_batch(&format!(
-        "PRAGMA synchronous={sync}; PRAGMA cache_size=-16384;"
-    ))?;
+    conn.execute_batch(&format!("PRAGMA synchronous={sync}; {CACHE_SIZE}"))?;
     Ok(())
 }
 

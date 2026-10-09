@@ -540,6 +540,42 @@ fn a_big_new_folder_is_applied_in_batches() {
 }
 
 #[test]
+fn a_walk_leaves_no_trace_on_the_source_however_it_ends() {
+    let panic = Arc::new(AtomicBool::new(true));
+    let router = Router::new();
+    let flag = panic.clone();
+    router.register(Arc::new(fake(move |path: &str| {
+        assert!(!flag.load(Ordering::SeqCst), "provider bug");
+        Ok(match path {
+            "/" => vec![("a".into(), false, 1)],
+            _ => anyhow::bail!("no such folder {path}"),
+        })
+    })));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "p".into(),
+        root: VPath::parse("fake://p/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+    });
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk(&src, &router)));
+    assert!(unwound.is_err());
+    panic.store(false, Ordering::SeqCst);
+    walk(&src, &router).unwrap(); // not "already being indexed"
+    let cache: i64 = src
+        .store
+        .get()
+        .unwrap()
+        .query_row("PRAGMA cache_size", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        cache, -16384,
+        "the pooled connection's cache is back to normal"
+    );
+}
+
+#[test]
 fn an_emptied_root_reads_as_offline() {
     let empty = Arc::new(AtomicBool::new(false));
     let router = Router::new();
