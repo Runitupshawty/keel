@@ -44,6 +44,48 @@ fn fonts() -> Arc<fontdb::Database> {
         .get_or_init(|| {
             let mut db = fontdb::Database::new();
             db.load_system_fonts();
+            // usvg resolves generic families through fontdb; its defaults
+            // (Times New Roman / Arial / Courier New) do not exist on Linux or
+            // macOS CI, so point each generic family at a face that is present.
+            let pick = |prefs: &[&str]| -> Option<String> {
+                let families: Vec<String> = db
+                    .faces()
+                    .filter_map(|f| f.families.first().map(|(name, _)| name.clone()))
+                    .collect();
+                prefs
+                    .iter()
+                    .find_map(|p| families.iter().find(|f| f.eq_ignore_ascii_case(p)).cloned())
+                    .or_else(|| families.first().cloned())
+            };
+            if let Some(f) = pick(&[
+                "Segoe UI",
+                "Helvetica",
+                "Arial",
+                "DejaVu Sans",
+                "Liberation Sans",
+                "Noto Sans",
+            ]) {
+                db.set_sans_serif_family(f);
+            }
+            if let Some(f) = pick(&[
+                "Times New Roman",
+                "Times",
+                "DejaVu Serif",
+                "Liberation Serif",
+                "Noto Serif",
+            ]) {
+                db.set_serif_family(f);
+            }
+            if let Some(f) = pick(&[
+                "Consolas",
+                "Menlo",
+                "Courier New",
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+            ]) {
+                db.set_monospace_family(f);
+            }
             Arc::new(db)
         })
         .clone()
@@ -53,6 +95,7 @@ fn render_svg(req: &Request) -> Result<Rgba, String> {
     let bytes = std::fs::read(&req.bytes_path).map_err(|error| error.to_string())?;
     let options = Options {
         fontdb: fonts(),
+        font_family: "sans-serif".to_string(),
         ..Options::default()
     };
     let tree = Tree::from_data(&bytes, &options).map_err(|error| error.to_string())?;
