@@ -394,6 +394,98 @@ fn a_different_folder_at_the_root_reads_as_offline() {
     walk(&src, &lib.router()).unwrap();
 }
 
+/// Serves `fake://cap/`: a root with folder `big` whose complete listing fails (as a cloud
+/// folder past the listing cap does).
+struct Capped;
+impl Provider for Capped {
+    fn scheme(&self) -> &'static str {
+        "fake"
+    }
+    fn caps(&self) -> Caps {
+        Caps::default()
+    }
+    fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        let entry = |name: &str, kind| Entry {
+            path: dir.join(name),
+            name: name.into(),
+            kind,
+            size: 1,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        };
+        Ok(match dir.path.as_str() {
+            "/" => vec![entry("big", Kind::Dir), entry("f.txt", Kind::File)],
+            _ => (0..3)
+                .map(|i| entry(&format!("{i}.txt"), Kind::File))
+                .collect(),
+        })
+    }
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        anyhow::ensure!(
+            dir.path != "/big" || !CAPPED.load(Ordering::SeqCst),
+            "listing incomplete"
+        );
+        self.list(dir)
+    }
+    fn stat(&self, p: &VPath) -> Result<Entry> {
+        Ok(Entry {
+            path: p.clone(),
+            name: p.name().into(),
+            kind: Kind::Dir,
+            size: 0,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        })
+    }
+    fn read(&self, _: &VPath) -> Result<Box<dyn std::io::Read + Send>> {
+        anyhow::bail!("fake")
+    }
+    fn write(&self, _: &VPath) -> Result<Box<dyn std::io::Write + Send>> {
+        anyhow::bail!("fake")
+    }
+    fn mkdir(&self, _: &VPath) -> Result<()> {
+        anyhow::bail!("fake")
+    }
+    fn rename(&self, _: &VPath, _: &VPath) -> Result<()> {
+        anyhow::bail!("fake")
+    }
+    fn remove(&self, _: &VPath) -> Result<()> {
+        anyhow::bail!("fake")
+    }
+    fn local_copy(&self, _: &VPath) -> Result<std::path::PathBuf> {
+        anyhow::bail!("fake")
+    }
+}
+static CAPPED: AtomicBool = AtomicBool::new(false);
+
+#[test]
+fn a_cut_off_listing_keeps_the_folder_as_unreadable() {
+    let router = Router::new();
+    router.register(Arc::new(Capped));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "cap".into(),
+        root: VPath::parse("fake://cap/").unwrap(),
+        kind: SourceKind::Cloud,
+        include_hidden: false,
+        ignore: Vec::new(),
+    });
+    walk(&src, &router).unwrap();
+    assert_eq!(paths(&src).len(), 6);
+    CAPPED.store(true, Ordering::SeqCst);
+    walk(&src, &router).unwrap();
+    let all = records(&src);
+    assert_eq!(all.len(), 6, "nothing under the cut-off folder was dropped");
+    let big = all.iter().find(|r| r.1 == "big").unwrap();
+    assert_eq!(big.2 & UNREADABLE, UNREADABLE);
+    CAPPED.store(false, Ordering::SeqCst);
+}
+
 #[test]
 fn an_emptied_root_reads_as_offline() {
     let empty = Arc::new(AtomicBool::new(false));

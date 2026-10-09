@@ -84,7 +84,8 @@ impl Lister {
             Lister::Local => {
                 Ok(fsid::list(&local(dir)?).with_context(|| format!("list {}", dir.display()))?)
             }
-            Lister::Remote(p) => Ok(p.list(dir)?.into_iter().map(item_of).collect()),
+            // Fresh and complete: a cut-off listing fails (the folder is kept as unreadable).
+            Lister::Remote(p) => Ok(p.list_complete(dir)?.into_iter().map(item_of).collect()),
         }
     }
 

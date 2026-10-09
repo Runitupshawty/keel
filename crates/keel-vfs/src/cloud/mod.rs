@@ -987,9 +987,16 @@ impl Core {
     }
 
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.list_with(dir, false)
+    }
+
+    /// `complete`: skip the cache and fail instead of cutting the listing off at the cap.
+    fn list_with(&self, dir: &VPath, complete: bool) -> Result<Vec<Entry>> {
         self.validate(dir)?;
-        if let Some(hit) = self.cached(&dir.path, <[Entry]>::to_vec) {
-            return Ok(hit);
+        if !complete {
+            if let Some(hit) = self.cached(&dir.path, <[Entry]>::to_vec) {
+                return Ok(hit);
+            }
         }
         let own = key(dir, true);
         // Paged lazily: past the cap (plus the folder itself and one more, to notice) no
@@ -1019,6 +1026,12 @@ impl Core {
             entries.push(self.entry(dir.join(name), item.metadata()));
         }
         if entries.len() > self.list_cap {
+            anyhow::ensure!(
+                !complete,
+                "{} has more than {} entries: listing incomplete",
+                dir.display(),
+                self.list_cap
+            );
             entries.truncate(self.list_cap);
             tracing::warn!(
                 folder = %dir.display(),
@@ -1481,6 +1494,9 @@ impl Provider for Fresh<'_> {
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
         self.cloud.list(dir)
     }
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.cloud.core.list_with(dir, true)
+    }
     fn stat(&self, p: &VPath) -> Result<Entry> {
         self.cloud.core.validate(p)?;
         self.cloud.core.stat_remote(p, self.cancel)
@@ -1522,6 +1538,9 @@ impl Provider for CloudProvider {
     }
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
         self.core.list(dir)
+    }
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.core.list_with(dir, true)
     }
     fn stat(&self, p: &VPath) -> Result<Entry> {
         self.core.stat(p)

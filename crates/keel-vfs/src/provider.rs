@@ -31,6 +31,11 @@ pub trait Provider: Send + Sync {
     /// May block on dead network volumes; call off the UI thread.
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>>;
     fn stat(&self, p: &VPath) -> Result<Entry>;
+    /// `list` for indexing: read fresh (no cache), and an error rather than a listing cut
+    /// off at a display cap (an index would take the missing entries as deleted).
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.list(dir)
+    }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
     /// Call `flush()` and check its result when done: providers that stage writes (SFTP)
     /// commit there, and a writer dropped without a successful `flush()` is discarded

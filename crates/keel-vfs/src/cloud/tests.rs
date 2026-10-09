@@ -989,6 +989,12 @@ fn big_folders_are_cut_off_at_the_cap() {
             .unwrap();
     }
     assert_eq!(cloud.list(&vp("cloud://mem/")).unwrap().len(), 3);
+    // For an index the cut-off listing is an error, never a partial answer.
+    let err = cloud.list_complete(&vp("cloud://mem/")).unwrap_err();
+    assert!(err.to_string().contains("more than 3 entries"), "{err:#}");
+    cloud.tune(|core| core.list_cap = 10);
+    // Fresh, not the cached 3.
+    assert_eq!(cloud.list_complete(&vp("cloud://mem/")).unwrap().len(), 5);
 }
 
 #[test]
