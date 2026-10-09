@@ -455,6 +455,7 @@ pub fn hits_listing(hits: Vec<keel_search::Hit>) -> Listing {
                 modified: h.modified,
                 hidden: false,
                 is_link: false,
+                encrypted: false,
                 ext,
                 name,
                 path: h.path,
@@ -507,6 +508,7 @@ pub(crate) fn test_entry(dir: &VPath, name: &str, kind: Kind, size: u64) -> Entr
         modified: None,
         hidden: false,
         is_link: false,
+        encrypted: false,
         ext: name
             .rsplit_once('.')
             .map(|(_, e)| e.into())

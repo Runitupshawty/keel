@@ -185,6 +185,7 @@ fn entry(
     is_dir: bool,
     size: u64,
     modified: Option<SystemTime>,
+    encrypted: bool,
 ) -> Entry {
     let path = VPath::join_archive(outer, inner);
     let name = path.name().to_owned();
@@ -200,6 +201,7 @@ fn entry(
         size,
         modified,
         is_link: false,
+        encrypted,
         ext,
     }
 }
@@ -238,6 +240,7 @@ impl Provider for ArchiveProvider {
                 is_dir,
                 if is_dir { 0 } else { item.size },
                 if deeper { None } else { item.modified },
+                !is_dir && item.encrypted,
             );
             children
                 .entry(child.to_owned())
@@ -254,18 +257,25 @@ impl Provider for ArchiveProvider {
     fn stat(&self, path: &VPath) -> Result<Entry> {
         let (mut reader, outer, inner) = self.open(path)?;
         if inner.is_empty() {
-            return Ok(entry(&outer, "", true, 0, None));
+            return Ok(entry(&outer, "", true, 0, None, false));
         }
         let entries = reader.entries()?;
         if let Some(item) = find(&entries, &inner) {
-            return Ok(entry(&outer, &inner, item.is_dir, item.size, item.modified));
+            return Ok(entry(
+                &outer,
+                &inner,
+                item.is_dir,
+                item.size,
+                item.modified,
+                item.encrypted,
+            ));
         }
         let folder = format!("{inner}/");
         if entries
             .iter()
             .any(|e| safe_name(&e.inner).is_ok_and(|n| n.starts_with(&folder)))
         {
-            return Ok(entry(&outer, &inner, true, 0, None));
+            return Ok(entry(&outer, &inner, true, 0, None, false));
         }
         bail!("archive entry not found: {}", path.display())
     }

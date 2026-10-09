@@ -35,6 +35,7 @@ fn hung_ffmpeg_is_killed_and_reported() {
             modified: None,
             hidden: false,
             is_link: false,
+            encrypted: false,
             ext: "mp4".into(),
         },
         bytes_path: video,

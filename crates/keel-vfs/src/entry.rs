@@ -18,6 +18,8 @@ pub struct Entry {
     pub hidden: bool,
     /// A symlink or junction; `kind`, `size` and `modified` describe its target.
     pub is_link: bool,
+    /// A password-protected archive entry: listed, never read or extracted.
+    pub encrypted: bool,
     /// Lowercase extension without the dot.
     pub ext: String,
 }

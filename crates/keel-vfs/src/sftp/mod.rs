@@ -205,6 +205,7 @@ impl SftpProvider {
             hidden: name.starts_with('.'),
             ext,
             is_link,
+            encrypted: false,
             name,
             path: p,
         })

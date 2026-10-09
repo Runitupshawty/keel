@@ -24,7 +24,7 @@ use ops_unix as sys;
 mod ops_windows;
 #[cfg(feature = "zip")]
 pub use ops::add_to_zip;
-pub use ops::{copy_local, extract, move_local, plan_size, Conflict, Progress};
+pub use ops::{copy_local, extract, extract_under, move_local, plan_size, Conflict, Progress};
 #[cfg(windows)]
 use ops_windows as sys;
 
