@@ -5,7 +5,7 @@
 //! Protocol: one JSON `Request` line from the client, `ok` back once it was taken.
 
 use crate::cli::Request;
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
+use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Name, Stream};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::time::Duration;
 
@@ -51,7 +51,15 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
                     tracing::warn!("running Keel did not answer: {e}");
                     return Claim::Alone;
                 }
-                Err(e) => tracing::debug!("no running Keel on {name}: {e}"),
+                Err(e) => {
+                    tracing::debug!("no running Keel on {name}: {e}");
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                    ) {
+                        remove_stale(name);
+                    }
+                }
             }
         }
         match listen(name) {
@@ -67,11 +75,43 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
     Claim::Alone
 }
 
+/// Windows (named pipe) and Linux (abstract socket) have a namespace that refuses a second
+/// listener; other Unixes get an explicit socket file under the temp dir so a stale file can be
+/// removed deliberately (never overwritten while an instance is alive).
+fn sock_name(name: &str) -> io::Result<Name<'static>> {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        name.to_ns_name::<GenericNamespaced>()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        use interprocess::local_socket::GenericFilePath;
+        sock_path(name).to_fs_name::<GenericFilePath>()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn sock_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{name}.sock"))
+}
+
+/// Removes a socket file nobody answers on (a crashed instance). No-op elsewhere.
+fn remove_stale(name: &str) {
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = std::fs::remove_file(sock_path(name));
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let _ = name;
+    }
+}
+
 fn listen(name: &str) -> io::Result<Listener> {
     ListenerOptions::new()
-        .name(name.to_ns_name::<GenericNamespaced>()?)
-        // A stale /tmp socket file of a crashed instance (macOS) is replaced.
-        .try_overwrite(cfg!(unix) && !cfg!(target_os = "linux"))
+        .name(sock_name(name)?)
+        // Never take over a socket another live instance owns.
+        .try_overwrite(false)
         .create_sync()
 }
 
@@ -79,7 +119,7 @@ fn listen(name: &str) -> io::Result<Listener> {
 fn send(name: &str, req: &Request) -> io::Result<()> {
     let mut line = serde_json::to_string(req)?;
     line.push('\n');
-    let mut conn = Stream::connect(name.to_ns_name::<GenericNamespaced>()?)?;
+    let mut conn = Stream::connect(sock_name(name)?)?;
     // The running instance may take the foreground (the user just started this one).
     #[cfg(windows)]
     keel_vfs::desktop::allow_foreground_any();
