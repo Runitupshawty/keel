@@ -26,7 +26,9 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
 | [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |
-| [`interprocess`](https://crates.io/crates/interprocess) 2.4 | Local socket / named pipe for the single instance | 0BSD OR Apache-2.0 | Rust crate, compiled in |
+| [`interprocess`](https://crates.io/crates/interprocess) 2.4 | Local socket / named pipe for the single instance and `keel-daemon` | 0BSD OR Apache-2.0 | Rust crate, compiled in |
+| [`tungstenite`](https://crates.io/crates/tungstenite) 0.30 | Optional `keel-daemon --ws` JSON-RPC WebSocket (no TLS features) | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`ctrlc`](https://crates.io/crates/ctrlc) 3.5 | `keel-daemon` graceful shutdown on Ctrl-C / SIGTERM | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`schemars`](https://crates.io/crates/schemars) 1.2 | JSON schemas of the API operations (`keel-api`: JSON-RPC, CLI, MCP tools) | MIT | Rust crate, compiled in |
 | [`global-hotkey`](https://crates.io/crates/global-hotkey) 0.8 | System-wide hotkey | Apache-2.0 OR MIT | Rust crate, compiled in |
 | [`rusqlite`](https://crates.io/crates/rusqlite) 0.37 | Search index and library stores, with FTS5 (bundled SQLite, which is public domain) | MIT | Rust crate, compiled in |

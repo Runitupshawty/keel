@@ -2,7 +2,7 @@
 //! `keel-<hash of user and profile>`; a later `keel [FOLDER] [--search Q]` sends its request
 //! there and exits.
 //!
-//! Only the same user gets through. Windows: a named pipe whose DACL grants only the
+//! Only the same user gets through (`keel_api::socket`). Windows: a named pipe whose DACL grants only the
 //! user's SID; the client refuses impersonation and checks that the pipe's server runs as
 //! the same user (`keel_vfs::pipe`). Unix: a socket file in a 0700 folder of the user's
 //! (`$XDG_RUNTIME_DIR/keel-<uid>`, else `<temp>/keel-<uid>`), and both ends check the peer's
@@ -12,13 +12,14 @@
 //! it was taken. The server reads each client on its own thread, for at most `READ_WAIT`.
 
 use crate::cli::Request;
-use interprocess::local_socket::{prelude::*, ListenerOptions, Name, Stream};
+use interprocess::local_socket::{prelude::*, Stream};
+use keel_api::socket;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use interprocess::local_socket::Listener;
+pub use keel_api::socket::Listener;
 
 /// How long a client waits for a running instance to answer (connecting included).
 const ANSWER_WAIT: Duration = Duration::from_secs(3);
@@ -27,22 +28,14 @@ const READ_WAIT: Duration = Duration::from_secs(2);
 /// Longest request line read (a path and a query).
 const MAX_LINE: u64 = 64 * 1024;
 
-/// The socket name: per user, and per profile. Both are hashed (FNV-1a, stable across
-/// builds): user names may be anything (non-ASCII, spaces), and a Unix socket path must stay
-/// short.
+/// The socket name: per user, and per profile (`keel_api::socket::name`).
 pub fn name(profile: &str) -> String {
-    let user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default();
-    name_for(&user, profile)
+    socket::name("keel", profile)
 }
 
+#[cfg(test)]
 fn name_for(user: &str, profile: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in user.bytes().chain([0]).chain(profile.bytes()) {
-        hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("keel-{hash:016x}")
+    socket::name_for("keel", user, profile)
 }
 
 pub enum Claim {
@@ -90,118 +83,19 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
     Claim::Alone
 }
 
-/// Windows: a named pipe (its namespace refuses a second listener). Unix: a socket file in
-/// the user's private folder; a stale one is removed deliberately (never overwritten while
-/// an instance is alive).
-fn sock_name(name: &str) -> io::Result<Name<'static>> {
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        name.to_owned().to_ns_name::<GenericNamespaced>()
-    }
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        sock_path(name)?.to_fs_name::<GenericFilePath>()
-    }
-}
-
-/// `<dir>/<name>.sock`, `<dir>` created 0700 when missing and refused unless it is a real
-/// folder of this user that nobody else may enter.
+use keel_api::socket::{bind, listen, remove_stale};
 #[cfg(unix)]
-fn sock_path(name: &str) -> io::Result<std::path::PathBuf> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    let uid = unsafe { libc::geteuid() };
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join(format!("keel-{uid}"));
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
-        _ => {}
-    }
-    let meta = std::fs::symlink_metadata(&dir)?;
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{} is not a private folder of this user", dir.display()),
-        ));
-    }
-    Ok(dir.join(format!("{name}.sock")))
-}
-
-/// The other end of `conn` runs as this user.
-#[cfg(unix)]
-fn check_peer(conn: &Stream) -> io::Result<()> {
-    let euid = conn.peer_creds()?.euid();
-    match euid == Some(unsafe { libc::geteuid() }) {
-        true => Ok(()),
-        false => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("peer runs as uid {euid:?}"),
-        )),
-    }
-}
-
-/// Removes a socket file nobody answers on (a crashed instance). No-op on Windows.
-fn remove_stale(name: &str) {
-    #[cfg(unix)]
-    if let Ok(path) = sock_path(name) {
-        let _ = std::fs::remove_file(path);
-    }
-    #[cfg(windows)]
-    let _ = name;
-}
-
-fn listen(name: &str) -> io::Result<Listener> {
-    let options = ListenerOptions::new()
-        .name(sock_name(name)?)
-        // Never take over a socket another live instance owns.
-        .try_overwrite(false);
-    #[cfg(windows)]
-    let options = {
-        use interprocess::os::windows::{
-            local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
-        };
-        let sddl = widestring::U16CString::from_str(keel_vfs::pipe::user_only_sddl()?)
-            .map_err(io::Error::other)?;
-        options.security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
-    };
-    options.create_sync()
-}
-
-/// `listen`, after clearing a stale socket file of a crashed instance.
-fn bind(name: &str) -> io::Result<Listener> {
-    match listen(name) {
-        #[cfg(unix)]
-        Err(e)
-            if e.kind() == io::ErrorKind::AddrInUse
-                && Stream::connect(sock_name(name)?)
-                    .is_err_and(|c| c.kind() == io::ErrorKind::ConnectionRefused) =>
-        {
-            remove_stale(name);
-            listen(name)
-        }
-        listened => listened,
-    }
-}
+use keel_api::socket::{check_peer, sock_path};
 
 /// Connects to the instance on `name`, which must run as this user. On Windows it may take
 /// the foreground (this process was just started by the user).
 fn connect(name: &str) -> io::Result<impl Read + Write> {
+    let (conn, _server) = socket::connect(name, ANSWER_WAIT)?;
     #[cfg(windows)]
-    {
-        let (pipe, server) = keel_vfs::pipe::connect(name, ANSWER_WAIT)?;
+    if let Some(server) = _server {
         keel_vfs::desktop::allow_foreground(server);
-        Ok(pipe)
     }
-    #[cfg(unix)]
-    {
-        let conn = Stream::connect(sock_name(name)?)?;
-        check_peer(&conn)?;
-        Ok(conn)
-    }
+    Ok(conn)
 }
 
 /// Sends `req` and waits up to `ANSWER_WAIT` for the `ok`, connecting included (a busy or
@@ -317,7 +211,7 @@ fn serve_one(conn: Stream, on_request: &dyn Fn(Request)) {
     }
     // Named pipes have no read timeout: a watchdog cancels the read instead.
     #[cfg(windows)]
-    let watchdog = Watchdog::arm(&conn);
+    let watchdog = socket::Watchdog::arm(&conn, READ_WAIT);
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
     let read = (&mut reader).take(MAX_LINE).read_line(&mut line);
@@ -335,44 +229,6 @@ fn serve_one(conn: Stream, on_request: &dyn Fn(Request)) {
             }
             Err(e) => tracing::warn!("single instance: bad request: {e}"),
         },
-    }
-}
-
-/// Cancels the pending read on a client pipe after `READ_WAIT` unless dropped first.
-#[cfg(windows)]
-struct Watchdog {
-    armed: Arc<parking_lot::Mutex<bool>>,
-    _disarm: crossbeam_channel::Sender<()>,
-}
-
-#[cfg(windows)]
-impl Watchdog {
-    fn arm(conn: &Stream) -> Self {
-        use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle};
-        let Stream::NamedPipe(pipe) = conn;
-        // As an integer: raw handles are not Send. Valid while `armed` (the stream outlives
-        // the watchdog, which is dropped before it).
-        let raw = pipe.inner().as_handle().as_raw_handle() as usize;
-        let armed = Arc::new(parking_lot::Mutex::new(true));
-        let (tx, rx) = crossbeam_channel::bounded::<()>(0);
-        let flag = armed.clone();
-        std::thread::spawn(move || {
-            if rx.recv_timeout(READ_WAIT).is_err_and(|e| e.is_timeout()) {
-                let armed = flag.lock();
-                if *armed {
-                    let pipe = unsafe { BorrowedHandle::borrow_raw(raw as _) };
-                    keel_vfs::pipe::cancel_io(pipe);
-                }
-            }
-        });
-        Self { armed, _disarm: tx }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Watchdog {
-    fn drop(&mut self) {
-        *self.armed.lock() = false;
     }
 }
 

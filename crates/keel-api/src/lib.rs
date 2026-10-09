@@ -9,10 +9,15 @@
 //! operations go through `plan` (keel-core's `validate -> preview -> execute`). Only
 //! `sources.remove` and `shares.revoke` (taking access away) act directly.
 
+pub mod client;
+pub mod config;
 pub mod error;
+pub mod host;
 pub mod net;
 mod ops;
 pub mod plans;
+pub mod rpc;
+pub mod socket;
 pub mod types;
 
 pub use error::{ApiError, Result};

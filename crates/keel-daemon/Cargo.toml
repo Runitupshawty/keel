@@ -1,0 +1,38 @@
+[package]
+name = "keel-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headless Keel: the library (and keel-net) behind JSON-RPC on a per-user local socket"
+
+[features]
+default = ["rar"]
+rar = ["keel-vfs/rar"]
+
+[[bin]]
+name = "keel-daemon"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+getrandom.workspace = true
+keel-api = { path = "../keel-api" }
+keel-core = { path = "../keel-core" }
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
+keel-net = { path = "../keel-net" }
+clap = { version = "4.6.7", features = ["derive"] }
+interprocess = "2.4.4"
+# WebSocket transport (no TLS: loopback by default).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# SIGTERM / Ctrl-C / console close.
+ctrlc = { version = "3.5", features = ["termination"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tempfile = "3"
