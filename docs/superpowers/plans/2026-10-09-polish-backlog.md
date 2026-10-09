@@ -20,6 +20,18 @@ Items the reviews confirmed but that were not folded into a task. None loses dat
 - Listing: queue a relist when a listing for the same folder is already in flight (mark dirty).
 - 100k-entry folders: measure the per-keystroke and per-refresh cost after the Task 6 fixes (target < 16 ms).
 
+## keel-app (from the Task 7 review, 2026-10-09)
+- Preview worker: abandon a render stuck for ~15 s, show `Error("timed out")`, start a fresh thread (cap abandoned threads).
+- Search: one newest-wins search worker instead of a thread per query (stale queries pile up on the Everything lock).
+- Preview cache: byte budget (~256 MB) in addition to the 64-entry count.
+- PDF: render page width to the panel width and add a width bucket to `PreviewKey` so widening the panel re-renders sharp.
+- Table preview: cap displayed columns at 64 with a "first N columns" note.
+- Code preview: `selectable_labels = false` (light-theme selection highlight under light text is unreadable).
+- Status bar: truncate the left group under ~800 px width.
+- Palette shortcut labels: "Cmd" on macOS.
+- `move_tab`: track the active tab by index (search tab + folder tab with the same dir).
+- Open location into a folder the other pane already shows: clear the filter and reveal the cursor immediately.
+
 ## keel-vfs
 - `ops_unix.rs` `rename_noreplace`: allow case-only renames on case-insensitive filesystems (`same_file::is_same_file`).
 - `reflink-copy` fast path on macOS/Linux (skipped in Task 2).
