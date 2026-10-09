@@ -43,6 +43,14 @@ pub struct ViewCx<'a> {
     pub preview: Option<&'a mut crate::preview_panel::PreviewPanel>,
     /// Columns view widths (setting; 0 = default).
     pub column_widths: &'a mut Vec<f32>,
+    // --- Task 29 ---
+    pub library: &'a crate::library::LibraryUi,
+    /// The Overview's storage cards.
+    pub drives: &'a [crate::sidebar::Drive],
+    /// The platform search backend's name (the search tab's backend picker).
+    pub searcher: Option<&'static str>,
+    /// Details view: the Tags column.
+    pub tags_column: bool,
 }
 
 impl Pane {
@@ -184,9 +192,13 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     ui.add_space(3.0);
     tab_strip(ui, idx, pane, out);
+    if pane.tabs[pane.active].kind == crate::tab::TabKind::Overview {
+        crate::library_ui::overview(ui, cx, out);
+        return;
+    }
     let search = pane.tab().is_search();
     if search {
-        crate::search_tab::bar(ui, pane, out);
+        crate::search_tab::bar(ui, pane, cx.searcher, cx.library.is_open(), out);
     } else {
         nav_bar(ui, pane, out);
         filter_bar(ui, pane, out);
@@ -368,6 +380,12 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     }
                     let label = match dir.name() {
                         name if i > 0 && !name.is_empty() => name.to_owned(),
+                        // Task 29: a library source root reads as its label.
+                        _ if dir.scheme == keel_vfs::library::SCHEME => {
+                            crate::library::label_of(&dir.authority)
+                                .map(|l| format!("Library › {l}"))
+                                .unwrap_or_else(|| dir.display())
+                        }
                         _ => dir.display(),
                     };
                     let r = ui.add(egui::Button::new(label).frame(false));

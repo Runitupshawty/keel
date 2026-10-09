@@ -371,7 +371,9 @@ mod tests {
         let x_of = |renaming: bool| {
             let ctx = egui::Context::default();
             let (tx, _rx) = crossbeam_channel::unbounded();
-            let mut thumbs = Thumbs::new(tx, ctx.clone(), Arc::new(Router::new()));
+            let router = Arc::new(Router::new());
+            let library = crate::library::LibraryUi::new(&router, tx.clone(), ctx.clone());
+            let mut thumbs = Thumbs::new(tx, ctx.clone(), router);
             let theme = crate::theme::Theme::load("dark");
             let mut tab = Tab::new(dir.clone());
             tab.set_entries(
@@ -394,6 +396,10 @@ mod tests {
                             banner: None,
                             preview: None,
                             column_widths: &mut Vec::new(),
+                            library: &library,
+                            drives: &[],
+                            searcher: None,
+                            tags_column: false,
                         };
                         super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
                     });

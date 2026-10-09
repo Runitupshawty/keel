@@ -51,6 +51,9 @@ pub struct Settings {
     pub column_widths: Vec<f32>,
     /// No transitions (panels, pane split, highlight, toasts).
     pub reduce_motion: bool,
+    // --- Task 29 ---
+    /// `[library]`: the library layer (on by default).
+    pub library: crate::library::LibrarySettings,
 }
 
 impl Default for Settings {
@@ -75,6 +78,7 @@ impl Default for Settings {
             single_instance: true,
             column_widths: Vec::new(),
             reduce_motion: false,
+            library: Default::default(),
         }
     }
 }
@@ -382,6 +386,7 @@ pub enum Page {
     Cloud,
     Profiles,
     Icons,
+    Library,
 }
 
 /// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
@@ -397,6 +402,7 @@ pub fn window(
     icons: &mut crate::icon_theme::IconThemes,
     tx: &Sender<crate::state::Msg>,
     searcher: Option<&str>, // Task 24: the active search backend's name
+    library: &mut crate::library::LibraryUi, // Task 29
 ) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
@@ -410,6 +416,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
                 ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
+                ui.selectable_value(&mut remotes.page, Page::Library, "Library");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -417,6 +424,7 @@ pub fn window(
                     Page::Remotes => remotes.settings_page(ui, s, tx),
                     Page::Profiles => profiles.settings_page(ui, s),
                     Page::Icons => icons.settings_page(ui, s),
+                    Page::Library => crate::library_ui::settings_page(ui, s, library),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

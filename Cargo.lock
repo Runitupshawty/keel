@@ -3785,6 +3785,7 @@ dependencies = [
  "ignore",
  "image",
  "interprocess",
+ "keel-core",
  "keel-preview",
  "keel-search",
  "keel-term",

@@ -52,6 +52,8 @@ pub enum TabKind {
         /// Request number of the query in flight or shown; older answers are dropped.
         req: u64,
     },
+    /// Task 29: the library dashboard (`library_ui::overview`); never listed.
+    Overview,
 }
 
 /// Cursor movement inside the listing.
@@ -114,6 +116,8 @@ pub struct Tab {
     /// Columns view: the columns right of this folder.
     pub columns: crate::view_columns::Columns,
     // --- end Task 23 ---
+    /// Task 29: a search tab querying the library instead of the platform backend.
+    pub library_search: bool,
     generation: u64,
     cache_key: Option<(u64, String, (SortKey, bool), bool)>,
     cache: Vec<usize>,
@@ -121,6 +125,7 @@ pub struct Tab {
 
 impl Tab {
     pub fn new(dir: VPath) -> Self {
+        let overview = dir == crate::library::overview_path();
         Self {
             dir,
             entries: Vec::new(),
@@ -136,11 +141,15 @@ impl Tab {
             filter_open: false,
             history: Vec::new(),
             future: Vec::new(),
-            loading: true,
+            loading: !overview,
             error: None,
             listed_dir: None,
             listed_req: 0,
-            kind: TabKind::Dir,
+            kind: if overview {
+                TabKind::Overview
+            } else {
+                TabKind::Dir
+            },
             renaming: None,
             scroll_to: None,
             page_rows: 20,
@@ -149,6 +158,7 @@ impl Tab {
             reveal: false,
             left_search: None,
             columns: Default::default(),
+            library_search: false,
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
@@ -184,9 +194,20 @@ impl Tab {
 
     pub fn title(&self) -> String {
         match &self.kind {
+            TabKind::Search { query, .. } if self.library_search => match query.as_str() {
+                crate::library::FAVORITES_QUERY => "Favorites".into(),
+                crate::library::RECENTS_QUERY => "Recents".into(),
+                "" => "Library search".into(),
+                q => format!("Library: {q}"),
+            },
             TabKind::Search { query, .. } if query.is_empty() => "Search".into(),
             TabKind::Search { query, .. } => format!("Search: {query}"),
+            TabKind::Overview => "Overview".into(),
             TabKind::Dir => match self.dir.name() {
+                "" if self.dir.scheme == keel_vfs::library::SCHEME => {
+                    crate::library::label_of(&self.dir.authority)
+                        .unwrap_or_else(|| "Library".into())
+                }
                 "" => self.dir.display(),
                 name => name.to_owned(),
             },
