@@ -977,6 +977,24 @@ fn watch_loop(
             // Another folder is at the root: its events stay out of the snapshot.
             continue;
         }
+        // Watchers may report the canonical spelling of the root (macOS FSEvents turns
+        // /var/... into /private/var/...; a mounted or junctioned root likewise). Map those
+        // back under the source's own root so they are not taken for outside paths.
+        if let Some(root_local) = src.def.root.to_local_path() {
+            if let Ok(canon) = std::fs::canonicalize(&root_local) {
+                let canon =
+                    std::path::PathBuf::from(canon.to_string_lossy().trim_start_matches(r"\?\"));
+                if canon != root_local {
+                    for p in paths.iter_mut() {
+                        if !p.starts_with(&root_local) {
+                            if let Ok(rest) = p.strip_prefix(&canon) {
+                                *p = root_local.join(rest);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         paths.sort();
         paths.dedup();
         // Present paths first: a rename then reads as a move.
