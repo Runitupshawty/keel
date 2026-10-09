@@ -223,6 +223,8 @@ pub struct Library {
     root: PathBuf,
     pub(crate) shared: Arc<Shared>,
     jobs: Jobs,
+    /// Held while open: one process owns a library (and resumes its jobs). Dropped last.
+    _lock: std::fs::File,
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -244,6 +246,11 @@ impl Library {
     pub fn open(root: &Path, name: &str) -> Result<Library> {
         check_name(name)?;
         let dir = root.join("library").join(name);
+        std::fs::create_dir_all(&dir)?;
+        let lock = std::fs::File::create(dir.join("library.lock"))?;
+        if let Err(e) = lock.try_lock() {
+            anyhow::bail!("library {name} is open in another process ({e})");
+        }
         let db = Pool::open(&dir.join("library.db"), Store::Library)?;
         let id = match db.meta("id")? {
             Some(id) => id,
@@ -282,6 +289,7 @@ impl Library {
             root: dir,
             jobs: Jobs::new(shared.clone()),
             shared,
+            _lock: lock,
         };
         // Resumed by `jobs().resume_all()` once the app has set the router.
         lib.jobs.register("index", IndexJob::restore);
@@ -541,6 +549,17 @@ pub(crate) mod tests {
             Library::open(data.path(), "james").unwrap().sources().len(),
             1
         );
+    }
+
+    #[test]
+    fn a_library_is_open_in_one_place_at_a_time() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "solo").unwrap();
+        let err = Library::open(data.path(), "solo").err().unwrap();
+        assert!(err.to_string().contains("open in another process"), "{err}");
+        assert!(Library::open(data.path(), "other").is_ok());
+        drop(lib);
+        Library::open(data.path(), "solo").unwrap();
     }
 
     #[test]
