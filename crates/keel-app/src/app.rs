@@ -20,9 +20,8 @@ const DROP_WAIT: Duration = Duration::from_millis(1000);
 /// What `main` loaded before the window opened.
 pub struct Boot {
     pub settings: Settings,
-    /// Repaired (`Session::repair`); `missing` lists the folders it replaced.
+    /// Repaired (`Session::repair`).
     pub session: Session,
-    pub missing: Vec<VPath>,
     pub home: VPath,
     /// The session as found on disk; `Some` turns saving on (off in tests).
     pub saved: Option<Option<Session>>,
@@ -35,7 +34,6 @@ impl Boot {
         Self {
             settings: Settings::default(),
             session: Session::single(start.clone()),
-            missing: Vec::new(),
             home: start,
             saved: None,
         }
@@ -50,10 +48,10 @@ pub struct App {
     pending_drop: Option<(Vec<PathBuf>, Instant)>,
     /// Settings + session writer; None in tests.
     persist: Option<Persist>,
-    /// Where a lone tab that panicked is reset to.
-    home: VPath,
     /// A frame panicked: the crash dialog is up.
     pub crashed: bool,
+    /// False after a crash reset the panes: the saved session keeps the tabs from before.
+    pub save_session: bool,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -64,51 +62,44 @@ impl App {
         let persist = boot
             .saved
             .map(|saved| Persist::new(boot.settings.clone(), saved));
-        let mut state = AppState::restore(
+        let state = AppState::restore(
             cc.egui_ctx.clone(),
             Arc::new(Router::new()),
             boot.session,
             boot.settings,
+            boot.home,
         );
-        match boot.missing.as_slice() {
-            [] => {}
-            [one] => state.toasts.error(format!(
-                "{} no longer exists; opened your home folder",
-                one.display()
-            )),
-            many => state.toasts.error(format!(
-                "{} saved folders no longer exist; opened your home folder",
-                many.len()
-            )),
-        }
         state.load_searcher();
         Self {
             state,
             split: 0.5,
             pending_drop: None,
             persist,
-            home: boot.home,
             crashed: false,
+            save_session: true,
             #[cfg(test)]
             panic_next_frame: false,
         }
     }
 
-    /// A frame panicked (the hook wrote crash.log): drop popups and close the active tab,
-    /// or send it home when it is the pane's only tab.
+    /// A frame panicked (the hook wrote crash.log): drop popups, reset both panes to one
+    /// home tab and clear the preview, once. While the dialog is up a panic that repeats
+    /// every frame changes nothing more. The reset tabs are never saved as the session.
     fn recover(&mut self) {
+        if self.crashed {
+            return;
+        }
         self.crashed = true;
+        self.save_session = false;
         self.pending_drop = None;
         let s = &mut self.state;
         s.dialog = None;
         s.jump.open = false;
         s.palette.open = false;
-        let p = s.active;
-        let pane = &mut s.panes[p];
-        if pane.tabs.len() > 1 {
-            pane.close_tab(pane.active);
-        } else {
-            pane.tabs[0] = Tab::new(self.home.clone());
+        s.preview.reset();
+        for p in 0..2 {
+            s.panes[p].tabs = vec![Tab::new(s.home.clone())];
+            s.panes[p].active = 0;
             s.list(p, 0);
         }
     }
@@ -312,13 +303,15 @@ impl eframe::App for App {
             crate::crash::modal(ctx, &mut self.crashed);
         }
         if let Some(persist) = &mut self.persist {
-            persist.update(&self.state.settings, Session::of(&self.state));
+            let session = self.save_session.then(|| Session::of(&self.state));
+            persist.update(&self.state.settings, session);
         }
     }
 
     fn on_exit(&mut self) {
         if let Some(persist) = &mut self.persist {
-            persist.finish(&self.state.settings, Session::of(&self.state));
+            let session = self.save_session.then(|| Session::of(&self.state));
+            persist.finish(&self.state.settings, session);
         }
     }
 }
@@ -513,7 +506,19 @@ mod tests {
         harness.step();
         let app = harness.state();
         assert!(app.crashed, "crash dialog up");
-        assert_eq!(app.state.panes[0].tabs.len(), 1, "failing tab closed");
+        assert!(!app.save_session, "the reset tabs are not saved");
+        for p in 0..2 {
+            assert_eq!(app.state.panes[p].tabs.len(), 1, "pane reset");
+            assert_eq!(app.state.tab(p).dir, start, "home tab");
+        }
+        // A panic that repeats while the dialog is up closes nothing more.
+        harness
+            .state_mut()
+            .state
+            .run(0, Action::NewTabAt(start.join("docs")));
+        harness.state_mut().panic_next_frame = true;
+        harness.step();
+        assert_eq!(harness.state().state.panes[0].tabs.len(), 2);
         // Later frames run normally; OK dismisses the dialog.
         harness.run_steps(3);
         egui_kittest::kittest::Queryable::get_by_label(&harness, "OK").click();

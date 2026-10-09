@@ -30,7 +30,26 @@ pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ct
             Some(p) => p.list(&dir).map(Listing::new),
             None => Err(anyhow::anyhow!("no provider for {}", dir.display())),
         };
-        send(&tx, &ctx, Msg::Listed { dir, req, result });
+        let gone = result.as_ref().is_err_and(|e| {
+            let not_found = e.chain().any(|c| {
+                c.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+            });
+            not_found
+                && dir
+                    .to_local_path()
+                    .is_some_and(|d| keel_vfs::is_fixed_disk(&d))
+        });
+        send(
+            &tx,
+            &ctx,
+            Msg::Listed {
+                dir,
+                req,
+                gone,
+                result,
+            },
+        );
     });
 }
 

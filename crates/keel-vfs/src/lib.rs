@@ -9,7 +9,7 @@ pub mod local;
 pub mod provider;
 pub mod router;
 pub use entry::{Entry, Kind};
-pub use local::{drives, watch, LocalProvider};
+pub use local::{drives, is_fixed_disk, watch, LocalProvider};
 pub use provider::{Caps, Provider};
 pub use router::Router;
 pub mod ops;

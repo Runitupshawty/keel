@@ -31,10 +31,12 @@ use std::time::{Duration, Instant};
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
 
 pub enum Msg {
-    /// Answer to listing request `req` (numbers only grow; older answers lose).
+    /// Answer to listing request `req` (numbers only grow; older answers lose). `gone`: the
+    /// folder is on a fixed local disk and does not exist (an offline share is not gone).
     Listed {
         dir: VPath,
         req: u64,
+        gone: bool,
         result: anyhow::Result<Listing>,
     },
     Changed {
@@ -102,6 +104,8 @@ type WatchSlot = (Option<VPath>, Option<Box<dyn Any + Send>>);
 
 pub struct AppState {
     pub router: Arc<Router>,
+    /// Where a saved tab whose folder is gone, and a crash reset, go.
+    pub home: VPath,
     pub panes: [Pane; 2],
     pub active: usize,
     pub dual: bool,
@@ -142,7 +146,13 @@ impl AppState {
     /// One tab on `start` per pane, default settings (tests).
     #[cfg(test)]
     pub fn new(ctx: egui::Context, router: Arc<Router>, start: VPath) -> Self {
-        Self::restore(ctx, router, Session::single(start), Settings::default())
+        Self::restore(
+            ctx,
+            router,
+            Session::single(start.clone()),
+            Settings::default(),
+            start,
+        )
     }
 
     /// Opens the tabs of `session` (already repaired, see `Session::repair`) with
@@ -152,6 +162,7 @@ impl AppState {
         router: Arc<Router>,
         session: Session,
         settings: Settings,
+        home: VPath,
     ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let theme = Theme::load(&settings.theme);
@@ -178,6 +189,7 @@ impl AppState {
         preview.max_bytes = settings.max_preview_bytes();
         let mut state = Self {
             router,
+            home,
             panes,
             active: if settings.dual {
                 session.active.min(1)
@@ -301,7 +313,12 @@ impl AppState {
 
     pub fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Listed { dir, req, result } => self.listed(dir, req, result),
+            Msg::Listed {
+                dir,
+                req,
+                gone,
+                result,
+            } => self.listed(dir, req, gone, result),
             Msg::Changed { dir } => {
                 self.pending_refresh
                     .entry(dir)
@@ -557,7 +574,7 @@ impl AppState {
         });
     }
 
-    fn listed(&mut self, dir: VPath, req: u64, result: anyhow::Result<Listing>) {
+    fn listed(&mut self, dir: VPath, req: u64, gone: bool, result: anyhow::Result<Listing>) {
         if self.inflight.get(&dir) == Some(&req) {
             self.inflight.remove(&dir);
         }
@@ -603,8 +620,17 @@ impl AppState {
             Err(e) => {
                 // Review Focus 2: keep the last good listing, say why.
                 let text = format!("{e:#}");
+                let mut moved = Vec::new();
                 for &(p, t) in &hits {
                     let tab = &mut self.panes[p].tabs[t];
+                    // A tab that never listed (restored from the session, or opened on a
+                    // stale path) whose local folder is gone: open home instead. Network
+                    // and unreachable folders keep their tab and only show the error.
+                    if gone && tab.listed_dir.is_none() && !tab.is_search() {
+                        *tab = Tab::new(self.home.clone());
+                        moved.push((p, t));
+                        continue;
+                    }
                     tab.loading = still_loading;
                     tab.listed_req = req;
                     tab.error = Some(text.clone());
@@ -624,7 +650,17 @@ impl AppState {
                         }
                     }
                 }
-                self.toasts.error(text);
+                if moved.is_empty() {
+                    self.toasts.error(text);
+                } else {
+                    self.toasts.error(format!(
+                        "{} no longer exists; opened your home folder",
+                        dir.display()
+                    ));
+                }
+                for (p, t) in moved {
+                    self.list(p, t);
+                }
             }
         }
     }
@@ -1145,6 +1181,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: dir.clone(),
             req: good_req,
+            gone: false,
             result: Ok(Listing::new(good)),
         });
         assert_eq!(state.tab(0).entries().len(), 2);
@@ -1152,6 +1189,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: dir.clone(),
             req: good_req - 1,
+            gone: false,
             result: Ok(Listing::new(Vec::new())),
         });
         assert_eq!(state.tab(0).entries().len(), 2);
@@ -1167,6 +1205,51 @@ mod tests {
         assert!(tab.error.as_deref().unwrap().contains("disappeared"));
         assert_eq!(tab.dir, dir);
         assert_eq!(state.toasts.list.len(), 1);
+    }
+
+    #[test]
+    fn gone_local_tab_opens_home_but_unreachable_tab_stays() {
+        let home = std::env::temp_dir().join(format!("keel-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = VPath::local(&home);
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            home.clone(),
+        );
+        // A saved tab on a deleted local folder: the worker reports it gone.
+        let gone = home.join("unplugged");
+        state.run(0, Action::NewTabAt(gone.clone()));
+        for _ in 0..10 {
+            let Ok(msg) = state.rx.recv_timeout(Duration::from_secs(5)) else {
+                break;
+            };
+            state.apply(msg);
+            if state.tab(0).dir == home {
+                break;
+            }
+        }
+        assert_eq!(state.panes[0].tabs.len(), 2, "tab kept, sent home");
+        assert_eq!(state.tab(0).dir, home);
+        assert!(state
+            .toasts
+            .list
+            .iter()
+            .any(|t| t.text.contains("no longer exists")));
+
+        // An unreachable share keeps its tab and shows the error.
+        let offline = VPath::local(std::path::Path::new("/offline-share/projects"));
+        state.panes[1].tabs.push(Tab::new(offline.clone()));
+        state.apply(Msg::Listed {
+            dir: offline.clone(),
+            req: 1000,
+            gone: false,
+            result: Err(anyhow::anyhow!("The network path was not found")),
+        });
+        let tab = &state.panes[1].tabs[1];
+        assert_eq!(tab.dir, offline);
+        assert!(tab.error.is_some());
+        let _ = std::fs::remove_dir_all(home.to_local_path().unwrap());
     }
 
     #[test]
@@ -1203,6 +1286,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: home.clone(),
             req: 100,
+            gone: false,
             result: Ok(Listing::new(vec![test_entry(
                 &home,
                 "a.txt",
@@ -1222,6 +1306,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: locked,
             req: 101,
+            gone: false,
             result: Err(anyhow::anyhow!("access denied")),
         });
         assert_eq!(query(&state).as_deref(), Some("ab"));
@@ -1241,6 +1326,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: home.clone(),
             req: 100,
+            gone: false,
             result: Ok(Listing::new(vec![test_entry(
                 &home,
                 "locked",
@@ -1253,6 +1339,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: locked.clone(),
             req: 101,
+            gone: false,
             result: Err(anyhow::anyhow!("access denied")),
         });
         let tab = state.tab(0);
@@ -1266,6 +1353,7 @@ mod tests {
         state.apply(Msg::Listed {
             dir: locked,
             req: 102,
+            gone: false,
             result: Err(anyhow::anyhow!("access denied")),
         });
         let tab = state.tab(0);

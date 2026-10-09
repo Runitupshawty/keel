@@ -1,3 +1,6 @@
+// Release builds on Windows open no console window (debug builds keep it for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod clipboard;
 mod crash;
@@ -43,7 +46,8 @@ fn main() -> eframe::Result<()> {
         .or_else(|| std::env::current_dir().ok())
         .map(VPath::local)
         .unwrap_or_else(|| VPath::local("/"));
-    // Startup reads (before the window exists): settings, last session.
+    // Startup reads (before the window exists): settings, last session. Both are small
+    // local files; saved folders are not checked here (a dead share would block).
     let settings = Settings::load();
     let saved = Session::load();
     let mut session = saved
@@ -60,11 +64,13 @@ fn main() -> eframe::Result<()> {
         session.active_tab[0] = session.panes[0].len() - 1;
         session.active = 0;
     }
-    let missing = session.repair(&home);
+    session.repair(&home);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([640.0, 400.0])
-        .with_title("Keel");
+        .with_title("Keel")
+        // Wayland: matches assets/keel.desktop (StartupWMClass=keel) for the icon.
+        .with_app_id("keel");
     match eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/keel.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => tracing::warn!("window icon: {e}"),
@@ -76,7 +82,6 @@ fn main() -> eframe::Result<()> {
     let boot = app::Boot {
         settings,
         session,
-        missing,
         home,
         saved: Some(saved),
     };

@@ -168,20 +168,21 @@ impl Persist {
     }
 
     /// Queues whatever changed since the last call (cheap: a few fields and paths).
-    pub fn update(&mut self, settings: &Settings, session: Session) {
+    /// `session` None leaves the saved session alone (after a crash reset).
+    pub fn update(&mut self, settings: &Settings, session: Option<Session>) {
         let Some(tx) = &self.tx else { return };
         if *settings != self.last_settings {
             self.last_settings = settings.clone();
             let _ = tx.send(Save::Settings(settings.clone()));
         }
-        if self.last_session.as_ref() != Some(&session) {
+        if let Some(session) = session.filter(|s| self.last_session.as_ref() != Some(s)) {
             let _ = tx.send(Save::Session(session.clone()));
             self.last_session = Some(session);
         }
     }
 
     /// On exit: queue the final state, then wait for the worker to write it.
-    pub fn finish(&mut self, settings: &Settings, session: Session) {
+    pub fn finish(&mut self, settings: &Settings, session: Option<Session>) {
         self.update(settings, session);
         self.tx = None;
         if let Some(thread) = self.thread.take() {

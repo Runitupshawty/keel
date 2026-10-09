@@ -130,7 +130,7 @@ fn trash_path(path: &Path) -> Result<()> {
     );
     #[cfg(windows)]
     anyhow::ensure!(
-        has_recycle_bin(path),
+        is_fixed_disk(path),
         "This location has no Recycle Bin; nothing deleted"
     );
     trash::delete(path)?;
@@ -140,9 +140,10 @@ fn trash_path(path: &Path) -> Result<()> {
 
 /// True only for fixed local drives. The Shell silently deletes *permanently* on UNC shares,
 /// mapped network drives, removable media and optical/RAM disks (no Recycle Bin there), so
-/// `trash_path` refuses those instead of trusting `trash::delete`.
+/// `trash_path` refuses those instead of trusting `trash::delete`. Also tells a deleted
+/// folder from an offline share. May block on a dead mapped drive; call off the UI thread.
 #[cfg(windows)]
-fn has_recycle_bin(path: &Path) -> bool {
+pub fn is_fixed_disk(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Component, Prefix};
     use windows::core::PCWSTR;
@@ -161,6 +162,15 @@ fn has_recycle_bin(path: &Path) -> bool {
         .collect();
     // SAFETY: `root` is a valid NUL-terminated UTF-16 string that outlives the call.
     unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
+}
+
+/// Outside Windows: false under the usual mount roots for network shares and removable
+/// media (an unmounted share there must not look deleted).
+#[cfg(not(windows))]
+pub fn is_fixed_disk(path: &Path) -> bool {
+    !["/Volumes", "/media", "/run/media", "/mnt", "/net"]
+        .iter()
+        .any(|root| path.starts_with(root))
 }
 
 impl Provider for LocalProvider {

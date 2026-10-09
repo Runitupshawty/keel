@@ -61,25 +61,18 @@ impl Session {
     }
 
     /// Makes a loaded session usable: exactly two panes with at least one tab, indices in
-    /// range, and local folders that no longer exist replaced by `home`. Returns the
-    /// replaced folders (for a toast). Touches the disk: call before the UI starts.
-    pub fn repair(&mut self, home: &VPath) -> Vec<VPath> {
+    /// range. Never touches the disk: a saved folder that is gone is found by the worker
+    /// that lists it (`AppState::listed`), so an offline share keeps its tabs.
+    pub fn repair(&mut self, home: &VPath) {
         self.panes.resize_with(2, Vec::new);
         self.panes.truncate(2);
-        let mut missing = Vec::new();
         for (p, tabs) in self.panes.iter_mut().enumerate() {
-            for dir in tabs.iter_mut() {
-                if dir.to_local_path().is_some_and(|d| !d.is_dir()) {
-                    missing.push(std::mem::replace(dir, home.clone()));
-                }
-            }
             if tabs.is_empty() {
                 tabs.push(home.clone());
             }
             self.active_tab[p] = self.active_tab[p].min(tabs.len() - 1);
         }
         self.active = self.active.min(1);
-        missing
     }
 }
 
@@ -89,14 +82,14 @@ mod tests {
     use keel_vfs::VPath;
 
     #[test]
-    fn missing_folder_falls_back_to_home() {
+    fn load_repair_and_broken_file() {
         let tmp = std::env::temp_dir().join(format!("keel-session-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let home = VPath::local(&tmp);
         let gone = VPath::local(tmp.join("unplugged-usb"));
         let saved = Session {
-            panes: vec![vec![home.clone(), gone.clone()], vec![gone.clone()]],
+            panes: vec![vec![home.clone(), gone.clone()], vec![]],
             active: 1,
             active_tab: [1, 7],
         };
@@ -105,12 +98,9 @@ mod tests {
 
         let mut loaded = Session::load_from(&file).expect("session loads");
         assert_eq!(loaded, saved);
-        let missing = loaded.repair(&home);
-        assert_eq!(missing, vec![gone.clone(), gone]);
-        assert_eq!(
-            loaded.panes,
-            vec![vec![home.clone(), home.clone()], vec![home]]
-        );
+        loaded.repair(&home);
+        // A missing folder is not checked here (no disk access before the window opens).
+        assert_eq!(loaded.panes, vec![vec![home.clone(), gone], vec![home]]);
         assert_eq!(loaded.active, 1);
         assert_eq!(loaded.active_tab, [1, 0], "out-of-range tab index clamped");
 

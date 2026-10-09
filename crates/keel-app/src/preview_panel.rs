@@ -57,6 +57,17 @@ pub struct PreviewPanel {
 }
 
 impl PreviewPanel {
+    /// Drops what is shown and cached (after a crash); the next frame asks again.
+    pub fn reset(&mut self) {
+        self.key = None;
+        self.current = None;
+        self.page = 0;
+        self.tex = None;
+        self.entry = None;
+        self.doc_tex.clear();
+        self.cache.clear();
+    }
+
     pub fn new(jobs: Sender<PreviewJob>) -> Self {
         Self {
             open: false,
