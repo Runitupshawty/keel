@@ -106,3 +106,24 @@ CREATE TABLE view(id INTEGER PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NUL
 -- Whether an operation completed, apart from its (redacted) result text.
 ALTER TABLE op_log ADD COLUMN ok INTEGER;
 UPDATE op_log SET ok = (result LIKE 'ok%') WHERE result <> 'running';
+
+-- @source 4
+-- Record counts kept by triggers, so library stats need no scan.
+CREATE TABLE counts(id INTEGER PRIMARY KEY CHECK (id = 1), records INTEGER NOT NULL,
+    files INTEGER NOT NULL, bytes INTEGER NOT NULL);
+INSERT INTO counts SELECT 1, count(*), coalesce(sum(kind = 0), 0),
+    coalesce(sum(CASE WHEN kind = 0 THEN size END), 0) FROM record;
+CREATE TRIGGER record_count_ai AFTER INSERT ON record BEGIN
+    UPDATE counts SET records = records + 1, files = files + (new.kind = 0),
+        bytes = bytes + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
+END;
+CREATE TRIGGER record_count_ad AFTER DELETE ON record BEGIN
+    UPDATE counts SET records = records - 1, files = files - (old.kind = 0),
+        bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END);
+END;
+CREATE TRIGGER record_count_au AFTER UPDATE OF kind, size ON record
+    WHEN old.kind IS NOT new.kind OR old.size IS NOT new.size BEGIN
+    UPDATE counts SET files = files - (old.kind = 0) + (new.kind = 0),
+        bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END)
+            + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
+END;

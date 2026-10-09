@@ -2,6 +2,13 @@
 //! a streaming indexer with stable record identity, durable jobs and
 //! `validate -> preview -> execute` for mutating operations. No UI types: every call is a
 //! typed request/response so a daemon can wrap it later.
+//!
+//! Blocking: every `Library` call reads or writes SQLite stores, and some also touch the
+//! filesystem or the network (`validate_preview_execute`, `Plan::execute`'s re-validation,
+//! `Indexer::full_walk`, `Indexer::apply_change`, `Library::close`). Call them off the UI
+//! thread; long work runs as jobs (`Library::index`, `Library::hash`, `Plan::execute`)
+//! whose progress arrives through `Jobs::subscribe`. Only `Library::activity`,
+//! `Library::sources`, `Library::refresh_status` and `Jobs::subscribe` return at once.
 
 mod db;
 mod fsid;
@@ -19,7 +26,7 @@ pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
     RECONCILE_INTERVAL,
 };
-pub use jobs::{Job, JobCtx, JobId, JobInfo, JobStatus, Jobs, Restore};
+pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, RecordRef, Source, SourceDef, SourceId,
     SourceKind, SourceStatus, SourceSummary,

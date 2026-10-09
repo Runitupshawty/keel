@@ -149,6 +149,27 @@ impl Source {
     }
 }
 
+/// Distinct content ids across every store (unioned in a scratch database), saved in
+/// `library.db` meta for `stats`.
+pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
+    let sources: Vec<Arc<Source>> = shared.sources.read().clone();
+    let conn = Connection::open("")?;
+    conn.execute_batch("CREATE TABLE c(id BLOB PRIMARY KEY) WITHOUT ROWID")?;
+    for s in &sources {
+        let path = s.dir.join("source.db");
+        conn.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
+        let copied = conn.execute(
+            "INSERT OR IGNORE INTO c SELECT cas_id FROM s.record WHERE cas_id IS NOT NULL",
+            [],
+        );
+        conn.execute("DETACH DATABASE s", [])?;
+        copied?;
+    }
+    let n = conn.query_row("SELECT count(*) FROM c", [], |r| r.get::<_, i64>(0))? as u64;
+    shared.db.set_meta("unique_content", &n.to_string())?;
+    Ok(n)
+}
+
 /// `p` relative to `root` ("" when equal), None when `p` is not inside `root`.
 pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
     if p.scheme != root.scheme || p.authority != root.authority || p.split_archive().is_some() {
@@ -197,7 +218,8 @@ pub struct LibraryStats {
     pub records: u64,
     pub files: u64,
     pub bytes: u64,
-    /// Distinct content ids across sources (filled by hashing).
+    /// Distinct content ids across sources, as of the last hashing run (or
+    /// `count_unique_content`).
     pub unique_content: u64,
     pub running_jobs: usize,
 }
@@ -210,6 +232,20 @@ pub(crate) struct Shared {
     /// Set by the app while the user is busy: background hashing pauses.
     pub(crate) activity: AtomicBool,
     pub(crate) pause_on_battery: AtomicBool,
+    /// `Jobs::subscribe` receivers.
+    pub(crate) job_events: Mutex<Vec<crossbeam_channel::Sender<crate::JobEvent>>>,
+}
+
+impl Shared {
+    /// Tells every subscriber; a full or closed subscriber misses it (or is dropped).
+    pub(crate) fn emit(&self, ev: crate::JobEvent) {
+        self.job_events.lock().retain(|tx| {
+            !matches!(
+                tx.try_send(ev.clone()),
+                Err(crossbeam_channel::TrySendError::Disconnected(_))
+            )
+        });
+    }
 }
 
 impl Shared {
@@ -286,6 +322,7 @@ impl Library {
             router: RwLock::new(Arc::new(Router::new())),
             activity: AtomicBool::new(false),
             pause_on_battery: AtomicBool::new(true),
+            job_events: Mutex::new(Vec::new()),
         });
         let lib = Library {
             id: LibraryId(id),
@@ -466,18 +503,15 @@ impl Library {
             ..LibraryStats::default()
         };
         let counts = |s: &Source| -> Result<(u64, u64, u64)> {
-            Ok(s.store.get()?.query_row(
-                "SELECT count(*), coalesce(sum(kind = 0), 0),
-                        coalesce(sum(CASE WHEN kind = 0 THEN size END), 0) FROM record",
-                [],
-                |r| {
+            Ok(s.store
+                .get()?
+                .query_row("SELECT records, files, bytes FROM counts", [], |r| {
                     Ok((
                         r.get::<_, i64>(0)? as u64,
                         r.get::<_, i64>(1)? as u64,
                         r.get::<_, i64>(2)? as u64,
                     ))
-                },
-            )?)
+                })?)
         };
         for s in &sources {
             match counts(s) {
@@ -489,27 +523,71 @@ impl Library {
                 Err(e) => tracing::warn!("stats for source {}: {e:#}", s.def.label),
             }
         }
-        // Distinct across stores: union every store's content ids in a scratch database.
-        let unique = || -> Result<u64> {
-            let conn = Connection::open_in_memory()?;
-            conn.execute_batch("CREATE TABLE c(id BLOB PRIMARY KEY) WITHOUT ROWID")?;
-            for s in &sources {
-                let path = s.dir.join("source.db");
-                conn.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
-                let copied = conn.execute(
-                    "INSERT OR IGNORE INTO c SELECT cas_id FROM s.record WHERE cas_id IS NOT NULL",
-                    [],
-                );
-                conn.execute("DETACH DATABASE s", [])?;
-                copied?;
-            }
-            Ok(conn.query_row("SELECT count(*) FROM c", [], |r| r.get::<_, i64>(0))? as u64)
-        };
-        match unique() {
-            Ok(n) => stats.unique_content = n,
-            Err(e) => tracing::warn!("unique content count: {e:#}"),
-        }
+        stats.unique_content = self
+            .shared
+            .db
+            .meta("unique_content")
+            .ok()
+            .flatten()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
         stats
+    }
+
+    /// Counts the distinct content ids across every source (a scan of all stores) and keeps
+    /// the number for `stats`. The hashing job does this when it ends.
+    pub fn count_unique_content(&self) -> Result<u64> {
+        count_unique(&self.shared)
+    }
+
+    /// The indexed children of a folder (`rel` relative to the source root, "" for the root),
+    /// folders first, by name; from the store, so it works offline.
+    pub fn list_children(&self, source: &SourceId, rel: &str) -> Result<Vec<crate::LibraryHit>> {
+        let src = self
+            .source(source)
+            .with_context(|| format!("no source {source}"))?;
+        let c = src.store.get()?;
+        let Some((id, _)) = crate::index::resolve(&c, rel, src.nocase())? else {
+            anyhow::bail!("{rel} is not in the index of {}", src.def.label);
+        };
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM record r WHERE r.parent = ?1
+             ORDER BY r.kind = 1 DESC, r.name COLLATE NOCASE",
+            crate::search::HIT_COLUMNS
+        ))?;
+        let rows = stmt.query_map([id], |r| crate::search::hit_of(&src, r, 0.0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Checks in the background whether each source's root can be reached and marks it
+    /// online or offline (sources being indexed are left alone). Returns at once.
+    pub fn refresh_status(&self) -> std::thread::JoinHandle<()> {
+        let shared = self.shared.clone();
+        std::thread::spawn(move || {
+            let router = shared.router.read().clone();
+            let sources: Vec<Arc<Source>> = shared.sources.read().clone();
+            for s in sources {
+                let reachable = match s.def.root.to_local_path() {
+                    Some(p) => p.is_dir(),
+                    None => router
+                        .provider_for(&s.def.root)
+                        .is_some_and(|p| p.stat(&s.def.root).is_ok()),
+                };
+                let indexed_at = s.store.meta("last_full_walk").ok().flatten();
+                let indexed_at = indexed_at.and_then(|t| t.parse().ok());
+                let mut status = s.status.write();
+                if matches!(*status, SourceStatus::Indexing { .. }) {
+                    continue;
+                }
+                *status = if reachable {
+                    SourceStatus::Online { indexed_at }
+                } else {
+                    SourceStatus::Offline {
+                        last_seen: indexed_at,
+                    }
+                };
+            }
+        })
     }
 }
 
@@ -653,7 +731,55 @@ pub(crate) mod tests {
                 stats.bytes,
                 stats.unique_content
             ),
-            (2, 6, 4, 30, 3)
+            (2, 6, 4, 30, 0)
         );
+        assert_eq!(lib.count_unique_content().unwrap(), 3);
+        assert_eq!(lib.stats().unique_content, 3);
+        // Counters follow changes.
+        let src = lib.source(&lib.sources()[0].id).unwrap();
+        src.store
+            .get()
+            .unwrap()
+            .execute_batch("UPDATE record SET size = 100 WHERE name = 'x'; DELETE FROM record WHERE name = 'y';")
+            .unwrap();
+        let stats = lib.stats();
+        assert_eq!((stats.records, stats.files, stats.bytes), (5, 3, 115));
+    }
+
+    #[test]
+    fn children_and_status_come_from_the_store() {
+        let data = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let root = files.path().join("drive");
+        std::fs::create_dir_all(root.join("b dir")).unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(root.join("b dir/c.txt"), "c").unwrap();
+        let lib = Library::open(data.path(), "c").unwrap();
+        let id = lib.add_source(folder("d", &root)).unwrap();
+        crate::index::tests::walk(&lib.source(&id).unwrap(), &lib.router()).unwrap();
+        let names = |rel: &str| -> Vec<String> {
+            lib.list_children(&id, rel)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.name)
+                .collect()
+        };
+        assert_eq!(names(""), ["b dir", "a.txt"]);
+        assert_eq!(names("b dir"), ["c.txt"]);
+        assert!(lib.list_children(&id, "nope").is_err());
+        // Unplugged: listed from the store, and the probe marks it offline.
+        std::fs::rename(&root, files.path().join("away")).unwrap();
+        lib.refresh_status().join().unwrap();
+        assert!(matches!(
+            lib.sources()[0].status,
+            SourceStatus::Offline { last_seen: Some(_) }
+        ));
+        assert_eq!(names(""), ["b dir", "a.txt"]);
+        std::fs::rename(files.path().join("away"), &root).unwrap();
+        lib.refresh_status().join().unwrap();
+        assert!(matches!(
+            lib.sources()[0].status,
+            SourceStatus::Online { .. }
+        ));
     }
 }

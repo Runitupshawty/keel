@@ -67,6 +67,18 @@ impl JobStatus {
     }
 }
 
+/// A job's progress or end, for the app's jobs panel (`Jobs::subscribe`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JobEvent {
+    pub id: JobId,
+    pub status: JobStatus,
+    /// 0..=1.
+    pub progress: f32,
+}
+
+/// Events a slow subscriber may fall behind by before it misses some.
+const EVENT_BACKLOG: usize = 1_024;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobInfo {
     pub id: JobId,
@@ -110,6 +122,7 @@ impl JobCtx {
             "UPDATE job SET state = ?2, progress = ?3, updated = ?4 WHERE id = ?1",
             params![self.id, state.to_string(), progress, crate::now()],
         )?;
+        self.running(progress);
         if self.stopping() {
             return Err(Cancelled.into());
         }
@@ -121,7 +134,16 @@ impl JobCtx {
             "UPDATE job SET progress = ?2, updated = ?3 WHERE id = ?1",
             params![self.id, progress, crate::now()],
         )?;
+        self.running(progress);
         Ok(())
+    }
+
+    fn running(&self, progress: f32) {
+        self.lib.emit(JobEvent {
+            id: self.id,
+            status: JobStatus::Running,
+            progress,
+        });
     }
 
     /// Appends a line to the job's log (redacted like the op log).
@@ -164,6 +186,14 @@ impl Jobs {
             running: Mutex::new(HashMap::new()),
             closing: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Progress and end events of every job from now on (bounded: a subscriber that does
+    /// not keep up misses events; `info` has the truth).
+    pub fn subscribe(&self) -> crossbeam_channel::Receiver<JobEvent> {
+        let (tx, rx) = crossbeam_channel::bounded(EVENT_BACKLOG);
+        self.lib.job_events.lock().push(tx);
+        rx
     }
 
     /// Makes `kind` restorable by `resume_all`.
@@ -261,6 +291,23 @@ impl Jobs {
                 if let Err(e) = finish(&ctx.db, id, status, Some(state), error.as_deref()) {
                     tracing::warn!("job {id}: recording its end failed: {e:#}");
                 }
+                let progress = if status == JobStatus::Done { 1.0 } else { 0.0 };
+                let progress = ctx
+                    .db
+                    .get()
+                    .and_then(|c| {
+                        Ok(
+                            c.query_row("SELECT progress FROM job WHERE id = ?1", [id], |r| {
+                                r.get::<_, f64>(0)
+                            })?,
+                        )
+                    })
+                    .map_or(progress, |p| p as f32);
+                ctx.lib.emit(JobEvent {
+                    id,
+                    status,
+                    progress,
+                });
             })?;
         let mut running = self.running.lock();
         running.retain(|_, r| !r.thread.is_finished());
@@ -625,6 +672,41 @@ mod tests {
         fn restore(_: serde_json::Value) -> Result<Box<dyn Job>> {
             Ok(Box::new(Stuck))
         }
+    }
+
+    #[test]
+    fn subscribers_hear_progress_and_the_end() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "j").unwrap();
+        lib.jobs().register("count", Count::restore);
+        let events = lib.jobs().subscribe();
+        let id = lib
+            .jobs()
+            .spawn(count(&data.path().join("e.txt"), 5))
+            .unwrap();
+        lib.jobs().wait(id).unwrap();
+        let got: Vec<JobEvent> = events.try_iter().collect();
+        assert_eq!(got.len(), 6, "{got:?}");
+        assert!(got.iter().all(|e| e.id == id));
+        assert_eq!(got[4].progress, 1.0);
+        assert_eq!(
+            got[5],
+            JobEvent {
+                id,
+                status: JobStatus::Done,
+                progress: 1.0
+            }
+        );
+        drop(events);
+        let id = lib
+            .jobs()
+            .spawn(count(&data.path().join("f.txt"), 1))
+            .unwrap();
+        lib.jobs().wait(id).unwrap();
+        assert!(
+            lib.shared.job_events.lock().is_empty(),
+            "a dropped subscriber goes"
+        );
     }
 
     #[test]

@@ -380,6 +380,7 @@ impl Job for HashJob {
             "hashed {} files, {} whole after a collision, {} unreadable",
             self.done, self.full, self.errors
         ))?;
+        crate::library::count_unique(&lib)?;
         Ok(())
     }
 
