@@ -3,17 +3,27 @@
 
 use crate::state::{AppState, Msg};
 use crossbeam_channel::Sender;
+use keel_search::SearchState;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// Longest backend note shown in the status bar; the full text is the tooltip.
 const NOTE_CHARS: usize = 60;
 
-/// The status-bar indicator: text and tooltip.
-pub fn indicator(name: Option<&str>, reason: Option<&str>) -> (String, &'static str) {
-    match (name, reason) {
-        (None, _) => ("Search: …".into(), "Loading the search backend"),
-        (Some(name), None) => (format!("{name}: ok"), "Search is available"),
-        (Some(name), Some(_)) => (format!("{name}: not running"), "Click to check again"),
+/// The status-bar indicator: text and tooltip. Indexing is not "not running".
+pub fn indicator(
+    name: Option<&str>,
+    state: SearchState,
+    reason: Option<&str>,
+) -> (String, &'static str) {
+    match (name, state, reason) {
+        (None, ..) => ("Search: …".into(), "Loading the search backend"),
+        (Some(name), SearchState::Indexing { done }, _) => (
+            format!("{name}: indexing ({done} so far)"),
+            "Building the file index; search works when it is done",
+        ),
+        (Some(name), _, None) => (format!("{name}: ok"), "Search is available"),
+        (Some(name), _, Some(_)) => (format!("{name}: not running"), "Click to check again"),
     }
 }
 
@@ -27,9 +37,23 @@ pub fn note(status: &str) -> (String, &str) {
 }
 
 /// Draws the indicator and note (right-to-left layout: the note lands left of it).
-pub fn status_bar(ui: &mut egui::Ui, s: &AppState) -> bool {
+/// True when search should be probed again: a click, or the backend's ready
+/// notification (its index finished), which also marks the Ctrl+P folder list stale.
+pub fn status_bar(ui: &mut egui::Ui, s: &mut AppState) -> bool {
     let name = s.searcher.as_ref().map(|x| x.name());
-    let (text, tip) = indicator(name, s.search_reason.as_deref());
+    let state = s
+        .searcher
+        .as_ref()
+        .map_or(SearchState::Unavailable, |x| x.state());
+    if matches!(state, SearchState::Indexing { .. }) {
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
+    }
+    // A folder list being built now may predate the index: take the notice after.
+    let ready = !s.jump.indexing && s.searcher.as_ref().is_some_and(|x| x.take_ready());
+    if ready {
+        s.jump.indexed_at = None;
+    }
+    let (text, tip) = indicator(name, state, s.search_reason.as_deref());
     let clicked = ui
         .add(egui::Button::new(text).frame(false))
         .on_hover_text(tip)
@@ -39,7 +63,7 @@ pub fn status_bar(ui: &mut egui::Ui, s: &AppState) -> bool {
         ui.separator();
         ui.weak(shown).on_hover_text(full);
     }
-    clicked
+    clicked || ready
 }
 
 /// A full index is being built (one at a time).
@@ -98,12 +122,67 @@ mod tests {
 
     #[test]
     fn indicator_names_the_backend() {
-        assert_eq!(indicator(None, None).0, "Search: …");
-        assert_eq!(indicator(Some("Keel index"), None).0, "Keel index: ok");
+        let ready = SearchState::Ready;
+        assert_eq!(indicator(None, ready, None).0, "Search: …");
         assert_eq!(
-            indicator(Some("Everything"), Some("not running")).0,
+            indicator(Some("Keel index"), ready, None).0,
+            "Keel index: ok"
+        );
+        assert_eq!(
+            indicator(Some("Everything"), ready, Some("not running")).0,
             "Everything: not running"
         );
+        // Review finding 22: a walk in progress is not "not running".
+        let indexing = SearchState::Indexing { done: 42 };
+        assert_eq!(
+            indicator(Some("Keel index"), indexing, Some("Keel is indexing")).0,
+            "Keel index: indexing (42 so far)"
+        );
+    }
+
+    /// The ready notification re-probes search and marks the Ctrl+P list stale.
+    #[test]
+    fn ready_notification_refreshes_status_and_folder_list() {
+        use keel_search::{Hit, Query, Searcher};
+        use std::sync::Arc;
+
+        struct Indexer(AtomicBool);
+        impl Searcher for Indexer {
+            fn query(&self, _: &Query) -> anyhow::Result<Vec<Hit>> {
+                Ok(Vec::new())
+            }
+            fn available(&self) -> bool {
+                true
+            }
+            fn take_ready(&self) -> bool {
+                self.0.swap(false, Ordering::Relaxed)
+            }
+        }
+
+        let dir = keel_vfs::VPath::local(std::env::temp_dir());
+        let ctx = egui::Context::default();
+        let mut s = AppState::new(ctx.clone(), Arc::new(keel_vfs::Router::new()), dir);
+        let indexer = Arc::new(Indexer(AtomicBool::new(true)));
+        s.searcher = Some(indexer.clone());
+        s.search_reason = Some("Keel is indexing your files".into());
+        s.jump.indexed_at = Some(std::time::Instant::now());
+        let frame = |s: &mut AppState| {
+            let mut probe = false;
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| probe = status_bar(ui, s));
+            });
+            probe
+        };
+        assert!(frame(&mut s), "ready: probe again");
+        assert!(s.jump.stale(), "Ctrl+P rebuilds from the finished index");
+        assert!(!frame(&mut s), "announced once");
+
+        // While a folder list is being built, the notice waits for it.
+        indexer.0.store(true, Ordering::Relaxed);
+        s.jump.indexing = true;
+        assert!(!frame(&mut s));
+        s.jump.indexing = false;
+        assert!(frame(&mut s));
     }
 
     #[test]

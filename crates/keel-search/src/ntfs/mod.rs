@@ -16,14 +16,14 @@ mod walk;
 mod win;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
-use crate::{Hit, Query, Searcher};
+use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index};
 use usn::Changes;
@@ -256,6 +256,18 @@ struct Shared {
     parts: RwLock<Vec<Part>>,
     status: Mutex<Option<String>>,
     ready: AtomicBool,
+    /// Entries found so far by the user-folder walk (before it is `ready`).
+    done: AtomicUsize,
+    /// An index was built or swapped in since the last `take_ready`.
+    fresh: AtomicBool,
+}
+
+impl Shared {
+    /// A finished index is in `parts`: searchable now, and the app is told.
+    fn finished(&self) {
+        self.ready.store(true, Ordering::Relaxed);
+        self.fresh.store(true, Ordering::Release);
+    }
 }
 
 /// Searcher over Keel's own index (see the module docs).
@@ -292,6 +304,8 @@ impl NtfsSearcher {
             ready: AtomicBool::new(!parts.is_empty()),
             parts: RwLock::new(parts),
             status: Mutex::new(None),
+            done: AtomicUsize::new(0),
+            fresh: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&shared);
         let _ = std::thread::Builder::new()
@@ -322,8 +336,8 @@ impl Searcher for NtfsSearcher {
         let mut found: Vec<Found> = {
             let parts = self.shared.parts.read();
             if parts.is_empty() {
-                let status = self.shared.status.lock().clone();
-                bail!(status.unwrap_or_else(|| "Keel is building its file index".into()));
+                let done = self.shared.done.load(Ordering::Relaxed);
+                bail!("Keel is indexing your files ({done} so far); search works when it is done");
             }
             parts
                 .iter()
@@ -359,6 +373,21 @@ impl Searcher for NtfsSearcher {
 
     fn name(&self) -> &'static str {
         "Keel index"
+    }
+
+    /// Indexing (with the walk's count so far) until the first index is in.
+    fn state(&self) -> SearchState {
+        if self.available() {
+            SearchState::Ready
+        } else {
+            SearchState::Indexing {
+                done: self.shared.done.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    fn take_ready(&self) -> bool {
+        self.shared.fresh.swap(false, Ordering::Acquire)
     }
 }
 
@@ -592,10 +621,11 @@ impl Worker {
             self.rescan = false;
             self.rescanned = Some(Instant::now());
             let (deep, shallow) = walk::roots();
-            let fresh = new_walk(&deep, &shallow);
+            let fresh = new_walk(&deep, &shallow, &AtomicUsize::new(0));
             if let Some(slot @ Part::Walk(_)) = shared.parts.write().first_mut() {
                 *slot = Part::Walk(fresh);
             }
+            shared.finished();
             return;
         }
         apply_walk_ops(&shared.parts, &ops);
@@ -616,19 +646,22 @@ impl Worker {
             w
         });
         self.events = Some(rx);
-        let walk = new_walk(&deep, &shallow);
+        shared.done.store(0, Ordering::Relaxed);
+        let walk = new_walk(&deep, &shallow, &shared.done);
         shared.parts.write().push(Part::Walk(walk));
+        shared.finished();
     }
 }
 
-/// Walks the user folders into a new index (minutes for a big home folder; no lock).
-fn new_walk(deep: &[PathBuf], shallow: &[PathBuf]) -> walk::Walk {
+/// Walks the user folders into a new index (seconds to minutes for a big home
+/// folder; no lock), counting entries in `progress`.
+fn new_walk(deep: &[PathBuf], shallow: &[PathBuf], progress: &AtomicUsize) -> walk::Walk {
     let mut walk = walk::Walk::new(deep);
     for s in shallow {
-        walk.add_tree(s, Some(1));
+        walk.add_tree(s, Some(1), progress);
     }
     for d in deep {
-        walk.add_tree(d, None);
+        walk.add_tree(d, None, progress);
     }
     walk
 }
@@ -671,6 +704,8 @@ fn replace(shared: &Shared, part: Part) {
         Some(slot) => *slot = part,
         None => parts.push(part),
     }
+    drop(parts);
+    shared.finished();
 }
 
 // ponytail: stderr, not tracing; keel-search has no logging dependency yet.
@@ -751,6 +786,42 @@ mod tests {
         let mut removes: Vec<u64> = changes.removes.iter().copied().collect();
         removes.sort();
         assert_eq!(removes, [12, 30]);
+    }
+
+    /// Finding 22: while the first index is built, the searcher reports Indexing
+    /// with a count (not "unavailable"), and announces the finished index once.
+    #[test]
+    fn indexing_is_reported_and_completion_announced() {
+        let shared = Arc::new(Shared {
+            dir: PathBuf::new(),
+            parts: RwLock::new(Vec::new()),
+            status: Mutex::new(Some(FALLBACK_STATUS.into())),
+            ready: AtomicBool::new(false),
+            done: AtomicUsize::new(1234),
+            fresh: AtomicBool::new(false),
+        });
+        let searcher = NtfsSearcher {
+            shared: shared.clone(),
+        };
+        assert_eq!(searcher.state(), SearchState::Indexing { done: 1234 });
+        let err = searcher.query(&Query::default()).unwrap_err().to_string();
+        assert!(err.contains("indexing") && err.contains("1234"), "{err}");
+        assert!(!searcher.take_ready());
+
+        let mut walk = walk::Walk::new(&[]);
+        walk.add(Path::new(r"C:\KeelReadyNeedle.txt"), false);
+        shared.parts.write().push(Part::Walk(walk));
+        shared.finished();
+        assert_eq!(searcher.state(), SearchState::Ready);
+        assert!(searcher.take_ready());
+        assert!(!searcher.take_ready(), "once");
+        let hits = searcher
+            .query(&Query {
+                text: "keelreadyneedle".into(),
+                ..Query::default()
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
     }
 
     /// Finding 3: a 10k-file tree deleted from a 1M-entry walk index, as one folder
@@ -888,6 +959,7 @@ mod tests {
         db::save_full(&db_path(&dir, id), &index, &meta).unwrap();
         let searcher = NtfsSearcher::open(dir.clone());
         assert!(searcher.available());
+        assert_eq!(searcher.state(), SearchState::Ready);
         let hits = searcher
             .query(&Query {
                 text: "keelopenneedle".into(),
@@ -1284,6 +1356,9 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(searcher.status().as_deref(), Some(FALLBACK_STATUS));
+        assert_eq!(searcher.state(), SearchState::Ready);
+        assert!(searcher.take_ready(), "the finished walk is announced once");
+        assert!(!searcher.take_ready());
         let home = directories::UserDirs::new()
             .unwrap()
             .home_dir()

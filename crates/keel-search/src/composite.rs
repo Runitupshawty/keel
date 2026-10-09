@@ -3,10 +3,11 @@
 //! re-probes it at most every [`REPROBE`], so starting or quitting Everything
 //! after Keel takes effect within one query or 30 s.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::{Hit, Query, Searcher};
+use crate::{Hit, Query, SearchState, Searcher};
 
 /// Least time between two probes of a stopped Everything.
 pub const REPROBE: Duration = Duration::from_secs(30);
@@ -20,6 +21,10 @@ pub struct Composite {
     open: Option<Open>,
     probed: Mutex<Instant>,
     reprobe: Duration,
+    /// Which one answered the last query, and whether that changed since
+    /// `take_ready` (a backend switch is announced like a finished index).
+    on_primary: AtomicBool,
+    switched: AtomicBool,
 }
 
 impl Composite {
@@ -32,6 +37,8 @@ impl Composite {
             open,
             probed: Mutex::new(Instant::now()),
             reprobe,
+            on_primary: AtomicBool::new(true),
+            switched: AtomicBool::new(false),
         };
         if !this.primary.available() {
             this.fallback();
@@ -57,22 +64,46 @@ impl Composite {
         *probed = Instant::now();
         self.primary.probe().then_some(self.primary.as_ref())
     }
+
+    fn answered_by(&self, primary: bool) {
+        if self.on_primary.swap(primary, Ordering::Relaxed) != primary {
+            self.switched.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Searcher for Composite {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         if let Some(primary) = self.live_primary() {
             match primary.query(query) {
-                Ok(hits) => return Ok(hits),
+                Ok(hits) => {
+                    self.answered_by(true);
+                    return Ok(hits);
+                }
                 // Still up: a bad query, not a stopped backend.
                 Err(e) if primary.available() || self.open.is_none() => return Err(e),
                 Err(_) => {}
             }
         }
         match self.fallback() {
-            Some(fallback) => fallback.query(query),
+            Some(fallback) => {
+                self.answered_by(false);
+                fallback.query(query)
+            }
             None => self.primary.query(query),
         }
+    }
+
+    fn state(&self) -> SearchState {
+        match self.fallback.get() {
+            Some(fallback) if !self.primary.available() => fallback.state(),
+            _ => self.primary.state(),
+        }
+    }
+
+    fn take_ready(&self) -> bool {
+        let fallback = self.fallback.get().is_some_and(|f| f.take_ready());
+        self.switched.swap(false, Ordering::Relaxed) | fallback
     }
 
     fn available(&self) -> bool {
@@ -219,6 +250,9 @@ mod tests {
         up.store(true, Ordering::Relaxed);
         assert_eq!(who(&search, "x"), "everything", "re-probed");
         assert_eq!(search.name(), "everything");
+        assert_eq!(search.state(), SearchState::Ready);
+        assert!(search.take_ready(), "the switches are announced");
+        assert!(!search.take_ready());
         assert!(probes.load(Ordering::Relaxed) >= 1);
         assert_eq!(opened.load(Ordering::Relaxed), 1);
     }

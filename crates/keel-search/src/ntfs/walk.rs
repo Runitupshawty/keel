@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind};
@@ -81,9 +82,10 @@ impl Walk {
         Some(parent)
     }
 
-    /// Adds `root` and, when it is a folder, everything under it (to `max_depth`).
-    pub fn add_tree(&mut self, root: &Path, max_depth: Option<usize>) {
-        for (path, is_dir) in scan_tree(root, max_depth) {
+    /// Adds `root` and, when it is a folder, everything under it (to `max_depth`),
+    /// counting entries found in `progress`.
+    pub fn add_tree(&mut self, root: &Path, max_depth: Option<usize>, progress: &AtomicUsize) {
+        for (path, is_dir) in scan_tree(root, max_depth, progress) {
             self.add(&path, is_dir);
         }
     }
@@ -119,8 +121,13 @@ impl Walk {
 }
 
 /// `root` and, when it is a folder, everything under it (to `max_depth`), as
-/// (path, is folder). Reads the disk: never call it under the index lock.
-pub(crate) fn scan_tree(root: &Path, max_depth: Option<usize>) -> Vec<(PathBuf, bool)> {
+/// (path, is folder), counting them in `progress`. Reads the disk: never call it
+/// under the index lock.
+pub(crate) fn scan_tree(
+    root: &Path,
+    max_depth: Option<usize>,
+    progress: &AtomicUsize,
+) -> Vec<(PathBuf, bool)> {
     let (tx, rx) = std::sync::mpsc::channel();
     ignore::WalkBuilder::new(root)
         .standard_filters(false)
@@ -131,6 +138,7 @@ pub(crate) fn scan_tree(root: &Path, max_depth: Option<usize>) -> Vec<(PathBuf, 
             let tx = tx.clone();
             Box::new(move |entry| {
                 if let Ok(entry) = entry {
+                    progress.fetch_add(1, Ordering::Relaxed);
                     let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
                     let _ = tx.send((entry.into_path(), is_dir));
                 }
@@ -158,7 +166,7 @@ pub(crate) fn plan(
     let mut ops = Vec::new();
     let created = |ops: &mut Vec<Op>, path: &Path| {
         if is_deep(deep, path) {
-            let tree = scan_tree(path, None).into_iter();
+            let tree = scan_tree(path, None, &AtomicUsize::new(0)).into_iter();
             ops.extend(tree.map(|(p, is_dir)| Op::Add(p, is_dir)));
         } else if let Ok(meta) = std::fs::symlink_metadata(path) {
             ops.push(Op::Add(path.to_path_buf(), meta.is_dir()));
@@ -243,7 +251,9 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("sub").join("KeelWalkNeedle.txt"), b"x").unwrap();
         let mut walk = Walk::new(std::slice::from_ref(&root));
-        walk.add_tree(&root, None);
+        let progress = AtomicUsize::new(0);
+        walk.add_tree(&root, None, &progress);
+        assert_eq!(progress.load(Ordering::Relaxed), 3, "root, sub, needle");
         let needle = root.join("sub").join("KeelWalkNeedle.txt");
         assert_eq!(
             names(&walk, "keelwalkneedle"),

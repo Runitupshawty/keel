@@ -63,6 +63,17 @@ pub struct Hit {
     pub modified: Option<SystemTime>,
 }
 
+/// What a backend can do right now, for the status bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchState {
+    Ready,
+    /// Building its index (`done` entries so far); queries fail until it is ready.
+    Indexing {
+        done: usize,
+    },
+    Unavailable,
+}
+
 /// A pluggable file search backend.
 pub trait Searcher: Send + Sync {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
@@ -81,6 +92,20 @@ pub trait Searcher: Send + Sync {
     /// The backend's name for the status bar ("Everything", "Keel index", ...).
     fn name(&self) -> &'static str {
         "Search"
+    }
+    /// Ready, still indexing, or unavailable. Never blocks.
+    fn state(&self) -> SearchState {
+        if self.available() {
+            SearchState::Ready
+        } else {
+            SearchState::Unavailable
+        }
+    }
+    /// The ready notification: true once each time the backend finished building
+    /// (or swapped in) an index since the last call, so the caller refreshes what it
+    /// derived from the old one (status, folder list). Poll it; never blocks.
+    fn take_ready(&self) -> bool {
+        false
     }
 }
 

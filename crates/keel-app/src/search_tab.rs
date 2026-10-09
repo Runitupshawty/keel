@@ -28,10 +28,11 @@ pub fn banner(err: &str) -> String {
     }
 }
 
-/// Why search does not work right now, or None when it does. May block on IPC or a
+/// Why search does not work right now, or None when it does. Asks the backend to
+/// check again first (Everything may have started since). May block on IPC or a
 /// child process: worker threads only.
 pub fn probe(searcher: &dyn Searcher) -> Option<String> {
-    if searcher.available() {
+    if searcher.probe() {
         return None;
     }
     let one = Query {
