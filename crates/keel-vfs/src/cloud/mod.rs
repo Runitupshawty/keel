@@ -408,9 +408,14 @@ impl Core {
         });
     }
     /// New access token from the stored refresh token; the operator is rebuilt with it.
-    fn refresh(&self) -> Result<()> {
+    /// `force` false: only if still expiring once this thread holds the refresh lock (another
+    /// thread may have just refreshed).
+    fn refresh(&self, force: bool) -> Result<()> {
         let oauth = self.oauth.as_ref().context("no OAuth for this account")?;
         let _one = oauth.refreshing.lock();
+        if !force && !Self::expiring(oauth) {
+            return Ok(());
+        }
         let id = &self.account.id;
         let result = (|| {
             let refresh = self
@@ -445,11 +450,8 @@ impl Core {
         p: &VPath,
         f: impl Fn(&blocking::Operator) -> opendal::Result<T>,
     ) -> Result<T> {
-        if let Some(oauth) = &self.oauth {
-            let expiring = *oauth.expires_at.lock() <= SystemTime::now() + Duration::from_secs(60);
-            if expiring {
-                self.refresh()?;
-            }
+        if self.oauth.as_ref().is_some_and(Self::expiring) {
+            self.refresh(false)?;
         }
         let (mut attempt, mut refreshed) = (0, false);
         loop {
@@ -460,7 +462,7 @@ impl Core {
             };
             if http_status(&e) == Some(401) && self.oauth.is_some() && !refreshed {
                 refreshed = true;
-                self.refresh()?;
+                self.refresh(true)?;
                 continue;
             }
             match backoff(attempt, jitter()).filter(|_| retryable(&e)) {
@@ -472,6 +474,9 @@ impl Core {
                 None => return Err(wire(&e, p)),
             }
         }
+    }
+    fn expiring(oauth: &OAuth) -> bool {
+        *oauth.expires_at.lock() <= SystemTime::now() + Duration::from_secs(60)
     }
     fn caps(&self) -> opendal::Capability {
         self.op.read().info().capability()
@@ -635,12 +640,25 @@ impl Core {
         anyhow::ensure!(depth < 256, "directory nesting limit: {}", from.display());
         if dir {
             let (src, dst) = (key(from, true), key(to, true));
+            let children: Vec<_> = self
+                .call(from, |op| op.list(&src))?
+                .into_iter()
+                .filter(|c| c.path() != src)
+                .collect();
+            // Drive allows one name twice; moving both would replace one with the other.
+            let mut seen = HashSet::new();
+            if let Some(twice) = children
+                .iter()
+                .map(|c| c.name().trim_end_matches('/'))
+                .find(|n| !seen.insert(*n))
+            {
+                anyhow::bail!(
+                    "{} holds two items named {twice:?}; rename one of them first",
+                    from.display()
+                );
+            }
             self.call(to, |op| op.create_dir(&dst))?;
-            let children = self.call(from, |op| op.list(&src))?;
             for child in children {
-                if child.path() == src {
-                    continue;
-                }
                 let name = child.name().trim_end_matches('/');
                 self.move_entry(
                     &from.join(name),

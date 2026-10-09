@@ -493,3 +493,136 @@ fn keyring_store_round_trip() {
     assert_eq!(store.get(&key).unwrap(), None);
     store.delete(&key).unwrap();
 }
+
+/// A token endpoint answering every refresh with `reply` (status, JSON body).
+fn token_server(status: u16, reply: &'static str) -> String {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let _ =
+                request.respond(tiny_http::Response::from_string(reply).with_status_code(status));
+        }
+    });
+    format!("http://127.0.0.1:{port}/token")
+}
+fn oauth_cloud(
+    token_url: String,
+    expires_at: SystemTime,
+) -> (
+    CloudProvider,
+    Arc<MemoryStore>,
+    crossbeam_channel::Receiver<RemoteEvent>,
+) {
+    let store = Arc::new(MemoryStore::default());
+    store.set("dbx/refresh_token", "rt").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut endpoints = oauth::Endpoints::for_kind(CloudKind::Dropbox).unwrap();
+    endpoints.token = token_url;
+    let oauth = OAuth {
+        client: OAuthClient {
+            id: "app".into(),
+            secret: None,
+        },
+        endpoints,
+        expires_at: Mutex::new(expires_at),
+        refreshing: Mutex::new(()),
+    };
+    let op = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+    init();
+    let p = CloudProvider::build(
+        account("dbx", CloudKind::Dropbox),
+        op,
+        Some(oauth),
+        store.clone(),
+        tx,
+    )
+    .unwrap();
+    (p, store, rx)
+}
+fn unauthorized() -> opendal::Error {
+    opendal::Error::new(ErrorKind::Unexpected, "expired").with_context(
+        "response",
+        "Parts { status: 401, version: HTTP/1.1, headers: {} }",
+    )
+}
+
+#[test]
+fn rejected_or_expired_tokens_refresh_once_and_are_stored() {
+    let ok = r#"{"access_token":"at-2","expires_in":3600}"#;
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let (cloud, store, events) = oauth_cloud(token_server(200, ok), far);
+    let p = vp("cloud://dbx/a");
+    let calls = std::sync::atomic::AtomicU32::new(0);
+    cloud
+        .core
+        .call(&p, |_| match calls.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(unauthorized()),
+            _ => Ok(()),
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        store.get("dbx/access_token").unwrap().as_deref(),
+        Some("at-2")
+    );
+    assert_eq!(
+        store.get("dbx/refresh_token").unwrap().as_deref(),
+        Some("rt")
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Ok(RemoteEvent::Status { status: ConnStatus::Connected, ref host_id, .. }) if host_id == "cloud:dbx"
+    ));
+    // A token the service keeps rejecting: one refresh, then the error (no loop).
+    calls.store(0, Ordering::SeqCst);
+    let err = cloud
+        .core
+        .call(&p, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(unauthorized())
+        })
+        .unwrap_err();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        err.downcast_ref::<io::Error>().map(io::Error::kind),
+        Some(io::ErrorKind::PermissionDenied)
+    );
+    // Expired before the call: refreshed first, the operation runs once.
+    let (cloud, store, _) = oauth_cloud(token_server(200, ok), UNIX_EPOCH);
+    calls.store(0, Ordering::SeqCst);
+    cloud
+        .core
+        .call(&p, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store.get("dbx/access_token").unwrap().as_deref(),
+        Some("at-2")
+    );
+}
+
+#[test]
+fn a_revoked_grant_asks_to_sign_in_again() {
+    let (cloud, store, events) = oauth_cloud(
+        token_server(400, r#"{"error":"invalid_grant"}"#),
+        UNIX_EPOCH,
+    );
+    let err = cloud.list(&vp("cloud://dbx/")).unwrap_err();
+    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
+    assert!(matches!(
+        events.try_recv(),
+        Ok(RemoteEvent::Status {
+            status: ConnStatus::Failed,
+            ..
+        })
+    ));
+    assert_eq!(store.get("dbx/access_token").unwrap(), None);
+    // Signed out entirely (no refresh token): same message, no request.
+    store.delete("dbx/refresh_token").unwrap();
+    let err = cloud.stat(&vp("cloud://dbx/x")).unwrap_err();
+    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
+}
