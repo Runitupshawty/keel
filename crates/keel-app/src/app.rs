@@ -65,6 +65,7 @@ pub struct App {
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
     // --- Task 24 ---
+    drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
     hotkey: Option<crate::hotkey::Hotkey>,
     #[cfg(test)]
@@ -111,6 +112,7 @@ impl App {
             crashed: false,
             save_session: true,
             seen_widths: (None, None),
+            drag_out: Default::default(),
             hotkey,
             #[cfg(test)]
             panic_next_frame: false,
@@ -299,6 +301,7 @@ impl App {
                 }
             });
         // --- Task 24 ---
+        self.drag_out.check(ctx, s);
         if let Some(e) = (self.hotkey.as_mut()).and_then(|h| h.sync(&s.settings.hotkey)) {
             s.toasts.error(e);
         }
@@ -347,6 +350,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    // --- Task 24 ---
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.drag_out.input_hook(raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // A panic inside a frame is logged by the panic hook; the app keeps running.
         let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ctx)));
