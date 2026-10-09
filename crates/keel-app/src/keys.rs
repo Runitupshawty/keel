@@ -50,6 +50,11 @@ pub enum Action {
         host: String,
         cmd: crate::remotes::RemoteCmd,
     },
+    /// Sidebar, settings or toast command on a cloud account (by id).
+    Cloud {
+        id: String,
+        cmd: crate::clouds::CloudCmd,
+    },
     /// A transfer whose conflict policy is decided.
     StartTransfer {
         op: Transfer,

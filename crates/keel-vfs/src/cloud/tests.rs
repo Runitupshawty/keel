@@ -1499,3 +1499,31 @@ fn keyring_store_round_trip() {
     assert_eq!(store.get(&key).unwrap(), None);
     store.delete(&key).unwrap();
 }
+
+#[test]
+fn sign_out_revokes_the_right_token_and_forgets_everything() {
+    let store = MemoryStore::default();
+    let tokens = OAuthTokens {
+        access: "at".into(),
+        refresh: Some("rt".into()),
+        expires_at: SystemTime::now() + Duration::from_secs(3600),
+    };
+    store_tokens(&store, "drive", &tokens).unwrap();
+    store_tokens(&store, "dbx", &tokens).unwrap();
+    let (drive, dbx) = (
+        account("drive", CloudKind::GoogleDrive),
+        account("dbx", CloudKind::Dropbox),
+    );
+    assert_eq!(revoke_token(&drive, &store).as_deref(), Some("rt"));
+    assert_eq!(revoke_token(&dbx, &store).as_deref(), Some("at"));
+    // S3 has nothing to revoke (no request): its keys just go.
+    store.set("b2/access_key_id", "AKID").unwrap();
+    store.set("b2/secret_access_key", "SECRET").unwrap();
+    sign_out(&account("b2", CloudKind::S3), &store).unwrap();
+    assert_eq!(store.get("b2/secret_access_key").unwrap(), None);
+    // Nothing stored: no request either.
+    forget_account(&store, "drive");
+    assert_eq!(revoke_token(&drive, &store), None);
+    sign_out(&drive, &store).unwrap();
+    assert_eq!(store.get("drive/tokens").unwrap(), None);
+}

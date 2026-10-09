@@ -242,6 +242,40 @@ pub(crate) fn refresh(
     )
 }
 
+/// The service's revoke endpoint (`None` for S3: keys are revoked in the provider's console).
+pub(crate) fn revoke_url(kind: CloudKind) -> Option<&'static str> {
+    match kind {
+        CloudKind::GoogleDrive => Some("https://oauth2.googleapis.com/revoke"),
+        CloudKind::Dropbox => Some("https://api.dropboxapi.com/2/auth/token/revoke"),
+        CloudKind::S3 => None,
+    }
+}
+
+/// Revokes a grant at `url`: Google takes the token as a form field (a refresh token ends
+/// the whole grant), Dropbox as the bearer of the call. Server text never reaches errors.
+pub(crate) fn revoke(kind: CloudKind, url: &str, token: &str) -> Result<()> {
+    let http = super::http_client()?;
+    let request = match kind {
+        CloudKind::GoogleDrive => http.post(url).form(&[("token", token)]),
+        CloudKind::Dropbox => http.post(url).bearer_auth(token),
+        CloudKind::S3 => anyhow::bail!("S3 keys are revoked in the provider's console"),
+    };
+    let status = crate::sftp::conn::runtime()
+        .block_on(async { request.send().await.map(|r| r.status()) })
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "revoke endpoint unreachable",
+            )
+        })?;
+    anyhow::ensure!(
+        status.is_success(),
+        "the service refused to revoke the sign-in (HTTP {})",
+        status.as_u16()
+    );
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 struct TokenReply {
     access_token: String,
@@ -516,6 +550,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
+    }
+
+    #[test]
+    fn revoke_sends_the_token_the_way_each_service_wants_it() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/revoke",
+            server.server_addr().to_ip().unwrap().port()
+        );
+        let seen = thread::spawn(move || {
+            let mut seen = Vec::new();
+            for mut request in server.incoming_requests().take(2) {
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let auth = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("Authorization"))
+                    .map(|h| h.value.to_string());
+                seen.push((body, auth));
+                let _ = request.respond(tiny_http::Response::empty(200));
+            }
+            seen
+        });
+        revoke(CloudKind::GoogleDrive, &url, "rt/1").unwrap();
+        revoke(CloudKind::Dropbox, &url, "at-2").unwrap();
+        let seen = seen.join().unwrap();
+        assert_eq!(seen[0], ("token=rt%2F1".into(), None));
+        assert_eq!(seen[1], (String::new(), Some("Bearer at-2".into())));
+        assert!(revoke_url(CloudKind::S3).is_none());
     }
 
     #[test]

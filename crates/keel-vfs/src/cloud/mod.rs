@@ -231,6 +231,22 @@ fn load_tokens(secrets: &dyn SecretStore, id: &str) -> Result<Option<OAuthTokens
     }))
 }
 
+/// Signs an account out: revokes its grant where the service allows it (Drive: the refresh
+/// token; Dropbox: the access token), then deletes its keychain entries whatever the
+/// service answered. S3 keys are only revocable in the provider's console. Blocks on the
+/// network: workers only. The error is the revoke's (the entries are gone either way).
+pub fn sign_out(account: &CloudAccount, secrets: &dyn SecretStore) -> Result<()> {
+    let revoked = match (
+        oauth::revoke_url(account.kind),
+        revoke_token(account, secrets),
+    ) {
+        (Some(url), Some(token)) => oauth::revoke(account.kind, url, &token),
+        _ => Ok(()),
+    };
+    forget_account(secrets, &account.id);
+    revoked
+}
+
 /// CPU features graviola (rustls' crypto here) asserts on first use; see its README.
 #[cfg(target_arch = "x86_64")]
 const CPU_FEATURES: &[&str] = &[
@@ -289,6 +305,15 @@ fn cpu_error(has: impl Fn(&str) -> bool) -> Result<(), CloudError> {
 /// Whether this machine can use cloud accounts at all (the UI may grey out "Add account").
 pub fn check_cpu() -> Result<(), CloudError> {
     cpu_error(cpu_has)
+}
+
+/// The token `sign_out` revokes: Drive's refresh token, Dropbox's access token.
+fn revoke_token(account: &CloudAccount, secrets: &dyn SecretStore) -> Option<String> {
+    let t = load_tokens(secrets, &account.id).ok().flatten()?;
+    match account.kind {
+        CloudKind::GoogleDrive => t.refresh,
+        _ => Some(t.access).filter(|a| !a.is_empty()),
+    }
 }
 
 /// rustls' crypto (graviola: pure Rust, so cross-target builds need no C toolchain) and
@@ -404,6 +429,14 @@ fn wire(e: &opendal::Error, p: &VPath) -> anyhow::Error {
     let status = http_status(e)
         .map(|s| format!(" (HTTP {s})"))
         .unwrap_or_default();
+    // No HTTP answer at all after the retries: the network or the endpoint is down.
+    if kind == io::ErrorKind::Other && e.is_temporary() && status.is_empty() {
+        return io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("{}: cannot reach the cloud service", p.display()),
+        )
+        .into();
+    }
     io::Error::new(kind, format!("{}: cloud {}{status}", p.display(), e.kind())).into()
 }
 fn not_found(p: &VPath) -> anyhow::Error {
@@ -480,7 +513,8 @@ pub struct CloudProvider {
     core: Arc<Core>,
 }
 
-fn valid_id(id: &str) -> bool {
+/// A usable account id: a lowercase slug (`[a-z0-9_-]+`), see `CloudAccount::id`.
+pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()

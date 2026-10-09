@@ -34,6 +34,9 @@ pub struct Settings {
     pub remote_thumbnails: bool,
     /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
     pub remotes: Vec<keel_vfs::RemoteHost>,
+    /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
+    /// keychain only.
+    pub clouds: Vec<keel_vfs::CloudAccount>,
 }
 
 impl Default for Settings {
@@ -52,6 +55,7 @@ impl Default for Settings {
             terminal_height: 220.0,
             remote_thumbnails: false,
             remotes: Vec::new(),
+            clouds: Vec::new(),
         }
     }
 }
@@ -261,13 +265,22 @@ impl Persist {
     }
 }
 
-/// The Settings window (Ctrl+,): General and Remotes pages. Returns true when the theme
-/// was changed.
+/// Pages of the Settings window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    General,
+    Remotes,
+    Cloud,
+}
+
+/// The Settings window (Ctrl+,): General, Remotes and Cloud pages. Returns true when the
+/// theme was changed.
 pub fn window(
     ctx: &egui::Context,
     open: &mut bool,
     s: &mut Settings,
     remotes: &mut crate::remotes::Remotes,
+    clouds: &mut crate::clouds::Clouds,
     tx: &Sender<crate::state::Msg>,
 ) -> bool {
     let mut theme_changed = false;
@@ -277,12 +290,16 @@ pub fn window(
         .resizable(false)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut remotes.page, false, "General");
-                ui.selectable_value(&mut remotes.page, true, "Remotes");
+                ui.selectable_value(&mut remotes.page, Page::General, "General");
+                ui.selectable_value(&mut remotes.page, Page::Remotes, "Remotes");
+                ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
             });
             ui.separator();
-            if remotes.page {
-                remotes.settings_page(ui, s, tx);
+            if remotes.page != Page::General {
+                match remotes.page {
+                    Page::Remotes => remotes.settings_page(ui, s, tx),
+                    _ => clouds.settings_page(ui, s, tx),
+                }
                 ui.add_space(4.0);
                 ui.weak(format!("Saved to {}", Settings::path().display()));
                 return;

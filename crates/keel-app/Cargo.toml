@@ -28,7 +28,7 @@ egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
 # rar (C++ via `cc`) is its own feature so cross-target checks can leave it out:
 # `cargo check -p keel-app --target x86_64-unknown-linux-gnu --no-default-features`.
-keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar"] }
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
 keel-search = { path = "../keel-search" }
 keel-preview = { path = "../keel-preview" }
 keel-term = { path = "../keel-term" }
@@ -51,6 +51,8 @@ rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 arboard = { version = "3.6", default-features = false }
 
 [dev-dependencies]
+# The real cloud provider over an in-memory service in the job tests.
+opendal = { workspace = true, features = ["services-memory"] }
 # Archive fixtures for the tests.
 zip.workspace = true
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

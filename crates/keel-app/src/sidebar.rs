@@ -18,6 +18,8 @@ pub struct Sidebar {
     pub drives_requested: Option<Instant>,
     /// Configured SFTP hosts (`sidebar_remotes`), rebuilt each frame by the state.
     pub remotes: Vec<crate::sidebar_remotes::RemoteRow>,
+    /// Configured cloud accounts, rebuilt each frame by the state.
+    pub clouds: Vec<crate::sidebar_remotes::CloudRow>,
 }
 
 impl Default for Sidebar {
@@ -44,6 +46,7 @@ impl Default for Sidebar {
             drives: Vec::new(),
             drives_requested: None,
             remotes: Vec::new(),
+            clouds: Vec::new(),
         }
     }
 }
@@ -152,7 +155,7 @@ impl Sidebar {
             crate::sidebar_remotes::ui(ui, &self.remotes, current, out);
             ui.add_space(8.0);
             section(ui, "Cloud", theme);
-            ui.weak("None configured");
+            crate::sidebar_remotes::cloud_ui(ui, &self.clouds, current, out);
         });
     }
 }
