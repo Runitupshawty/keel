@@ -6,8 +6,8 @@ Date: 2026-10-08. Owner: James King. Status: draft for review.
 
 Replace day-to-day use of Windows Explorer on JAMES-DESKTOP with a faster, previews-everything
 file manager that also reaches every other machine James owns. Reference for feature parity and
-feel: Atlas (https://atlasfm.modhyt.org). Keel is personal tooling, private repo, no licensing or
-telemetry concerns.
+feel: Atlas (https://atlasfm.modhyt.org). Keel is open source: public GitHub repo so James's friends
+can use it, fork it, open issues and PRs. No telemetry.
 
 Success = James opens Keel instead of Explorer for a normal week and does not go back.
 
@@ -198,13 +198,26 @@ laptopserver; remote preview + open-with via materialise; job queue for transfer
 **Phase 5 — Polish**: profiles UI, icon-theme manager (download VS Code themes), Miller columns,
 drop zone, Explorer drag-out, animations, global hotkey, own NTFS indexer.
 
-## 4. Prerequisites on JAMES-DESKTOP
+## 4. Public repo rules
+
+- Nothing machine-specific in the repo: no hostnames, IPs, usernames, SSH keys, OAuth client
+  secrets. Profiles live in `%APPDATA%\Keel`, never in-tree. James's own hosts go in his profile.
+- OAuth: Google/Dropbox client IDs are public by design (PKCE loopback flow, no client secret).
+  Users create their own app credentials or use Keel's; documented in `docs/cloud-setup.md`.
+- `README.md` (what, screenshots, install, build), `CONTRIBUTING.md` (cargo fmt + clippy clean,
+  one PR per change, tests for providers), `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD_PARTY.md`.
+- GitHub Actions: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` on
+  windows-latest for every PR; tagged release builds upload `keel.exe` + zip to Releases.
+- Issue templates: bug, feature request. Discussions on for suggestions.
+- Branch protection on `main`: PRs required, CI green. James and friends review each other.
+
+## 5. Prerequisites on JAMES-DESKTOP
 
 Not installed today: `rustup`/cargo, MSVC Build Tools, `gh`, WSL. Phase 1 plan starts with
 installing these via winget (rustup, Microsoft.VisualStudio.2022.BuildTools with C++ workload,
 GitHub.cli). Everything.exe already runs as a service. ffmpeg 9.0.1 present.
 
-## 5. Out of scope
+## 6. Out of scope
 
 Replacing Explorer as the default handler; OneDrive; Linux/macOS builds; direct iPhone
 transport; tagging and bulk rename (candidates after Phase 5); any telemetry.
