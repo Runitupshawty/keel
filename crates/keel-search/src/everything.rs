@@ -257,7 +257,7 @@ unsafe fn result_path(
     ))
 }
 
-fn filetime_to_system_time(filetime: u64) -> Option<std::time::SystemTime> {
+pub(crate) fn filetime_to_system_time(filetime: u64) -> Option<std::time::SystemTime> {
     let unix_ticks = filetime.checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)?;
     UNIX_EPOCH.checked_add(Duration::from_nanos(unix_ticks.checked_mul(100)?))
 }

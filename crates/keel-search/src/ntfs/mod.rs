@@ -29,6 +29,7 @@ use index::{rank, Found, Index};
 use usn::Changes;
 use win::{Journal, Volume, VolumeId};
 
+pub(crate) use win::file_meta;
 pub use win::is_elevated;
 
 /// Shown while only the user folders are indexed.
@@ -44,7 +45,7 @@ const POLL: Duration = Duration::from_secs(2);
 const BATCH: Duration = Duration::from_millis(20);
 /// Least time between two full re-walks after lost watcher events.
 const RESCAN_GAP: Duration = Duration::from_secs(60);
-/// Hits beyond this many skip the per-file size/date lookup (the folder index).
+/// Hits beyond this many skip the per-file size/date lookup (a huge `max`).
 const STAT_LIMIT: usize = 2_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
 const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
@@ -331,19 +332,20 @@ impl Searcher for NtfsSearcher {
         };
         found.sort_by(rank);
         found.truncate(max);
-        let stat = found.len() <= STAT_LIMIT;
+        let mut hits: Vec<Hit> = found
+            .into_iter()
+            .map(|f| Hit {
+                path: keel_vfs::VPath::local(&f.path),
+                is_dir: f.is_dir,
+                size: 0,
+                modified: None,
+            })
+            .collect();
         // Size and date come from the file system: a few hundred lookups, in parallel.
-        let chunk = found.len().div_ceil(8).max(64);
-        Ok(std::thread::scope(|s| {
-            let workers: Vec<_> = found
-                .chunks(chunk)
-                .map(|part| s.spawn(move || part.iter().map(|f| hit(f, stat)).collect::<Vec<_>>()))
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        }))
+        if query.meta && hits.len() <= STAT_LIMIT {
+            crate::fill_meta(&mut hits);
+        }
+        Ok(hits)
     }
 
     /// True once any index (a volume or the user-folder walk) is loaded.
@@ -357,16 +359,6 @@ impl Searcher for NtfsSearcher {
 
     fn name(&self) -> &'static str {
         "Keel index"
-    }
-}
-
-fn hit(found: &Found, stat: bool) -> Hit {
-    let meta = stat.then(|| std::fs::metadata(&found.path).ok()).flatten();
-    Hit {
-        path: keel_vfs::VPath::local(&found.path),
-        is_dir: found.is_dir,
-        size: meta.as_ref().filter(|m| m.is_file()).map_or(0, |m| m.len()),
-        modified: meta.and_then(|m| m.modified().ok()),
     }
 }
 
@@ -1230,6 +1222,45 @@ mod tests {
             folders.len(),
             started.elapsed()
         );
+    }
+
+    /// `query()` time over the user-folder walk of this machine, per pattern: cold,
+    /// then warm file-system cache, then `meta: false`. Patterns via `KEEL_PERF_QUERIES`
+    /// (comma-separated). `cargo test -p keel-search --release -- --ignored --nocapture
+    /// perf_query`
+    #[test]
+    #[ignore]
+    fn perf_query_times() {
+        let dir = std::env::temp_dir().join(format!("keel-index-perf-{}", std::process::id()));
+        let searcher = NtfsSearcher::open(dir.clone());
+        let started = Instant::now();
+        while !searcher.available() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        println!("{} entries in {:.2?}", searcher.len(), started.elapsed());
+        let patterns = std::env::var("KEEL_PERF_QUERIES")
+            .unwrap_or_else(|_| "*.dll,*.json,report,keel,a,*.png".into());
+        for text in patterns.split(',') {
+            let mut times = Vec::new();
+            for meta in [true, true, false] {
+                let started = Instant::now();
+                let hits = searcher
+                    .query(&Query {
+                        text: text.into(),
+                        meta,
+                        ..Query::default()
+                    })
+                    .unwrap();
+                times.push(format!(
+                    "{:>4} hits {:>9.2?}",
+                    hits.len(),
+                    started.elapsed()
+                ));
+            }
+            println!("{text:>10}: {}", times.join("  |  "));
+        }
+        drop(searcher);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The user-folder fallback on this machine: walk time and size.

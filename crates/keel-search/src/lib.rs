@@ -32,6 +32,11 @@ pub struct Query {
     pub max: u32,
     pub regex: bool,
     pub match_case: bool,
+    /// Fill in every hit's size and date (the default). The Keel index has to ask
+    /// the file system per hit (cold disk: tens to hundreds of ms for 500 hits);
+    /// with `false` it skips that and the caller fills them later with
+    /// [`fill_meta`] (on a worker). Everything has them either way.
+    pub meta: bool,
 }
 
 impl Default for Query {
@@ -42,6 +47,7 @@ impl Default for Query {
             max: 500,
             regex: false,
             match_case: false,
+            meta: true,
         }
     }
 }
@@ -133,6 +139,7 @@ pub fn folder_index(searcher: &dyn Searcher) -> anyhow::Result<Vec<String>> {
     let hits = searcher.query(&Query {
         folders_only: true,
         max: 200_000,
+        meta: false,
         ..Query::default()
     })?;
 
@@ -174,6 +181,38 @@ pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
         }
     }
     hits
+}
+
+/// Fills in the size and date of `hits` (from a query run with `meta: false`) from
+/// the file system, in parallel. Hits that are gone keep 0 / None. Blocks on disk IO:
+/// worker threads only.
+pub fn fill_meta(hits: &mut [Hit]) {
+    let chunk = hits.len().div_ceil(8).max(64);
+    std::thread::scope(|s| {
+        for part in hits.chunks_mut(chunk) {
+            s.spawn(move || {
+                for hit in part {
+                    if let Some((size, modified)) = hit.path.to_local_path().and_then(|p| stat(&p))
+                    {
+                        hit.size = size;
+                        hit.modified = modified;
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Size (0 for a folder) and modification time.
+fn stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    // One GetFileAttributesExW call, no file handle: cheaper than std's metadata.
+    #[cfg(windows)]
+    if let Some(meta) = ntfs::file_meta(path) {
+        return Some(meta);
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    let size = if meta.is_dir() { 0 } else { meta.len() };
+    Some((size, meta.modified().ok()))
 }
 
 fn hit_for_path(path: &Path) -> Option<Hit> {
@@ -343,5 +382,31 @@ mod tests {
         assert!(query.folders_only);
         assert!(query.text.is_empty());
         assert_eq!(query.max, 200_000);
+        assert!(!query.meta, "folder paths need no size or date");
+    }
+
+    #[test]
+    fn fill_meta_adds_size_and_date() {
+        let dir = std::env::temp_dir().join(format!("keel-fill-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("five.txt"), b"12345").unwrap();
+        let hit = |path: std::path::PathBuf, is_dir| super::Hit {
+            path: keel_vfs::VPath::local(path),
+            is_dir,
+            size: 0,
+            modified: None,
+        };
+        let mut hits = vec![
+            hit(dir.join("five.txt"), false),
+            hit(dir.clone(), true),
+            hit(dir.join("gone.txt"), false),
+        ];
+        super::fill_meta(&mut hits);
+        assert_eq!(hits[0].size, 5);
+        assert!(hits[0].modified.is_some());
+        assert_eq!(hits[1].size, 0);
+        assert!(hits[1].modified.is_some());
+        assert_eq!((hits[2].size, hits[2].modified), (0, None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
