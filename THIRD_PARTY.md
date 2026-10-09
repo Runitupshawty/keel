@@ -22,7 +22,11 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`interprocess`](https://crates.io/crates/interprocess) 2.4 | Local socket / named pipe for the single instance | 0BSD OR Apache-2.0 | Rust crate, compiled in |
 | [`global-hotkey`](https://crates.io/crates/global-hotkey) 0.8 | System-wide hotkey | Apache-2.0 OR MIT | Rust crate, compiled in |
-| [`rusqlite`](https://crates.io/crates/rusqlite) 0.37 | Search index storage (bundled SQLite, which is public domain) | MIT | Rust crate, compiled in |
+| [`rusqlite`](https://crates.io/crates/rusqlite) 0.37 | Search index and library stores, with FTS5 (bundled SQLite, which is public domain) | MIT | Rust crate, compiled in |
+| [`blake3`](https://crates.io/crates/blake3) 1 | Content ids for the duplicate finder (pure-Rust build) | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Rust crate, compiled in |
+| [`notify`](https://crates.io/crates/notify) 6 | Live file watching for library sources | CC0-1.0 | Rust crate, compiled in |
+| [`ignore`](https://crates.io/crates/ignore) 0.4 | Directory walking | Unlicense OR MIT | Rust crate, compiled in |
+| [`battery`](https://crates.io/crates/battery) 0.7 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | Apache-2.0 OR MIT | Rust crate, compiled in |
 | [`regex`](https://crates.io/crates/regex) 1.13 | Regex search queries | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`encoding_rs`](https://crates.io/crates/encoding_rs) 0.8 | Windows-1252 text decoding | (Apache-2.0 OR MIT) AND BSD-3-Clause | Rust crate, compiled in |
 | [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |

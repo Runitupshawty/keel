@@ -6,7 +6,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.5.0)
+## What works (v0.6.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
@@ -26,12 +26,44 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Command line, single instance and a global hotkey**: `keel <folder>` opens in the running window; Ctrl+Shift+Alt+K brings Keel forward. See [Command line](#command-line).
 - **Drag out** of Keel onto other apps (Windows).
 - **Own search index** on Windows, so search works without Everything. See [Search without Everything](#search-without-everything).
+- **Library**: an index of every file across your folders, drives, SSH hosts and cloud accounts that keeps working when a drive is unplugged. Cross-source search, tags, favorites, saved views, a duplicate finder, and a preview before every copy, move or delete. See [Library](#library).
 - **Open, open with, reveal** in the system file manager, open a terminal in the current folder.
 - **Themes**: dark and light (a TOML file in `<config>/themes/dark.toml` or `light.toml` overrides the built-in colours). One built-in file icon theme.
 - **Settings** (Ctrl+,): theme, hidden files, dual pane, preview panel, maximum preview size. Open tabs are restored on the next start; a local folder that was deleted falls back to your home folder, while a tab on an unreachable network share stays open and shows the error. A `config.toml` or `session.json` that cannot be read is kept as `config.toml.bad` / `session.json.bad`.
 - **Crash safety**: a bug inside the UI is written to `crash.log`, the panes are reset and Keel keeps running.
 
 Settings live in `%APPDATA%\Keel` (Windows), `~/Library/Application Support/Keel` (macOS) or `~/.config/keel` (Linux); session and `crash.log` in `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel` or `~/.cache/keel`. Set `KEEL_CONFIG_DIR` to keep settings, session and `crash.log` in one folder instead (the window size and position that eframe saves in `app.ron` stay in eframe's own folder).
+
+## Library
+
+The library is an index of the files in your **sources** (a local folder or drive, an SSH host, a cloud account). It records name, size, dates and kind, follows files across renames, and keeps the last indexed state of each source so you can still browse, search and plan operations on a drive that is unplugged. It is additive: Keel works as before with the library off (Settings → Library).
+
+**Add a source.** In the sidebar's Library section choose **Add source…** and pick a local folder, a configured remote or a cloud account. Indexing starts at once and runs in the background; the source shows a status dot. Local sources are watched live and fully re-checked every 6 hours; remote and cloud sources are re-walked on a poll interval (15 minutes by default).
+
+**Sidebar.** Overview (counts, storage, sources, running jobs, duplicates), Favorites (Ctrl+D toggles), Recents, Sources, Tags and saved Views. Sources open as `library://` tabs that work offline. Ctrl+Shift+T opens the tag picker; tags show as chips on rows. Search can use the Library as its backend.
+
+**Where data lives.** Each source has its own SQLite store (with full-text search) in `<data dir>/library/<name>/`, where `<data dir>` is `%LOCALAPPDATA%\Keel` (Windows), `~/Library/Application Support/Keel` (macOS) or `~/.local/share/keel` (Linux). Set `KEEL_DATA_DIR` to use another folder. The library only changes your files through an operation you confirmed.
+
+**Content hashing.** To find duplicates Keel computes BLAKE3 content ids lazily: a sample of the file first, and a full hash only when samples collide; files of 192 KiB or less are hashed whole. Hashing runs at idle priority. Settings → Library → Hashing chooses *idle only* (default), *pause on battery* (also runs while you work, but not on battery) or *off*. Only sources on a local path are hashed.
+
+**Preview before you act.** Copy, move, delete and rename started from a library view first show a preview built from the index: what will change, plus warnings for the last copy of a file, a permanent delete on SFTP or S3, content that has not been hashed (unverified), and an offline source. Execution checks the plan again and stops if anything changed since the preview.
+
+**Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview.
+
+**Search syntax.** Several terms must all match; results are ranked.
+
+| Term | Meaning |
+| --- | --- |
+| `report` | name or path contains the word |
+| `"annual report"` | exact phrase |
+| `ext:pdf` | extension |
+| `size:>1mb`, `size:<10kb` | size comparison |
+| `dm:2026-10` | modified in that month (ranges and `today` work too) |
+| `kind:image` | file kind (`file:`, `folder:`) |
+| `tag:taxes` | has the tag |
+| `in:photos` | under a path or source |
+
+Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
 
 ## Columns view and drop zone
 
@@ -76,6 +108,8 @@ By default there is one Keel per user and profile: a second `keel` hands its fol
 | Key | Action |
 | --- | --- |
 | Ctrl+, | Settings |
+| Ctrl+Shift+T | Tag picker (library) |
+| Ctrl+D | Toggle favorite (library) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
 | Ctrl+Shift+S | Stash the selection in the drop zone |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
@@ -192,9 +226,8 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 5 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish). Next:
+Phases 1 to 6 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library). Planned:
 
-6. Library core: an index of every file across sources, content hashes, duplicate finder, tags and saved views.
 7. Media and protection: fast photo grid, video scrubbing, EXIF, redundancy and backup state per file.
 8. Devices: pairing and file transfer between your machines, a headless daemon and CLI.
 9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
