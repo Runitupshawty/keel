@@ -1,0 +1,26 @@
+[package]
+name = "keel-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Keel's typed operation registry: one list for JSON-RPC, the CLI and MCP"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+getrandom.workspace = true
+blake3.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+keel-core = { path = "../keel-core" }
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud"] }
+keel-net = { path = "../keel-net" }
+schemars = "1.2"
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+jsonschema = { version = "0.58", default-features = false }
