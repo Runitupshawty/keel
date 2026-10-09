@@ -3820,7 +3820,7 @@ dependencies = [
  "keel-search",
  "keel-vfs",
  "libc",
- "notify-debouncer-mini",
+ "notify",
  "parking_lot",
  "regex",
  "rusqlite",

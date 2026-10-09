@@ -26,7 +26,7 @@ ignore.workspace = true
 getrandom.workspace = true
 directories.workspace = true
 regex.workspace = true
-notify-debouncer-mini = "0.4"
+notify.workspace = true
 tracing.workspace = true
 blake3.workspace = true
 battery = { workspace = true, optional = true }

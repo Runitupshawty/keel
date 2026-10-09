@@ -15,7 +15,10 @@ mod search;
 mod tags;
 
 pub use hash::{on_battery, Copies, DupGroup, HashJob, VolumeRef, SAMPLE, WHOLE};
-pub use index::{ChangeEvent, IndexProgress, Indexer, WatchHandle, BATCH, POLL_INTERVAL};
+pub use index::{
+    ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
+    RECONCILE_INTERVAL,
+};
 pub use jobs::{Job, JobCtx, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, RecordRef, Source, SourceDef, SourceId,

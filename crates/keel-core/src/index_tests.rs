@@ -588,6 +588,66 @@ fn watch_applies_local_changes() {
 }
 
 #[test]
+fn watch_reconciles_on_start_and_periodically() {
+    let files = tempfile::tempdir().unwrap();
+    let (_data, _lib, src) = library_with(folder("w", files.path()));
+    let router = Arc::new(Router::new());
+    walk(&src, &router).unwrap();
+    // Changed while nobody watched.
+    write(&files.path().join("missed.txt"), "m");
+    let cfg = WatchConfig {
+        reconcile: Duration::from_millis(300),
+        ..WatchConfig::default()
+    };
+    let handle = Indexer::watch_with(&src, &router, cfg).unwrap();
+    eventually("start-up walk", || id_of(&src, "missed.txt").is_some());
+    let gen = src.generation.load(Ordering::SeqCst);
+    eventually("periodic walks", || {
+        src.generation.load(Ordering::SeqCst) >= gen + 2
+    });
+    drop(handle);
+}
+
+#[test]
+fn lost_events_trigger_a_full_walk() {
+    let files = tempfile::tempdir().unwrap();
+    let (_data, _lib, src) = library_with(folder("w", files.path()));
+    let router = Router::new();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let walks = AtomicUsize::new(0);
+    let quit = AtomicBool::new(false);
+    let rescan = |s: &Source| {
+        walks.fetch_add(1, Ordering::SeqCst);
+        walk(s, &router).unwrap();
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| watch_loop(&src, &rx, Duration::from_secs(3600), &quit, &rescan));
+        eventually("start-up walk", || walks.load(Ordering::SeqCst) == 1);
+        write(&files.path().join("lost.txt"), "l");
+        tx.send(Ok(
+            notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan)
+        ))
+        .unwrap();
+        eventually("rescan", || walks.load(Ordering::SeqCst) == 2);
+        assert!(id_of(&src, "lost.txt").is_some());
+        tx.send(Err(notify::Error::generic("queue overflow")))
+            .unwrap();
+        eventually("rescan after an error", || {
+            walks.load(Ordering::SeqCst) == 3
+        });
+        // Plain events are applied without a walk.
+        write(&files.path().join("seen.txt"), "s");
+        tx.send(Ok(
+            notify::Event::new(notify::EventKind::Any).add_path(files.path().join("seen.txt"))
+        ))
+        .unwrap();
+        eventually("applied", || id_of(&src, "seen.txt").is_some());
+        assert_eq!(walks.load(Ordering::SeqCst), 3);
+        quit.store(true, Ordering::SeqCst);
+    });
+}
+
+#[test]
 fn watch_polls_remote_sources() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
@@ -595,7 +655,11 @@ fn watch_polls_remote_sources() {
     }));
     let router = Arc::new(Router::new());
     let (_data, _lib, src) = library_with(fake_source(&router, &state, SourceKind::Cloud));
-    let handle = Indexer::watch_every(&src, &router, Duration::from_millis(20)).unwrap();
+    let cfg = WatchConfig {
+        poll: Duration::from_millis(20),
+        ..WatchConfig::default()
+    };
+    let handle = Indexer::watch_with(&src, &router, cfg).unwrap();
     eventually("two polls", || src.generation.load(Ordering::SeqCst) >= 2);
     drop(handle);
     assert_eq!(paths(&src).len(), 6);

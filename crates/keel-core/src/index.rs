@@ -25,6 +25,8 @@ use std::{
 pub const BATCH: u64 = 5_000;
 /// How often `Indexer::watch` re-walks a remote or cloud source.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// How often `Indexer::watch` re-walks a local source besides applying change events.
+pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// A walk commits before listing a folder once its open batch is this old, so a slow
 /// (remote) listing never holds the store's write lock.
 const MAX_BATCH_AGE: Duration = Duration::from_millis(500);
@@ -626,18 +628,20 @@ impl Indexer {
         result
     }
 
-    /// `watch_every(src, router, POLL_INTERVAL)`.
+    /// `watch_with(src, router, WatchConfig::default())`.
     pub fn watch(src: &Arc<Source>, router: &Arc<Router>) -> Result<WatchHandle> {
-        Self::watch_every(src, router, POLL_INTERVAL)
+        Self::watch_with(src, router, WatchConfig::default())
     }
 
-    /// Local sources: a recursive notify watcher, debounced 500 ms, applied with
-    /// `apply_change` (a lost-events error triggers a full walk). Other sources: a full walk
-    /// (a new generation snapshot) every `poll`. Dropping the handle stops watching.
-    pub fn watch_every(
+    /// Keeps a source current until the handle is dropped, starting with a full walk (what
+    /// changed while nobody watched). Local sources: a recursive notify watcher, debounced
+    /// (500 ms quiet, 5 s at most), applied with `apply_change`; lost events (a rescan flag or
+    /// a watcher error) and every `cfg.reconcile` trigger a full walk. Other sources: a full
+    /// walk (a new generation snapshot) every `cfg.poll`.
+    pub fn watch_with(
         src: &Arc<Source>,
         router: &Arc<Router>,
-        poll: Duration,
+        cfg: WatchConfig,
     ) -> Result<WatchHandle> {
         let cancel = Arc::new(AtomicBool::new(false));
         let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
@@ -650,62 +654,131 @@ impl Indexer {
         let Some(root) = src.def.root.to_local_path() else {
             let thread = std::thread::Builder::new()
                 .name("keel-poll".into())
-                .spawn(move || {
-                    while let Err(crossbeam_channel::RecvTimeoutError::Timeout) =
-                        stop_rx.recv_timeout(poll)
-                    {
-                        rescan(&src);
+                .spawn(move || loop {
+                    rescan(&src);
+                    match stop_rx.recv_timeout(cfg.poll) {
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                        _ => break,
                     }
                 })?;
             return Ok(WatchHandle {
                 cancel,
                 stop: stop_tx,
-                debouncer: None,
+                watcher: None,
                 thread: Some(thread),
             });
         };
         let (tx, rx) = crossbeam_channel::unbounded();
-        let mut debouncer = notify_debouncer_mini::new_debouncer(
-            Duration::from_millis(500),
-            move |res: notify_debouncer_mini::DebounceEventResult| {
-                let _ = tx.send(res);
-            },
-        )?;
-        debouncer
-            .watcher()
-            .watch(
-                &root,
-                notify_debouncer_mini::notify::RecursiveMode::Recursive,
-            )
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })?;
+        notify::Watcher::watch(&mut watcher, &root, notify::RecursiveMode::Recursive)
             .with_context(|| format!("watch {}", root.display()))?;
+        let quit = cancel.clone();
         let thread = std::thread::Builder::new()
             .name("keel-watch-source".into())
             .spawn(move || {
                 drop(stop_rx);
-                while let Ok(res) = rx.recv() {
-                    let Ok(events) = res else {
-                        rescan(&src);
-                        continue;
-                    };
-                    let mut paths: Vec<_> = events.into_iter().map(|e| e.path).collect();
-                    paths.sort();
-                    paths.dedup();
-                    // Present paths first: a rename then reads as a move.
-                    paths.sort_by_key(|p| p.symlink_metadata().is_err());
-                    for p in paths {
-                        let ev = ChangeEvent::Changed(VPath::local(&p));
-                        if let Err(e) = Indexer::apply_change(&src, ev) {
-                            tracing::debug!("index change {}: {e:#}", p.display());
-                        }
-                    }
-                }
+                watch_loop(&src, &rx, cfg.reconcile, &quit, &rescan);
             })?;
         Ok(WatchHandle {
             cancel,
             stop: stop_tx,
-            debouncer: Some(debouncer),
+            watcher: Some(watcher),
             thread: Some(thread),
         })
+    }
+}
+
+/// How `Indexer::watch_with` keeps a source current.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatchConfig {
+    /// Remote and cloud sources: a full walk this often.
+    pub poll: Duration,
+    /// Local sources: a full walk this often on top of change events, which can be lost
+    /// without notice (a Windows change buffer overflow is not reported).
+    pub reconcile: Duration,
+}
+
+impl Default for WatchConfig {
+    fn default() -> Self {
+        WatchConfig {
+            poll: POLL_INTERVAL,
+            reconcile: RECONCILE_INTERVAL,
+        }
+    }
+}
+
+/// Quiet time before a burst of change events is applied.
+const DEBOUNCE: Duration = Duration::from_millis(500);
+/// Longest a change waits while events keep coming.
+const MAX_DELAY: Duration = Duration::from_secs(5);
+/// How often the watch loop looks at its stop flag.
+const TICK: Duration = Duration::from_millis(250);
+
+/// The local watcher's loop: an initial full walk, then debounced change events, with a full
+/// walk whenever events were lost and every `reconcile`. Ends when the event channel closes
+/// or `quit` is set.
+fn watch_loop(
+    src: &Source,
+    rx: &crossbeam_channel::Receiver<notify::Result<notify::Event>>,
+    reconcile: Duration,
+    quit: &AtomicBool,
+    rescan: &dyn Fn(&Source),
+) {
+    rescan(src);
+    let mut next_walk = Instant::now() + reconcile;
+    let mut pending: Vec<std::path::PathBuf> = Vec::new();
+    let mut lost = false;
+    // (first, last) event of the current burst.
+    let mut burst: Option<(Instant, Instant)> = None;
+    while !quit.load(Ordering::SeqCst) {
+        match rx.recv_timeout(TICK) {
+            Ok(res) => {
+                let now = Instant::now();
+                burst = Some(burst.map_or((now, now), |(first, _)| (first, now)));
+                match res {
+                    Ok(ev) => {
+                        lost |= ev.need_rescan();
+                        pending.extend(ev.paths);
+                    }
+                    Err(e) => {
+                        tracing::debug!("watch {}: {e}", src.def.label);
+                        lost = true;
+                    }
+                }
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+        }
+        let due = burst.is_some_and(|(first, last)| {
+            last.elapsed() >= DEBOUNCE || first.elapsed() >= MAX_DELAY
+        });
+        if lost || Instant::now() >= next_walk {
+            if burst.is_none() || due {
+                rescan(src);
+                next_walk = Instant::now() + reconcile;
+                (lost, burst) = (false, None);
+                pending.clear();
+            }
+            continue;
+        }
+        if !due {
+            continue;
+        }
+        burst = None;
+        let mut paths = std::mem::take(&mut pending);
+        paths.sort();
+        paths.dedup();
+        // Present paths first: a rename then reads as a move.
+        paths.sort_by_key(|p| p.symlink_metadata().is_err());
+        for p in paths {
+            let ev = ChangeEvent::Changed(VPath::local(&p));
+            if let Err(e) = Indexer::apply_change(src, ev) {
+                tracing::debug!("index change {}: {e:#}", p.display());
+            }
+        }
     }
 }
 
@@ -847,16 +920,15 @@ fn apply(
 pub struct WatchHandle {
     cancel: Arc<AtomicBool>,
     stop: crossbeam_channel::Sender<()>,
-    debouncer:
-        Option<notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>,
+    watcher: Option<notify::RecommendedWatcher>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
-        // Dropping the debouncer ends its thread and with it the event channel.
-        self.debouncer.take();
+        // Dropping the watcher closes the event channel.
+        self.watcher.take();
         // Replacing the sender disconnects the polling thread's stop channel.
         self.stop = crossbeam_channel::bounded(0).0;
         if let Some(thread) = self.thread.take() {
