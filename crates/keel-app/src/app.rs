@@ -152,7 +152,13 @@ impl App {
         s.tick();
         s.jobs.tick();
         // Every frame, so key state stays right while a modal is open.
-        let keys_on = s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed;
+        // A context menu acts on what it was opened on: no key may move the focus or
+        // selection under it (Task 23: the columns view's keyboard column).
+        let keys_on = s.dialog.is_none()
+            && !s.jump.open
+            && !s.palette.open
+            && !self.crashed
+            && !ctx.is_context_menu_open();
         for action in keys::actions_with_terminal(ctx, keys_on, s.terminal.focused(ctx)) {
             s.run(s.active, action);
         }
@@ -264,21 +270,26 @@ impl App {
                 }
                 if let Some((_, at)) = &self.pending_drop {
                     let target = match moved {
-                        Some(pos) => Some(
+                        Some(pos) => Some((
                             rects
                                 .iter()
                                 .position(|r| r.contains(pos))
                                 .filter(|&p| p == 0 || s.dual)
                                 .unwrap_or(s.active),
-                        ),
-                        None if at.elapsed() >= DROP_WAIT => Some(s.active),
+                            Some(pos),
+                        )),
+                        None if at.elapsed() >= DROP_WAIT => Some((s.active, None)),
                         None => {
                             ctx.request_repaint_after(Duration::from_millis(50));
                             None
                         }
                     };
-                    if let (Some(p), Some((paths, _))) = (target, self.pending_drop.take()) {
-                        let dst = s.tab(p).dir.clone();
+                    if let (Some((p, pos)), Some((paths, _))) = (target, self.pending_drop.take()) {
+                        // Task 23: the column under the pointer, not the keyboard column.
+                        let dst = pos
+                            .filter(|_| s.panes[p].view == pane::ViewMode::Columns)
+                            .and_then(|pos| crate::view_columns::folder_at(ctx, p, pos))
+                            .unwrap_or_else(|| s.tab(p).dir.clone());
                         out.push((
                             p,
                             Action::Drop {

@@ -109,19 +109,22 @@ fn home(root: &mut Tab, show_hidden: bool) {
 /// Makes the columns follow each column's selection: one selected folder opens the next
 /// column (closing the ones after it), one selected file becomes the preview, anything
 /// else closes everything right of it. Cheap when nothing changed (no listing scan).
-pub fn sync(root: &mut Tab) {
+/// True when it opened a folder column (it needs listing: the next tick does that).
+pub fn sync(root: &mut Tab) -> bool {
     let mut i = 0;
     while i < count(root) {
         let next = root.columns.cols.get(i).map(|t| t.dir.clone());
         let deepest = next.is_none();
         let file = root.columns.file.as_ref().map(|e| e.path.clone());
-        let Some(col) = col_mut(root, i) else { return };
+        let Some(col) = col_mut(root, i) else {
+            return false;
+        };
         let child = col.cursor.clone().filter(|c| {
             col.selected.is_empty() || (col.selected.len() == 1 && col.selected.contains(c))
         });
         let Some(name) = child else {
             truncate(root, i);
-            return;
+            return false;
         };
         let path = col.dir.join(&name);
         if next.as_ref() == Some(&path) {
@@ -129,21 +132,22 @@ pub fn sync(root: &mut Tab) {
             continue;
         }
         if deepest && file.as_ref() == Some(&path) {
-            return;
+            return false;
         }
         // The selection changed: one scan of this column's listing.
         let Some(e) = col.entries().iter().find(|e| e.name == name).cloned() else {
             // Not listed (yet): keep what is shown.
-            return;
+            return false;
         };
         truncate(root, i);
         if e.kind == Kind::Dir && !e.encrypted {
             root.columns.cols.push(Tab::new(e.path));
-        } else {
-            root.columns.file = Some(e);
+            return true;
         }
-        return;
+        root.columns.file = Some(e);
+        return false;
     }
+    false
 }
 
 /// The folder of every column right of the tab (saved in the session).
@@ -177,7 +181,10 @@ pub fn intercept(s: &mut AppState, p: usize, action: Action) -> Option<Action> {
         return Some(action);
     }
     let root = &mut pane.tabs[active];
-    act(root, action, show_hidden)
+    let out = act(root, action, show_hidden);
+    // A column opened here is listed by the next tick: make sure there is one.
+    s.ctx.request_repaint();
+    out
 }
 
 /// `intercept` on one tab (tests drive this directly).
@@ -190,6 +197,10 @@ pub fn act(root: &mut Tab, action: Action, show_hidden: bool) -> Option<Action> 
             None
         }
         Action::Move(Nav::Right, _) => {
+            // Down then Right in one frame: the column the cursor moved onto is not
+            // open yet (the view syncs after the actions run).
+            sync(root);
+            let focus = root.columns.focus.min(count(root) - 1);
             if focus + 1 < count(root) {
                 root.columns.focus = focus + 1;
                 home(root, show_hidden);
@@ -207,8 +218,19 @@ pub fn act(root: &mut Tab, action: Action, show_hidden: bool) -> Option<Action> 
             root.columns.file = None;
             None
         }
-        // The tab's own folder goes up; the folder it came from opens as column 1.
-        Action::Up | Action::Backspace => {
+        // Up from column k closes it and its parent, column k - 1, takes the keyboard.
+        Action::Up | Action::Backspace if focus > 0 => {
+            truncate(root, focus - 1);
+            if let Some(col) = col_mut(root, focus - 1) {
+                clear_selection(col);
+            }
+            root.columns.focus = focus - 1;
+            root.columns.home_pending = false;
+            None
+        }
+        // The tab's own folder goes up (or forward in its history): the columns close
+        // and the action runs on the tab.
+        Action::Up | Action::Backspace | Action::Forward => {
             collapse(root);
             Some(action)
         }
@@ -339,6 +361,32 @@ fn width(widths: &[f32], i: usize, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
+/// The preview column's width, kept apart from the folder columns' (a column opened
+/// where the preview was must not take its width). In egui's persisted memory.
+// ponytail: not in Settings (settings.rs belongs to another change); move it there and
+// out of the window-state file if profiles should carry it.
+fn preview_width_id() -> egui::Id {
+    egui::Id::new("keel-columns-preview-width")
+}
+
+fn rects_id(pane: usize) -> egui::Id {
+    egui::Id::new(("keel-column-rects", pane))
+}
+
+/// The folder of the column under `pos` in pane `pane` as drawn last frame (OS drops
+/// land there, not in the keyboard column).
+pub fn folder_at(ctx: &egui::Context, pane: usize, pos: egui::Pos2) -> Option<VPath> {
+    ctx.data(|d| d.get_temp::<Vec<(Rect, VPath)>>(rects_id(pane)))
+        .and_then(|rects| column_at(&rects, pos))
+}
+
+fn column_at(rects: &[(Rect, VPath)], pos: egui::Pos2) -> Option<VPath> {
+    rects
+        .iter()
+        .find(|(r, _)| r.contains(pos))
+        .map(|(_, d)| d.clone())
+}
+
 pub fn ui(
     ui: &mut egui::Ui,
     id: (usize, usize),
@@ -349,7 +397,9 @@ pub fn ui(
     if root.columns.home_pending {
         home(root, cx.show_hidden);
     }
-    sync(root);
+    if sync(root) {
+        ui.ctx().request_repaint();
+    }
     let n = count(root);
     root.columns.focus = root.columns.focus.min(n - 1);
     let focus = root.columns.focus;
@@ -362,6 +412,12 @@ pub fn ui(
     let mut target: Option<Rect> = None;
     let mut clicked = None;
     let mut resized = None;
+    let mut rects: Vec<(Rect, VPath)> = Vec::with_capacity(n);
+    let preview_w = ui
+        .data_mut(|d| d.get_persisted::<f32>(preview_width_id()))
+        .filter(|w| *w >= MIN_WIDTH)
+        .unwrap_or(PREVIEW_WIDTH);
+    let mut preview_resized = None;
     let down = egui::Layout::top_down(egui::Align::Min);
     egui::ScrollArea::horizontal()
         .id_salt(("columns", id))
@@ -379,6 +435,7 @@ pub fn ui(
                         ui.new_child(UiBuilder::new().max_rect(rect).id_salt(i).layout(down));
                     child.set_clip_rect(rect.intersect(ui.clip_rect()));
                     let col = col_mut(root, i).expect("column in range");
+                    rects.push((child.clip_rect(), col.dir.clone()));
                     if column(&mut child, (id.0, id.1, i), col, i == focus, cx, out) {
                         clicked = Some(i);
                     }
@@ -387,7 +444,7 @@ pub fn ui(
                     }
                 }
                 if let Some(file) = root.columns.file.clone() {
-                    let w = width(cx.column_widths, n, PREVIEW_WIDTH);
+                    let w = preview_w;
                     let (rect, _) = ui.allocate_exact_size(vec2(w, height), Sense::hover());
                     let mut child = ui.new_child(
                         UiBuilder::new()
@@ -401,7 +458,7 @@ pub fn ui(
                         target = target.map(|t| t.union(rect));
                     }
                     if let Some(dx) = handle(ui, height) {
-                        resized = Some((n, (w + dx).max(MIN_WIDTH)));
+                        preview_resized = Some((w + dx).max(MIN_WIDTH).round());
                     }
                 }
                 if let Some(rect) = target.filter(|_| moved) {
@@ -409,6 +466,10 @@ pub fn ui(
                 }
             });
         });
+    ui.data_mut(|d| d.insert_temp(rects_id(id.0), rects));
+    if let Some(w) = preview_resized {
+        ui.data_mut(|d| d.insert_persisted(preview_width_id(), w));
+    }
     if let Some(i) = clicked {
         root.columns.focus = i;
     }
@@ -458,13 +519,17 @@ fn column(
     if clicked {
         clear_selection(col);
     }
+    // Anything this column asks for (a menu item, a double click, a drop on a row) is
+    // about this column: it takes the keyboard before the action runs on `Pane::tab()`.
+    let asked = out.len();
     bg.context_menu(|ui| context_menu(ui, col, None, out));
     if let Some(err) = col.error.clone() {
         ui.colored_label(ui.visuals().error_fg_color, err);
     }
     if col.loading && col.listed_dir.is_none() {
         ui.centered_and_justified(|ui| ui.spinner());
-        return clicked;
+        take_drop(ui, col, out);
+        return clicked || out.len() > asked;
     }
     col.visible(cx.show_hidden);
     col.row_step = 1;
@@ -472,8 +537,9 @@ fn column(
         .saturating_sub(1)
         .max(1);
     let n = col.visible_cached().len();
+    // The folder is part of the id: another folder opened in this slot starts at the top.
     let mut area = egui::ScrollArea::vertical()
-        .id_salt(("column", id))
+        .id_salt(("column", id, &col.dir))
         .auto_shrink([false, false]);
     if let Some(pos) = col.scroll_to.take() {
         let (offset, viewport) = col.grid_scroll;
@@ -604,7 +670,24 @@ fn column(
     if !rename_done {
         col.renaming = renaming;
     }
-    clicked
+    take_drop(ui, col, out);
+    clicked || out.len() > asked
+}
+
+/// An in-app drag released over this column but not on a folder row (rows take theirs
+/// first): into the column's folder, not the keyboard column's.
+fn take_drop(ui: &egui::Ui, col: &Tab, out: &mut Vec<Action>) {
+    let released = ui.input(|i| {
+        i.pointer.any_released()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| ui.clip_rect().contains(pos))
+    });
+    if released {
+        if let Some(drag) = egui::DragAndDrop::take_payload::<crate::pane::DragPayload>(ui.ctx()) {
+            out.push(drag.action(col.dir.clone()));
+        }
+    }
 }
 
 /// The preview column: the preview panel's rendering when this pane has it (the panel
@@ -774,10 +857,55 @@ mod tests {
         let far = Action::Navigate(dir("/other"));
         assert_eq!(act(&mut r, far.clone(), false), Some(far));
         assert!(chain(&r).is_empty());
-        // Up collapses, then runs on the tab.
+        // Up from column k closes it and focuses column k - 1; from column 0 it
+        // collapses and runs on the tab.
+        restore(&mut r, &[dir("/r/a"), dir("/r/a/x")]);
+        assert_eq!(act(&mut r, Action::Up, false), None);
+        assert_eq!((chain(&r), r.columns.focus), (vec![dir("/r/a")], 1));
+        assert_eq!(col_mut(&mut r, 1).unwrap().cursor, None, "stays closed");
+        assert_eq!(act(&mut r, Action::Backspace, false), None);
+        assert_eq!((chain(&r).len(), r.columns.focus), (0, 0));
         restore(&mut r, &[dir("/r/a")]);
+        r.columns.focus = 0;
         assert_eq!(act(&mut r, Action::Up, false), Some(Action::Up));
         assert!(chain(&r).is_empty());
+    }
+
+    /// Forward with a column focused walks the tab's history (it used to run on the
+    /// column, which has none).
+    #[test]
+    fn forward_from_a_column_walks_the_tab_history() {
+        let mut pane = Pane::new(dir("/r"));
+        pane.view = ViewMode::Columns;
+        pane.tabs[0].future.push(dir("/next"));
+        restore(&mut pane.tabs[0], &[dir("/r/a"), dir("/r/a/x")]);
+        assert_eq!(pane.tab().dir, dir("/r/a/x"));
+        let action = act(&mut pane.tabs[0], Action::Forward, false);
+        assert_eq!(action, Some(Action::Forward));
+        assert!(pane.tab_mut().forward());
+        assert_eq!(pane.tabs[0].dir, dir("/next"));
+    }
+
+    /// Down then Right in one frame: Right enters the column Down just selected.
+    #[test]
+    fn down_then_right_in_one_frame_enters_the_new_column() {
+        let mut r = root();
+        r.move_cursor(Nav::Home, false);
+        assert_eq!(act(&mut r, Action::Move(Nav::Right, false), false), None);
+        assert_eq!(r.columns.focus, 1);
+        assert_eq!(focused(&r).dir, dir("/r/a"));
+    }
+
+    #[test]
+    fn os_drop_lands_in_the_column_under_the_pointer() {
+        let rect = |x: f32| Rect::from_min_size(egui::pos2(x, 0.0), vec2(100.0, 300.0));
+        let rects = [(rect(0.0), dir("/r")), (rect(100.0), dir("/r/a"))];
+        assert_eq!(
+            column_at(&rects, egui::pos2(150.0, 20.0)),
+            Some(dir("/r/a"))
+        );
+        assert_eq!(column_at(&rects, egui::pos2(50.0, 20.0)), Some(dir("/r")));
+        assert_eq!(column_at(&rects, egui::pos2(250.0, 20.0)), None);
     }
 
     /// Through `AppState`: a column is listed by a worker, actions work on the keyboard
@@ -886,11 +1014,59 @@ mod tests {
         h.run_steps(3);
         assert_eq!(chain(&h.state().state.panes[0].tabs[0]).len(), 2);
         // Rows stack down their column (not across it).
-        let left = |label: &str| {
-            let node = egui_kittest::kittest::Queryable::get_by_label(&h, label);
-            node.raw_bounds().expect("row bounds").x0
+        // The row (selectable; the preview column and the path bar repeat names).
+        let center = |h: &Harness<App>, label: &str| {
+            let node = egui_kittest::kittest::Queryable::query_all_by_label(h, label)
+                .find(|n| n.toggled().is_some())
+                .expect("row");
+            let b = node.raw_bounds().expect("row bounds");
+            egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32)
         };
-        assert_eq!(left("tmp-sibling.txt"), left("zz-other.txt"));
+        assert_eq!(
+            center(&h, "tmp-sibling.txt").x,
+            center(&h, "zz-other.txt").x
+        );
+        // An OS drop over column 2 goes to its folder, whatever has the keyboard.
+        let over = center(&h, "c.txt");
+        let folder = folder_at(&h.ctx, 0, over);
+        assert_eq!(folder, Some(start.join("a").join("b")));
+
+        // A context menu acts on the column it was opened on: keys do not move the
+        // focus under it, and its action focuses that column.
+        let b = center(&h, "b");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: b,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.input_mut().events.push(egui::Event::PointerMoved(b));
+        h.input_mut().events.push(button(true));
+        h.step();
+        h.input_mut().events.push(button(false));
+        h.run_steps(2);
+        assert_eq!(h.state().state.panes[0].tabs[0].columns.focus, 1);
+        h.press_key(Key::ArrowLeft);
+        h.run_steps(2);
+        assert_eq!(
+            h.state().state.panes[0].tabs[0].columns.focus,
+            1,
+            "keys wait"
+        );
+        // Even when the focus moved some other way, the menu's column takes it back.
+        h.state_mut().state.panes[0].tabs[0].columns.focus = 0;
+        egui_kittest::kittest::Queryable::get_by_label(&h, "Copy path").click();
+        let mut copied = String::new();
+        for _ in 0..3 {
+            h.step();
+            for c in &h.output().platform_output.commands {
+                if let egui::OutputCommand::CopyText(text) = c {
+                    copied += text;
+                }
+            }
+        }
+        assert_eq!(h.state().state.panes[0].tabs[0].columns.focus, 1);
+        assert_eq!(copied, start.join("a").join("b").display());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
