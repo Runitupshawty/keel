@@ -5,6 +5,11 @@ pub mod archive;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
 pub mod cloud;
+// --- Task 24 ---
+#[cfg(windows)]
+pub mod desktop;
+pub mod drag_out;
+// --- end Task 24 ---
 pub mod path;
 pub use path::VPath;
 pub mod entry;

@@ -151,6 +151,9 @@ pub enum Msg {
         path: std::path::PathBuf,
         apps: Vec<(String, String)>,
     },
+    // --- Task 24 ---
+    /// A later `keel` run handed over its command line (single instance).
+    External(crate::cli::Request),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -341,6 +344,7 @@ impl AppState {
             &mut self.remotes,
             &mut self.clouds,
             &self.tx,
+            self.searcher.as_ref().map(|x| x.name()), // Task 24
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -602,6 +606,8 @@ impl AppState {
                     self.dialog = Some(Dialog::OpenWith { path, apps });
                 }
             }
+            // --- Task 24 ---
+            Msg::External(req) => self.external(req),
         }
     }
 

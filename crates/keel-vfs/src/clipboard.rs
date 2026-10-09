@@ -1,10 +1,7 @@
 //! Windows file clipboard: `CF_HDROP` plus `Preferred DropEffect` (cut = move), so files
 //! copied here paste in Explorer and the other way round. Other OSes live in keel-app.
 use anyhow::{Context, Result};
-use std::{
-    os::windows::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
-};
+use std::{os::windows::ffi::OsStringExt, path::PathBuf};
 use windows::Win32::{
     Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
     System::{
@@ -15,7 +12,7 @@ use windows::Win32::{
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
         Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_MOVE},
     },
-    UI::Shell::{DragQueryFileW, CFSTR_PREFERREDDROPEFFECT, DROPFILES, HDROP},
+    UI::Shell::{DragQueryFileW, CFSTR_PREFERREDDROPEFFECT, HDROP},
 };
 
 /// Open clipboard; closed on drop.
@@ -69,19 +66,7 @@ pub fn write_files(paths: &[PathBuf], cut: bool) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let header = std::mem::size_of::<DROPFILES>();
-    let mut bytes = vec![0u8; header];
-    bytes[..4].copy_from_slice(&(header as u32).to_le_bytes()); // pFiles
-    bytes[16..20].copy_from_slice(&1u32.to_le_bytes()); // fWide
-    for p in paths {
-        // Plain absolute paths: Explorer does not take `\?\` names here.
-        let units: Vec<u16> = p.as_os_str().encode_wide().collect();
-        anyhow::ensure!(!units.contains(&0), "path contains NUL");
-        for u in units.into_iter().chain([0]) {
-            bytes.extend_from_slice(&u.to_le_bytes());
-        }
-    }
-    bytes.extend_from_slice(&[0, 0]);
+    let bytes = crate::drag_out::dropfiles(paths)?;
     let effect = if cut {
         DROPEFFECT_MOVE
     } else {

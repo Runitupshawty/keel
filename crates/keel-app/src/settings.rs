@@ -39,6 +39,11 @@ pub struct Settings {
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
     /// keychain only.
     pub clouds: Vec<keel_vfs::CloudAccount>,
+    // --- Task 24 ---
+    /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Alt+K".
+    pub hotkey: String,
+    /// A second `keel` hands its folder / search to the running one and exits.
+    pub single_instance: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +64,8 @@ impl Default for Settings {
             one_transfer_per_drive: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
+            hotkey: "Ctrl+Alt+K".into(),
+            single_instance: true,
         }
     }
 }
@@ -98,7 +105,7 @@ impl Settings {
         config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("profiles")
-            .join("default")
+            .join(crate::cli::profile()) // Task 24: `--profile`
             .join("config.toml")
     }
 
@@ -349,6 +356,7 @@ pub fn window(
     remotes: &mut crate::remotes::Remotes,
     clouds: &mut crate::clouds::Clouds,
     tx: &Sender<crate::state::Msg>,
+    searcher: Option<&str>, // Task 24: the active search backend's name
 ) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
@@ -411,6 +419,19 @@ pub fn window(
                     ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
                         .on_hover_text("Copies and moves on the same drive wait for each other");
                     ui.end_row();
+                    // --- Task 24 ---
+                    ui.label("Global hotkey");
+                    crate::hotkey::field(ui, &mut s.hotkey);
+                    ui.end_row();
+                    ui.label("Instances");
+                    ui.checkbox(&mut s.single_instance, "Reuse the running window")
+                        .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
+                    ui.end_row();
+                    if cfg!(windows) {
+                        ui.label("Search index");
+                        crate::index_ui::full_index_button(ui, searcher, tx);
+                        ui.end_row();
+                    }
                 });
             ui.add_space(4.0);
             ui.weak(format!("Saved to {}", Settings::path().display()));

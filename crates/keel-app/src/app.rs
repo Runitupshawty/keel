@@ -27,6 +27,11 @@ pub struct Boot {
     pub home: VPath,
     /// The session as found on disk; `Some` turns saving on (off in tests).
     pub saved: Option<Option<Session>>,
+    // --- Task 24 ---
+    /// FOLDER / --search from the command line.
+    pub request: crate::cli::Request,
+    /// This process is the single instance: requests from later `keel` runs arrive here.
+    pub server: Option<crate::single_instance::Listener>,
 }
 
 impl Boot {
@@ -39,6 +44,8 @@ impl Boot {
             notices: Vec::new(),
             home: start,
             saved: None,
+            request: Default::default(),
+            server: None,
         }
     }
 }
@@ -57,6 +64,10 @@ pub struct App {
     pub save_session: bool,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
+    // --- Task 24 ---
+    drag_out: crate::dragout::DragOut,
+    /// None in tests and where the OS has no global hotkeys.
+    hotkey: Option<crate::hotkey::Hotkey>,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -78,6 +89,21 @@ impl App {
             state.toasts.error(notice);
         }
         state.load_searcher();
+        // --- Task 24 ---
+        state.external(boot.request);
+        if let Some(listener) = boot.server {
+            let (tx, ctx) = (state.tx.clone(), cc.egui_ctx.clone());
+            crate::single_instance::serve(listener, move |req| {
+                crate::single_instance::bring_to_front(&ctx);
+                crate::worker::send(&tx, &ctx, crate::state::Msg::External(req));
+            });
+        }
+        // Not in tests (`persist` is None there): they would grab the real hotkey.
+        let hotkey = persist
+            .is_some()
+            .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx))
+            .flatten();
+        // --- end Task 24 ---
         Self {
             state,
             split: 0.5,
@@ -86,6 +112,8 @@ impl App {
             crashed: false,
             save_session: true,
             seen_widths: (None, None),
+            drag_out: Default::default(),
+            hotkey,
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -272,6 +300,12 @@ impl App {
                     }
                 }
             });
+        // --- Task 24 ---
+        self.drag_out.check(ctx, s);
+        if let Some(e) = (self.hotkey.as_mut()).and_then(|h| h.sync(&s.settings.hotkey)) {
+            s.toasts.error(e);
+        }
+        // --- end Task 24 ---
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
             let (shift, hover) = ctx.input(|i| (i.modifiers.shift, i.pointer.hover_pos()));
             let over = hover.and_then(|pos| pane_rects.iter().position(|r| r.contains(pos)));
@@ -310,6 +344,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    // --- Task 24 ---
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.drag_out.input_hook(raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // A panic inside a frame is logged by the panic hook; the app keeps running.
         let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ctx)));
@@ -413,16 +452,8 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
             }
             if cfg!(windows) {
                 ui.separator();
-                let (text, tip) = match (&s.searcher, &s.search_reason) {
-                    (None, _) => ("Everything: …", "Loading the search backend"),
-                    (Some(_), None) => ("Everything: ok", "Everything search is available"),
-                    (Some(_), Some(_)) => ("Everything: not running", "Click to check again"),
-                };
-                if ui
-                    .add(egui::Button::new(text).frame(false))
-                    .on_hover_text(tip)
-                    .clicked()
-                {
+                // --- Task 24: backend name + its status note ---
+                if crate::index_ui::status_bar(ui, s) {
                     s.probe_search();
                 }
             }
