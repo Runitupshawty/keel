@@ -299,20 +299,13 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                             ui.weak("Counting…");
                             return;
                         };
-                        for (i, (text, how)) in protection_lines(p).into_iter().enumerate() {
-                            let warn = match i {
-                                0 => p.single_copy > 0,
-                                1 => p.single_domain > 0,
-                                3 => p.drifted > 0,
-                                4 => p.offline_volumes > 0,
-                                _ => false,
-                            };
-                            let text = if warn {
-                                RichText::new(text).color(ui.visuals().warn_fg_color)
+                        for line in protection_lines(p) {
+                            let text = if line.warn {
+                                RichText::new(line.text).color(ui.visuals().warn_fg_color)
                             } else {
-                                RichText::new(text)
+                                RichText::new(line.text)
                             };
-                            ui.label(text).on_hover_text(how);
+                            ui.label(text).on_hover_text(line.how);
                         }
                         if ui
                             .small_button("Check integrity now")
@@ -428,11 +421,38 @@ fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                         }
                     }
                 });
-                ui.add_sized(
-                    [150.0, 16.0],
-                    egui::Label::new(RichText::new(&r.domain).small().weak()).truncate(),
-                )
-                .on_hover_text(&r.domain);
+                // Editable: the text being typed lives in egui's memory until Enter or
+                // leaving the field; blank goes back to the detected domain.
+                let id = ui.id().with(("keel-volume-domain", &r.id));
+                let mut text = ui
+                    .data_mut(|d| d.get_temp::<String>(id))
+                    .unwrap_or_else(|| r.domain.clone());
+                let field = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(150.0)
+                            .font(egui::TextStyle::Small),
+                    )
+                    .on_hover_text(if r.domain_set {
+                        "Set by you. Copies on volumes with the same failure domain count as \
+                         one. Clear the field to go back to the detected one."
+                    } else {
+                        "Detected. Copies on volumes with the same failure domain count as \
+                         one; type another name to merge volumes (two names of one server, \
+                         one disk the detection splits) or to split them."
+                    });
+                if field.changed() {
+                    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+                }
+                if field.lost_focus() {
+                    ui.data_mut(|d| d.remove::<String>(id));
+                    if text.trim() != r.domain || (r.domain_set && text.trim().is_empty()) {
+                        out.push(lib(LibCmd::SetDomain {
+                            volume: r.id.clone(),
+                            domain: text,
+                        }));
+                    }
+                }
                 let mut backup = r.backup;
                 if ui
                     .checkbox(&mut backup, "")

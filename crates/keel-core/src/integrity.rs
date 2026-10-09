@@ -43,9 +43,12 @@ pub struct IntegrityJob {
     /// Percent of each source's confirmed files to check (1.0 = 1 %).
     pub sample_pct: f64,
     picked: bool,
-    /// Records still to check, by source; the last is next.
+    /// The sample, by source: written once (the checkpoint after the draw).
     todo: Vec<(SourceId, i64)>,
     total: u64,
+    /// The cursor: `todo[next..]` is still to check (with `result`, all a step writes).
+    #[serde(default)]
+    next: usize,
     result: IntegrityResult,
     #[serde(skip)]
     battery: Option<(Instant, bool)>,
@@ -115,7 +118,7 @@ impl IntegrityJob {
         if self.total == 0 {
             0.0
         } else {
-            (1.0 - self.todo.len() as f32 / self.total as f32).min(0.99)
+            (self.next as f32 / self.total as f32).min(0.99)
         }
     }
 }
@@ -189,7 +192,7 @@ impl Job for IntegrityJob {
             ctx.checkpoint(self.checkpoint(), 0.0)?;
         }
         let mut since = 0;
-        while let Some((sid, id)) = self.todo.last().cloned() {
+        while let Some((sid, id)) = self.todo.get(self.next).cloned() {
             let src = lib.sources.read().iter().find(|s| s.id == sid).cloned();
             let usable =
                 src.filter(|s| !s.removed.load(Ordering::SeqCst) && skip_reason(s).is_none());
@@ -207,11 +210,13 @@ impl Job for IntegrityJob {
                     None => {}
                 }
             }
-            self.todo.pop();
+            self.next += 1;
             since += 1;
             if since >= CHECKPOINT_EVERY {
                 since = 0;
-                ctx.checkpoint(self.checkpoint(), self.progress())?;
+                // The sample stays as written; only the cursor and the counts move.
+                let cursor = serde_json::json!({ "next": self.next, "result": self.result });
+                ctx.cursor(cursor, self.progress())?;
             }
         }
         lib.db.set_meta(LAST, &crate::now().to_string())?;

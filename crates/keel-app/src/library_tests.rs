@@ -591,6 +591,7 @@ fn volume(id: &str, state: VolumeState, backup: bool, capacity: Option<(u64, u64
         label: id.to_uppercase(),
         kind: VolumeKind::Removable,
         failure_domain: format!("disk:{id}"),
+        domain_set: id == "b",
         state,
         last_seen: if capacity.is_some() { 1_700_000_000 } else { 0 },
         backup,
@@ -609,7 +610,11 @@ fn volume_table_and_protection_card_models() {
         ("A", "Removable", true)
     );
     assert_eq!(rows[0].usage, "1 MB / 4 MB");
-    assert_eq!(rows[0].domain, "disk:a");
+    assert_eq!(
+        (rows[0].domain.as_str(), rows[0].domain_set),
+        ("disk:a", false)
+    );
+    assert!(rows[1].domain_set);
     assert_ne!(rows[0].last_seen, "never");
     assert_eq!(
         (rows[1].usage.as_str(), rows[1].last_seen.as_str()),
@@ -617,15 +622,17 @@ fn volume_table_and_protection_card_models() {
     );
     assert_eq!(state_text(rows[1].state), "lost");
 
-    let lines = protection_lines(&ProtectionSummary {
+    let mut p = ProtectionSummary {
         single_copy: 1,
         single_domain: 1_200,
         unbacked: 3,
         drifted: 0,
+        unchecked: 0,
         offline_volumes: 2,
         capacity: Vec::new(),
-    });
-    let texts: Vec<&str> = lines.iter().map(|(t, _)| t.as_str()).collect();
+    };
+    let lines = protection_lines(&p);
+    let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(
         texts,
         [
@@ -636,8 +643,22 @@ fn volume_table_and_protection_card_models() {
             "2 volumes offline",
         ]
     );
+    let warns: Vec<bool> = lines.iter().map(|l| l.warn).collect();
+    assert_eq!(warns, [true, true, false, false, true]);
     // Every number says how it was computed.
-    assert!(lines.iter().all(|(_, how)| how.len() > 40));
+    assert!(lines.iter().all(|l| l.how.len() > 40));
+    // Nothing hashed yet: the unknown is said first, and the counts say they are partial.
+    p.single_copy = 0;
+    p.unchecked = 5;
+    let lines = protection_lines(&p);
+    assert_eq!(
+        (lines[0].text.as_str(), lines[0].warn),
+        ("5 files not checked yet", true)
+    );
+    assert_eq!(
+        lines[1].text,
+        "0 files with one copy only (of those checked)"
+    );
 }
 
 #[test]
@@ -732,18 +753,22 @@ fn overview_reads_protection_and_volumes_and_badges_load_off_the_ui_thread() {
     s.library_cmd(
         0,
         LibCmd::SetBackup {
-            volume: vol,
+            volume: vol.clone(),
             on: true,
+        },
+    );
+    s.library_cmd(
+        0,
+        LibCmd::SetDomain {
+            volume: vol,
+            domain: "disk:shelf".into(),
         },
     );
     assert!(s.library.badges.is_empty(), "badges are read again");
     let end = Instant::now() + Duration::from_secs(20);
-    while !s
-        .library
-        .volumes
-        .first()
-        .is_some_and(|v| v.state == VolumeState::Archived && v.backup)
-    {
+    while !s.library.volumes.first().is_some_and(|v| {
+        v.state == VolumeState::Archived && v.backup && v.failure_domain == "disk:shelf"
+    }) {
         assert!(Instant::now() < end, "timed out: volume edits");
         s.library.refresh_stats();
         std::thread::sleep(Duration::from_millis(50));

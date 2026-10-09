@@ -167,6 +167,11 @@ pub enum LibCmd {
         volume: String,
         on: bool,
     },
+    /// The failure-domain field: set by hand, or blank for the detected one.
+    SetDomain {
+        volume: String,
+        domain: String,
+    },
     /// Overview → Protection: re-hash a sample now.
     CheckIntegrity,
 }
@@ -1789,6 +1794,14 @@ impl AppState {
                     });
                 self.library.protection_changed();
             }
+            LibCmd::SetDomain { volume, domain } => {
+                self.library
+                    .spawn_try("keel-library-volume", "Volume", move |lib| {
+                        lib.set_failure_domain(&volume, Some(&domain))?;
+                        Ok(None)
+                    });
+                self.library.protection_changed();
+            }
             LibCmd::CheckIntegrity => {
                 let pct = self.settings.library.integrity_pct;
                 self.library.spawn("keel-library-integrity", move |lib| {
@@ -1921,8 +1934,18 @@ impl LibraryUi {
                 let Ok(children) = lib.list_children(&source, &rel) else {
                     continue;
                 };
-                for h in children.into_iter().filter(|h| !h.is_dir).take(MAX_BADGES) {
-                    if let Ok(r) = lib.redundancy(&h.record) {
+                let files: Vec<_> = children
+                    .into_iter()
+                    .filter(|h| !h.is_dir)
+                    .take(MAX_BADGES)
+                    .collect();
+                let records: Vec<_> = files.iter().map(|h| h.record.clone()).collect();
+                // The volumes are read once per folder, not once per file.
+                let Ok(all) = lib.redundancies(&records) else {
+                    continue;
+                };
+                for (h, r) in files.into_iter().zip(all) {
+                    if let Some(r) = r {
                         out.insert(h.path, badge_of(&r));
                     }
                 }
@@ -2033,6 +2056,8 @@ pub struct VolumeRow {
     pub kind: &'static str,
     pub state: VolumeState,
     pub domain: String,
+    /// The domain was set by hand.
+    pub domain_set: bool,
     pub backup: bool,
     /// "120 GB / 250 GB", or "" when unknown.
     pub usage: String,
@@ -2048,6 +2073,7 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
             kind: kind_text(v.kind),
             state: v.state,
             domain: v.failure_domain.clone(),
+            domain_set: v.domain_set,
             backup: v.backup,
             usage: v
                 .capacity
@@ -2064,8 +2090,19 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
         .collect()
 }
 
-/// The protection card's lines: (text, how it is computed), so every number is explained.
-pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
+/// One line of the protection card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProtectionLine {
+    pub text: String,
+    /// How the number is computed (hover).
+    pub how: &'static str,
+    /// Shown as a warning.
+    pub warn: bool,
+}
+
+/// The protection card's lines, every number explained. While files are not hashed yet the
+/// copy counts cover the checked files only, and say so: an unknown is never a plain 0.
+pub fn protection_lines(p: &ProtectionSummary) -> Vec<ProtectionLine> {
     let files = |n: u64| {
         if n == 1 {
             "1 file".to_owned()
@@ -2073,28 +2110,51 @@ pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
             format!("{} files", count(n))
         }
     };
-    vec![
-        (
-            format!("{} with one copy only", files(p.single_copy)),
+    let partial = if p.unchecked > 0 {
+        " (of those checked)"
+    } else {
+        ""
+    };
+    let line = |text: String, how: &'static str, warn: bool| ProtectionLine { text, how, warn };
+    let mut lines = Vec::new();
+    if p.unchecked > 0 {
+        lines.push(line(
+            format!("{} not checked yet", files(p.unchecked)),
+            "Files without a content hash yet (hashing off, paused or still running; shares \
+             and cloud sources are hashed only when asked): whether they have other copies is \
+             unknown, so they are in none of the counts below.",
+            true,
+        ));
+    }
+    lines.extend([
+        line(
+            format!("{} with one copy only{partial}", files(p.single_copy)),
             "Hashed contents held by a single file (hard links count once; copies on lost or \
              retired volumes do not count). Files not hashed yet are not counted.",
+            p.single_copy > 0,
         ),
-        (
-            format!("{} with every copy on one disk", files(p.single_domain)),
+        line(
+            format!(
+                "{} with every copy on one disk{partial}",
+                files(p.single_domain)
+            ),
             "Contents with two or more copies, all in one failure domain: one physical disk, \
              cloud account or host. One failure loses them all.",
+            p.single_domain > 0,
         ),
-        (
-            format!("{} not backed up", files(p.unbacked)),
+        line(
+            format!("{} not backed up{partial}", files(p.unbacked)),
             "Contents without a copy on a volume marked as backup in a second failure domain. \
              Mark backup drives in the volume table below.",
+            false,
         ),
-        (
+        line(
             format!("{} changed since last check", files(p.drifted)),
             "Integrity checks re-hash a sample of files; drift is a file whose bytes changed \
              although its size and times did not (bit rot, or a tool restoring timestamps).",
+            p.drifted > 0,
         ),
-        (
+        line(
             if p.offline_volumes == 1 {
                 "1 volume offline".to_owned()
             } else {
@@ -2102,6 +2162,8 @@ pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
             },
             "Volumes none of whose sources can be reached now. Their copies still count; mark \
              a drive Archived, Lost or Retired in the volume table.",
+            p.offline_volumes > 0,
         ),
-    ]
+    ]);
+    lines
 }

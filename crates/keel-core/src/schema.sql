@@ -255,3 +255,7 @@ ALTER TABLE source ADD COLUMN volume_id TEXT;
 -- change time did not (unix seconds; NULL = never). A real change resets it with the hashes.
 ALTER TABLE record ADD COLUMN drift INTEGER;
 CREATE INDEX record_drift ON record(drift) WHERE drift IS NOT NULL;
+
+-- @library 6
+-- A failure domain set by hand in the drive inventory (NULL: the detected `domain`).
+ALTER TABLE volume ADD COLUMN domain_set TEXT;
