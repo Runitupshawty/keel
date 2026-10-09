@@ -23,6 +23,9 @@ Success = James opens Keel instead of Explorer for a normal week and does not go
 - Cloud and FTP mounts shown as folders.
 - CLI and WSL support.
 - Open any file on: Mac mini, Mac Studio, XPS laptop, laptopserver, iPhone.
+- Added 2026-10-09: everything Spacedrive (https://spacedrive.com, github.com/spacedriveapp/spacedrive) does: one
+  library across devices, drives, NAS and clouds; content identity + dedupe; tags, favorites, recents, overview
+  dashboard; paired devices over an encrypted P2P link; durable jobs; media views; CLI/API/MCP. See 2.10 and Phases 6-9.
 
 ### Decisions made in brainstorming
 
@@ -200,6 +203,78 @@ CI matrix: `windows-latest`, `macos-latest`, `ubuntu-latest`; every PR must pass
 Ubuntu runner installs `libgtk-3-dev libxkbcommon-dev libwayland-dev` for eframe. Tests that need
 an OS-specific service (Everything, Spotlight) are `#[ignore]` unless the service is present.
 
+### 2.10 Library layer (Spacedrive-class, Phases 6-9)
+
+Phases 1-5 make Keel a great *browser*. The library layer makes it a *filesystem of record*: it knows
+every file James owns, on every machine, even when the drive is unplugged. It is additive: the VFS
+browser keeps working with the library off.
+
+**Core (`keel-core`, in-process first; `keel-daemon` later)**
+
+- **Library**: one SQLite database per library (`rusqlite`, bundled, WAL, FTS5). Default library
+  `james`. Multiple libraries supported; never merged automatically.
+- **Sources**: a folder, a whole drive, a NAS share, a cloud bucket, a paired device's source, or an
+  adapter (Gmail attachments, Obsidian vault, GitHub repos). Each source has its own portable store
+  (`source.db`) that can travel with the data ("provider exit": leave a cloud and keep the
+  organization). A *generation* refreshes while the source is online; offline sources stay browsable
+  from the last generation (frozen snapshots).
+- **Indexer jobs**: walk + watch (`notify`), record name/size/mtime/kind, stable record identity
+  across moves (inode / file-id + rename tracking), BLAKE3 content ids computed lazily (sampled hash
+  first for duplicate candidates, full hash to confirm). Unreadable files are kept with their error.
+- **Identity + dedupe**: records with the same content id are linked; "last copy" warnings before
+  delete; duplicate finder view.
+- **Protection**: per-record redundancy (how many independent physical copies, by drive / pool /
+  failure domain), backup state, integrity (hash drift), capacity; drive inventory with states
+  online / offline / archived / lost / retired.
+- **Safe operations**: every mutating op is `validate -> preview -> execute`; previews are projected
+  from the index without touching files (works for offline drives); execution re-validates and
+  reports divergence. The Phase 1 job queue grows into durable jobs: persisted progress, cancel,
+  restart recovery, logs.
+- **Search**: one query across every source (FTS5 over names, paths, extracted text, tags,
+  metadata), ranked, with filters (kind, size, date, device, tag). Everything/Spotlight stay as the
+  instant local backends; the library search covers what they cannot (offline, remote, cloud).
+- **Tags, favorites, recents, albums/views**: tags with color, nested; favorites; recents from
+  operation history; saved views (query + layout) shown in the sidebar.
+- **Media**: thumbnails and proxies written as persistent sidecars (`<cache>/thumbs/<cas-id>`),
+  video thumbstrips + scrubbing, EXIF/XMP metadata (`kamadak-exif`), HEIC via `libheif` optional,
+  a photo grid that scrolls 100k items at 60 fps (virtualised, decode off the hot path).
+- **History**: operation log per library; point-in-time browsing of a source.
+
+**Network (`keel-net`)**
+
+- **Devices**: pair nodes with a QR/code (`iroh` + QUIC, end-to-end encrypted, direct when possible,
+  relay fallback). Sidebar shows LAN / Relay / Offline per device with storage used/total.
+- **Remote sources**: browse and operate a paired device's authorized sources as `node://<device>/...`
+  (a VFS provider); content streams on demand with byte-range reads; metadata projections cached.
+- **Spacedrop**: send files/folders to a paired device with progress, resumable.
+- **Shares**: grant a source or subtree to a person, device or agent; scoped, visible, revocable by the
+  host; never merges libraries.
+- **Mounts** (stretch): expose any source or subtree as a drive letter / mount point via WinFsp,
+  macFUSE, FUSE with on-demand range reads.
+
+**Cloud (`keel-cloud`)**: Phase 4's providers move onto `opendal` so one backend list covers S3 (incl.
+Glacier tier), B2, Google Drive, Dropbox, WebDAV, SFTP; cloud sources index like local ones and
+stream on demand.
+
+**API and automation (`keel-api`)**: compile-time registered, typed operations (same list for UI,
+CLI `keel`, JSON-RPC over local socket / WebSocket, an MCP server, and agent skills); stable ids;
+structured output; capabilities are explicit and revocable; agents must `validate -> preview` and
+then commit the exact previewed input.
+
+**Extensions**: source adapters, storage backends, file recognition (extension, MIME, magic bytes,
+UTType on macOS), typed metadata fields, preview renderers and sidecars, registered jobs / actions /
+menus / settings / views; OS handler bridges. Explicit install with declared access. Rust crates
+behind a stable trait set first; dynamic loading later.
+
+**Overview dashboard**: total / used storage across devices, files indexed, unique content ids,
+devices + states, jobs running, protection summary.
+
+**Clients**: desktop (egui) first; headless `keel-daemon` + CLI; web UI and iOS/Android are Phase 9
+stretch goals (the daemon API makes them possible; the egui app does not run on phones).
+
+**Privacy**: local-first, no account, no telemetry; any transfer to another device or cloud is shown
+before it happens (recipient, what leaves).
+
 ### 2.8 Testing
 
 - Unit tests per crate: VPath parsing, archive listing fixtures (zip/7z/rar/tar in `tests/fixtures`),
@@ -227,6 +302,21 @@ laptopserver; remote preview + open-with via materialise; job queue for transfer
 **Phase 5 — Polish**: profiles UI, icon-theme manager (download VS Code themes), Miller columns,
 drop zone, Explorer drag-out, animations, global hotkey, own NTFS indexer.
 
+**Phase 6 — Library core**: `keel-core` with library + source stores (SQLite/FTS5), indexer + watcher
+jobs, stable identity, BLAKE3 content ids + duplicate finder, tags / favorites / recents / saved views,
+library search across sources, Overview dashboard, durable jobs with restart recovery, `validate ->
+preview -> execute` for every op, operation history, offline (frozen) sources.
+
+**Phase 7 — Media + protection**: thumbnail/proxy sidecars, 60 fps photo grid, video thumbstrips +
+scrubbing, EXIF/XMP, HEIC; protection model (redundancy by failure domain, backup state, integrity,
+drive inventory, last-copy warnings); cloud sources on `opendal`.
+
+**Phase 8 — Devices**: `keel-net` on `iroh`: pairing, LAN/relay/offline, remote sources as
+`node://`, Spacedrop, scoped shares; `keel-daemon` + CLI + JSON-RPC + MCP server; mounts (stretch).
+
+**Phase 9 — Clients + extensions (stretch)**: extension traits + adapters (Gmail, Obsidian, GitHub),
+web UI on the daemon, iOS/Android clients.
+
 ## 4. Public repo rules
 
 - Nothing machine-specific in the repo: no hostnames, IPs, usernames, SSH keys, OAuth client
@@ -248,5 +338,5 @@ GitHub.cli). Everything.exe already runs as a service. ffmpeg 9.0.1 present.
 
 ## 6. Out of scope
 
-Replacing Explorer as the default handler; OneDrive; Linux/macOS builds; direct iPhone
-transport; tagging and bulk rename (candidates after Phase 5); any telemetry.
+Replacing Explorer as the default handler; OneDrive; direct iPhone transport (Phase 9 may add a
+phone client); bulk rename (candidate after Phase 5); any telemetry; accounts or subscriptions.
