@@ -136,6 +136,18 @@ fn init() {
         let _ =
             rustls::crypto::CryptoProvider::install_default(rustls_graviola::default_provider());
         opendal::install_default();
+        // That installs no HTTP transport with the rustls-no-provider feature: every request
+        // would fail as ConfigInvalid. Install reqwest here, after the crypto provider. A
+        // connect timeout so a silent host fails in seconds; transfers have no total limit.
+        match reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+        {
+            Ok(client) => opendal::HttpTransporter::install_default(
+                opendal_http_transport_reqwest::ReqwestTransport::new(client),
+            ),
+            Err(e) => tracing::error!("cloud HTTP client unavailable: {e}"),
+        }
     });
 }
 /// The HTTP client for OAuth token requests: no redirects (credentials never follow one).
@@ -200,6 +212,14 @@ fn wire(e: &opendal::Error, p: &VPath) -> anyhow::Error {
     let status = http_status(e)
         .map(|s| format!(" (HTTP {s})"))
         .unwrap_or_default();
+    // No HTTP answer at all after the retries: the network or the endpoint is down.
+    if kind == io::ErrorKind::Other && e.is_temporary() && status.is_empty() {
+        return io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("{}: cannot reach the cloud service", p.display()),
+        )
+        .into();
+    }
     io::Error::new(kind, format!("{}: cloud {}{status}", p.display(), e.kind())).into()
 }
 fn not_found(p: &VPath) -> anyhow::Error {

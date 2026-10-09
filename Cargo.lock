@@ -3652,6 +3652,7 @@ dependencies = [
  "notify-debouncer-mini",
  "open",
  "opendal",
+ "opendal-http-transport-reqwest",
  "parking_lot",
  "rayon",
  "reqwest",

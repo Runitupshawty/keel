@@ -626,3 +626,29 @@ fn a_revoked_grant_asks_to_sign_in_again() {
     let err = cloud.stat(&vp("cloud://dbx/x")).unwrap_err();
     assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
 }
+
+/// opendal's `install_default` installs no HTTP transport with the rustls-no-provider
+/// feature; without Keel's own every request failed as "ConfigInvalid".
+#[test]
+fn s3_requests_reach_the_network() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let _ = request.respond(tiny_http::Response::empty(403));
+        }
+    });
+    let mut a = account("s3net", CloudKind::S3);
+    a.s3 = Some(S3Config {
+        endpoint: format!("http://127.0.0.1:{port}"),
+        region: "us-west-002".into(),
+        bucket: "bucket".into(),
+    });
+    let store = Arc::new(MemoryStore::default());
+    store.set("s3net/access_key_id", "AKID").unwrap();
+    store.set("s3net/secret_access_key", "SECRET").unwrap();
+    let p = CloudProvider::connect(&a, store, crossbeam_channel::unbounded().0).unwrap();
+    let err = p.list(&vp("cloud://s3net/")).unwrap_err();
+    assert!(format!("{err:#}").contains("HTTP 403"), "{err:#}");
+    assert!(!format!("{err:#}").contains("SECRET"));
+}

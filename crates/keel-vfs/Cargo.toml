@@ -46,6 +46,7 @@ sha2.workspace = true
 hmac.workspace = true
 sha1.workspace = true
 opendal.workspace = true
+opendal-http-transport-reqwest.workspace = true
 reqwest.workspace = true
 tiny_http.workspace = true
 rustls.workspace = true

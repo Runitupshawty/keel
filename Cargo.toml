@@ -53,6 +53,8 @@ unrar = "0.5"
 # Cloud (Phase 4): only the three services; TLS is rustls (no OpenSSL / native-tls).
 opendal = { version = "0.59", default-features = false, features = ["services-gdrive", "services-dropbox", "services-s3", "executors-tokio", "blocking", "http-transport-reqwest-rustls-no-provider"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+# opendal installs no HTTP transport with rustls-no-provider; keel-vfs installs this one.
+opendal-http-transport-reqwest = { version = "0.59", default-features = false, features = ["rustls-no-provider"] }
 # Pure-Rust TLS crypto (no C toolchain, so cross-target checks build), installed as
 # rustls' process default on first cloud use.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
