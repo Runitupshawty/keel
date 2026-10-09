@@ -169,6 +169,12 @@ pub fn ui(
 
     let muted = cx.theme.muted();
     let selection = ui.visuals().selection.bg_fill;
+    // The tile that just got the cursor fades its highlight in (Task 23).
+    let fade = crate::anim::fade_in(
+        ui.ctx(),
+        egui::Id::new(("keel-fade-grid", id)),
+        tab.cursor.as_deref(),
+    );
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
     let mut renaming = tab.renaming.take();
     let mut rename_done = false;
@@ -189,7 +195,13 @@ pub fn ui(
                                 ui.allocate_exact_size(TILE, Sense::click_and_drag());
                             let tile = rect.shrink(3.0);
                             if tab.selected.contains(&e.name) {
-                                ui.painter().rect_filled(tile, 4.0, selection);
+                                let t = if tab.cursor.as_deref() == Some(&e.name) {
+                                    fade
+                                } else {
+                                    1.0
+                                };
+                                ui.painter()
+                                    .rect_filled(tile, 4.0, selection.gamma_multiply(t));
                             } else if resp.hovered() {
                                 ui.painter().rect_filled(tile, 4.0, hover);
                             }
@@ -380,6 +392,8 @@ mod tests {
                             thumbs: &mut thumbs,
                             active: false,
                             banner: None,
+                            preview: None,
+                            column_widths: &mut Vec::new(),
                         };
                         super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
                     });

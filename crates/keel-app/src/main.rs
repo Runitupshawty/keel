@@ -1,11 +1,13 @@
 // Release builds on Windows open no console window (debug builds keep it for logs).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod anim;
 mod app;
 mod clipboard;
 mod clouds;
 mod crash;
 mod dialogs;
+mod dropzone;
 mod icon_theme;
 mod icons;
 mod jobs;
@@ -27,6 +29,7 @@ mod tab;
 mod term_pane;
 mod theme;
 mod toast;
+mod view_columns;
 mod view_details;
 mod view_grid;
 mod worker;

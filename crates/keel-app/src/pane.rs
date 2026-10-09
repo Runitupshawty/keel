@@ -9,10 +9,14 @@ use crate::{view_details, view_grid};
 use egui::{Align, Key, Layout, Modifiers, Sense};
 use keel_vfs::VPath;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ViewMode {
+    #[default]
     Details,
     Grid,
+    // --- Task 23 ---
+    /// Miller columns (`view_columns`).
+    Columns,
 }
 
 pub struct Pane {
@@ -34,6 +38,11 @@ pub struct ViewCx<'a> {
     pub active: bool,
     /// Remote connection / remote search note above the listing.
     pub banner: Option<String>,
+    // --- Task 23 ---
+    /// Columns view: the preview panel, for the active pane while the panel is closed.
+    pub preview: Option<&'a mut crate::preview_panel::PreviewPanel>,
+    /// Columns view widths (setting; 0 = default).
+    pub column_widths: &'a mut Vec<f32>,
 }
 
 impl Pane {
@@ -48,12 +57,24 @@ impl Pane {
         }
     }
 
+    /// The active tab; in the columns view, its keyboard column (Task 23), so actions
+    /// work on the folder shown there.
     pub fn tab(&self) -> &Tab {
-        &self.tabs[self.active]
+        let tab = &self.tabs[self.active];
+        match self.view {
+            ViewMode::Columns => crate::view_columns::focused(tab),
+            _ => tab,
+        }
     }
 
     pub fn tab_mut(&mut self) -> &mut Tab {
-        &mut self.tabs[self.active]
+        let a = self.active;
+        if self.view == ViewMode::Columns {
+            if let Some(i) = crate::view_columns::focused_index(&self.tabs[a]) {
+                return &mut self.tabs[a].columns.cols[i];
+            }
+        }
+        &mut self.tabs[a]
     }
 
     /// Never closes the last tab.
@@ -166,7 +187,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
-            if ui.small_button("✕").clicked() {
+            if ui.small_button("×").clicked() {
                 tab.error = None;
             }
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -181,6 +202,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         _ if search => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Details => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Grid => view_grid::ui(ui, (idx, tab_idx), tab, cx, out),
+        ViewMode::Columns => crate::view_columns::ui(ui, (idx, tab_idx), tab, cx, out),
     }
 }
 
@@ -238,13 +260,15 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
 
 fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        let tab = pane.tab();
+        // The tab itself (history), not its keyboard column.
+        let tab = &pane.tabs[pane.active];
         let nav = |ui: &mut egui::Ui, enabled: bool, text: &str, tip: &str| {
             ui.add_enabled(enabled, egui::Button::new(text).frame(false))
                 .on_hover_text(tip)
                 .clicked()
         };
-        if nav(ui, !tab.history.is_empty(), "⏴", "Back (Alt+Left)") {
+        let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
+        if nav(ui, back, "⏴", "Back (Alt+Left)") {
             out.push(Action::Back);
         }
         if nav(ui, !tab.future.is_empty(), "⏵", "Forward (Alt+Right)") {
@@ -258,6 +282,7 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             for (mode, text, tip) in [
+                (ViewMode::Columns, "Columns", "Columns view"),
                 (ViewMode::Grid, "Grid", "Grid view with thumbnails"),
                 (ViewMode::Details, "Details", "Details view"),
             ] {
@@ -390,7 +415,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             }
         }
         let close = ui
-            .small_button("✕")
+            .small_button("×")
             .on_hover_text("Clear filter (Esc)")
             .clicked();
         if close || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {

@@ -110,6 +110,10 @@ pub struct Tab {
     pub reveal: bool,
     /// The search this tab left for a folder, restored if that folder cannot be listed.
     pub left_search: Option<TabKind>,
+    // --- Task 23 ---
+    /// Columns view: the columns right of this folder.
+    pub columns: crate::view_columns::Columns,
+    // --- end Task 23 ---
     generation: u64,
     cache_key: Option<(u64, String, (SortKey, bool), bool)>,
     cache: Vec<usize>,
@@ -144,6 +148,7 @@ impl Tab {
             grid_scroll: (0.0, 0.0),
             reveal: false,
             left_search: None,
+            columns: Default::default(),
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
@@ -355,6 +360,8 @@ impl Tab {
         self.error = None;
         self.loading = true;
         self.scroll_to = Some(0);
+        // --- Task 23 ---
+        crate::view_columns::collapse(self);
     }
 
     /// Mouse click on `name`: plain = select only, ctrl = toggle, shift = range from anchor.

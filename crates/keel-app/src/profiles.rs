@@ -471,6 +471,7 @@ mod tests {
             ],
             active: 1,
             active_tab: [0, 0],
+            ..Session::single(VPath::local(&dir))
         };
         tabs.save_to(&work_session).unwrap();
 

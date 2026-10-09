@@ -69,6 +69,15 @@ fn global_items() -> Vec<Item> {
         ("Toggle dual pane", "Ctrl+Shift+D", ToggleDual),
         ("Switch pane", "F6", SwitchPane),
         ("Toggle preview panel", "F3", TogglePreview),
+        ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
+        (
+            "Stash selection in the drop zone",
+            "Ctrl+Shift+S",
+            StashSelection,
+        ),
+        ("Paste the drop zone here", "", StashPaste { mv: false }),
+        ("Move the drop zone here", "", StashPaste { mv: true }),
+        ("Clear the drop zone", "", ClearStash),
         (
             "Toggle hidden files",
             crate::keys::HIDDEN_LABEL,

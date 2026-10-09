@@ -13,6 +13,8 @@ pub struct Toast {
     pub text: String,
     pub level: Level,
     until: Instant,
+    /// Shown since (slides in, Task 23).
+    born: Instant,
     /// A button on the toast (label, what it runs).
     pub action: Option<(String, Action)>,
 }
@@ -52,6 +54,7 @@ impl Toasts {
             text,
             level,
             until: Instant::now() + ttl,
+            born: Instant::now(),
             action: None,
         });
         if self.list.len() > 5 {
@@ -66,12 +69,22 @@ impl Toasts {
         let next = self.list.iter().map(|t| t.until).min()?;
         let mut clicked = None;
         ctx.request_repaint_after(next - now);
-        egui::Area::new(egui::Id::new("keel-toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -36.0])
-            .order(egui::Order::Foreground)
-            .interactable(self.list.iter().any(|t| t.action.is_some()))
-            .show(ctx, |ui| {
-                for (i, t) in self.list.iter().enumerate() {
+        // One area per toast, stacked up from the bottom; a new one slides in from the
+        // right edge.
+        let dur = crate::anim::duration(ctx);
+        let mut y = -36.0;
+        for (i, t) in self.list.iter().enumerate().rev() {
+            let age = now.saturating_duration_since(t.born).as_secs_f32();
+            let slide = 1.0 - crate::anim::at(0.0, 1.0, age, dur);
+            if slide > 0.0 {
+                ctx.request_repaint();
+            }
+            let shown = egui::Area::new(egui::Id::new(("keel-toast", t.text.as_str())))
+                .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0 + slide * 440.0, y])
+                .constrain(false)
+                .order(egui::Order::Foreground)
+                .interactable(t.action.is_some())
+                .show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_max_width(420.0);
                         let text = egui::RichText::new(&t.text);
@@ -86,8 +99,9 @@ impl Toasts {
                             }
                         }
                     });
-                }
-            });
+                });
+            y -= shown.response.rect.height() + 4.0;
+        }
         let (i, action) = clicked?;
         self.list.remove(i);
         Some(action)
