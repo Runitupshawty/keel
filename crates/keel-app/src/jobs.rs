@@ -479,18 +479,22 @@ pub fn items(n: usize) -> String {
     }
 }
 
-/// The drive a local path is on: the path prefix on Windows (`c:`, `\\server\share`),
-/// the device number elsewhere. None for remote paths. May touch the disk: workers only.
+/// The volume a local path is on: on Windows its volume GUID (the same through `subst`
+/// drives, junctions and folder mount points; `keel_vfs::desktop::volume_id`) or share root,
+/// else the path prefix (`c:`, `\\server\share`) when it can't be read; the device number
+/// elsewhere. A path that does not exist yet counts by its nearest existing parent. None for
+/// remote paths. May touch the disk: workers only.
 pub fn volume_key(p: &VPath) -> Option<String> {
     let local = p.to_local_path()?;
     #[cfg(windows)]
     {
-        match local.components().next()? {
+        let real = local.ancestors().find_map(keel_vfs::desktop::volume_id);
+        real.or_else(|| match local.components().next()? {
             std::path::Component::Prefix(pre) => {
                 Some(pre.as_os_str().to_string_lossy().to_lowercase())
             }
             _ => None,
-        }
+        })
     }
     #[cfg(not(windows))]
     {
@@ -505,15 +509,28 @@ pub fn volume_key(p: &VPath) -> Option<String> {
     }
 }
 
-/// Drives held by running transfers (setting "one transfer per drive").
-static BUSY_DRIVES: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+/// Transfers holding or waiting for drives (setting "one transfer per drive"), in ticket
+/// order: (ticket, drives).
+struct DriveQueue {
+    next: u64,
+    queue: Vec<(u64, Vec<String>)>,
+}
 
-/// Holds `keys` (drives) for a transfer; released on drop.
-pub struct DriveLock(Vec<String>);
+static DRIVES: parking_lot::Mutex<DriveQueue> = parking_lot::Mutex::new(DriveQueue {
+    next: 0,
+    queue: Vec::new(),
+});
+/// Signalled whenever a transfer leaves the queue.
+static DRIVES_FREED: parking_lot::Condvar = parking_lot::Condvar::new();
+
+/// Holds drives for a transfer (its ticket in the queue); released on drop.
+pub struct DriveLock(u64);
 
 impl DriveLock {
-    /// Waits until no other transfer holds any of `keys`, showing that it waits, then
-    /// takes them all. Cancel stops the wait.
+    /// Takes a ticket for `keys` (drives) and waits until no earlier ticket shares one of
+    /// them, showing that it waits: transfers on one drive run in the order they asked, none
+    /// waits forever behind later ones, and transfers on other drives are not held up.
+    /// Cancel stops the wait.
     pub fn acquire(
         mut keys: Vec<String>,
         report: &dyn Fn(Progress),
@@ -521,16 +538,25 @@ impl DriveLock {
     ) -> anyhow::Result<Self> {
         keys.sort();
         keys.dedup();
+        let mut drives = DRIVES.lock();
+        let ticket = drives.next;
+        drives.next += 1;
+        drives.queue.push((ticket, keys.clone()));
         let mut told = false;
         loop {
-            {
-                let mut busy = BUSY_DRIVES.lock();
-                if !keys.iter().any(|k| busy.contains(k)) {
-                    busy.extend(keys.iter().cloned());
-                    return Ok(Self(keys));
-                }
+            let blocked = drives
+                .queue
+                .iter()
+                .take_while(|(t, _)| *t != ticket)
+                .any(|(_, held)| held.iter().any(|k| keys.contains(k)));
+            if !blocked {
+                return Ok(Self(ticket));
             }
-            anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
+            if cancel.load(Ordering::Relaxed) {
+                drives.queue.retain(|(t, _)| *t != ticket);
+                DRIVES_FREED.notify_all();
+                anyhow::bail!("operation cancelled");
+            }
             if !told {
                 told = true;
                 report(Progress {
@@ -538,14 +564,16 @@ impl DriveLock {
                     ..Progress::default()
                 });
             }
-            std::thread::sleep(Duration::from_millis(100));
+            // Wakes on a release, or after a while to look at `cancel`.
+            DRIVES_FREED.wait_for(&mut drives, Duration::from_millis(100));
         }
     }
 }
 
 impl Drop for DriveLock {
     fn drop(&mut self) {
-        BUSY_DRIVES.lock().retain(|k| !self.0.contains(k));
+        DRIVES.lock().queue.retain(|(t, _)| *t != self.0);
+        DRIVES_FREED.notify_all();
     }
 }
 
@@ -890,6 +918,58 @@ mod tests {
         assert!(DriveLock::acquire(vec!["test-drive-s".into()], &|_| {}, &cancelled).is_err());
         assert!(volume_key(&VPath::local(std::env::temp_dir())).is_some());
         assert!(volume_key(&VPath::parse("sftp://h/x").unwrap()).is_none());
+    }
+
+    /// Waiters on one drive get it in the order they asked; a waiter blocked on a busy
+    /// drive holds up later waiters that share a drive with it, but not unrelated ones.
+    #[test]
+    fn drive_lock_is_first_come_first_served() {
+        let none = AtomicBool::new(false);
+        let first = DriveLock::acquire(vec!["fifo-a".into()], &|_| {}, &none).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut waiters = Vec::new();
+        for (n, keys) in [
+            (1, vec!["fifo-a"]),
+            (2, vec!["fifo-a", "fifo-b"]),
+            (3, vec!["fifo-b"]),
+        ] {
+            let tx = tx.clone();
+            let keys: Vec<String> = keys.into_iter().map(str::to_owned).collect();
+            waiters.push(std::thread::spawn(move || {
+                let lock = DriveLock::acquire(keys, &|_| {}, &AtomicBool::new(false)).unwrap();
+                tx.send(n).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                drop(lock);
+            }));
+            // Each has taken its ticket before the next asks.
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        // 3 waits behind 2 (fifo-b), which waits behind 1 and `first` (fifo-a), although
+        // fifo-b itself is free.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        // An unrelated drive goes at once.
+        drop(DriveLock::acquire(vec!["fifo-c".into()], &|_| {}, &none).unwrap());
+        drop(first);
+        let order: Vec<i32> = (0..3)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+            .collect();
+        assert_eq!(order, [1, 2, 3]);
+        for w in waiters {
+            w.join().unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn volume_key_is_the_real_volume() {
+        let tmp = std::env::temp_dir();
+        let key = volume_key(&VPath::local(&tmp)).unwrap();
+        assert!(key.starts_with(r"\\?\volume{"), "{key}");
+        // Not there yet: its nearest existing parent's volume.
+        let new = tmp.join("keel-no-such-dir").join("x");
+        assert_eq!(volume_key(&VPath::local(new)), Some(key.clone()));
+        let root = tmp.ancestors().last().unwrap();
+        assert_eq!(volume_key(&VPath::local(root)), Some(key));
     }
 
     #[test]

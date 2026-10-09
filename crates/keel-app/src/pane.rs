@@ -113,9 +113,10 @@ impl Pane {
     }
 }
 
-/// Typed path: `scheme://...`, an absolute local path, `X:` (that drive's root on
-/// Windows), or a path relative to `base` (the pane's folder; `..` and `.` work, and on
-/// Windows `\dir` means the root of `base`'s drive).
+/// Typed path: `scheme://...`, an absolute local path, `~` (the home folder, in local
+/// panes), `X:` (that drive's root on Windows) and `X:dir` (taken as `X:\dir`, not the
+/// drive's current folder), or a path relative to `base` (the pane's folder; `..` and `.`
+/// work, and on Windows `\dir` means the root of `base`'s drive).
 pub fn parse_path(text: &str, base: &VPath) -> Option<VPath> {
     let text = text.trim().trim_matches('"');
     if text.is_empty() {
@@ -124,15 +125,30 @@ pub fn parse_path(text: &str, base: &VPath) -> Option<VPath> {
     if text.contains("://") {
         return VPath::parse(text).ok();
     }
-    let windows = cfg!(windows) && base.scheme == "file";
+    let local = base.scheme == "file";
+    let windows = cfg!(windows) && local;
+    let seps: &[char] = if windows { &['/', '\\'] } else { &['/'] };
+    let home;
+    let text = match text.strip_prefix('~') {
+        Some(rest) if local && (rest.is_empty() || rest.starts_with(seps)) => {
+            match directories::BaseDirs::new() {
+                Some(dirs) => {
+                    home = format!("{}{rest}", dirs.home_dir().display());
+                    home.as_str()
+                }
+                None => text,
+            }
+        }
+        _ => text,
+    };
     let bytes = text.as_bytes();
-    if windows && bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return Some(VPath::local(format!("{text}\\")));
+    if windows && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let rest = text[2..].trim_start_matches(seps).replace('/', "\\");
+        return Some(VPath::local(format!("{}\\{rest}", &text[..2])));
     }
-    if std::path::Path::new(text).is_absolute() && base.scheme == "file" {
+    if std::path::Path::new(text).is_absolute() && local {
         return Some(VPath::local(text));
     }
-    let seps: &[char] = if windows { &['/', '\\'] } else { &['/'] };
     let mut dir = base.clone();
     if text.starts_with(seps) {
         // Root of this location (drive root on Windows, `/` elsewhere).
@@ -646,9 +662,24 @@ mod tests {
                 d
             };
             assert_eq!(parse_path(r"\Users", &base), Some(drive_root.join("Users")));
+            // `X:dir` is `X:\dir`.
+            assert_eq!(
+                parse_path("d:Users", &base),
+                Some(VPath::local(r"d:\Users"))
+            );
+            assert_eq!(parse_path("D:/x", &base), Some(VPath::local(r"D:\x")));
         } else {
             assert_eq!(parse_path("/etc", &base), Some(VPath::local("/etc")));
         }
+        let home = VPath::local(directories::BaseDirs::new().unwrap().home_dir());
+        assert_eq!(parse_path("~", &base), Some(home.clone()));
+        assert_eq!(parse_path("~/docs", &base), Some(home.join("docs")));
+        assert_eq!(parse_path("~x", &base), Some(base.join("~x")), "not ~user");
+        assert_eq!(
+            parse_path("~", &remote),
+            Some(VPath::parse("sftp://host/home/me/~").unwrap()),
+            "remote panes have no local home"
+        );
     }
 
     #[test]
