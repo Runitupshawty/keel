@@ -39,6 +39,11 @@ pub const FALLBACK_STATUS: &str = "Indexing user folders only; run 'Index all dr
 pub const FROZEN_STATUS: &str = "The drive index is out of date; run 'Index all drives' as \
      administrator to refresh it.";
 const POLL: Duration = Duration::from_secs(2);
+/// Longest the walk index stays write-locked while watcher changes are applied;
+/// searches get the lock in between batches.
+const BATCH: Duration = Duration::from_millis(20);
+/// Least time between two full re-walks after lost watcher events.
+const RESCAN_GAP: Duration = Duration::from_secs(60);
 /// Hits beyond this many skip the per-file size/date lookup (the folder index).
 const STAT_LIMIT: usize = 2_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
@@ -373,6 +378,10 @@ struct Worker {
     frozen: Vec<u32>,
     watcher: Option<notify::RecommendedWatcher>,
     events: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
+    /// The watcher lost events: walk the user folders again (at most every
+    /// [`RESCAN_GAP`]).
+    rescan: bool,
+    rescanned: Option<Instant>,
 }
 
 /// The background thread: bring saved volumes current (or build them when
@@ -385,6 +394,8 @@ fn run(weak: Weak<Shared>) {
         frozen: Vec::new(),
         watcher: None,
         events: None,
+        rescan: false,
+        rescanned: None,
     };
     let mut first = true;
     loop {
@@ -564,14 +575,38 @@ impl Worker {
                 }
             }
         }
-        if let Some(events) = &self.events {
-            let mut parts = shared.parts.write();
-            if let Some(Part::Walk(walk)) = parts.first_mut() {
-                for event in events.try_iter().flatten() {
-                    walk.apply(&event);
-                }
-            }
+        self.poll_walk(shared);
+    }
+
+    /// Applies the watcher's events to the user-folder walk. The disk is read (new
+    /// folders walked) before the index is locked, then the changes go in batches.
+    fn poll_walk(&mut self, shared: &Shared) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let events: Vec<_> = events.try_iter().collect();
+        if events.is_empty() && !self.rescan {
+            return;
         }
+        let deep = match shared.parts.read().first() {
+            Some(Part::Walk(walk)) => walk.deep.clone(),
+            _ => return,
+        };
+        let ops = walk::plan(&deep, events);
+        self.rescan |= ops.contains(&walk::Op::Rescan);
+        if self.rescan && self.rescanned.is_none_or(|at| at.elapsed() >= RESCAN_GAP) {
+            // Lost events: walk again off the lock (the old index keeps serving), then
+            // swap. Events arriving meanwhile stay queued for the next poll.
+            self.rescan = false;
+            self.rescanned = Some(Instant::now());
+            let (deep, shallow) = walk::roots();
+            let fresh = new_walk(&deep, &shallow);
+            if let Some(slot @ Part::Walk(_)) = shared.parts.write().first_mut() {
+                *slot = Part::Walk(fresh);
+            }
+            return;
+        }
+        apply_walk_ops(&shared.parts, &ops);
     }
 
     /// Indexes the user folders, watching first so nothing created meanwhile is lost.
@@ -589,15 +624,44 @@ impl Worker {
             w
         });
         self.events = Some(rx);
-        let mut walk = walk::Walk::new(&deep);
-        for s in &shallow {
-            walk.add_tree(s, Some(1));
-        }
-        for d in &deep {
-            walk.add_tree(d, None);
-        }
+        let walk = new_walk(&deep, &shallow);
         shared.parts.write().push(Part::Walk(walk));
     }
+}
+
+/// Walks the user folders into a new index (minutes for a big home folder; no lock).
+fn new_walk(deep: &[PathBuf], shallow: &[PathBuf]) -> walk::Walk {
+    let mut walk = walk::Walk::new(deep);
+    for s in shallow {
+        walk.add_tree(s, Some(1));
+    }
+    for d in deep {
+        walk.add_tree(d, None);
+    }
+    walk
+}
+
+/// Applies `ops` to the walk index, write-locking it for about [`BATCH`] at a time
+/// and handing the lock to waiting searches in between. Returns the longest hold.
+fn apply_walk_ops(parts: &RwLock<Vec<Part>>, ops: &[walk::Op]) -> Duration {
+    let mut longest = Duration::ZERO;
+    let mut rest = ops;
+    while !rest.is_empty() {
+        let mut guard = parts.write();
+        let Some(Part::Walk(walk)) = guard.first_mut() else {
+            break;
+        };
+        let started = Instant::now();
+        let mut n = 0;
+        while n < rest.len() && (n == 0 || started.elapsed() < BATCH) {
+            walk.apply(&rest[n]);
+            n += 1;
+        }
+        longest = longest.max(started.elapsed());
+        rest = &rest[n..];
+        parking_lot::RwLockWriteGuard::unlock_fair(guard);
+    }
+    longest
 }
 
 fn has_volume(shared: &Shared, serial: u32) -> bool {
@@ -695,6 +759,60 @@ mod tests {
         let mut removes: Vec<u64> = changes.removes.iter().copied().collect();
         removes.sort();
         assert_eq!(removes, [12, 30]);
+    }
+
+    /// Finding 3: a 10k-file tree deleted from a 1M-entry walk index, as one folder
+    /// event and as one event per file; the write lock is held < 50 ms per batch, and
+    /// planning (which walks new folders) needs no lock at all.
+    #[test]
+    fn walk_changes_hold_the_index_lock_briefly() {
+        use notify::event::{CreateKind, RemoveKind};
+        use notify::{Event, EventKind};
+        let mut big = walk::Walk::new(&[]);
+        for d in 0..1_000 {
+            for f in 0..1_000 {
+                big.add(Path::new(&format!(r"C:\t\d{d}\f{f}.txt")), false);
+            }
+        }
+        for tree in ["one", "each"] {
+            for f in 0..10_000 {
+                let path = format!(r"C:\t\{tree}\s{}\f{f}.txt", f % 100);
+                big.add(Path::new(&path), false);
+            }
+        }
+        assert!(big.index.len() > 1_000_000);
+        let parts = RwLock::new(vec![Part::Walk(big)]);
+        let remove = |path: String| {
+            Ok(Event::new(EventKind::Remove(RemoveKind::Any)).add_path(PathBuf::from(path)))
+        };
+        let one = vec![remove(r"C:\t\one".into())];
+        let mut each: Vec<_> = (0..10_000)
+            .map(|f| remove(format!(r"C:\t\each\s{}\f{f}.txt", f % 100)))
+            .collect();
+        each.extend((0..100).map(|s| remove(format!(r"C:\t\each\s{s}"))));
+        each.push(remove(r"C:\t\each".into()));
+        for events in [one, each] {
+            let ops = walk::plan(&[], events);
+            let longest = apply_walk_ops(&parts, &ops);
+            println!("{} ops, longest write-lock hold {longest:?}", ops.len());
+            assert!(longest < Duration::from_millis(50), "lock held {longest:?}");
+        }
+        assert_eq!(parts.read()[0].index().len(), 1_001_002);
+
+        // A folder created under a deep root is walked while a search holds the lock.
+        let root = std::env::temp_dir().join(format!("keel-walk-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("new").join("deeper")).unwrap();
+        std::fs::write(root.join("new").join("deeper").join("x.txt"), b"x").unwrap();
+        let deep = walk::Walk::new(std::slice::from_ref(&root)).deep;
+        let created =
+            Ok(Event::new(EventKind::Create(CreateKind::Folder)).add_path(root.join("new")));
+        let ops = {
+            let _search = parts.write();
+            walk::plan(&deep, [created])
+        };
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
