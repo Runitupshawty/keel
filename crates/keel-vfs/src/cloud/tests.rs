@@ -1,6 +1,12 @@
 use super::*;
 use crate::{ops, Conflict, Router};
-use std::{fs, sync::atomic::Ordering};
+use serde_json::{json, Value};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    sync::atomic::AtomicUsize,
+};
 
 fn account(id: &str, kind: CloudKind) -> CloudAccount {
     CloudAccount {
@@ -12,16 +18,15 @@ fn account(id: &str, kind: CloudKind) -> CloudAccount {
         s3: None,
     }
 }
-/// A cloud account backed by opendal's in-memory service (S3 semantics: no native
-/// rename, permanent delete).
-fn memory_cloud(id: &str) -> CloudProvider {
+/// A cloud account of `kind` backed by opendal's in-memory service (no native rename or
+/// copy, one-request writes).
+fn memory_cloud_of(id: &str, kind: CloudKind) -> CloudProvider {
     let op = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
-    CloudProvider::with_operator(
-        account(id, CloudKind::S3),
-        op,
-        crossbeam_channel::unbounded().0,
-    )
-    .unwrap()
+    CloudProvider::with_operator(account(id, kind), op, crossbeam_channel::unbounded().0).unwrap()
+}
+/// S3 semantics (permanent delete, recursive folder delete).
+fn memory_cloud(id: &str) -> CloudProvider {
+    memory_cloud_of(id, CloudKind::S3)
 }
 fn vp(s: &str) -> VPath {
     VPath::parse(s).unwrap()
@@ -41,6 +46,447 @@ fn names(entries: &[Entry]) -> Vec<String> {
     n.sort();
     n
 }
+fn kind_of(e: &anyhow::Error) -> Option<io::ErrorKind> {
+    io_kind(e)
+}
+/// An opendal error as a service answering `status` produces it.
+fn http_error(status: u16) -> opendal::Error {
+    opendal::Error::new(ErrorKind::Unexpected, "server says no").with_context(
+        "response",
+        format!("Parts {{ status: {status}, version: HTTP/1.1, headers: {{}} }}"),
+    )
+}
+
+// --- Local HTTP fakes ---------------------------------------------------------------
+
+/// One request to a fake service.
+struct Req {
+    method: String,
+    path: String,
+    query: HashMap<String, String>,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+type Reply = (u16, Vec<(&'static str, String)>, Vec<u8>);
+/// Serves `handle` on a loopback port; returns `http://127.0.0.1:<port>`.
+fn serve(handle: impl Fn(Req) -> Reply + Send + 'static) -> String {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    std::thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let url = url::Url::parse(&format!("http://x{}", request.url())).unwrap();
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            let req = Req {
+                method: request.method().as_str().to_owned(),
+                path: url.path().to_owned(),
+                query: url.query_pairs().into_owned().collect(),
+                headers: request
+                    .headers()
+                    .iter()
+                    .map(|h| {
+                        (
+                            h.field.as_str().as_str().to_ascii_lowercase(),
+                            h.value.as_str().to_owned(),
+                        )
+                    })
+                    .collect(),
+                body,
+            };
+            let (status, headers, body) = handle(req);
+            let mut response = tiny_http::Response::from_data(body).with_status_code(status);
+            for (name, value) in headers {
+                response.add_header(tiny_http::Header::from_bytes(name, value).unwrap());
+            }
+            let _ = request.respond(response);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+fn json_reply(status: u16, body: Value) -> Reply {
+    (
+        status,
+        vec![("Content-Type", "application/json".into())],
+        body.to_string().into_bytes(),
+    )
+}
+
+/// A minimal S3 bucket `b` (path-style): ListObjectsV2, HEAD, GET, PUT (and copy), DELETE.
+#[derive(Default)]
+struct S3Fake {
+    objects: BTreeMap<String, Vec<u8>>,
+    /// (method, key, status): the next matching request fails once.
+    fail: Vec<(&'static str, String, u16)>,
+    /// Once the first key is deleted, the second appears (another client's upload).
+    on_delete: Option<(String, String)>,
+}
+const HTTP_DATE: &str = "Fri, 09 Oct 2026 12:00:00 GMT";
+const ISO_DATE: &str = "2026-10-09T12:00:00.000Z";
+fn s3_fake() -> (String, Arc<Mutex<S3Fake>>) {
+    let state = Arc::new(Mutex::new(S3Fake::default()));
+    let shared = state.clone();
+    let base = serve(move |req| s3_reply(&mut shared.lock(), req));
+    (base, state)
+}
+fn s3_reply(s: &mut S3Fake, req: Req) -> Reply {
+    let key = req
+        .path
+        .strip_prefix("/b")
+        .unwrap_or(&req.path)
+        .trim_start_matches('/')
+        .to_owned();
+    if let Some(i) = s
+        .fail
+        .iter()
+        .position(|(m, k, _)| *m == req.method && *k == key)
+    {
+        let (_, _, status) = s.fail.remove(i);
+        return (
+            status,
+            vec![],
+            b"<Error><Code>AccessDenied</Code><Message>no</Message></Error>".to_vec(),
+        );
+    }
+    let found = |data: &[u8]| -> Reply {
+        (
+            200,
+            vec![
+                ("Last-Modified", HTTP_DATE.into()),
+                ("ETag", "\"e\"".into()),
+            ],
+            data.to_vec(),
+        )
+    };
+    let missing = || -> Reply {
+        (
+            404,
+            vec![],
+            b"<Error><Code>NoSuchKey</Code></Error>".to_vec(),
+        )
+    };
+    match req.method.as_str() {
+        "GET" if key.is_empty() => {
+            assert_eq!(req.query.get("list-type").map(String::as_str), Some("2"));
+            let prefix = req.query.get("prefix").cloned().unwrap_or_default();
+            let delimiter = req.query.get("delimiter").cloned().unwrap_or_default();
+            let (mut contents, mut prefixes) = (String::new(), BTreeSet::new());
+            for (k, data) in s.objects.range(prefix.clone()..) {
+                let Some(rest) = k.strip_prefix(&prefix) else {
+                    break;
+                };
+                match rest.find(&delimiter).filter(|_| !delimiter.is_empty()) {
+                    Some(i) => {
+                        prefixes.insert(format!("{prefix}{}", &rest[..=i]));
+                    }
+                    None => contents.push_str(&format!(
+                        "<Contents><Key>{k}</Key><Size>{}</Size><LastModified>{ISO_DATE}\
+                         </LastModified><ETag>\"e\"</ETag></Contents>",
+                        data.len()
+                    )),
+                }
+            }
+            let prefixes: String = prefixes
+                .iter()
+                .map(|p| format!("<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>"))
+                .collect();
+            let xml = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><Name>b</Name>\
+                 <Prefix>{prefix}</Prefix><IsTruncated>false</IsTruncated>{contents}{prefixes}\
+                 </ListBucketResult>"
+            );
+            (200, vec![], xml.into_bytes())
+        }
+        "HEAD" | "GET" => match s.objects.get(&key) {
+            Some(data) => found(data),
+            None if key.ends_with('/') && s.objects.keys().any(|k| k.starts_with(&key)) => {
+                found(b"")
+            }
+            None => missing(),
+        },
+        "PUT" => {
+            if let Some(source) = req.headers.get("x-amz-copy-source") {
+                let source = source.replace("%2F", "/");
+                let source = source.trim_start_matches('/').trim_start_matches("b/");
+                let Some(data) = s.objects.get(source).cloned() else {
+                    return missing();
+                };
+                s.objects.insert(key, data);
+                let xml = format!(
+                    "<CopyObjectResult><ETag>\"e\"</ETag><LastModified>{ISO_DATE}\
+                     </LastModified></CopyObjectResult>"
+                );
+                return (200, vec![], xml.into_bytes());
+            }
+            if req.headers.get("if-none-match").is_some_and(|v| v == "*")
+                && s.objects.contains_key(&key)
+            {
+                return (
+                    412,
+                    vec![],
+                    b"<Error><Code>PreconditionFailed</Code></Error>".to_vec(),
+                );
+            }
+            s.objects.insert(key, req.body);
+            (200, vec![("ETag", "\"e\"".into())], vec![])
+        }
+        "DELETE" => {
+            s.objects.remove(&key);
+            if let Some((_, appears)) = s.on_delete.take_if(|(after, _)| *after == key) {
+                s.objects.insert(appears, b"late".to_vec());
+            }
+            (204, vec![], vec![])
+        }
+        "POST" if req.query.contains_key("delete") => {
+            let body = String::from_utf8(req.body).unwrap();
+            let mut deleted = String::new();
+            for part in body.split("<Key>").skip(1) {
+                let k = part.split("</Key>").next().unwrap();
+                s.objects.remove(k);
+                deleted.push_str(&format!("<Deleted><Key>{k}</Key></Deleted>"));
+            }
+            let xml = format!("<DeleteResult>{deleted}</DeleteResult>");
+            (200, vec![], xml.into_bytes())
+        }
+        _ => (501, vec![], vec![]),
+    }
+}
+fn s3_cloud(base: &str) -> CloudProvider {
+    let store = Arc::new(MemoryStore::default());
+    store.set("fake/access_key_id", "AKIDFAKE").unwrap();
+    store.set("fake/secret_access_key", "fake-secret").unwrap();
+    let mut fake = account("fake", CloudKind::S3);
+    fake.s3 = Some(S3Config {
+        endpoint: base.into(),
+        region: "us-east-1".into(),
+        bucket: "b".into(),
+    });
+    CloudProvider::connect(&fake, store, crossbeam_channel::unbounded().0).unwrap()
+}
+
+/// Sends an operator's requests to a fake service instead of the real host.
+#[derive(Debug)]
+struct ToFake(String);
+impl opendal::raw::Layer for ToFake {
+    fn apply_context(
+        &self,
+        _: opendal::raw::Servicer,
+        inner: opendal::OperationContext,
+    ) -> opendal::OperationContext {
+        let redirect = Redirect {
+            base: self.0.clone(),
+            inner: inner.http_transport().clone(),
+        };
+        inner.with_http_transport(opendal::HttpTransporter::new(redirect))
+    }
+}
+struct Redirect {
+    base: String,
+    inner: opendal::HttpTransporter,
+}
+impl opendal::HttpTransport for Redirect {
+    async fn fetch(
+        &self,
+        mut req: http::Request<Buffer>,
+    ) -> opendal::Result<http::Response<opendal::HttpBody>> {
+        let path = req
+            .uri()
+            .path_and_query()
+            .map_or("/".to_owned(), |p| p.as_str().to_owned());
+        *req.uri_mut() = format!("{}{path}", self.base).parse().unwrap();
+        self.inner.fetch(req).await
+    }
+}
+
+/// A minimal Dropbox: get_metadata, upload, move_v2, delete_v2, create_folder_v2,
+/// list_folder. Paths as opendal sends them (`/dir/name`, the root is ``).
+#[derive(Default)]
+struct DropboxFake {
+    files: BTreeMap<String, Vec<u8>>,
+    folders: BTreeSet<String>,
+    /// (endpoint, path, status, error summary): the next matching request fails once.
+    fail: Vec<(&'static str, String, u16, &'static str)>,
+    /// (endpoint, path) of every request.
+    log: Vec<(String, String)>,
+}
+impl DropboxFake {
+    fn meta(&self, path: &str) -> Option<Value> {
+        let name = path.rsplit('/').next().unwrap_or_default();
+        if let Some(data) = self.files.get(path) {
+            return Some(json!({
+                ".tag": "file", "name": name, "path_display": path, "id": "id:f",
+                "size": data.len(), "rev": "1",
+                "client_modified": "2026-10-09T12:00:00Z",
+                "server_modified": "2026-10-09T12:00:00Z",
+            }));
+        }
+        self.folders
+            .contains(path)
+            .then(|| json!({".tag": "folder", "name": name, "path_display": path, "id": "id:d"}))
+    }
+    fn calls(&self, endpoint: &str) -> Vec<String> {
+        self.log
+            .iter()
+            .filter(|(e, _)| e == endpoint)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+}
+fn dropbox_fake() -> (String, Arc<Mutex<DropboxFake>>) {
+    let state = Arc::new(Mutex::new(DropboxFake::default()));
+    let shared = state.clone();
+    let base = serve(move |req| dropbox_reply(&mut shared.lock(), req));
+    (base, state)
+}
+fn dropbox_reply(s: &mut DropboxFake, req: Req) -> Reply {
+    let endpoint = req.path.trim_start_matches("/2/files/").to_owned();
+    let arg: Value = match req.headers.get("dropbox-api-arg") {
+        Some(arg) => serde_json::from_str(arg).unwrap(),
+        None => serde_json::from_slice(&req.body).unwrap_or_default(),
+    };
+    let path = arg["path"]
+        .as_str()
+        .or(arg["from_path"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    s.log.push((endpoint.clone(), path.clone()));
+    if let Some(i) = s
+        .fail
+        .iter()
+        .position(|(e, p, ..)| *e == endpoint && *p == path)
+    {
+        let (_, _, status, summary) = s.fail.remove(i);
+        return json_reply(status, json!({ "error_summary": summary }));
+    }
+    let not_found = || json_reply(409, json!({"error_summary": "path/not_found/.."}));
+    match endpoint.as_str() {
+        "get_metadata" => s.meta(&path).map_or_else(not_found, |m| json_reply(200, m)),
+        "upload" => {
+            s.files.insert(path.clone(), req.body);
+            json_reply(200, s.meta(&path).unwrap())
+        }
+        "create_folder_v2" => {
+            s.folders.insert(path.clone());
+            json_reply(200, json!({ "metadata": s.meta(&path) }))
+        }
+        "move_v2" | "delete_v2" => {
+            if s.meta(&path).is_none() {
+                return not_found();
+            }
+            let to = arg["to_path"].as_str().map(str::to_owned);
+            if to.as_deref().is_some_and(|to| s.meta(to).is_some()) {
+                return json_reply(409, json!({"error_summary": "to/conflict/file/.."}));
+            }
+            let under = format!("{path}/");
+            let moved = |p: &String| *p == path || p.starts_with(&under);
+            let rebase = |p: &str| to.as_ref().map(|to| format!("{to}{}", &p[path.len()..]));
+            let files: Vec<_> = s.files.keys().filter(|p| moved(p)).cloned().collect();
+            for p in files {
+                let data = s.files.remove(&p).unwrap();
+                if let Some(p) = rebase(&p) {
+                    s.files.insert(p, data);
+                }
+            }
+            let folders: Vec<_> = s.folders.iter().filter(|p| moved(p)).cloned().collect();
+            for p in folders {
+                s.folders.remove(&p);
+                if let Some(p) = rebase(&p) {
+                    s.folders.insert(p);
+                }
+            }
+            json_reply(200, json!({ "metadata": {"name": "x"} }))
+        }
+        "list_folder" => {
+            let parent = |p: &str| p.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
+            let entries: Vec<_> = s
+                .files
+                .keys()
+                .chain(&s.folders)
+                .filter(|p| parent(p) == path)
+                .map(|p| s.meta(p).unwrap())
+                .collect();
+            json_reply(
+                200,
+                json!({"entries": entries, "cursor": "c", "has_more": false}),
+            )
+        }
+        _ => (501, vec![], vec![]),
+    }
+}
+fn dropbox_op(base: &str, access: &str) -> opendal::Operator {
+    opendal::Operator::new(
+        opendal::services::Dropbox::default()
+            .root("/")
+            .access_token(access),
+    )
+    .unwrap()
+    .layer(ToFake(base.to_owned()))
+}
+
+/// A token endpoint answering every refresh with `reply` (status, JSON body); also returns
+/// the number of requests it got.
+fn token_server(status: u16, reply: &'static str) -> (String, Arc<AtomicUsize>) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let seen = count.clone();
+    let base = serve(move |_| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        (status, vec![], reply.as_bytes().to_vec())
+    });
+    (format!("{base}/token"), count)
+}
+/// A Dropbox account "dbx" with refresh token "rt" (in the per-field form older builds
+/// wrote), whose operator for an access token comes from `op_for`.
+fn oauth_cloud_over(
+    token_url: String,
+    expires_at: SystemTime,
+    op_for: impl Fn(&str) -> opendal::Operator + Send + Sync + 'static,
+) -> (
+    CloudProvider,
+    Arc<MemoryStore>,
+    crossbeam_channel::Receiver<RemoteEvent>,
+) {
+    let store = Arc::new(MemoryStore::default());
+    store.set("dbx/refresh_token", "rt").unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut endpoints = oauth::Endpoints::for_kind(CloudKind::Dropbox).unwrap();
+    endpoints.token = token_url;
+    let client = OAuthClient {
+        id: "app".into(),
+        secret: None,
+    };
+    init().unwrap();
+    let op = op_for("at-1");
+    let oauth = OAuth::new(
+        client,
+        endpoints,
+        expires_at,
+        Box::new(move |access| Ok(op_for(access))),
+    );
+    let p = CloudProvider::build(
+        account("dbx", CloudKind::Dropbox),
+        op,
+        Some(oauth),
+        store.clone(),
+        tx,
+    )
+    .unwrap();
+    (p, store, rx)
+}
+fn oauth_cloud(
+    token_url: String,
+    expires_at: SystemTime,
+) -> (
+    CloudProvider,
+    Arc<MemoryStore>,
+    crossbeam_channel::Receiver<RemoteEvent>,
+) {
+    let op = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+    oauth_cloud_over(token_url, expires_at, move |_| op.clone())
+}
+fn stored(store: &MemoryStore, id: &str) -> OAuthTokens {
+    load_tokens(store, id).unwrap().unwrap()
+}
+
+// --- Configuration, secrets, CPU ---------------------------------------------------
 
 #[test]
 fn config_round_trip_keeps_secrets_out_of_toml() {
@@ -80,9 +526,16 @@ fn config_round_trip_keeps_secrets_out_of_toml() {
     );
     assert!(!text.contains("secret"), "no secret in config: {text}");
     assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    // One keychain entry holds all tokens (saved atomically).
     assert_eq!(
-        store.get("drive/expires_at").unwrap().as_deref(),
-        Some("2000000000")
+        store.keys(),
+        ["b2/access_key_id", "b2/secret_access_key", "drive/tokens"]
+    );
+    let tokens = stored(&store, "drive");
+    assert_eq!(tokens.access, "ya29.access-secret");
+    assert_eq!(
+        tokens.expires_at,
+        UNIX_EPOCH + Duration::from_secs(2_000_000_000)
     );
     // A refresh reply without a new refresh token keeps the stored one.
     store_tokens(
@@ -96,11 +549,59 @@ fn config_round_trip_keeps_secrets_out_of_toml() {
     )
     .unwrap();
     assert_eq!(
-        store.get("drive/refresh_token").unwrap().as_deref(),
+        stored(&store, "drive").refresh.as_deref(),
         Some("1//refresh-secret")
     );
     forget_account(&store, "drive");
     assert_eq!(store.keys(), ["b2/access_key_id", "b2/secret_access_key"]);
+}
+
+#[test]
+fn tokens_of_earlier_builds_are_read_and_replaced_by_one_entry() {
+    let store = MemoryStore::default();
+    store.set("old/access_token", "at").unwrap();
+    store.set("old/refresh_token", "rt").unwrap();
+    store.set("old/expires_at", "2000000000").unwrap();
+    let t = stored(&store, "old");
+    assert_eq!(
+        (t.access.as_str(), t.refresh.as_deref()),
+        ("at", Some("rt"))
+    );
+    assert_eq!(
+        t.expires_at,
+        UNIX_EPOCH + Duration::from_secs(2_000_000_000)
+    );
+    store_tokens(
+        &store,
+        "old",
+        &OAuthTokens {
+            access: "at-2".into(),
+            refresh: None,
+            expires_at: UNIX_EPOCH,
+        },
+    )
+    .unwrap();
+    assert_eq!(store.keys(), ["old/tokens"]);
+    assert_eq!(stored(&store, "old").refresh.as_deref(), Some("rt"));
+    // An access token too long for Windows Credential Manager is not kept.
+    store_tokens(
+        &store,
+        "old",
+        &OAuthTokens {
+            access: "x".repeat(2000),
+            refresh: Some("rt-3".into()),
+            expires_at: UNIX_EPOCH + Duration::from_secs(2_000_000_000),
+        },
+    )
+    .unwrap();
+    let json = store.get("old/tokens").unwrap().unwrap();
+    assert!(json.len() < KEYCHAIN_MAX_CHARS, "{}", json.len());
+    let t = stored(&store, "old");
+    assert_eq!(
+        (t.access.as_str(), t.refresh.as_deref(), t.expires_at),
+        ("", Some("rt-3"), UNIX_EPOCH)
+    );
+    assert_eq!(load_tokens(&store, "none").unwrap(), None);
 }
 
 #[test]
@@ -143,13 +644,63 @@ fn connect_reads_keys_from_the_store_without_network() {
     drive.client_id_override = Some("mine".into());
     let p = CloudProvider::connect(&drive, store, events).unwrap();
     assert_eq!(p.remove_kind(), RemoveKind::Trash);
-    assert!(CloudProvider::connect(
-        &account("bad id", CloudKind::S3),
-        Arc::new(MemoryStore::default()),
-        crossbeam_channel::unbounded().0
-    )
-    .is_err());
+    assert!(!p.needs_reauth());
+    // Ids are lowercase slugs: Windows Credential Manager would mix up `Work` and `work`.
+    for bad in ["bad id", "Work", "", "a/b"] {
+        assert!(
+            CloudProvider::connect(
+                &account(bad, CloudKind::S3),
+                Arc::new(MemoryStore::default()),
+                crossbeam_channel::unbounded().0
+            )
+            .is_err(),
+            "{bad:?}"
+        );
+    }
+    assert!(valid_id("work-2_b"));
 }
+
+#[test]
+fn an_unsupported_cpu_is_an_error_not_a_panic() {
+    assert_eq!(check_cpu(), Ok(()), "this machine runs the cloud tests");
+    assert_eq!(cpu_error(|_| true), Ok(()));
+    let missing = *CPU_FEATURES.last().unwrap();
+    let err = cpu_error(|f| f != missing).unwrap_err();
+    assert_eq!(err, CloudError::UnsupportedCpu(missing.to_uppercase()));
+    let text = anyhow::Error::from(err.clone()).to_string();
+    assert!(
+        text.contains("need a CPU with") && text.contains(&missing.to_uppercase()),
+        "{text}"
+    );
+    assert!(cpu_error(|_| false)
+        .unwrap_err()
+        .to_string()
+        .contains(&CPU_FEATURES.join(", ").to_uppercase()));
+}
+
+#[test]
+fn s3_keys_never_reach_debug_output() {
+    let keys = S3Keys(reqsign_aws_v4::StaticCredentialProvider::new(
+        "AKIDLEAKCHECK",
+        "wJalr-leak-check-secret",
+    ));
+    let mut fake = account("leak", CloudKind::S3);
+    fake.s3 = Some(S3Config {
+        endpoint: "https://s3.example.invalid".into(),
+        region: "auto".into(),
+        bucket: "b".into(),
+    });
+    let op = s3_op(&fake, "AKIDLEAKCHECK", "wJalr-leak-check-secret").unwrap();
+    for text in [format!("{keys:?}"), format!("{op:?}")] {
+        assert!(
+            !text.contains("leak-check") && !text.contains("AKIDLEAKCHECK"),
+            "{text}"
+        );
+    }
+    assert!(LOG_FILTER_HINT.contains("reqsign_core=warn"));
+}
+
+// --- Retries, tokens -----------------------------------------------------------------
 
 #[test]
 fn backoff_doubles_with_jitter_and_stops_after_five_tries() {
@@ -194,12 +745,193 @@ fn http_errors_are_classified_and_sanitised() {
         text.contains("HTTP 401") && !text.contains("ya29"),
         "{text}"
     );
-    assert_eq!(
-        wired.downcast_ref::<io::Error>().map(io::Error::kind),
-        Some(io::ErrorKind::PermissionDenied)
-    );
+    assert_eq!(kind_of(&wired), Some(io::ErrorKind::PermissionDenied));
     assert!(is_not_found(&wire(&err(ErrorKind::NotFound, 404), &p)));
 }
+
+#[test]
+fn drive_rate_limit_403s_are_retried_other_403s_are_not() {
+    // As opendal's Drive service words them (it keeps only the message).
+    let drive = |message: &str| {
+        opendal::Error::new(
+            ErrorKind::PermissionDenied,
+            format!("GdriveError {{ error: GdriveInnerError {{ message: \"{message}\" }} }}"),
+        )
+        .with_context(
+            "response",
+            "Parts { status: 403, version: HTTP/1.1, headers: {} }",
+        )
+    };
+    assert!(retryable(&drive("Rate Limit Exceeded")));
+    assert!(retryable(&drive("User Rate Limit Exceeded")));
+    assert!(retryable(&drive("reason: userRateLimitExceeded")));
+    assert!(!retryable(&drive(
+        "The user does not have sufficient permissions"
+    )));
+}
+
+#[test]
+fn backoff_waits_end_when_cancelled() {
+    let cloud = memory_cloud("mem");
+    let cancel = AtomicBool::new(false);
+    let started = Instant::now();
+    let tries = AtomicUsize::new(0);
+    let err = std::thread::scope(|s| {
+        s.spawn(|| {
+            std::thread::sleep(Duration::from_millis(150));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        cloud
+            .core
+            .call_cancellable(&vp("cloud://mem/a"), &cancel, |_| {
+                tries.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(http_error(503))
+            })
+            .unwrap_err()
+    });
+    // Uncancelled, the four waits take at least 3.75 s.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::Interrupted));
+    assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
+    assert!(tries.load(Ordering::SeqCst) < MAX_TRIES as usize);
+}
+
+#[test]
+fn rejected_or_expired_tokens_refresh_once_and_are_stored() {
+    let ok = r#"{"access_token":"at-2","expires_in":3600}"#;
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let (url, requests) = token_server(200, ok);
+    let (cloud, store, events) = oauth_cloud(url, far);
+    let p = vp("cloud://dbx/a");
+    let calls = std::sync::atomic::AtomicU32::new(0);
+    cloud
+        .core
+        .call(&p, |_| match calls.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(http_error(401)),
+            _ => Ok(()),
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    let tokens = stored(&store, "dbx");
+    assert_eq!(tokens.access, "at-2");
+    assert_eq!(tokens.refresh.as_deref(), Some("rt"));
+    assert!(matches!(
+        events.try_recv(),
+        Ok(RemoteEvent::Status { status: ConnStatus::Connected, ref host_id, .. }) if host_id == "cloud:dbx"
+    ));
+    // A token the service keeps rejecting: one refresh, then the error (no loop).
+    calls.store(0, Ordering::SeqCst);
+    let err = cloud
+        .core
+        .call(&p, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(http_error(401))
+        })
+        .unwrap_err();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::PermissionDenied));
+    // Expired before the call: refreshed first, the operation runs once.
+    let (url, _) = token_server(200, ok);
+    let (cloud, store, _) = oauth_cloud(url, UNIX_EPOCH);
+    calls.store(0, Ordering::SeqCst);
+    cloud
+        .core
+        .call(&p, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(stored(&store, "dbx").access, "at-2");
+}
+
+#[test]
+fn concurrent_401s_refresh_the_token_once() {
+    let (url, requests) = token_server(200, r#"{"access_token":"at-2","expires_in":3600}"#);
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let (cloud, _, _) = oauth_cloud(url, far);
+    let threads = 6;
+    let barrier = std::sync::Barrier::new(threads);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                let first = Cell::new(true);
+                cloud
+                    .core
+                    .call(&vp("cloud://dbx/a"), |_| {
+                        let generation = cloud.core.generation.load(Ordering::SeqCst);
+                        // Every thread's first request fails with the old token.
+                        if first.replace(false) {
+                            barrier.wait();
+                        }
+                        match generation {
+                            0 => Err(http_error(401)),
+                            _ => Ok(()),
+                        }
+                    })
+                    .unwrap();
+            });
+        }
+    });
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_revoked_grant_asks_to_sign_in_again_and_fails_fast() {
+    let (url, requests) = token_server(400, r#"{"error":"invalid_grant"}"#);
+    let (cloud, store, events) = oauth_cloud(url, UNIX_EPOCH);
+    let err = cloud.list(&vp("cloud://dbx/")).unwrap_err();
+    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
+    assert!(matches!(
+        events.try_recv(),
+        Ok(RemoteEvent::Status {
+            status: ConnStatus::Failed,
+            ..
+        })
+    ));
+    assert!(cloud.needs_reauth());
+    assert!(load_tokens(&*store, "dbx")
+        .unwrap()
+        .unwrap()
+        .access
+        .is_empty());
+    // From now on: no token request and no further status event, until a new sign-in.
+    for _ in 0..3 {
+        let err = cloud.stat(&vp("cloud://dbx/x")).unwrap_err();
+        assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(events.try_recv().is_err());
+    // Signed in again (new tokens stored): works without re-registering.
+    store_tokens(
+        &*store,
+        "dbx",
+        &OAuthTokens {
+            access: "at-new".into(),
+            refresh: Some("rt-new".into()),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+        },
+    )
+    .unwrap();
+    assert!(cloud.list(&vp("cloud://dbx/")).unwrap().is_empty());
+    assert!(!cloud.needs_reauth());
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    // Signed out entirely (no refresh token): the same message, no request.
+    let (url, requests) = token_server(400, r#"{"error":"invalid_grant"}"#);
+    let (cloud, store, _) = oauth_cloud(url, UNIX_EPOCH);
+    store.delete("dbx/refresh_token").unwrap();
+    let err = cloud.stat(&vp("cloud://dbx/x")).unwrap_err();
+    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(cloud.needs_reauth());
+}
+
+// --- Listing, reading, writing (memory service) ---------------------------------------
 
 #[test]
 fn listings_are_cached_until_a_write_or_the_ttl() {
@@ -235,13 +967,48 @@ fn listings_are_cached_until_a_write_or_the_ttl() {
     assert_eq!(cloud.stat(&vp("cloud://mem/docs")).unwrap().kind, Kind::Dir);
     // Expiry.
     let mut short = memory_cloud("mem");
-    short.set_ttl(Duration::from_millis(30));
+    short.tune(|core| core.ttl = Duration::from_millis(30));
     put(&short, "cloud://mem/a.txt", b"a");
     let root = vp("cloud://mem/");
     assert_eq!(names(&short.list(&root).unwrap()), ["a.txt"]);
     short.core.op.read().write("c.txt", b"c".to_vec()).unwrap();
     std::thread::sleep(Duration::from_millis(60));
     assert_eq!(names(&short.list(&root).unwrap()), ["a.txt", "c.txt"]);
+}
+
+#[test]
+fn big_folders_are_cut_off_at_the_cap() {
+    let mut cloud = memory_cloud("mem");
+    cloud.tune(|core| core.list_cap = 3);
+    for i in 0..5 {
+        cloud
+            .core
+            .op
+            .read()
+            .write(&format!("f{i}"), b"x".to_vec())
+            .unwrap();
+    }
+    assert_eq!(cloud.list(&vp("cloud://mem/")).unwrap().len(), 3);
+}
+
+#[test]
+fn google_docs_and_shortcuts_are_not_listed_as_files() {
+    let with_type = |t: &str| {
+        let mut meta = opendal::MetadataBuilder::file(0);
+        meta.content_type(t);
+        meta.build()
+    };
+    assert!(google_native(&with_type(
+        "application/vnd.google-apps.document"
+    )));
+    assert!(google_native(&with_type(
+        "application/vnd.google-apps.shortcut"
+    )));
+    assert!(!google_native(&with_type(
+        "application/vnd.google-apps.folder"
+    )));
+    assert!(!google_native(&with_type("application/pdf")));
+    assert!(!google_native(&opendal::MetadataBuilder::file(1).build()));
 }
 
 #[test]
@@ -252,10 +1019,7 @@ fn read_write_create_new_and_dropped_uploads() {
     put(&cloud, "cloud://mem/a.txt", b"replaced");
     assert_eq!(get(&cloud, "cloud://mem/a.txt"), b"replaced");
     let err = cloud.create_new(&vp("cloud://mem/a.txt")).err().unwrap();
-    assert_eq!(
-        err.downcast_ref::<io::Error>().map(io::Error::kind),
-        Some(io::ErrorKind::AlreadyExists)
-    );
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::AlreadyExists));
     {
         let mut w = cloud.create_new(&vp("cloud://mem/never.txt")).unwrap();
         w.write_all(b"half").unwrap();
@@ -279,6 +1043,44 @@ fn read_write_create_new_and_dropped_uploads() {
 }
 
 #[test]
+fn local_copy_checks_the_service_not_the_listing_cache() {
+    let cloud = memory_cloud("mem");
+    put(&cloud, "cloud://mem/doc.txt", b"old");
+    cloud.list(&vp("cloud://mem/")).unwrap();
+    // Changed elsewhere while the listing (size 3) is cached.
+    cloud
+        .core
+        .op
+        .read()
+        .write("doc.txt", b"changed elsewhere".to_vec())
+        .unwrap();
+    let copy = cloud.local_copy(&vp("cloud://mem/doc.txt")).unwrap();
+    assert_eq!(fs::read(&copy).unwrap(), b"changed elsewhere");
+}
+
+#[test]
+fn single_request_uploads_are_capped_with_a_clear_message() {
+    assert_eq!(
+        CloudKind::GoogleDrive.upload_limit(),
+        Some(256 * 1024 * 1024)
+    );
+    assert_eq!(CloudKind::Dropbox.upload_limit(), Some(150 * 1024 * 1024));
+    let mut drive = memory_cloud_of("drive", CloudKind::GoogleDrive);
+    drive.tune(|core| core.upload_limit = Some(1 << 20));
+    let mut w = drive.write(&vp("cloud://drive/big.bin")).unwrap();
+    w.write_all(&vec![1; 1 << 20]).unwrap();
+    let err = w.write_all(b"one more").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("files over 1 MB cannot be uploaded to Google Drive"),
+        "{err}"
+    );
+    assert!(w.flush().is_err());
+    drop(w);
+    assert!(drive.stat(&vp("cloud://drive/big.bin")).is_err());
+}
+
+#[test]
 fn rename_and_remove_follow_each_kind() {
     assert_eq!(CloudKind::GoogleDrive.remove_kind(), RemoveKind::Trash);
     assert_eq!(
@@ -295,13 +1097,14 @@ fn rename_and_remove_follow_each_kind() {
         vp("cloud://mem/c.txt"),
     );
     let err = cloud.rename(&a, &b).unwrap_err();
-    assert_eq!(
-        err.downcast_ref::<io::Error>().map(io::Error::kind),
-        Some(io::ErrorKind::AlreadyExists)
-    );
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::AlreadyExists));
     cloud.rename_noreplace(&a, &c).unwrap();
     assert!(is_not_found(&cloud.stat(&a).unwrap_err()));
     cloud.rename_replace(&c, &b).unwrap();
+    assert_eq!(get(&cloud, "cloud://mem/b.txt"), b"a");
+    // Never onto itself (a replace would delete it) or into itself.
+    let err = cloud.rename_replace(&b, &b).unwrap_err();
+    assert!(format!("{err:#}").contains("into itself"), "{err:#}");
     assert_eq!(get(&cloud, "cloud://mem/b.txt"), b"a");
     // Folders move with their contents (file by file).
     cloud.mkdir(&vp("cloud://mem/d")).unwrap();
@@ -309,6 +1112,11 @@ fn rename_and_remove_follow_each_kind() {
     put(&cloud, "cloud://mem/d/sub/x.txt", b"x");
     put(&cloud, "cloud://mem/d/y.txt", b"y");
     assert!(cloud.mkdir(&vp("cloud://mem/d")).is_err());
+    let err = cloud
+        .rename(&vp("cloud://mem/d"), &vp("cloud://mem/d/sub/d"))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("into itself"), "{err:#}");
+    assert_eq!(get(&cloud, "cloud://mem/d/sub/x.txt"), b"x");
     cloud
         .rename(&vp("cloud://mem/d"), &vp("cloud://mem/e"))
         .unwrap();
@@ -439,6 +1247,204 @@ fn transfer_between_local_and_cloud_with_conflicts_and_cancel() {
     assert!(router.provider_for(&vp("cloud://mem/")).is_none());
 }
 
+// --- Real opendal services against local fakes ----------------------------------------
+
+/// opendal's real S3 service over the HTTP transport `init` installs.
+#[test]
+fn s3_over_http_lists_reads_and_writes() {
+    let (base, fake) = s3_fake();
+    let cloud = s3_cloud(&base);
+    put(&cloud, "cloud://fake/a.txt", b"hello");
+    cloud.mkdir(&vp("cloud://fake/docs")).unwrap();
+    put(&cloud, "cloud://fake/docs/b.txt", b"bee");
+    assert_eq!(fake.lock().objects["a.txt"], b"hello");
+    assert_eq!(
+        names(&cloud.list(&vp("cloud://fake/")).unwrap()),
+        ["a.txt", "docs"]
+    );
+    assert_eq!(
+        names(&cloud.list(&vp("cloud://fake/docs")).unwrap()),
+        ["b.txt"]
+    );
+    assert_eq!(get(&cloud, "cloud://fake/docs/b.txt"), b"bee");
+    let a = cloud.stat(&vp("cloud://fake/a.txt")).unwrap();
+    assert_eq!((a.kind, a.size), (Kind::File, 5));
+    assert!(a.modified.is_some());
+    let err = cloud.create_new(&vp("cloud://fake/a.txt")).err().unwrap();
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::AlreadyExists));
+    cloud
+        .rename(&vp("cloud://fake/a.txt"), &vp("cloud://fake/c.txt"))
+        .unwrap();
+    assert_eq!(get(&cloud, "cloud://fake/c.txt"), b"hello");
+    assert!(!fake.lock().objects.contains_key("a.txt"));
+}
+
+#[test]
+fn s3_folder_moves_keep_whatever_was_not_moved() {
+    let (base, fake) = s3_fake();
+    let cloud = s3_cloud(&base);
+    cloud.mkdir(&vp("cloud://fake/d")).unwrap();
+    put(&cloud, "cloud://fake/d/a.txt", b"a");
+    put(&cloud, "cloud://fake/d/b.txt", b"b");
+    // Someone uploads into the folder while it is being moved.
+    fake.lock().on_delete = Some(("d/a.txt".into(), "d/late.txt".into()));
+    let err = cloud
+        .rename(&vp("cloud://fake/d"), &vp("cloud://fake/e"))
+        .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("moved 2 of 3 items") && text.contains("still holds the rest: late.txt"),
+        "{text}"
+    );
+    {
+        let objects = &fake.lock().objects;
+        assert_eq!(objects["d/late.txt"], b"late");
+        assert_eq!(objects["e/a.txt"], b"a");
+        assert_eq!(objects["e/b.txt"], b"b");
+    }
+    // A child that cannot be moved: the move stops there and the source keeps the rest.
+    cloud.mkdir(&vp("cloud://fake/f")).unwrap();
+    put(&cloud, "cloud://fake/f/a.txt", b"a");
+    put(&cloud, "cloud://fake/f/b.txt", b"b");
+    fake.lock().fail.push(("PUT", "g/b.txt".into(), 403));
+    let err = cloud
+        .rename(&vp("cloud://fake/f"), &vp("cloud://fake/g"))
+        .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(text.contains("moved 1 of 2 items"), "{text}");
+    let objects = &fake.lock().objects;
+    assert_eq!(objects["f/b.txt"], b"b");
+    assert!(objects.contains_key("f/"));
+}
+
+#[test]
+fn dropbox_uploads_go_in_one_request_straight_to_the_target() {
+    let (base, fake) = dropbox_fake();
+    let op = dropbox_op(&base, "at");
+    let dbx = CloudProvider::with_operator(
+        account("dbx", CloudKind::Dropbox),
+        op,
+        crossbeam_channel::unbounded().0,
+    )
+    .unwrap();
+    // opendal's Dropbox writer takes one write only; uploads come in 1 MiB pieces.
+    let mut w = dbx.write(&vp("cloud://dbx/direct.bin")).unwrap();
+    for _ in 0..3 {
+        w.write_all(&vec![5; 1 << 20]).unwrap();
+    }
+    w.flush().unwrap();
+    {
+        let fake = fake.lock();
+        assert_eq!(fake.files["/direct.bin"].len(), 3 << 20);
+        assert_eq!(fake.calls("upload"), ["/direct.bin"]);
+        assert!(fake.calls("move_v2").is_empty(), "no staging name");
+    }
+    // Through a transfer (which stages under its own partial name).
+    let router = Router::new();
+    router.register_cloud_provider("dbx".into(), Arc::new(dbx));
+    let local = tempfile::tempdir().unwrap();
+    fs::write(local.path().join("n.bin"), vec![7u8; 3 << 20]).unwrap();
+    fake.lock().folders.insert("/up".into());
+    ops::transfer(
+        &[VPath::local(local.path().join("n.bin"))],
+        &vp("cloud://dbx/up"),
+        false,
+        Conflict::Skip,
+        &|_| {},
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    let fake = fake.lock();
+    assert_eq!(fake.files["/up/n.bin"].len(), 3 << 20);
+    assert_eq!(fake.calls("upload").len(), 2, "one request per file");
+}
+
+#[test]
+fn dropbox_upload_requests_are_retried_with_the_data_still_in_memory() {
+    let (base, fake) = dropbox_fake();
+    let (url, requests) = token_server(200, r#"{"access_token":"at-2","expires_in":3600}"#);
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let fake_url = base.clone();
+    let (dbx, store, _) = oauth_cloud_over(url, far, move |access| dropbox_op(&fake_url, access));
+    {
+        let mut fake = fake.lock();
+        fake.fail
+            .push(("upload", "/r.bin".into(), 503, "too_many_write_operations/"));
+        fake.fail
+            .push(("upload", "/r.bin".into(), 401, "expired_access_token/"));
+    }
+    put(&dbx, "cloud://dbx/r.bin", &[9; 3000]);
+    assert_eq!(fake.lock().files["/r.bin"], [9; 3000]);
+    assert_eq!(fake.lock().calls("upload").len(), 3);
+    assert_eq!(requests.load(Ordering::SeqCst), 1, "401: one token refresh");
+    assert_eq!(stored(&store, "dbx").access, "at-2");
+}
+
+#[test]
+fn dropbox_replace_never_loses_the_old_or_the_new_file() {
+    let (base, fake) = dropbox_fake();
+    let dbx = CloudProvider::with_operator(
+        account("dbx", CloudKind::Dropbox),
+        dropbox_op(&base, "at"),
+        crossbeam_channel::unbounded().0,
+    )
+    .unwrap();
+    {
+        let mut fake = fake.lock();
+        fake.files.insert("/t.txt".into(), b"old".to_vec());
+        fake.files.insert("/staged".into(), b"new".to_vec());
+        fake.fail
+            .push(("move_v2", "/staged".into(), 409, "to/no_write_permission/"));
+    }
+    let err = dbx
+        .rename_replace(&vp("cloud://dbx/staged"), &vp("cloud://dbx/t.txt"))
+        .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("the old file is unchanged") && text.contains("still at cloud://dbx/staged"),
+        "{text}"
+    );
+    {
+        let fake = fake.lock();
+        assert_eq!(fake.files["/t.txt"], b"old");
+        assert_eq!(fake.files["/staged"], b"new");
+        assert_eq!(fake.files.len(), 2, "{:?}", fake.files.keys());
+        assert!(fake.calls("delete_v2").is_empty());
+    }
+    dbx.rename_replace(&vp("cloud://dbx/staged"), &vp("cloud://dbx/t.txt"))
+        .unwrap();
+    let fake = fake.lock();
+    assert_eq!(fake.files["/t.txt"], b"new");
+    assert_eq!(fake.files.len(), 1, "{:?}", fake.files.keys());
+}
+
+#[test]
+fn dropbox_folder_moves_are_one_request() {
+    let (base, fake) = dropbox_fake();
+    let dbx = CloudProvider::with_operator(
+        account("dbx", CloudKind::Dropbox),
+        dropbox_op(&base, "at"),
+        crossbeam_channel::unbounded().0,
+    )
+    .unwrap();
+    {
+        let mut fake = fake.lock();
+        fake.folders.insert("/d".into());
+        fake.files.insert("/d/a.txt".into(), b"a".to_vec());
+        fake.files.insert("/d/b.txt".into(), b"b".to_vec());
+    }
+    dbx.rename(&vp("cloud://dbx/d"), &vp("cloud://dbx/e"))
+        .unwrap();
+    let fake = fake.lock();
+    assert_eq!(fake.calls("move_v2"), ["/d"]);
+    assert!(fake.calls("delete_v2").is_empty());
+    assert_eq!(
+        fake.files.keys().collect::<Vec<_>>(),
+        ["/e/a.txt", "/e/b.txt"]
+    );
+}
+
 /// `KEEL_CLOUD_TEST_S3=endpoint,region,bucket` plus `KEEL_CLOUD_TEST_S3_KEY_ID` and
 /// `KEEL_CLOUD_TEST_S3_SECRET`: round trip against a real bucket under `keel-test/`.
 #[test]
@@ -492,137 +1498,4 @@ fn keyring_store_round_trip() {
     store.delete(&key).unwrap();
     assert_eq!(store.get(&key).unwrap(), None);
     store.delete(&key).unwrap();
-}
-
-/// A token endpoint answering every refresh with `reply` (status, JSON body).
-fn token_server(status: u16, reply: &'static str) -> String {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let port = server.server_addr().to_ip().unwrap().port();
-    std::thread::spawn(move || {
-        for request in server.incoming_requests() {
-            let _ =
-                request.respond(tiny_http::Response::from_string(reply).with_status_code(status));
-        }
-    });
-    format!("http://127.0.0.1:{port}/token")
-}
-fn oauth_cloud(
-    token_url: String,
-    expires_at: SystemTime,
-) -> (
-    CloudProvider,
-    Arc<MemoryStore>,
-    crossbeam_channel::Receiver<RemoteEvent>,
-) {
-    let store = Arc::new(MemoryStore::default());
-    store.set("dbx/refresh_token", "rt").unwrap();
-    let (tx, rx) = crossbeam_channel::unbounded();
-    let mut endpoints = oauth::Endpoints::for_kind(CloudKind::Dropbox).unwrap();
-    endpoints.token = token_url;
-    let oauth = OAuth {
-        client: OAuthClient {
-            id: "app".into(),
-            secret: None,
-        },
-        endpoints,
-        expires_at: Mutex::new(expires_at),
-        refreshing: Mutex::new(()),
-    };
-    let op = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
-    init();
-    let p = CloudProvider::build(
-        account("dbx", CloudKind::Dropbox),
-        op,
-        Some(oauth),
-        store.clone(),
-        tx,
-    )
-    .unwrap();
-    (p, store, rx)
-}
-fn unauthorized() -> opendal::Error {
-    opendal::Error::new(ErrorKind::Unexpected, "expired").with_context(
-        "response",
-        "Parts { status: 401, version: HTTP/1.1, headers: {} }",
-    )
-}
-
-#[test]
-fn rejected_or_expired_tokens_refresh_once_and_are_stored() {
-    let ok = r#"{"access_token":"at-2","expires_in":3600}"#;
-    let far = SystemTime::now() + Duration::from_secs(3600);
-    let (cloud, store, events) = oauth_cloud(token_server(200, ok), far);
-    let p = vp("cloud://dbx/a");
-    let calls = std::sync::atomic::AtomicU32::new(0);
-    cloud
-        .core
-        .call(&p, |_| match calls.fetch_add(1, Ordering::SeqCst) {
-            0 => Err(unauthorized()),
-            _ => Ok(()),
-        })
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        store.get("dbx/access_token").unwrap().as_deref(),
-        Some("at-2")
-    );
-    assert_eq!(
-        store.get("dbx/refresh_token").unwrap().as_deref(),
-        Some("rt")
-    );
-    assert!(matches!(
-        events.try_recv(),
-        Ok(RemoteEvent::Status { status: ConnStatus::Connected, ref host_id, .. }) if host_id == "cloud:dbx"
-    ));
-    // A token the service keeps rejecting: one refresh, then the error (no loop).
-    calls.store(0, Ordering::SeqCst);
-    let err = cloud
-        .core
-        .call(&p, |_| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Err::<(), _>(unauthorized())
-        })
-        .unwrap_err();
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        err.downcast_ref::<io::Error>().map(io::Error::kind),
-        Some(io::ErrorKind::PermissionDenied)
-    );
-    // Expired before the call: refreshed first, the operation runs once.
-    let (cloud, store, _) = oauth_cloud(token_server(200, ok), UNIX_EPOCH);
-    calls.store(0, Ordering::SeqCst);
-    cloud
-        .core
-        .call(&p, |_| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        store.get("dbx/access_token").unwrap().as_deref(),
-        Some("at-2")
-    );
-}
-
-#[test]
-fn a_revoked_grant_asks_to_sign_in_again() {
-    let (cloud, store, events) = oauth_cloud(
-        token_server(400, r#"{"error":"invalid_grant"}"#),
-        UNIX_EPOCH,
-    );
-    let err = cloud.list(&vp("cloud://dbx/")).unwrap_err();
-    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
-    assert!(matches!(
-        events.try_recv(),
-        Ok(RemoteEvent::Status {
-            status: ConnStatus::Failed,
-            ..
-        })
-    ));
-    assert_eq!(store.get("dbx/access_token").unwrap(), None);
-    // Signed out entirely (no refresh token): same message, no request.
-    store.delete("dbx/refresh_token").unwrap();
-    let err = cloud.stat(&vp("cloud://dbx/x")).unwrap_err();
-    assert!(format!("{err:#}").contains("sign in again"), "{err:#}");
 }

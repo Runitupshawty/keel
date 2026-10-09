@@ -83,6 +83,7 @@ impl Router {
     }
     /// Connects (keychain only, no network) and adds or replaces `cloud://<account id>/`.
     /// Status events go to `remote_events()` as host id `cloud:<account id>`.
+    #[cfg(feature = "cloud")]
     pub fn register_cloud(
         &self,
         account: &crate::CloudAccount,

@@ -3,6 +3,7 @@
 pub mod archive;
 #[cfg(windows)]
 pub mod clipboard;
+#[cfg(feature = "cloud")]
 pub mod cloud;
 pub mod path;
 pub use path::VPath;
@@ -11,7 +12,10 @@ pub mod local;
 pub mod provider;
 pub mod router;
 pub mod sftp;
-pub use cloud::{CloudAccount, CloudKind, CloudProvider, RemoveKind, S3Config, SecretStore};
+#[cfg(feature = "cloud")]
+pub use cloud::{
+    CloudAccount, CloudError, CloudKind, CloudProvider, RemoveKind, S3Config, SecretStore,
+};
 pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, watch, LocalProvider};
 pub use provider::{Caps, Provider};

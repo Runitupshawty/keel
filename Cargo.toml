@@ -52,7 +52,13 @@ time = "0.3"
 unrar = "0.5"
 # Cloud (Phase 4): only the three services; TLS is rustls (no OpenSSL / native-tls).
 opendal = { version = "0.59", default-features = false, features = ["services-gdrive", "services-dropbox", "services-s3", "executors-tokio", "blocking", "http-transport-reqwest-rustls-no-provider"] }
+# opendal's facade only installs a transport with its own TLS provider: Keel installs this one
+# (its reqwest client, timeouts, rustls + platform verifier) explicitly.
+opendal-http-transport-reqwest = { version = "0.59.4", default-features = false, features = ["rustls-no-provider"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+# S3 keys go to opendal through a credential provider whose Debug output is redacted.
+reqsign-core = { version = "3.3", default-features = false }
+reqsign-aws-v4 = { version = "3.3", default-features = false }
 # Pure-Rust TLS crypto (no C toolchain, so cross-target checks build), installed as
 # rustls' process default on first cloud use.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }

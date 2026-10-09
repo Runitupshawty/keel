@@ -123,6 +123,17 @@ cargo build --release
 
 Google Drive and Dropbox sign-in uses OAuth with PKCE and a loopback redirect (`http://127.0.0.1:<port>/`). Keel ships no OAuth client ids: `assets/cloud-clients.toml` holds placeholders. Register your own free app (a Google Cloud "Desktop app" OAuth client with the Drive API enabled, or a Dropbox scoped app with redirect URI `http://127.0.0.1`) and enter its client id per account, or replace the placeholders in that file before building; the file explains each step. Tokens and S3 keys are kept in the OS keychain, never in `config.toml`.
 
+Limits and requirements:
+
+- Account ids are lowercase (`[a-z0-9_-]`), because Windows Credential Manager ignores case.
+- Drive and Dropbox take a file in one request, so uploads are held in memory and capped: 256 MB for Google Drive and 150 MB for Dropbox, until resumable uploads exist. S3 uploads stream.
+- Google Docs, Sheets and other Drive-native files, and Drive shortcuts, have no bytes to download; they are not listed, so copying a folder skips them.
+- A folder shows at most 50,000 entries.
+- HTTPS uses rustls with the pure-Rust graviola crypto and the operating system's certificate store. Graviola needs an x86-64 CPU with AES, AVX2, ADX and BMI2 (most made since about 2014) or a 64-bit ARM CPU with AES, PMULL and SHA-2 (Apple silicon, Raspberry Pi 5); on other CPUs adding or opening a cloud account fails with "cloud accounts need a CPU with ...".
+- If a sign-in is revoked, the account stops making requests and asks to sign in again.
+- Keep `reqsign_core=warn` in any debug log filter (`keel_vfs::cloud::LOG_FILTER_HINT`): S3 keys are redacted, but the signing library logs credential providers at debug level.
+- Cloud support is `keel-vfs`'s default `cloud` feature; build without it to leave out opendal, reqwest and rustls.
+
 ## Roadmap
 
 Phases 1 to 3 are released (the usable core, archives and terminal, SFTP remotes). Next:
