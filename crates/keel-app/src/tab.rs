@@ -121,6 +121,8 @@ pub struct Tab {
     generation: u64,
     cache_key: Option<(u64, String, (SortKey, bool), bool)>,
     cache: Vec<usize>,
+    /// Bumped whenever `cache` changes (Task 32: the media view's layout cache).
+    cache_gen: u64,
 }
 
 impl Tab {
@@ -162,6 +164,7 @@ impl Tab {
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
+            cache_gen: 0,
         }
     }
 
@@ -299,6 +302,7 @@ impl Tab {
             }
         }
         self.cache_key = Some(key);
+        self.cache_gen += 1;
         if !self.selected.is_empty() {
             let shown: HashSet<&str> = self
                 .cache
@@ -313,6 +317,16 @@ impl Tab {
     /// The cached result of the last `visible()` call (empty before the first call).
     pub fn visible_cached(&self) -> &[usize] {
         &self.cache
+    }
+
+    /// Changes whenever `visible_cached()` may have changed.
+    pub fn visible_gen(&self) -> u64 {
+        self.cache_gen
+    }
+
+    /// Changes with every new listing.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Changes directory: pushes history, clears selection/filter, marks loading.

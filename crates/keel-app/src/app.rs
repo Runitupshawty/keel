@@ -200,6 +200,7 @@ impl App {
             && !s.jump.open
             && !s.palette.open
             && !self.crashed
+            && s.viewer.is_none() // Task 32: the viewer reads its own keys
             && !ctx.is_context_menu_open();
         for action in keys::actions_with_terminal(ctx, keys_on, s.terminal.focused(ctx)) {
             s.run(s.active, action);
@@ -377,6 +378,7 @@ impl App {
                         drives: &s.sidebar.drives,
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: s.settings.library.tags_column,
+                        media: &mut s.media,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {
@@ -408,6 +410,7 @@ impl App {
                 |ui| ui.label(drag_verb(&drag, over, shift)),
             );
         }
+        s.viewer_ui(ctx); // Task 32
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
         }

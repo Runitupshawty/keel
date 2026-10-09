@@ -3823,6 +3823,7 @@ dependencies = [
  "resvg 0.44.0",
  "rfd",
  "roxmltree 0.19.0",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -201,6 +201,7 @@ impl JobRow {
             "index" => "Library: indexing",
             "hash" => "Library: hashing contents",
             "op" => "Library: file operation",
+            "sidecar" => "Library: media thumbnails",
             _ => "Library job",
         }
     }
@@ -825,6 +826,34 @@ impl LibraryUi {
         });
     }
 
+    /// Task 32: thumbnails and metadata for every source's photos and videos (the sidecar
+    /// job, idle priority), unless one is already running.
+    fn start_media(&mut self) {
+        if self
+            .jobs
+            .values()
+            .any(|j| j.kind == "sidecar" && j.active())
+        {
+            return;
+        }
+        let ids: Vec<SourceId> = (self.sources.iter())
+            .filter(|s| s.root.scheme == "file")
+            .map(|s| s.id.clone())
+            .collect();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.spawn("keel-library-media", move |lib| {
+            for id in ids {
+                let id = lib.media_job(&id).ok();
+                let msg = Msg::Library(LibMsg::Spawned {
+                    kind: "sidecar",
+                    id,
+                });
+                worker::send(&tx, &ctx, msg);
+            }
+            None
+        });
+    }
+
     /// A watcher per source once no index job runs (both would walk the source).
     fn sync_watchers(&mut self, rescan: Duration) {
         let Some(lib) = self.lib.clone() else { return };
@@ -996,6 +1025,7 @@ impl AppState {
                         l.refresh_libraries();
                         self.library.policy = self.settings.library.hashing;
                         self.library.sync_hashing();
+                        self.library.start_media(); // Task 32
                         if first_run {
                             self.toasts.offer(
                                 "Keel can index your files into a library, even offline",
@@ -1048,7 +1078,9 @@ impl AppState {
                             ended: None,
                         });
                     }
-                    None if kind != "hash" => self.toasts.error(format!("Could not start {kind}")),
+                    None if kind != "hash" && kind != "sidecar" => {
+                        self.toasts.error(format!("Could not start {kind}"))
+                    }
                     None => {}
                 }
             }
@@ -1162,6 +1194,7 @@ impl AppState {
             l.refresh_stats();
             if ended.iter().any(|k| k == "index") {
                 l.start_hashing();
+                l.start_media(); // Task 32
             }
             // The Overview's duplicate summary (and an open finder) follow new content ids.
             if ended.iter().any(|k| k == "hash") {
