@@ -10,8 +10,10 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+ignore.workspace = true
 keel-vfs = { path = "../keel-vfs" }
-libloading.workspace = true
 nucleo.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+libloading.workspace = true
 parking_lot.workspace = true
-windows.workspace = true
