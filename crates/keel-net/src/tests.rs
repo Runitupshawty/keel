@@ -559,3 +559,171 @@ async fn requests_share_one_connection_and_link_is_stable() {
     a.close().await;
     b.close().await;
 }
+
+#[tokio::test]
+async fn hostile_labels_are_never_stored() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    a.set_label("Host");
+    let (aid, _) = pair(&a, &b).await;
+    assert!(a.try_set_label("evil\u{202E}txt").is_err());
+    // A peer that bypasses its own checks still cannot plant a label here.
+    a.state.lock().data.label = format!("{}\u{7}", "x".repeat(300));
+    assert!(matches!(
+        b.request(&aid, Request::Ping).await.unwrap(),
+        Response::Pong { .. }
+    ));
+    assert_eq!(b.peers()[0].label, "Host");
+    a.state.lock().data.label = "Renamed".into();
+    b.request(&aid, Request::Ping).await.unwrap();
+    assert_eq!(b.peers()[0].label, "Renamed");
+    let stranger = iroh::SecretKey::from_bytes(&crate::node::random().unwrap()).public();
+    assert!(b
+        .paired(iroh::EndpointAddr::new(stranger), "a\u{2067}b".into())
+        .is_err());
+    a.close().await;
+    b.close().await;
+    let b = open(&db, Arc::default()).await;
+    assert_eq!(b.peers()[0].label, "Renamed");
+    b.close().await;
+}
+
+#[tokio::test]
+async fn denied_large_upload_reports_denied() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    let (aid, bid) = pair(&a, &b).await;
+    allow(&a, bid, Access::Read);
+    for _ in 0..3 {
+        let body = vec![7u8; 8 << 20];
+        let size = body.len() as u64;
+        assert!(matches!(
+            b.write_stream(
+                &aid,
+                "docs",
+                "shared/big",
+                Box::new(std::io::Cursor::new(body)),
+                size
+            )
+            .await
+            .unwrap(),
+            Response::Denied(_)
+        ));
+    }
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn revoking_nothing_is_an_error() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    let (_, bid) = pair(&a, &b).await;
+    allow(&a, bid, Access::Read);
+    assert!(a.revoke(&bid, "docs", "shared/").is_err());
+    assert_eq!(a.grants().len(), 1);
+    a.revoke(&bid, "docs", "shared").unwrap();
+    assert!(a.revoke(&bid, "docs", "shared").is_err());
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn per_peer_connection_and_stream_caps() {
+    use crate::{node::MAX_CONNECTIONS_PER_PEER, protocol::MAX_STREAMS_PER_CONNECTION};
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    let (aid, bid) = pair(&a, &b).await;
+    allow(&a, bid, Access::Read);
+    // Streams: every slot busy with a stalled read, so a Ping must wait.
+    let mut readers = Vec::new();
+    for _ in 0..MAX_STREAMS_PER_CONNECTION {
+        readers.push(
+            b.read_stream(&aid, "docs", "shared/slow", None)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), b.request(&aid, Request::Ping))
+            .await
+            .is_err()
+    );
+    drop(readers);
+    // Slots free up once the host's idle timeout ends the stalled bodies.
+    let mut pong = false;
+    for _ in 0..4 {
+        if let Ok(Response::Pong { .. }) = b.request(&aid, Request::Ping).await {
+            pong = true;
+            break;
+        }
+    }
+    assert!(pong);
+    // Connections: B's held one plus raw extra dials, up to the cap.
+    let mut extra = Vec::new();
+    for _ in 1..MAX_CONNECTIONS_PER_PEER {
+        extra.push(b.endpoint.connect(a.endpoint.addr(), ALPN).await.unwrap());
+    }
+    for _ in 0..40 {
+        if a.state.lock().sessions[&bid].len() == MAX_CONNECTIONS_PER_PEER {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        a.state.lock().sessions[&bid].len(),
+        MAX_CONNECTIONS_PER_PEER
+    );
+    let over = b.endpoint.connect(a.endpoint.addr(), ALPN).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), over.closed())
+        .await
+        .unwrap();
+    assert!(extra.iter().all(|c| c.close_reason().is_none()));
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn corrupt_store_is_moved_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("net")).unwrap();
+    std::fs::write(dir.path().join("net/net.sqlite3"), b"not a database at all").unwrap();
+    let a = open(&dir, Arc::default()).await;
+    assert!(a.peers().is_empty());
+    assert_eq!(a.label(), "Keel");
+    let aside = std::fs::read_dir(dir.path().join("net"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("net.sqlite3.corrupt-")
+        })
+        .count();
+    assert_eq!(aside, 1);
+    a.close().await;
+}
+
+#[tokio::test]
+async fn invitation_endpoint_closes_once_used() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    pair(&a, &b).await;
+    let mut closed = false;
+    for _ in 0..40 {
+        if a.pairing.lock().await.as_ref().unwrap().stop.is_cancelled() {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(closed);
+    a.close().await;
+    b.close().await;
+}

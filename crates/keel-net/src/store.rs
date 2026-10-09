@@ -99,9 +99,21 @@ impl Store {
             fs4::fs_std::FileExt::try_lock_exclusive(&lock)?,
             "this data directory is already in use by another Keel node"
         );
-        let db = rusqlite::Connection::open(dir.join("net.sqlite3"))?;
-        db.execute_batch("PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);")?;
-        let mut data = read(&db)?;
+        let path = dir.join("net.sqlite3");
+        let (db, mut data) = match load(&path) {
+            Err(error) if corrupt(&error) => {
+                // Keep the evidence, start empty: peers must pair again.
+                let suffix = format!("corrupt-{}", crate::node::now());
+                tracing::warn!("network store is unreadable; moved aside, starting empty");
+                std::fs::rename(&path, dir.join(format!("net.sqlite3.{suffix}")))?;
+                let journal = dir.join("net.sqlite3-journal");
+                if journal.exists() {
+                    std::fs::rename(journal, dir.join(format!("net.sqlite3-journal.{suffix}")))?;
+                }
+                load(&path)?
+            }
+            loaded => loaded?,
+        };
         for record in &mut data.peers {
             record.peer.link = Link::Offline;
         }
@@ -124,6 +136,22 @@ impl Store {
         tx.commit()?;
         Ok((data, out))
     }
+}
+fn load(path: &Path) -> Result<(rusqlite::Connection, Data)> {
+    let db = rusqlite::Connection::open(path)?;
+    db.execute_batch("PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);")?;
+    let data = read(&db)?;
+    Ok((db, data))
+}
+/// Damaged contents, as opposed to I/O or permission errors, which must not
+/// discard the store.
+fn corrupt(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<serde_json::Error>().is_some()
+        || matches!(
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(e.code, rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+        )
 }
 fn read(db: &rusqlite::Connection) -> Result<Data> {
     let json: Option<String> = db

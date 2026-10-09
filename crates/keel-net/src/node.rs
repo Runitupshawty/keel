@@ -17,6 +17,8 @@ use std::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub const ALPN: &[u8] = b"keel/net/1";
+/// Live connections accepted per peer; normally one is held.
+pub(crate) const MAX_CONNECTIONS_PER_PEER: usize = 4;
 
 /// Transport configuration, shared by the permanent and pairing endpoints.
 #[derive(Clone, Debug)]
@@ -185,10 +187,7 @@ impl Node {
         }
     }
     pub fn try_set_label(&self, s: &str) -> Result<()> {
-        ensure!(
-            s.len() <= 256 && !s.chars().any(char::is_control),
-            "invalid label"
-        );
+        ensure!(scope::valid_label(s), "invalid label");
         drop(self.update(|d| {
             d.label = s.into();
             Ok(())
@@ -251,8 +250,10 @@ impl Node {
     }
     pub fn revoke(&self, peer: &PeerId, source: &str, subtree: &str) -> Result<()> {
         let ((), mut state) = self.update(|d| {
+            let before = d.grants.len();
             d.grants
                 .retain(|g| !(&g.peer == peer && g.source == source && g.subtree == subtree));
+            ensure!(d.grants.len() < before, "no matching grant");
             Ok(())
         })?;
         let offline = state.disconnect(peer);
@@ -277,10 +278,7 @@ impl Node {
         Ok(())
     }
     pub(crate) fn paired(&self, addr: iroh::EndpointAddr, label: String) -> Result<Peer> {
-        ensure!(
-            label.len() <= 256 && !label.chars().any(char::is_control),
-            "invalid label"
-        );
+        ensure!(scope::valid_label(&label), "invalid label");
         let peer = Peer {
             id: PeerId(NodeId(*addr.id.as_bytes())),
             label,
@@ -312,6 +310,11 @@ impl Node {
         let sessions = state.sessions.entry(peer).or_default();
         if let Some(s) = sessions.get(&conn.stable_id()) {
             return Ok(s.cancel.clone());
+        }
+        if sessions.len() >= MAX_CONNECTIONS_PER_PEER {
+            tracing::debug!(peer = %peer.0, what = "connect", allowed = false, "net request");
+            conn.close(2u8.into(), b"too many connections");
+            bail!("too many connections");
         }
         let cancel = self.stop.child_token();
         sessions.insert(
