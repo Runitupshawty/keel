@@ -109,8 +109,13 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     ui.add_space(3.0);
     tab_strip(ui, idx, pane, out);
-    nav_bar(ui, pane, out);
-    filter_bar(ui, pane, out);
+    let search = pane.tab().is_search();
+    if search {
+        crate::search_tab::bar(ui, pane, out);
+    } else {
+        nav_bar(ui, pane, out);
+        filter_bar(ui, pane, out);
+    }
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
     if let Some(err) = tab.error.clone() {
@@ -126,6 +131,8 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         return;
     }
     match pane.view {
+        // Search rows need the Folder column.
+        _ if search => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Details => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Grid => view_grid::ui(ui, (idx, tab_idx), tab, cx, out),
     }
@@ -350,8 +357,9 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
     });
 }
 
-/// Context menu shared by both views. `on_item`: opened on an entry, not empty space.
-pub fn context_menu(ui: &mut egui::Ui, on_item: bool, out: &mut Vec<Action>) {
+/// Context menu shared by both views. `on_item`: opened on an entry, not empty space;
+/// `search`: a search results row (adds Open location).
+pub fn context_menu(ui: &mut egui::Ui, on_item: bool, search: bool, out: &mut Vec<Action>) {
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
         let button = egui::Button::new(text).shortcut_text(shortcut);
         if ui.add(button).clicked() {
@@ -362,6 +370,9 @@ pub fn context_menu(ui: &mut egui::Ui, on_item: bool, out: &mut Vec<Action>) {
     if on_item {
         item(ui, "Open", "Enter", Action::Enter);
         item(ui, "Open with…", "", Action::OpenWith);
+        if search {
+            item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
+        }
         ui.separator();
         item(ui, "Copy", "Ctrl+C", Action::Copy);
         item(ui, "Cut", "Ctrl+X", Action::Cut);

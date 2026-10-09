@@ -73,9 +73,13 @@ pub enum Action {
     ToggleTheme,
     Navigate(VPath),
     NewTabAt(VPath),
-    /// Task 7.
+    /// Open the cursor entry's folder with the entry selected (other pane, or a new tab
+    /// when single-pane).
+    OpenLocation,
     Search,
     JumpFolder,
+    /// Rebuild the Ctrl+P folder index (F5 in the popup).
+    ReindexFolders,
     Palette,
     TogglePreview,
 }
@@ -94,6 +98,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::N, Action::NewFolder),
     (CMD_SHIFT, Key::V, Action::TogglePreview),
     (CMD, Key::P, Action::JumpFolder),
+    (CMD, Key::Enter, Action::OpenLocation),
     (CMD, Key::F, Action::Search),
     (CMD, Key::E, Action::FocusFilter),
     (CMD, Key::L, Action::FocusPath),
@@ -115,6 +120,17 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::NONE, Key::Escape, Action::ClearFilter),
 ];
 
+/// Shortcuts that never mean anything to a focused text box.
+const WHILE_TYPING: &[Action] = &[
+    Action::Palette,
+    Action::JumpFolder,
+    Action::Search,
+    Action::ToggleDual,
+    Action::TogglePreview,
+    Action::NewTab,
+    Action::CloseTab,
+];
+
 const MOVES: &[(Key, Nav)] = &[
     (Key::ArrowUp, Nav::Prev),
     (Key::ArrowDown, Nav::Next),
@@ -133,7 +149,15 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
         .memory(|m| m.focused())
         .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
     if typing {
-        return Vec::new();
+        // Window-level shortcuts still work from a text box (e.g. Ctrl+P from the search box).
+        return ctx.input_mut(|i| {
+            SHORTCUTS
+                .iter()
+                .filter(|(_, _, a)| WHILE_TYPING.contains(a))
+                .filter(|(mods, key, _)| i.consume_key(*mods, *key))
+                .map(|(_, _, a)| a.clone())
+                .collect()
+        });
     }
     let (mut out, paste_event, v_released) = ctx.input_mut(|i| {
         let mut out = Vec::new();

@@ -5,6 +5,8 @@ use crate::preview_panel::PreviewKey;
 use crate::state::Msg;
 use crate::tab::Listing;
 use crossbeam_channel::{Sender, TrySendError};
+use keel_preview::Preview;
+use keel_search::{Query, Searcher};
 use keel_vfs::{Entry, Router, VPath};
 use std::sync::Arc;
 
@@ -56,6 +58,78 @@ pub fn spawn_local(
     });
 }
 
+/// Materialises `entry` and renders it into a fit box of `max_px`. Blocks: workers only.
+pub fn render(router: &Router, entry: Entry, page: u32, max_px: u32) -> Preview {
+    match router
+        .provider_for(&entry.path)
+        .ok_or_else(|| anyhow::anyhow!("no provider for {}", entry.path.display()))
+        .and_then(|p| p.local_copy(&entry.path))
+    {
+        Ok(bytes_path) => keel_preview::preview(&keel_preview::Request {
+            entry,
+            bytes_path,
+            page,
+            max_px,
+        }),
+        Err(e) => Preview::Error(format!("{e:#}")),
+    }
+}
+
+/// A preview panel request: what to render and the panel width in physical pixels.
+pub type PreviewJob = (PreviewKey, Entry, u32);
+
+/// The preview panel's single worker. Requests queued while it renders are skipped
+/// except the newest, so fast cursor movement never queues a backlog of renders.
+pub fn spawn_previewer(
+    router: Arc<Router>,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+) -> Sender<PreviewJob> {
+    let (jobs, rx) = crossbeam_channel::unbounded::<PreviewJob>();
+    spawn("keel-preview", move || {
+        while let Ok(first) = rx.recv() {
+            let (key, entry, max_px) = rx.try_iter().last().unwrap_or(first);
+            let preview = render(&router, entry, key.page, max_px);
+            send(&tx, &ctx, Msg::Preview { key, preview });
+        }
+    });
+    jobs
+}
+
+/// Loads the platform searcher (the Everything DLL load and IPC probe may block).
+pub fn spawn_searcher(tx: Sender<Msg>, ctx: egui::Context) {
+    spawn("keel-searcher", move || {
+        let searcher: Arc<dyn Searcher> = Arc::from(keel_search::default_searcher());
+        let reason = crate::search_tab::probe(searcher.as_ref());
+        send(&tx, &ctx, Msg::Searcher { searcher, reason });
+    });
+}
+
+/// Re-checks whether search works (e.g. Everything was started after Keel).
+pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Context) {
+    spawn("keel-probe", move || {
+        let reason = crate::search_tab::probe(searcher.as_ref());
+        send(&tx, &ctx, Msg::SearchProbe(reason));
+    });
+}
+
+pub fn spawn_search(
+    searcher: Arc<dyn Searcher>,
+    text: String,
+    id: u64,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+) {
+    spawn("keel-search", move || {
+        let result = searcher.query(&Query {
+            text,
+            max: crate::search_tab::MAX_HITS,
+            ..Query::default()
+        });
+        send(&tx, &ctx, Msg::Search { id, result });
+    });
+}
+
 /// Four thumbnail threads behind a small bounded queue. When the queue is full the
 /// request is refused and the grid asks again next frame, so fast scrolling never
 /// piles up stale work.
@@ -72,19 +146,7 @@ impl ThumbPool {
             let (rx, tx, ctx, router) = (rx.clone(), tx.clone(), ctx.clone(), router.clone());
             spawn("keel-thumb", move || {
                 while let Ok((key, entry)) = rx.recv() {
-                    let preview = match router
-                        .provider_for(&entry.path)
-                        .ok_or_else(|| anyhow::anyhow!("no provider"))
-                        .and_then(|p| p.local_copy(&entry.path))
-                    {
-                        Ok(bytes_path) => keel_preview::preview(&keel_preview::Request {
-                            entry,
-                            bytes_path,
-                            page: 0,
-                            max_px: THUMB_PX,
-                        }),
-                        Err(e) => keel_preview::Preview::Error(e.to_string()),
-                    };
+                    let preview = render(&router, entry, 0, THUMB_PX);
                     send(&tx, &ctx, Msg::Thumb { key, preview });
                 }
             });

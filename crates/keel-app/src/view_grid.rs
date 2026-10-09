@@ -219,7 +219,7 @@ pub fn ui(
                                 }
                             }
                             let resp = resp.on_hover_text(&e.name);
-                            resp.context_menu(|ui| context_menu(ui, true, out));
+                            resp.context_menu(|ui| context_menu(ui, true, false, out));
                             clicks.push((resp, e.clone()));
                         }
                     });

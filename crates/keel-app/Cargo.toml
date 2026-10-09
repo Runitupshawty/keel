@@ -30,6 +30,9 @@ open = "5"
 humansize = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 natord = "1"
+# No http loader: Markdown previews must not fetch remote images.
+egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
+ignore.workspace = true
 
 # Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
 [target.'cfg(not(windows))'.dependencies]

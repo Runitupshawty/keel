@@ -4,16 +4,20 @@
 use crate::clipboard::Clipboard;
 use crate::dialogs::{self, Dialog};
 use crate::jobs::{self, Jobs, Source, Transfer};
+use crate::jump::Jump;
 use crate::keys::Action;
+use crate::palette::Palette;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
+use crate::search_tab::DEBOUNCE;
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
-use crate::tab::{Listing, Tab};
+use crate::tab::{Listing, Tab, TabKind};
 use crate::theme::Theme;
 use crate::toast::Toasts;
 use crate::view_grid::Thumbs;
 use crate::{platform, worker};
 use crossbeam_channel::{Receiver, Sender};
+use keel_search::Searcher;
 use keel_vfs::{Entry, Kind, Router, VPath};
 use std::any::Any;
 use std::collections::HashMap;
@@ -46,8 +50,6 @@ pub enum Msg {
         preview: keel_preview::Preview,
     },
     Toast(String),
-    /// Task 7: preview panel result.
-    #[allow(dead_code)]
     Preview {
         key: PreviewKey,
         preview: keel_preview::Preview,
@@ -71,11 +73,21 @@ pub enum Msg {
         dir: VPath,
         name: String,
     },
-    /// Task 7: search tab results.
-    #[allow(dead_code)]
     Search {
         id: u64,
         result: anyhow::Result<Vec<keel_search::Hit>>,
+    },
+    /// The platform searcher loaded; `reason` says why it does not work, if it does not.
+    Searcher {
+        searcher: Arc<dyn Searcher>,
+        reason: Option<String>,
+    },
+    SearchProbe(Option<String>),
+    /// Folder list for Ctrl+P.
+    JumpIndexed(Vec<String>),
+    Jump {
+        id: u64,
+        results: Vec<String>,
     },
 }
 
@@ -89,8 +101,13 @@ pub struct AppState {
     pub dual: bool,
     pub show_hidden: bool,
     pub sidebar: Sidebar,
-    #[allow(dead_code)]
     pub preview: PreviewPanel,
+    /// Loaded on a worker at startup (`load_searcher`); None until then.
+    pub searcher: Option<Arc<dyn Searcher>>,
+    /// Why search does not work (banner text), None when it does.
+    pub search_reason: Option<String>,
+    pub jump: Jump,
+    pub palette: Palette,
     pub jobs: Jobs,
     pub clipboard: Clipboard,
     pub dialog: Option<Dialog>,
@@ -117,6 +134,8 @@ impl AppState {
             "light"
         });
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
+        let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
+        let jump = Jump::new(tx.clone(), ctx.clone());
         let mut state = Self {
             router,
             panes: [Pane::new(start.clone()), Pane::new(start)],
@@ -124,7 +143,11 @@ impl AppState {
             dual: true,
             show_hidden: false,
             sidebar: Sidebar::default(),
-            preview: PreviewPanel::default(),
+            preview: PreviewPanel::new(previewer),
+            searcher: None,
+            search_reason: None,
+            jump,
+            palette: Palette::default(),
             jobs: Jobs::new(ctx.clone()),
             clipboard: Clipboard::default(),
             dialog: None,
@@ -145,6 +168,11 @@ impl AppState {
         state
     }
 
+    /// Loads the platform searcher off the UI thread (the Everything DLL load may block).
+    pub fn load_searcher(&self) {
+        worker::spawn_searcher(self.tx.clone(), self.ctx.clone());
+    }
+
     pub fn tab(&self, pane: usize) -> &Tab {
         self.panes[pane].tab()
     }
@@ -155,8 +183,14 @@ impl AppState {
 
     /// (Re)lists tab `t` of pane `p` on a worker; the old entries stay until it answers.
     /// A folder already being listed is not listed twice: the tab waits for that answer.
+    /// A search tab reruns its query instead.
     pub fn list(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
+        if let TabKind::Search { due, .. } = &mut tab.kind {
+            *due = Some(Instant::now());
+            self.ctx.request_repaint();
+            return;
+        }
         tab.refresh();
         let dir = tab.dir.clone();
         if self.inflight.contains_key(&dir) {
@@ -229,7 +263,10 @@ impl AppState {
                 for p in 0..2 {
                     for t in 0..self.panes[p].tabs.len() {
                         let tab = &mut self.panes[p].tabs[t];
-                        if tab.dir == dir {
+                        if tab.is_search() {
+                            // A renamed or new file may now (not) match.
+                            self.list(p, t);
+                        } else if tab.dir == dir {
                             tab.selected = [name.clone()].into();
                             tab.cursor = Some(name.clone());
                             tab.anchor = Some(name.clone());
@@ -238,8 +275,116 @@ impl AppState {
                     }
                 }
             }
-            Msg::Preview { .. } | Msg::Search { .. } => {}
+            Msg::Preview { key, preview } => self.preview.insert(&self.ctx, key, preview),
+            Msg::Search { id, result } => self.searched(id, result),
+            Msg::Searcher { searcher, reason } => {
+                self.searcher = Some(searcher);
+                self.search_reason = reason;
+                if std::mem::take(&mut self.jump.waiting) {
+                    self.index_folders();
+                }
+            }
+            Msg::SearchProbe(reason) => {
+                self.search_reason = reason;
+                if self.search_reason.is_none() {
+                    self.toasts.info("Search is available");
+                }
+            }
+            Msg::JumpIndexed(items) => self.jump.indexed(items),
+            Msg::Jump { id, results } => self.jump.results(id, results),
         }
+    }
+
+    fn searched(&mut self, id: u64, result: anyhow::Result<Vec<keel_search::Hit>>) {
+        let Some(tab) = self
+            .panes
+            .iter_mut()
+            .flat_map(|p| p.tabs.iter_mut())
+            .find(|t| matches!(t.kind, TabKind::Search { req, .. } if req == id))
+        else {
+            return;
+        };
+        tab.loading = false;
+        match result {
+            Ok(hits) => {
+                tab.set_listing(crate::tab::hits_listing(hits));
+                tab.error = None;
+                self.search_reason = None;
+            }
+            Err(e) => {
+                let text = crate::search_tab::banner(&format!("{e:#}"));
+                tab.error = Some(text.clone());
+                self.search_reason = Some(text);
+            }
+        }
+    }
+
+    /// Runs the due query of search tab `t` in pane `p`.
+    fn start_search(&mut self, p: usize, t: usize) {
+        let tab = &mut self.panes[p].tabs[t];
+        let TabKind::Search { query, due, req } = &mut tab.kind else {
+            return;
+        };
+        let Some(searcher) = self.searcher.clone() else {
+            // Still loading: try again shortly.
+            *due = Some(Instant::now() + DEBOUNCE);
+            self.ctx.request_repaint_after(DEBOUNCE);
+            return;
+        };
+        *due = None;
+        self.next_req += 1;
+        *req = self.next_req;
+        let text = query.trim().to_owned();
+        if text.is_empty() {
+            tab.set_listing(Listing::new(Vec::new()));
+            tab.loading = false;
+            return;
+        }
+        tab.loading = true;
+        worker::spawn_search(
+            searcher,
+            text,
+            self.next_req,
+            self.tx.clone(),
+            self.ctx.clone(),
+        );
+    }
+
+    /// Builds the Ctrl+P folder index on a worker (or once the searcher has loaded).
+    fn index_folders(&mut self) {
+        if self.jump.indexing {
+            return;
+        }
+        let Some(searcher) = self.searcher.clone() else {
+            self.jump.waiting = true;
+            return;
+        };
+        self.jump.indexing = true;
+        if self.jump.indexed_at.is_none() {
+            self.toasts.info("Indexing folders…");
+        }
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-index", move || {
+            let items = crate::jump::build_index(searcher.as_ref());
+            worker::send(&tx, &ctx, Msg::JumpIndexed(items));
+        });
+    }
+
+    /// Asks the searcher again whether it works (status bar click).
+    pub fn probe_search(&self) {
+        if let Some(s) = self.searcher.clone() {
+            worker::spawn_probe(s, self.tx.clone(), self.ctx.clone());
+        }
+    }
+
+    /// The entry the preview panel shows: the active pane's cursor, else its first target.
+    pub fn preview_target(&mut self) -> Option<Entry> {
+        let show_hidden = self.show_hidden;
+        let tab = self.tab_mut(self.active);
+        tab.visible(show_hidden);
+        tab.cursor_pos()
+            .map(|pos| tab.entries()[tab.visible_cached()[pos]].clone())
+            .or_else(|| tab.targets().first().map(|e| (*e).clone()))
     }
 
     fn start_transfer(&mut self, op: Transfer, conflict: keel_vfs::Conflict, from_clipboard: bool) {
@@ -323,6 +468,14 @@ impl AppState {
                 }
                 // 100k entries: the last (usually only) tab takes the listing itself.
                 fill(last, listing);
+                let show_hidden = self.show_hidden;
+                for &(p, t) in &hits {
+                    let tab = &mut self.panes[p].tabs[t];
+                    if tab.reveal {
+                        tab.visible(show_hidden);
+                        tab.reveal_cursor();
+                    }
+                }
             }
             Err(e) => {
                 // Review Focus 2: keep the last good listing, say why.
@@ -366,7 +519,8 @@ impl AppState {
             self.pending_refresh.remove(&dir);
             for p in 0..2 {
                 for t in 0..self.panes[p].tabs.len() {
-                    if self.panes[p].tabs[t].dir == dir {
+                    let tab = &self.panes[p].tabs[t];
+                    if tab.dir == dir && !tab.is_search() {
                         self.list(p, t);
                     }
                 }
@@ -391,6 +545,22 @@ impl AppState {
             worker::spawn_drives(self.tx.clone(), self.ctx.clone());
             self.ctx.request_repaint_after(DRIVES_REFRESH);
         }
+        let mut next_search: Option<Instant> = None;
+        for p in 0..2 {
+            for t in 0..self.panes[p].tabs.len() {
+                if let TabKind::Search { due: Some(at), .. } = self.panes[p].tabs[t].kind {
+                    if at <= now {
+                        self.start_search(p, t);
+                    } else {
+                        next_search = Some(next_search.map_or(at, |n| n.min(at)));
+                    }
+                }
+            }
+        }
+        if let Some(at) = next_search {
+            self.ctx
+                .request_repaint_after(at.saturating_duration_since(now));
+        }
         self.sync_watchers();
     }
 
@@ -399,7 +569,9 @@ impl AppState {
     fn sync_watchers(&mut self) {
         for p in 0..2 {
             let wanted = (p == 0 || self.dual)
-                .then(|| self.tab(p).dir.clone())
+                .then(|| self.tab(p))
+                .filter(|t| !t.is_search())
+                .map(|t| t.dir.clone())
                 .filter(|d| d.to_local_path().is_some());
             if self.watchers[p].0 == wanted {
                 continue;
@@ -489,8 +661,15 @@ impl AppState {
             }
             Action::Type(text) => {
                 let tab = self.tab_mut(p);
-                tab.filter.push_str(&text);
-                tab.filter_open = true;
+                if let TabKind::Search { query, due, .. } = &mut tab.kind {
+                    // Typing in a search tab edits the query.
+                    query.push_str(&text);
+                    *due = Some(Instant::now() + DEBOUNCE);
+                    self.ctx.request_repaint_after(DEBOUNCE);
+                } else {
+                    tab.filter.push_str(&text);
+                    tab.filter_open = true;
+                }
                 self.panes[p].focus_filter = true;
             }
             Action::ClearFilter => {
@@ -532,8 +711,12 @@ impl AppState {
             }
             Action::Rename => {
                 let tab = self.tab_mut(p);
-                if let Some(name) = tab.targets().first().map(|e| e.name.clone()) {
-                    tab.renaming = Some((name.clone(), name));
+                let target = tab
+                    .targets()
+                    .first()
+                    .map(|e| (e.name.clone(), tab.shown_name(e).to_owned()));
+                if target.is_some() {
+                    tab.renaming = target;
                 }
             }
             Action::CopyPath => {
@@ -603,6 +786,10 @@ impl AppState {
                     self.toasts.info(format!("{verb} {}", jobs::items(n)));
                 }
             }
+            Action::Paste | Action::NewFolder | Action::NewFile if self.tab(p).is_search() => {
+                self.toasts
+                    .error("Open a folder first (search results have no folder)");
+            }
             Action::Paste => match self.tab(p).dir.to_local_path() {
                 Some(dst) => jobs::spawn_plan(
                     Source::Clipboard(self.clipboard.clone()),
@@ -627,6 +814,11 @@ impl AppState {
                 };
                 if paths.is_empty() || from.as_ref().is_some_and(|(_, dir)| *dir == dst) {
                     return;
+                }
+                if self.tab(p).is_search() && self.tab(p).dir == dst {
+                    return self
+                        .toasts
+                        .error("Drop onto a folder row, or open a folder first");
                 }
                 // Shift = move; within one pane a drag into a subfolder moves, like Explorer.
                 let shift = self.ctx.input(|i| i.modifiers.shift);
@@ -666,11 +858,53 @@ impl AppState {
                 });
             }
             Action::Properties => self.toasts.not_yet("Properties"),
-            Action::Search => self.toasts.not_yet("Search"),
-            Action::JumpFolder => self.toasts.not_yet("Jump to folder"),
-            Action::Palette => self.toasts.not_yet("Command palette"),
-            Action::TogglePreview => self.toasts.not_yet("Preview panel"),
+            Action::Search => {
+                if !self.tab(p).is_search() {
+                    let mut tab = Tab::search(self.tab(p).dir.clone());
+                    tab.error = self.search_reason.clone();
+                    let pane = &mut self.panes[p];
+                    pane.tabs.push(tab);
+                    pane.active = pane.tabs.len() - 1;
+                }
+                self.panes[p].focus_filter = true;
+            }
+            Action::OpenLocation => self.open_location(p),
+            Action::JumpFolder => {
+                self.jump.show();
+                if self.jump.stale() {
+                    self.index_folders();
+                }
+            }
+            Action::ReindexFolders => self.index_folders(),
+            Action::Palette => {
+                let selection = !self.tab(p).targets().is_empty();
+                self.palette.show(selection);
+            }
+            Action::TogglePreview => self.preview.open = !self.preview.open,
         }
+    }
+
+    /// Opens the cursor entry's folder with the entry selected: in the other pane, or a
+    /// new tab here when single-pane (or when the other pane shows a search).
+    fn open_location(&mut self, p: usize) {
+        let Some(e) = self.tab(p).targets().first().map(|e| (*e).clone()) else {
+            return;
+        };
+        let Some(dir) = e.path.parent() else { return };
+        let q = if self.dual { 1 - p } else { p };
+        if !self.dual || self.tab(q).is_search() {
+            self.open_tab(q, dir);
+        } else {
+            self.tab_mut(q).navigate(dir);
+            self.list_active(q);
+        }
+        let name = e.path.name().to_owned();
+        let tab = self.tab_mut(q);
+        tab.selected = [name.clone()].into();
+        tab.cursor = Some(name.clone());
+        tab.anchor = Some(name);
+        tab.reveal = true;
+        self.active = q;
     }
 
     fn open_tab(&mut self, p: usize, dir: VPath) {

@@ -1,4 +1,5 @@
-//! Details view: a virtual-row table (Name / Ext / Size / Modified).
+//! Details view: a virtual-row table (Name / Ext / Size / Modified; search results show
+//! Name / Folder / Size / Modified).
 
 use crate::keys::Action;
 use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
@@ -40,6 +41,7 @@ pub fn ui(
         .saturating_sub(2)
         .max(1);
     let muted = cx.theme.muted();
+    let search = tab.is_search();
     let mut renaming = tab.renaming.take();
     let mut rename_done = false;
     let mut sort_click = None;
@@ -54,7 +56,11 @@ pub fn ui(
         .max_scroll_height(f32::INFINITY)
         .cell_layout(Layout::left_to_right(Align::Center))
         .column(Column::remainder().at_least(120.0).clip(true))
-        .column(Column::initial(56.0).at_least(30.0).clip(true))
+        .column(
+            Column::initial(if search { 180.0 } else { 56.0 })
+                .at_least(30.0)
+                .clip(true),
+        )
         .column(Column::initial(80.0).at_least(50.0))
         .column(Column::initial(124.0).at_least(60.0).clip(true));
     if let Some(row) = tab.scroll_to.take() {
@@ -70,6 +76,10 @@ pub fn ui(
                 ("Modified", SortKey::Modified),
             ] {
                 header.col(|ui| {
+                    if search && key == SortKey::Ext {
+                        ui.strong("Folder");
+                        return;
+                    }
                     let arrow = match sort {
                         (k, true) if k == key => " ⏶",
                         (k, false) if k == key => " ⏷",
@@ -86,6 +96,7 @@ pub fn ui(
             let vis = tab.visible_cached();
             body.rows(ROW_H, vis.len(), |mut row| {
                 let e = &tab.entries()[vis[row.index()]];
+                let shown = tab.shown_name(e);
                 row.set_selected(tab.selected.contains(&e.name));
                 let color = (e.hidden).then_some(muted);
                 row.col(|ui| {
@@ -101,7 +112,7 @@ pub fn ui(
                                 rename_done = true;
                                 if ui.input(|i| i.key_pressed(Key::Enter))
                                     && !text.trim().is_empty()
-                                    && text != name
+                                    && text.trim() != shown
                                 {
                                     out.push(Action::RenameTo {
                                         from: e.path.clone(),
@@ -113,12 +124,18 @@ pub fn ui(
                             }
                         }
                         _ => {
-                            ui.add(egui::Label::new(cell(&e.name, color)).truncate());
+                            ui.add(egui::Label::new(cell(shown, color)).truncate());
                         }
                     }
                 });
                 row.col(|ui| {
-                    ui.label(cell(&e.ext, Some(muted)));
+                    if search {
+                        let folder = e.path.parent().map(|d| d.display()).unwrap_or_default();
+                        ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate())
+                            .on_hover_text(folder);
+                    } else {
+                        ui.label(cell(&e.ext, Some(muted)));
+                    }
                 });
                 row.col(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -129,7 +146,7 @@ pub fn ui(
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
                 let r = row.response();
-                r.context_menu(|ui| context_menu(ui, true, out));
+                r.context_menu(|ui| context_menu(ui, true, search, out));
                 clicks.push((r, e.clone()));
             });
         });
@@ -165,5 +182,5 @@ pub fn empty_area(ui: &mut egui::Ui, tab: &mut Tab, out: &mut Vec<Action>) {
     if r.clicked() || r.secondary_clicked() {
         tab.selected.clear();
     }
-    r.context_menu(|ui| context_menu(ui, false, out));
+    r.context_menu(|ui| context_menu(ui, false, false, out));
 }

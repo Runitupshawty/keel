@@ -1,4 +1,5 @@
-//! The eframe app: message drain, keyboard, sidebar, dual panes, status bar, toasts.
+//! The eframe app: message drain, keyboard, sidebar, dual panes, preview panel,
+//! popups (jump, palette), status bar, toasts.
 
 use crate::keys::{self, Action};
 use crate::pane::{self, DragPayload, ViewCx};
@@ -17,10 +18,9 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, start: VPath) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        Self {
-            state: AppState::new(cc.egui_ctx.clone(), Arc::new(Router::new()), start),
-            split: 0.5,
-        }
+        let state = AppState::new(cc.egui_ctx.clone(), Arc::new(Router::new()), start);
+        state.load_searcher();
+        Self { state, split: 0.5 }
     }
 }
 
@@ -30,7 +30,7 @@ impl eframe::App for App {
         s.drain();
         s.tick();
         s.jobs.tick();
-        if s.dialog.is_none() {
+        if s.dialog.is_none() && !s.jump.open && !s.palette.open {
             for action in keys::actions(ctx) {
                 s.run(s.active, action);
             }
@@ -50,6 +50,19 @@ impl eframe::App for App {
                 s.sidebar.ui(ui, &s.theme, &current, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
+        if s.preview.open {
+            let target = s.preview_target();
+            s.preview.follow(ctx, target.as_ref());
+            egui::SidePanel::right("preview")
+                .resizable(true)
+                .default_width(380.0)
+                .width_range(200.0..=1000.0)
+                .show(ctx, |ui| {
+                    s.preview.width_px =
+                        (ui.available_width() * ctx.pixels_per_point()).round() as u32;
+                    s.preview.ui(ui, s.theme.muted());
+                });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(4.0))
             .show(ctx, |ui| {
@@ -148,6 +161,16 @@ impl eframe::App for App {
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
         }
+        if s.jump.open {
+            if let Some(action) = s.jump.ui(ctx) {
+                out.push((s.active, action));
+            }
+        }
+        if s.palette.open {
+            if let Some(action) = s.palette.ui(ctx) {
+                out.push((s.active, action));
+            }
+        }
         for (p, action) in out {
             s.run(p, action);
         }
@@ -200,6 +223,21 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                     format_size(*free, DECIMAL),
                     format_size(*total, DECIMAL)
                 ));
+            }
+            if cfg!(windows) {
+                ui.separator();
+                let (text, tip) = match (&s.searcher, &s.search_reason) {
+                    (None, _) => ("Everything: …", "Loading the search backend"),
+                    (Some(_), None) => ("Everything: ok", "Everything search is available"),
+                    (Some(_), Some(_)) => ("Everything: not running", "Click to check again"),
+                };
+                if ui
+                    .add(egui::Button::new(text).frame(false))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    s.probe_search();
+                }
             }
             if s.show_hidden {
                 ui.separator();

@@ -3,6 +3,7 @@
 
 use keel_vfs::{Entry, Kind, VPath};
 use std::collections::{BTreeSet, HashSet};
+use std::time::Instant;
 
 /// A folder listing plus each name lowercased (computed on the listing worker, so the
 /// UI thread never case-folds 100k names).
@@ -30,10 +31,14 @@ pub enum SortKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Dir,
-    /// Task 7: Everything search results.
-    #[allow(dead_code)]
+    /// Search results (Everything on Windows). Entries are keyed by full path, so two
+    /// hits with the same file name stay distinct.
     Search {
         query: String,
+        /// Debounce: run the query at this instant.
+        due: Option<Instant>,
+        /// Request number of the query in flight or shown; older answers are dropped.
+        req: u64,
     },
 }
 
@@ -83,6 +88,8 @@ pub struct Tab {
     pub row_step: usize,
     /// Grid view scroll (offset, viewport height), for keeping the cursor in view.
     pub grid_scroll: (f32, f32),
+    /// Scroll the cursor into view once the next listing arrives (Open location).
+    pub reveal: bool,
     generation: u64,
     cache_key: Option<(u64, String, (SortKey, bool), bool)>,
     cache: Vec<usize>,
@@ -112,15 +119,44 @@ impl Tab {
             page_rows: 20,
             row_step: 1,
             grid_scroll: (0.0, 0.0),
+            reveal: false,
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
         }
     }
 
+    /// A search tab started from `dir` (where it pastes nothing and lists nothing).
+    pub fn search(dir: VPath) -> Self {
+        Self {
+            kind: TabKind::Search {
+                query: String::new(),
+                due: None,
+                req: 0,
+            },
+            loading: false,
+            listed_dir: Some(dir.clone()),
+            ..Self::new(dir)
+        }
+    }
+
+    pub fn is_search(&self) -> bool {
+        matches!(self.kind, TabKind::Search { .. })
+    }
+
+    /// The name shown for `e`: search rows are keyed by full path but show the file name.
+    pub fn shown_name<'a>(&self, e: &'a Entry) -> &'a str {
+        if self.is_search() {
+            e.path.name()
+        } else {
+            &e.name
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.kind {
-            TabKind::Search { query } => format!("Search: {query}"),
+            TabKind::Search { query, .. } if query.is_empty() => "Search".into(),
+            TabKind::Search { query, .. } => format!("Search: {query}"),
             TabKind::Dir => match self.dir.name() {
                 "" => self.dir.display(),
                 name => name.to_owned(),
@@ -193,7 +229,7 @@ impl Tab {
 
     /// Changes directory: pushes history, clears selection/filter, marks loading.
     pub fn navigate(&mut self, to: VPath) {
-        if to == self.dir {
+        if to == self.dir && !self.is_search() {
             return;
         }
         let from = std::mem::replace(&mut self.dir, to);
@@ -238,7 +274,9 @@ impl Tab {
         self.loading = true;
     }
 
+    /// Leaving a search for a folder turns the tab into a folder tab.
     fn reset_view(&mut self) {
+        self.kind = TabKind::Dir;
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
@@ -334,6 +372,13 @@ impl Tab {
         self.selected = next;
     }
 
+    /// Scrolls to the cursor if `reveal` was asked for (call after `visible()`).
+    pub fn reveal_cursor(&mut self) {
+        if std::mem::take(&mut self.reveal) {
+            self.scroll_to = self.cursor_pos();
+        }
+    }
+
     pub fn cursor_pos(&self) -> Option<usize> {
         let c = self.cursor.as_deref()?;
         self.cache.iter().position(|&i| self.entries[i].name == c)
@@ -380,6 +425,37 @@ impl Tab {
             picked
         }
     }
+}
+
+/// Search hits as a listing: names are full paths (unique), `lower` is the lowercased
+/// file name so Name sort and the filter work on what the row shows.
+pub fn hits_listing(hits: Vec<keel_search::Hit>) -> Listing {
+    let entries: Vec<Entry> = hits
+        .into_iter()
+        .map(|h| {
+            let name = h.path.display();
+            let file = h.path.name();
+            let ext = match file.rsplit_once('.') {
+                Some((stem, ext)) if !h.is_dir && !stem.is_empty() => ext.to_lowercase(),
+                _ => String::new(),
+            };
+            Entry {
+                kind: if h.is_dir { Kind::Dir } else { Kind::File },
+                size: h.size,
+                modified: h.modified,
+                hidden: false,
+                is_link: false,
+                ext,
+                name,
+                path: h.path,
+            }
+        })
+        .collect();
+    let lower = entries
+        .iter()
+        .map(|e| e.path.name().to_lowercase())
+        .collect();
+    Listing { entries, lower }
 }
 
 fn compute_visible(
