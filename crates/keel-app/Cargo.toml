@@ -63,6 +63,9 @@ global-hotkey = "0.8.0"
 arboard = { version = "3.6", default-features = false }
 
 [dev-dependencies]
+# tests/cli.rs: temp library folders, unique profile names.
+tempfile = "3"
+getrandom.workspace = true
 # The real cloud provider over an in-memory service in the job tests.
 opendal = { workspace = true, features = ["services-memory"] }
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

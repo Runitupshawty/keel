@@ -13,6 +13,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod host;
+pub mod mcp;
 pub mod net;
 mod ops;
 pub mod plans;

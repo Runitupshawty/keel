@@ -1,10 +1,12 @@
 //! Command line (Task 24): `keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]`,
 //! and the request a later `keel` hands to the running instance (`single_instance`).
+//! Task 37: subcommands (`keel search`, `keel plan`, `keel mcp`, ...; see `commands`) run
+//! without a window.
 
 use crate::keys::Action;
 use crate::state::AppState;
 use crate::tab::TabKind;
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use keel_vfs::VPath;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -18,7 +20,7 @@ pub struct Cli {
     #[arg(long)]
     pub new_window: bool,
     /// Settings profile: <config dir>/profiles/<NAME>.
-    #[arg(long, value_name = "NAME", value_parser = profile_name)]
+    #[arg(long, global = true, value_name = "NAME", value_parser = profile_name)]
     pub profile: Option<String>,
     /// Open a search tab with this query (in FOLDER when given).
     #[arg(long, value_name = "QUERY")]
@@ -26,6 +28,138 @@ pub struct Cli {
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
+    /// Subcommands: print machine-readable JSON.
+    #[arg(long, global = true)]
+    pub json: bool,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// `keel <subcommand>`: talks to keel-daemon when it runs for the profile, else opens the
+/// library in this process. Exit codes: 0 ok, 1 operation error, 2 usage.
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum Command {
+    /// Search the library index.
+    Search {
+        query: String,
+        /// At most N hits (default 100).
+        #[arg(long, value_name = "N")]
+        max: Option<usize>,
+    },
+    /// Tag or untag indexed files.
+    #[command(subcommand)]
+    Tag(TagCmd),
+    /// Preview a file operation: prints the preview, its plan id and input hash.
+    #[command(subcommand)]
+    Plan(PlanCmd),
+    /// Apply a previewed plan. Without PLAN, reads `keel plan` output from stdin.
+    Execute {
+        /// The plan id `keel plan` printed.
+        plan: Option<String>,
+        /// The input hash `keel plan` printed.
+        #[arg(long, value_name = "HASH")]
+        hash: Option<String>,
+        /// Return once the job started instead of waiting for it.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Paired devices.
+    Devices,
+    /// Grants to paired devices.
+    Shares,
+    /// Library sources (lists them without a subcommand).
+    Sources {
+        #[command(subcommand)]
+        action: Option<SourcesCmd>,
+    },
+    /// Start, stop or check keel-daemon for the profile.
+    #[command(subcommand)]
+    Daemon(DaemonCmd),
+    /// MCP server over stdio (for Claude Code, Codex and other MCP clients).
+    Mcp,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum TagCmd {
+    /// Tag indexed files (the tag is created when missing).
+    Add {
+        tag: String,
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Remove a tag from indexed files.
+    Remove {
+        tag: String,
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum PlanCmd {
+    /// Copy into a folder.
+    Copy {
+        #[arg(required = true)]
+        src: Vec<String>,
+        #[arg(long, value_name = "DIR")]
+        to: String,
+        #[arg(long, value_enum)]
+        on_conflict: Option<Conflict>,
+    },
+    /// Move into a folder.
+    Move {
+        #[arg(required = true)]
+        src: Vec<String>,
+        #[arg(long, value_name = "DIR")]
+        to: String,
+        #[arg(long, value_enum)]
+        on_conflict: Option<Conflict>,
+    },
+    /// Delete (to the trash where the provider has one).
+    Delete {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq)]
+pub enum Conflict {
+    Skip,
+    Overwrite,
+    /// Keep both (the new one gets a free name).
+    Rename,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum SourcesCmd {
+    /// Add a folder as a source and index it.
+    Add {
+        path: String,
+        #[arg(long)]
+        label: Option<String>,
+        /// Do not index it now.
+        #[arg(long)]
+        no_index: bool,
+    },
+    /// Forget a source (its files are not touched).
+    Remove {
+        id: String,
+        /// Also delete its index store.
+        #[arg(long)]
+        delete_store: bool,
+    },
+    /// Index a source now.
+    Index { id: String },
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq)]
+pub enum DaemonCmd {
+    /// Start keel-daemon in the background.
+    Start,
+    /// Ask the running keel-daemon to stop.
+    Stop,
+    /// Whether keel-daemon runs (exit 0) or not (exit 1).
+    Status,
 }
 
 /// What to open: from this process's command line, or handed over by a later `keel`.
@@ -142,6 +276,8 @@ mod tests {
                 profile: None,
                 search: None,
                 index_service: None,
+                json: false,
+                command: None,
             }
         );
         let cli = parse(&[
@@ -278,5 +414,133 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("select"), "{json}");
         assert_eq!(Request::default().checked().unwrap(), Request::default());
+    }
+
+    #[test]
+    fn parses_subcommands() {
+        let cmd = |args: &[&str]| parse(args).unwrap().command.unwrap();
+        assert_eq!(
+            cmd(&["search", "two words", "--max", "5"]),
+            Command::Search {
+                query: "two words".into(),
+                max: Some(5)
+            }
+        );
+        let cli = parse(&["search", "x", "--json", "--profile", "work"]).unwrap();
+        assert!(cli.json);
+        assert_eq!(cli.profile.as_deref(), Some("work"));
+        assert_eq!(cli.folder, None);
+        assert_eq!(
+            cmd(&["tag", "add", "receipts", "a.pdf", "b.pdf"]),
+            Command::Tag(TagCmd::Add {
+                tag: "receipts".into(),
+                paths: vec!["a.pdf".into(), "b.pdf".into()]
+            })
+        );
+        assert_eq!(
+            cmd(&["tag", "remove", "receipts", "a.pdf"]),
+            Command::Tag(TagCmd::Remove {
+                tag: "receipts".into(),
+                paths: vec!["a.pdf".into()]
+            })
+        );
+        assert_eq!(
+            cmd(&[
+                "plan",
+                "copy",
+                "a",
+                "b",
+                "--to",
+                "dst",
+                "--on-conflict",
+                "rename"
+            ]),
+            Command::Plan(PlanCmd::Copy {
+                src: vec!["a".into(), "b".into()],
+                to: "dst".into(),
+                on_conflict: Some(Conflict::Rename)
+            })
+        );
+        assert_eq!(
+            cmd(&["plan", "move", "a", "--to", "dst"]),
+            Command::Plan(PlanCmd::Move {
+                src: vec!["a".into()],
+                to: "dst".into(),
+                on_conflict: None
+            })
+        );
+        assert_eq!(
+            cmd(&["plan", "delete", "a"]),
+            Command::Plan(PlanCmd::Delete {
+                paths: vec!["a".into()]
+            })
+        );
+        assert_eq!(
+            cmd(&["execute", "abc", "--hash", "def"]),
+            Command::Execute {
+                plan: Some("abc".into()),
+                hash: Some("def".into()),
+                no_wait: false
+            }
+        );
+        assert_eq!(
+            cmd(&["execute"]),
+            Command::Execute {
+                plan: None,
+                hash: None,
+                no_wait: false
+            }
+        );
+        assert_eq!(cmd(&["devices"]), Command::Devices);
+        assert_eq!(cmd(&["shares"]), Command::Shares);
+        assert_eq!(cmd(&["sources"]), Command::Sources { action: None });
+        assert_eq!(
+            cmd(&["sources", "add", "D:/x", "--label", "X"]),
+            Command::Sources {
+                action: Some(SourcesCmd::Add {
+                    path: "D:/x".into(),
+                    label: Some("X".into()),
+                    no_index: false
+                })
+            }
+        );
+        assert_eq!(
+            cmd(&["sources", "remove", "id1", "--delete-store"]),
+            Command::Sources {
+                action: Some(SourcesCmd::Remove {
+                    id: "id1".into(),
+                    delete_store: true
+                })
+            }
+        );
+        assert_eq!(
+            cmd(&["sources", "index", "id1"]),
+            Command::Sources {
+                action: Some(SourcesCmd::Index { id: "id1".into() })
+            }
+        );
+        assert_eq!(cmd(&["daemon", "start"]), Command::Daemon(DaemonCmd::Start));
+        assert_eq!(cmd(&["daemon", "stop"]), Command::Daemon(DaemonCmd::Stop));
+        assert_eq!(
+            cmd(&["daemon", "status"]),
+            Command::Daemon(DaemonCmd::Status)
+        );
+        assert_eq!(cmd(&["mcp"]), Command::Mcp);
+        // Usage errors (exit code 2).
+        for bad in [
+            &["plan", "copy", "a"][..],
+            &["plan", "delete"],
+            &["tag", "add", "t"],
+            &["search"],
+            &["daemon"],
+            &["plan", "copy", "a", "--to", "d", "--on-conflict", "maybe"],
+        ] {
+            let err = parse(bad).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{bad:?}");
+        }
+        // A folder that is not a subcommand still opens the window.
+        let cli = parse(&[r"D:\work"]).unwrap();
+        assert_eq!(cli.command, None);
+        assert!(cli.folder.is_some());
     }
 }
