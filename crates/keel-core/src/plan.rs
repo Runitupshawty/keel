@@ -140,9 +140,11 @@ pub enum Warning {
     },
     /// The provider deletes for good (no trash): SFTP, S3.
     Permanent { path: VPath },
-    /// `files` deleted files have no content id yet, so whether another copy exists is not
-    /// known (no `LastCopy` can be computed for them).
+    /// `files` deleted files have no content id yet, or their bytes drifted from it, so
+    /// whether another copy exists is not known (no `LastCopy` can be computed for them).
     ContentUnverified { path: VPath, files: u64 },
+    /// `files` deleted files' content survives only on offline or archived volumes.
+    CopiesOffline { path: VPath, files: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +179,7 @@ fn kind_of(w: &Warning) -> Warning {
         Warning::LastCopy { path, .. } => Warning::LastCopy { path, files: 0 },
         Warning::SingleDomain { path, .. } => Warning::SingleDomain { path, files: 0 },
         Warning::ContentUnverified { path, .. } => Warning::ContentUnverified { path, files: 0 },
+        Warning::CopiesOffline { path, .. } => Warning::CopiesOffline { path, files: 0 },
         w => w,
     }
 }
@@ -442,7 +445,8 @@ fn sampled_alone(lib: &Shared, h: &[u8]) -> Result<bool> {
 /// `LastCopy` for each deleted path holding files whose content no counted record outside
 /// the deletion holds (by content id, or a sampled hash no other record shares);
 /// `SingleDomain` for files whose remaining copies all fall in one failure domain;
-/// `ContentUnverified` for the other files without a content id yet.
+/// `CopiesOffline` for files whose remaining copies are all offline; `ContentUnverified`
+/// for the other files without a content id yet, or drifted from it.
 fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Result<()> {
     /// (content id, deleted records with it) under one deleted path.
     type Contents = Vec<(Vec<u8>, u64)>;
@@ -472,7 +476,8 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
                     "WITH RECURSIVE sub(id) AS (
                          SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
                      SELECT sampled_hash FROM record
-                     WHERE id IN (SELECT id FROM sub) AND kind = 0 AND cas_id IS NULL",
+                     WHERE id IN (SELECT id FROM sub) AND kind = 0
+                         AND (cas_id IS NULL OR drift IS NOT NULL)",
                 )?
                 .query_map([id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
@@ -505,7 +510,7 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
     // outside the deletion keeps the content too.
     // ponytail: one lookup per content id per source; batch it if deletes of huge hashed
     // trees get slow.
-    let mut left: HashMap<&[u8], (bool, bool)> = HashMap::new();
+    let mut left: HashMap<&[u8], crate::protect::Left> = HashMap::new();
     if !deleted.is_empty() {
         let vols = crate::protect::Volumes::load(lib)?;
         for (cas, records) in &deleted {
@@ -513,14 +518,15 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
         }
     }
     for (path, cas, alone) in per_path {
-        let count = |pick: fn(&(bool, bool)) -> bool| -> u64 {
+        let count = |pick: fn(&crate::protect::Left) -> bool| -> u64 {
             cas.iter()
                 .filter(|(c, _)| pick(&left[c.as_slice()]))
                 .map(|(_, n)| n)
                 .sum()
         };
-        let files = alone + count(|l| l.0);
-        let single = count(|l| l.1);
+        let files = alone + count(|l| l.none);
+        let single = count(|l| l.one_domain);
+        let offline = count(|l| l.offline);
         if files > 0 {
             warnings.push(Warning::LastCopy {
                 path: path.clone(),
@@ -529,8 +535,14 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
         }
         if single > 0 {
             warnings.push(Warning::SingleDomain {
-                path,
+                path: path.clone(),
                 files: single,
+            });
+        }
+        if offline > 0 {
+            warnings.push(Warning::CopiesOffline {
+                path,
+                files: offline,
             });
         }
     }

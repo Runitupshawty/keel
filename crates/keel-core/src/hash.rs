@@ -683,7 +683,8 @@ impl Library {
             let copied = scratch.execute(
                 "INSERT INTO c SELECT cas_id, ?1, id, size,
                      CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id ELSE ?1 || ':' || id END
-                 FROM s.record WHERE kind = 0 AND cas_id IS NOT NULL AND size >= ?2 ORDER BY id",
+                 FROM s.record WHERE kind = 0 AND cas_id IS NOT NULL AND drift IS NULL
+                     AND size >= ?2 ORDER BY id",
                 params![i as i64, min_size as i64],
             );
             scratch.execute("DETACH DATABASE s", [])?;

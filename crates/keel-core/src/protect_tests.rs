@@ -434,3 +434,146 @@ fn cloud_sources_walk_the_provider_listing_as_their_own_domain() {
     );
     assert_eq!(v[0].state, VolumeState::Online);
 }
+
+fn delete_warnings(lib: &Library, p: &Path) -> Vec<Warning> {
+    validate_preview_execute(
+        lib,
+        Op::Delete {
+            paths: vec![VPath::local(p)],
+        },
+    )
+    .unwrap()
+    .warnings
+}
+
+#[test]
+fn add_source_refuses_a_root_aliased_through_a_junction() {
+    let files = tempfile::tempdir().unwrap();
+    let (real, alias) = (files.path().join("real"), files.path().join("alias"));
+    write(&real.join("sub/only.txt"), "the only copy of these bytes");
+    if !crate::index::tests::dir_link(&real, &alias) {
+        return;
+    }
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "p").unwrap();
+    lib.add_source(folder("real", &real.join("sub"))).unwrap();
+    // Same folder, other path text: refused; so is the folder around it.
+    assert!(lib.add_source(folder("same", &alias.join("sub"))).is_err());
+    assert!(lib.add_source(folder("around", &alias)).is_err());
+    assert_eq!(lib.sources().len(), 1);
+}
+
+#[test]
+fn walk_refuses_a_root_another_source_holds() {
+    let files = tempfile::tempdir().unwrap();
+    let (real, alias) = (files.path().join("real"), files.path().join("alias"));
+    write(&real.join("sub/only.txt"), "the only copy of these bytes");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "p").unwrap();
+    lib.set_hash_after_walk(false);
+    let a = lib.add_source(folder("a", &real.join("sub"))).unwrap();
+    // Added while the alias does not exist yet, so add_source cannot see through it.
+    let b = lib.add_source(folder("b", &alias.join("sub"))).unwrap();
+    if !crate::index::tests::dir_link(&real, &alias) {
+        return;
+    }
+    let (a, b) = (lib.source(&a).unwrap(), lib.source(&b).unwrap());
+    walk(&a, &lib.router()).unwrap();
+    let err = walk(&b, &lib.router()).unwrap_err();
+    assert!(format!("{err:#}").contains("already indexes"), "{err:#}");
+    assert!(matches!(*b.status.read(), crate::SourceStatus::Error(_)));
+    assert_eq!(id_of(&b, "only.txt"), None);
+}
+
+#[test]
+fn deleting_the_only_copy_through_an_alias_warns() {
+    let files = tempfile::tempdir().unwrap();
+    let (real, alias) = (files.path().join("real"), files.path().join("alias"));
+    write(&real.join("sub/only.txt"), "the only copy of these bytes");
+    write(&real.join("sub/linked.txt"), "bytes with a hard link");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "p").unwrap();
+    lib.set_pause_on_battery(false);
+    lib.set_hash_after_walk(false);
+    // Both added before the alias exists; b walks first, so a's root is no folder of b's
+    // and a indexes real/sub again: one physical file, two records with one file key.
+    let b = lib.add_source(folder("b", &alias.join("sub"))).unwrap();
+    let a = lib.add_source(folder("a", &real)).unwrap();
+    if !crate::index::tests::dir_link(&real, &alias) {
+        return;
+    }
+    std::fs::hard_link(real.join("sub/linked.txt"), real.join("link2.txt")).unwrap();
+    for id in [&b, &a] {
+        walk(&lib.source(id).unwrap(), &lib.router()).unwrap();
+    }
+    let id = lib.hash().unwrap();
+    assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Done);
+    for p in [alias.join("sub/only.txt"), real.join("sub/only.txt")] {
+        assert_eq!(
+            delete_warnings(&lib, &p),
+            [Warning::LastCopy {
+                path: VPath::local(&p),
+                files: 1
+            }],
+            "{}",
+            p.display()
+        );
+    }
+    // A real hard link outside the deletion (another path) still keeps the content.
+    assert!(delete_warnings(&lib, &alias.join("sub/linked.txt")).is_empty());
+}
+
+#[test]
+fn drifted_files_warn_on_delete_and_are_no_duplicates() {
+    let files = tempfile::tempdir().unwrap();
+    let a = files.path();
+    write(&a.join("x.txt"), "same bytes");
+    write(&a.join("y.txt"), "same bytes");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[a]);
+    assert_eq!(lib.duplicates(0).unwrap().len(), 1);
+    // As `IntegrityJob` marks it: y's bytes are no longer its content id's.
+    s[0].store
+        .get()
+        .unwrap()
+        .execute("UPDATE record SET drift = 1 WHERE path = 'y.txt'", [])
+        .unwrap();
+    assert!(lib.duplicates(0).unwrap().is_empty());
+    assert_eq!(
+        delete_warnings(&lib, &a.join("y.txt")),
+        [Warning::ContentUnverified {
+            path: VPath::local(a.join("y.txt")),
+            files: 1
+        }]
+    );
+    // y no longer holds x's content: x is its last copy.
+    assert_eq!(
+        delete_warnings(&lib, &a.join("x.txt")),
+        [Warning::LastCopy {
+            path: VPath::local(a.join("x.txt")),
+            files: 1
+        }]
+    );
+}
+
+#[test]
+fn deleting_warns_when_the_copies_left_are_all_offline() {
+    let files = tempfile::tempdir().unwrap();
+    let (a, b) = (files.path().join("a"), files.path().join("b"));
+    write(&a.join("x.txt"), "same");
+    write(&b.join("x.txt"), "same");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[&a, &b]);
+    put_on(&lib, &s[0], "vol-a", "disk:A");
+    put_on(&lib, &s[1], "vol-b", "disk:A");
+    assert!(delete_warnings(&lib, &a.join("x.txt")).is_empty());
+    lib.set_volume_state("vol-b", VolumeState::Archived)
+        .unwrap();
+    assert_eq!(
+        delete_warnings(&lib, &a.join("x.txt")),
+        [Warning::CopiesOffline {
+            path: VPath::local(a.join("x.txt")),
+            files: 1
+        }]
+    );
+}

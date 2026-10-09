@@ -422,25 +422,61 @@ fn copies_of(lib: &Shared, vols: &Volumes, cas: &[u8]) -> Result<Vec<(String, Co
         .collect())
 }
 
-/// For `plan`: per deleted content, whether no counted copy survives, and whether the
-/// surviving ones fall from two or more failure domains to one. `deleted`: the records
-/// being deleted, by (source, id).
+/// What a delete leaves of a content (`after_delete`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Left {
+    /// No counted copy survives.
+    pub none: bool,
+    /// The surviving copies fall from two or more failure domains to one.
+    pub one_domain: bool,
+    /// Copies survive, all of them on offline or archived volumes.
+    pub offline: bool,
+}
+
+/// The resolved path of a local copy (None: remote, or not reachable now).
+fn canonical(p: &VPath) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(p.to_local_path()?).ok()
+}
+
+/// For `plan`: per deleted content, what survives. `deleted`: the records being deleted,
+/// by (source, id). A surviving record with the file key of a deleted one is a hard link
+/// only when it resolves to another path: the same path is the same file seen through an
+/// alias (a junction, symlink or subst drive), deleted with it.
 pub(crate) fn after_delete(
     lib: &Shared,
     vols: &Volumes,
     cas: &[u8],
     deleted: &HashSet<(String, i64)>,
-) -> Result<(bool, bool)> {
+) -> Result<Left> {
     let all = copies_of(lib, vols, cas)?;
-    let kept =
-        |c: &&(String, CopyAt)| !deleted.contains(&(c.1.record.source.0.clone(), c.1.record.id));
+    let gone = |c: &CopyAt| deleted.contains(&(c.record.source.0.clone(), c.record.id));
+    // The deleted files' resolved paths, by file key.
+    let mut gone_at: HashMap<&str, Vec<Option<std::path::PathBuf>>> = HashMap::new();
+    for (f, c) in all.iter().filter(|(_, c)| gone(c)) {
+        gone_at
+            .entry(f.as_str())
+            .or_default()
+            .push(canonical(&c.path));
+    }
+    let kept = |(f, c): &&(String, CopyAt)| {
+        !gone(c)
+            && gone_at.get(f.as_str()).is_none_or(|at| {
+                // Only a path known on both sides and different is another file.
+                canonical(&c.path)
+                    .is_some_and(|p| at.iter().all(|a| a.as_ref().is_some_and(|a| *a != p)))
+            })
+    };
     let (_, before, ..) = tally(all.iter().map(|(f, c)| (f.as_str(), &c.volume)));
-    let (left, after, ..) = tally(
+    let (left, after, _, offline) = tally(
         all.iter()
             .filter(kept)
             .map(|(f, c)| (f.as_str(), &c.volume)),
     );
-    Ok((left == 0, left > 0 && after == 1 && before >= 2))
+    Ok(Left {
+        none: left == 0,
+        one_domain: left > 0 && after == 1 && before >= 2,
+        offline: left > 0 && offline == left,
+    })
 }
 
 /// Recomputes the protection counters over every store (a scan; at walk, hash and

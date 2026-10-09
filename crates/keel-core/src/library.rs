@@ -139,6 +139,8 @@ pub struct Source {
     held: RwLock<Option<OfflineReason>>,
     /// The volume the root was last seen on (`library.db` `source.volume_id`).
     pub(crate) volume_id: RwLock<Option<String>>,
+    /// The library's sources (this one included), for checks across sources.
+    peers: Weak<RwLock<Vec<Arc<Source>>>>,
     dir: PathBuf,
 }
 
@@ -148,6 +150,7 @@ impl Source {
         id: SourceId,
         def: SourceDef,
         volume_id: Option<String>,
+        peers: Weak<RwLock<Vec<Arc<Source>>>>,
     ) -> Result<Source> {
         let store = Pool::open(&dir.join("source.db"), Store::Source)
             .with_context(|| format!("source store {}", def.label))?;
@@ -177,6 +180,7 @@ impl Source {
             write: Mutex::new(()),
             held: RwLock::new(held),
             volume_id: RwLock::new(volume_id),
+            peers,
             dir,
         })
     }
@@ -210,6 +214,24 @@ impl Source {
             status: self.status.read().clone(),
             generation: self.generation.load(Ordering::SeqCst),
         }
+    }
+
+    /// Another source of the library holding a folder record with native id `fs_id` (the
+    /// same folder reached through a junction, a symlink, a subst drive or a bind mount):
+    /// its label.
+    pub(crate) fn folder_elsewhere(&self, fs_id: &str) -> Option<String> {
+        if fs_id.starts_with("h:") {
+            return None;
+        }
+        let peers = self.peers.upgrade()?.read().clone();
+        peers.iter().filter(|s| s.id != self.id).find_map(|s| {
+            let c = s.store.get().ok()?;
+            let hit = c
+                .prepare_cached("SELECT 1 FROM record WHERE fs_id = ?1 AND kind = 1 LIMIT 1")
+                .and_then(|mut q| q.exists([fs_id]))
+                .unwrap_or(false);
+            hit.then(|| s.def.label.clone())
+        })
     }
 
     /// Where `source.db` lives (moves with the data).
@@ -385,7 +407,7 @@ fn now_ms() -> u64 {
 /// locked until the last job thread that outlived `close` has ended.
 pub(crate) struct Shared {
     pub(crate) db: Pool,
-    pub(crate) sources: RwLock<Vec<Arc<Source>>>,
+    pub(crate) sources: Arc<RwLock<Vec<Arc<Source>>>>,
     pub(crate) router: RwLock<Arc<Router>>,
     /// Unix ms until which background hashing pauses (`Library::note_activity`).
     pub(crate) busy_until: AtomicU64,
@@ -587,19 +609,21 @@ impl Library {
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        let mut sources = Vec::new();
+        let sources = Arc::new(RwLock::new(Vec::new()));
         for (id, def, volume) in rows {
             let def: SourceDef = serde_json::from_str(&def)?;
-            sources.push(Arc::new(Source::open(
+            let source = Source::open(
                 dir.join("sources").join(&id),
                 SourceId(id),
                 def,
                 volume,
-            )?));
+                Arc::downgrade(&sources),
+            )?;
+            sources.write().push(Arc::new(source));
         }
         let shared = Arc::new(Shared {
             db,
-            sources: RwLock::new(sources),
+            sources,
             router: RwLock::new(Arc::new(Router::new())),
             busy_until: AtomicU64::new(0),
             pause_on_battery: AtomicBool::new(true),
@@ -693,24 +717,56 @@ impl Library {
     }
 
     /// Registers a source; it is indexed by `Indexer::full_walk` (or an index job).
-    /// Sources never overlap: a root inside (or around) another source's root is refused.
+    /// Sources never overlap: a root inside (or around) another source's root is refused,
+    /// also when one of them is reached through a junction, symlink or subst drive (their
+    /// resolved paths are compared too; the walk refuses the aliases this cannot see).
     pub fn add_source(&self, def: SourceDef) -> Result<SourceId> {
         anyhow::ensure!(
             def.root.split_archive().is_none(),
             "a source cannot be inside an archive: {}",
             def.root.display()
         );
+        // Resolved outside the lock (an unreachable share can take a while to answer).
+        let resolve = |root: &VPath| {
+            root.to_local_path()
+                .and_then(|p| std::fs::canonicalize(p).ok())
+        };
+        let real = resolve(&def.root);
+        let others: Vec<(SourceId, Option<PathBuf>)> = self
+            .shared
+            .sources
+            .read()
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    real.as_ref().and_then(|_| resolve(&s.def.root)),
+                )
+            })
+            .collect();
         let mut sources = self.shared.sources.write();
         for s in sources.iter() {
+            let aliased = match (&real, others.iter().find(|(id, _)| *id == s.id)) {
+                (Some(a), Some((_, Some(b)))) => a.starts_with(b) || b.starts_with(a),
+                _ => false,
+            };
             anyhow::ensure!(
-                s.relative(&def.root).is_none() && relative(&def.root, &s.def.root).is_none(),
+                !aliased
+                    && s.relative(&def.root).is_none()
+                    && relative(&def.root, &s.def.root).is_none(),
                 "{} overlaps source {}",
                 def.root.display(),
                 s.def.label
             );
         }
         let id = SourceId(crate::random_id()?);
-        let source = Source::open(self.root.join("sources").join(&id.0), id.clone(), def, None)?;
+        let source = Source::open(
+            self.root.join("sources").join(&id.0),
+            id.clone(),
+            def,
+            None,
+            Arc::downgrade(&self.shared.sources),
+        )?;
         self.shared.db.get()?.execute(
             "INSERT INTO source(id, def, created) VALUES (?1, ?2, ?3)",
             rusqlite::params![id.0, serde_json::to_string(&source.def)?, crate::now()],

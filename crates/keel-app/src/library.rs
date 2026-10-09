@@ -510,6 +510,11 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             files(*n, "is", "are"),
             path.name()
         ),
+        Warning::CopiesOffline { path, files: n } => format!(
+            "{} other copies only on offline or archived drives ({})",
+            files(*n, "has its", "have their"),
+            path.name()
+        ),
     }
 }
 

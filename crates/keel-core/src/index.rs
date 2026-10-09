@@ -602,6 +602,18 @@ impl Indexer {
                 "{} is not a folder",
                 src.def.root.display()
             );
+            // The same folder reached another way (a junction, a mapped drive, a bind mount)
+            // would count every file in it twice.
+            if let Some(other) = root
+                .fs_id
+                .as_deref()
+                .and_then(|id| src.folder_elsewhere(id))
+            {
+                anyhow::bail!(
+                    "{} is a folder source {other} already indexes, reached another way",
+                    src.def.root.display()
+                );
+            }
             root.name = match src.def.root.name() {
                 "" => src.def.label.clone(),
                 name => name.to_owned(),

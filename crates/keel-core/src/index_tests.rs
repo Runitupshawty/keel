@@ -131,6 +131,27 @@ pub(crate) fn fts(src: &Source, q: &str) -> i64 {
         .unwrap()
 }
 
+/// Makes `link` lead to the folder `target`: a directory junction on Windows (no privilege
+/// needed), a symlink elsewhere. False when the platform refuses (the caller skips).
+pub(crate) fn dir_link(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(not(any(windows, unix)))]
+    let made = false;
+    if !made {
+        eprintln!("skipped: cannot make a junction or symlink here");
+    }
+    made
+}
+
 pub(crate) fn write(path: &Path, data: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, data).unwrap();
