@@ -1148,7 +1148,7 @@ fn remote_archives_are_fetched_cancellably() {
         root: tmp.path().into(),
         downloads: Default::default(),
     });
-    let mut router = router(&tmp);
+    let router = router(&tmp);
     router.register_remote_provider("remote".into(), remote.clone());
     let archive = VPath::parse("sftp://remote/r.zip").unwrap();
     let root = VPath::join_archive(&archive, "");
