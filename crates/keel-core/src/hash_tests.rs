@@ -103,7 +103,13 @@ fn collisions_are_hashed_whole_and_only_true_copies_are_duplicates() {
     assert_eq!(c1, c3);
     assert_eq!(c1.as_deref(), Some(&blake3::hash(&p).as_bytes()[..]));
     let (su, cu) = hashes(sa, "unique.bin");
-    assert_eq!(su, cu, "a unique large file keeps its sampled hash");
+    assert!(su.is_some());
+    assert_eq!(cu, None, "a unique large file needs no content id");
+    // Small files: the content id is BLAKE3 of the bytes, like a confirmed large one.
+    assert_eq!(
+        hashes(sa, "small.txt").1.as_deref(),
+        Some(&blake3::hash(b"hello").as_bytes()[..])
+    );
 
     let dups = lib.duplicates(1).unwrap();
     assert_eq!(
@@ -130,7 +136,7 @@ fn collisions_are_hashed_whole_and_only_true_copies_are_duplicates() {
     assert_eq!(copies.count, 2);
     assert_eq!(
         copies
-            .volumes
+            .locations
             .iter()
             .map(|v| v.label.as_str())
             .collect::<Vec<_>>(),
@@ -173,19 +179,45 @@ fn a_shared_unconfirmed_sampled_hash_is_never_a_duplicate() {
         .get()
         .unwrap()
         .execute_batch(
-            "UPDATE record SET sampled_hash = x'aa', cas_id = x'aa' WHERE name LIKE '%.bin'",
+            "UPDATE record SET sampled_hash = x'aa', cas_id = NULL WHERE name LIKE '%.bin'",
         )
         .unwrap();
     assert!(lib.duplicates(0).unwrap().is_empty());
     assert!(lib.last_copy(&rec(&s[0], "x.bin")).unwrap());
-    let plan = validate_preview_execute(
-        &lib,
-        Op::Delete {
-            paths: vec![VPath::local(a.join("x.bin"))],
-        },
-    )
-    .unwrap();
-    assert!(matches!(plan.warnings[..], [Warning::LastCopy { .. }]));
+    let warnings = |name: &str| {
+        validate_preview_execute(
+            &lib,
+            Op::Delete {
+                paths: vec![VPath::local(a.join(name))],
+            },
+        )
+        .unwrap()
+        .warnings
+    };
+    // Shared but unconfirmed: whether y.bin is a copy is not known yet.
+    assert!(matches!(
+        warnings("x.bin")[..],
+        [Warning::ContentUnverified { files: 1, .. }]
+    ));
+    // The re-confirm pass of the next hash job settles it: different bytes.
+    let info = hash_all(&lib);
+    let result: HashResult = serde_json::from_value(info.result.unwrap()).unwrap();
+    assert_eq!(result.reconfirmed, 2, "{result:?}");
+    assert!(lib.duplicates(0).unwrap().is_empty());
+    assert!(matches!(
+        warnings("x.bin")[..],
+        [Warning::LastCopy { files: 1, .. }]
+    ));
+    // A unique sampled hash without a content id is a last copy too.
+    s[0].store
+        .get()
+        .unwrap()
+        .execute_batch("UPDATE record SET sampled_hash = x'bb', cas_id = NULL WHERE name = 'x.bin'")
+        .unwrap();
+    assert!(matches!(
+        warnings("x.bin")[..],
+        [Warning::LastCopy { files: 1, .. }]
+    ));
 }
 
 #[test]
@@ -211,7 +243,7 @@ fn hashing_resumes_from_its_checkpoint() {
     eventually("a checkpoint", || {
         state(&lib)["done"].as_u64() >= Some(1_000)
     });
-    lib.activity().store(true, Ordering::SeqCst);
+    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
     let src_dir = s[0].store_dir().to_owned();
     drop(s);
     drop(lib); // the "kill": the paused job stops at once and stays running
@@ -253,19 +285,19 @@ fn hashing_pauses_while_the_app_is_busy() {
     }
     let data = tempfile::tempdir().unwrap();
     let (lib, s) = library(data.path(), &[files.path()]);
-    lib.activity().store(true, Ordering::SeqCst);
+    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
     let id = lib.hash().unwrap();
     std::thread::sleep(Duration::from_millis(600));
     assert_eq!(hashed(&s[0]), 0, "paused");
     assert_eq!(lib.jobs().info(id).unwrap().status, JobStatus::Running);
-    lib.activity().store(false, Ordering::SeqCst);
+    lib.shared.busy_until.store(0, Ordering::SeqCst);
     assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Done);
     assert_eq!(hashed(&s[0]), 10);
 
     // A cancel reaches a paused job.
     write(&files.path().join("late.txt"), "y");
     walk(&s[0], &lib.router()).unwrap();
-    lib.activity().store(true, Ordering::SeqCst);
+    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
     let id = lib.hash().unwrap();
     lib.jobs().cancel(id).unwrap();
     assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Cancelled);
@@ -338,4 +370,130 @@ fn ten_thousand_small_files_hash_fast() {
     eprintln!("hashed 10,000 small files in {took:?}");
     assert_eq!(hashed(&s[0]), 10_000);
     assert!(took < Duration::from_secs(10), "took {took:?}");
+}
+
+/// Review item 7: hard links of one file are one file to duplicates and redundancy.
+#[test]
+fn hard_links_are_not_copies() {
+    let files = tempfile::tempdir().unwrap();
+    let a = files.path();
+    write(&a.join("x.txt"), "hello");
+    std::fs::hard_link(a.join("x.txt"), a.join("y.txt")).unwrap();
+    write(&a.join("z.txt"), "hello");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[a]);
+    hash_all(&lib);
+    let dups = lib.duplicates(0).unwrap();
+    assert_eq!(dups.len(), 1);
+    assert_eq!(dups[0].records, [rec(&s[0], "x.txt"), rec(&s[0], "z.txt")]);
+    assert_eq!(lib.redundancy(&rec(&s[0], "y.txt")).unwrap().count, 2);
+    std::fs::remove_file(a.join("z.txt")).unwrap();
+    walk(&s[0], &lib.router()).unwrap();
+    assert!(lib.duplicates(0).unwrap().is_empty());
+    assert!(lib.last_copy(&rec(&s[0], "x.txt")).unwrap());
+    // Deleting one link leaves the content at the other: not a last copy.
+    let plan = validate_preview_execute(
+        &lib,
+        Op::Delete {
+            paths: vec![VPath::local(a.join("x.txt"))],
+        },
+    )
+    .unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+}
+
+/// Review item 8: hashing a big file whole stops between 1 MiB reads.
+#[test]
+fn a_whole_file_hash_stops_when_asked() {
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("big.bin");
+    let bytes = big(3).repeat(10);
+    std::fs::write(&path, &bytes).unwrap();
+    let size = bytes.len() as u64;
+    let stop = AtomicBool::new(true);
+    let err = full_hash(&path, size, &stop).unwrap_err();
+    assert!(err.is::<Cancelled>(), "{err:#}");
+    stop.store(false, Ordering::SeqCst);
+    assert_eq!(
+        full_hash(&path, size, &stop).unwrap(),
+        *blake3::hash(&bytes).as_bytes()
+    );
+}
+
+/// Review item 9: a network share is skipped (and said so in the job's result) unless it
+/// opts in.
+#[test]
+fn shares_are_hashed_only_when_asked() {
+    let files = tempfile::tempdir().unwrap();
+    let (a, b) = (files.path().join("a"), files.path().join("b"));
+    write(&a.join("x.txt"), "x");
+    write(&b.join("y.txt"), "y");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "h").unwrap();
+    lib.set_pause_on_battery(false);
+    let share = |label: &str, root: &Path, opt_in: bool| {
+        let mut def = folder(label, root);
+        def.kind = crate::SourceKind::Share;
+        def.hash_shares = opt_in;
+        let src = lib.source(&lib.add_source(def).unwrap()).unwrap();
+        walk(&src, &lib.router()).unwrap();
+        src
+    };
+    let (sa, sb) = (share("nas", &a, false), share("opted", &b, true));
+    let info = hash_all(&lib);
+    let result: HashResult = serde_json::from_value(info.result.unwrap()).unwrap();
+    assert_eq!(
+        result.skipped,
+        [SkippedSource {
+            source: sa.id.clone(),
+            label: "nas".into(),
+            reason: SkipReason::Share,
+        }]
+    );
+    assert_eq!(result.hashed, 1);
+    assert_eq!((hashed(&sa), hashed(&sb)), (0, 1));
+}
+
+/// Review item 11: one hash job at a time (asking again while one runs returns it), app
+/// activity pauses it only for a while, and a completed index job schedules hashing.
+#[test]
+fn hashing_is_one_job_paused_briefly_and_scheduled_after_walks() {
+    let files = tempfile::tempdir().unwrap();
+    for i in 0..10 {
+        write(&files.path().join(format!("{i}.txt")), "x");
+    }
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[files.path()]);
+    lib.note_activity();
+    let first = lib.hash().unwrap();
+    assert_eq!(lib.hash().unwrap(), first, "the running job");
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(hashed(&s[0]), 0, "paused by the activity");
+    // Expires without an all-clear from the app.
+    let info = lib.jobs().wait(first).unwrap();
+    assert_eq!(info.status, JobStatus::Done);
+    assert_eq!(hashed(&s[0]), 10);
+    // The next ask starts a new job; an index job asks by itself.
+    write(&files.path().join("late.txt"), "y");
+    let index = lib.index(&s[0].id).unwrap();
+    assert_eq!(lib.jobs().wait(index).unwrap().status, JobStatus::Done);
+    let jobs = lib.jobs().list().unwrap();
+    let scheduled = jobs.iter().find(|j| j.kind == "hash" && j.id != first);
+    let scheduled = scheduled.expect("hashing scheduled after the walk").id;
+    lib.jobs().wait(scheduled).unwrap();
+    assert_eq!(hashed(&s[0]), 11);
+    lib.set_hash_after_walk(false);
+    write(&files.path().join("later.txt"), "z");
+    let index = lib.index(&s[0].id).unwrap();
+    lib.jobs().wait(index).unwrap();
+    assert_eq!(
+        lib.jobs()
+            .list()
+            .unwrap()
+            .iter()
+            .filter(|j| j.kind == "hash")
+            .count(),
+        2,
+        "off"
+    );
 }

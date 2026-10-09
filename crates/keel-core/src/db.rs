@@ -328,4 +328,74 @@ mod tests {
         c.execute("DELETE FROM record WHERE id = 1", []).unwrap();
         assert_eq!(hits("menu"), 0);
     }
+
+    /// Review items 3, 15, 17: a version-4 store moves to nanosecond times, restarts its
+    /// content ids and never reuses a record id again; records, links and FTS stay.
+    #[test]
+    fn a_version_4_store_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(Store::Source)
+                .into_iter()
+                .filter(|(v, _)| *v <= 4)
+            {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO record(id, parent, name, path, kind, size, mtime, ctime, fs_id, gen,
+                     cas_id, sampled_hash)
+                     VALUES (1, NULL, 'r', '', 1, 0, 1700000000, 5, 'r', 1, NULL, NULL),
+                            (7, 1, 'Café.txt', 'Café.txt', 0, 3, 1700000000, 5, 'f', 1,
+                             x'01', x'01');
+                 INSERT INTO record_tag(record, tag) VALUES (7, 2);",
+            )
+            .unwrap();
+        }
+        let pool = Pool::open(&path, Store::Source).unwrap();
+        let c = pool.get().unwrap();
+        let row: (i64, bool) = c
+            .query_row(
+                "SELECT mtime, ctime IS NULL AND cas_id IS NULL AND sampled_hash IS NULL
+                 FROM record WHERE id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1_700_000_000_000_000_000, true));
+        let links: i64 = c
+            .query_row("SELECT count(*) FROM record_tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 1);
+        let fts: i64 = c
+            .query_row(
+                "SELECT count(*) FROM record_fts WHERE record_fts MATCH 'cafe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts, 1);
+        let counts: (i64, i64) = c
+            .query_row("SELECT records, files FROM counts", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(counts, (2, 1));
+        // The highest id is gone: the next record still gets a new one.
+        c.execute("DELETE FROM record WHERE id = 7", []).unwrap();
+        c.execute(
+            "INSERT INTO record(parent, name, path, kind, fs_id, gen) VALUES (1, 'n', 'n', 0, 'n', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(c.last_insert_rowid(), 8);
+        let counts: (i64, i64) = c
+            .query_row("SELECT records, files FROM counts", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(counts, (2, 1), "counters follow");
+    }
 }

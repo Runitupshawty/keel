@@ -25,7 +25,7 @@ fn set_cas(src: &Source, rel: &str, cas: &[u8]) {
 
 fn run(lib: &Library, op: Op) -> crate::JobInfo {
     let plan = validate_preview_execute(lib, op).unwrap();
-    let id = plan.execute(lib).unwrap();
+    let id = plan.execute(lib, true).unwrap();
     lib.jobs().wait(id).unwrap()
 }
 
@@ -189,19 +189,33 @@ fn a_plan_that_no_longer_matches_is_not_executed() {
         paths: vec![keep.clone()],
     };
     let plan = validate_preview_execute(&lib, delete.clone()).unwrap();
-    // More files now: the confirmed preview is stale.
+    // More files now (a log file grows): counts drift, the confirmed shape still holds.
     write(&root.join("keep/b.txt"), "b");
     walk(&src, &lib.router()).unwrap();
-    let err = plan.clone().execute(&lib).unwrap_err();
-    let fresh = err.downcast::<PlanChanged>().unwrap().0;
-    assert_eq!(fresh.changes[0].files, 2);
-    // Warnings count too: a content id appears (no more ContentUnverified for it).
+    let grown = validate_preview_execute(&lib, delete.clone()).unwrap();
+    assert_eq!(grown.changes[0].files, 2);
+    assert!(same_shape(&grown, &plan));
+    // A new kind of warning does not: a content id appears, making a.txt a last copy.
     set_cas(&src, "keep/a.txt", &[9]);
-    let err = fresh.clone().execute(&lib).unwrap_err();
+    let err = plan.clone().execute(&lib, true).unwrap_err();
     let fresh = err.downcast::<PlanChanged>().unwrap().0;
     assert_eq!(*fresh, validate_preview_execute(&lib, delete).unwrap());
+    assert!(fresh
+        .warnings
+        .iter()
+        .any(|w| matches!(w, Warning::LastCopy { .. })));
+    // Without the recheck here, the job checks before its first step and fails.
+    let job = plan.clone().execute(&lib, false).unwrap();
+    let info = lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, JobStatus::Failed);
+    assert!(
+        info.log.contains("changed since the preview"),
+        "{}",
+        info.log
+    );
     assert!(root.join("keep").exists(), "nothing ran");
-    let job = fresh.execute(&lib).unwrap();
+    assert!(lib.op_log(1).unwrap().is_empty(), "nothing logged as run");
+    let job = fresh.execute(&lib, false).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
     assert!(!root.join("keep").exists());
 }
@@ -211,14 +225,15 @@ fn resume_after_crash(lib: &Library, op: Op, target_existed: bool) -> crate::Job
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
+            expect: None,
             op,
             next: 0,
             skipped: 0,
             log_id: None,
-            started: Some(Started {
+            marks: vec![Started {
                 item: 0,
                 target_existed,
-            }),
+            }],
         }))
         .unwrap();
     lib.jobs().wait(job).unwrap()
@@ -289,7 +304,7 @@ fn an_operation_on_an_unreachable_source_fails_instead_of_skipping() {
     let f = VPath::parse("fake://box/f.txt").unwrap();
     let plan = validate_preview_execute(&lib, Op::Delete { paths: vec![f] }).unwrap();
     state.lock().lists_left = Some(0); // the host went away
-    let job = plan.execute(&lib).unwrap();
+    let job = plan.execute(&lib, true).unwrap();
     let info = lib.jobs().wait(job).unwrap();
     assert_eq!(info.status, JobStatus::Failed);
     assert!(info.log.contains("source box is offline"), "{}", info.log);
@@ -485,13 +500,14 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
+            expect: None,
             op: Op::Delete {
                 paths: vec![f, VPath::parse("fake://box/gone.txt").unwrap()],
             },
             next: 0,
             skipped: 0,
             log_id: None,
-            started: None,
+            marks: Vec::new(),
         }))
         .unwrap();
     let info = lib.jobs().wait(job).unwrap();
@@ -513,6 +529,7 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
+            expect: None,
             op: Op::Copy {
                 src: vec![v(&root.join("a.txt")), v(&root.join("b.txt"))],
                 dst_dir: v(&root.join("dst")),
@@ -521,10 +538,152 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
             next: 1,
             skipped: 0,
             log_id: None,
-            started: None,
+            marks: Vec::new(),
         }))
         .unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
     assert!(!root.join("dst/a.txt").exists());
     assert!(root.join("dst/b.txt").is_file());
+}
+
+/// Review item 4: an operation over 3,000 one-byte files (top-level items) runs in < 3 s
+/// where a plain copy of them takes 0.34 s: its overhead over the plain copy (measured
+/// here too, as file system speed varies widely) stays under 2.66 s.
+/// `cargo test -p keel-core --release -- --ignored three_thousand --nocapture`
+#[test]
+#[ignore]
+fn three_thousand_items_copy_fast() {
+    const N: usize = 3_000;
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("dst")).unwrap();
+    for i in 0..N {
+        std::fs::write(root.join(format!("src/{i}.txt")), "x").unwrap();
+    }
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    let paths: Vec<_> = (0..N).map(|i| root.join(format!("src/{i}.txt"))).collect();
+    let plain = || {
+        let out = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let skip = keel_vfs::ops::Conflict::Skip;
+        keel_vfs::ops::copy_local(&paths, out.path(), skip, &|_| {}, &never).unwrap();
+        start.elapsed()
+    };
+    plain(); // warm (a scanner reads each new file once)
+    let plain = plain();
+    let start = std::time::Instant::now();
+    let op = Op::Copy {
+        src: paths.iter().map(|p| v(p)).collect(),
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Skip,
+    };
+    let plan = validate_preview_execute(&lib, op).unwrap();
+    let id = plan.execute(&lib, false).unwrap();
+    let info = lib.jobs().wait(id).unwrap();
+    let took = start.elapsed();
+    eprintln!("copied {N} items in {took:?} (a plain copy: {plain:?})");
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert_eq!(std::fs::read_dir(root.join("dst")).unwrap().count(), N);
+    assert!(id_of(&src, &format!("dst/{}.txt", N - 1)).is_some());
+    let overhead = took.saturating_sub(plain);
+    assert!(
+        overhead < std::time::Duration::from_millis(2_660),
+        "took {took:?}, a plain copy {plain:?}"
+    );
+}
+
+/// Review item 1: a folder copy killed after 10 of its 150 files resumes as a merge, not as
+/// done (whatever the conflict policy).
+#[test]
+fn a_folder_copy_killed_halfway_resumes_with_every_file() {
+    for on_conflict in [
+        OnConflict::Skip,
+        OnConflict::RenameNew,
+        OnConflict::Overwrite,
+    ] {
+        let files = tempfile::tempdir().unwrap();
+        let root = files.path();
+        for i in 0..150 {
+            write(&root.join(format!("album/{i:03}.jpg")), "photo");
+        }
+        std::fs::create_dir_all(root.join("dst")).unwrap();
+        let (_data, lib, src) = library_with(folder("f", root));
+        walk(&src, &lib.router()).unwrap();
+        // The kill: 10 files were copied, the folder exists.
+        for i in 0..10 {
+            write(&root.join(format!("dst/album/{i:03}.jpg")), "photo");
+        }
+        let copy = Op::Copy {
+            src: vec![v(&root.join("album"))],
+            dst_dir: v(&root.join("dst")),
+            on_conflict,
+        };
+        let info = resume_after_crash(&lib, copy, false);
+        assert_eq!(
+            info.status,
+            JobStatus::Done,
+            "{on_conflict:?}: {}",
+            info.log
+        );
+        assert!(info.log.contains("merging"), "{}", info.log);
+        let copied = std::fs::read_dir(root.join("dst/album")).unwrap().count();
+        assert_eq!(copied, 150, "{on_conflict:?}");
+        assert_eq!(
+            std::fs::read_dir(root.join("dst")).unwrap().count(),
+            1,
+            "{on_conflict:?}: no second folder"
+        );
+        assert!(id_of(&src, "dst/album/149.jpg").is_some(), "merge indexed");
+    }
+}
+
+/// Batches: the marks of a batch are written before it runs, so a resumed batch settles
+/// each of its items.
+#[test]
+fn a_resumed_batch_settles_each_item() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        write(&root.join(name), name);
+    }
+    std::fs::create_dir_all(root.join("dst")).unwrap();
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    // Killed after moving a.txt of a three-item batch.
+    std::fs::rename(root.join("a.txt"), root.join("dst/a.txt")).unwrap();
+    let mv = Op::Move {
+        src: ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|n| v(&root.join(n)))
+            .collect(),
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Skip,
+    };
+    let job = lib
+        .jobs()
+        .spawn(Box::new(ExecJob {
+            op: mv,
+            expect: None,
+            next: 0,
+            skipped: 0,
+            log_id: None,
+            marks: (0..3)
+                .map(|item| Started {
+                    item,
+                    target_existed: false,
+                })
+                .collect(),
+        }))
+        .unwrap();
+    let info = lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert_eq!(lib.op_log(1).unwrap()[0].result, "ok");
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        assert!(root.join("dst").join(name).is_file(), "{name}");
+        assert!(id_of(&src, &format!("dst/{name}")).is_some(), "{name}");
+        assert!(id_of(&src, name).is_none(), "{name}");
+    }
 }

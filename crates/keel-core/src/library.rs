@@ -2,18 +2,22 @@
 //! `source.db` per source under `<library>/sources/<source id>/`.
 
 use crate::db::{Pool, Store};
-use crate::jobs::{IndexJob, Job, JobId, Jobs};
+use crate::index::{WatchConfig, WatchHandle};
+use crate::jobs::{IndexJob, Job, JobId, JobState, Jobs};
+use crate::Indexer;
 use anyhow::{Context, Result};
 use keel_vfs::{Router, VPath};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        Arc, Weak,
     },
+    time::Duration,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,7 +32,7 @@ impl std::fmt::Display for SourceId {
     }
 }
 
-/// One record of one source (record ids are per source store).
+/// One record of one source (record ids are per source store and never reused).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecordRef {
     pub source: SourceId,
@@ -39,6 +43,8 @@ pub struct RecordRef {
 pub enum SourceKind {
     Folder,
     Drive,
+    /// A network share (UNC path or mapped drive): indexed, but only hashed when
+    /// `SourceDef::hash_shares` is set (hashing reads every file over the network).
     Share,
     Cloud,
     Device,
@@ -57,6 +63,23 @@ pub struct SourceDef {
     /// `POLL_INTERVAL`).
     #[serde(default)]
     pub poll_secs: Option<u64>,
+    /// Hash this source although it is a network share (a UNC path or `SourceKind::Share`).
+    #[serde(default)]
+    pub hash_shares: bool,
+}
+
+/// Why a source reads as offline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OfflineReason {
+    /// The root (or its host, or its provider) cannot be reached.
+    Unreachable,
+    /// Something else is at the root (another volume on the drive letter, an unmounted
+    /// mount point): kept offline, and its changes kept out of the snapshot, until the
+    /// indexed folder is back or `Indexer::adopt_root` accepts the new one.
+    RootMismatch,
+    /// The root is empty although the snapshot has entries (more likely unmounted than
+    /// emptied); held like `RootMismatch`.
+    Empty,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,8 +95,29 @@ pub enum SourceStatus {
     },
     Offline {
         last_seen: Option<i64>,
+        reason: OfflineReason,
     },
     Error(String),
+}
+
+/// `store` meta key: a held `OfflineReason` (root mismatch or empty root).
+const HELD: &str = "offline_reason";
+
+impl OfflineReason {
+    fn key(self) -> &'static str {
+        match self {
+            OfflineReason::Unreachable => "unreachable",
+            OfflineReason::RootMismatch => "root_mismatch",
+            OfflineReason::Empty => "empty",
+        }
+    }
+    fn parse(s: &str) -> Option<OfflineReason> {
+        Some(match s {
+            "root_mismatch" => OfflineReason::RootMismatch,
+            "empty" => OfflineReason::Empty,
+            _ => return None,
+        })
+    }
 }
 
 /// One indexed location. Its store keeps the last generation while the source is offline.
@@ -90,6 +134,9 @@ pub struct Source {
     pub(crate) write: Mutex<()>,
     /// Set by `remove_source`: walks, hashing and watchers of this source stop.
     pub(crate) removed: AtomicBool,
+    /// A root mismatch or empty root, persisted in the store: changes are not applied and
+    /// the status stays offline until a full walk succeeds again (or adopts the new root).
+    held: RwLock<Option<OfflineReason>>,
     dir: PathBuf,
 }
 
@@ -102,15 +149,26 @@ impl Source {
             .and_then(|g| g.parse().ok())
             .unwrap_or(0);
         let indexed_at = store.meta("last_full_walk")?.and_then(|t| t.parse().ok());
+        let held = store.meta(HELD)?.as_deref().and_then(OfflineReason::parse);
+        // Built after a first walk; a walk that never ended left them out.
+        store.get()?.execute_batch(crate::index::FILTER_INDEXES)?;
+        let status = match held {
+            Some(reason) => SourceStatus::Offline {
+                last_seen: indexed_at,
+                reason,
+            },
+            None => SourceStatus::Online { indexed_at },
+        };
         Ok(Source {
             id,
             def,
             store,
             generation: AtomicU64::new(generation),
-            status: RwLock::new(SourceStatus::Online { indexed_at }),
+            status: RwLock::new(status),
             pending_gen: AtomicU64::new(0),
             removed: AtomicBool::new(false),
             write: Mutex::new(()),
+            held: RwLock::new(held),
             dir,
         })
     }
@@ -150,10 +208,76 @@ impl Source {
     pub fn store_dir(&self) -> &Path {
         &self.dir
     }
+
+    /// The held root mismatch or empty root, if any.
+    pub(crate) fn held(&self) -> Option<OfflineReason> {
+        *self.held.read()
+    }
+
+    /// Forgets the hold in memory (a walk released it in the store).
+    pub(crate) fn release_held(&self) {
+        *self.held.write() = None;
+    }
+
+    /// Holds (`Some`) or releases (`None`) the source, persistently.
+    pub(crate) fn hold(&self, reason: Option<OfflineReason>) -> Result<()> {
+        match reason {
+            Some(r) => self.store.set_meta(HELD, r.key())?,
+            None => {
+                self.store
+                    .get()?
+                    .execute("DELETE FROM meta WHERE key = ?1", [HELD])?;
+            }
+        }
+        *self.held.write() = reason;
+        Ok(())
+    }
+
+    /// Network shares are hashed only when asked for.
+    pub(crate) fn hashable_share(&self) -> bool {
+        let unc = self
+            .def
+            .root
+            .to_local_path()
+            .is_some_and(|p| p.to_string_lossy().starts_with(r"\\"));
+        self.def.hash_shares || !(self.def.kind == SourceKind::Share || unc)
+    }
+
+    /// For a held local source: whether the indexed folder is back at the root (the same
+    /// root identity, and entries again after an empty root).
+    fn root_is_back(&self) -> bool {
+        let Some(root) = self.def.root.to_local_path() else {
+            return false;
+        };
+        let same = match self.store.meta("root_id").ok().flatten() {
+            Some(was) => crate::fsid::stat(&root).ok().and_then(|i| i.fs_id) == Some(was),
+            None => true,
+        };
+        let filled = std::fs::read_dir(&root).is_ok_and(|mut d| d.next().is_some());
+        same && (self.held() != Some(OfflineReason::Empty) || filled)
+    }
+
+    /// For a local source: whether a different folder than the indexed one is at the root.
+    fn root_swapped(&self) -> bool {
+        let Some(root) = self.def.root.to_local_path() else {
+            return false;
+        };
+        if self.store.meta("adopt_root").ok().flatten().is_some() {
+            return false;
+        }
+        match (
+            self.store.meta("root_id").ok().flatten(),
+            crate::fsid::stat(&root).ok().and_then(|i| i.fs_id),
+        ) {
+            (Some(was), Some(now)) => was != now,
+            _ => false,
+        }
+    }
 }
 
-/// Distinct content ids across every store (unioned in a scratch database), saved in
-/// `library.db` meta for `stats`.
+/// Distinct content across every store (unioned in a scratch database), saved in
+/// `library.db` meta for `stats`: confirmed content ids, plus each unconfirmed sampled hash
+/// (unique when it was hashed, so content no other file has).
 pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
     let sources: Vec<Arc<Source>> = shared.sources.read().clone();
     let conn = Connection::open("")?;
@@ -162,7 +286,8 @@ pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
         let path = s.dir.join("source.db");
         conn.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
         let copied = conn.execute(
-            "INSERT OR IGNORE INTO c SELECT cas_id FROM s.record WHERE cas_id IS NOT NULL",
+            "INSERT OR IGNORE INTO c SELECT coalesce(cas_id, sampled_hash) FROM s.record
+             WHERE kind = 0 AND coalesce(cas_id, sampled_hash) IS NOT NULL",
             [],
         );
         conn.execute("DETACH DATABASE s", [])?;
@@ -174,7 +299,9 @@ pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
 }
 
 /// How long `remove_source` waits for jobs and watchers to close a store it deletes.
-const REMOVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+const REMOVE_WAIT: Duration = Duration::from_secs(10);
+/// How long hashing stays paused after `Library::note_activity`.
+pub(crate) const ACTIVITY_PAUSE: Duration = Duration::from_secs(5);
 
 /// `p` relative to `root` ("" when equal), None when `p` is not inside `root`.
 pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
@@ -233,22 +360,42 @@ pub struct LibraryStats {
     pub records: u64,
     pub files: u64,
     pub bytes: u64,
-    /// Distinct content ids across sources, as of the last hashing run (or
+    /// Distinct content across sources, as of the last hashing run (or
     /// `count_unique_content`).
     pub unique_content: u64,
     pub running_jobs: usize,
 }
 
-/// State shared with jobs and watchers.
+/// Unix milliseconds.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// State shared with jobs and watchers. Holds the library's lock file: the library stays
+/// locked until the last job thread that outlived `close` has ended.
 pub(crate) struct Shared {
     pub(crate) db: Pool,
     pub(crate) sources: RwLock<Vec<Arc<Source>>>,
     pub(crate) router: RwLock<Arc<Router>>,
-    /// Set by the app while the user is busy: background hashing pauses.
-    pub(crate) activity: AtomicBool,
+    /// Unix ms until which background hashing pauses (`Library::note_activity`).
+    pub(crate) busy_until: AtomicU64,
     pub(crate) pause_on_battery: AtomicBool,
+    /// Whether a completed walk schedules hashing.
+    pub(crate) hash_after_walk: AtomicBool,
+    /// The hash job `Library::hash` started or found (one at a time).
+    pub(crate) hash_job: Mutex<Option<JobId>>,
+    /// Set when hashing was asked for while a hash job ran: it goes round once more.
+    pub(crate) hash_again: AtomicBool,
+    /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
+    pub(crate) utc_offset: AtomicI64,
     /// `Jobs::subscribe` receivers.
     pub(crate) job_events: Mutex<Vec<crossbeam_channel::Sender<crate::JobEvent>>>,
+    pub(crate) jobs: JobState,
+    /// Sources kept current by `Library::watch` (None: not armed, the root was away).
+    watchers: Mutex<HashMap<SourceId, Option<WatchHandle>>>,
+    _lock: std::fs::File,
 }
 
 impl Shared {
@@ -261,14 +408,113 @@ impl Shared {
             )
         });
     }
-}
 
-impl Shared {
     pub(crate) fn source_for(&self, p: &VPath) -> Option<(Arc<Source>, String)> {
         self.sources
             .read()
             .iter()
             .find_map(|s| s.relative(p).map(|rel| (s.clone(), rel)))
+    }
+
+    pub(crate) fn closing(&self) -> bool {
+        self.jobs.closing.load(Ordering::SeqCst)
+    }
+
+    /// The app reported activity within the last `ACTIVITY_PAUSE`.
+    pub(crate) fn busy(&self) -> bool {
+        now_ms() < self.busy_until.load(Ordering::SeqCst)
+    }
+
+    /// (Re)starts the watcher of a watched source; a root that cannot be watched now leaves
+    /// it unarmed (`refresh_status` arms it when the root is back).
+    fn arm(self: &Arc<Self>, src: &Arc<Source>) {
+        let old = match self.watchers.lock().get_mut(&src.id) {
+            Some(slot) => slot.take(),
+            None => return,
+        };
+        drop(old); // joins its thread, outside the lock
+        if self.closing() || src.removed.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut cfg = WatchConfig::default();
+        if let Some(secs) = src.def.poll_secs {
+            cfg.poll = Duration::from_secs(secs);
+        }
+        let weak = Arc::downgrade(self);
+        let after_walk = move |s: &Source| {
+            if let Some(lib) = Weak::upgrade(&weak) {
+                crate::hash::after_walk(&lib, s);
+            }
+        };
+        let router = self.router.read().clone();
+        let handle = match Indexer::watch_hooked(src, &router, cfg, Box::new(after_walk)) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::debug!("watch {}: {e:#}", src.def.label);
+                None
+            }
+        };
+        let mut watchers = self.watchers.lock();
+        match watchers.get_mut(&src.id) {
+            Some(slot) if !self.closing() => *slot = handle,
+            // Unwatched or closed meanwhile: dropped (joined) below, outside the lock.
+            _ => {
+                drop(watchers);
+                drop(handle);
+            }
+        }
+    }
+
+    /// `Library::refresh_status`, on the calling thread.
+    fn refresh(self: &Arc<Self>) {
+        let router = self.router.read().clone();
+        let sources: Vec<Arc<Source>> = self.sources.read().clone();
+        for s in sources {
+            if self.closing() {
+                return;
+            }
+            let reachable = match s.def.root.to_local_path() {
+                Some(p) => p.is_dir(),
+                None => router
+                    .provider_for(&s.def.root)
+                    .is_some_and(|p| p.stat(&s.def.root).is_ok()),
+            };
+            // A held root stays offline until the indexed folder is back (local roots are
+            // checked here; remote ones by their next walk).
+            if reachable && s.held().is_some() && s.root_is_back() {
+                let _ = s.hold(None);
+            }
+            if reachable && s.held().is_none() && s.root_swapped() {
+                let _ = s.hold(Some(OfflineReason::RootMismatch));
+            }
+            let reason = match (reachable, s.held()) {
+                (false, _) => Some(OfflineReason::Unreachable),
+                (true, held) => held,
+            };
+            let indexed_at = s.store.meta("last_full_walk").ok().flatten();
+            let indexed_at = indexed_at.and_then(|t| t.parse().ok());
+            let was_offline = {
+                let mut status = s.status.write();
+                if matches!(*status, SourceStatus::Indexing { .. }) {
+                    continue;
+                }
+                let was = matches!(*status, SourceStatus::Offline { .. });
+                *status = match reason {
+                    None => SourceStatus::Online { indexed_at },
+                    Some(reason) => SourceStatus::Offline {
+                        last_seen: indexed_at,
+                        reason,
+                    },
+                };
+                was
+            };
+            // Back online: a local watcher died with its volume; a fresh one catches up.
+            let unarmed = matches!(self.watchers.lock().get(&s.id), Some(None));
+            let local = s.def.root.to_local_path().is_some();
+            if reason.is_none() && (unarmed || (was_offline && local)) {
+                self.arm(&s);
+            }
+        }
     }
 }
 
@@ -278,8 +524,6 @@ pub struct Library {
     root: PathBuf,
     pub(crate) shared: Arc<Shared>,
     jobs: Jobs,
-    /// Held while open: one process owns a library (and resumes its jobs). Dropped last.
-    _lock: std::fs::File,
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -298,13 +542,15 @@ impl Library {
     /// Opens (creating if needed) the library `name` under `<root>/library/<name>/`; `root` is
     /// normally [`crate::data_dir`]. Jobs left by an earlier session wait for
     /// `jobs().resume_all()` (call it after `set_router` and registering app job kinds).
+    /// Fails while the library is open, in this process (including jobs of a closed library
+    /// still finishing a step) or another.
     pub fn open(root: &Path, name: &str) -> Result<Library> {
         check_name(name)?;
         let dir = root.join("library").join(name);
         std::fs::create_dir_all(&dir)?;
         let lock = std::fs::File::create(dir.join("library.lock"))?;
         if let Err(e) = lock.try_lock() {
-            anyhow::bail!("library {name} is open in another process ({e})");
+            anyhow::bail!("library {name} is already open ({e})");
         }
         let db = Pool::open(&dir.join("library.db"), Store::Library)?;
         let id = match db.meta("id")? {
@@ -335,9 +581,16 @@ impl Library {
             db,
             sources: RwLock::new(sources),
             router: RwLock::new(Arc::new(Router::new())),
-            activity: AtomicBool::new(false),
+            busy_until: AtomicU64::new(0),
             pause_on_battery: AtomicBool::new(true),
+            hash_after_walk: AtomicBool::new(true),
+            hash_job: Mutex::new(None),
+            hash_again: AtomicBool::new(false),
+            utc_offset: AtomicI64::new(0),
             job_events: Mutex::new(Vec::new()),
+            jobs: JobState::default(),
+            watchers: Mutex::new(HashMap::new()),
+            _lock: lock,
         });
         let lib = Library {
             id: LibraryId(id),
@@ -345,13 +598,14 @@ impl Library {
             root: dir,
             jobs: Jobs::new(shared.clone()),
             shared,
-            _lock: lock,
         };
         crate::jobs::prune(&lib.shared.db)?;
         // Resumed by `jobs().resume_all()` once the app has set the router.
         lib.jobs.register("index", IndexJob::restore);
         lib.jobs.register("op", crate::plan::ExecJob::restore);
         lib.jobs.register("hash", crate::HashJob::restore);
+        // Stores that came back with tags this library does not know.
+        lib.reconcile_tags()?;
         Ok(lib)
     }
 
@@ -453,6 +707,8 @@ impl Library {
         };
         // Its walk, hashing and watcher stop at their next step and let go of the store.
         source.removed.store(true, Ordering::SeqCst);
+        let watcher = self.shared.watchers.lock().remove(id);
+        drop(watcher);
         if delete_store {
             let dir = source.dir.clone();
             let deadline = std::time::Instant::now() + REMOVE_WAIT;
@@ -461,7 +717,7 @@ impl Library {
                 match std::fs::remove_dir_all(&dir) {
                     Ok(()) => break,
                     Err(_) if dir.exists() && std::time::Instant::now() < deadline => {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(Duration::from_millis(50));
                     }
                     Err(e) if dir.exists() => {
                         return Err(e).with_context(|| format!("delete store {}", dir.display()))
@@ -477,18 +733,66 @@ impl Library {
         &self.jobs
     }
 
-    /// Closes the library: stops its jobs at their next checkpoint (they resume on the next
-    /// open) and waits up to `timeout`. False when a job was still in an uninterruptible
-    /// step (a slow listing or transfer); it finishes that step on its own. Dropping the
-    /// library does the same with a 30 s timeout.
-    pub fn close(self, timeout: std::time::Duration) -> bool {
-        self.jobs.shutdown(timeout)
+    /// Closes the library: stops watchers and the status poll, and stops jobs at their next
+    /// checkpoint (they resume on the next open), waiting up to `timeout`. Callable while
+    /// other `Arc<Library>` handles exist; dropping the last one afterwards is then cheap.
+    /// False when a job was still in an uninterruptible step (a slow listing or
+    /// transfer): it finishes that step on its own and the library stays locked until it
+    /// has. Dropping an open library does the same with a 30 s timeout.
+    pub fn close(&self, timeout: Duration) -> bool {
+        self.shared.jobs.closing.store(true, Ordering::SeqCst);
+        let watchers: Vec<_> = self.shared.watchers.lock().drain().collect();
+        drop(watchers); // joins their threads
+        crate::jobs::shutdown(&self.shared, timeout)
     }
 
     /// Indexes a source as a durable job (resumed after a restart).
     pub fn index(&self, id: &SourceId) -> Result<JobId> {
         anyhow::ensure!(self.source(id).is_some(), "no source {id}");
         self.jobs.spawn(Box::new(IndexJob { source: id.clone() }))
+    }
+
+    /// Keeps a source current (`Indexer::watch`, owned by the library until `unwatch`,
+    /// `remove_source` or `close`); a completed walk schedules hashing. A local source
+    /// whose root is away is armed by `refresh_status` once it is back, and re-armed after
+    /// a reconnect (its old watcher died with the volume).
+    pub fn watch(&self, id: &SourceId) -> Result<()> {
+        let src = self.source(id).with_context(|| format!("no source {id}"))?;
+        self.shared
+            .watchers
+            .lock()
+            .entry(id.clone())
+            .or_insert(None);
+        let reachable = match src.def.root.to_local_path() {
+            Some(p) => p.is_dir(),
+            None => true,
+        };
+        if reachable && src.held().is_none() {
+            self.shared.arm(&src);
+        }
+        Ok(())
+    }
+
+    /// Stops keeping a source current (waits for an in-flight change or walk to stop).
+    pub fn unwatch(&self, id: &SourceId) {
+        let watcher = self.shared.watchers.lock().remove(id);
+        drop(watcher);
+    }
+
+    /// Whether hashing starts after each completed walk (index jobs and watchers); default
+    /// on.
+    pub fn set_hash_after_walk(&self, on: bool) {
+        self.shared.hash_after_walk.store(on, Ordering::SeqCst);
+    }
+
+    /// Seconds east of UTC (local time) for `dm:` dates in `LibrarySearcher` queries;
+    /// default 0.
+    pub fn set_utc_offset(&self, secs: i64) {
+        self.shared.utc_offset.store(secs, Ordering::SeqCst);
+    }
+
+    pub(crate) fn utc_offset(&self) -> i64 {
+        self.shared.utc_offset.load(Ordering::SeqCst)
     }
 
     /// The newest `limit` operation log entries (redacted when written), newest first.
@@ -563,7 +867,7 @@ impl Library {
         stats
     }
 
-    /// Counts the distinct content ids across every source (a scan of all stores) and keeps
+    /// Counts the distinct content across every source (a scan of all stores) and keeps
     /// the number for `stats`. The hashing job does this when it ends.
     pub fn count_unique_content(&self) -> Result<u64> {
         count_unique(&self.shared)
@@ -589,34 +893,44 @@ impl Library {
     }
 
     /// Checks in the background whether each source's root can be reached and marks it
-    /// online or offline (sources being indexed are left alone). Returns at once.
+    /// online or offline (sources being indexed are left alone); a local root with a
+    /// different folder than the indexed one is held offline (`OfflineReason::RootMismatch`)
+    /// until the indexed folder is back. Watched sources that came back are re-armed.
+    /// Returns at once.
     pub fn refresh_status(&self) -> std::thread::JoinHandle<()> {
         let shared = self.shared.clone();
-        std::thread::spawn(move || {
-            let router = shared.router.read().clone();
-            let sources: Vec<Arc<Source>> = shared.sources.read().clone();
-            for s in sources {
-                let reachable = match s.def.root.to_local_path() {
-                    Some(p) => p.is_dir(),
-                    None => router
-                        .provider_for(&s.def.root)
-                        .is_some_and(|p| p.stat(&s.def.root).is_ok()),
-                };
-                let indexed_at = s.store.meta("last_full_walk").ok().flatten();
-                let indexed_at = indexed_at.and_then(|t| t.parse().ok());
-                let mut status = s.status.write();
-                if matches!(*status, SourceStatus::Indexing { .. }) {
-                    continue;
-                }
-                *status = if reachable {
-                    SourceStatus::Online { indexed_at }
-                } else {
-                    SourceStatus::Offline {
-                        last_seen: indexed_at,
+        std::thread::spawn(move || shared.refresh())
+    }
+
+    /// Runs `refresh_status` every `every` until the library closes (so watchers re-arm
+    /// when a drive comes back).
+    pub fn poll_status(&self, every: Duration) -> Result<()> {
+        let weak = Arc::downgrade(&self.shared);
+        std::thread::Builder::new()
+            .name("keel-library-status".into())
+            .spawn(move || loop {
+                let mut waited = Duration::ZERO;
+                while waited < every {
+                    let tick = Duration::from_millis(100).min(every - waited);
+                    std::thread::sleep(tick);
+                    waited += tick;
+                    match Weak::upgrade(&weak) {
+                        Some(lib) if !lib.closing() => {}
+                        _ => return,
                     }
-                };
-            }
-        })
+                }
+                match Weak::upgrade(&weak) {
+                    Some(lib) if !lib.closing() => lib.refresh(),
+                    _ => return,
+                }
+            })?;
+        Ok(())
+    }
+}
+
+impl Drop for Library {
+    fn drop(&mut self) {
+        self.close(crate::jobs::CLOSE_TIMEOUT);
     }
 }
 
@@ -632,6 +946,7 @@ pub(crate) mod tests {
             include_hidden: false,
             ignore: Vec::new(),
             poll_secs: None,
+            hash_shares: false,
         }
     }
 
@@ -684,7 +999,7 @@ pub(crate) mod tests {
         let data = tempfile::tempdir().unwrap();
         let lib = Library::open(data.path(), "solo").unwrap();
         let err = Library::open(data.path(), "solo").err().unwrap();
-        assert!(err.to_string().contains("open in another process"), "{err}");
+        assert!(err.to_string().contains("already open"), "{err}");
         assert!(Library::open(data.path(), "other").is_ok());
         drop(lib);
         Library::open(data.path(), "solo").unwrap();
@@ -812,7 +1127,10 @@ pub(crate) mod tests {
         lib.refresh_status().join().unwrap();
         assert!(matches!(
             lib.sources()[0].status,
-            SourceStatus::Offline { last_seen: Some(_) }
+            SourceStatus::Offline {
+                last_seen: Some(_),
+                ..
+            }
         ));
         assert_eq!(names(""), ["b dir", "a.txt"]);
         std::fs::rename(files.path().join("away"), &root).unwrap();

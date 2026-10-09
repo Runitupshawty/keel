@@ -128,3 +128,85 @@ CREATE TRIGGER record_count_au AFTER UPDATE OF kind, size ON record
         bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END)
             + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
 END;
+
+-- @source 5
+-- 0.6.0, the first release with libraries. Record ids are never reused (AUTOINCREMENT): tags
+-- and recents keyed by a record id never move to another file. `mtime` is in nanoseconds and
+-- `ctime` is the change time (status change on unix, ChangeTime on Windows; it was the
+-- creation time) in nanoseconds: a same-size edit that restores the mtime still drops the
+-- content id. Content ids restart: `cas_id` is now BLAKE3 of the bytes, set only once
+-- confirmed. Partial indexes serve filter-only searches.
+DROP TRIGGER record_ai;
+DROP TRIGGER record_ad;
+DROP TRIGGER record_au;
+DROP TRIGGER record_count_ai;
+DROP TRIGGER record_count_ad;
+DROP TRIGGER record_count_au;
+CREATE TABLE record_new(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent INTEGER,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind INTEGER NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    mtime INTEGER,
+    ctime INTEGER,
+    fs_id TEXT NOT NULL,
+    cas_id BLOB,
+    sampled_hash BLOB,
+    gen INTEGER NOT NULL,
+    flags INTEGER NOT NULL DEFAULT 0,
+    error TEXT);
+INSERT INTO record_new(id, parent, name, path, kind, size, mtime, ctime, fs_id, gen, flags, error)
+    SELECT id, parent, name, path, kind, size,
+        CASE WHEN abs(mtime) < 9000000000 THEN mtime * 1000000000 END, NULL,
+        fs_id, gen, flags, error
+    FROM record;
+DROP TABLE record;
+ALTER TABLE record_new RENAME TO record;
+CREATE INDEX record_fs_id ON record(fs_id) WHERE substr(fs_id, 1, 2) <> 'h:';
+CREATE INDEX record_parent ON record(parent, name);
+CREATE INDEX record_cas ON record(cas_id) WHERE cas_id IS NOT NULL;
+CREATE INDEX record_sampled ON record(sampled_hash) WHERE sampled_hash IS NOT NULL;
+CREATE INDEX record_mtime ON record(mtime) WHERE parent IS NOT NULL;
+CREATE INDEX record_size ON record(size) WHERE kind = 0;
+CREATE INDEX record_kind ON record(kind, mtime) WHERE parent IS NOT NULL;
+CREATE TRIGGER record_ai AFTER INSERT ON record BEGIN
+    INSERT INTO record_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+END;
+CREATE TRIGGER record_ad AFTER DELETE ON record BEGIN
+    INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
+    DELETE FROM record_tag WHERE record = old.id;
+END;
+CREATE TRIGGER record_au AFTER UPDATE OF name, path ON record BEGIN
+    INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
+    INSERT INTO record_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+END;
+CREATE TRIGGER record_count_ai AFTER INSERT ON record BEGIN
+    UPDATE counts SET records = records + 1, files = files + (new.kind = 0),
+        bytes = bytes + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
+END;
+CREATE TRIGGER record_count_ad AFTER DELETE ON record BEGIN
+    UPDATE counts SET records = records - 1, files = files - (old.kind = 0),
+        bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END);
+END;
+CREATE TRIGGER record_count_au AFTER UPDATE OF kind, size ON record
+    WHEN old.kind IS NOT new.kind OR old.size IS NOT new.size BEGIN
+    UPDATE counts SET files = files - (old.kind = 0) + (new.kind = 0),
+        bytes = bytes - (CASE WHEN old.kind = 0 THEN old.size ELSE 0 END)
+            + (CASE WHEN new.kind = 0 THEN new.size ELSE 0 END);
+END;
+
+-- @library 4
+-- Tag ids are never reused (a deleted tag's leftover links never reach a new tag). Jobs get
+-- a cursor (the small part of their state written each step, laid over `state` on resume)
+-- and a structured result. Content ids restarted with source version 5.
+CREATE TABLE tag_new(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT,
+    parent INTEGER);
+INSERT INTO tag_new(id, name, color, parent) SELECT id, name, color, parent FROM tag;
+DROP TABLE tag;
+ALTER TABLE tag_new RENAME TO tag;
+CREATE UNIQUE INDEX tag_name ON tag(coalesce(parent, 0), name COLLATE NOCASE);
+ALTER TABLE job ADD COLUMN cursor TEXT;
+ALTER TABLE job ADD COLUMN result TEXT;
+DELETE FROM meta WHERE key = 'unique_content';

@@ -297,6 +297,7 @@ pub(crate) fn fake_source(
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     }
 }
 
@@ -485,6 +486,7 @@ fn a_cut_off_listing_keeps_the_folder_as_unreadable() {
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     walk(&src, &router).unwrap();
     assert_eq!(paths(&src).len(), 6);
@@ -523,6 +525,7 @@ fn folders_are_never_listed_while_holding_the_write_lock() {
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     *db.lock() = Some(src.store_dir().join("source.db"));
     walk(&src, &router).unwrap();
@@ -567,6 +570,7 @@ fn a_walk_leaves_no_trace_on_the_source_however_it_ends() {
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk(&src, &router)));
     assert!(unwound.is_err());
@@ -604,6 +608,7 @@ fn an_emptied_root_reads_as_offline() {
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     walk(&src, &router).unwrap();
     assert_eq!(paths(&src).len(), 4);
@@ -655,7 +660,10 @@ fn unreadable_offline_and_cancelled_walks_keep_the_snapshot() {
     assert_eq!(src.generation.load(Ordering::SeqCst), 2);
     assert!(matches!(
         *src.status.read(),
-        SourceStatus::Offline { last_seen: Some(_) }
+        SourceStatus::Offline {
+            last_seen: Some(_),
+            ..
+        }
     ));
     assert_eq!(paths(&src), all);
 
@@ -888,6 +896,7 @@ fn removing_a_source_stops_its_walk_and_watchers() {
             include_hidden: false,
             ignore: Vec::new(),
             poll_secs: None,
+            hash_shares: false,
         })
         .unwrap();
     let job = lib.index(&slow).unwrap();
@@ -1013,6 +1022,7 @@ pub(crate) fn two_million() -> (Router, tempfile::TempDir, Library, Arc<Source>)
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     (router, data, lib, src)
 }
@@ -1085,4 +1095,179 @@ fn identity_lookups_use_indexes() {
     assert!(by_id.contains("record_fs_id"), "{by_id}");
     let by_name = plan("SELECT id FROM record WHERE parent IS 1 AND name = 'x' AND gen < 3");
     assert!(by_name.contains("record_parent"), "{by_name}");
+}
+
+/// `(sampled_hash, cas_id)` of `rel`.
+fn hashes_of(src: &Source, rel: &str) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    src.store
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT sampled_hash, cas_id FROM record WHERE id = ?1",
+            [id_of(src, rel).unwrap()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// Review item 3: an in-place edit of the same size whose mtime is put back still drops the
+/// content id (the change time moved); an untouched file keeps its id.
+#[test]
+fn a_same_size_rewrite_with_its_mtime_put_back_drops_the_content_id() {
+    let files = tempfile::tempdir().unwrap();
+    let (a, b) = (files.path().join("a.txt"), files.path().join("b.txt"));
+    write(&a, "aaaa");
+    write(&b, "bbbb");
+    let (_data, lib, src) = library_with(folder("f", files.path()));
+    walk(&src, &lib.router()).unwrap();
+    src.store
+        .get()
+        .unwrap()
+        .execute_batch("UPDATE record SET sampled_hash = x'01', cas_id = x'02' WHERE kind = 0")
+        .unwrap();
+    let mtime = std::fs::metadata(&a).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&a, "zzzz").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&a)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert_eq!(std::fs::metadata(&a).unwrap().modified().unwrap(), mtime);
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(hashes_of(&src, "a.txt"), (None, None));
+    assert_eq!(
+        hashes_of(&src, "b.txt"),
+        (Some(vec![1]), Some(vec![2])),
+        "unchanged"
+    );
+}
+
+/// Review item 6: a root that holds another folder stays offline, and its changes stay out
+/// of the snapshot, until the indexed folder is back (or the new one is adopted).
+#[test]
+fn a_root_mismatch_holds_until_the_folder_is_back() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("drive");
+    write(&root.join("a.txt"), "a");
+    let (_data, lib, src) = library_with(folder("d", &root));
+    walk(&src, &lib.router()).unwrap();
+    // Another volume on the drive letter, noticed by the status probe (no walk yet).
+    std::fs::rename(&root, files.path().join("unplugged")).unwrap();
+    write(&root.join("other.txt"), "o");
+    lib.refresh_status().join().unwrap();
+    let held = || {
+        matches!(
+            *src.status.read(),
+            SourceStatus::Offline {
+                reason: OfflineReason::RootMismatch,
+                ..
+            }
+        )
+    };
+    assert!(held());
+    // Its changes are refused, by a watcher too.
+    let change = ChangeEvent::Changed(VPath::local(root.join("other.txt")));
+    assert!(Indexer::apply_change(&src, change.clone()).is_err());
+    assert!(walk(&src, &lib.router()).is_err());
+    lib.refresh_status().join().unwrap();
+    assert!(held(), "the probe does not flip it back online");
+    assert_eq!(paths(&src), ["", "a.txt"], "snapshot kept");
+    assert_eq!(
+        src.store.meta("offline_reason").unwrap().as_deref(),
+        Some("root_mismatch"),
+        "persisted"
+    );
+    // The indexed folder comes back: online again, changes apply.
+    std::fs::rename(&root, files.path().join("foreign")).unwrap();
+    std::fs::rename(files.path().join("unplugged"), &root).unwrap();
+    lib.refresh_status().join().unwrap();
+    assert!(matches!(*src.status.read(), SourceStatus::Online { .. }));
+    write(&root.join("new.txt"), "n");
+    Indexer::apply_change(
+        &src,
+        ChangeEvent::Changed(VPath::local(root.join("new.txt"))),
+    )
+    .unwrap();
+    assert!(id_of(&src, "new.txt").is_some());
+    // Swapped again and adopted: the walk takes the new folder and releases the hold.
+    std::fs::rename(&root, files.path().join("unplugged")).unwrap();
+    std::fs::rename(files.path().join("foreign"), &root).unwrap();
+    assert!(walk(&src, &lib.router()).is_err());
+    assert!(held());
+    Indexer::adopt_root(&src).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(paths(&src), ["", "other.txt"]);
+    assert!(Indexer::apply_change(&src, change).is_ok());
+    lib.refresh_status().join().unwrap();
+    assert!(matches!(*src.status.read(), SourceStatus::Online { .. }));
+}
+
+/// Review item 7: a new hard link gets its own record; the original keeps its own (and its
+/// tags), whether the link is seen by a change or a walk; a move of a linked file still
+/// keeps its record.
+#[test]
+fn a_new_hard_link_never_takes_over_the_original_record() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    write(&root.join("a.txt"), "a");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    let a = tagged(&src, "a.txt");
+    std::fs::hard_link(root.join("a.txt"), root.join("b.txt")).unwrap();
+    Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join("b.txt")))).unwrap();
+    assert_eq!(id_of(&src, "a.txt"), Some(a));
+    let b = id_of(&src, "b.txt").unwrap();
+    assert_ne!(b, a);
+    std::fs::hard_link(root.join("a.txt"), root.join("sub/c.txt")).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    let c = id_of(&src, "sub/c.txt").unwrap();
+    assert_eq!(
+        (id_of(&src, "a.txt"), id_of(&src, "b.txt")),
+        (Some(a), Some(b))
+    );
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(
+        (
+            id_of(&src, "a.txt"),
+            id_of(&src, "b.txt"),
+            id_of(&src, "sub/c.txt")
+        ),
+        (Some(a), Some(b), Some(c)),
+        "stable"
+    );
+    assert_eq!(tag_holder(&src), ["a.txt"]);
+    // A linked file that moves keeps its record.
+    std::fs::rename(root.join("a.txt"), root.join("sub/moved.txt")).unwrap();
+    for p in ["sub/moved.txt", "a.txt"] {
+        Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join(p)))).unwrap();
+    }
+    assert_eq!(id_of(&src, "sub/moved.txt"), Some(a));
+    assert_eq!(tag_holder(&src), ["sub/moved.txt"]);
+}
+
+/// Review item 18: a watched source whose root is away is armed when it comes back.
+#[test]
+fn library_watchers_arm_when_the_root_comes_back() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("drive");
+    let (_data, lib, src) = library_with(folder("d", &root));
+    lib.watch(&src.id).unwrap();
+    lib.refresh_status().join().unwrap();
+    assert!(matches!(
+        *src.status.read(),
+        SourceStatus::Offline {
+            reason: OfflineReason::Unreachable,
+            ..
+        }
+    ));
+    write(&root.join("a.txt"), "a");
+    lib.refresh_status().join().unwrap();
+    // Armed: its first walk finds a.txt, then its events the rest.
+    eventually("first walk", || id_of(&src, "a.txt").is_some());
+    write(&root.join("b.txt"), "b");
+    eventually("watched", || id_of(&src, "b.txt").is_some());
+    lib.unwatch(&src.id);
 }
