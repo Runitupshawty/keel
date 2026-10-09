@@ -33,28 +33,103 @@ jobs:
     steps:
       - run: echo ok
 
-  release:
+  # Tag v* -> one archive per platform on the GitHub release. macOS x64 is cross-built on the
+  # arm64 runner (no Intel runner needed); fetch-deps picks the matching pdfium via
+  # KEEL_PDFIUM_ASSET.
+  package:
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: win64
+            libs: Everything64.dll pdfium.dll
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+            pdfium: pdfium-mac-arm64
+            libs: libpdfium.dylib
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x64
+            pdfium: pdfium-mac-x64
+            libs: libpdfium.dylib
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x64
+            pdfium: pdfium-linux-x64
+            libs: libpdfium.so
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Fetch runtime dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fetch-deps.ps1
+      - name: Fetch runtime dependencies (macOS, Linux)
+        if: runner.os != 'Windows'
+        env:
+          KEEL_PDFIUM_ASSET: ${{ matrix.pdfium }}
+        run: ./scripts/fetch-deps.sh
+      - name: Build release
+        run: cargo build --release --locked -p keel-app --target ${{ matrix.target }}
+      - name: Package release
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="keel-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          bin="target/${{ matrix.target }}/release"
+          exe=keel; [ "$RUNNER_OS" = Windows ] && exe=keel.exe
+          mkdir -p "dist/$name"
+          # Every runtime library and its license notices must be present: fail otherwise.
+          for f in "$bin/$exe" $(printf 'target/deps/%s ' ${{ matrix.libs }}) target/deps/licenses/pdfium/LICENSE; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          if [ "$RUNNER_OS" = Windows ] && [ -z "$(ls -A target/deps/licenses/everything 2>/dev/null)" ]; then
+            echo "::error::missing Everything SDK license notice"; exit 1
+          fi
+          cp "$bin/$exe" "dist/$name/"
+          for lib in ${{ matrix.libs }}; do cp "target/deps/$lib" "dist/$name/"; done
+          cp -R target/deps/licenses "dist/$name/licenses"
+          cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md README.md CHANGELOG.md "dist/$name/"
+          if [ "$RUNNER_OS" = Linux ]; then cp assets/keel.desktop assets/keel.png "dist/$name/"; fi
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keel-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  # One job creates the release, so parallel uploads cannot race on it.
+  release:
+    needs: package
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Fetch runtime dependencies
-        shell: pwsh
-        run: |
-          ./scripts/fetch-deps.ps1
-          if (-not (Get-ChildItem target/deps -Filter 'pdfium*.dll')) { throw 'pdfium library missing from target/deps' }
-      - name: Build release
-        run: cargo build --release
-      - name: Package release
-        shell: pwsh
-        run: Compress-Archive -Path target/release/keel.exe,target/release/*.dll,LICENSE-MIT,LICENSE-APACHE,THIRD_PARTY.md,target/deps/licenses -DestinationPath keel-${{ github.ref_name }}-win64.zip
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            target/release/keel.exe
-            keel-${{ github.ref_name }}-win64.zip
+            dist/*.zip
+            dist/*.tar.gz

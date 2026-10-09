@@ -77,6 +77,7 @@ fn global_items() -> Vec<Item> {
         ("Show in system file manager", "", RevealInSystem),
         ("Open terminal here", "", OpenTerminal),
         ("Toggle dark / light theme", "", ToggleTheme),
+        ("Settings", "Ctrl+,", Settings),
     ]
     .map(|(label, shortcut, action)| Item {
         label,

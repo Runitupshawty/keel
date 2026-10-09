@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Keel app icon: an anchor on a rounded tile. Two colours. Regenerate the PNG/ICO with
+       the gen_icon example of keel-app after editing. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#16324f"/>
+  <g fill="none" stroke="#7dd3fc" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="62" r="20"/>
+    <path d="M128 82 V206"/>
+    <path d="M90 114 H166"/>
+    <path d="M58 152 Q64 206 128 206 Q192 206 198 152"/>
+  </g>
+  <g fill="#7dd3fc">
+    <path d="M38 166 L58 132 L78 166 Z"/>
+    <path d="M178 166 L198 132 L218 166 Z"/>
+  </g>
+</svg>

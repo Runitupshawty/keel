@@ -134,7 +134,14 @@ impl Jobs {
                 total_items: paths.len(),
             };
             for path in &paths {
-                anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
+                if cancel.load(Ordering::Relaxed) {
+                    anyhow::ensure!(p.done_items > 0, "operation cancelled");
+                    anyhow::bail!(
+                        "Cancelled: {} of {} moved to trash",
+                        p.done_items,
+                        paths.len()
+                    );
+                }
                 p.current = path.display();
                 report(p.clone());
                 let removed = router
@@ -329,47 +336,59 @@ pub fn plan_conflicts(src: &[PathBuf], dst: &Path) -> Vec<String> {
 }
 
 /// Resolves the sources (reading the system clipboard for a paste) and scans `dst` for
-/// name clashes off the UI thread, then answers with `Msg::Planned`.
-pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Context) {
+/// name clashes off the UI thread, then answers with `Msg::Planned` (or `PlanFailed`, also
+/// when planning panics). False when the thread could not start.
+pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Context) -> bool {
     spawn("keel-plan", move || {
-        let (src, mv, from_clipboard) = match source {
-            Source::Paths(src, mv) => (src, mv, false),
-            Source::Clipboard(clip) => match clip.resolve() {
-                Some((src, cut)) => (src, cut, true),
-                None => {
-                    send(
-                        &tx,
-                        &ctx,
-                        Msg::PlanFailed("The clipboard holds no files".into()),
-                    );
-                    return;
-                }
-            },
-        };
-        let src: Vec<PathBuf> = src
-            .into_iter()
-            .filter(|p| p.parent() != Some(dst.as_path()))
-            .collect();
-        if src.is_empty() {
-            let text = if mv {
-                "Already in this folder"
-            } else {
-                "Copying into the same folder is not supported yet"
-            };
-            send(&tx, &ctx, Msg::PlanFailed(text.into()));
-            return;
+        let planned = std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &tx, &ctx)));
+        if planned.is_err() {
+            send(
+                &tx,
+                &ctx,
+                Msg::PlanFailed("Planning the transfer failed (see crash.log)".into()),
+            );
         }
-        let conflicts = plan_conflicts(&src, &dst);
-        send(
-            &tx,
-            &ctx,
-            Msg::Planned {
-                op: Transfer { src, dst, mv },
-                conflicts,
-                from_clipboard,
-            },
-        );
-    });
+    })
+}
+
+fn plan(source: Source, dst: PathBuf, tx: &Sender<Msg>, ctx: &egui::Context) {
+    let (src, mv, from_clipboard) = match source {
+        Source::Paths(src, mv) => (src, mv, false),
+        Source::Clipboard(clip) => match clip.resolve() {
+            Some((src, cut)) => (src, cut, true),
+            None => {
+                send(
+                    tx,
+                    ctx,
+                    Msg::PlanFailed("The clipboard holds no files".into()),
+                );
+                return;
+            }
+        },
+    };
+    let src: Vec<PathBuf> = src
+        .into_iter()
+        .filter(|p| p.parent() != Some(dst.as_path()))
+        .collect();
+    if src.is_empty() {
+        let text = if mv {
+            "Already in this folder"
+        } else {
+            "Copying into the same folder is not supported yet"
+        };
+        send(tx, ctx, Msg::PlanFailed(text.into()));
+        return;
+    }
+    let conflicts = plan_conflicts(&src, &dst);
+    send(
+        tx,
+        ctx,
+        Msg::Planned {
+            op: Transfer { src, dst, mv },
+            conflicts,
+            from_clipboard,
+        },
+    );
 }
 
 #[cfg(test)]

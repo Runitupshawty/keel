@@ -90,6 +90,8 @@ pub struct Tab {
     pub grid_scroll: (f32, f32),
     /// Scroll the cursor into view once the next listing arrives (Open location).
     pub reveal: bool,
+    /// The search this tab left for a folder, restored if that folder cannot be listed.
+    pub left_search: Option<TabKind>,
     generation: u64,
     cache_key: Option<(u64, String, (SortKey, bool), bool)>,
     cache: Vec<usize>,
@@ -120,6 +122,7 @@ impl Tab {
             row_step: 1,
             grid_scroll: (0.0, 0.0),
             reveal: false,
+            left_search: None,
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
@@ -276,7 +279,14 @@ impl Tab {
 
     /// Leaving a search for a folder turns the tab into a folder tab.
     fn reset_view(&mut self) {
-        self.kind = TabKind::Dir;
+        let kind = std::mem::replace(&mut self.kind, TabKind::Dir);
+        if let TabKind::Search { query, req, .. } = kind {
+            self.left_search = Some(TabKind::Search {
+                query,
+                due: None,
+                req,
+            });
+        }
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;

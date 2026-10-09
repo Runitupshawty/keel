@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Keel
+GenericName=File Manager
+Comment=Browse and manage files
+Exec=keel %f
+Icon=keel
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;
+MimeType=inode/directory;
+StartupWMClass=keel

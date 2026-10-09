@@ -1,4 +1,4 @@
-//! Preview panel (right side, F3 / Ctrl+Shift+V): follows the active pane's cursor,
+//! Preview panel (right side, F3): follows the active pane's cursor,
 //! renders on `worker::spawn_previewer` and keeps the last 64 previews.
 
 use crate::view_details::{date_text, size_text};
@@ -47,6 +47,8 @@ pub struct PreviewPanel {
     pub md_cache: CommonMarkCache,
     /// Panel width in physical pixels (last frame): the render size of new requests.
     pub width_px: u32,
+    /// Larger files show "too large" without being read (Settings, max preview size).
+    pub max_bytes: u64,
     entry: Option<Entry>,
     doc_tex: Vec<TextureHandle>,
     cache: HashMap<PreviewKey, (Preview, u64)>,
@@ -64,6 +66,7 @@ impl PreviewPanel {
             tex: None,
             md_cache: CommonMarkCache::default(),
             width_px: 480,
+            max_bytes: keel_preview::MAX_PREVIEW_BYTES,
             entry: None,
             doc_tex: Vec::new(),
             cache: HashMap::new(),
@@ -91,6 +94,10 @@ impl PreviewPanel {
         self.entry = Some(e.clone());
         self.set(ctx, None);
         if e.kind == Kind::Dir {
+            return;
+        }
+        if e.size > self.max_bytes {
+            self.set(ctx, Some(Preview::TooLarge(e.size)));
             return;
         }
         self.clock += 1;
@@ -189,11 +196,13 @@ impl PreviewPanel {
         match current {
             Preview::Text { lines, .. } => text(ui, lines),
             Preview::Markdown(md) => {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        CommonMarkViewer::new().show(ui, &mut self.md_cache, md);
-                    });
+                // Keyed by path + mtime + size: parsed once, only visible blocks laid out.
+                CommonMarkViewer::new().show_scrollable(
+                    ("md", &self.key),
+                    ui,
+                    &mut self.md_cache,
+                    md,
+                );
             }
             Preview::Image(_) => {
                 if let Some(t) = &self.tex {

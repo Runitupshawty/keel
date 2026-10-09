@@ -10,6 +10,8 @@ use crate::palette::Palette;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::search_tab::DEBOUNCE;
+use crate::session::Session;
+use crate::settings::Settings;
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH};
 use crate::tab::{Listing, Tab, TabKind};
 use crate::theme::Theme;
@@ -70,6 +72,8 @@ pub enum Msg {
     },
     /// Planning a transfer found nothing to do (or no files on the clipboard).
     PlanFailed(String),
+    /// Sources of a failed cut-move that still exist: the cut to put back.
+    RestoreCut(Vec<PathBuf>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
     Select {
         dir: VPath,
@@ -114,9 +118,12 @@ pub struct AppState {
     pub clipboard: Clipboard,
     /// A clipboard paste is being planned; further Ctrl+V wait (no double move of a cut).
     pub paste_pending: bool,
-    /// The move job started from a cut, and the cut to put back if that job fails.
-    cut_job: Option<(u64, Clipboard)>,
+    /// The move job started from a cut, and its sources (put back as a cut if it fails).
+    cut_job: Option<(u64, Vec<PathBuf>)>,
     pub dialog: Option<Dialog>,
+    /// Theme, layout and preview options; saved by `settings::Persist`.
+    pub settings: Settings,
+    pub settings_open: bool,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -132,24 +139,55 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// One tab on `start` per pane, default settings (tests).
+    #[cfg(test)]
     pub fn new(ctx: egui::Context, router: Arc<Router>, start: VPath) -> Self {
+        Self::restore(ctx, router, Session::single(start), Settings::default())
+    }
+
+    /// Opens the tabs of `session` (already repaired, see `Session::repair`) with
+    /// `settings` applied, and lists every tab.
+    pub fn restore(
+        ctx: egui::Context,
+        router: Arc<Router>,
+        session: Session,
+        settings: Settings,
+    ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let theme = Theme::load(if ctx.style().visuals.dark_mode {
-            "dark"
-        } else {
-            "light"
-        });
+        let theme = Theme::load(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
         let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
+        let mut panes = session
+            .panes
+            .into_iter()
+            .zip(session.active_tab)
+            .map(|(dirs, active)| {
+                let mut dirs = dirs.into_iter();
+                let mut pane = Pane::new(dirs.next().expect("repaired session has a tab per pane"));
+                pane.tabs.extend(dirs.map(Tab::new));
+                pane.active = active.min(pane.tabs.len() - 1);
+                pane
+            });
+        let panes = [
+            panes.next().expect("two panes"),
+            panes.next().expect("two panes"),
+        ];
+        let mut preview = PreviewPanel::new(previewer);
+        preview.open = settings.preview_open;
+        preview.max_bytes = settings.max_preview_bytes();
         let mut state = Self {
             router,
-            panes: [Pane::new(start.clone()), Pane::new(start)],
-            active: 0,
-            dual: true,
-            show_hidden: false,
+            panes,
+            active: if settings.dual {
+                session.active.min(1)
+            } else {
+                0
+            },
+            dual: settings.dual,
+            show_hidden: settings.show_hidden,
             sidebar: Sidebar::default(),
-            preview: PreviewPanel::new(previewer),
+            preview,
             searcher: None,
             search_reason: None,
             jump,
@@ -159,6 +197,8 @@ impl AppState {
             paste_pending: false,
             cut_job: None,
             dialog: None,
+            settings,
+            settings_open: false,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -171,9 +211,41 @@ impl AppState {
             next_req: 0,
         };
         state.theme.apply(&state.ctx);
-        state.list(0, 0);
-        state.list(1, 0);
+        // Tabs are only listed when asked; restored background tabs need it now.
+        for p in 0..2 {
+            for t in 0..state.panes[p].tabs.len() {
+                state.list(p, t);
+            }
+        }
         state
+    }
+
+    /// Shows the Settings window (when open) on a copy of the live options and applies
+    /// what the user changed.
+    pub fn settings_ui(&mut self, ctx: &egui::Context) {
+        let s = &mut self.settings;
+        s.show_hidden = self.show_hidden;
+        s.dual = self.dual;
+        s.preview_open = self.preview.open;
+        if !self.settings_open {
+            return;
+        }
+        let theme_changed = crate::settings::window(ctx, &mut self.settings_open, s);
+        self.show_hidden = s.show_hidden;
+        self.preview.open = s.preview_open;
+        let max = s.max_preview_bytes();
+        if self.preview.max_bytes != max {
+            self.preview.max_bytes = max;
+            // Re-evaluate the shown file against the new limit.
+            self.preview.key = None;
+        }
+        if self.dual != s.dual {
+            self.run(self.active, Action::ToggleDual);
+        }
+        if theme_changed {
+            self.theme = Theme::load(&self.settings.theme);
+            self.theme.apply(&self.ctx);
+        }
     }
 
     /// Loads the platform searcher off the UI thread (the Everything DLL load may block).
@@ -245,13 +317,18 @@ impl AppState {
             Msg::Toast(text) => self.toasts.error(text),
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
             Msg::JobDone { id, result } => {
-                if let Some((job, cut)) = self.cut_job.take() {
+                if let Some((job, src)) = self.cut_job.take() {
                     if job != id {
-                        self.cut_job = Some((job, cut));
-                    } else if result.is_err() && self.clipboard.paths.is_empty() {
-                        // The move failed or was cancelled and nothing was copied since:
-                        // the cut can be pasted again.
-                        self.clipboard.set(cut.paths, true);
+                        self.cut_job = Some((job, src));
+                    } else if result.is_err() {
+                        // The move failed or was cancelled: what was not moved can be
+                        // pasted again (checked on a worker: stat may block).
+                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                        worker::spawn("keel-recut", move || {
+                            let left: Vec<PathBuf> =
+                                src.into_iter().filter(|p| p.exists()).collect();
+                            worker::send(&tx, &ctx, Msg::RestoreCut(left));
+                        });
                     }
                 }
                 self.jobs.finish(id, result);
@@ -280,6 +357,15 @@ impl AppState {
                         op,
                         from_clipboard,
                     });
+                }
+            }
+            Msg::RestoreCut(paths) => {
+                // Only when nothing was copied since, here or in another app.
+                if !paths.is_empty()
+                    && self.clipboard.paths.is_empty()
+                    && !self.clipboard.changed_outside()
+                {
+                    self.clipboard.set(paths, true);
                 }
             }
             Msg::PlanFailed(text) => {
@@ -340,8 +426,11 @@ impl AppState {
             }
             Err(e) => {
                 let text = crate::search_tab::banner(&format!("{e:#}"));
-                tab.error = Some(text.clone());
-                self.search_reason = Some(text);
+                // Only "not running" is global; a bad query stays on its tab.
+                if text == crate::search_tab::NOT_RUNNING {
+                    self.search_reason = Some(text.clone());
+                }
+                tab.error = Some(text);
             }
         }
     }
@@ -415,14 +504,15 @@ impl AppState {
     }
 
     fn start_transfer(&mut self, op: Transfer, conflict: keel_vfs::Conflict, from_clipboard: bool) {
-        let cut = (from_clipboard && op.mv).then(|| self.clipboard.clone());
+        // `op.src` is what was actually pasted (the system clipboard may have won).
+        let cut = (from_clipboard && op.mv).then(|| op.src.clone());
         if cut.is_some() {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
         let id = self.jobs.start(op, conflict, self.tx.clone());
-        if let Some(cut) = cut {
-            self.cut_job = Some((id, cut));
+        if let Some(src) = cut {
+            self.cut_job = Some((id, src));
         }
     }
 
@@ -478,7 +568,8 @@ impl AppState {
             .flat_map(|p| (0..self.panes[p].tabs.len()).map(move |t| (p, t)))
             .filter(|&(p, t)| {
                 let tab = &self.panes[p].tabs[t];
-                tab.dir == dir && req > tab.listed_req
+                // A search tab keeps the folder it was opened from; never fill it.
+                tab.dir == dir && req > tab.listed_req && !tab.is_search()
             })
             .collect();
         let Some((&last, rest)) = hits.split_last() else {
@@ -493,6 +584,7 @@ impl AppState {
                     tab.listed_req = req;
                     tab.loading = still_loading;
                     tab.error = None;
+                    tab.left_search = None;
                 };
                 for &hit in rest {
                     fill(hit, listing.clone());
@@ -526,6 +618,10 @@ impl AppState {
                             tab.future.pop();
                         }
                         tab.dir = prev;
+                        // Leaving a search failed: it is still the search tab.
+                        if let Some(kind) = tab.left_search.take() {
+                            tab.kind = kind;
+                        }
                     }
                 }
                 self.toasts.error(text);
@@ -642,7 +738,12 @@ impl AppState {
         self.tab_mut(p).visible(show_hidden);
         match action {
             Action::Up => {
-                if self.tab_mut(p).up() {
+                if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
+                    // Backspace in a search tab edits the query.
+                    query.pop();
+                    *due = Some(Instant::now() + DEBOUNCE);
+                    self.ctx.request_repaint_after(DEBOUNCE);
+                } else if self.tab_mut(p).up() {
                     self.list_active(p);
                 }
             }
@@ -780,9 +881,12 @@ impl AppState {
                 self.launch(dir, platform::terminal);
             }
             Action::ToggleTheme => {
-                self.theme = Theme::load(if self.theme.dark { "light" } else { "dark" });
+                let name = if self.theme.dark { "light" } else { "dark" };
+                self.settings.theme = name.to_owned();
+                self.theme = Theme::load(name);
                 self.theme.apply(&self.ctx);
             }
+            Action::Settings => self.settings_open = !self.settings_open,
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
                     return self.toasts.error(why);
@@ -826,13 +930,15 @@ impl AppState {
             }
             Action::Paste => match self.tab(p).dir.to_local_path() {
                 Some(dst) => {
-                    self.paste_pending = true;
-                    jobs::spawn_plan(
+                    self.paste_pending = jobs::spawn_plan(
                         Source::Clipboard(self.clipboard.clone()),
                         dst,
                         self.tx.clone(),
                         self.ctx.clone(),
-                    )
+                    );
+                    if !self.paste_pending {
+                        self.toasts.error("Could not start the paste");
+                    }
                 }
                 None => self
                     .toasts
@@ -862,12 +968,14 @@ impl AppState {
                 // modifiers during an OS drag).
                 let shift = self.ctx.input(|i| i.modifiers.shift);
                 let mv = from.is_some_and(|(pane, _)| shift || pane == p);
-                jobs::spawn_plan(
+                if !jobs::spawn_plan(
                     Source::Paths(paths, mv),
                     dst_local,
                     self.tx.clone(),
                     self.ctx.clone(),
-                );
+                ) {
+                    self.toasts.error("Could not start the transfer");
+                }
             }
             Action::NewFolder | Action::NewFile => {
                 let folder = action == Action::NewFolder;
@@ -1075,6 +1183,53 @@ mod tests {
             .any(|t| t.text == "Paste already in progress"));
         state.apply(Msg::PlanFailed("The clipboard holds no files".into()));
         assert!(!state.paste_pending);
+    }
+
+    #[test]
+    fn search_tab_is_never_filled_by_its_folder_and_survives_a_failed_exit() {
+        let mut router = Router::new();
+        router.register(Arc::new(Gone));
+        let home = VPath::parse("gone://usb/").unwrap();
+        let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());
+        state.run(0, Action::Search);
+        let query = |s: &AppState| match &s.tab(0).kind {
+            TabKind::Search { query, .. } => Some(query.clone()),
+            TabKind::Dir => None,
+        };
+        if let TabKind::Search { query, .. } = &mut state.tab_mut(0).kind {
+            query.push_str("ab");
+        }
+        // A refresh of the folder the search was opened from (watcher, F5, job done).
+        state.apply(Msg::Listed {
+            dir: home.clone(),
+            req: 100,
+            result: Ok(Listing::new(vec![test_entry(
+                &home,
+                "a.txt",
+                Kind::File,
+                1,
+            )])),
+        });
+        assert!(
+            state.tab(0).entries().is_empty(),
+            "search results untouched"
+        );
+
+        // Leaving the search for a folder that cannot be listed keeps the search tab.
+        let locked = home.join("locked");
+        state.tab_mut(0).navigate(locked.clone());
+        assert!(!state.tab(0).is_search());
+        state.apply(Msg::Listed {
+            dir: locked,
+            req: 101,
+            result: Err(anyhow::anyhow!("access denied")),
+        });
+        assert_eq!(query(&state).as_deref(), Some("ab"));
+        assert_eq!(state.tab(0).dir, home);
+
+        // Backspace edits the query instead of leaving the search.
+        state.run(0, Action::Up);
+        assert_eq!(query(&state).as_deref(), Some("a"));
     }
 
     #[test]

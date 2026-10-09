@@ -1,0 +1,4 @@
+// Windows resources for keel.exe (compiled by build.rs via embed-resource).
+// 1 = application icon (Explorer, taskbar); 1 24 = RT_MANIFEST for the process.
+1 ICON "../../assets/keel.ico"
+1 24 "keel.exe.manifest"
