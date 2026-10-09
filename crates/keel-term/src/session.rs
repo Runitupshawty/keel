@@ -3,7 +3,7 @@ use crate::{
     Shell, ShellKind,
 };
 use anyhow::Result;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -12,17 +12,21 @@ use std::sync::{
     Arc,
 };
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 struct Resources {
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     reader: JoinHandle<()>,
     waiter: JoinHandle<()>,
+    flusher: JoinHandle<()>,
 }
+/// Idle state plus the condition the cd flusher waits on (output, a new cd, exit).
+type IdleCell = Arc<(Mutex<Idle>, Condvar)>;
 pub struct Session {
     grid: Arc<Mutex<vt100::Parser>>,
-    idle: Arc<Mutex<Idle>>,
+    idle: IdleCell,
     alive: Arc<AtomicBool>,
     kind: ShellKind,
     resources: Option<Resources>,
@@ -48,14 +52,23 @@ impl Session {
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
         let mut child = pair.slave.spawn_command(command)?;
         let mut killer = child.clone_killer();
+        #[cfg(unix)]
+        let shell_pid = child.process_id();
         drop(pair.slave);
+        let master = Arc::new(Mutex::new(pair.master));
         let grid = Arc::new(Mutex::new(vt100::Parser::new(
             rows.max(1),
             cols.max(1),
             10_000,
         )));
-        let idle = Arc::new(Mutex::new(Idle::default()));
+        let idle: IdleCell = Arc::default();
         let kind = shell.kind;
+        // WSL prompts name the distro's host, which defaults to this machine's name.
+        let host = if kind == ShellKind::Wsl {
+            std::env::var("COMPUTERNAME").unwrap_or_default()
+        } else {
+            String::new()
+        };
         let alive = Arc::new(AtomicBool::new(true));
         let reader_thread = {
             let grid = grid.clone();
@@ -112,13 +125,10 @@ impl Session {
                             let parser = grid.lock();
                             let screen = parser.screen();
                             let (row, col) = screen.cursor_position();
-                            is_prompt(kind, &screen.contents_between(row, 0, row, col))
+                            is_prompt(kind, &screen.contents_between(row, 0, row, col), &host)
                         };
-                        let cd = idle.lock().output(prompt);
-                        if let Some(line) = cd {
-                            let mut w = writer.lock();
-                            let _ = w.write_all(line.as_bytes()).and_then(|_| w.flush());
-                        }
+                        idle.0.lock().output(prompt, Instant::now());
+                        idle.1.notify_all();
                         notify(); // The app coalesces notifications to one pending message.
                     }
                     notify();
@@ -149,17 +159,48 @@ impl Session {
                 return Err(e.into());
             }
         };
+        // On Unix the shell must also own the terminal's foreground process group (ssh,
+        // vim or psql started from it take it over). Weak: never keeps the PTY open.
+        #[cfg(unix)]
+        let in_front = {
+            let master = Arc::downgrade(&master);
+            move || {
+                let leader = master
+                    .upgrade()
+                    .and_then(|m| m.lock().process_group_leader());
+                match (leader, shell_pid) {
+                    (Some(leader), Some(pid)) => leader as u32 == pid,
+                    _ => true,
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let in_front = || true;
+        let flusher = {
+            let (idle, alive, writer) = (idle.clone(), alive.clone(), writer.clone());
+            std::thread::Builder::new()
+                .name("keel-pty-cd".into())
+                .spawn(move || flush_cds(&idle, &alive, &writer, in_front))
+        };
+        let flusher = match flusher {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = killer.kill();
+                return Err(e.into());
+            }
+        };
         Ok(Self {
             grid,
             idle,
             alive,
             kind: shell.kind,
             resources: Some(Resources {
-                master: Mutex::new(pair.master),
+                master,
                 writer,
                 killer: Mutex::new(killer),
                 reader,
                 waiter,
+                flusher,
             }),
         })
     }
@@ -169,7 +210,7 @@ impl Session {
             .resources
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("terminal closed"))?;
-        self.idle.lock().input(bytes);
+        self.idle.0.lock().input(bytes);
         let mut writer = r.writer.lock();
         writer.write_all(bytes)?;
         writer.flush()?;
@@ -188,19 +229,14 @@ impl Session {
     pub fn grid(&self) -> MutexGuard<'_, vt100::Parser> {
         self.grid.lock()
     }
-    /// Sends a `cd` line now if the shell looks idle, else queues it for the next idle
-    /// prompt (latest wins). See `grid::Idle` for the heuristic.
+    /// Queues a `cd` line (latest wins); it is typed once the shell is idle (see
+    /// `grid::Idle`). Paths that cannot be quoted safely for the shell are ignored.
     pub fn cd(&self, dir: &Path) {
         let Some(line) = cd_line(self.kind, dir) else {
             return;
         };
-        let mut idle = self.idle.lock();
-        if !self.is_alive() || !idle.ready {
-            idle.pending = Some(line);
-            return;
-        }
-        drop(idle);
-        let _ = self.write(line.as_bytes());
+        self.idle.0.lock().pending = Some(line);
+        self.idle.1.notify_all();
     }
     /// Kills the child without waiting (usable through a shared `Arc`). The cloned
     /// killer only signals (TerminateProcess / SIGHUP), so this never blocks; it also
@@ -209,6 +245,7 @@ impl Session {
         if !self.alive.swap(false, Ordering::AcqRel) {
             return;
         }
+        self.idle.1.notify_all();
         if let Some(r) = &self.resources {
             let _ = r.killer.lock().kill();
         }
@@ -220,6 +257,7 @@ impl Session {
             let _ = std::thread::Builder::new()
                 .name("keel-pty-close".into())
                 .spawn(move || {
+                    let _ = r.flusher.join();
                     drop(r.writer);
                     drop(r.master);
                     let _ = r.waiter.join();
@@ -234,6 +272,35 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+/// Types queued `cd` lines once the shell has been idle for `grid::QUIET`.
+fn flush_cds(
+    idle: &IdleCell,
+    alive: &AtomicBool,
+    writer: &Mutex<Box<dyn Write + Send>>,
+    in_front: impl Fn() -> bool,
+) {
+    let (state, wake) = &**idle;
+    let mut guard = state.lock();
+    while alive.load(Ordering::Acquire) {
+        match guard.due(Instant::now()) {
+            Ok(line) if in_front() => {
+                drop(guard);
+                let mut w = writer.lock();
+                let _ = w.write_all(line.as_bytes()).and_then(|_| w.flush());
+                drop(w);
+                guard = state.lock();
+            }
+            // A foreground job owns the terminal: keep the line for the next prompt.
+            Ok(line) => {
+                guard.pending.get_or_insert(line);
+            }
+            Err(wait) => {
+                // The timeout also re-checks `alive` should a wake-up be missed.
+                wake.wait_for(&mut guard, wait.unwrap_or(Duration::from_secs(1)));
+            }
+        }
     }
 }
 fn size(cols: u16, rows: u16) -> PtySize {
