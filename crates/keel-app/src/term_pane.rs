@@ -23,12 +23,38 @@ pub fn keyboard_event(event: &Event) -> bool {
     )
 }
 
+/// Alt+letter/digit is meta: ESC then the key (Windows/Linux; macOS Option composes text).
+fn meta_char(key: Key, modifiers: egui::Modifiers) -> Option<char> {
+    if cfg!(target_os = "macos") || !modifiers.alt || modifiers.ctrl || modifiers.command {
+        return None;
+    }
+    let name = key.name();
+    let c = name.chars().next().filter(|c| c.is_ascii_alphanumeric())?;
+    (name.len() == 1).then(|| {
+        if modifiers.shift {
+            c.to_ascii_uppercase()
+        } else {
+            c.to_ascii_lowercase()
+        }
+    })
+}
+
+/// egui-winit also reports Alt+key as text; that echo is already sent as meta.
+fn is_meta_echo(meta: Option<char>, event: &Event) -> bool {
+    match (meta, event) {
+        (Some(c), Event::Text(text)) => text.eq_ignore_ascii_case(c.encode_utf8(&mut [0; 4])),
+        _ => false,
+    }
+}
+
 fn input_bytes(event: &Event, application_cursor: bool, bracketed_paste: bool) -> Option<Vec<u8>> {
     let bytes = match event {
         Event::Text(text) => text.as_bytes().to_vec(),
         Event::Paste(text) => {
             if bracketed_paste {
-                format!("\x1b[200~{text}\x1b[201~").into_bytes()
+                // An ESC in the text could end paste mode early (`ESC[201~`) and run the
+                // rest as typed keys.
+                format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
             } else {
                 text.replace('\n', "\r").into_bytes()
             }
@@ -41,11 +67,38 @@ fn input_bytes(event: &Event, application_cursor: bool, bracketed_paste: bool) -
             modifiers,
             ..
         } => {
-            // The physical Ctrl key (not macOS Cmd) makes control bytes.
-            if modifiers.ctrl {
+            // The physical Ctrl key (not macOS Cmd) makes control bytes. Ctrl+Alt is
+            // AltGr on Windows: a layout character, never a control byte.
+            if modifiers.ctrl && !modifiers.alt {
                 let name = key.name();
                 if name.len() == 1 && name.as_bytes()[0].is_ascii_alphabetic() {
                     return Some(vec![name.as_bytes()[0].to_ascii_uppercase() - b'A' + 1]);
+                }
+            }
+            if let Some(c) = meta_char(*key, *modifiers) {
+                return Some(vec![0x1b, c as u8]);
+            }
+            // xterm modifier parameter: 1 + Shift 1 + Alt 2 + Ctrl 4.
+            let m = 1
+                + u8::from(modifiers.shift)
+                + 2 * u8::from(modifiers.alt)
+                + 4 * u8::from(modifiers.ctrl);
+            if m > 1 {
+                let modified = match key {
+                    Key::ArrowUp => Some(format!("\x1b[1;{m}A")),
+                    Key::ArrowDown => Some(format!("\x1b[1;{m}B")),
+                    Key::ArrowRight => Some(format!("\x1b[1;{m}C")),
+                    Key::ArrowLeft => Some(format!("\x1b[1;{m}D")),
+                    Key::Home => Some(format!("\x1b[1;{m}H")),
+                    Key::End => Some(format!("\x1b[1;{m}F")),
+                    Key::Insert => Some(format!("\x1b[2;{m}~")),
+                    Key::Delete => Some(format!("\x1b[3;{m}~")),
+                    Key::PageUp => Some(format!("\x1b[5;{m}~")),
+                    Key::PageDown => Some(format!("\x1b[6;{m}~")),
+                    _ => None,
+                };
+                if let Some(sequence) = modified {
+                    return Some(sequence.into_bytes());
                 }
             }
             let sequence = match key {
@@ -154,6 +207,26 @@ impl TermPane {
     pub fn leave(&self, ctx: &egui::Context) {
         ctx.memory_mut(|m| m.surrender_focus(Self::id()));
     }
+    /// Ctrl+` while focused: hide the panel, keep the shell running.
+    pub fn hide(&mut self, ctx: &egui::Context) {
+        self.leave(ctx);
+        self.open = false;
+        self.seen_height = None;
+    }
+    /// Shows a hidden terminal again (its shell kept running); false if there is none.
+    pub fn reopen(&mut self, ctx: &egui::Context) -> bool {
+        if !self.open && !self.starting && self.session.is_none() {
+            return false;
+        }
+        self.open = true;
+        self.focus(ctx);
+        true
+    }
+    #[cfg(test)]
+    pub fn running(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.is_alive())
+    }
+    /// The × button: ends the shell.
     pub fn close(&mut self, ctx: &egui::Context) {
         self.leave(ctx);
         self.open = false;
@@ -274,7 +347,8 @@ impl TermPane {
         }
     }
     pub fn ready(&mut self, generation: u64, session: Arc<Session>, shells: Vec<Shell>) {
-        if self.open && generation == self.generation {
+        // A hidden pane keeps its session; `close` and restarts bump the generation.
+        if generation == self.generation {
             self.session = Some(session);
             self.shells = shells;
             self.starting = false;
@@ -374,7 +448,21 @@ impl TermPane {
         // event, and Shift+Delete into Cut on Windows. Ctrl+Shift+C/V (Cmd+C/V on macOS)
         // copy/paste; plain Ctrl+C/X/V reach the child as control bytes.
         let clipboard = modifiers.shift || modifiers.mac_cmd;
+        let mut meta = None;
         for event in events {
+            let echo = is_meta_echo(meta.take(), &event);
+            if let Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = &event
+            {
+                meta = meta_char(*key, *modifiers);
+            }
+            if echo {
+                continue;
+            }
             let bytes = match &event {
                 Event::Copy if clipboard => {
                     ctx.copy_text(self.copy_text());
@@ -456,7 +544,7 @@ impl TermPane {
                         .button("×")
                         .on_hover_text("Close terminal (ends the shell)")
                         .clicked();
-                    ui.weak("Ctrl+` toggles, F6 / Esc returns to files");
+                    ui.weak("Ctrl+` hides, F6 / Shift+Esc returns to files");
                 });
                 if self.starting {
                     ui.label("Starting terminal…");
@@ -713,6 +801,77 @@ mod tests {
         assert_eq!(
             input_bytes(&Event::Paste("a\nb".into()), false, true),
             Some(b"\x1b[200~a\nb\x1b[201~".to_vec())
+        );
+    }
+    /// m17: a pasted ESC[201~ must not end bracketed paste and run the rest as keys.
+    #[test]
+    fn bracketed_paste_strips_escape() {
+        assert_eq!(
+            input_bytes(&Event::Paste("a\x1b[201~rm -rf ~\r".into()), false, true),
+            Some(b"\x1b[200~a[201~rm -rf ~\r\x1b[201~".to_vec())
+        );
+    }
+    /// m16: AltGr (Ctrl+Alt) is no control byte; Alt+key is meta; modified cursor keys
+    /// use xterm parameters.
+    #[test]
+    fn modifier_combinations() {
+        let ctrl_alt = egui::Modifiers {
+            ctrl: true,
+            command: !cfg!(target_os = "macos"),
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(input_bytes(&key(Key::Q, ctrl_alt), false, false), None);
+        let alt = egui::Modifiers::ALT;
+        let alt_shift = egui::Modifiers { shift: true, ..alt };
+        if !cfg!(target_os = "macos") {
+            assert_eq!(
+                input_bytes(&key(Key::B, alt), false, false),
+                Some(b"\x1bb".to_vec())
+            );
+            assert_eq!(
+                input_bytes(&key(Key::B, alt_shift), false, false),
+                Some(b"\x1bB".to_vec())
+            );
+            assert_eq!(
+                input_bytes(&key(Key::Num1, alt), false, false),
+                Some(b"\x1b1".to_vec())
+            );
+            // egui-winit also sends the Alt+b text; it is dropped once, right after.
+            let meta = meta_char(Key::B, alt);
+            assert!(is_meta_echo(meta, &Event::Text("b".into())));
+            assert!(!is_meta_echo(meta, &Event::Text("c".into())));
+            assert!(!is_meta_echo(None, &Event::Text("b".into())));
+        }
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let shift = egui::Modifiers::SHIFT;
+        for (code, modifiers, bytes) in [
+            (Key::ArrowLeft, ctrl, b"\x1b[1;5D".as_slice()),
+            (Key::ArrowUp, shift, b"\x1b[1;2A"),
+            (Key::Home, alt, b"\x1b[1;3H"),
+            (
+                Key::End,
+                egui::Modifiers {
+                    shift: true,
+                    ..ctrl
+                },
+                b"\x1b[1;6F",
+            ),
+            (Key::Delete, ctrl, b"\x1b[3;5~"),
+            (Key::PageDown, shift, b"\x1b[6;2~"),
+        ] {
+            assert_eq!(
+                input_bytes(&key(code, modifiers), false, false).as_deref(),
+                Some(bytes)
+            );
+        }
+        // Plain Esc reaches the program (vim, less, fzf).
+        assert_eq!(
+            input_bytes(&key(Key::Escape, egui::Modifiers::NONE), false, false),
+            Some(vec![0x1b])
         );
     }
 }

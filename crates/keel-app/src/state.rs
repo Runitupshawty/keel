@@ -984,13 +984,13 @@ impl AppState {
                     self.toasts.error("Terminal requires a local folder");
                 }
             }
-            // Closed: open (at the pane, else home). Open but unfocused: focus it.
-            // Focused: close, which ends the shell.
+            // Focused: hide it, the shell keeps running (only × ends it). Hidden or
+            // unfocused: show and focus it. No shell yet: open at the pane, else home.
             Action::ToggleTerminal => {
                 if self.terminal.focused(&self.ctx) {
-                    self.terminal.close(&self.ctx);
-                } else if self.terminal.open {
-                    self.terminal.focus(&self.ctx);
+                    self.terminal.hide(&self.ctx);
+                } else if self.terminal.reopen(&self.ctx) {
+                    // shown again
                 } else if let Some(dir) =
                     (self.tab(p).dir.to_local_path()).or_else(|| self.home.to_local_path())
                 {
@@ -1518,6 +1518,31 @@ mod tests {
         assert_eq!(tab.dir, offline);
         assert!(tab.error.is_some());
         let _ = std::fs::remove_dir_all(home.to_local_path().unwrap());
+    }
+
+    /// m19: Ctrl+` while focused hides the terminal and keeps its shell; × ends it.
+    #[test]
+    fn toggling_a_focused_terminal_hides_and_keeps_the_shell() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        state.run(0, Action::ToggleTerminal);
+        assert!(state.terminal.open);
+        let start = std::time::Instant::now();
+        while !state.terminal.running() {
+            assert!(start.elapsed() < Duration::from_secs(20), "no shell");
+            if let Ok(msg) = state.rx.recv_timeout(Duration::from_millis(100)) {
+                state.apply(msg);
+            }
+        }
+        assert!(state.terminal.focused(&state.ctx));
+        state.run(0, Action::ToggleTerminal);
+        assert!(!state.terminal.open && state.terminal.running());
+        state.run(0, Action::ToggleTerminal);
+        assert!(state.terminal.open && state.terminal.focused(&state.ctx));
+        assert!(state.terminal.running());
+        let ctx = state.ctx.clone();
+        state.terminal.close(&ctx);
+        assert!(!state.terminal.open && !state.terminal.running());
     }
 
     #[test]

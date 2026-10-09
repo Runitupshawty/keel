@@ -189,7 +189,8 @@ pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool)
         if i.consume_key(CMD, Key::Backtick) {
             return vec![Action::ToggleTerminal];
         }
-        if i.consume_key(Modifiers::NONE, Key::F6) || i.consume_key(Modifiers::NONE, Key::Escape) {
+        // Plain Esc belongs to the shell's programs (vim, less, fzf, PSReadLine).
+        if i.consume_key(Modifiers::NONE, Key::F6) || i.consume_key(Modifiers::SHIFT, Key::Escape) {
             // Discard this frame's text/key events on focus transfer.
             i.events.retain(|e| !crate::term_pane::keyboard_event(e));
             return vec![Action::LeaveTerminal];
@@ -333,6 +334,43 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// M7: only F6 / Shift+Esc leave the terminal; plain Esc stays for the PTY.
+    #[test]
+    fn terminal_keeps_plain_escape() {
+        let ctx = egui::Context::default();
+        let esc = |modifiers| Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let run = |event: Event| {
+            let (mut actions, mut left) = (Vec::new(), 0);
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![event],
+                    ..Default::default()
+                },
+                |ctx| {
+                    actions = actions_with_terminal(ctx, true, true);
+                    left = ctx.input(|i| i.events.len());
+                },
+            );
+            (actions, left)
+        };
+        assert_eq!(run(esc(Modifiers::NONE)), (vec![], 1));
+        assert_eq!(run(esc(Modifiers::SHIFT)), (vec![Action::LeaveTerminal], 0));
+        let f6 = Event::Key {
+            key: Key::F6,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(run(f6), (vec![Action::LeaveTerminal], 0));
     }
 
     fn frame(ctx: &egui::Context, events: Vec<Event>) -> bool {
