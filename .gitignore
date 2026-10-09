@@ -7,3 +7,4 @@ target/deps/
 *.diff.png
 *.old.png
 *.new.png
+crates/keel-app/tests/snapshots/*.png
