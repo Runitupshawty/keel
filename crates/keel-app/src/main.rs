@@ -30,6 +30,7 @@ mod view_grid;
 mod worker;
 // --- Task 24 ---
 mod cli;
+mod hotkey;
 mod single_instance;
 // --- end Task 24 ---
 

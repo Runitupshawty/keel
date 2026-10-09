@@ -64,6 +64,9 @@ pub struct App {
     pub save_session: bool,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
+    // --- Task 24 ---
+    /// None in tests and where the OS has no global hotkeys.
+    hotkey: Option<crate::hotkey::Hotkey>,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -94,6 +97,11 @@ impl App {
                 crate::worker::send(&tx, &ctx, crate::state::Msg::External(req));
             });
         }
+        // Not in tests (`persist` is None there): they would grab the real hotkey.
+        let hotkey = persist
+            .is_some()
+            .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx))
+            .flatten();
         // --- end Task 24 ---
         Self {
             state,
@@ -103,6 +111,7 @@ impl App {
             crashed: false,
             save_session: true,
             seen_widths: (None, None),
+            hotkey,
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -289,6 +298,11 @@ impl App {
                     }
                 }
             });
+        // --- Task 24 ---
+        if let Some(e) = (self.hotkey.as_mut()).and_then(|h| h.sync(&s.settings.hotkey)) {
+            s.toasts.error(e);
+        }
+        // --- end Task 24 ---
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
             // Same rule as `Action::Drop`: Shift or a drop inside the source pane moves.
             let (shift, hover) = ctx.input(|i| (i.modifiers.shift, i.pointer.hover_pos()));

@@ -38,6 +38,8 @@ pub struct Settings {
     /// keychain only.
     pub clouds: Vec<keel_vfs::CloudAccount>,
     // --- Task 24 ---
+    /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Alt+K".
+    pub hotkey: String,
     /// A second `keel` hands its folder / search to the running one and exits.
     pub single_instance: bool,
 }
@@ -59,6 +61,7 @@ impl Default for Settings {
             remote_thumbnails: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
+            hotkey: "Ctrl+Alt+K".into(),
             single_instance: true,
         }
     }
@@ -345,6 +348,9 @@ pub fn window(
                     );
                     ui.end_row();
                     // --- Task 24 ---
+                    ui.label("Global hotkey");
+                    crate::hotkey::field(ui, &mut s.hotkey);
+                    ui.end_row();
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
