@@ -150,14 +150,29 @@ pub fn validate_preview_execute(lib: &Library, op: Op) -> Result<Plan> {
     preview(&lib.shared, op)
 }
 
+/// `Plan::execute` refused because the preview no longer matches (changes or warnings):
+/// the fresh plan is inside, for the user to confirm instead.
+#[derive(Debug)]
+pub struct PlanChanged(pub Box<Plan>);
+
+impl std::fmt::Display for PlanChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the sources changed since the preview: confirm the new preview")
+    }
+}
+
+impl std::error::Error for PlanChanged {}
+
 impl Plan {
-    /// Re-validates against the current state (a path that vanished fails here), then runs
-    /// the operation as a durable job that logs to op_log. A preview that no longer matches
-    /// is noted in the job log.
+    /// Re-validates against the current state (a path that vanished fails here) and runs the
+    /// operation as a durable job that logs to op_log, but only when the fresh preview is
+    /// the one that was confirmed: otherwise `Err(PlanChanged(fresh))`.
     pub fn execute(self, lib: &Library) -> Result<JobId> {
         let fresh = preview(&lib.shared, self.op.clone())?;
+        if fresh != self {
+            return Err(PlanChanged(Box::new(fresh)).into());
+        }
         lib.jobs().spawn(Box::new(ExecJob {
-            diverged: fresh.changes != self.changes,
             op: fresh.op,
             next: 0,
             skipped: 0,
@@ -444,7 +459,6 @@ pub(crate) struct ExecJob {
     next: usize,
     skipped: usize,
     log_id: Option<i64>,
-    diverged: bool,
 }
 
 impl Job for ExecJob {
@@ -459,9 +473,6 @@ impl Job for ExecJob {
             None => {
                 let id = oplog::record(&lib, self.op.kind(), &self.op.payload(), "running")?;
                 self.log_id = Some(id);
-                if self.diverged {
-                    ctx.log("the sources changed since the preview")?;
-                }
                 ctx.checkpoint(self.checkpoint(), 0.0)?;
                 id
             }

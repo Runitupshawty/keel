@@ -25,7 +25,9 @@ pub use library::{
     SourceKind, SourceStatus, SourceSummary,
 };
 pub use oplog::OpLogEntry;
-pub use plan::{validate_preview_execute, Action, Change, OnConflict, Op, Plan, Warning};
+pub use plan::{
+    validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
+};
 pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
 pub use tags::{Tag, TagId, View, FAVORITES};
 

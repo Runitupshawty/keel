@@ -178,6 +178,35 @@ fn invalid_operations_are_refused() {
 }
 
 #[test]
+fn a_plan_that_no_longer_matches_is_not_executed() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    write(&root.join("keep/a.txt"), "a");
+    let (_data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    let keep = v(&root.join("keep"));
+    let delete = Op::Delete {
+        paths: vec![keep.clone()],
+    };
+    let plan = validate_preview_execute(&lib, delete.clone()).unwrap();
+    // More files now: the confirmed preview is stale.
+    write(&root.join("keep/b.txt"), "b");
+    walk(&src, &lib.router()).unwrap();
+    let err = plan.clone().execute(&lib).unwrap_err();
+    let fresh = err.downcast::<PlanChanged>().unwrap().0;
+    assert_eq!(fresh.changes[0].files, 2);
+    // Warnings count too: a content id appears (no more ContentUnverified for it).
+    set_cas(&src, "keep/a.txt", &[9]);
+    let err = fresh.clone().execute(&lib).unwrap_err();
+    let fresh = err.downcast::<PlanChanged>().unwrap().0;
+    assert_eq!(*fresh, validate_preview_execute(&lib, delete).unwrap());
+    assert!(root.join("keep").exists(), "nothing ran");
+    let job = fresh.execute(&lib).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    assert!(!root.join("keep").exists());
+}
+
+#[test]
 fn offline_sources_preview_from_their_last_generation() {
     let state = Arc::new(Mutex::new(State {
         fail: None,
@@ -366,7 +395,6 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
             next: 0,
             skipped: 0,
             log_id: None,
-            diverged: false,
         }))
         .unwrap();
     let info = lib.jobs().wait(job).unwrap();
@@ -395,7 +423,6 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
             next: 1,
             skipped: 0,
             log_id: None,
-            diverged: false,
         }))
         .unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
