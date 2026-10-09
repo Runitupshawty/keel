@@ -384,3 +384,108 @@ fn local_to_local_delegates_to_local_ops() {
     .unwrap();
     assert_eq!(fs::read(dst.join("one.txt")).unwrap(), b"1");
 }
+
+/// M13: a host re-registered while a job runs (new settings) does not switch the rest of
+/// that job to the new provider; later operations use the new one.
+#[test]
+fn reregistering_a_host_mid_job_keeps_the_jobs_provider() {
+    let f = fixture(None);
+    fs::create_dir(f.a.join("d")).unwrap();
+    for n in ["1.txt", "2.txt", "3.txt"] {
+        fs::write(f.a.join("d").join(n), n).unwrap();
+    }
+    let swapped = AtomicBool::new(false);
+    transfer(
+        &[remote("a", "d")],
+        &VPath::local(&f.local),
+        false,
+        Conflict::Skip,
+        &|_| {
+            if !swapped.swap(true, Ordering::Relaxed) {
+                f.router.register_remote_provider(
+                    "a".into(),
+                    Arc::new(Mirror {
+                        id: "a".into(),
+                        root: f.b.clone(),
+                        fail_after: None,
+                    }),
+                );
+            }
+        },
+        &AtomicBool::new(false),
+        &f.router,
+    )
+    .unwrap();
+    assert!(swapped.load(Ordering::Relaxed));
+    for n in ["1.txt", "2.txt", "3.txt"] {
+        assert_eq!(fs::read(f.local.join("d").join(n)).unwrap(), n.as_bytes());
+    }
+    let now = f.router.provider_for(&remote("a", "")).unwrap();
+    assert!(
+        now.list(&remote("a", "")).unwrap().is_empty(),
+        "new provider serves b"
+    );
+}
+
+/// Local files that must never be trashed: `remove` fails the test.
+struct NoTrash;
+impl Provider for NoTrash {
+    fn scheme(&self) -> &'static str {
+        "file"
+    }
+    fn caps(&self) -> Caps {
+        LocalProvider.caps()
+    }
+    fn list(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        LocalProvider.list(dir)
+    }
+    fn stat(&self, p: &VPath) -> anyhow::Result<Entry> {
+        LocalProvider.stat(p)
+    }
+    fn read(&self, p: &VPath) -> anyhow::Result<Box<dyn Read + Send>> {
+        LocalProvider.read(p)
+    }
+    fn write(&self, p: &VPath) -> anyhow::Result<Box<dyn Write + Send>> {
+        LocalProvider.write(p)
+    }
+    fn mkdir(&self, p: &VPath) -> anyhow::Result<()> {
+        LocalProvider.mkdir(p)
+    }
+    fn rename(&self, from: &VPath, to: &VPath) -> anyhow::Result<()> {
+        LocalProvider.rename(from, to)
+    }
+    fn remove_empty_dir(&self, p: &VPath) -> anyhow::Result<()> {
+        LocalProvider.remove_empty_dir(p)
+    }
+    fn remove(&self, p: &VPath) -> anyhow::Result<()> {
+        anyhow::bail!("{} was sent to the trash", p.display())
+    }
+    fn local_copy(&self, p: &VPath) -> anyhow::Result<PathBuf> {
+        LocalProvider.local_copy(p)
+    }
+}
+
+/// m28: moving local files to a remote deletes the verified sources permanently (like a
+/// local move), never through the Recycle Bin.
+#[test]
+fn move_to_remote_deletes_local_sources_permanently() {
+    let f = fixture(None);
+    f.router.register(Arc::new(NoTrash));
+    let src = f.local.join("tree");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"a").unwrap();
+    fs::write(src.join("sub/b.txt"), b"b").unwrap();
+    run(
+        &f,
+        &[VPath::local(&src)],
+        &remote("a", ""),
+        true,
+        Conflict::Skip,
+    )
+    .unwrap();
+    assert!(!src.exists());
+    assert_eq!(
+        tree(&f.a),
+        ["tree", "tree/a.txt", "tree/sub", "tree/sub/b.txt"]
+    );
+}

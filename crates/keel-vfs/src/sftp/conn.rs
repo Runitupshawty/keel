@@ -37,6 +37,7 @@ pub(super) struct Client {
     events: Sender<RemoteEvent>,
     problem: Arc<parking_lot::Mutex<Option<String>>>,
     prompting: Arc<AtomicBool>,
+    listener: Arc<AtomicBool>,
 }
 impl client::Handler for Client {
     type Error = anyhow::Error;
@@ -55,6 +56,16 @@ impl client::Handler for Client {
                 *self.problem.lock() = Some(format!(
                     "host key for {} does not match ~/.ssh/known_hosts (changed or revoked); \
                      refusing to connect. If the host was reinstalled, remove its old entry.",
+                    self.host.host
+                ));
+                Ok(false)
+            }
+            // Nobody would answer a prompt (no window drains the events): fail at once
+            // instead of pinning a worker for PROMPT_TIMEOUT.
+            hostkeys::HostKeyVerdict::Unknown(_) if !self.listener.load(Ordering::SeqCst) => {
+                *self.problem.lock() = Some(format!(
+                    "host key for {} is not known yet and no Keel window is open to confirm \
+                     it; connect from the Keel window first",
                     self.host.host
                 ));
                 Ok(false)
@@ -109,15 +120,26 @@ struct State {
 pub struct ConnPool {
     host: RemoteHost,
     events: Sender<RemoteEvent>,
+    listener: Arc<AtomicBool>,
     state: Mutex<State>,
     status: parking_lot::Mutex<ConnStatus>,
     timeout: parking_lot::RwLock<Duration>,
 }
 impl ConnPool {
+    /// Assumes something answers `HostKeyPrompt` events on `events`.
     pub fn new(host: RemoteHost, events: Sender<RemoteEvent>) -> Self {
+        Self::with_prompt_listener(host, events, Arc::new(AtomicBool::new(true)))
+    }
+    /// `listener` false: an unknown host key fails at once instead of prompting.
+    pub fn with_prompt_listener(
+        host: RemoteHost,
+        events: Sender<RemoteEvent>,
+        listener: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             host,
             events,
+            listener,
             state: Mutex::new(State {
                 session: None,
                 failures: 0,
@@ -165,11 +187,22 @@ impl ConnPool {
     pub(super) fn run<T>(&self, future: impl Future<Output = Result<T>>) -> Result<T> {
         run_for(*self.timeout.read(), future)
     }
+    /// No overall deadline: for long multi-request operations (listing a huge folder)
+    /// whose every SFTP request is still bounded by the session's request timeout.
+    pub(super) fn run_per_request<T>(&self, future: impl Future<Output = Result<T>>) -> Result<T> {
+        runtime().block_on(future)
+    }
     pub(super) fn session(&self) -> Result<Arc<Session>> {
         let timeout = *self.timeout.read();
-        // TCP connect, handshake and auth each get `timeout`; a pending host key prompt
-        // extends the handshake up to PROMPT_TIMEOUT.
-        let result = run_for(timeout * 3 + PROMPT_TIMEOUT, async {
+        // Worst case, each bounded by `timeout`: the backoff wait, TCP connect, the
+        // handshake up to the host key check, the handshake slice in which a prompt ends,
+        // and auth + SFTP start; an answered host key prompt adds up to PROMPT_TIMEOUT.
+        let prompt = if self.listener.load(Ordering::SeqCst) {
+            PROMPT_TIMEOUT
+        } else {
+            Duration::ZERO
+        };
+        let result = run_for(timeout * 5 + prompt, async {
             let mut state = self.state.lock().await;
             if let Some(s) = &state.session {
                 if !s.ssh.is_closed() {
@@ -213,12 +246,29 @@ impl ConnPool {
             events: self.events.clone(),
             problem: problem.clone(),
             prompting: prompting.clone(),
+            listener: self.listener.clone(),
         };
-        let config = client::Config {
+        let mut config = client::Config {
             keepalive_interval: Some(Duration::from_secs(10)),
             keepalive_max: 2,
             ..Default::default()
         };
+        // A host with known keys may only present one of those key types: offering others
+        // would let an attacker with a different key type get a first-connect prompt.
+        let (host, port) = (self.host.host.clone(), self.host.port);
+        let known =
+            tokio::task::spawn_blocking(move || hostkeys::known_key_types(&host, port)).await?;
+        if !known.is_empty() {
+            let keys: Vec<_> = config
+                .preferred
+                .key
+                .iter()
+                .filter(|a| known.iter().any(|k| k == key_type(a)))
+                .cloned()
+                .collect();
+            anyhow::ensure!(!keys.is_empty(), algorithm_changed(&self.host.host, &known));
+            config.preferred.key = keys.into();
+        }
         let stream = tokio::time::timeout(
             timeout,
             tokio::net::TcpStream::connect((self.host.host.as_str(), self.host.port)),
@@ -237,6 +287,17 @@ impl ConnPool {
         };
         let mut ssh = connected.map_err(|e| match problem.lock().take() {
             Some(problem) => anyhow::anyhow!(problem),
+            None if !known.is_empty()
+                && matches!(
+                    e.downcast_ref::<russh::Error>(),
+                    Some(russh::Error::NoCommonAlgo {
+                        kind: russh::AlgorithmKind::Key,
+                        ..
+                    })
+                ) =>
+            {
+                anyhow::anyhow!(algorithm_changed(&self.host.host, &known))
+            }
             None => e.context("SSH handshake failed"),
         })?;
         tokio::time::timeout(timeout, async {
@@ -279,6 +340,21 @@ fn run_for<T>(timeout: Duration, future: impl Future<Output = Result<T>>) -> Res
 }
 fn backoff(failures: u32) -> Duration {
     Duration::from_secs((1u64 << failures.min(5)).min(30))
+}
+/// The known_hosts key type a negotiated host key algorithm uses.
+fn key_type(algorithm: &russh::keys::Algorithm) -> &str {
+    match algorithm {
+        russh::keys::Algorithm::Rsa { .. } => "ssh-rsa",
+        other => other.as_str(),
+    }
+}
+fn algorithm_changed(host: &str, known: &[String]) -> String {
+    format!(
+        "host key algorithm changed for {host}: ~/.ssh/known_hosts trusts {} but the server \
+         offers none of them; refusing to connect. If the host was reinstalled, remove its old \
+         entry.",
+        known.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -345,5 +421,103 @@ mod tests {
         assert_eq!(statuses, [ConnStatus::Connecting, ConnStatus::Failed]);
         pool.disconnect();
         assert_eq!(pool.status(), ConnStatus::Disconnected);
+    }
+
+    struct Nobody;
+    impl russh::server::Handler for Nobody {
+        type Error = russh::Error;
+    }
+    /// An in-process SSH server with a fresh `algorithm` host key that rejects all logins.
+    fn fake_server(algorithm: russh::keys::Algorithm) -> (u16, russh::keys::PublicKey) {
+        use russh::keys::ssh_key::rand_core::OsRng;
+        let key = russh::keys::PrivateKey::random(&mut OsRng, algorithm).unwrap();
+        let public = key.public_key().clone();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![key],
+            ..Default::default()
+        });
+        let listener = runtime()
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        runtime().spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, socket, Nobody).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+        (port, public)
+    }
+    fn pool_for(port: u16, listener: bool) -> (ConnPool, crossbeam_channel::Receiver<RemoteEvent>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let host = RemoteHost {
+            id: "fake".into(),
+            label: String::new(),
+            host: "127.0.0.1".into(),
+            port,
+            user: "nobody".into(),
+            auth: super::super::RemoteAuth::PasswordInKeyring,
+            home: None,
+            bookmarks: vec![],
+        };
+        let pool = ConnPool::with_prompt_listener(host, tx, Arc::new(AtomicBool::new(listener)));
+        pool.set_timeout(Duration::from_secs(5));
+        (pool, rx)
+    }
+
+    /// m29: no prompt listener -> an unknown key fails fast. M12: known_hosts trusts only
+    /// another key type -> hard failure, never a prompt. A matching key passes the check.
+    #[test]
+    fn host_key_algorithm_rules_against_a_local_server() {
+        let _guard = hostkeys::TEST_LOCK.lock();
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("known_hosts");
+        std::fs::write(&file, "").unwrap();
+        *hostkeys::TEST_FILE.lock() = Some(file.clone());
+        let (port, server_key) = fake_server(russh::keys::Algorithm::Ed25519);
+
+        let (pool, rx) = pool_for(port, false);
+        let start = Instant::now();
+        let err = format!("{:#}", pool.connect().unwrap_err());
+        assert!(err.contains("no Keel window"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(!rx
+            .try_iter()
+            .any(|e| matches!(e, RemoteEvent::HostKeyPrompt { .. })));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+
+        let (_, other) = fake_server(russh::keys::Algorithm::Ecdsa {
+            curve: russh::keys::EcdsaCurve::NistP256,
+        });
+        std::fs::write(
+            &file,
+            format!("[127.0.0.1]:{port} {}\n", other.to_openssh().unwrap()),
+        )
+        .unwrap();
+        let (pool, rx) = pool_for(port, true);
+        let err = format!("{:#}", pool.connect().unwrap_err());
+        assert!(err.contains("host key algorithm changed"), "{err}");
+        assert!(!rx
+            .try_iter()
+            .any(|e| matches!(e, RemoteEvent::HostKeyPrompt { .. })));
+
+        std::fs::write(
+            &file,
+            format!(
+                "[127.0.0.1]:{port} {}\n[127.0.0.1]:{port} {}\n",
+                other.to_openssh().unwrap(),
+                server_key.to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let (pool, _) = pool_for(port, false);
+        let err = format!("{:#}", pool.connect().unwrap_err());
+        *hostkeys::TEST_FILE.lock() = None;
+        // Past the host key check: the login itself fails (no stored password).
+        assert!(err.contains("keychain"), "{err}");
     }
 }

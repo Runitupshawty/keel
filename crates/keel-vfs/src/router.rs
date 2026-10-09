@@ -1,7 +1,10 @@
 use crate::{Provider, VPath};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 /// Providers by scheme plus remote providers by host id. Shared weakly with the archive
 /// provider so it can resolve an archive's OUTER path, including a remote one.
@@ -11,10 +14,15 @@ pub(crate) struct Table {
 }
 pub(crate) type Registry = RwLock<Table>;
 
+/// Shared by the app as `Arc<Router>`: registration takes `&self`. Replacing a provider
+/// (same scheme, or same remote host id) only affects operations that resolve it later;
+/// a running `ops::transfer` resolved its providers once at the start and keeps using the
+/// old ones (and their connections) until it ends.
 pub struct Router {
     registry: Arc<Registry>,
     remote_events: crossbeam_channel::Sender<crate::RemoteEvent>,
     events: crossbeam_channel::Receiver<crate::RemoteEvent>,
+    prompt_listener: Arc<AtomicBool>,
 }
 impl Default for Router {
     fn default() -> Self {
@@ -37,6 +45,7 @@ impl Router {
             registry,
             remote_events,
             events,
+            prompt_listener: Arc::default(),
         }
     }
     /// Paths with a `!/` archive boundary go to the archive provider, `sftp://<id>/...` to that
@@ -44,17 +53,23 @@ impl Router {
     pub fn provider_for(&self, p: &VPath) -> Option<Arc<dyn Provider>> {
         find(&self.registry, p)
     }
-    pub fn register(&mut self, p: Arc<dyn Provider>) {
+    pub fn register(&self, p: Arc<dyn Provider>) {
         let mut table = self.registry.write();
         table
             .providers
             .retain(|existing| existing.scheme() != p.scheme());
         table.providers.push(p);
     }
+    /// Adds or replaces the SFTP provider for `host.id` (see the type docs for jobs that
+    /// are already running).
     pub fn register_remote(&self, host: crate::RemoteHost) {
         self.register_remote_provider(
             host.id.clone(),
-            Arc::new(crate::SftpProvider::new(host, self.remote_events.clone())),
+            Arc::new(crate::SftpProvider::with_prompt_listener(
+                host,
+                self.remote_events.clone(),
+                self.prompt_listener.clone(),
+            )),
         );
     }
     /// Adds or replaces the provider for `sftp://<id>/...` (callable through an `Arc<Router>`).
@@ -66,6 +81,15 @@ impl Router {
     }
     pub fn remote_events(&self) -> crossbeam_channel::Receiver<crate::RemoteEvent> {
         self.events.clone()
+    }
+    /// The app sets this while it drains `remote_events()` and can show host key prompts.
+    /// Without a listener, connecting to a host with an unknown key fails at once instead
+    /// of waiting for an answer nobody will give.
+    pub fn set_prompt_listener(&self, listening: bool) {
+        self.prompt_listener.store(listening, Ordering::SeqCst);
+    }
+    pub fn has_prompt_listener(&self) -> bool {
+        self.prompt_listener.load(Ordering::SeqCst)
     }
 }
 

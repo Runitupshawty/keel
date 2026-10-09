@@ -1032,13 +1032,13 @@ impl AppState {
                     self.toasts.error("Terminal requires a local folder");
                 }
             }
-            // Closed: open (at the pane, else home). Open but unfocused: focus it.
-            // Focused: close, which ends the shell.
+            // Focused: hide it, the shell keeps running (only × ends it). Hidden or
+            // unfocused: show and focus it. No shell yet: open at the pane, else home.
             Action::ToggleTerminal => {
                 if self.terminal.focused(&self.ctx) {
-                    self.terminal.close(&self.ctx);
-                } else if self.terminal.open {
-                    self.terminal.focus(&self.ctx);
+                    self.terminal.hide(&self.ctx);
+                } else if self.terminal.reopen(&self.ctx) {
+                    // shown again
                 } else if let Some(dir) =
                     (self.tab(p).dir.to_local_path()).or_else(|| self.home.to_local_path())
                 {
@@ -1483,7 +1483,7 @@ mod tests {
 
     #[test]
     fn listed_err_keeps_entries_and_toasts() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let dir = VPath::parse("gone://usb/photos").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir.clone());
@@ -1577,6 +1577,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(home.to_local_path().unwrap());
     }
 
+    /// m19: Ctrl+` while focused hides the terminal and keeps its shell; × ends it.
+    #[test]
+    fn toggling_a_focused_terminal_hides_and_keeps_the_shell() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        state.run(0, Action::ToggleTerminal);
+        assert!(state.terminal.open);
+        let start = std::time::Instant::now();
+        while !state.terminal.running() {
+            assert!(start.elapsed() < Duration::from_secs(20), "no shell");
+            if let Ok(msg) = state.rx.recv_timeout(Duration::from_millis(100)) {
+                state.apply(msg);
+            }
+        }
+        assert!(state.terminal.focused(&state.ctx));
+        state.run(0, Action::ToggleTerminal);
+        assert!(!state.terminal.open && state.terminal.running());
+        state.run(0, Action::ToggleTerminal);
+        assert!(state.terminal.open && state.terminal.focused(&state.ctx));
+        assert!(state.terminal.running());
+        let ctx = state.ctx.clone();
+        state.terminal.close(&ctx);
+        assert!(!state.terminal.open && !state.terminal.running());
+    }
+
     #[test]
     fn second_paste_waits_for_the_first() {
         let dir = VPath::local(std::env::temp_dir());
@@ -1604,7 +1629,7 @@ mod tests {
 
     #[test]
     fn search_tab_is_never_filled_by_its_folder_and_survives_a_failed_exit() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());
@@ -1929,7 +1954,7 @@ mod tests {
 
     #[test]
     fn failed_navigation_returns_to_the_listed_folder() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());

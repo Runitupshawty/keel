@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use hmac::{Hmac, Mac};
-use ssh_key::known_hosts::{HostPatterns, KnownHosts, Marker};
+use ssh_key::known_hosts::{Entry, HostPatterns, KnownHosts, Marker};
 pub use ssh_key::PublicKey;
 use std::{
     fs,
@@ -15,18 +15,46 @@ pub enum HostKeyVerdict {
     Mismatch,
 }
 
+/// Tests point known_hosts at a temp file (hold `TEST_LOCK` while it is set).
+#[cfg(test)]
+pub(super) static TEST_FILE: parking_lot::Mutex<Option<PathBuf>> = parking_lot::Mutex::new(None);
+#[cfg(test)]
+pub(super) static TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn location() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_FILE.lock().clone() {
+        return Ok(path);
+    }
     Ok(dirs::home_dir()
         .context("home directory unavailable")?
         .join(".ssh/known_hosts"))
 }
 
 /// `Mismatch` when the host has a known key of the same algorithm that differs, or the key
-/// is `@revoked`, or the file exists but cannot be read (fails closed).
+/// is `@revoked`, or the file exists but cannot be read (fails closed). A host whose known
+/// keys are all of other algorithms is `Unknown` here; the connection itself only offers
+/// the known algorithms (see `known_key_types`), so a server cannot downgrade into a prompt.
 pub fn known_hosts_check(host: &str, port: u16, key: &PublicKey) -> HostKeyVerdict {
     location()
         .map(|p| check_at(&p, host, port, key))
         .unwrap_or(HostKeyVerdict::Mismatch)
+}
+
+/// Key types (`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`, ...) of the plain (not
+/// `@cert-authority` / `@revoked`) known_hosts lines for `host:port`; empty if none.
+pub fn known_key_types(host: &str, port: u16) -> Vec<String> {
+    let Ok(input) = location().and_then(|p| Ok(fs::read_to_string(p)?)) else {
+        return Vec::new();
+    };
+    let mut types = Vec::new();
+    for entry in applicable(&input, host, port) {
+        let kind = entry.public_key().algorithm().as_str().to_owned();
+        if entry.marker().is_none() && !types.contains(&kind) {
+            types.push(kind);
+        }
+    }
+    types
 }
 
 fn glob(pattern: &str, text: &str) -> bool {
@@ -54,26 +82,18 @@ fn glob(pattern: &str, text: &str) -> bool {
     i == p.len()
 }
 
-fn check_at(path: &Path, host: &str, port: u16, key: &PublicKey) -> HostKeyVerdict {
-    let unknown = || HostKeyVerdict::Unknown(key.fingerprint(ssh_key::HashAlg::Sha256).to_string());
-    let input = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return unknown(),
-        Err(_) => return HostKeyVerdict::Mismatch,
-    };
+/// Parsed lines whose host patterns match `host:port`.
+fn applicable<'a>(input: &'a str, host: &str, port: u16) -> impl Iterator<Item = Entry> + 'a {
     let name = if port == 22 {
         host.to_owned()
     } else {
         format!("[{host}]:{port}")
     };
-    let (mut seen, mut matched) = (false, false);
-    for entry in KnownHosts::new(&input) {
-        // Like OpenSSH: a line we cannot parse (unknown key type, typo) is skipped. It can
-        // never make an unknown key trusted; at worst it turns a mismatch into a prompt.
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let applies = match entry.host_patterns() {
+    // Like OpenSSH: a line we cannot parse (unknown key type, typo) is skipped. It can
+    // never make an unknown key trusted; at worst it turns a mismatch into a prompt.
+    KnownHosts::new(input)
+        .flatten()
+        .filter(move |entry| match entry.host_patterns() {
             HostPatterns::Patterns(patterns) => {
                 !patterns
                     .iter()
@@ -85,19 +105,32 @@ fn check_at(path: &Path, host: &str, port: u16, key: &PublicKey) -> HostKeyVerdi
             HostPatterns::HashedName { salt, hash } => Hmac::<sha1::Sha1>::new_from_slice(salt)
                 .map(|mac| mac.chain_update(name.as_bytes()).verify_slice(hash).is_ok())
                 .unwrap_or(false),
-        };
-        // A known key of another algorithm is not a mismatch: OpenSSH also asks again
-        // ("keys of different type are already known for this host").
-        if !applies || entry.public_key().algorithm() != key.algorithm() {
+        })
+}
+
+fn check_at(path: &Path, host: &str, port: u16, key: &PublicKey) -> HostKeyVerdict {
+    let unknown = || HostKeyVerdict::Unknown(key.fingerprint(ssh_key::HashAlg::Sha256).to_string());
+    let input = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return unknown(),
+        Err(_) => return HostKeyVerdict::Mismatch,
+    };
+    let (mut seen, mut matched) = (false, false);
+    for entry in applicable(&input, host, port) {
+        // A known key of another algorithm is not a mismatch here (the handshake only
+        // offers known algorithms, see `known_key_types`).
+        if entry.public_key().algorithm() != key.algorithm() {
             continue;
         }
-        seen = true;
         let same = entry.public_key().key_data() == key.key_data();
         match entry.marker() {
             Some(Marker::Revoked) if same => return HostKeyVerdict::Mismatch,
+            // @cert-authority keys sign host certificates; they are not this host's key.
             Some(_) => {}
-            None if same => matched = true,
-            None => {}
+            None => {
+                seen = true;
+                matched |= same;
+            }
         }
     }
     if matched {
@@ -221,9 +254,56 @@ mod tests {
     }
     /// The public API against a temp HOME (`dirs` reads `$HOME` on Unix only; Windows
     /// covers the same code through `check_at`/`add_at` above).
+    /// m24: @cert-authority / @revoked lines for other keys are no mismatch.
+    #[test]
+    fn marker_lines_do_not_count_as_known_keys() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("known_hosts");
+        let host = "marked-host";
+        fs::write(
+            &file,
+            format!(
+                "@cert-authority {host} {}\n@revoked {host} {}\n",
+                key(2).to_openssh().unwrap(),
+                key(3).to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            check_at(&file, host, 22, &key(1)),
+            HostKeyVerdict::Unknown(_)
+        ));
+        assert_eq!(check_at(&file, host, 22, &key(3)), HostKeyVerdict::Mismatch);
+        add_at(&file, host, 22, &key(1)).unwrap();
+        assert_eq!(check_at(&file, host, 22, &key(1)), HostKeyVerdict::Known);
+    }
+    /// M12: the key types a connection may negotiate come from plain lines only.
+    #[test]
+    fn known_key_types_ignore_markers_and_other_hosts() {
+        let _guard = TEST_LOCK.lock();
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("known_hosts");
+        fs::write(
+            &file,
+            format!(
+                "[typed]:2222 {}\n@cert-authority [typed]:2222 {}\nother {}\n",
+                key(1).to_openssh().unwrap(),
+                key(2).to_openssh().unwrap(),
+                key(3).to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        *TEST_FILE.lock() = Some(file);
+        let types = known_key_types("typed", 2222);
+        let none = known_key_types("typed", 22);
+        *TEST_FILE.lock() = None;
+        assert_eq!(types, ["ssh-ed25519"]);
+        assert!(none.is_empty());
+    }
     #[cfg(unix)]
     #[test]
     fn tofu_with_temp_home() {
+        let _guard = TEST_LOCK.lock();
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", home.path());
         assert!(matches!(
