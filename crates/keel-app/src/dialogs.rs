@@ -37,11 +37,17 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.label(text.as_str());
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    // Enter / Space press the focused button (egui), which starts on "yes";
+                    // Tab moves to Cancel. No window-wide Enter, so Enter on Cancel cancels.
                     let yes = ui.button("Move to trash");
-                    if yes.clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+                    let no = ui.button("Cancel");
+                    if !yes.has_focus() && !no.has_focus() {
+                        yes.request_focus();
+                    }
+                    cancel |= no.clicked();
+                    if !cancel && yes.clicked() {
                         out = Some(on_yes.clone());
                     }
-                    cancel |= ui.button("Cancel").clicked();
                 });
             }
             Dialog::Conflict {

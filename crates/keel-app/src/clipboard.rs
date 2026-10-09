@@ -128,8 +128,10 @@ mod tests {
         );
     }
 
-    /// Touches the real system clipboard. Skipped where there is no display.
+    /// Overwrites the real system clipboard, so it only runs on request:
+    /// `cargo test -p keel-app -- --ignored round_trip`. Skipped where there is no display.
     #[test]
+    #[ignore]
     fn round_trip_two_paths() {
         if cfg!(target_os = "linux")
             && std::env::var_os("DISPLAY").is_none()

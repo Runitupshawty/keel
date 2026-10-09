@@ -148,6 +148,8 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
     let typing = ctx
         .memory(|m| m.focused())
         .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+    // Tracked even while typing, so a key released inside a text box cannot confuse it.
+    let paste = paste_pressed(ctx);
     if typing {
         // Window-level shortcuts still work from a text box (e.g. Ctrl+P from the search box).
         return ctx.input_mut(|i| {
@@ -159,7 +161,7 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
                 .collect()
         });
     }
-    let (mut out, paste_event, v_released) = ctx.input_mut(|i| {
+    let mut out = ctx.input_mut(|i| {
         let mut out = Vec::new();
         for (mods, key, action) in SHORTCUTS {
             if i.consume_key(*mods, *key) {
@@ -174,20 +176,12 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
             }
         }
         let typing_allowed = !i.modifiers.command && !i.modifiers.alt;
-        let (mut paste_event, mut v_released) = (false, false);
         for event in &i.events {
             match event {
                 Event::Copy => out.push(Action::Copy),
                 // egui-winit turns Shift+Delete into Cut on Windows; Phase 1 trashes.
                 Event::Cut if i.modifiers.shift && !i.modifiers.command => out.push(Action::Delete),
                 Event::Cut => out.push(Action::Cut),
-                Event::Paste(_) => paste_event = true,
-                Event::Key {
-                    key: Key::V,
-                    pressed: false,
-                    modifiers,
-                    ..
-                } if modifiers.command => v_released = true,
                 // Space toggles selection; it never starts a filter.
                 Event::Text(t) if typing_allowed && !t.trim().is_empty() => {
                     out.push(Action::Type(t.clone()))
@@ -195,21 +189,97 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
                 _ => {}
             }
         }
-        (out, paste_event, v_released)
+        out
     });
-    // egui-winit only sends `Event::Paste` when the clipboard holds text, so files on the
-    // clipboard show up only as the Ctrl+V key release. Paste once per press either way.
-    let seen = egui::Id::new("keel-paste-event");
-    if paste_event {
-        ctx.data_mut(|d| d.insert_temp(seen, true));
-        out.push(Action::Paste);
-    }
-    if v_released
-        && !ctx
-            .data_mut(|d| d.remove_temp::<bool>(seen))
-            .unwrap_or(false)
-    {
+    if paste {
         out.push(Action::Paste);
     }
     out
+}
+
+/// Ctrl+V (or Shift+Insert with text on the clipboard), once per key press. egui-winit
+/// swallows the press of a paste shortcut and only sends `Event::Paste`, and only when the
+/// clipboard holds text. So a V release whose press never arrived as a key event was a
+/// paste press, whatever the modifiers are by the time of the release.
+fn paste_pressed(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("keel-paste-keys");
+    // (a V/Insert press arrived as a plain key event, an Event::Paste already fired)
+    let (mut press_seen, mut pasted) = ctx
+        .data(|d| d.get_temp::<(bool, bool)>(id))
+        .unwrap_or_default();
+    let mut paste = false;
+    ctx.input(|i| {
+        for event in &i.events {
+            match event {
+                Event::Paste(_) if !pasted => {
+                    pasted = true;
+                    paste = true;
+                }
+                Event::Key {
+                    key: Key::V,
+                    pressed,
+                    ..
+                } => {
+                    if *pressed {
+                        press_seen = true;
+                    } else {
+                        paste |= !press_seen && !pasted;
+                        (press_seen, pasted) = (false, false);
+                    }
+                }
+                // Shift+Insert pastes only through `Event::Paste` (text clipboards); an
+                // unseen Insert press may also be Ctrl+Insert (copy), so it never pastes.
+                Event::Key {
+                    key: Key::Insert,
+                    pressed: false,
+                    ..
+                } => pasted = false,
+                _ => {}
+            }
+        }
+    });
+    ctx.data_mut(|d| d.insert_temp(id, (press_seen, pasted)));
+    paste
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ctx: &egui::Context, events: Vec<Event>) -> bool {
+        let mut paste = false;
+        let _ = ctx.run(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ctx| paste = paste_pressed(ctx),
+        );
+        paste
+    }
+
+    fn v(pressed: bool, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key: Key::V,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn swallowed_ctrl_v_pastes_once_on_release() {
+        let ctx = egui::Context::default();
+        // Files on the clipboard: egui-winit swallows the press, only the release arrives,
+        // and Ctrl may already be up by then.
+        assert!(frame(&ctx, vec![v(false, Modifiers::NONE)]));
+        // Text on the clipboard: Event::Paste on press, the release adds nothing.
+        assert!(frame(&ctx, vec![Event::Paste("x".into())]));
+        assert!(!frame(&ctx, vec![v(false, Modifiers::COMMAND)]));
+        // Typing a plain "v" is not a paste, and leaves no state behind.
+        assert!(!frame(&ctx, vec![v(true, Modifiers::NONE)]));
+        assert!(!frame(&ctx, vec![v(false, Modifiers::NONE)]));
+        assert!(frame(&ctx, vec![v(false, Modifiers::COMMAND)]));
+    }
 }

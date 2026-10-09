@@ -15,10 +15,13 @@ pub fn send(tx: &Sender<Msg>, ctx: &egui::Context, msg: Msg) {
     ctx.request_repaint();
 }
 
-pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
-    if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(f) {
-        tracing::error!("spawn {name}: {e}");
-    }
+/// Starts a named thread; false (and logged) when the OS refuses one.
+pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> bool {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(f)
+        .map_err(|e| tracing::error!("spawn {name}: {e}"))
+        .is_ok()
 }
 
 pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ctx: egui::Context) {

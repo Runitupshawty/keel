@@ -68,6 +68,8 @@ pub enum Msg {
         conflicts: Vec<String>,
         from_clipboard: bool,
     },
+    /// Planning a transfer found nothing to do (or no files on the clipboard).
+    PlanFailed(String),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
     Select {
         dir: VPath,
@@ -110,6 +112,10 @@ pub struct AppState {
     pub palette: Palette,
     pub jobs: Jobs,
     pub clipboard: Clipboard,
+    /// A clipboard paste is being planned; further Ctrl+V wait (no double move of a cut).
+    pub paste_pending: bool,
+    /// The move job started from a cut, and the cut to put back if that job fails.
+    cut_job: Option<(u64, Clipboard)>,
     pub dialog: Option<Dialog>,
     pub toasts: Toasts,
     pub theme: Theme,
@@ -150,6 +156,8 @@ impl AppState {
             palette: Palette::default(),
             jobs: Jobs::new(ctx.clone()),
             clipboard: Clipboard::default(),
+            paste_pending: false,
+            cut_job: None,
             dialog: None,
             toasts: Toasts::default(),
             theme,
@@ -237,6 +245,15 @@ impl AppState {
             Msg::Toast(text) => self.toasts.error(text),
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
             Msg::JobDone { id, result } => {
+                if let Some((job, cut)) = self.cut_job.take() {
+                    if job != id {
+                        self.cut_job = Some((job, cut));
+                    } else if result.is_err() && self.clipboard.paths.is_empty() {
+                        // The move failed or was cancelled and nothing was copied since:
+                        // the cut can be pasted again.
+                        self.clipboard.set(cut.paths, true);
+                    }
+                }
                 self.jobs.finish(id, result);
                 // Watchers usually beat us to it; network folders may not have one.
                 for p in 0..2 {
@@ -248,9 +265,15 @@ impl AppState {
                 conflicts,
                 from_clipboard,
             } => {
+                if from_clipboard {
+                    self.paste_pending = false;
+                }
                 if conflicts.is_empty() {
                     // Skip: a clash that appeared since the scan is never overwritten.
                     self.start_transfer(op, keel_vfs::Conflict::Skip, from_clipboard);
+                } else if self.dialog.is_some() {
+                    self.toasts
+                        .error("Another dialog is open; nothing was copied or moved");
                 } else {
                     self.dialog = Some(Dialog::Conflict {
                         names: conflicts,
@@ -258,6 +281,10 @@ impl AppState {
                         from_clipboard,
                     });
                 }
+            }
+            Msg::PlanFailed(text) => {
+                self.paste_pending = false;
+                self.toasts.error(text);
             }
             Msg::Select { dir, name } => {
                 for p in 0..2 {
@@ -388,11 +415,15 @@ impl AppState {
     }
 
     fn start_transfer(&mut self, op: Transfer, conflict: keel_vfs::Conflict, from_clipboard: bool) {
-        if from_clipboard && op.mv {
+        let cut = (from_clipboard && op.mv).then(|| self.clipboard.clone());
+        if cut.is_some() {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
-        self.jobs.start(op, conflict, self.tx.clone());
+        let id = self.jobs.start(op, conflict, self.tx.clone());
+        if let Some(cut) = cut {
+            self.cut_job = Some((id, cut));
+        }
     }
 
     /// Local paths of the targets, or a toast when some are remote (Phase 2+).
@@ -790,13 +821,19 @@ impl AppState {
                 self.toasts
                     .error("Open a folder first (search results have no folder)");
             }
+            Action::Paste if self.paste_pending => {
+                self.toasts.info("Paste already in progress");
+            }
             Action::Paste => match self.tab(p).dir.to_local_path() {
-                Some(dst) => jobs::spawn_plan(
-                    Source::Clipboard(self.clipboard.clone()),
-                    dst,
-                    self.tx.clone(),
-                    self.ctx.clone(),
-                ),
+                Some(dst) => {
+                    self.paste_pending = true;
+                    jobs::spawn_plan(
+                        Source::Clipboard(self.clipboard.clone()),
+                        dst,
+                        self.tx.clone(),
+                        self.ctx.clone(),
+                    )
+                }
                 None => self
                     .toasts
                     .error("Paste into remote folders is not supported yet"),
@@ -820,9 +857,11 @@ impl AppState {
                         .toasts
                         .error("Drop onto a folder row, or open a folder first");
                 }
-                // Shift = move; within one pane a drag into a subfolder moves, like Explorer.
+                // In-app drags: Shift = move; within one pane a drag into a subfolder moves,
+                // like Explorer. Drops from other apps always copy (winit reports no
+                // modifiers during an OS drag).
                 let shift = self.ctx.input(|i| i.modifiers.shift);
-                let mv = shift || from.is_some_and(|(pane, _)| pane == p);
+                let mv = from.is_some_and(|(pane, _)| shift || pane == p);
                 jobs::spawn_plan(
                     Source::Paths(paths, mv),
                     dst_local,
@@ -843,17 +882,12 @@ impl AppState {
                 if let Some(why) = dialogs::invalid_name(&name) {
                     return self.toasts.error(why);
                 }
+                // Both fail when the name exists; nothing is ever truncated.
                 self.spawn_in_dir(dir, name, move |p, target| {
-                    // ponytail: stat-then-create race; Provider has no create_new yet.
-                    anyhow::ensure!(
-                        p.stat(target).is_err(),
-                        "{} already exists",
-                        target.display()
-                    );
                     if folder {
                         p.mkdir(target)
                     } else {
-                        p.write(target).map(drop)
+                        p.create_new(target).map(drop)
                     }
                 });
             }
@@ -1025,6 +1059,22 @@ mod tests {
         assert!(tab.error.as_deref().unwrap().contains("disappeared"));
         assert_eq!(tab.dir, dir);
         assert_eq!(state.toasts.list.len(), 1);
+    }
+
+    #[test]
+    fn second_paste_waits_for_the_first() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        state.run(0, Action::Paste);
+        assert!(state.paste_pending);
+        state.run(0, Action::Paste);
+        assert!(state
+            .toasts
+            .list
+            .iter()
+            .any(|t| t.text == "Paste already in progress"));
+        state.apply(Msg::PlanFailed("The clipboard holds no files".into()));
+        assert!(!state.paste_pending);
     }
 
     #[test]

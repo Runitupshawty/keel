@@ -7,6 +7,7 @@ use crate::worker::{send, spawn};
 use crossbeam_channel::Sender;
 use keel_vfs::{Conflict, Progress, Router, VPath};
 use std::cell::Cell;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,9 +27,23 @@ pub struct Job {
     finished: Option<Instant>,
 }
 
+/// The error a job returns when its Cancel flag stopped it.
+pub fn is_cancel(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.to_string() == "operation cancelled")
+}
+
 impl Job {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Finished and nothing to report: Ok, or stopped by Cancel. Real errors stay.
+    fn clears(&self) -> bool {
+        match &self.done {
+            Some(Ok(())) => true,
+            Some(Err(e)) => is_cancel(e),
+            None => false,
+        }
     }
 
     fn fraction(&self) -> f32 {
@@ -122,10 +137,23 @@ impl Jobs {
                 anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
                 p.current = path.display();
                 report(p.clone());
-                router
+                let removed = router
                     .provider_for(path)
-                    .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))?
-                    .remove(path)?;
+                    .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))
+                    .and_then(|provider| provider.remove(path));
+                if let Err(e) = removed {
+                    if p.done_items == 0 {
+                        return Err(e);
+                    }
+                    // "nothing deleted" is about this item only; earlier ones are gone.
+                    let why = format!("{e:#}").replace("; nothing deleted", "");
+                    anyhow::bail!(
+                        "{} of {} moved to trash; stopped at {}: {why}",
+                        p.done_items,
+                        paths.len(),
+                        path.display()
+                    );
+                }
                 p.done_items += 1;
             }
             report(p);
@@ -157,7 +185,7 @@ impl Jobs {
             finished: None,
         });
         let ctx = self.ctx.clone();
-        spawn("keel-job", move || {
+        let started = spawn("keel-job", move || {
             let last = Cell::new(None::<Instant>);
             let report = |p: Progress| {
                 if last.get().is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
@@ -165,9 +193,21 @@ impl Jobs {
                     send(&tx, &ctx, Msg::JobProgress { id, p });
                 }
             };
-            let result = work(&report, &cancel);
+            // A panicking job still answers, so its Cancel button never hangs around.
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&report, &cancel)))
+                .unwrap_or_else(|panic| {
+                    let why = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".into());
+                    Err(anyhow::anyhow!("internal error: {why}"))
+                });
             send(&tx, &ctx, Msg::JobDone { id, result });
         });
+        if !started {
+            self.finish(id, Err(anyhow::anyhow!("could not start a worker thread")));
+        }
         id
     }
 
@@ -191,12 +231,18 @@ impl Jobs {
     /// dismissed. Cancelled jobs count as finished.
     pub fn tick(&mut self) {
         let now = Instant::now();
-        self.list.retain(|j| match (&j.done, j.finished) {
-            (Some(Err(_)), _) if !j.cancelled() => true,
-            (Some(_), Some(at)) => now < at + CLEAR_AFTER,
+        self.list.retain(|j| match j.finished {
+            Some(at) if j.clears() => now < at + CLEAR_AFTER,
             _ => true,
         });
-        if let Some(next) = self.list.iter().filter_map(|j| j.finished).min() {
+        // Only jobs that will clear need a wake-up; failures stay until dismissed.
+        if let Some(next) = self
+            .list
+            .iter()
+            .filter(|j| j.clears())
+            .filter_map(|j| j.finished)
+            .min()
+        {
             self.ctx
                 .request_repaint_after((next + CLEAR_AFTER).saturating_duration_since(now));
         }
@@ -204,7 +250,23 @@ impl Jobs {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let mut dismiss = None;
-        for job in &self.list {
+        egui::ScrollArea::vertical()
+            .max_height(150.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for job in &self.list {
+                    job_row(ui, job, &mut dismiss);
+                }
+            });
+        if let Some(id) = dismiss {
+            self.list.retain(|j| j.id != id);
+        }
+    }
+}
+
+fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
+    {
+        {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match &job.done {
@@ -213,12 +275,12 @@ impl Jobs {
                                 job.cancel.store(true, Ordering::Relaxed);
                             }
                         }
-                        Some(Err(_)) => {
+                        Some(_) if job.clears() => {}
+                        Some(_) => {
                             if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
-                                dismiss = Some(job.id);
+                                *dismiss = Some(job.id);
                             }
                         }
-                        Some(Ok(())) => {}
                     }
                     ui.add(
                         egui::ProgressBar::new(job.fraction())
@@ -226,10 +288,14 @@ impl Jobs {
                             .show_percentage(),
                     );
                     let (text, error) = match &job.done {
-                        _ if job.cancelled() => ("Cancelled".to_owned(), false),
-                        Some(Err(e)) => (format!("{e:#}"), true),
-                        Some(Ok(())) => ("Done".to_owned(), false),
+                        None if job.cancelled() => ("Cancelling…".to_owned(), false),
                         None => (job.progress.current.clone(), false),
+                        Some(Ok(())) if job.cancelled() => {
+                            ("Done (cancel too late)".to_owned(), false)
+                        }
+                        Some(Ok(())) => ("Done".to_owned(), false),
+                        Some(Err(e)) if is_cancel(e) => ("Cancelled".to_owned(), false),
+                        Some(Err(e)) => (format!("{e:#}"), true),
                     };
                     let mut label = egui::RichText::new(text);
                     if error {
@@ -242,9 +308,6 @@ impl Jobs {
                     });
                 });
             });
-        }
-        if let Some(id) = dismiss {
-            self.list.retain(|j| j.id != id);
         }
     }
 }
@@ -274,7 +337,11 @@ pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Cont
             Source::Clipboard(clip) => match clip.resolve() {
                 Some((src, cut)) => (src, cut, true),
                 None => {
-                    send(&tx, &ctx, Msg::Toast("The clipboard holds no files".into()));
+                    send(
+                        &tx,
+                        &ctx,
+                        Msg::PlanFailed("The clipboard holds no files".into()),
+                    );
                     return;
                 }
             },
@@ -289,7 +356,7 @@ pub fn spawn_plan(source: Source, dst: PathBuf, tx: Sender<Msg>, ctx: egui::Cont
             } else {
                 "Copying into the same folder is not supported yet"
             };
-            send(&tx, &ctx, Msg::Toast(text.into()));
+            send(&tx, &ctx, Msg::PlanFailed(text.into()));
             return;
         }
         let conflicts = plan_conflicts(&src, &dst);
@@ -363,16 +430,37 @@ mod tests {
         let mut jobs = Jobs::new(egui::Context::default());
         let (tx, _rx) = crossbeam_channel::unbounded();
         let ok = jobs.delete(Vec::new(), Arc::new(Router::new()), tx.clone());
-        let bad = jobs.delete(Vec::new(), Arc::new(Router::new()), tx);
+        let bad = jobs.delete(Vec::new(), Arc::new(Router::new()), tx.clone());
+        let stopped = jobs.delete(Vec::new(), Arc::new(Router::new()), tx);
         jobs.finish(ok, Ok(()));
         jobs.finish(
             bad,
             Err(anyhow::anyhow!("Could not move to trash; nothing deleted")),
+        );
+        jobs.finish(
+            stopped,
+            Err(anyhow::anyhow!("operation cancelled").context("copy a to b")),
         );
         for j in &mut jobs.list {
             j.finished = Some(Instant::now() - CLEAR_AFTER);
         }
         jobs.tick();
         assert_eq!(jobs.list.iter().map(|j| j.id).collect::<Vec<_>>(), [bad]);
+        // The failure that stays never schedules a wake-up (no repaint loop).
+        assert!(jobs.list.iter().all(|j| !j.clears()));
+    }
+
+    #[test]
+    fn panicking_job_still_reports_done() {
+        let mut jobs = Jobs::new(egui::Context::default());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let id = jobs.spawn("boom".into(), tx, |_, _| panic!("disk on fire"));
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Msg::JobDone { id: got, result } => {
+                assert_eq!(got, id);
+                assert!(format!("{:#}", result.unwrap_err()).contains("disk on fire"));
+            }
+            _ => panic!("unexpected message"),
+        }
     }
 }

@@ -7,12 +7,19 @@ use crate::state::AppState;
 use egui::{pos2, Rect, Sense, UiBuilder};
 use humansize::{format_size, DECIMAL};
 use keel_vfs::{Router, VPath};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long an OS drop waits for a pointer position before landing in the active pane.
+const DROP_WAIT: Duration = Duration::from_millis(1000);
 
 pub struct App {
     pub state: AppState,
     /// Left pane share of the central area in dual mode.
     split: f32,
+    /// Files dropped from another app, waiting for a pointer position (see `update`).
+    pending_drop: Option<(Vec<PathBuf>, Instant)>,
 }
 
 impl App {
@@ -20,7 +27,11 @@ impl App {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let state = AppState::new(cc.egui_ctx.clone(), Arc::new(Router::new()), start);
         state.load_searcher();
-        Self { state, split: 0.5 }
+        Self {
+            state,
+            split: 0.5,
+            pending_drop: None,
+        }
     }
 }
 
@@ -37,6 +48,7 @@ impl eframe::App for App {
         }
 
         let mut out: Vec<(usize, Action)> = Vec::new();
+        let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
         egui::TopBottomPanel::bottom("jobs")
             .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
@@ -88,31 +100,54 @@ impl eframe::App for App {
                 } else {
                     vec![full]
                 };
-                let (pressed, released, dropped, hover) = ctx.input(|i| {
+                let (pressed, released, dropped, moved) = ctx.input(|i| {
                     let at = |yes: bool| yes.then(|| i.pointer.interact_pos()).flatten();
+                    let moved = i.events.iter().rev().find_map(|e| match e {
+                        egui::Event::PointerMoved(pos) => Some(*pos),
+                        _ => None,
+                    });
                     (
                         at(i.pointer.any_pressed()),
                         at(i.pointer.any_released()),
                         i.raw.dropped_files.clone(),
-                        i.pointer.hover_pos(),
+                        moved,
                     )
                 });
-                // Files dropped from another app land in the pane under the pointer.
+                // Files dropped from another app land in the pane under the pointer. winit
+                // sends no pointer moves during an OS drag, so the position known at drop
+                // time is stale: wait for the first move after the drop (or DROP_WAIT,
+                // then the active pane). OS drops always copy; Shift is not seen there.
                 let dropped: Vec<_> = dropped.into_iter().filter_map(|f| f.path).collect();
                 if !dropped.is_empty() {
-                    let p = hover
-                        .and_then(|pos| rects.iter().position(|r| r.contains(pos)))
-                        .unwrap_or(s.active);
-                    let dst = s.tab(p).dir.clone();
-                    out.push((
-                        p,
-                        Action::Drop {
-                            paths: dropped,
-                            from: None,
-                            dst,
-                        },
-                    ));
+                    self.pending_drop = Some((dropped, Instant::now()));
                 }
+                if let Some((_, at)) = &self.pending_drop {
+                    let target = match moved {
+                        Some(pos) => Some(
+                            rects
+                                .iter()
+                                .position(|r| r.contains(pos))
+                                .unwrap_or(s.active),
+                        ),
+                        None if at.elapsed() >= DROP_WAIT => Some(s.active),
+                        None => {
+                            ctx.request_repaint_after(Duration::from_millis(50));
+                            None
+                        }
+                    };
+                    if let (Some(p), Some((paths, _))) = (target, self.pending_drop.take()) {
+                        let dst = s.tab(p).dir.clone();
+                        out.push((
+                            p,
+                            Action::Drop {
+                                paths,
+                                from: None,
+                                dst,
+                            },
+                        ));
+                    }
+                }
+                pane_rects = rects.clone();
                 for (p, rect) in rects.into_iter().enumerate() {
                     if pressed.is_some_and(|pos| rect.contains(pos)) {
                         s.active = p;
@@ -145,10 +180,13 @@ impl eframe::App for App {
                 }
             });
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
-            let verb = if ctx.input(|i| i.modifiers.shift) {
+            // Same rule as `Action::Drop`: Shift or a drop inside the source pane moves.
+            let (shift, hover) = ctx.input(|i| (i.modifiers.shift, i.pointer.hover_pos()));
+            let over = hover.and_then(|pos| pane_rects.iter().position(|r| r.contains(pos)));
+            let verb = if shift || over == Some(drag.pane) {
                 "Move"
             } else {
-                "Copy / move"
+                "Copy"
             };
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
             egui::show_tooltip_at_pointer(
