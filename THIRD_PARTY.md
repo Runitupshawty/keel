@@ -33,6 +33,10 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`zeroize`](https://crates.io/crates/zeroize) 1.9 | Wipes secrets from memory | Apache-2.0 OR MIT | Rust crate, compiled in |
 | [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`kamadak-exif`](https://crates.io/crates/kamadak-exif) 0.6 | EXIF metadata for media sidecars | BSD-2-Clause | Rust crate, compiled in |
+| [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars | MIT | Rust crate, compiled in |
+| [`wait-timeout`](https://crates.io/crates/wait-timeout) 0.2 | Time limit for `ffmpeg`/`ffprobe` runs (video sidecars; ffmpeg is not shipped, it is used when installed) | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`libheif-rs`](https://crates.io/crates/libheif-rs) 2 / libheif | HEIC thumbnails (`keel-core` feature `heic`, off by default) | crate: MIT; libheif: LGPL-3.0 | Not in release builds (feature off); enabling it links libheif |
 
 **User-installed icon themes.** Settings → Icons can download a VS Code icon theme extension from the Visual Studio Marketplace at the user's request, after showing the extension's license (from the package when it has one) and asking the user to accept it. The theme is unpacked into the user's own config folder (`<config dir>/icons/<extension id>/`) for that user only. Keel does not bundle, mirror or redistribute these themes; they are not part of Keel's source or release archives, and their licenses are between the user and the theme's author.
 

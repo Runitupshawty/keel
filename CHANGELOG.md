@@ -21,6 +21,8 @@ Library release: Keel now keeps an index of every file across your sources, work
 - Search backend selector now includes Library. Tag chips on rows, a tag picker (Ctrl+Shift+T) and Ctrl+D to favorite.
 - Preview dialog before copy, move and delete from library views.
 - Settings → Library: enable or disable, hashing policy (idle only, pause on battery, off), rescan interval and rebuild.
+- Sidecar store and media metadata, the foundation for the media view: an idle-priority job makes thumbnails and metadata sidecars for every image and video of a source and fills a `media` table (dimensions, orientation, capture time, duration, camera, GPS, keywords) under a size budget. Not yet shown in the app or searchable.
+- An offline source says why in its tooltip (unreachable, a different folder at its root, or an empty root); for the last two its context menu offers "Adopt new root", which indexes whatever is there now.
 
 ### Changed
 
@@ -36,6 +38,13 @@ Library release: Keel now keeps an index of every file across your sources, work
 - Removing a source stops its walk, hashing and watchers.
 - Shorter write locks during walks, so the UI stays responsive while a big source indexes.
 - Delete previews warn about permanent and unverified deletes; locations in logs are redacted.
+- A folder copy or move whose target appeared while it ran resumes as a merge instead of reporting done; operations run in batches with one durable checkpoint each, and a refused plan is compared by actions, paths and warnings, not counts.
+- Content ids stay only while size, modification and change time (nanoseconds) are unchanged, and are BLAKE3 of the bytes (existing content ids are recomputed once). Hard links count once in duplicates and copies.
+- A drive letter or mount point now holding a different (or empty) folder keeps the source offline instead of replacing its index.
+- Hashing pauses for 5 seconds after input, skips network shares unless the source allows it, starts after each completed walk (not when hashing is off or paused), and stops promptly when asked.
+- Filter-only library searches (`ext:`, `size:`, `dm:`) take about 1 ms on 2 million rows instead of up to 400 ms; `dm:` dates use local time.
+- Tag and record ids are never reused, so a deleted tag or file never passes its tags to a new one; stores from another library merge their tags by name.
+- Every file system provider states whether its listing is complete and what a delete does (no silent defaults).
 
 ### Known limitations
 
