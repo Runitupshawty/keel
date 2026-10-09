@@ -20,7 +20,9 @@ mod ops_unix;
 use ops_unix as sys;
 #[cfg(windows)]
 mod ops_windows;
-pub use ops::{copy_local, move_local, plan_size, Conflict, Progress};
+#[cfg(feature = "zip")]
+pub use ops::add_to_zip;
+pub use ops::{copy_local, extract, move_local, plan_size, Conflict, Progress};
 #[cfg(windows)]
 use ops_windows as sys;
 

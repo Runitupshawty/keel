@@ -1,5 +1,6 @@
-//! Archive readers. Everything here blocks: call it off the UI thread. Links and special
-//! files inside archives are not listed or extracted.
+//! Archives as read-only folders (`x.zip!/dir/a.txt`). Everything here blocks: call it off
+//! the UI thread. Links and special files inside archives are not listed or extracted.
+pub mod cache;
 #[cfg(feature = "rar")]
 mod rar;
 #[cfg(feature = "sevenz")]
@@ -9,14 +10,20 @@ mod tar;
 #[cfg(feature = "zip")]
 mod zip;
 
+use crate::{Caps, Entry, Kind, Provider, VPath};
 use anyhow::{bail, Context, Result};
+use cache::{CacheKey, MaterialiseCache};
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{self, Read, Write},
-    path::Path,
-    sync::mpsc,
+    path::{Path, PathBuf},
+    sync::{mpsc, Arc, Weak},
     time::SystemTime,
 };
+
+/// Entries above this are never materialised (previews show `TooLarge`).
+pub const MATERIALISE_LIMIT: u64 = 1 << 30;
 
 pub trait ArchiveReader: Send {
     /// Metadata only (regular files and folders, raw archive names); never entry bodies.
@@ -120,6 +127,196 @@ fn read_up_to(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
         }
     }
     Ok(n)
+}
+
+/// Serves `file://…/x.zip!/…` (and nested chains). The outer path is resolved through the
+/// router, so an archive on any provider works once that provider has `local_copy`.
+pub struct ArchiveProvider {
+    cache: Arc<MaterialiseCache>,
+    providers: Weak<crate::router::Registry>,
+}
+impl ArchiveProvider {
+    pub(crate) fn new(
+        cache: Arc<MaterialiseCache>,
+        providers: Weak<crate::router::Registry>,
+    ) -> Self {
+        Self { cache, providers }
+    }
+    fn provider(&self, path: &VPath) -> Result<Arc<dyn Provider>> {
+        let registry = self.providers.upgrade().context("router was dropped")?;
+        crate::router::find(&registry, path)
+            .with_context(|| format!("no provider for {}", path.display()))
+    }
+    /// The archive holding `path`, opened from a local copy, and `path`'s normalised inner name.
+    fn open(&self, path: &VPath) -> Result<(Box<dyn ArchiveReader>, VPath, String)> {
+        let (outer, inner) = path.split_archive().context("not an archive path")?;
+        let local = self.provider(&outer)?.local_copy(&outer)?;
+        let inner = if inner.trim_matches('/').is_empty() {
+            String::new()
+        } else {
+            safe_name(&inner)?
+        };
+        Ok((open_archive(&local)?, outer, inner))
+    }
+    fn key(&self, path: &VPath) -> Result<CacheKey> {
+        let mut outer = path.clone();
+        while let Some((parent, _)) = outer.split_archive() {
+            outer = parent;
+        }
+        let meta = self.provider(&outer)?.stat(&outer)?;
+        let inner = path.path[outer.path.len() + 2..].to_owned();
+        Ok(CacheKey {
+            outer,
+            modified: meta.modified,
+            size: meta.size,
+            inner,
+        })
+    }
+}
+/// The entry whose normalised name is `inner`.
+fn find<'a>(entries: &'a [ArchiveEntry], inner: &str) -> Option<&'a ArchiveEntry> {
+    entries
+        .iter()
+        .find(|e| safe_name(&e.inner).is_ok_and(|n| n == inner))
+}
+fn entry(
+    outer: &VPath,
+    inner: &str,
+    is_dir: bool,
+    size: u64,
+    modified: Option<SystemTime>,
+) -> Entry {
+    let path = VPath::join_archive(outer, inner);
+    let name = path.name().to_owned();
+    let ext = Path::new(&name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    Entry {
+        path,
+        hidden: name.starts_with('.'),
+        name,
+        kind: if is_dir { Kind::Dir } else { Kind::File },
+        size,
+        modified,
+        is_link: false,
+        ext,
+    }
+}
+const READ_ONLY: &str = "archives are read-only in this version";
+impl Provider for ArchiveProvider {
+    fn scheme(&self) -> &'static str {
+        "archive"
+    }
+    fn caps(&self) -> Caps {
+        Caps::default()
+    }
+    /// Unsafe names (`..`, absolute, drive letters) are left out; folders that exist only
+    /// as a prefix of deeper entries are synthesised.
+    fn list(&self, path: &VPath) -> Result<Vec<Entry>> {
+        let (mut reader, outer, inner) = self.open(path)?;
+        let prefix = if inner.is_empty() {
+            inner
+        } else {
+            format!("{inner}/")
+        };
+        let mut children = BTreeMap::new();
+        for item in reader.entries()? {
+            let Ok(name) = safe_name(&item.inner) else {
+                continue;
+            };
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let (child, deeper) = rest
+                .split_once('/')
+                .map_or((rest, false), |(c, _)| (c, true));
+            let is_dir = deeper || item.is_dir;
+            let value = entry(
+                &outer,
+                &format!("{prefix}{child}"),
+                is_dir,
+                if is_dir { 0 } else { item.size },
+                if deeper { None } else { item.modified },
+            );
+            children
+                .entry(child.to_owned())
+                .and_modify(|seen: &mut Entry| {
+                    // An explicit folder entry carries the real mtime.
+                    if !deeper && is_dir {
+                        *seen = value.clone();
+                    }
+                })
+                .or_insert(value);
+        }
+        Ok(children.into_values().collect())
+    }
+    fn stat(&self, path: &VPath) -> Result<Entry> {
+        let (mut reader, outer, inner) = self.open(path)?;
+        if inner.is_empty() {
+            return Ok(entry(&outer, "", true, 0, None));
+        }
+        let entries = reader.entries()?;
+        if let Some(item) = find(&entries, &inner) {
+            return Ok(entry(&outer, &inner, item.is_dir, item.size, item.modified));
+        }
+        let folder = format!("{inner}/");
+        if entries
+            .iter()
+            .any(|e| safe_name(&e.inner).is_ok_and(|n| n.starts_with(&folder)))
+        {
+            return Ok(entry(&outer, &inner, true, 0, None));
+        }
+        bail!("archive entry not found: {}", path.display())
+    }
+    fn read(&self, path: &VPath) -> Result<Box<dyn Read + Send>> {
+        let (mut reader, _, inner) = self.open(path)?;
+        let entries = reader.entries()?;
+        let item = find(&entries, &inner)
+            .filter(|e| !e.is_dir)
+            .with_context(|| format!("archive file not found: {}", path.display()))?;
+        anyhow::ensure!(!item.encrypted, "password-protected archive entry");
+        reader.read(&item.inner)
+    }
+    /// Materialises one entry into the cache (nested archives recurse through the router).
+    fn local_copy(&self, path: &VPath) -> Result<PathBuf> {
+        let (outer, inner) = path.split_archive().context("not an archive path")?;
+        if inner.trim_matches('/').is_empty() {
+            return self.provider(&outer)?.local_copy(&outer);
+        }
+        let key = self.key(path)?;
+        self.cache.get_or_extract(&key, |destination| {
+            let (mut reader, _, inner) = self.open(path)?;
+            let entries = reader.entries()?;
+            let item = find(&entries, &inner)
+                .with_context(|| format!("archive entry not found: {}", path.display()))?;
+            anyhow::ensure!(!item.is_dir, "cannot materialise a folder");
+            anyhow::ensure!(!item.encrypted, "password-protected archive entry");
+            anyhow::ensure!(
+                item.size <= MATERIALISE_LIMIT,
+                "TooLarge: archive entries over 1 GiB are not materialised"
+            );
+            let mut input = reader.read(&item.inner)?.take(MATERIALISE_LIMIT + 1);
+            let copied = io::copy(&mut input, &mut File::create(destination)?)?;
+            anyhow::ensure!(
+                copied <= MATERIALISE_LIMIT,
+                "TooLarge: archive entries over 1 GiB are not materialised"
+            );
+            Ok(())
+        })
+    }
+    fn write(&self, _: &VPath) -> Result<Box<dyn Write + Send>> {
+        bail!(READ_ONLY)
+    }
+    fn mkdir(&self, _: &VPath) -> Result<()> {
+        bail!(READ_ONLY)
+    }
+    fn rename(&self, _: &VPath, _: &VPath) -> Result<()> {
+        bail!(READ_ONLY)
+    }
+    fn remove(&self, _: &VPath) -> Result<()> {
+        bail!(READ_ONLY)
+    }
 }
 
 /// Runs `work` on a thread and reads what it writes. At most two 64 KiB chunks are in

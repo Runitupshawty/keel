@@ -1,10 +1,31 @@
 #![cfg(all(feature = "zip", feature = "sevenz", feature = "tar"))]
-use keel_vfs::VPath;
+use keel_vfs::{archive::cache::MaterialiseCache, ops::extract, Conflict, Kind, Router, VPath};
 use std::{
     fs,
     io::{Read, Write},
     path::Path,
+    sync::{atomic::AtomicBool, Arc},
 };
+
+/// A router whose materialise cache lives in the test's temp dir, not the user's cache.
+fn router(tmp: &tempfile::TempDir) -> Router {
+    Router::with_archive_cache(Arc::new(MaterialiseCache::new(
+        tmp.path().join("cache"),
+        2 << 30,
+    )))
+}
+
+fn extract_all(archive: &VPath, dst: &Path, router: &Router) -> anyhow::Result<()> {
+    extract(
+        archive,
+        &[],
+        dst,
+        Conflict::Overwrite,
+        &|_| {},
+        &AtomicBool::new(false),
+        router,
+    )
+}
 
 fn zip_file(path: &Path, entries: &[(&str, &[u8])]) {
     let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
@@ -123,7 +144,7 @@ fn sevenz_metadata_and_single_entry() {
 
 #[cfg(feature = "rar")]
 #[test]
-fn rar_fixture_lists_and_reads() {
+fn rar_fixture_lists_reads_and_extracts() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.rar");
     assert!(fs::metadata(&path).unwrap().len() < 4096);
     let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
@@ -150,6 +171,296 @@ fn rar_fixture_lists_and_reads() {
         .map(|e| e.inner)
         .collect();
     assert_eq!(names, ["a.txt", "b.txt"]);
+    let tmp = tempfile::tempdir().unwrap();
+    extract_all(&VPath::local(&path), tmp.path(), &router(&tmp)).unwrap();
+    assert_eq!(fs::read(tmp.path().join("a.txt")).unwrap(), b"rar hello\n");
+    assert_eq!(fs::read(tmp.path().join("b.txt")).unwrap().len(), 11);
+}
+
+#[test]
+fn router_browses_and_materialises_zip_inside_tar_inside_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let inner = tmp.path().join("inner.zip");
+    zip_file(&inner, &[("dir/a.txt", b"nested hello")]);
+    let tar = tar_bytes("inner.zip", &fs::read(inner).unwrap());
+    let outer = tmp.path().join("outer.zip");
+    zip_file(&outer, &[("middle.tar", &tar)]);
+    let router = router(&tmp);
+    let root = VPath::join_archive(&VPath::local(&outer), "middle.tar!/inner.zip!/");
+    let provider = router.provider_for(&root).unwrap();
+    assert_eq!(provider.scheme(), "archive");
+    let list = provider.list(&root).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "dir");
+    assert_eq!(list[0].kind, keel_vfs::Kind::Dir);
+    let path = root.join("dir/a.txt");
+    assert_eq!(provider.stat(&path).unwrap().size, 12);
+    let mut body = String::new();
+    provider
+        .read(&path)
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "nested hello");
+    let local = provider.local_copy(&path).unwrap();
+    assert_eq!(fs::read(&local).unwrap(), b"nested hello");
+    assert_eq!(provider.local_copy(&path).unwrap(), local);
+    assert!(!provider.caps().write);
+    assert!(provider.write(&path).is_err());
+    assert!(provider.remove(&path).is_err());
+}
+
+#[test]
+fn cache_evicts_by_bytes_and_recency_and_cleans_failures() {
+    use keel_vfs::archive::cache::{CacheKey, MaterialiseCache};
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = MaterialiseCache::new(tmp.path().into(), 8);
+    let key = |inner: &str| CacheKey {
+        outer: VPath::local("outer.zip"),
+        modified: None,
+        size: 100,
+        inner: inner.into(),
+    };
+    let first = cache
+        .get_or_extract(&key("a"), |p| {
+            fs::write(p, b"1234")?;
+            Ok(())
+        })
+        .unwrap();
+    let second = cache
+        .get_or_extract(&key("b"), |p| {
+            fs::write(p, b"5678")?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        cache
+            .get_or_extract(&key("a"), |_| panic!("cache miss"))
+            .unwrap(),
+        first
+    );
+    cache
+        .get_or_extract(&key("c"), |p| {
+            fs::write(p, b"9012")?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(first.exists());
+    assert!(!second.exists());
+    assert!(cache
+        .get_or_extract(&key("big"), |p| {
+            fs::write(p, b"123456789")?;
+            Ok(())
+        })
+        .is_err());
+    assert!(cache
+        .get_or_extract(&key("bad"), |p| {
+            fs::write(p, b"x")?;
+            anyhow::bail!("failed")
+        })
+        .is_err());
+    cache.evict_to_budget();
+    assert!(
+        fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|p| p.unwrap().metadata().unwrap().len())
+            .sum::<u64>()
+            <= 8
+    );
+}
+
+#[test]
+fn too_large_preview_is_refused_before_reading_body() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("huge.zip");
+    zip_file(&file, &[("big", b"x")]);
+    let mut bytes = fs::read(&file).unwrap();
+    let pos = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    bytes[pos + 24..pos + 28].copy_from_slice(&((1u32 << 30) + 1).to_le_bytes());
+    fs::write(&file, bytes).unwrap();
+    let path = VPath::join_archive(&VPath::local(file), "big");
+    let router = router(&tmp);
+    assert!(router
+        .provider_for(&path)
+        .unwrap()
+        .local_copy(&path)
+        .unwrap_err()
+        .to_string()
+        .contains("TooLarge"));
+}
+
+#[test]
+fn extract_rejects_slip_before_writing_and_handles_conflicts_and_selection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("source.zip");
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    for bad in [
+        "../evil.txt",
+        "../escape",
+        "/abs/evil.txt",
+        "/absolute",
+        "D:/drive",
+        "dir/../../escape",
+        "..\\escape",
+        "dir/file:stream",
+    ] {
+        zip_file(&file, &[("good", b"good"), (bad, b"bad")]);
+        assert!(extract(
+            &VPath::local(&file),
+            &[],
+            &dst,
+            Conflict::Overwrite,
+            &|_| {},
+            &AtomicBool::new(false),
+            &router(&tmp)
+        )
+        .is_err());
+        assert!(!dst.join("good").exists());
+        assert!(!tmp.path().join("escape").exists());
+    }
+    zip_file(&file, &[("dir/a.txt", b"hello"), ("b.txt", b"world")]);
+    fs::create_dir(dst.join("dir")).unwrap();
+    fs::write(dst.join("dir/a.txt"), b"original").unwrap();
+    let path = VPath::local(&file);
+    let router = router(&tmp);
+    let cancel = AtomicBool::new(false);
+    extract(
+        &path,
+        &["dir".into()],
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("dir/a.txt")).unwrap(), b"original");
+    assert!(!dst.join("b.txt").exists());
+    extract(
+        &path,
+        &[],
+        &dst,
+        Conflict::RenameNew,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("dir/a (2).txt")).unwrap(), b"hello");
+    let progress = std::cell::RefCell::new(Vec::new());
+    extract(
+        &path,
+        &[],
+        &dst,
+        Conflict::Overwrite,
+        &|p| progress.borrow_mut().push(p),
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("dir/a.txt")).unwrap(), b"hello");
+    let progress = progress.borrow();
+    let last = progress.last().unwrap();
+    assert_eq!(last.done_bytes, 10);
+    assert_eq!(last.done_items, last.total_items);
+}
+
+#[test]
+fn extract_cancel_preserves_existing_file() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("source.zip");
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    zip_file(&file, &[("a", &vec![42; 2 << 20])]);
+    fs::write(dst.join("a"), b"keep").unwrap();
+    let cancel = AtomicBool::new(false);
+    assert!(extract(
+        &VPath::local(file),
+        &[],
+        &dst,
+        Conflict::Overwrite,
+        &|p| {
+            if p.done_bytes > 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        },
+        &cancel,
+        &router(&tmp)
+    )
+    .is_err());
+    assert_eq!(fs::read(dst.join("a")).unwrap(), b"keep");
+    assert_eq!(fs::read_dir(dst).unwrap().count(), 1);
+}
+
+#[test]
+fn add_to_zip_replaces_entries_preserves_others_and_is_atomic_on_cancel() {
+    use keel_vfs::ops::add_to_zip;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("output.zip");
+    let src = tmp.path().join("a.txt");
+    fs::write(&src, b"first").unwrap();
+    let cancel = AtomicBool::new(false);
+    add_to_zip(&file, std::slice::from_ref(&src), "dir", &|_| {}, &cancel).unwrap();
+    let b = tmp.path().join("b.txt");
+    fs::write(&b, b"second").unwrap();
+    add_to_zip(&file, &[b], "", &|_| {}, &cancel).unwrap();
+    fs::write(&src, b"updated").unwrap();
+    add_to_zip(&file, std::slice::from_ref(&src), "dir", &|_| {}, &cancel).unwrap();
+    let mut reader = keel_vfs::archive::open_archive(&file).unwrap();
+    assert_eq!(reader.entries().unwrap().len(), 2);
+    let mut body = String::new();
+    reader
+        .read("dir/a.txt")
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "updated");
+    drop(reader);
+    let original = fs::read(&file).unwrap();
+    fs::write(&src, vec![42; 2 << 20]).unwrap();
+    assert!(add_to_zip(
+        &file,
+        &[src],
+        "dir",
+        &|p| {
+            if p.done_bytes > 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        },
+        &cancel
+    )
+    .is_err());
+    assert_eq!(fs::read(&file).unwrap(), original);
+}
+
+#[test]
+#[ignore = "10,000-entry ZIP listing timing; run in release mode"]
+fn perf_zip_list_10k_under_200ms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("many.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    for i in 0..10000 {
+        zip.start_file(
+            format!("file-{i}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    }
+    zip.finish().unwrap();
+    let root = VPath::join_archive(&VPath::local(file), "");
+    let router = router(&tmp);
+    let provider = router.provider_for(&root).unwrap();
+    let start = std::time::Instant::now();
+    assert_eq!(provider.list(&root).unwrap().len(), 10000);
+    eprintln!("10,000-entry zip listed in {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(200),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
@@ -181,4 +492,273 @@ fn archive_paths_split_at_last_boundary_and_keep_provider() {
         assert!(VPath::is_archive_name(name), "{name}");
     }
     assert!(!VPath::is_archive_name("a.txt"));
+}
+
+#[test]
+fn bang_folder_is_not_an_archive_and_archive_root_names_itself() {
+    assert!(VPath::parse("sftp://h/Yahoo!/a.txt")
+        .unwrap()
+        .split_archive()
+        .is_none());
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Yahoo!");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("a.txt"), b"x").unwrap();
+    let local = VPath::local(dir.join("a.txt"));
+    assert!(local.split_archive().is_none());
+    let router = router(&tmp);
+    let provider = router.provider_for(&local).unwrap();
+    assert_eq!(provider.scheme(), "file");
+    assert_eq!(provider.stat(&local).unwrap().size, 1);
+    let root = VPath::join_archive(&VPath::local(tmp.path().join("x.zip")), "");
+    assert_eq!(root.name(), "x.zip");
+    assert_eq!(VPath::local(root.display()), root);
+    let inner = root.join("dir/a.txt");
+    assert_eq!(VPath::local(inner.display()), inner);
+    assert_eq!(inner.parent().unwrap().parent().unwrap(), root);
+}
+
+fn tar_entry(builder: &mut tar::Builder<Vec<u8>>, path: &str, kind: tar::EntryType, bytes: &[u8]) {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(kind);
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o755);
+    if kind == tar::EntryType::Symlink {
+        header.set_link_name("../../outside").unwrap();
+    }
+    header.set_path(path).unwrap();
+    header.set_cksum();
+    builder.append(&header, bytes).unwrap();
+}
+
+#[test]
+fn dot_slash_tarball_lists_and_extracts_in_one_pass_skipping_links() {
+    use tar::EntryType::{Directory, Regular, Symlink};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut builder = tar::Builder::new(Vec::new());
+    tar_entry(&mut builder, "./", Directory, b"");
+    tar_entry(&mut builder, "./pkg/", Directory, b"");
+    tar_entry(&mut builder, "./pkg/a.txt", Regular, b"alpha");
+    tar_entry(&mut builder, "./pkg/link", Symlink, b"");
+    tar_entry(&mut builder, "./pkg/sub/b.txt", Regular, b"beta");
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+    gz.write_all(&builder.into_inner().unwrap()).unwrap();
+    let file = tmp.path().join("pkg.tar.gz");
+    fs::write(&file, gz.finish().unwrap()).unwrap();
+    let router = router(&tmp);
+    let root = VPath::join_archive(&VPath::local(&file), "");
+    let provider = router.provider_for(&root).unwrap();
+    let top = provider.list(&root).unwrap();
+    assert_eq!(top.len(), 1);
+    assert_eq!((top[0].name.as_str(), &top[0].kind), ("pkg", &Kind::Dir));
+    let names: Vec<_> = provider
+        .list(&root.join("pkg"))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["a.txt", "sub"]);
+    assert_eq!(
+        provider.stat(&root.join("pkg/sub")).unwrap().kind,
+        Kind::Dir
+    );
+    let mut body = String::new();
+    provider
+        .read(&root.join("pkg/sub/b.txt"))
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "beta");
+    let dst = tmp.path().join("out");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&root, &dst, &router).unwrap();
+    assert_eq!(fs::read(dst.join("pkg/a.txt")).unwrap(), b"alpha");
+    assert_eq!(fs::read(dst.join("pkg/sub/b.txt")).unwrap(), b"beta");
+    assert!(fs::symlink_metadata(dst.join("pkg/link")).is_err());
+}
+
+#[test]
+fn corrupt_archives_are_errors_not_panics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let zip = tmp.path().join("good.zip");
+    zip_file(&zip, &[("a.txt", b"hello hello hello")]);
+    let zip = fs::read(zip).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+    gz.write_all(&tar_bytes("a.txt", &[7; 4096])).unwrap();
+    let gz = gz.finish().unwrap();
+    let src = tmp.path().join("seven");
+    fs::create_dir(&src).unwrap();
+    fs::write(src.join("a.txt"), [9; 4096]).unwrap();
+    let seven = tmp.path().join("good.7z");
+    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    let seven = fs::read(seven).unwrap();
+    let mut cases: Vec<(&str, Vec<u8>)> = vec![
+        ("empty.zip", Vec::new()),
+        ("garbage.zip", b"PK\x03\x04 not really a zip".to_vec()),
+        ("cut.zip", zip[..zip.len() - 10].to_vec()),
+        ("garbage.7z", b"7z\xbc\xaf\x27\x1c garbage".to_vec()),
+        ("cut.7z", seven[..seven.len() / 2].to_vec()),
+        ("cut.tar.gz", gz[..gz.len() / 2].to_vec()),
+        ("garbage.tar", vec![b'x'; 600]),
+        ("garbage.bin", vec![0; 600]),
+    ];
+    if cfg!(feature = "rar") {
+        cases.push(("garbage.rar", b"Rar!\x1a\x07\x01\x00 garbage".to_vec()));
+    }
+    for (name, bytes) in cases {
+        let file = tmp.path().join(name);
+        fs::write(&file, bytes).unwrap();
+        let dst = tmp.path().join(format!("out-{name}"));
+        fs::create_dir(&dst).unwrap();
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        let listed = router.provider_for(&root).unwrap().list(&root);
+        // libunrar reports a garbage body after a valid signature as an empty archive.
+        if name.ends_with(".rar") {
+            assert!(listed.is_err() || listed.unwrap().is_empty(), "{name}");
+        } else {
+            assert!(listed.is_err(), "{name} listed {listed:?}");
+        }
+        let extracted = extract_all(&root, &dst, &router);
+        assert!(extracted.is_err() || name.ends_with(".rar"), "{name}");
+        assert_eq!(fs::read_dir(&dst).unwrap().count(), 0, "{name}");
+    }
+}
+
+#[test]
+fn encrypted_zip_entries_are_flagged_and_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("locked.zip");
+    zip_file(&file, &[("secret.txt", b"hidden"), ("plain.txt", b"open")]);
+    let mut bytes = fs::read(&file).unwrap();
+    bytes[6] |= 1; // first local header: general purpose bit 0 = encrypted
+    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    bytes[central + 8] |= 1;
+    fs::write(&file, bytes).unwrap();
+    let entries = keel_vfs::archive::open_archive(&file)
+        .unwrap()
+        .entries()
+        .unwrap();
+    assert!(entries[0].encrypted && !entries[1].encrypted);
+    let router = router(&tmp);
+    let root = VPath::join_archive(&VPath::local(&file), "");
+    let provider = router.provider_for(&root).unwrap();
+    assert_eq!(provider.list(&root).unwrap().len(), 2);
+    assert!(provider.read(&root.join("secret.txt")).is_err());
+    assert!(provider.local_copy(&root.join("secret.txt")).is_err());
+    let mut body = String::new();
+    provider
+        .read(&root.join("plain.txt"))
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "open");
+    let dst = tmp.path().join("out");
+    fs::create_dir(&dst).unwrap();
+    assert!(extract_all(&root, &dst, &router).is_err());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+    extract(
+        &root,
+        &["plain.txt".into()],
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("plain.txt")).unwrap(), b"open");
+}
+
+#[test]
+fn extracts_7z_folders_and_archives_nested_in_archives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let src = tmp.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a.txt"), b"seven a").unwrap();
+    fs::write(src.join("sub/b.txt"), b"seven b").unwrap();
+    fs::write(src.join("empty.txt"), b"").unwrap();
+    let seven = tmp.path().join("s.7z");
+    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    let dst = tmp.path().join("out7");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&VPath::local(&seven), &dst, &router).unwrap();
+    assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"seven a");
+    assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"seven b");
+    assert_eq!(fs::read(dst.join("empty.txt")).unwrap(), b"");
+
+    let inner = tmp.path().join("inner.zip");
+    zip_file(&inner, &[("dir/a.txt", b"nested hello")]);
+    let outer = tmp.path().join("outer.zip");
+    zip_file(&outer, &[("x/inner.zip", &fs::read(inner).unwrap())]);
+    let nested = VPath::join_archive(&VPath::local(&outer), "x/inner.zip");
+    let dst = tmp.path().join("out-nested");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&nested, &dst, &router).unwrap();
+    assert_eq!(fs::read(dst.join("dir/a.txt")).unwrap(), b"nested hello");
+}
+
+/// A symlink (Unix) or junction (Windows) at `link` pointing to `target`.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap()
+        .status
+        .success());
+}
+
+#[test]
+fn extract_never_follows_a_link_inside_the_destination_but_accepts_a_linked_destination() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let file = tmp.path().join("a.zip");
+    zip_file(&file, &[("dir/x.txt", b"payload")]);
+    let outside = tmp.path().join("outside");
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(&dst).unwrap();
+    link_dir(&outside, &dst.join("dir"));
+    assert!(extract_all(&VPath::local(&file), &dst, &router).is_err());
+    assert!(!outside.join("x.txt").exists());
+    // The destination itself may be reached through a link (e.g. a junctioned folder).
+    let linked = tmp.path().join("linked");
+    link_dir(&outside, &linked);
+    extract_all(&VPath::local(&file), &linked, &router).unwrap();
+    assert_eq!(fs::read(outside.join("dir/x.txt")).unwrap(), b"payload");
+}
+
+#[test]
+fn add_to_zip_creates_and_recurses_into_folders() {
+    use keel_vfs::ops::add_to_zip;
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path().join("folder");
+    fs::create_dir_all(folder.join("deep")).unwrap();
+    fs::write(folder.join("deep/x.txt"), b"x").unwrap();
+    let file = tmp.path().join("new.zip");
+    add_to_zip(&file, &[folder], "", &|_| {}, &AtomicBool::new(false)).unwrap();
+    let mut names: Vec<_> = keel_vfs::archive::open_archive(&file)
+        .unwrap()
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.inner, e.modified.is_some()))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            ("folder/".to_owned(), true),
+            ("folder/deep/".to_owned(), true),
+            ("folder/deep/x.txt".to_owned(), true)
+        ]
+    );
 }
