@@ -91,3 +91,13 @@ CREATE TRIGGER record_au AFTER UPDATE OF name, path ON record BEGIN
     INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
     INSERT INTO record_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
 END;
+
+-- @library 2
+-- Tags (copied into every source store's `tag` table), recents and saved views.
+CREATE TABLE tag(id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT, parent INTEGER);
+CREATE UNIQUE INDEX tag_name ON tag(coalesce(parent, 0), name COLLATE NOCASE);
+-- Reserved: Favorites.
+INSERT INTO tag(id, name, color, parent) VALUES (1, 'Favorites', '#f5c518', NULL);
+CREATE TABLE opened(source TEXT NOT NULL, record INTEGER NOT NULL, ts INTEGER NOT NULL,
+    PRIMARY KEY(source, record));
+CREATE TABLE view(id INTEGER PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, layout TEXT NOT NULL);
