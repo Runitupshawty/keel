@@ -133,6 +133,19 @@ pub enum Action {
         pane: usize,
         tab: usize,
     },
+    // --- Task 23: drop zone ---
+    /// Show / hide the drop zone strip (Ctrl+Shift+Z).
+    ToggleDropZone,
+    /// Stash the targets in the drop zone (Ctrl+Shift+S).
+    StashSelection,
+    /// Rows dragged onto the drop zone.
+    Stash(Vec<VPath>),
+    Unstash(VPath),
+    /// Copy (or move) the stash into the active folder.
+    StashPaste {
+        mv: bool,
+    },
+    ClearStash,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -172,6 +185,8 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
+    (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
+    (CMD_SHIFT, Key::S, Action::StashSelection),
     (HIDDEN.0, HIDDEN.1, Action::ToggleHidden),
     (CMD, Key::P, Action::JumpFolder),
     (CMD, Key::Enter, Action::OpenLocation),

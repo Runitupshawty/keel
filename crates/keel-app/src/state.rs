@@ -211,6 +211,8 @@ pub struct AppState {
     /// The (tab, folder) each visible pane showed last frame; a change relists a tab
     /// that was in the background (it had no watcher).
     shown: [Option<(usize, VPath)>; 2],
+    /// The drop zone strip and its stash (Task 23).
+    pub dropzone: crate::dropzone::DropZone,
 }
 
 impl AppState {
@@ -314,7 +316,9 @@ impl AppState {
             list_timeout: LIST_TIMEOUT,
             next_req: 0,
             shown: [None, None],
+            dropzone: Default::default(),
         };
+        state.dropzone.items = session.stash; // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
         state.theme.apply(&state.ctx);
         // Tabs are only listed when asked; restored background tabs need it now.
@@ -1619,6 +1623,13 @@ impl AppState {
                 }
                 self.jobs.add_to_zip(zip, src, self.tx.clone());
             }
+            // --- Task 23 ---
+            Action::ToggleDropZone
+            | Action::StashSelection
+            | Action::Stash(_)
+            | Action::Unstash(_)
+            | Action::StashPaste { .. }
+            | Action::ClearStash => crate::dropzone::run(self, p, action),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

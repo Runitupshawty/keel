@@ -6,6 +6,7 @@ mod clipboard;
 mod clouds;
 mod crash;
 mod dialogs;
+mod dropzone;
 mod icons;
 mod jobs;
 mod jump;

@@ -132,6 +132,10 @@ impl App {
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
+        // --- Task 23 ---
+        if let Some(action) = crate::dropzone::panel(ctx, s) {
+            out.push((s.active, action));
+        }
         egui::TopBottomPanel::bottom("jobs")
             .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
         s.terminal.panel(ctx, &mut s.settings, &s.tx);
