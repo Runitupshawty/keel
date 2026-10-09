@@ -28,7 +28,9 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MK_RBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::Shell::{SHCreateStdEnumFmtEtc, CFSTR_PREFERREDDROPEFFECT, DROPFILES};
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
 
 /// A `DROPFILES` block: the 20-byte header (`pFiles` = 20, `fWide` = 1), then each path as
 /// UTF-16 with its NUL, then one more NUL. Plain absolute paths: Explorer does not take
@@ -67,8 +69,13 @@ pub fn start(
 }
 
 /// Runs the drag on the calling thread (made an OLE STA here) until the user drops or
-/// cancels. `ui_thread`: the thread whose window the mouse button went down in.
+/// cancels. `ui_thread`: the thread whose window the mouse button went down in; with one,
+/// a button already released by the time this runs ends the drag at once (`None` effect)
+/// instead of starting one that would follow the pointer with no button held.
 pub fn run(paths: &[PathBuf], allow_move: bool, ui_thread: Option<u32>) -> Result<DropEffect> {
+    if ui_thread.is_some() && !primary_button_down() {
+        return Ok(DropEffect::None);
+    }
     let data = DataObject::new(paths)?;
     unsafe { OleInitialize(None) }.context("OleInitialize")?;
     // Declared first, dropped last: the COM objects below go before OLE is torn down.
@@ -101,6 +108,15 @@ pub fn run(paths: &[PathBuf], allow_move: bool, ui_thread: Option<u32>) -> Resul
         DRAGDROP_S_DROP | DRAGDROP_S_CANCEL => Ok(DropEffect::None),
         hr => Err(windows::core::Error::from(hr)).context("DoDragDrop"),
     }
+}
+
+/// The (logical) primary mouse button is down now. `GetAsyncKeyState` reads physical
+/// buttons, so swapped buttons mean the right one.
+fn primary_button_down() -> bool {
+    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
+    let vk = if swapped { VK_RBUTTON } else { VK_LBUTTON };
+    let state = unsafe { GetAsyncKeyState(vk.0 as i32) };
+    state < 0
 }
 
 fn preferred_effect_format() -> u16 {
@@ -148,30 +164,34 @@ impl DataObject {
         [format(CF_HDROP.0), format(self.preferred)]
     }
 
-    /// The bytes served for `f`, or why not.
-    fn bytes_for(&self, f: *const FORMATETC) -> Result<Vec<u8>, HRESULT> {
+    /// Whether `f` asks for something served: true for `CF_HDROP`, false for the preferred
+    /// effect. Only looks at the request (`QueryGetData` builds nothing).
+    fn check(&self, f: *const FORMATETC) -> Result<bool, HRESULT> {
         let f = unsafe { f.as_ref() }.ok_or(E_INVALIDARG)?;
         if f.dwAspect != DVASPECT_CONTENT.0 {
             return Err(DV_E_FORMATETC);
         }
-        let bytes = if f.cfFormat == CF_HDROP.0 {
-            self.hdrop.clone()
+        let hdrop = if f.cfFormat == CF_HDROP.0 {
+            true
         } else if f.cfFormat == self.preferred {
-            // Copy by default; the target still moves on Shift (or by its own rules).
-            DROPEFFECT_COPY.0.to_le_bytes().to_vec()
+            false
         } else {
             return Err(DV_E_FORMATETC);
         };
         if f.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
             return Err(DV_E_TYMED);
         }
-        Ok(bytes)
+        Ok(hdrop)
     }
 }
 
 impl IDataObject_Impl for DataObject_Impl {
     fn GetData(&self, f: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
-        let bytes = self.bytes_for(f)?;
+        let bytes = match self.check(f)? {
+            true => self.hdrop.clone(),
+            // Copy by default; the target still moves on Shift (or by its own rules).
+            false => DROPEFFECT_COPY.0.to_le_bytes().to_vec(),
+        };
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
             u: STGMEDIUM_0 {
@@ -186,7 +206,7 @@ impl IDataObject_Impl for DataObject_Impl {
     }
 
     fn QueryGetData(&self, f: *const FORMATETC) -> HRESULT {
-        match self.bytes_for(f) {
+        match self.check(f) {
             Ok(_) => S_OK,
             Err(hr) => hr,
         }
@@ -334,5 +354,19 @@ mod tests {
         }
         assert!(drag.is_finished(), "DoDragDrop did not end on Esc");
         assert_eq!(drag.join().unwrap().unwrap(), DropEffect::None);
+    }
+
+    /// A drag from the UI whose button is already up (released before the drag thread ran)
+    /// never enters `DoDragDrop`.
+    #[test]
+    fn released_button_starts_no_drag() {
+        if primary_button_down() {
+            return; // someone is holding the mouse button while the tests run
+        }
+        let me = unsafe { GetCurrentThreadId() };
+        let started = std::time::Instant::now();
+        let effect = run(&[std::env::temp_dir()], true, Some(me)).unwrap();
+        assert_eq!(effect, DropEffect::None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

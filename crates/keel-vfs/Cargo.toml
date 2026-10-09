@@ -87,14 +87,19 @@ sysinfo = { version = "0.32", default-features = false, features = ["disk"] }
 
 [target.'cfg(windows)'.dependencies]
 # Task 24 adds the COM `implement` support (drag_out's IDataObject / IDropSource) and the
-# input / console / window helpers in `desktop`.
+# input / console / window helpers in `desktop`; `pipe` (single instance) the security ones.
 windows = { workspace = true, features = [
     "implement",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-core = "0.58"
 

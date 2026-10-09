@@ -11,6 +11,9 @@ pub mod desktop;
 pub mod drag_out;
 // --- end Task 24 ---
 pub mod path;
+/// Per-user named pipe security (single instance, Windows).
+#[cfg(windows)]
+pub mod pipe;
 pub use path::VPath;
 pub mod entry;
 pub mod local;
