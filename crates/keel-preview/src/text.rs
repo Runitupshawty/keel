@@ -99,7 +99,8 @@ pub(crate) fn render(req: &Request, ext: &str, size: u64) -> Preview {
     }
 }
 
-/// UTF-16 with BOM, UTF-8, or (mostly printable) legacy-codepage text decoded lossily.
+/// UTF-16 with BOM, UTF-8, or (mostly printable) legacy text read as Windows-1252 (the
+/// Western ANSI codepage; its printable range covers Latin-1).
 /// `None` means binary: show hex instead.
 fn decode(bytes: &[u8]) -> Option<String> {
     if let Some(units) = utf16_units(bytes) {
@@ -125,7 +126,12 @@ fn decode(bytes: &[u8]) -> Option<String> {
                 .iter()
                 .filter(|&&b| b >= 0x20 && b != 0x7f || matches!(b, b'\t' | b'\n' | b'\r' | 0x0c))
                 .count();
-            (printable * 10 >= bytes.len() * 9).then(|| String::from_utf8_lossy(bytes).into_owned())
+            (printable * 10 >= bytes.len() * 9).then(|| {
+                encoding_rs::WINDOWS_1252
+                    .decode_without_bom_handling(bytes)
+                    .0
+                    .into_owned()
+            })
         }
     }
 }
@@ -146,4 +152,22 @@ fn utf16_units(bytes: &[u8]) -> Option<Vec<u16>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode;
+
+    #[test]
+    fn windows_1252_text_decodes() {
+        // "Café — 5€" saved by Notepad in the ANSI codepage.
+        let bytes = b"Caf\xe9 \x97 5\x80\r\n";
+        assert_eq!(decode(bytes).as_deref(), Some("Café — 5€\r\n"));
+        assert_eq!(
+            decode("Café".as_bytes()).as_deref(),
+            Some("Café"),
+            "UTF-8 first"
+        );
+        assert_eq!(decode(b"\x00\x01binary"), None);
+    }
 }

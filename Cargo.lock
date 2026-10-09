@@ -3597,6 +3597,7 @@ dependencies = [
  "calamine",
  "csv",
  "docx-rs",
+ "encoding_rs",
  "image",
  "keel-vfs",
  "pdfium-render",
