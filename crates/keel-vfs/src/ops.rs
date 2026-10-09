@@ -1,23 +1,10 @@
-use crate::local::{long, recycle, wide};
+use crate::local::long;
+use crate::sys;
 use anyhow::{Context, Result};
 use std::{
-    cell::RefCell,
-    ffi::c_void,
-    fs,
-    os::windows::fs::MetadataExt,
+    fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-};
-use windows::Win32::System::WindowsProgramming::{PROGRESS_CANCEL, PROGRESS_CONTINUE};
-use windows::{
-    core::PCWSTR,
-    Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{
-            CopyFileExW, MoveFileExW, FILE_ATTRIBUTE_REPARSE_POINT,
-            LPPROGRESS_ROUTINE_CALLBACK_REASON, MOVEFILE_COPY_ALLOWED, MOVE_FILE_FLAGS,
-        },
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Clone, Debug)]
@@ -35,7 +22,7 @@ pub enum Conflict {
     RenameNew,
 }
 
-/// Includes directories in the item count. Reparse points are deliberately not followed.
+/// Includes directories in the item count. Links and junctions are refused, not followed.
 pub fn plan_size(src: &[PathBuf]) -> Result<(u64, usize)> {
     let (mut bytes, mut items) = (0u64, 0usize);
     for root in src {
@@ -56,9 +43,10 @@ pub fn plan_size(src: &[PathBuf]) -> Result<(u64, usize)> {
 }
 
 fn ensure_regular(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    // On Windows `is_symlink` covers symlinks and junctions (name-surrogate reparse points).
     anyhow::ensure!(
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
-        "copy/move of reparse points is unsupported: {}",
+        !metadata.file_type().is_symlink(),
+        "copy/move of links is unsupported: {}",
         path.display()
     );
     Ok(())
@@ -74,6 +62,8 @@ pub fn copy_local(
     transfer(src, dst_dir, on_conflict, progress, cancel, false)
 }
 
+/// Same volume: rename. Other volume: per file, copy with progress, then delete that source
+/// only after its copy succeeded. Skipped or failed sources (and their folders) are kept.
 pub fn move_local(
     src: &[PathBuf],
     dst_dir: &Path,
@@ -89,10 +79,12 @@ fn check_cancel(cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
+/// Canonical path, case-folded where the filesystem is case-insensitive (Windows).
 fn canonical_key(path: &Path) -> Result<PathBuf> {
-    Ok(PathBuf::from(
-        fs::canonicalize(path)?.to_string_lossy().to_lowercase(),
-    ))
+    let p = fs::canonicalize(path).with_context(|| format!("resolve {}", path.display()))?;
+    #[cfg(windows)]
+    let p = PathBuf::from(p.to_string_lossy().to_lowercase());
+    Ok(p)
 }
 
 fn transfer(
@@ -111,7 +103,7 @@ fn transfer(
         dst_dir.display()
     );
     let dst_key = canonical_key(&dst)?;
-    // Preflight the entire selection before any writes, including alias/case resolution.
+    // Preflight the entire selection before any writes.
     let sources = src.iter().map(|p| long(p)).collect::<Result<Vec<_>>>()?;
     let mut keys: Vec<PathBuf> = Vec::new();
     for path in &sources {
@@ -174,14 +166,14 @@ struct Job<'a> {
 }
 
 impl Job<'_> {
+    /// Returns false when something under `source` was skipped (so a move keeps it).
     fn node(&mut self, source: &Path, proposed: &Path) -> Result<bool> {
         check_cancel(self.cancel)?;
         let metadata = fs::symlink_metadata(source)?;
         ensure_regular(source, &metadata)?;
         self.state.current = source.to_string_lossy().into_owned();
-        let target = match destination(source, proposed, self.conflict)? {
-            Some(p) => p,
-            None => return Ok(false),
+        let Some(target) = destination(source, proposed, self.conflict)? else {
+            return Ok(false);
         };
         if let Ok(target_metadata) = fs::symlink_metadata(&target) {
             ensure_regular(&target, &target_metadata)?;
@@ -195,15 +187,23 @@ impl Job<'_> {
                 "file/directory conflict: {}",
                 target.display()
             );
-        }
-        if self.moving && !target.try_exists()? && same_volume(source, &target)? {
-            let (bytes, items) = plan_size(&[source.to_path_buf()])?;
-            check_cancel(self.cancel)?;
-            move_file(source, &target, MOVEFILE_COPY_ALLOWED)?;
-            self.state.done_bytes += bytes;
-            self.state.done_items += items;
-            (self.progress)(self.state.clone());
-            return Ok(true);
+        } else if self.moving {
+            // Same volume: one rename. Another volume: fall through to copy + delete.
+            match sys::rename_noreplace(source, &target) {
+                Ok(()) => {
+                    let (bytes, items) = plan_size(std::slice::from_ref(&target))?;
+                    self.state.done_bytes += bytes;
+                    self.state.done_items += items;
+                    (self.progress)(self.state.clone());
+                    return Ok(true);
+                }
+                Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {}
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("move {} to {}", source.display(), target.display())
+                    })
+                }
+            }
         }
         if metadata.is_dir() {
             if !target.try_exists()? {
@@ -211,14 +211,15 @@ impl Job<'_> {
             }
             let mut complete = true;
             // Stable traversal makes progress and cancellation deterministic.
-            let mut children = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
+            let mut children = fs::read_dir(source)?.collect::<io::Result<Vec<_>>>()?;
             children.sort_by_key(|e| e.file_name());
             for child in children {
                 complete &= self.node(&child.path(), &target.join(child.file_name()))?;
             }
             if self.moving && complete {
-                check_cancel(self.cancel)?;
-                recycle(source)?;
+                // remove_dir only removes an empty folder: every child has been moved.
+                fs::remove_dir(source)
+                    .with_context(|| format!("remove moved folder {}", source.display()))?;
             }
             self.state.current = source.to_string_lossy().into_owned();
             self.state.done_items += 1;
@@ -227,7 +228,9 @@ impl Job<'_> {
         }
         self.copy_file(source, &target, metadata.len())?;
         if self.moving {
-            recycle(source)?;
+            // The verified copy is in place at `target`; only now drop the source.
+            fs::remove_file(source)
+                .with_context(|| format!("remove moved file {}", source.display()))?;
         }
         self.state.done_bytes += metadata.len();
         self.state.done_items += 1;
@@ -235,74 +238,76 @@ impl Job<'_> {
         Ok(true)
     }
 
+    /// Copies to `<target>.keel-partial`, then renames into place. On cancel or error the
+    /// partial is deleted and an existing `target` is untouched.
     fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<()> {
-        // Stage in the destination directory: cancel/failure cannot truncate an existing file.
-        let staged = Staged::new(target.parent().context("target has no parent")?)?;
-        let src_name = wide(source)?;
-        let dst_name = wide(&staged.0)?;
-        let context = CopyContext {
-            state: &self.state,
-            progress: self.progress,
-            cancel: self.cancel,
-            transferred: AtomicU64::new(0),
-            panic: RefCell::new(None),
-        };
-        // CopyFileEx invokes callbacks synchronously; all borrowed state outlives the call.
-        let result = unsafe {
-            CopyFileExW(
-                PCWSTR(src_name.as_ptr()),
-                PCWSTR(dst_name.as_ptr()),
-                Some(copy_progress),
-                Some((&context as *const CopyContext<'_>).cast()),
-                None,
-                0,
-            )
-        };
-        if let Some(panic) = context.panic.into_inner() {
-            std::panic::resume_unwind(panic);
-        }
-        check_cancel(self.cancel)?;
-        result.with_context(|| format!("copy {} to {}", source.display(), target.display()))?;
+        let mut partial = target.as_os_str().to_owned();
+        partial.push(".keel-partial");
+        let partial = PathBuf::from(partial);
         anyhow::ensure!(
-            fs::metadata(&staged.0)?.len() == size,
+            fs::symlink_metadata(&partial).is_err(),
+            "leftover partial copy exists: {}",
+            partial.display()
+        );
+        let partial = Partial(partial);
+        let base = &self.state;
+        let result = sys::copy_file(
+            source,
+            &partial.0,
+            &|bytes| {
+                let mut state = base.clone();
+                state.done_bytes += bytes;
+                (self.progress)(state);
+            },
+            self.cancel,
+        );
+        check_cancel(self.cancel)?;
+        result?;
+        anyhow::ensure!(
+            fs::metadata(&partial.0)?.len() == size,
             "source changed during copy: {}",
             source.display()
         );
-        // Recheck races: only Overwrite may displace a target that appeared during copying.
-        if target.try_exists()? {
-            anyhow::ensure!(
-                self.conflict == Conflict::Overwrite,
-                "destination appeared during copy: {}",
-                target.display()
-            );
-            let metadata = fs::symlink_metadata(target)?;
-            ensure_regular(target, &metadata)?;
-            anyhow::ensure!(
-                metadata.is_file() && !same_file::is_same_file(source, target)?,
-                "unsafe overwrite: {}",
-                target.display()
-            );
-            recycle(target)
-                .with_context(|| format!("recycle overwritten file {}", target.display()))?;
+        if self.conflict == Conflict::Overwrite {
+            if let Ok(metadata) = fs::symlink_metadata(target) {
+                anyhow::ensure!(
+                    metadata.is_file() && !same_file::is_same_file(source, target)?,
+                    "unsafe overwrite: {}",
+                    target.display()
+                );
+            }
+            fs::rename(&partial.0, target)
+        } else {
+            // A file that appeared at `target` during the copy is never replaced.
+            sys::rename_noreplace(&partial.0, target)
         }
-        // No REPLACE_EXISTING: a racing new file must not be permanently destroyed.
-        move_file(&staged.0, target, MOVE_FILE_FLAGS(0))?;
-        Ok(())
+        .with_context(|| format!("place {}", target.display()))
+    }
+}
+
+/// This job's own incomplete copy; removed on every exit path (a no-op after the rename).
+struct Partial(PathBuf);
+impl Drop for Partial {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
 fn destination(source: &Path, proposed: &Path, conflict: Conflict) -> Result<Option<PathBuf>> {
-    if fs::symlink_metadata(proposed).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-        return Ok(Some(proposed.to_path_buf()));
-    }
-    // Propagate access errors, and count dangling links as collisions.
-    fs::symlink_metadata(proposed)?;
+    let existing = match fs::symlink_metadata(proposed) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Some(proposed.to_path_buf())),
+        // Propagate access errors, and count dangling links as collisions.
+        Err(e) => return Err(e.into()),
+        Ok(m) => m,
+    };
+    let is_dir = fs::symlink_metadata(source)?.is_dir();
     match conflict {
+        // Folders merge (as in Explorer); the policy applies to the files inside.
+        Conflict::Skip if is_dir && existing.is_dir() => Ok(Some(proposed.to_path_buf())),
         Conflict::Skip => Ok(None),
         Conflict::Overwrite => Ok(Some(proposed.to_path_buf())),
         Conflict::RenameNew => {
-            let metadata = fs::symlink_metadata(source)?;
-            let stem = if metadata.is_dir() {
+            let stem = if is_dir {
                 proposed.file_name()
             } else {
                 proposed.file_stem()
@@ -311,7 +316,7 @@ fn destination(source: &Path, proposed: &Path, conflict: Conflict) -> Result<Opt
             for n in 2u64.. {
                 let mut name = stem.to_os_string();
                 name.push(format!(" ({n})"));
-                if !metadata.is_dir() {
+                if !is_dir {
                     if let Some(ext) = proposed.extension() {
                         name.push(".");
                         name.push(ext);
@@ -319,103 +324,12 @@ fn destination(source: &Path, proposed: &Path, conflict: Conflict) -> Result<Opt
                 }
                 let candidate = proposed.with_file_name(name);
                 match fs::symlink_metadata(&candidate) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(Some(candidate))
-                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Some(candidate)),
                     Err(e) => return Err(e.into()),
                     Ok(_) => {}
                 }
             }
             unreachable!()
         }
-    }
-}
-
-fn same_volume(source: &Path, target: &Path) -> Result<bool> {
-    // Prefix equality is conservative for ordinary volumes. Mount points may still cause
-    // a cross-volume move; reject reparse destinations in the fast path below.
-    let src = fs::canonicalize(source)?;
-    let parent = target.parent().context("target has no parent")?;
-    let dst = fs::canonicalize(parent)?;
-    Ok(src.components().next() == dst.components().next())
-}
-
-fn move_file(source: &Path, target: &Path, flags: MOVE_FILE_FLAGS) -> Result<()> {
-    let from = wide(source)?;
-    let to = wide(target)?;
-    unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), flags) }
-        .with_context(|| format!("move {} to {}", source.display(), target.display()))
-}
-
-struct Staged(PathBuf);
-impl Staged {
-    fn new(dir: &Path) -> Result<Self> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let path = dir.join(format!(
-                ".keel-copy-{}-{}.tmp",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Self(path)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e).context("create staged copy"),
-            }
-        }
-    }
-}
-impl Drop for Staged {
-    fn drop(&mut self) {
-        // Only this job's private incomplete copy is removed permanently.
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-struct CopyContext<'a> {
-    state: &'a Progress,
-    progress: &'a dyn Fn(Progress),
-    cancel: &'a AtomicBool,
-    transferred: AtomicU64,
-    panic: RefCell<Option<Box<dyn std::any::Any + Send>>>,
-}
-
-unsafe extern "system" fn copy_progress(
-    _total: i64,
-    transferred: i64,
-    _stream_size: i64,
-    _stream_transferred: i64,
-    _stream: u32,
-    _reason: LPPROGRESS_ROUTINE_CALLBACK_REASON,
-    _source: HANDLE,
-    _destination: HANDLE,
-    data: *const c_void,
-) -> u32 {
-    // The caller supplies a valid context for the synchronous duration of CopyFileExW.
-    let context = &*data.cast::<CopyContext<'_>>();
-    if context.cancel.load(Ordering::Relaxed) {
-        return PROGRESS_CANCEL;
-    }
-    let transferred = transferred.max(0) as u64;
-    context
-        .transferred
-        .fetch_max(transferred, Ordering::Relaxed);
-    let mut state = context.state.clone();
-    state.done_bytes += context.transferred.load(Ordering::Relaxed);
-    // Never unwind through a Windows ABI frame. Resume on the Rust side after CopyFileExW.
-    if let Err(panic) =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (context.progress)(state)))
-    {
-        *context.panic.borrow_mut() = Some(panic);
-        return PROGRESS_CANCEL;
-    }
-    if context.cancel.load(Ordering::Relaxed) {
-        PROGRESS_CANCEL
-    } else {
-        PROGRESS_CONTINUE
     }
 }

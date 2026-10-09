@@ -4,37 +4,23 @@ use notify::Watcher;
 use std::{
     fs,
     io::{Read, Write},
-    os::windows::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     time::Duration,
-};
-use windows::{
-    core::PCWSTR,
-    Win32::{
-        Foundation::RPC_E_CHANGED_MODE,
-        Storage::FileSystem::{
-            GetDiskFreeSpaceExW, GetLogicalDrives, GetVolumeInformationW, FILE_ATTRIBUTE_HIDDEN,
-        },
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
-        },
-        UI::Shell::{
-            FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName,
-            FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
-            FOF_NOERRORUI, FOF_SILENT,
-        },
-    },
 };
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LocalProvider;
 
-/// Produce an absolute extended-length path without stripping trailing dots or spaces.
+/// Absolute extended-length (`\\?\`, `\\?\UNC\`) path that keeps trailing dots and spaces.
+/// `/` is normalized to `\` first.
+#[cfg(windows)]
 pub(crate) fn long(p: &Path) -> Result<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let p = PathBuf::from(p.as_os_str().to_string_lossy().replace('/', "\\"));
     let absolute = if p.is_absolute() {
-        p.to_path_buf()
+        p
     } else {
-        // Prefix before GetFullPathName-style normalization can trim trailing dots/spaces.
+        // Joining manually: GetFullPathName-style normalization would trim trailing dots/spaces.
         anyhow::ensure!(
             !p.has_root()
                 && !matches!(p.components().next(), Some(std::path::Component::Prefix(_))),
@@ -53,12 +39,10 @@ pub(crate) fn long(p: &Path) -> Result<PathBuf> {
             other => normalized.push(other.as_os_str()),
         }
     }
-    let absolute = normalized;
-    let units: Vec<_> = absolute.as_os_str().encode_wide().collect();
-    use std::os::windows::ffi::OsStringExt;
+    let units: Vec<_> = normalized.as_os_str().encode_wide().collect();
     let prefix: Vec<_> = r"\\?\".encode_utf16().collect();
     if units.starts_with(&prefix) {
-        return Ok(absolute);
+        return Ok(normalized);
     }
     let extended = if units.starts_with(&[92, 92]) {
         r"\\?\UNC\"
@@ -71,11 +55,21 @@ pub(crate) fn long(p: &Path) -> Result<PathBuf> {
     Ok(std::ffi::OsString::from_wide(&extended).into())
 }
 
-pub(crate) fn wide(p: &Path) -> Result<Vec<u16>> {
-    let mut units: Vec<_> = p.as_os_str().encode_wide().collect();
-    anyhow::ensure!(!units.contains(&0), "path contains NUL: {}", p.display());
-    units.push(0);
-    Ok(units)
+#[cfg(not(windows))]
+pub(crate) fn long(p: &Path) -> Result<PathBuf> {
+    Ok(std::path::absolute(p)?)
+}
+
+#[cfg(windows)]
+fn is_hidden(_name: &str, metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
+}
+
+#[cfg(not(windows))]
+fn is_hidden(name: &str, _metadata: &fs::Metadata) -> bool {
+    name.starts_with('.')
 }
 
 fn local(p: &VPath) -> Result<PathBuf> {
@@ -102,14 +96,31 @@ fn entry(path: VPath, metadata: fs::Metadata) -> Entry {
             .unwrap_or_default()
     };
     Entry {
+        hidden: is_hidden(&name, &metadata),
         path,
         name,
         kind,
         size: metadata.len(),
         modified: metadata.modified().ok(),
-        hidden: metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN.0 != 0,
         ext,
     }
+}
+
+const TRASH_FAILED: &str = "Could not move to trash; nothing deleted";
+
+/// Sends `path` to the OS trash. Never deletes permanently.
+fn trash_path(path: &Path) -> Result<()> {
+    // The Shell resolves non-`\\?\` names, which drops trailing dots/spaces and could hit a
+    // different file. Refuse rather than risk trashing the wrong thing.
+    #[cfg(windows)]
+    anyhow::ensure!(
+        !path.components().any(|c| matches!(c,
+            std::path::Component::Normal(n) if n.to_string_lossy().ends_with(['.', ' ']))),
+        "name ends with a dot or space"
+    );
+    trash::delete(path)?;
+    anyhow::ensure!(!path.try_exists()?, "still present after trash");
+    Ok(())
 }
 
 impl Provider for LocalProvider {
@@ -124,10 +135,12 @@ impl Provider for LocalProvider {
             watch: true,
         }
     }
+    /// Sorted: folders first, then case-insensitive natural name order.
+    /// May block on dead network volumes; call off the UI thread.
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
         (|| -> Result<_> {
             // DirEntry::metadata uses the metadata already returned by FindNextFileW on Windows.
-            let mut entries = fs::read_dir(local(dir)?)?
+            let entries = fs::read_dir(local(dir)?)?
                 .map(|item| {
                     let item = item?;
                     let metadata = item.metadata()?;
@@ -139,7 +152,7 @@ impl Provider for LocalProvider {
                 .collect::<Result<Vec<_>>>()?;
             // Cache case folding once per entry, not once per comparison.
             let mut keyed: Vec<_> = entries
-                .drain(..)
+                .into_iter()
                 .map(|e| (e.name.to_lowercase(), e))
                 .collect();
             keyed.sort_unstable_by(|(ak, a), (bk, b)| {
@@ -172,69 +185,17 @@ impl Provider for LocalProvider {
         fs::create_dir(local(p)?).with_context(|| format!("mkdir {}", p.display()))
     }
     fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
-        // MoveFileEx without REPLACE_EXISTING prevents a rename dialog from losing another file.
-        let src = wide(&local(from)?)?;
-        let dst = wide(&local(to)?)?;
-        unsafe {
-            windows::Win32::Storage::FileSystem::MoveFileExW(
-                PCWSTR(src.as_ptr()),
-                PCWSTR(dst.as_ptr()),
-                windows::Win32::Storage::FileSystem::MOVE_FILE_FLAGS(0),
-            )
-        }
-        .with_context(|| format!("rename {} to {}", from.display(), to.display()))
+        // Never replaces an existing target, so a rename cannot destroy another file.
+        crate::sys::rename_noreplace(&local(from)?, &local(to)?)
+            .with_context(|| format!("rename {} to {}", from.display(), to.display()))
     }
     fn remove(&self, p: &VPath) -> Result<()> {
-        recycle(&local(p)?).with_context(|| format!("recycle {}", p.display()))
+        trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
     }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         p.to_local_path()
             .ok_or_else(|| anyhow::anyhow!("not a local path: {}", p.display()))
     }
-}
-
-struct ComGuard(bool);
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe { CoUninitialize() };
-        }
-    }
-}
-
-pub(crate) fn recycle(path: &Path) -> Result<()> {
-    // Shell parsing names use ordinary DOS/UNC syntax, unlike filesystem APIs.
-    // All COM objects are released before the per-call apartment guard.
-    unsafe {
-        let status = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        if status != RPC_E_CHANGED_MODE {
-            status.ok()?;
-        }
-        let _guard = ComGuard(status.is_ok());
-        let op: IFileOperation =
-            CoCreateInstance(&FileOperation, None, CLSCTX_ALL).context("create IFileOperation")?;
-        op.SetOperationFlags(
-            FOF_ALLOWUNDO
-                | FOF_NOCONFIRMATION
-                | FOF_SILENT
-                | FOF_NOERRORUI
-                | FOFX_RECYCLEONDELETE
-                | FOFX_EARLYFAILURE,
-        )?;
-        let item: IShellItem = shell_item(path).context("create Shell item")?;
-        op.DeleteItem(&item, None).context("queue recycle")?;
-        op.PerformOperations().context("perform recycle")?;
-        anyhow::ensure!(
-            !op.GetAnyOperationsAborted()?.as_bool(),
-            "recycle operation aborted"
-        );
-    }
-    anyhow::ensure!(
-        !path.try_exists()?,
-        "Shell did not recycle {}",
-        path.display()
-    );
-    Ok(())
 }
 
 /// A trailing-edge 100 ms debounce. Dropping the watcher disconnects and stops the worker.
@@ -271,66 +232,43 @@ pub fn watch(dir: &Path, tx: crossbeam_channel::Sender<()>) -> Result<notify::Re
     Ok(watcher)
 }
 
+/// Mounted volumes as `(name, label, free bytes, total bytes)`. `name` is `"C:"` on Windows
+/// and the mount point elsewhere.
+/// May block on dead network volumes; call off the UI thread.
 pub fn drives() -> Vec<(String, String, u64, u64)> {
-    let mask = unsafe { GetLogicalDrives() };
-    (0..26)
-        .filter(|i| mask & (1 << i) != 0)
-        .map(|i| {
-            let name = format!("{}:", (b'A' + i) as char);
-            let root: Vec<_> = format!("{name}\\\0").encode_utf16().collect();
-            let mut label = [0u16; 261];
-            let (mut free, mut total) = (0, 0);
-            unsafe {
-                let _ = GetVolumeInformationW(
-                    PCWSTR(root.as_ptr()),
-                    Some(&mut label),
-                    None,
-                    None,
-                    None,
-                    None,
-                );
-                let _ = GetDiskFreeSpaceExW(
-                    PCWSTR(root.as_ptr()),
-                    Some(&mut free),
-                    Some(&mut total),
-                    None,
-                );
-            }
-            let len = label.iter().position(|&u| u == 0).unwrap_or(label.len());
-            (name, String::from_utf16_lossy(&label[..len]), free, total)
+    sysinfo::Disks::new_with_refreshed_list()
+        .iter()
+        .map(|d| {
+            let mount = d.mount_point().to_string_lossy();
+            let name = if cfg!(windows) {
+                mount.trim_end_matches('\\').to_owned()
+            } else {
+                mount.into_owned()
+            };
+            let label = d.name().to_string_lossy().into_owned();
+            (name, label, d.available_space(), d.total_space())
         })
         .collect()
 }
 
-// Enumerating a Shell item preserves names that the parsing API would normalize.
-unsafe fn shell_item(path: &Path) -> Result<IShellItem> {
-    use windows::Win32::{
-        System::Com::CoTaskMemFree,
-        UI::Shell::{BHID_EnumItems, IEnumShellItems, SIGDN_PARENTRELATIVEPARSING},
-    };
-    let plain = VPath::local(path).to_local_path().expect("local path");
-    if !plain
-        .components()
-        .any(|c| c.as_os_str().to_string_lossy().ends_with(['.', ' ']))
-    {
-        let name = wide(&plain)?;
-        return Ok(SHCreateItemFromParsingName(PCWSTR(name.as_ptr()), None)?);
-    }
-    let parent = shell_item(path.parent().context("cannot recycle a root")?)?;
-    let children: IEnumShellItems = parent.BindToHandler(None, &BHID_EnumItems)?;
-    loop {
-        let mut items = [None];
-        let mut fetched = 0;
-        children.Next(&mut items, Some(&mut fetched))?;
-        if fetched == 0 {
-            anyhow::bail!("Shell item not found: {}", path.display());
-        }
-        let item = items[0].take().context("missing Shell item")?;
-        let name = item.GetDisplayName(SIGDN_PARENTRELATIVEPARSING)?;
-        let actual = name.to_string();
-        CoTaskMemFree(Some(name.0.cast()));
-        if actual? == path.file_name().context("no file name")?.to_string_lossy() {
-            return Ok(item);
-        }
+#[cfg(all(test, windows))]
+mod tests {
+    use super::long;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn long_normalizes_forward_slashes() {
+        assert_eq!(
+            long(Path::new("C:/a/b")).unwrap(),
+            PathBuf::from(r"\\?\C:\a\b")
+        );
+        assert_eq!(
+            long(Path::new("//server/share/x")).unwrap(),
+            PathBuf::from(r"\\?\UNC\server\share\x")
+        );
+        assert_eq!(
+            long(Path::new(r"\\?\C:\a\b.")).unwrap(),
+            PathBuf::from(r"\\?\C:\a\b.")
+        );
     }
 }

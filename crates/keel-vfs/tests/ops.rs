@@ -47,11 +47,10 @@ fn refuses_folder_into_itself_or_subfolder_including_case_aliases() {
     let tmp = tempfile::tempdir().unwrap();
     let sub = tmp.path().join("child");
     fs::create_dir(&sub).unwrap();
-    for dst in [
-        tmp.path().to_path_buf(),
-        sub,
-        tmp.path().to_string_lossy().to_uppercase().into(),
-    ] {
+    for dst in [tmp.path().to_path_buf(), sub]
+        .into_iter()
+        .chain(cfg!(windows).then(|| tmp.path().to_string_lossy().to_uppercase().into()))
+    {
         let err = copy_local(
             &[tmp.path().to_path_buf()],
             &dst,
@@ -164,6 +163,8 @@ fn mid_file_cancel_keeps_existing_destination_and_source() {
     .unwrap_err();
     assert!(err.to_string().contains("cancel"));
     assert_eq!(fs::read(dst.join("large")).unwrap(), b"original");
+    assert!(!dst.join("large.keel-partial").exists());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
     assert_eq!(fs::metadata(src).unwrap().len(), 16 * 1024 * 1024);
 }
 
@@ -185,8 +186,8 @@ fn move_tree_and_skip_collisions_preserves_source() {
     .unwrap();
     assert!(!src.exists());
     assert_eq!(fs::read(dst.join("src/nested/a")).unwrap(), b"a");
-    fs::create_dir(&src).unwrap();
-    fs::write(src.join("keep"), b"keep").unwrap();
+    fs::create_dir_all(src.join("nested")).unwrap();
+    fs::write(src.join("nested/a"), b"keep").unwrap();
     move_local(
         std::slice::from_ref(&src),
         &dst,
@@ -195,9 +196,11 @@ fn move_tree_and_skip_collisions_preserves_source() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert!(src.join("keep").exists());
+    assert_eq!(fs::read(src.join("nested/a")).unwrap(), b"keep");
+    assert_eq!(fs::read(dst.join("src/nested/a")).unwrap(), b"a");
 }
 
+#[cfg(windows)]
 #[test]
 fn refuses_junction_sources_instead_of_copying_their_targets() {
     let tmp = tempfile::tempdir().unwrap();
@@ -233,4 +236,69 @@ fn hard_link_alias_is_not_overwritten() {
     )
     .is_err());
     assert_eq!(fs::read(src).unwrap(), b"preserve");
+}
+
+#[test]
+fn move_merges_into_existing_folder_and_keeps_skipped_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::create_dir_all(dst.join("src/sub")).unwrap();
+    fs::write(src.join("a"), b"a").unwrap();
+    fs::write(src.join("clash"), b"new").unwrap();
+    fs::write(src.join("sub/b"), b"b").unwrap();
+    fs::write(dst.join("src/clash"), b"old").unwrap();
+    fs::write(dst.join("src/sub/c"), b"c").unwrap();
+    move_local(
+        std::slice::from_ref(&src),
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let merged = dst.join("src");
+    assert_eq!(fs::read(merged.join("a")).unwrap(), b"a");
+    assert_eq!(fs::read(merged.join("sub/b")).unwrap(), b"b");
+    assert_eq!(fs::read(merged.join("sub/c")).unwrap(), b"c");
+    assert_eq!(fs::read(merged.join("clash")).unwrap(), b"old");
+    // Moved items are gone from the source; the skipped one (and its folder) stay.
+    assert!(!src.join("a").exists() && !src.join("sub").exists());
+    assert_eq!(fs::read(src.join("clash")).unwrap(), b"new");
+}
+
+/// Set KEEL_TEST_OTHER_VOLUME to a writable folder on a different drive than %TEMP%.
+#[test]
+fn cross_volume_move_copies_then_deletes_each_source() {
+    let Some(other) = std::env::var_os("KEEL_TEST_OTHER_VOLUME") else {
+        eprintln!("KEEL_TEST_OTHER_VOLUME not set; skipping cross-volume move");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir_in(other).unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::write(src.join("a"), b"a").unwrap();
+    fs::write(src.join("sub/b"), vec![7; 3 << 20]).unwrap();
+    fs::create_dir(dst.path().join("src")).unwrap();
+    fs::write(dst.path().join("src/a"), b"old").unwrap();
+    let updates = RefCell::new(Vec::new());
+    move_local(
+        std::slice::from_ref(&src),
+        dst.path(),
+        Conflict::Skip,
+        &|p| updates.borrow_mut().push(p.done_bytes),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.path().join("src/a")).unwrap(), b"old");
+    assert_eq!(fs::read(src.join("a")).unwrap(), b"a");
+    assert_eq!(
+        fs::metadata(dst.path().join("src/sub/b")).unwrap().len(),
+        3 << 20
+    );
+    assert!(!src.join("sub").exists());
+    // Copied with per-chunk progress, not renamed in one step.
+    assert!(updates.borrow().iter().any(|&b| b > 0 && b < 3 << 20));
 }

@@ -11,7 +11,15 @@ pub use local::{drives, watch, LocalProvider};
 pub use provider::{Caps, Provider};
 pub use router::Router;
 pub mod ops;
+#[cfg(not(windows))]
+mod ops_unix;
+#[cfg(not(windows))]
+use ops_unix as sys;
+#[cfg(windows)]
+mod ops_windows;
 pub use ops::{copy_local, move_local, plan_size, Conflict, Progress};
+#[cfg(windows)]
+use ops_windows as sys;
 
 /// Returns this crate's package name.
 pub fn crate_name() -> &'static str {
