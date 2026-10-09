@@ -196,6 +196,8 @@ pub struct AppState {
     pub(crate) themes: Themes,
     /// Settings → Profiles (`profiles.rs`).
     pub profiles: crate::profiles::Profiles,
+    /// Settings → Icons and the active icon theme (`icon_theme.rs`).
+    pub icon_themes: crate::icon_theme::IconThemes,
     pub thumbs: Thumbs,
     search: worker::SearchWorker,
     pub tx: Sender<Msg>,
@@ -304,6 +306,7 @@ impl AppState {
             theme,
             themes,
             profiles: crate::profiles::Profiles::new(ctx.clone()),
+            icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
             tx,
@@ -331,6 +334,8 @@ impl AppState {
     /// what the user changed.
     pub fn settings_ui(&mut self, ctx: &egui::Context) {
         self.profiles_tick();
+        self.icon_themes.tick(&mut self.settings, &mut self.toasts);
+        self.icon_themes.license_modal(ctx);
         let s = &mut self.settings;
         s.show_hidden = self.show_hidden;
         s.dual = self.dual;
@@ -345,6 +350,7 @@ impl AppState {
             &mut self.remotes,
             &mut self.clouds,
             &mut self.profiles,
+            &mut self.icon_themes,
             &self.tx,
         );
         self.show_hidden = s.show_hidden;

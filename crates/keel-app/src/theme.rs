@@ -73,6 +73,7 @@ impl Theme {
         });
         // Set for the active theme so an OS light/dark switch cannot undo it.
         ctx.set_visuals_of(theme, v);
+        crate::icons::set_light(!self.dark);
     }
 }
 

@@ -385,6 +385,44 @@ fn init() -> Result<(), CloudError> {
     })
     .clone()
 }
+/// Downloads `url` (HTTPS only; redirects followed) into memory, at most `max` bytes,
+/// calling `progress(done, total)` as it goes. Blocking: call it on a worker thread.
+pub fn https_get(
+    url: &str,
+    max: u64,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Vec<u8>> {
+    use std::io::Read;
+    anyhow::ensure!(url.starts_with("https://"), "not an HTTPS address: {url}");
+    init()?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(600))
+        .https_only(true)
+        .user_agent(concat!("Keel/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("HTTP client unavailable")?;
+    let mut resp = client.get(url).send()?.error_for_status()?;
+    let total = resp.content_length();
+    let too_big = || anyhow::anyhow!("the download is larger than {} MB", max >> 20);
+    if total.is_some_and(|t| t > max) {
+        return Err(too_big());
+    }
+    let mut out = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = resp.read(&mut buf)?;
+        if n == 0 {
+            return Ok(out);
+        }
+        out.extend_from_slice(&buf[..n]);
+        if out.len() as u64 > max {
+            return Err(too_big());
+        }
+        progress(out.len() as u64, total);
+    }
+}
+
 /// The HTTP client for OAuth token requests: no redirects (credentials never follow one).
 pub(crate) fn http_client() -> Result<reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();

@@ -366,9 +366,10 @@ pub enum Page {
     Remotes,
     Cloud,
     Profiles,
+    Icons,
 }
 
-/// The Settings window (Ctrl+,): General, Remotes, Cloud and Profiles pages.
+/// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
 /// Returns true when the theme was changed.
 #[allow(clippy::too_many_arguments)]
 pub fn window(
@@ -378,6 +379,7 @@ pub fn window(
     remotes: &mut crate::remotes::Remotes,
     clouds: &mut crate::clouds::Clouds,
     profiles: &mut crate::profiles::Profiles,
+    icons: &mut crate::icon_theme::IconThemes,
     tx: &Sender<crate::state::Msg>,
 ) -> bool {
     let mut theme_changed = false;
@@ -391,12 +393,14 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Remotes, "Remotes");
                 ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
                 ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
+                ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
             });
             ui.separator();
             if remotes.page != Page::General {
                 match remotes.page {
                     Page::Remotes => remotes.settings_page(ui, s, tx),
                     Page::Profiles => profiles.settings_page(ui, s),
+                    Page::Icons => icons.settings_page(ui, s),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

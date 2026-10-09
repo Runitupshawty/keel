@@ -55,7 +55,7 @@ opendal = { version = "0.59", default-features = false, features = ["services-gd
 # opendal's facade only installs a transport with its own TLS provider: Keel installs this one
 # (its reqwest client, timeouts, rustls + platform verifier) explicitly.
 opendal-http-transport-reqwest = { version = "0.59.4", default-features = false, features = ["rustls-no-provider"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form", "blocking"] }
 # S3 keys go to opendal through a credential provider whose Debug output is redacted.
 reqsign-core = { version = "3.3", default-features = false }
 reqsign-aws-v4 = { version = "3.3", default-features = false }

@@ -6,6 +6,7 @@ mod clipboard;
 mod clouds;
 mod crash;
 mod dialogs;
+mod icon_theme;
 mod icons;
 mod jobs;
 mod jump;
