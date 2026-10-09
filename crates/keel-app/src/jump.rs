@@ -32,6 +32,10 @@ pub struct Jump {
     /// The matcher thread, which owns the `Fuzzy`.
     matcher: Sender<Cmd>,
     req: u64,
+    /// The request `results` answer.
+    answered: u64,
+    /// Enter (or Ctrl+Enter: true) pressed before the results caught up with the text.
+    pending_enter: Option<bool>,
     pub indexed: usize,
     pub indexed_at: Option<Instant>,
     pub indexing: bool,
@@ -71,6 +75,8 @@ impl Jump {
             focus: false,
             matcher,
             req: 0,
+            answered: 0,
+            pending_enter: None,
             indexed: 0,
             indexed_at: None,
             indexing: false,
@@ -82,6 +88,9 @@ impl Jump {
         self.open = true;
         self.focus = true;
         self.text.clear();
+        self.results.clear();
+        self.cursor = 0;
+        self.pending_enter = None;
         self.search();
     }
 
@@ -97,6 +106,7 @@ impl Jump {
 
     pub fn results(&mut self, id: u64, results: Vec<String>) {
         if id == self.req {
+            self.answered = id;
             self.results = results;
             self.cursor = self.cursor.min(self.results.len().saturating_sub(1));
         }
@@ -147,9 +157,15 @@ impl Jump {
                     Action::Navigate(to)
                 });
             };
-            if let Some(path) = self.results.get(self.cursor) {
-                if enter || new_tab {
-                    go(path, new_tab);
+            // Enter acts on results for the text as typed, never on stale ones.
+            if enter || new_tab {
+                self.pending_enter = Some(new_tab);
+            }
+            if self.answered == self.req {
+                if let Some(new_tab) = self.pending_enter.take() {
+                    if let Some(path) = self.results.get(self.cursor) {
+                        go(path, new_tab);
+                    }
                 }
             }
             ui.add_space(4.0);
@@ -192,7 +208,8 @@ impl Jump {
 /// Folder display paths: the searcher's folder index, else a walk of the home folder.
 /// Blocks for seconds: worker threads only.
 pub fn build_index(searcher: &dyn Searcher) -> Vec<String> {
-    if searcher.available() {
+    // Probe again: Everything may have started after Keel.
+    if crate::search_tab::probe(searcher).is_none() {
         match keel_search::folder_index(searcher) {
             Ok(items) if !items.is_empty() => return items,
             Ok(_) => {}

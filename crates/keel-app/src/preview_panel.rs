@@ -1,4 +1,4 @@
-//! Preview panel (right side, F3 / Ctrl+Shift+V): follows the active pane's cursor,
+//! Preview panel (right side, F3): follows the active pane's cursor,
 //! renders on `worker::spawn_previewer` and keeps the last 64 previews.
 
 use crate::view_details::{date_text, size_text};
@@ -196,11 +196,13 @@ impl PreviewPanel {
         match current {
             Preview::Text { lines, .. } => text(ui, lines),
             Preview::Markdown(md) => {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        CommonMarkViewer::new().show(ui, &mut self.md_cache, md);
-                    });
+                // Keyed by path + mtime + size: parsed once, only visible blocks laid out.
+                CommonMarkViewer::new().show_scrollable(
+                    ("md", &self.key),
+                    ui,
+                    &mut self.md_cache,
+                    md,
+                );
             }
             Preview::Image(_) => {
                 if let Some(t) = &self.tex {

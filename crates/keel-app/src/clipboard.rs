@@ -66,6 +66,11 @@ impl Clipboard {
         self.cut = cut;
     }
 
+    /// Another app wrote the system clipboard after our last write (Windows only).
+    pub fn changed_outside(&self) -> bool {
+        sys::sequence().is_some_and(|s| Some(s) != self.stamp)
+    }
+
     /// What Ctrl+V pastes. Reads the system clipboard, which may wait on its owner:
     /// call off the UI thread.
     pub fn resolve(&self) -> Option<(Vec<PathBuf>, bool)> {

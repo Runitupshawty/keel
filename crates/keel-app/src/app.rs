@@ -122,10 +122,10 @@ impl App {
         s.drain();
         s.tick();
         s.jobs.tick();
-        if s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed {
-            for action in keys::actions(ctx) {
-                s.run(s.active, action);
-            }
+        // Every frame, so key state stays right while a modal is open.
+        let keys_on = s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed;
+        for action in keys::actions(ctx, keys_on) {
+            s.run(s.active, action);
         }
 
         let mut out: Vec<(usize, Action)> = Vec::new();

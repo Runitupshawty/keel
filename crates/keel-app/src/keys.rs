@@ -98,7 +98,6 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
-    (CMD_SHIFT, Key::V, Action::TogglePreview),
     (CMD, Key::P, Action::JumpFolder),
     (CMD, Key::Enter, Action::OpenLocation),
     (CMD, Key::F, Action::Search),
@@ -147,13 +146,18 @@ const MOVES: &[(Key, Nav)] = &[
 ];
 
 /// Actions for this frame. Empty while a text field has focus (rename, filter, path box);
-/// a focused button (after Tab) does not block the key map.
-pub fn actions(ctx: &egui::Context) -> Vec<Action> {
+/// a focused button (after Tab) does not block the key map. Call every frame: with
+/// `enabled` false (a modal is open) nothing is returned, but V presses are still tracked
+/// so a V held while the modal closes cannot turn into a paste.
+pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
+    // Tracked even while typing, so a key released inside a text box cannot confuse it.
+    let paste = paste_pressed(ctx);
+    if !enabled {
+        return Vec::new();
+    }
     let typing = ctx
         .memory(|m| m.focused())
         .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-    // Tracked even while typing, so a key released inside a text box cannot confuse it.
-    let paste = paste_pressed(ctx);
     if typing {
         // Window-level shortcuts still work from a text box (e.g. Ctrl+P from the search box).
         return ctx.input_mut(|i| {
@@ -204,7 +208,9 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
 /// Ctrl+V (or Shift+Insert with text on the clipboard), once per key press. egui-winit
 /// swallows the press of a paste shortcut and only sends `Event::Paste`, and only when the
 /// clipboard holds text. So a V release whose press never arrived as a key event was a
-/// paste press, whatever the modifiers are by the time of the release.
+/// paste press, whatever the modifiers are by the time of the release. egui-winit treats
+/// Ctrl+Shift+V as a paste too: a V release or `Event::Paste` with Shift and Command held
+/// is ignored (Shift+Insert, Shift without Command, still pastes).
 fn paste_pressed(ctx: &egui::Context) -> bool {
     let id = egui::Id::new("keel-paste-keys");
     // (a V/Insert press arrived as a plain key event, an Event::Paste already fired)
@@ -213,21 +219,23 @@ fn paste_pressed(ctx: &egui::Context) -> bool {
         .unwrap_or_default();
     let mut paste = false;
     ctx.input(|i| {
+        let shift_cmd = i.modifiers.shift && i.modifiers.command;
         for event in &i.events {
             match event {
                 Event::Paste(_) if !pasted => {
                     pasted = true;
-                    paste = true;
+                    paste = !shift_cmd;
                 }
                 Event::Key {
                     key: Key::V,
                     pressed,
+                    modifiers,
                     ..
                 } => {
                     if *pressed {
                         press_seen = true;
                     } else {
-                        paste |= !press_seen && !pasted;
+                        paste |= !press_seen && !pasted && !modifiers.shift;
                         (press_seen, pasted) = (false, false);
                     }
                 }
@@ -285,5 +293,30 @@ mod tests {
         assert!(!frame(&ctx, vec![v(true, Modifiers::NONE)]));
         assert!(!frame(&ctx, vec![v(false, Modifiers::NONE)]));
         assert!(frame(&ctx, vec![v(false, Modifiers::COMMAND)]));
+        // Ctrl+Shift+V (swallowed by egui-winit like Ctrl+V) never pastes.
+        let cmd_shift = Modifiers {
+            shift: true,
+            ..Modifiers::COMMAND
+        };
+        assert!(!frame(&ctx, vec![v(false, cmd_shift)]));
+    }
+
+    #[test]
+    fn v_typed_in_a_modal_does_not_paste_after_it_closes() {
+        let ctx = egui::Context::default();
+        let run = |events: Vec<Event>, enabled: bool| {
+            let mut out = Vec::new();
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| out = actions(ctx, enabled),
+            );
+            out
+        };
+        // "v" pressed while Ctrl+P is open; Enter closes it; the release arrives after.
+        assert!(run(vec![v(true, Modifiers::NONE)], false).is_empty());
+        assert!(!run(vec![v(false, Modifiers::NONE)], true).contains(&Action::Paste));
     }
 }
