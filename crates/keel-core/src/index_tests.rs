@@ -487,6 +487,56 @@ fn a_cut_off_listing_keeps_the_folder_as_unreadable() {
 }
 
 #[test]
+fn folders_are_never_listed_while_holding_the_write_lock() {
+    let db: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::default();
+    let locked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let router = Router::new();
+    let (db2, locked2) = (db.clone(), locked.clone());
+    router.register(Arc::new(fake(move |path: &str| {
+        if let Some(db) = db2.lock().as_ref() {
+            let c = rusqlite::Connection::open(db).unwrap();
+            c.busy_timeout(Duration::ZERO).unwrap();
+            if c.execute_batch("BEGIN IMMEDIATE; ROLLBACK").is_err() {
+                locked2.lock().push(path.to_owned());
+            }
+        }
+        Ok(match path {
+            "/" => (0..3).map(|d| (format!("d{d}"), true, 0)).collect(),
+            _ => (0..50).map(|i| (format!("f{i}"), false, 1)).collect(),
+        })
+    })));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "slow".into(),
+        root: VPath::parse("fake://slow/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+    });
+    *db.lock() = Some(src.store_dir().join("source.db"));
+    walk(&src, &router).unwrap();
+    assert_eq!(paths(&src).len(), 1 + 3 + 150);
+    assert!(
+        locked.lock().is_empty(),
+        "listed under the lock: {:?}",
+        locked.lock()
+    );
+}
+
+#[test]
+fn a_big_new_folder_is_applied_in_batches() {
+    let files = tempfile::tempdir().unwrap();
+    let (_data, lib, src) = library_with(folder("w", files.path()));
+    walk(&src, &lib.router()).unwrap();
+    let big = files.path().join("big");
+    std::fs::create_dir_all(big.join("sub")).unwrap();
+    for i in 0..BATCH + 500 {
+        std::fs::write(big.join(format!("{i}.txt")), "").unwrap();
+    }
+    Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(&big))).unwrap();
+    assert_eq!(paths(&src).len() as u64, 1 + 2 + BATCH + 500);
+}
+
+#[test]
 fn an_emptied_root_reads_as_offline() {
     let empty = Arc::new(AtomicBool::new(false));
     let router = Router::new();

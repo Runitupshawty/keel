@@ -27,9 +27,8 @@ pub const BATCH: u64 = 5_000;
 pub const POLL_INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// How often `Indexer::watch` re-walks a local source besides applying change events.
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-/// A walk commits before listing a folder once its open batch is this old, so a slow
-/// (remote) listing never holds the store's write lock.
-const MAX_BATCH_AGE: Duration = Duration::from_millis(500);
+/// Attempts at taking the store's write lock (each waits the 5 s busy timeout).
+const BEGIN_ATTEMPTS: u32 = 4;
 
 pub(crate) const UNREADABLE: i64 = 1;
 pub(crate) const HIDDEN: i64 = 2;
@@ -324,7 +323,7 @@ struct Walk<'a> {
 impl Walk<'_> {
     fn begin(&mut self) -> Result<()> {
         if self.batched && self.batch_started.is_none() {
-            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            begin_immediate(self.conn)?;
             self.batch_started = Some(Instant::now());
         }
         Ok(())
@@ -348,12 +347,8 @@ impl Walk<'_> {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err(Cancelled.into());
             }
-            if self
-                .batch_started
-                .is_some_and(|t| t.elapsed() > MAX_BATCH_AGE)
-            {
-                self.commit()?;
-            }
+            // Never list (slow on remotes and dead drives) while holding the write lock.
+            self.commit()?;
             self.current.clone_from(&p.rel);
             let items = match self.lister.list(&p.dir) {
                 Ok(items) => items,
@@ -623,10 +618,34 @@ impl Indexer {
             pending => pending,
         } as i64;
         let conn = src.store.get()?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
+        begin_immediate(&conn)?;
         let result = apply(&conn, src, &ignore, gen, &path, &rel, &local);
         conn.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
-        result
+        // A folder that appeared is walked in batches like a full walk (no long lock).
+        let Some(subtree) = result? else {
+            return Ok(());
+        };
+        let lister = Lister::Local;
+        let never = AtomicBool::new(false);
+        let mut walk = Walk {
+            src,
+            lister: &lister,
+            ignore: &ignore,
+            conn: &conn,
+            gen,
+            unseen_below: i64::MAX,
+            batched: true,
+            batch: 0,
+            batch_started: None,
+            done: 0,
+            total: 0,
+            current: String::new(),
+            progress: &|_| {},
+            cancel: &never,
+        };
+        let walked = walk.run(vec![subtree]);
+        walk.commit()?;
+        walked
     }
 
     /// `watch_with(src, router, WatchConfig::default())`.
@@ -791,7 +810,7 @@ fn apply(
     path: &VPath,
     rel: &str,
     local: &std::path::Path,
-) -> Result<()> {
+) -> Result<Option<Pending>> {
     let nocase = src.nocase();
     let existing = resolve(c, rel, nocase)?;
     let mut item = match fsid::stat(local) {
@@ -800,7 +819,7 @@ fn apply(
             if let Some((id, _)) = existing {
                 delete_subtree(c, id)?;
             }
-            return Ok(());
+            return Ok(None);
         }
         Err(e) => {
             if let Some((id, _)) = existing {
@@ -809,13 +828,13 @@ fn apply(
                     params![id, e.to_string(), UNREADABLE],
                 )?;
             }
-            return Ok(());
+            return Ok(None);
         }
     };
     if rel.is_empty() {
         // The root itself: keep its record, refresh its metadata.
         let Some((id, fs_id)) = existing else {
-            return Ok(());
+            return Ok(None);
         };
         item.name = c.query_row("SELECT name FROM record WHERE id = ?1", [id], |r| r.get(0))?;
         upsert(
@@ -828,13 +847,13 @@ fn apply(
             &item.fs_id.clone().unwrap_or(fs_id),
             &|_| true,
         )?;
-        return Ok(());
+        return Ok(None);
     }
     let (parent_rel, name) = rel.rsplit_once('/').unwrap_or(("", rel));
     item.name = name.to_owned();
     // A parent that is not indexed (hidden, ignored, never walked): nothing to do.
     let Some((parent_id, parent_fs)) = resolve(c, parent_rel, nocase)? else {
-        return Ok(());
+        return Ok(None);
     };
     let excluded = (item.hidden && !src.def.include_hidden)
         || ignore
@@ -844,7 +863,7 @@ fn apply(
         if let Some((id, _)) = existing {
             delete_subtree(c, id)?;
         }
-        return Ok(());
+        return Ok(None);
     }
     let fs_id = item
         .fs_id
@@ -888,33 +907,30 @@ fn apply(
             delete_subtree(c, other)?;
         }
     }
-    if item.kind == DIR && !item.link && outcome == Outcome::Inserted {
-        let lister = Lister::Local;
-        let never = AtomicBool::new(false);
-        Walk {
-            src,
-            lister: &lister,
-            ignore,
-            conn: c,
-            gen,
-            unseen_below: i64::MAX,
-            batched: false,
-            batch: 0,
-            batch_started: None,
-            done: 0,
-            total: 0,
-            current: String::new(),
-            progress: &|_| {},
-            cancel: &never,
-        }
-        .run(vec![Pending {
+    // A new folder's contents: walked by the caller after this transaction.
+    Ok(
+        (item.kind == DIR && !item.link && outcome == Outcome::Inserted).then(|| Pending {
             dir: path.clone(),
             id,
             rel: rel.to_owned(),
             fs_id,
-        }])?;
+        }),
+    )
+}
+
+/// `BEGIN IMMEDIATE`, retried while another writer keeps the store busy.
+fn begin_immediate(c: &Connection) -> Result<()> {
+    let mut attempt = 1;
+    loop {
+        match c.execute_batch("BEGIN IMMEDIATE") {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && attempt < BEGIN_ATTEMPTS =>
+            {
+                attempt += 1;
+            }
+            r => return Ok(r?),
+        }
     }
-    Ok(())
 }
 
 /// Stops watching when dropped (waits for an in-flight change or walk to stop).
