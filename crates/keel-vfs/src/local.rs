@@ -253,6 +253,18 @@ impl Provider for LocalProvider {
     fn remove(&self, p: &VPath) -> Result<()> {
         trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
     }
+    fn rename_noreplace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.rename(from, to)
+    }
+    fn rename_replace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        std::fs::rename(local(from)?, local(to)?).with_context(|| format!("place {}", to.display()))
+    }
+    fn canonicalize(&self, p: &VPath) -> Result<VPath> {
+        Ok(VPath::local(std::fs::canonicalize(local(p)?)?))
+    }
+    fn remove_empty_dir(&self, p: &VPath) -> Result<()> {
+        std::fs::remove_dir(local(p)?).with_context(|| p.display())
+    }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         p.to_local_path()
             .ok_or_else(|| anyhow::anyhow!("not a local path: {}", p.display()))
