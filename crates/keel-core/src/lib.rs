@@ -9,17 +9,20 @@
 //! them off the UI thread; long work runs as jobs (`Library::index`, `Library::hash`,
 //! `Plan::execute`) whose progress arrives through `Jobs::subscribe`. Only
 //! `Library::note_activity`, `Library::sources`, `Library::refresh_status` and
-//! `Jobs::subscribe` return at once.
+//! `Jobs::subscribe` return at once. Protection calls (`volumes`, `redundancy`,
+//! `protection_summary`, …) may also look at a source's root.
 
 mod db;
 mod fsid;
 mod hash;
 mod index;
+mod integrity;
 mod jobs;
 mod library;
 mod media;
 mod oplog;
 mod plan;
+mod protect;
 mod search;
 mod sidecar_job;
 mod sidecars;
@@ -27,13 +30,13 @@ mod tags;
 
 pub use fsid::unix_ns;
 pub use hash::{
-    on_battery, Copies, DupGroup, HashJob, HashResult, Location, SkipReason, SkippedSource, SAMPLE,
-    WHOLE,
+    on_battery, DupGroup, HashJob, HashResult, SkipReason, SkippedSource, SAMPLE, WHOLE,
 };
 pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
     RECONCILE_INTERVAL,
 };
+pub use integrity::{IntegrityJob, IntegrityResult, DEFAULT_SAMPLE_PCT, INTEGRITY_EVERY};
 pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, OfflineReason, RecordRef, Source, SourceDef,
@@ -44,6 +47,7 @@ pub use oplog::OpLogEntry;
 pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
 };
+pub use protect::{CopyAt, ProtectionSummary, Redundancy, Volume, VolumeKind, VolumeState};
 pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
 pub use sidecar_job::SidecarJob;
 pub use sidecars::{

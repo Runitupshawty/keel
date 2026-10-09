@@ -96,6 +96,8 @@ windows = { workspace = true, features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
     "Win32_System_IO",
+    # Task 33: the physical disk behind a volume (failure domains).
+    "Win32_System_Ioctl",
     "Win32_System_Pipes",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
@@ -104,6 +106,9 @@ windows = { workspace = true, features = [
 windows-core = "0.58"
 
 # Copy-on-write fast path for local copies on macOS/Linux.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(not(windows))'.dependencies]
 reflink-copy = "0.1"
 

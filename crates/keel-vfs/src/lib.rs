@@ -24,6 +24,10 @@ pub mod sftp;
 /// Explorer Properties sheet (Windows).
 #[cfg(windows)]
 pub mod shell;
+// --- Task 33 ---
+pub mod volume;
+pub use volume::{volume_info, VolumeInfo, VolumeType};
+// --- end Task 33 ---
 #[cfg(feature = "cloud")]
 pub use cloud::{CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore};
 pub use entry::{Entry, Kind};
