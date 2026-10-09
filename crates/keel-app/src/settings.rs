@@ -30,6 +30,10 @@ pub struct Settings {
     pub terminal_shell: String,
     pub terminal_follow_cwd: bool,
     pub terminal_height: f32,
+    /// Grid thumbnails for files on remote hosts (each one is a download).
+    pub remote_thumbnails: bool,
+    /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
+    pub remotes: Vec<keel_vfs::RemoteHost>,
 }
 
 impl Default for Settings {
@@ -46,6 +50,8 @@ impl Default for Settings {
             terminal_shell: String::new(),
             terminal_follow_cwd: true,
             terminal_height: 220.0,
+            remote_thumbnails: false,
+            remotes: Vec::new(),
         }
     }
 }
@@ -255,14 +261,32 @@ impl Persist {
     }
 }
 
-/// The Settings window (Ctrl+,). Returns true when the theme was changed.
-pub fn window(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
+/// The Settings window (Ctrl+,): General and Remotes pages. Returns true when the theme
+/// was changed.
+pub fn window(
+    ctx: &egui::Context,
+    open: &mut bool,
+    s: &mut Settings,
+    remotes: &mut crate::remotes::Remotes,
+    tx: &Sender<crate::state::Msg>,
+) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
         .open(open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut remotes.page, false, "General");
+                ui.selectable_value(&mut remotes.page, true, "Remotes");
+            });
+            ui.separator();
+            if remotes.page {
+                remotes.settings_page(ui, s, tx);
+                ui.add_space(4.0);
+                ui.weak(format!("Saved to {}", Settings::path().display()));
+                return;
+            }
             egui::Grid::new("settings-grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0])

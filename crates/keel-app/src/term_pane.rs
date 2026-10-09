@@ -181,6 +181,24 @@ impl TermPane {
         }
         self.focus(ctx);
     }
+    /// Types `line` and Enter into the shell ("Open terminal here" on a remote host),
+    /// starting one at `cwd` first when none is running.
+    pub fn type_line(
+        &mut self,
+        line: &str,
+        cwd: PathBuf,
+        settings: &Settings,
+        tx: &Sender<Msg>,
+        ctx: &egui::Context,
+    ) {
+        let dead = !self.starting && self.session.as_ref().is_none_or(|s| !s.is_alive());
+        if !self.open || dead {
+            self.open = true;
+            self.restart(cwd, settings, tx, ctx);
+        }
+        self.focus(ctx);
+        self.send(Command::Write(format!("{line}\r").into_bytes()), tx, ctx);
+    }
     fn restart(
         &mut self,
         cwd: PathBuf,

@@ -2,6 +2,7 @@
 //! in-app copy as fallback. Windows: CF_HDROP via keel-vfs; macOS: NSPasteboard
 //! `public.file-url` and Linux: `text/uri-list`, both via arboard.
 
+use keel_vfs::VPath;
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -51,6 +52,8 @@ pub use sys::{read_files, write_files};
 #[derive(Clone, Debug, Default)]
 pub struct Clipboard {
     pub paths: Vec<PathBuf>,
+    /// Remote (or in-archive) entries: in-app only, the system clipboard is cleared.
+    pub remote: Vec<VPath>,
     pub cut: bool,
     stamp: Option<u32>,
 }
@@ -63,7 +66,23 @@ impl Clipboard {
         }
         self.stamp = sys::sequence();
         self.paths = paths;
+        self.remote.clear();
         self.cut = cut;
+    }
+
+    /// Copy/cut of any entries: local ones as above, otherwise in-app only.
+    pub fn set_paths(&mut self, paths: Vec<VPath>, cut: bool) {
+        match paths.iter().map(VPath::to_local_path).collect() {
+            Some(local) => self.set(local, cut),
+            None => {
+                self.set(Vec::new(), cut);
+                self.remote = paths;
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty() && self.remote.is_empty()
     }
 
     /// Another app wrote the system clipboard after our last write (Windows only).
@@ -73,8 +92,19 @@ impl Clipboard {
 
     /// What Ctrl+V pastes. Reads the system clipboard, which may wait on its owner:
     /// call off the UI thread.
-    pub fn resolve(&self) -> Option<(Vec<PathBuf>, bool)> {
-        choose(self, read_files(), sys::sequence())
+    pub fn resolve(&self) -> Option<(Vec<VPath>, bool)> {
+        let (system, seq) = (read_files(), sys::sequence());
+        if !self.remote.is_empty() {
+            // Ours unless another app wrote the clipboard since (we left it empty).
+            let changed = match (seq, self.stamp) {
+                (Some(now), Some(ours)) => now != ours,
+                _ => system.is_some(),
+            };
+            if !changed {
+                return Some((self.remote.clone(), self.cut));
+            }
+        }
+        choose(self, system, seq).map(|(p, cut)| (p.into_iter().map(VPath::local).collect(), cut))
     }
 }
 
@@ -106,6 +136,7 @@ mod tests {
         let b = vec![PathBuf::from("/b")];
         let app = Clipboard {
             paths: a.clone(),
+            remote: Vec::new(),
             cut: true,
             stamp: Some(7),
         };

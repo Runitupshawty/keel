@@ -9,6 +9,23 @@ use std::{path::PathBuf, sync::Arc};
 /// Keyring service shared with settings. Account is `<host id>:password` or `:passphrase`.
 pub const KEYRING_SERVICE: &str = "Keel SFTP";
 
+/// Stores a password (`kind` "password") or key passphrase ("passphrase") for a host in the
+/// OS keychain. Blocks on the keychain: call off the UI thread.
+pub fn store_secret(host_id: &str, kind: &str, secret: &str) -> Result<()> {
+    keyring::Entry::new(KEYRING_SERVICE, &format!("{host_id}:{kind}"))?
+        .set_password(secret)
+        .context("could not write to the OS keychain")
+}
+
+/// Removes a host's stored password and passphrase, if any. Blocks: worker threads only.
+pub fn forget_secrets(host_id: &str) {
+    for kind in ["password", "passphrase"] {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("{host_id}:{kind}")) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
 /// `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, whichever exist, in that order.
 pub fn default_key_files() -> Vec<PathBuf> {
     let Some(ssh) = dirs::home_dir().map(|h| h.join(".ssh")) else {

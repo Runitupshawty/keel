@@ -32,6 +32,8 @@ pub struct ViewCx<'a> {
     pub thumbs: &'a mut Thumbs,
     /// Highlight as the keyboard target (dual mode only).
     pub active: bool,
+    /// Remote connection / remote search note above the listing.
+    pub banner: Option<String>,
 }
 
 impl Pane {
@@ -118,6 +120,14 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
+    if let Some(banner) = &cx.banner {
+        ui.horizontal(|ui| {
+            if tab.loading {
+                ui.spinner();
+            }
+            ui.weak(banner);
+        });
+    }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
             if ui.small_button("✕").clicked() {
@@ -428,12 +438,6 @@ pub struct DragPayload {
     pub paths: Vec<VPath>,
 }
 
-impl DragPayload {
-    pub fn local_paths(&self) -> Vec<std::path::PathBuf> {
-        self.paths.iter().filter_map(VPath::to_local_path).collect()
-    }
-}
-
 /// Shared row/tile drag handling: a drag starts with the row's selection (selecting the
 /// row first if needed); folders accept drops.
 pub fn drag_and_drop(
@@ -468,7 +472,7 @@ pub fn drag_and_drop(
     if let Some(p) = r.dnd_release_payload::<DragPayload>() {
         if !p.paths.contains(&entry.path) {
             out.push(Action::Drop {
-                paths: p.local_paths(),
+                paths: p.paths.clone(),
                 from: Some((p.pane, p.dir.clone())),
                 dst: entry.path.clone(),
             });

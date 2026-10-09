@@ -117,7 +117,7 @@ struct Fixture {
 fn fixture(fail_after: Option<u64>) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let [local, a, b] = ["local", "a", "b"].map(|n| tmp.path().join(n));
-    let mut router = Router::new();
+    let router = Router::new();
     for (id, root) in [("a", &a), ("b", &b)] {
         fs::create_dir(root).unwrap();
         router.register_remote_provider(

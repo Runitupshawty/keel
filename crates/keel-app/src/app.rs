@@ -235,7 +235,7 @@ impl App {
                         out.push((
                             p,
                             Action::Drop {
-                                paths,
+                                paths: paths.into_iter().map(VPath::local).collect(),
                                 from: None,
                                 dst,
                             },
@@ -251,11 +251,13 @@ impl App {
                         ui.new_child(UiBuilder::new().max_rect(rect).id_salt(("pane", p)));
                     child.set_clip_rect(rect);
                     let mut acts = Vec::new();
+                    let banner = s.remotes.banner(s.panes[p].tab());
                     let mut cx = ViewCx {
                         theme: &s.theme,
                         show_hidden: s.show_hidden,
                         thumbs: &mut s.thumbs,
                         active: s.dual && s.active == p,
+                        banner,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     out.extend(acts.into_iter().map(|a| (p, a)));
@@ -265,7 +267,7 @@ impl App {
                             out.push((
                                 p,
                                 Action::Drop {
-                                    paths: drag.local_paths(),
+                                    paths: drag.paths.clone(),
                                     from: Some((drag.pane, drag.dir.clone())),
                                     dst: s.tab(p).dir.clone(),
                                 },
@@ -308,6 +310,7 @@ impl App {
             s.run(p, action);
         }
         s.settings_ui(ctx);
+        s.remotes.modals(ctx, &mut s.settings, &s.tx);
         let error = ctx.style().visuals.error_fg_color;
         s.toasts.show(ctx, error);
     }

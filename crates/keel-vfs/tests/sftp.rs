@@ -124,7 +124,7 @@ fn live_operations_transfers_cache_and_cleanup() {
     provider.remove(&big).unwrap();
     provider.disconnect();
     assert_eq!(provider.stat(&file).unwrap().size, payload.len() as u64);
-    let mut router = Router::new();
+    let router = Router::new();
     router.register_remote_provider(host.id.clone(), provider.clone());
     let local = tempfile::tempdir().unwrap();
     let cancel = AtomicBool::new(false);
