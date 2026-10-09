@@ -548,7 +548,7 @@ impl Job for ExecJob {
         })();
         let summary = match &result {
             Ok(()) if self.skipped == 0 => "ok".to_owned(),
-            Ok(()) => format!("ok, {} skipped", self.skipped),
+            Ok(()) => format!("{} skipped", self.skipped),
             // Resumes on the next open.
             Err(_) if ctx.closing() => return result,
             Err(e) if e.is::<Cancelled>() || ctx.stopping() => {
@@ -556,7 +556,7 @@ impl Job for ExecJob {
             }
             Err(e) => format!("failed after {} of {}: {e:#}", self.next, items.len()),
         };
-        oplog::set_result(&lib, log_id, &summary)?;
+        oplog::set_result(&lib, log_id, &summary, result.is_ok())?;
         result
     }
 

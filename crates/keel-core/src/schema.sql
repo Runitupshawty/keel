@@ -101,3 +101,8 @@ INSERT INTO tag(id, name, color, parent) VALUES (1, 'Favorites', '#f5c518', NULL
 CREATE TABLE opened(source TEXT NOT NULL, record INTEGER NOT NULL, ts INTEGER NOT NULL,
     PRIMARY KEY(source, record));
 CREATE TABLE view(id INTEGER PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, layout TEXT NOT NULL);
+
+-- @library 3
+-- Whether an operation completed, apart from its (redacted) result text.
+ALTER TABLE op_log ADD COLUMN ok INTEGER;
+UPDATE op_log SET ok = (result LIKE 'ok%') WHERE result <> 'running';

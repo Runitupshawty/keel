@@ -1,6 +1,6 @@
 //! The operation log: one row per executed operation in `library.db`. Payload and result are
 //! redacted before they are written: no secret, and no location outside the library's
-//! sources (a string that mentions one is replaced as a whole).
+//! sources (each such location is replaced, up to the next quote, bracket, `: ` or ` -> `).
 
 use crate::library::Shared;
 use anyhow::Result;
@@ -20,6 +20,8 @@ pub struct OpLogEntry {
     pub kind: String,
     pub payload: Value,
     pub result: String,
+    /// None while running; whether the operation completed.
+    pub ok: Option<bool>,
 }
 
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
@@ -65,8 +67,19 @@ pub(crate) fn roots(lib: &Shared) -> Vec<String> {
     roots
 }
 
-/// `s` with secrets blanked; replaced by [`OUTSIDE`] when it mentions any location that is
-/// not inside one of `roots`.
+/// Where a location span that starts at `from` ends: the next quote, bracket, `: ` or ` -> `,
+/// else the end of the text (spaces belong to the path).
+fn span_end(s: &str, from: usize) -> usize {
+    let rest = &s[from..];
+    ["\"", "'", "`", ")", "]", ": ", " -> ", "\n"]
+        .iter()
+        .filter_map(|t| rest.find(t))
+        .min()
+        .map_or(s.len(), |i| from + i)
+}
+
+/// `s` with secrets blanked and every location that is not inside one of `roots` replaced
+/// by [`OUTSIDE`].
 pub(crate) fn redact_text(s: &str, roots: &[String]) -> String {
     let s = s
         .replace(MASK, "")
@@ -89,8 +102,16 @@ pub(crate) fn redact_text(s: &str, roots: &[String]) -> String {
             .replace_all(&masked, |c: &Captures| format!("{MASK}{i}{MASK}{}", &c[1]))
             .into_owned();
     }
-    if LOCATION.is_match(&masked) {
-        return OUTSIDE.into();
+    // Replace each outside location; `OUTSIDE` itself never matches.
+    while let Some(m) = LOCATION.find(&masked) {
+        // The unix-path pattern includes the character before the path.
+        let start = m.start()
+            + masked[m.start()..]
+                .find(['~', '/', '\\'])
+                .filter(|_| !masked[m.start()..].starts_with(|c: char| c.is_ascii_alphabetic()))
+                .unwrap_or(0);
+        let end = span_end(&masked, start + 1);
+        masked.replace_range(start..end, OUTSIDE);
     }
     let mut out = masked;
     for (i, root) in roots.iter().enumerate() {
@@ -135,11 +156,11 @@ pub(crate) fn record(lib: &Shared, kind: &str, payload: &Value, result: &str) ->
     Ok(conn.last_insert_rowid())
 }
 
-pub(crate) fn set_result(lib: &Shared, id: i64, result: &str) -> Result<()> {
+pub(crate) fn set_result(lib: &Shared, id: i64, result: &str, ok: bool) -> Result<()> {
     let result = redact_text(result, &roots(lib));
     lib.db.get()?.execute(
-        "UPDATE op_log SET result = ?2, ts = ?3 WHERE id = ?1",
-        params![id, result, crate::now()],
+        "UPDATE op_log SET result = ?2, ts = ?3, ok = ?4 WHERE id = ?1",
+        params![id, result, crate::now(), ok],
     )?;
     Ok(())
 }
@@ -147,8 +168,9 @@ pub(crate) fn set_result(lib: &Shared, id: i64, result: &str) -> Result<()> {
 /// The newest `limit` entries, newest first.
 pub(crate) fn entries(lib: &Shared, limit: usize) -> Result<Vec<OpLogEntry>> {
     let conn = lib.db.get()?;
-    let mut stmt =
-        conn.prepare("SELECT id, ts, kind, payload, result FROM op_log ORDER BY id DESC LIMIT ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, kind, payload, result, ok FROM op_log ORDER BY id DESC LIMIT ?1",
+    )?;
     let rows = stmt.query_map([limit as i64], |r| {
         Ok(OpLogEntry {
             id: r.get(0)?,
@@ -156,6 +178,7 @@ pub(crate) fn entries(lib: &Shared, limit: usize) -> Result<Vec<OpLogEntry>> {
             kind: r.get(2)?,
             payload: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
             result: r.get(4)?,
+            ok: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -190,14 +213,32 @@ mod tests {
             r"D:\Library\x",
             r"\\server\share\x",
             "/etc/passwd",
-            "copy ~/notes.txt failed",
             "sftp://box/home/meow",
             "sftp://bob:pw@box/home/me/x",
             "cloud://acct/x",
-            &format!("{inside} -> C:/elsewhere/c.txt"),
         ] {
             assert_eq!(redact_text(outside, &roots), OUTSIDE, "{outside}");
         }
+        // Only the location goes; the rest of the message stays.
+        assert_eq!(
+            redact_text("copy ~/My notes.txt", &roots),
+            format!("copy {OUTSIDE}")
+        );
+        assert_eq!(
+            redact_text(&format!("{inside} -> C:/else where/c.txt"), &roots),
+            format!("{inside} -> {OUTSIDE}")
+        );
+        assert_eq!(
+            redact_text(r"open C:\Users\james\x y.txt: access denied", &roots),
+            format!("open {OUTSIDE}: access denied")
+        );
+        assert_eq!(
+            redact_text(
+                r#"from "\\nas\share\a b" to (/srv/x) at sftp://h/p"#,
+                &roots
+            ),
+            format!(r#"from "{OUTSIDE}" to ({OUTSIDE}) at {OUTSIDE}"#)
+        );
         assert_eq!(
             redact_text("login failed: password=hunter2 token: abc123", &roots),
             "login failed: password=<redacted> token: <redacted>"

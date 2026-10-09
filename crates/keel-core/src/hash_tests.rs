@@ -230,7 +230,11 @@ fn hashing_resumes_from_its_checkpoint() {
     assert!(info.log.contains("resumed"));
     let src = lib.sources()[0].id.clone();
     assert_eq!(hashed(&lib.source(&src).unwrap()), FILES as i64);
-    assert_eq!(state(&lib)["done"].as_u64(), Some(FILES as u64));
+    assert_eq!(
+        state(&lib),
+        serde_json::Value::Null,
+        "an ended job's state expires"
+    );
 }
 
 fn state_of(data: &tempfile::TempDir, id: JobId) -> serde_json::Value {

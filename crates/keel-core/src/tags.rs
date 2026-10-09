@@ -385,7 +385,7 @@ impl Library {
             events.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
         for entry in crate::oplog::entries(&self.shared, limit.max(1) * 4)? {
-            if !entry.result.starts_with("ok") {
+            if entry.ok != Some(true) {
                 continue;
             }
             for target in op_targets(&entry.kind, &entry.payload) {

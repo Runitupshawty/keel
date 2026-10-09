@@ -763,8 +763,8 @@ fn lost_events_trigger_a_full_walk() {
     let walks = AtomicUsize::new(0);
     let quit = AtomicBool::new(false);
     let rescan = |s: &Source| {
-        walks.fetch_add(1, Ordering::SeqCst);
         walk(s, &router).unwrap();
+        walks.fetch_add(1, Ordering::SeqCst);
     };
     /// Stops the loop even when an assertion below fails (else the scope never ends).
     struct Quit<'a>(&'a AtomicBool);

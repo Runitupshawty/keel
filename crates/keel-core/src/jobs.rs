@@ -124,9 +124,10 @@ impl JobCtx {
         Ok(())
     }
 
-    /// Appends a line to the job's log.
+    /// Appends a line to the job's log (redacted like the op log).
     pub fn log(&self, line: &str) -> Result<()> {
-        append_log(&self.db, self.id, line)
+        let line = crate::oplog::redact_text(line, &crate::oplog::roots(&self.lib));
+        append_log(&self.db, self.id, &line)
     }
 
     pub fn router(&self) -> Arc<Router> {
@@ -251,7 +252,11 @@ impl Jobs {
                     // Closing the library: stays running, resumes on the next open.
                     Err(_) if closing.load(Ordering::SeqCst) => (JobStatus::Running, None),
                     Err(e) if e.is::<Cancelled>() || ctx.stopping() => (JobStatus::Cancelled, None),
-                    Err(e) => (JobStatus::Failed, Some(format!("{e:#}"))),
+                    Err(e) => {
+                        let roots = crate::oplog::roots(&ctx.lib);
+                        let error = crate::oplog::redact_text(&format!("{e:#}"), &roots);
+                        (JobStatus::Failed, Some(error))
+                    }
                 };
                 if let Err(e) = finish(&ctx.db, id, status, Some(state), error.as_deref()) {
                     tracing::warn!("job {id}: recording its end failed: {e:#}");
@@ -345,6 +350,11 @@ fn finish(
     state: Option<serde_json::Value>,
     error: Option<&str>,
 ) -> Result<()> {
+    // An ended job's state (paths, possibly outside the library) is no longer needed.
+    let state = match status {
+        JobStatus::Queued | JobStatus::Running => state,
+        _ => Some(serde_json::Value::Null),
+    };
     let conn = db.get()?;
     conn.execute(
         "UPDATE job SET status = ?2, state = coalesce(?3, state),

@@ -364,7 +364,10 @@ fn executed_operations_update_the_index_and_the_op_log() {
     let log = lib.op_log(10).unwrap();
     let kinds: Vec<_> = log.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, ["move", "rename", "copy"]);
-    assert!(log.iter().all(|e| e.result == "ok"), "{log:?}");
+    assert!(
+        log.iter().all(|e| e.result == "ok" && e.ok == Some(true)),
+        "{log:?}"
+    );
     assert_eq!(
         log[2].payload["src"][0],
         serde_json::json!(v(&root.join("src/a.txt")).display())
@@ -470,7 +473,8 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
     assert_eq!(info.status, JobStatus::Done, "{}", info.log);
     assert!(info.log.contains("skipped"), "{}", info.log);
     assert_eq!(*fake.1.lock(), ["/f.txt"]);
-    assert_eq!(lib.op_log(1).unwrap()[0].result, "ok, 1 skipped");
+    let entry = &lib.op_log(1).unwrap()[0];
+    assert_eq!((entry.result.as_str(), entry.ok), ("1 skipped", Some(true)));
 }
 
 #[test]
