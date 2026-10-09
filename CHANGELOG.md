@@ -2,9 +2,9 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-10-09
 
-First release: the Phase 1 core on Windows, macOS and Linux.
+First release: the Phase 1 core on Windows, macOS and Linux. The Windows build links the C runtime statically (no Visual C++ redistributable needed); the Linux build targets glibc 2.35 (Ubuntu 22.04, Debian 12 and newer).
 
 ### Added
 
@@ -12,13 +12,13 @@ First release: the Phase 1 core on Windows, macOS and Linux.
 - Search tab (Ctrl+F): Everything on Windows, Spotlight on macOS, `plocate`/`locate` or a folder walk on Linux; "open location" with the file selected.
 - Fuzzy folder jump (Ctrl+P) and command palette (Ctrl+Shift+P).
 - Filter by typing in any list.
-- Preview panel (F3): code and text with syntax highlighting, Markdown, images including SVG, PDF pages, CSV/TSV and spreadsheets, docx, video thumbnails via ffmpeg, hex fallback.
+- Preview panel (F3): code and text with syntax highlighting, Markdown, images including SVG, PDF pages (pdfium, bundled in the release archives), CSV/TSV and spreadsheets, docx, video thumbnails via ffmpeg (optional), hex fallback. A missing pdfium or ffmpeg is named in the panel.
 - Copy, move, rename, new folder/file, delete to the OS trash; progress, cancel, conflict prompts (skip / overwrite / rename); drag and drop between panes and from other apps.
 - File clipboard shared with Explorer (copy and cut) and with Finder / Linux file managers (copy).
 - Open, open with, reveal in the system file manager, open a terminal here.
 - Dark and light themes; one file icon theme.
-- Settings window (Ctrl+,) saved to `<config>/profiles/default/config.toml`; open tabs restored from `<cache>/session.json`, with a fallback to the home folder when a saved folder is gone.
-- Crash log (`<cache>/crash.log`) and a panic guard: a bug inside a frame closes the failing tab and shows a dialog instead of killing the app.
+- Settings window (Ctrl+,) saved to `<config>/profiles/default/config.toml`; open tabs restored from `<cache>/session.json` without blocking startup. A deleted local folder falls back to the home folder; a tab on an unreachable share stays. A file that cannot be read is kept as `.bad` and reported. `KEEL_CONFIG_DIR` moves settings, session and crash log to one folder.
+- Crash log (`<cache>/crash.log`, capped at 1 MiB) and a panic guard: a bug inside a frame resets the panes and shows a dialog instead of killing the app.
 - App icon, Windows manifest (long paths, per-monitor DPI v2), Linux `.desktop` file; release archives for win64, macOS arm64/x64 and Linux x64 with the pdfium (and Everything) libraries and their license notices.
 
 ### Known gaps
