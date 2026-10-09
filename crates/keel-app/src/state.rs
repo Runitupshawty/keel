@@ -1951,6 +1951,12 @@ mod tests {
         fn remove(&self, _: &VPath) -> anyhow::Result<()> {
             anyhow::bail!("gone")
         }
+        fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+            self.list(dir)
+        }
+        fn remove_kind(&self) -> keel_vfs::RemoveKind {
+            keel_vfs::RemoveKind::Permanent
+        }
         fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
             anyhow::bail!("gone")
         }
@@ -2458,6 +2464,12 @@ mod tests {
         }
         fn remove(&self, _: &VPath) -> anyhow::Result<()> {
             anyhow::bail!("hang")
+        }
+        fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+            self.list(dir)
+        }
+        fn remove_kind(&self) -> keel_vfs::RemoveKind {
+            keel_vfs::RemoveKind::Permanent
         }
         fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
             anyhow::bail!("hang")

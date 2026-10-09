@@ -218,6 +218,10 @@ impl Provider for LocalProvider {
         })()
         .with_context(|| format!("list {}", dir.display()))
     }
+    /// Never cached or capped.
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.list(dir)
+    }
     fn stat(&self, p: &VPath) -> Result<Entry> {
         let path = local(p)?;
         fs::symlink_metadata(&path)

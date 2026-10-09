@@ -723,6 +723,12 @@ mod tests {
         fn remove(&self, _: &VPath) -> anyhow::Result<()> {
             anyhow::bail!("no")
         }
+        fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+            self.list(dir)
+        }
+        fn remove_kind(&self) -> keel_vfs::RemoveKind {
+            keel_vfs::RemoveKind::Permanent
+        }
         fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
             anyhow::bail!("no")
         }

@@ -76,6 +76,12 @@ impl Provider for Fake {
         self.1.lock().push(p.path.clone());
         Ok(())
     }
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
+    }
     fn local_copy(&self, _: &VPath) -> Result<std::path::PathBuf> {
         anyhow::bail!("fake")
     }
@@ -458,6 +464,9 @@ impl Provider for Capped {
     }
     fn remove(&self, _: &VPath) -> Result<()> {
         anyhow::bail!("fake")
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
     }
     fn local_copy(&self, _: &VPath) -> Result<std::path::PathBuf> {
         anyhow::bail!("fake")

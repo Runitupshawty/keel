@@ -227,6 +227,13 @@ impl Provider for LazyCloud {
     fn remove(&self, p: &VPath) -> anyhow::Result<()> {
         self.get()?.remove(p)
     }
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.get()?.list_complete(dir)
+    }
+    /// Known from the account without connecting.
+    fn remove_kind(&self) -> RemoveKind {
+        self.account.kind.remove_kind()
+    }
     fn local_copy(&self, p: &VPath) -> anyhow::Result<PathBuf> {
         self.get()?.local_copy(p)
     }

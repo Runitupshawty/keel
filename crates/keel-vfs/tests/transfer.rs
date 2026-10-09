@@ -102,6 +102,12 @@ impl Provider for Mirror {
         }
         Ok(())
     }
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
+    }
     fn local_copy(&self, p: &VPath) -> anyhow::Result<PathBuf> {
         Ok(self.local(p).to_local_path().unwrap())
     }
@@ -459,6 +465,12 @@ impl Provider for NoTrash {
     }
     fn remove(&self, p: &VPath) -> anyhow::Result<()> {
         anyhow::bail!("{} was sent to the trash", p.display())
+    }
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
     }
     fn local_copy(&self, p: &VPath) -> anyhow::Result<PathBuf> {
         LocalProvider.local_copy(p)
