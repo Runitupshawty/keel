@@ -11,6 +11,7 @@ mod jobs;
 mod library;
 mod oplog;
 mod plan;
+mod search;
 
 pub use hash::{on_battery, Copies, DupGroup, HashJob, VolumeRef, SAMPLE, WHOLE};
 pub use index::{ChangeEvent, IndexProgress, Indexer, WatchHandle, BATCH, POLL_INTERVAL};
@@ -21,6 +22,7 @@ pub use library::{
 };
 pub use oplog::OpLogEntry;
 pub use plan::{validate_preview_execute, Action, Change, OnConflict, Op, Plan, Warning};
+pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
 
 use std::path::PathBuf;
 

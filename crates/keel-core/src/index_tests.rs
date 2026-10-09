@@ -494,14 +494,12 @@ fn peak_rss() -> Option<u64> {
     None
 }
 
-/// Review focus 1 + 4: 2,000,000 generated entries (2,000 folders of 1,000 files, never on
-/// disk) index in < 90 s with < 400 MB peak RSS, and FTS queries answer in < 50 ms.
-/// `cargo test -p keel-core --release -- --ignored two_million`
-#[test]
-#[ignore]
-fn two_million_entries_index_fast_in_bounded_memory() {
-    const DIRS: u64 = 2_000;
-    const FILES: u64 = 1_000;
+pub(crate) const DIRS: u64 = 2_000;
+pub(crate) const FILES: u64 = 1_000;
+
+/// The 2,002,001-entry generated tree (`fake://perf/`, never on disk): DIRS folders of FILES
+/// files named `f<i> w<word>.dat`, and an unwalked library source over it.
+pub(crate) fn two_million() -> (Router, tempfile::TempDir, Library, Arc<Source>) {
     let router = Router::new();
     router.register(Arc::new(fake(|path: &str| {
         if path == "/" {
@@ -516,13 +514,23 @@ fn two_million_entries_index_fast_in_bounded_memory() {
             })
             .collect())
     })));
-    let (_data, _lib, src) = library_with(SourceDef {
+    let (data, lib, src) = library_with(SourceDef {
         label: "perf".into(),
         root: VPath::parse("fake://perf/").unwrap(),
         kind: SourceKind::Share,
         include_hidden: false,
         ignore: Vec::new(),
     });
+    (router, data, lib, src)
+}
+
+/// Review focus 1 + 4: 2,000,000 generated entries (2,000 folders of 1,000 files, never on
+/// disk) index in < 90 s with < 400 MB peak RSS, and FTS queries answer in < 50 ms.
+/// `cargo test -p keel-core --release -- --ignored two_million`
+#[test]
+#[ignore]
+fn two_million_entries_index_fast_in_bounded_memory() {
+    let (router, _data, _lib, src) = two_million();
     let start = Instant::now();
     walk(&src, &router).unwrap();
     let took = start.elapsed();

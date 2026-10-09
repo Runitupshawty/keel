@@ -16,6 +16,7 @@ power = ["dep:battery"]
 [dependencies]
 anyhow.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
+keel-search = { path = "../keel-search" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

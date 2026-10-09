@@ -68,3 +68,26 @@ CREATE TABLE record_tag(record INTEGER NOT NULL, tag INTEGER NOT NULL, PRIMARY K
 -- @source 2
 -- Content identity: sampled-hash collisions are looked up per hashed file.
 CREATE INDEX record_sampled ON record(sampled_hash) WHERE sampled_hash IS NOT NULL;
+
+-- @source 3
+-- Library search: prefix indexes for 2- and 3-character prefixes (short prefix queries stay
+-- fast); the table is rebuilt from `record`.
+DROP TRIGGER record_ai;
+DROP TRIGGER record_ad;
+DROP TRIGGER record_au;
+DROP TABLE record_fts;
+CREATE VIRTUAL TABLE record_fts USING fts5(
+    name, path, content=record, content_rowid=id, tokenize='unicode61 remove_diacritics 2',
+    prefix='2 3');
+INSERT INTO record_fts(record_fts) VALUES ('rebuild');
+CREATE TRIGGER record_ai AFTER INSERT ON record BEGIN
+    INSERT INTO record_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+END;
+CREATE TRIGGER record_ad AFTER DELETE ON record BEGIN
+    INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
+    DELETE FROM record_tag WHERE record = old.id;
+END;
+CREATE TRIGGER record_au AFTER UPDATE OF name, path ON record BEGIN
+    INSERT INTO record_fts(record_fts, rowid, name, path) VALUES ('delete', old.id, old.name, old.path);
+    INSERT INTO record_fts(rowid, name, path) VALUES (new.id, new.name, new.path);
+END;
