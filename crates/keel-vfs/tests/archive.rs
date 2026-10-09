@@ -631,14 +631,8 @@ fn corrupt_archives_are_errors_not_panics() {
         fs::create_dir(&dst).unwrap();
         let root = VPath::join_archive(&VPath::local(&file), "");
         let listed = router.provider_for(&root).unwrap().list(&root);
-        // libunrar reports a garbage body after a valid signature as an empty archive.
-        if name.ends_with(".rar") {
-            assert!(listed.is_err() || listed.unwrap().is_empty(), "{name}");
-        } else {
-            assert!(listed.is_err(), "{name} listed {listed:?}");
-        }
-        let extracted = extract_all(&root, &dst, &router);
-        assert!(extracted.is_err() || name.ends_with(".rar"), "{name}");
+        assert!(listed.is_err(), "{name} listed {listed:?}");
+        assert!(extract_all(&root, &dst, &router).is_err(), "{name}");
         assert_eq!(fs::read_dir(&dst).unwrap().count(), 0, "{name}");
     }
 }
@@ -823,13 +817,33 @@ fn extract_under_strips_the_base_folder() {
 }
 
 #[cfg(feature = "rar")]
+fn fixture(name: &str) -> std::path::PathBuf {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    assert!(fs::metadata(&path).unwrap().len() < 4096);
+    path
+}
+
+#[cfg(feature = "rar")]
+fn read_entry(archive: &mut dyn keel_vfs::archive::ArchiveReader, name: &str) -> String {
+    let mut body = String::new();
+    archive
+        .read(name)
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    body
+}
+
+#[cfg(feature = "rar")]
 #[test]
-fn rar_file_reference_entries_are_never_resolved() {
+fn rar_file_reference_entries_are_never_resolved_outside_the_archive() {
     // reference.rar (WinRAR `a -oi:1 -ep`): `Cargo.toml` ("fixture body\n"), then `evil.txt`,
     // a file reference to `Cargo.toml`. unrar resolved such references against the process
-    // CWD (here the crate folder, whose real Cargo.toml differs) and copied that file out.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference.rar");
-    assert!(fs::metadata(&path).unwrap().len() < 4096);
+    // CWD (here the crate folder, whose real Cargo.toml differs) and copied that file out;
+    // Keel copies the archive's own entry.
+    let path = fixture("reference.rar");
     let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
     let names: Vec<_> = archive
         .entries()
@@ -837,25 +851,180 @@ fn rar_file_reference_entries_are_never_resolved() {
         .into_iter()
         .map(|e| e.inner)
         .collect();
-    assert_eq!(names, ["Cargo.toml"]);
-    assert!(archive.read("evil.txt").is_err());
-    let mut body = String::new();
-    archive
-        .read("Cargo.toml")
-        .unwrap()
-        .read_to_string(&mut body)
-        .unwrap();
-    assert_eq!(body, "fixture body\n");
+    assert_eq!(names, ["Cargo.toml", "evil.txt"]);
+    assert_eq!(read_entry(&mut *archive, "evil.txt"), "fixture body\n");
+    assert_eq!(read_entry(&mut *archive, "Cargo.toml"), "fixture body\n");
     let tmp = tempfile::tempdir().unwrap();
     let dst = tmp.path().join("dst");
     fs::create_dir(&dst).unwrap();
     extract_all(&VPath::local(&path), &dst, &router(&tmp)).unwrap();
     assert_eq!(fs::read(dst.join("Cargo.toml")).unwrap(), b"fixture body\n");
-    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
-    let root = VPath::join_archive(&VPath::local(&path), "");
+    assert_eq!(fs::read(dst.join("evil.txt")).unwrap(), b"fixture body\n");
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 2);
+}
+
+#[cfg(feature = "rar")]
+#[test]
+fn rar_hard_links_and_file_references_land_as_plain_copies() {
+    // links.rar (WinRAR `a -ep -oh -oi:1`): a.txt, b.txt (hard link to a.txt), c.txt and
+    // d.txt (file reference to c.txt).
+    let path = fixture("links.rar");
+    let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
+    let entries = archive.entries().unwrap();
+    let names: Vec<_> = entries.iter().map(|e| e.inner.as_str()).collect();
+    assert_eq!(names, ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    assert!(entries.iter().all(|e| !e.is_dir && e.size == 11));
+    assert_eq!(read_entry(&mut *archive, "b.txt"), "alpha body\n");
+    assert_eq!(read_entry(&mut *archive, "d.txt"), "gamma body\n");
+    let tmp = tempfile::tempdir().unwrap();
     let router = router(&tmp);
-    let listed = router.provider_for(&root).unwrap().list(&root).unwrap();
-    assert_eq!(listed.len(), 1);
+    let dst = tmp.path().join("all");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&VPath::local(&path), &dst, &router).unwrap();
+    for (name, body) in [
+        ("a.txt", "alpha body\n"),
+        ("b.txt", "alpha body\n"),
+        ("c.txt", "gamma body\n"),
+        ("d.txt", "gamma body\n"),
+    ] {
+        assert_eq!(fs::read_to_string(dst.join(name)).unwrap(), body, "{name}");
+    }
+    // Separate files, not links of one another.
+    fs::write(dst.join("a.txt"), b"changed").unwrap();
+    assert_eq!(fs::read(dst.join("b.txt")).unwrap(), b"alpha body\n");
+    // Only the links: their sources are read but not written.
+    let only = tmp.path().join("only");
+    fs::create_dir(&only).unwrap();
+    extract(
+        &VPath::local(&path),
+        &["b.txt".into(), "d.txt".into()],
+        &only,
+        Conflict::Skip,
+        &|_| {},
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    let mut landed: Vec<_> = fs::read_dir(&only)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    landed.sort();
+    assert_eq!(landed, ["b.txt", "d.txt"]);
+    assert_eq!(fs::read(only.join("d.txt")).unwrap(), b"gamma body\n");
+}
+
+#[cfg(feature = "rar")]
+#[test]
+fn rar_link_without_its_source_fails_the_whole_extraction() {
+    // dangling.rar: links.rar with c.txt deleted (`rar d`), so d.txt references nothing.
+    let path = fixture("dangling.rar");
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let root = VPath::join_archive(&VPath::local(&path), "");
+    let names: Vec<_> = router
+        .provider_for(&root)
+        .unwrap()
+        .list(&root)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["a.txt", "b.txt", "d.txt"]);
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let error = extract_all(&root, &dst, &router).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("1 link entries cannot be extracted: d.txt"),
+        "{error:#}"
+    );
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+    extract(
+        &root,
+        &["b.txt".into()],
+        &dst,
+        Conflict::Skip,
+        &|_| {},
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("b.txt")).unwrap(), b"alpha body\n");
+}
+
+/// Cut exactly on a header or block boundary, an archive must not read as complete.
+#[test]
+fn archives_cut_on_a_boundary_are_truncated_not_short() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let mut builder = tar::Builder::new(Vec::new());
+    for n in 0..5 {
+        tar_entry(
+            &mut builder,
+            &format!("f{n}.txt"),
+            tar::EntryType::Regular,
+            b"x",
+        );
+    }
+    let tar = builder.into_inner().unwrap();
+    assert_eq!(tar.len(), 6 * 1024);
+    let gz = |bytes: &[u8]| {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+        gz.write_all(bytes).unwrap();
+        gz.finish().unwrap()
+    };
+    #[allow(unused_mut)] // only the rar feature adds cases
+    let mut cases = vec![
+        ("whole.tar", tar.clone(), true),
+        ("one-file.tar", tar[..1024].to_vec(), false),
+        ("no-marker.tar", tar[..5 * 1024].to_vec(), false),
+        ("lone-zero.tar", tar[..5 * 1024 + 512].to_vec(), false),
+        ("one-file.tar.gz", gz(&tar[..1024]), false),
+        ("whole.tar.gz", gz(&tar), true),
+    ];
+    #[cfg(feature = "rar")]
+    {
+        // sample.rar: a.txt's block ends at 71, b.txt's at 120, then the 8-byte end header.
+        let rar = fs::read(fixture("sample.rar")).unwrap();
+        assert_eq!(rar.len(), 128);
+        cases.push(("one-file.rar", rar[..71].to_vec(), false));
+        cases.push(("no-end.rar", rar[..120].to_vec(), false));
+    }
+    for (name, bytes, whole) in cases {
+        let file = tmp.path().join(name);
+        fs::write(&file, bytes).unwrap();
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        let dst = tmp.path().join(format!("out-{name}"));
+        fs::create_dir(&dst).unwrap();
+        let listed = router.provider_for(&root).unwrap().list(&root);
+        let extracted = extract_all(&root, &dst, &router);
+        if whole {
+            assert_eq!(listed.unwrap().len(), 5, "{name}");
+            extracted.unwrap();
+            continue;
+        }
+        let error = listed.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("truncated"),
+            "{name}: {error:#}"
+        );
+        assert!(extracted.is_err(), "{name}");
+        assert_eq!(fs::read_dir(&dst).unwrap().count(), 0, "{name}");
+    }
+    // The reader itself, not just the router's listing, refuses a cut tar while extracting.
+    let cut = tmp.path().join("cut-direct.tar");
+    fs::write(&cut, &tar[..1024]).unwrap();
+    let mut seen = 0;
+    let error = keel_vfs::archive::open_archive(&cut)
+        .unwrap()
+        .visit(&|_| true, &mut |_, body| {
+            seen += 1;
+            std::io::copy(body, &mut std::io::sink())?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(seen, 1);
+    assert!(format!("{error:#}").contains("no end marker"), "{error:#}");
 }
 
 /// 7-Zip's default: every file in one solid block.
@@ -989,18 +1158,34 @@ fn entry_longer_than_its_header_is_an_error_everywhere() {
 #[test]
 fn extract_checks_free_space_before_writing() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut header = tar::Header::new_gnu();
-    header.set_path("huge.bin").unwrap();
-    // 8 TiB: more than any CI runner has free, but within what `lseek` accepts on ext4
-    // (a 1 EiB offset fails with EINVAL on Linux before the free-space check runs).
-    header.set_size(1 << 43);
-    header.set_mode(0o644);
-    header.set_cksum();
-    let mut bytes = tar_bytes("small.txt", b"small");
-    bytes.truncate(1024); // drop the end-of-archive blocks
-    bytes.extend_from_slice(header.as_bytes());
-    let file = tmp.path().join("huge.tar");
+    // A whole archive whose one entry claims 8 TiB (more than any CI runner has free): a
+    // zip64 entry of one stored byte, its uncompressed size patched in both headers. (A
+    // tarball would need the body's 8 TiB on disk to reach its end marker.)
+    let file = tmp.path().join("huge.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
+    zip.start_file("huge.bin", options).unwrap();
+    zip.write_all(b"x").unwrap();
+    zip.finish().unwrap();
+    let mut bytes = fs::read(&file).unwrap();
+    let sizes = [1u64.to_le_bytes(), 1u64.to_le_bytes()].concat();
+    let mut patched = 0;
+    while let Some(at) = bytes.windows(16).position(|w| w == sizes) {
+        bytes[at..at + 8].copy_from_slice(&(1u64 << 43).to_le_bytes());
+        patched += 1;
+    }
+    assert_eq!(patched, 2, "zip64 size fields not found");
     fs::write(&file, bytes).unwrap();
+    assert_eq!(
+        keel_vfs::archive::open_archive(&file)
+            .unwrap()
+            .entries()
+            .unwrap()[0]
+            .size,
+        1 << 43
+    );
     let dst = tmp.path().join("dst");
     fs::create_dir(&dst).unwrap();
     let error = extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap_err();
@@ -1016,11 +1201,11 @@ fn truncated_tar_entry_is_an_error_and_never_lands() {
     let file = tmp.path().join("cut.tar");
     fs::write(&file, bytes).unwrap();
     let mut body = Vec::new();
+    // Refused up front now (no end marker), or while streaming the short body.
     assert!(keel_vfs::archive::open_archive(&file)
         .unwrap()
         .read("big.bin")
-        .unwrap()
-        .read_to_end(&mut body)
+        .and_then(|mut r| Ok(r.read_to_end(&mut body)?))
         .is_err());
     let router = router(&tmp);
     let path = VPath::join_archive(&VPath::local(&file), "big.bin");

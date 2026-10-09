@@ -70,15 +70,31 @@ fn metadata<R: Read>(entries: ::tar::Entries<'_, R>) -> Result<Vec<ArchiveEntry>
     }
     Ok(out)
 }
+/// The tar crate stops at the first zero block and, silently, at a clean end of input on a
+/// block boundary; only the second zero block tells a whole archive from a truncated one.
+fn end_marker(mut rest: impl Read) -> Result<()> {
+    let mut block = [0; 512];
+    anyhow::ensure!(
+        rest.read_exact(&mut block).is_ok() && block.iter().all(|&b| b == 0),
+        "truncated archive (no end marker)"
+    );
+    Ok(())
+}
 impl ArchiveReader for Reader {
     fn entries(&mut self) -> Result<Vec<ArchiveEntry>> {
         if matches!(self.compression, Compression::Plain) {
             // Seeks past bodies instead of reading them.
-            return metadata(::tar::Archive::new(File::open(&self.path)?).entries_with_seek()?);
+            let mut archive = ::tar::Archive::new(File::open(&self.path)?);
+            let out = metadata(archive.entries_with_seek()?)?;
+            end_marker(archive.into_inner())?;
+            return Ok(out);
         }
         // Compressed tar has no index: reaching each header decompresses the bytes before
         // it, but no body is kept.
-        metadata(::tar::Archive::new(self.input()?).entries()?)
+        let mut archive = ::tar::Archive::new(self.input()?);
+        let out = metadata(archive.entries()?)?;
+        end_marker(archive.into_inner())?;
+        Ok(out)
     }
     fn local(&self) -> &Path {
         &self.path
@@ -89,13 +105,14 @@ impl ArchiveReader for Reader {
         want: &dyn Fn(&str) -> bool,
         each: &mut dyn FnMut(&str, u64, &mut dyn Read) -> Result<()>,
     ) -> Result<()> {
-        for entry in ::tar::Archive::new(self.input()?).entries()? {
+        let mut archive = ::tar::Archive::new(self.input()?);
+        for entry in archive.entries()? {
             let mut entry = entry?;
             let name = name(&entry);
             if entry.header().entry_type().is_file() && want(&name) {
                 each(&name, entry.size(), &mut entry)?;
             }
         }
-        Ok(())
+        end_marker(archive.into_inner())
     }
 }

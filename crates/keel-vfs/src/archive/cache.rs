@@ -50,19 +50,21 @@ pub struct MaterialiseCache {
     state: Mutex<State>,
 }
 impl Default for MaterialiseCache {
-    /// `%LOCALAPPDATA%\Keel\archives`, `~/Library/Caches/Keel/archives`, `~/.cache/keel/archives`.
     fn default() -> Self {
-        let app = if cfg!(target_os = "linux") {
-            "keel"
-        } else {
-            "Keel"
-        };
-        let root = directories::BaseDirs::new()
-            .map(|dirs| dirs.cache_dir().join(app))
-            .unwrap_or_else(|| std::env::temp_dir().join(app))
-            .join("archives");
-        Self::new(root, 2 << 30)
+        Self::new(default_root(), 2 << 30)
     }
+}
+/// `%LOCALAPPDATA%\Keel\archives`, `~/Library/Caches/Keel/archives`, `~/.cache/keel/archives`.
+pub(crate) fn default_root() -> PathBuf {
+    let app = if cfg!(target_os = "linux") {
+        "keel"
+    } else {
+        "Keel"
+    };
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.cache_dir().join(app))
+        .unwrap_or_else(|| std::env::temp_dir().join(app))
+        .join("archives")
 }
 impl MaterialiseCache {
     pub fn new(root: PathBuf, budget: u64) -> Self {
