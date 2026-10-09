@@ -99,11 +99,34 @@ pub fn run_index_service(dir: &Path) -> anyhow::Result<()> {
         bail!("the index service needs administrator rights");
     }
     std::fs::create_dir_all(dir)?;
-    for id in win::fixed_ntfs_volumes() {
+    each_volume(&win::fixed_ntfs_volumes(), |id| {
         let (index, meta) = build_volume(id)?;
-        db::save_full(&db_path(dir, id).with_extension("db.svc"), &index, &meta)?;
+        db::save_full(&db_path(dir, id).with_extension("db.svc"), &index, &meta)
+    })
+}
+
+/// Runs `index` on every volume; a failure is logged and the rest still run. Errors
+/// only when every volume failed.
+fn each_volume(
+    ids: &[VolumeId],
+    mut index: impl FnMut(VolumeId) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut last = None;
+    let mut done = 0;
+    for &id in ids {
+        match index(id) {
+            Ok(()) => done += 1,
+            Err(e) => {
+                let e = e.context(format!("indexing {}", id.drive()));
+                warn(&format!("{e:#}"));
+                last = Some(e);
+            }
+        }
     }
-    Ok(())
+    match last {
+        Some(e) if done == 0 => Err(e),
+        _ => Ok(()),
+    }
 }
 
 fn db_path(dir: &Path, id: VolumeId) -> PathBuf {
@@ -671,6 +694,33 @@ mod tests {
         let mut removes: Vec<u64> = changes.removes.iter().copied().collect();
         removes.sort();
         assert_eq!(removes, [12, 30]);
+    }
+
+    #[test]
+    fn one_failing_volume_does_not_stop_the_others() {
+        let ids = [
+            VolumeId {
+                letter: 'C',
+                serial: 1,
+            },
+            VolumeId {
+                letter: 'D',
+                serial: 2,
+            },
+        ];
+        let mut seen = Vec::new();
+        let ok = each_volume(&ids, |id| {
+            seen.push(id.letter);
+            if id.letter == 'C' {
+                bail!("bad volume")
+            }
+            Ok(())
+        });
+        assert!(ok.is_ok());
+        assert_eq!(seen, ['C', 'D']);
+        let all = each_volume(&ids, |_| bail!("bad volume")).unwrap_err();
+        assert!(format!("{all:#}").contains("bad volume"));
+        assert!(each_volume(&[], |_| bail!("never")).is_ok());
     }
 
     #[test]
