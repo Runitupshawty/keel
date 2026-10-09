@@ -153,7 +153,7 @@ fn errors_include_path_and_reject_nonlocal_scheme() {
 
 #[test]
 fn router_registers_local_and_replaces_matching_scheme() {
-    let mut router = Router::new();
+    let router = Router::new();
     let p = VPath::local("C:\\");
     let provider = router.provider_for(&p).unwrap();
     assert!(

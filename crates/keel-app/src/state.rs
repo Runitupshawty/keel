@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn listed_err_keeps_entries_and_toasts() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let dir = VPath::parse("gone://usb/photos").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), dir.clone());
@@ -1572,7 +1572,7 @@ mod tests {
 
     #[test]
     fn search_tab_is_never_filled_by_its_folder_and_survives_a_failed_exit() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());
@@ -1863,7 +1863,7 @@ mod tests {
 
     #[test]
     fn failed_navigation_returns_to_the_listed_folder() {
-        let mut router = Router::new();
+        let router = Router::new();
         router.register(Arc::new(Gone));
         let home = VPath::parse("gone://usb/").unwrap();
         let mut state = AppState::new(egui::Context::default(), Arc::new(router), home.clone());

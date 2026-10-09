@@ -29,6 +29,7 @@ unrar = { workspace = true, optional = true }
 tempfile = "3"
 directories = "5"
 anyhow.workspace = true
+tracing.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 parking_lot.workspace = true

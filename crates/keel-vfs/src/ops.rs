@@ -326,6 +326,9 @@ pub fn transfer(
         dst_dir.display()
     );
     let dst_key = target_provider.canonicalize(dst_dir)?;
+    // Providers are resolved once: re-registering a host mid-job (new settings) must not
+    // switch the remaining files of this job to another connection.
+    let mut sources = Vec::with_capacity(src.len());
     let mut roots = Vec::new();
     let mut state = Progress {
         done_bytes: 0,
@@ -356,17 +359,18 @@ pub fn transfer(
         }
         roots.push(key);
         scan_remote(&*provider, source, &mut state, cancel, 0)?;
+        sources.push(provider);
     }
     let mut job = ProviderJob {
-        router,
+        dst: target_provider,
         state,
         conflict: on_conflict,
         progress,
         cancel,
         moving: mv,
     };
-    for source in src {
-        job.node(source, &dst_dir.join(source.name()), 0)?;
+    for (source, provider) in src.iter().zip(&sources) {
+        job.node(provider, source, &dst_dir.join(source.name()), 0)?;
     }
     Ok(())
 }
@@ -434,7 +438,7 @@ fn maybe_stat(provider: &dyn crate::Provider, p: &crate::VPath) -> Result<Option
     }
 }
 struct ProviderJob<'a> {
-    router: &'a crate::Router,
+    dst: std::sync::Arc<dyn crate::Provider>,
     state: Progress,
     conflict: Conflict,
     progress: &'a dyn Fn(Progress),
@@ -444,6 +448,7 @@ struct ProviderJob<'a> {
 impl ProviderJob<'_> {
     fn node(
         &mut self,
+        src: &std::sync::Arc<dyn crate::Provider>,
         source: &crate::VPath,
         proposed: &crate::VPath,
         depth: usize,
@@ -451,8 +456,7 @@ impl ProviderJob<'_> {
         use crate::Kind;
         check_cancel(self.cancel)?;
         anyhow::ensure!(depth < 256, "directory nesting limit");
-        let src = routed(self.router, source)?;
-        let dst = routed(self.router, proposed)?;
+        let dst = self.dst.clone();
         let before = src.stat(source)?;
         anyhow::ensure!(
             !before.is_link && before.kind != Kind::Symlink,
@@ -511,7 +515,7 @@ impl ProviderJob<'_> {
             }
             let mut complete = true;
             for child in src.list(source)? {
-                complete &= self.node(&child.path, &target.join(&child.name), depth + 1)?;
+                complete &= self.node(src, &child.path, &target.join(&child.name), depth + 1)?;
             }
             if self.moving && complete {
                 src.remove_empty_dir(source)?;
@@ -579,7 +583,13 @@ impl ProviderJob<'_> {
         );
         if self.moving {
             check_cancel(self.cancel)?;
-            src.remove(source)?;
+            // The copy is verified: delete the source permanently, like `move_local` (the
+            // local provider's `remove` would only send it to the Recycle Bin).
+            match source.to_local_path() {
+                Some(local) => fs::remove_file(&local)
+                    .with_context(|| format!("remove moved file {}", local.display()))?,
+                None => src.remove(source)?,
+            }
         }
         self.state.done_bytes += copied;
         self.state.done_items += 1;
