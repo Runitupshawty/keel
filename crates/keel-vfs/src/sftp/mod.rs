@@ -135,23 +135,11 @@ fn undecodable(p: &VPath) -> anyhow::Error {
 
 /// Requests in flight while resolving the symlinks of one listing.
 const LINKS_IN_FLIGHT: usize = 32;
-/// Staging files for uploads: `<name>.keel-partial-<pid>-<n>`; also matches the
-/// `.keel-partial` names `ops::transfer` stages under.
+/// Staging files for uploads: `<name>.keel-partial-<pid>-<n>`, the names `ops::transfer`
+/// stages under too (`ops::is_partial` recognises both).
 const PARTIAL: &str = ".keel-partial";
 const STALE_PARTIAL: Duration = Duration::from_secs(24 * 3600);
-fn is_partial(name: &str) -> bool {
-    name.rsplit_once(PARTIAL).is_some_and(|(stem, rest)| {
-        !stem.is_empty()
-            && (rest.is_empty()
-                || rest.strip_prefix('-').is_some_and(|r| {
-                    r.split_once('-').is_some_and(|(a, b)| {
-                        [a, b]
-                            .iter()
-                            .all(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
-                    })
-                }))
-    })
-}
+use crate::ops::is_partial;
 /// A staging path unique to this attempt, its name capped at 255 bytes (NAME_MAX).
 pub(crate) fn partial_path(target: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -727,15 +715,17 @@ async fn sweep_partials(s: &conn::Session, dir: &str) {
 }
 
 /// `replace`: POSIX rename over an existing target (needs the OpenSSH extension, else the
-/// plain SFTP rename refuses an existing target); the replaced file's permissions are
-/// copied onto `from` first. Otherwise never replaces.
+/// plain SFTP rename refuses an existing target); the replaced file's permission bits
+/// (`0o777`, never setuid/setgid/sticky) are copied onto `from` first. Otherwise never
+/// replaces.
 async fn rename(s: &conn::Session, from: &str, to: &str, replace: bool) -> Result<()> {
     if replace {
         match s.raw.lstat(to).await {
             Ok(old) if old.attrs.file_type().is_file() => {
                 if let Some(mode) = old.attrs.permissions {
                     let attrs = FileAttributes {
-                        permissions: Some(mode & 0o7777),
+                        // Never setuid/setgid/sticky: those belong to the old content.
+                        permissions: Some(mode & 0o777),
                         ..FileAttributes::empty()
                     };
                     s.raw.setstat(from, attrs).await.map_err(wire_error)?;
@@ -1068,6 +1058,7 @@ mod tests {
         assert!(!is_partial("notes.keel-partial-draft.txt"));
         assert!(!is_partial(".keel-partial"));
         assert!(!is_partial("x.keel-partial-1-"));
+        assert!(!is_partial("report.keel-partial-2024-05"));
     }
     /// m25: names the server could not send as UTF-8 are refused before any request.
     #[test]

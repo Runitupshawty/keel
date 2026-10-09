@@ -636,16 +636,22 @@ fn partial_name(name: &str) -> String {
     }
     format!("{}{suffix}", &name[..keep])
 }
-/// `<stem>.keel-partial` (older builds) or `<stem>.keel-partial-<digits>-<digits>`.
-fn is_partial(name: &str) -> bool {
+/// `<stem>.keel-partial` (v0.1 builds) or exactly `<stem>.keel-partial-<pid>-<n>`, both
+/// numbers written as `partial_name` writes them (no leading zeros), so a user's
+/// `report.keel-partial-2024-05` is never taken for a staging file and swept. Also used by
+/// the SFTP provider, which stages under the same names.
+pub(crate) fn is_partial(name: &str) -> bool {
     name.rsplit_once(PARTIAL).is_some_and(|(stem, rest)| {
-        let digits = |n: &str| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit());
+        let number = |n: &str| {
+            n.bytes().all(|c| c.is_ascii_digit())
+                && (n == "0" || !n.is_empty() && !n.starts_with('0'))
+        };
         !stem.is_empty()
             && (rest.is_empty()
                 || rest
                     .strip_prefix('-')
                     .and_then(|r| r.split_once('-'))
-                    .is_some_and(|(a, b)| digits(a) && digits(b)))
+                    .is_some_and(|(pid, n)| number(pid) && number(n)))
     })
 }
 fn stale(modified: Option<std::time::SystemTime>) -> bool {
@@ -1135,11 +1141,18 @@ mod tests {
         let long = partial_name(&"\u{e9}".repeat(200));
         assert!(long.len() <= 255 && is_partial(&long), "{}", long.len());
         assert!(is_partial("x.bin.keel-partial"));
+        assert!(is_partial("x.keel-partial-1234-0") && is_partial("x.keel-partial-7-10"));
         for not in [
             "notes.keel-partial-draft.txt",
             ".keel-partial",
             "x.keel-partial-1-",
             "x.keel-partial-1",
+            "report.keel-partial-2024-05",
+            "x.keel-partial-01-2",
+            "x.keel-partial-1-2-3",
+            "x.keel-partial-1-2.txt",
+            "x.keel-partial--1-2",
+            "x.keel-partial-+1-2",
         ] {
             assert!(!is_partial(not), "{not}");
         }

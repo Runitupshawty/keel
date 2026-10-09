@@ -318,7 +318,7 @@ fn mode(path: &VPath) -> String {
 }
 
 /// M10: new uploads get the server's default mode (not 0600); replacing a file keeps its
-/// mode, for direct uploads and for transfers.
+/// permission bits but never setuid/setgid, for direct uploads and for transfers.
 #[test]
 fn live_upload_modes_follow_umask_and_replaced_files() {
     let Some((host, base)) = live() else {
@@ -336,13 +336,14 @@ fn live_upload_modes_follow_umask_and_replaced_files() {
     let fresh = u32::from_str_radix(&mode(&file), 8).unwrap();
     assert_ne!(fresh, 0o600, "staged with an explicit 0600");
     assert_eq!(fresh & 0o044, 0o044 & !umask(), "server umask applies");
-    ssh(&format!("chmod 640 '{}'", file.path));
+    ssh(&format!("chmod 6640 '{}'", file.path));
+    assert_eq!(mode(&file), "6640", "setuid/setgid could not be set");
     let mut up = provider.upload(&file, false).unwrap();
     up.write_all(b"two").unwrap();
     up.finish().unwrap();
     assert_eq!(mode(&file), "640");
     // Through ops::transfer (staged as .keel-partial, then rename_replace).
-    ssh(&format!("chmod 604 '{}'", file.path));
+    ssh(&format!("chmod 4604 '{}'", file.path));
     let local = tempfile::tempdir().unwrap();
     std::fs::write(local.path().join("a.txt"), b"three").unwrap();
     let router = Router::new();
