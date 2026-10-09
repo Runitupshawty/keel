@@ -99,10 +99,15 @@ pub fn preview(req: &Request) -> Preview {
 }
 
 fn preview_inner(req: &Request) -> Preview {
-    let size = match std::fs::metadata(&req.bytes_path) {
-        Ok(metadata) => metadata.len(),
+    let metadata = match std::fs::metadata(&req.bytes_path) {
+        Ok(metadata) => metadata,
         Err(error) => return Preview::Error(error.to_string()),
     };
+    // FIFOs, devices and directories would block or make no sense to read.
+    if !metadata.is_file() {
+        return Preview::Unsupported;
+    }
+    let size = metadata.len();
     if size > MAX_PREVIEW_BYTES {
         return Preview::TooLarge(size);
     }
@@ -114,13 +119,13 @@ fn preview_inner(req: &Request) -> Preview {
 
     let ext = req.entry.ext.trim_start_matches('.').to_ascii_lowercase();
     if text::accepts(&ext) {
-        return text::render(req, size);
+        return text::render(req, &ext, size);
     }
     if image::accepts(&ext) {
-        return image::render(req);
+        return image::render(req, &ext);
     }
     if table::accepts(&ext) {
-        return table::render(req);
+        return table::render(req, &ext);
     }
     if pdf::accepts(&ext) {
         return pdf::render(req);

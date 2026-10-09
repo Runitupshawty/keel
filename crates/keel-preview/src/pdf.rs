@@ -10,8 +10,9 @@ pub(crate) fn accepts(ext: &str) -> bool {
 }
 
 pub(crate) fn init(dll_dir: &Path) {
+    // pdfium.dll / libpdfium.dylib / libpdfium.so; a failed bind leaves PDFs Unsupported.
     PDFIUM.get_or_init(|| {
-        Pdfium::bind_to_library(dll_dir.join("pdfium.dll"))
+        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(dll_dir))
             .ok()
             .map(Pdfium::new)
     });
@@ -39,8 +40,11 @@ fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
         .pages()
         .get(req.page as u16)
         .map_err(|error| error.to_string())?;
+    // Fit box: the page's longer side lands on max_px.
+    let max_px = req.max_px.max(1) as f32;
+    let longest = page.width().value.max(page.height().value).max(1.0);
     let bitmap = page
-        .render_with_config(&PdfRenderConfig::new().set_target_width(req.max_px.max(1) as i32))
+        .render_with_config(&PdfRenderConfig::new().scale_page_by_factor(max_px / longest))
         .map_err(|error| error.to_string())?;
     let image = bitmap.as_image().to_rgba8();
     Ok(Preview::Pdf {

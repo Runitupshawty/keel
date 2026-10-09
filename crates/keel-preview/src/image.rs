@@ -1,5 +1,7 @@
 use crate::{Preview, Request, Rgba};
 use image::{DynamicImage, GenericImageView};
+use resvg::usvg::{fontdb, Options, Tree};
+use std::sync::{Arc, OnceLock};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
 
@@ -7,8 +9,8 @@ pub(crate) fn accepts(ext: &str) -> bool {
     IMAGE_EXTENSIONS.contains(&ext)
 }
 
-pub(crate) fn render(req: &Request) -> Preview {
-    let result = if req.entry.ext.eq_ignore_ascii_case("svg") {
+pub(crate) fn render(req: &Request, ext: &str) -> Preview {
+    let result = if ext == "svg" {
         render_svg(req)
     } else {
         image::open(&req.bytes_path)
@@ -35,18 +37,34 @@ fn downscale(image: DynamicImage, max_px: u32) -> Rgba {
     }
 }
 
+/// System fonts, loaded once (a few hundred ms) so SVG `<text>` renders.
+fn fonts() -> Arc<fontdb::Database> {
+    static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            Arc::new(db)
+        })
+        .clone()
+}
+
 fn render_svg(req: &Request) -> Result<Rgba, String> {
     let bytes = std::fs::read(&req.bytes_path).map_err(|error| error.to_string())?;
-    let tree = resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default())
-        .map_err(|error| error.to_string())?;
+    let options = Options {
+        fontdb: fonts(),
+        ..Options::default()
+    };
+    let tree = Tree::from_data(&bytes, &options).map_err(|error| error.to_string())?;
     let size = tree.size();
+    // Fit box both ways: tiny icons scale up to max_px, big drawings scale down.
     let scale = if req.max_px > 0 {
-        (req.max_px as f32 / size.width().max(size.height())).min(1.0)
+        req.max_px as f32 / size.width().max(size.height())
     } else {
         1.0
     };
-    let w = (size.width() * scale).ceil().max(1.0) as u32;
-    let h = (size.height() * scale).ceil().max(1.0) as u32;
+    let w = (size.width() * scale).round().max(1.0) as u32;
+    let h = (size.height() * scale).round().max(1.0) as u32;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("invalid SVG dimensions")?;
     resvg::render(
         &tree,

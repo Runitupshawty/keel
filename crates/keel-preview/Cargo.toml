@@ -21,6 +21,8 @@ csv.workspace = true
 pdfium-render.workspace = true
 docx-rs.workspace = true
 keel-vfs = { path = "../keel-vfs" }
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+wait-timeout = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
