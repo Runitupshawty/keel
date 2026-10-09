@@ -76,6 +76,7 @@ fn global_items() -> Vec<Item> {
         ("New file", "", NewFile),
         ("Show in system file manager", "", RevealInSystem),
         ("Open terminal here", "", OpenTerminal),
+        ("Toggle terminal", "Ctrl+`", ToggleTerminal),
         ("Toggle dark / light theme", "", ToggleTheme),
         ("Settings", "Ctrl+,", Settings),
     ]

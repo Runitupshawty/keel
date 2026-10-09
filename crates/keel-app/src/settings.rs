@@ -27,6 +27,9 @@ pub struct Settings {
     pub preview_width: f32,
     /// Files larger than this are not previewed (keel-preview's own 64 MB cap still applies).
     pub max_preview_mb: u64,
+    pub terminal_shell: String,
+    pub terminal_follow_cwd: bool,
+    pub terminal_height: f32,
 }
 
 impl Default for Settings {
@@ -40,6 +43,9 @@ impl Default for Settings {
             sidebar_width: 210.0,
             preview_width: 380.0,
             max_preview_mb: keel_preview::MAX_PREVIEW_BYTES / MB,
+            terminal_shell: String::new(),
+            terminal_follow_cwd: true,
+            terminal_height: 220.0,
         }
     }
 }
@@ -303,6 +309,23 @@ pub fn window(ctx: &egui::Context, open: &mut bool, s: &mut Settings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Settings;
+
+    #[test]
+    fn terminal_settings_upgrade_and_round_trip() {
+        let defaults: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert!(defaults.terminal_follow_cwd);
+        assert_eq!(defaults.terminal_height, 220.0);
+        let custom = Settings {
+            terminal_shell: "cmd.exe".into(),
+            terminal_follow_cwd: false,
+            terminal_height: 310.0,
+            ..defaults
+        };
+        assert_eq!(
+            toml::from_str::<Settings>(&toml::to_string(&custom).unwrap()).unwrap(),
+            custom
+        );
+    }
 
     #[test]
     fn round_trip_under_keel_config_dir() {
