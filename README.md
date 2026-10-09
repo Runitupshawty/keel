@@ -27,6 +27,18 @@ cargo run --release
 - Phase 4: Google Drive, Dropbox, and S3-compatible cloud providers
 - Phase 5: profiles, icon-theme management, Miller columns, a drop zone, Explorer drag-out, animations, a global hotkey, and a native NTFS indexer
 
+## Perf
+
+Run the local provider benchmark in an optimized build:
+
+```powershell
+cargo test -p keel-vfs --release -- --ignored perf --nocapture
+```
+
+The test creates 50,000 empty files once under `target/perf-list-50k`, prints that
+cache path, and requires the listing (including sorting) to finish in under 150 ms.
+Fixture creation is excluded from the timing. Normal test runs skip this benchmark.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
