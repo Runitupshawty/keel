@@ -124,15 +124,17 @@ impl App {
         s.jobs.tick();
         // Every frame, so key state stays right while a modal is open.
         let keys_on = s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed;
-        for action in keys::actions(ctx, keys_on) {
+        for action in keys::actions_with_terminal(ctx, keys_on, s.terminal.focused(ctx)) {
             s.run(s.active, action);
         }
+        s.terminal.input(ctx, keys_on, &s.settings, &s.tx);
 
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
         egui::TopBottomPanel::bottom("jobs")
             .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
+        s.terminal.panel(ctx, &mut s.settings, &s.tx);
         let sidebar = egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(s.settings.sidebar_width)

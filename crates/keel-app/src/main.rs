@@ -19,6 +19,7 @@ mod settings;
 mod sidebar;
 mod state;
 mod tab;
+mod term_pane;
 mod theme;
 mod toast;
 mod view_details;

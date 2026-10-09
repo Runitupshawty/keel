@@ -25,6 +25,8 @@ egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
 keel-vfs = { path = "../keel-vfs" }
 keel-search = { path = "../keel-search" }
 keel-preview = { path = "../keel-preview" }
+keel-term = { path = "../keel-term" }
+vt100.workspace = true
 directories = "5"
 open = "5"
 humansize = "2"

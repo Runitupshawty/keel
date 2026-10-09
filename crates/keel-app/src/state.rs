@@ -31,6 +31,16 @@ use std::time::{Duration, Instant};
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
 
 pub enum Msg {
+    TerminalReady {
+        generation: u64,
+        session: Arc<keel_term::Session>,
+        shells: Vec<keel_term::Shell>,
+    },
+    TerminalChanged(u64),
+    TerminalError {
+        generation: u64,
+        text: String,
+    },
     /// Answer to listing request `req` (numbers only grow; older answers lose). `gone`: the
     /// folder is on a fixed local disk and does not exist (an offline share is not gone).
     Listed {
@@ -106,6 +116,7 @@ pub enum Msg {
 type WatchSlot = (Option<VPath>, Option<Box<dyn Any + Send>>);
 
 pub struct AppState {
+    pub terminal: crate::term_pane::TermPane,
     pub router: Arc<Router>,
     /// Where a saved tab whose folder is gone, and a crash reset, go.
     pub home: VPath,
@@ -191,6 +202,7 @@ impl AppState {
         preview.open = settings.preview_open;
         preview.max_bytes = settings.max_preview_bytes();
         let mut state = Self {
+            terminal: crate::term_pane::TermPane::default(),
             router,
             home,
             panes,
@@ -316,6 +328,17 @@ impl AppState {
 
     pub fn apply(&mut self, msg: Msg) {
         match msg {
+            Msg::TerminalReady {
+                generation,
+                session,
+                shells,
+            } => self.terminal.ready(generation, session, shells),
+            Msg::TerminalChanged(generation) => self.terminal.changed(generation),
+            Msg::TerminalError { generation, text } => {
+                if self.terminal.error(generation) {
+                    self.toasts.error(text);
+                }
+            }
             Msg::Listed {
                 dir,
                 req,
@@ -676,6 +699,9 @@ impl AppState {
 
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
+        let cwd = self.panes[self.active].tab().dir.to_local_path();
+        self.terminal
+            .follow(cwd, &self.settings, &self.tx, &self.ctx);
         let now = Instant::now();
         let due: Vec<VPath> = self
             .pending_refresh
@@ -925,9 +951,29 @@ impl AppState {
                 self.launch(path, platform::reveal);
             }
             Action::OpenTerminal => {
-                let dir = self.tab(p).dir.clone();
-                self.launch(dir, platform::terminal);
+                self.active = p;
+                if let Some(dir) = self.tab(p).dir.to_local_path() {
+                    self.terminal
+                        .open_at(dir, &self.settings, &self.tx, &self.ctx);
+                } else {
+                    self.toasts.error("Terminal requires a local folder");
+                }
             }
+            // Closed: open (at the pane, else home). Open but unfocused: focus it.
+            // Focused: close, which ends the shell.
+            Action::ToggleTerminal => {
+                if self.terminal.focused(&self.ctx) {
+                    self.terminal.close(&self.ctx);
+                } else if self.terminal.open {
+                    self.terminal.focus(&self.ctx);
+                } else if let Some(dir) =
+                    (self.tab(p).dir.to_local_path()).or_else(|| self.home.to_local_path())
+                {
+                    self.terminal
+                        .open_at(dir, &self.settings, &self.tx, &self.ctx);
+                }
+            }
+            Action::LeaveTerminal => self.terminal.leave(&self.ctx),
             Action::ToggleTheme => {
                 let name = if self.theme.dark { "light" } else { "dark" };
                 self.settings.theme = name.to_owned();

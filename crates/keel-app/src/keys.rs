@@ -72,6 +72,8 @@ pub enum Action {
     Properties,
     RevealInSystem,
     OpenTerminal,
+    ToggleTerminal,
+    LeaveTerminal,
     ToggleTheme,
     Navigate(VPath),
     NewTabAt(VPath),
@@ -97,6 +99,7 @@ const CMD_SHIFT: Modifiers = Modifiers {
 /// Shortcut table; more specific modifier sets come first because egui ignores
 /// unrequested Shift/Alt when matching.
 const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
+    (CMD, Key::Backtick, Action::ToggleTerminal),
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
@@ -126,6 +129,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
 
 /// Shortcuts that never mean anything to a focused text box.
 const WHILE_TYPING: &[Action] = &[
+    Action::ToggleTerminal,
     Action::Palette,
     Action::JumpFolder,
     Action::Search,
@@ -146,6 +150,29 @@ const MOVES: &[(Key, Nav)] = &[
     (Key::Home, Nav::Home),
     (Key::End, Nav::End),
 ];
+
+pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool) -> Vec<Action> {
+    if !terminal {
+        return actions(ctx, enabled);
+    }
+    // Track swallowed clipboard presses even while the terminal owns the events.
+    // Their later releases must never become a file paste after focus leaves.
+    let _ = paste_pressed(ctx);
+    if !enabled {
+        return Vec::new();
+    }
+    ctx.input_mut(|i| {
+        if i.consume_key(CMD, Key::Backtick) {
+            return vec![Action::ToggleTerminal];
+        }
+        if i.consume_key(Modifiers::NONE, Key::F6) || i.consume_key(Modifiers::NONE, Key::Escape) {
+            // Discard this frame's text/key events on focus transfer.
+            i.events.retain(|e| !crate::term_pane::keyboard_event(e));
+            return vec![Action::LeaveTerminal];
+        }
+        Vec::new()
+    })
+}
 
 /// Actions for this frame. Empty while a text field has focus (rename, filter, path box);
 /// a focused button (after Tab) does not block the key map. Call every frame: with
@@ -264,6 +291,25 @@ fn paste_pressed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_focus_suppresses_file_shortcuts_and_clipboard_release() {
+        let ctx = egui::Context::default();
+        for events in [
+            vec![Event::Copy, Event::Cut, Event::Paste("text".into())],
+            vec![v(false, CMD)],
+        ] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    assert!(actions_with_terminal(ctx, true, true).is_empty());
+                },
+            );
+        }
+    }
 
     fn frame(ctx: &egui::Context, events: Vec<Event>) -> bool {
         frame_with(ctx, Modifiers::NONE, events)

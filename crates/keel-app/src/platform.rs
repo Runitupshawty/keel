@@ -1,5 +1,4 @@
-//! OS launches: default app, open-with picker, reveal in the system file manager,
-//! terminal at a folder. Each starts a process and returns without waiting.
+//! OS launches: default app, open-with picker, reveal in the system file manager. Each starts a process and returns without waiting.
 //! Call through `worker::spawn_local` so remote paths materialise off the UI thread.
 
 use std::io;
@@ -18,7 +17,6 @@ fn run(mut cmd: Command) -> io::Result<()> {
 mod sys {
     use super::*;
     use std::os::windows::process::CommandExt;
-    const CREATE_NEW_CONSOLE: u32 = 0x10;
 
     pub fn open_with(path: &Path) -> io::Result<()> {
         // OpenAs_RunDLL reads the raw tail of the command line; quotes would be part of the name.
@@ -31,22 +29,6 @@ mod sys {
         let mut cmd = Command::new("explorer.exe");
         cmd.raw_arg(format!("/select,\"{}\"", path.display()));
         run(cmd)
-    }
-
-    pub fn terminal(dir: &Path) -> io::Result<()> {
-        let mut wt = Command::new("wt.exe");
-        wt.arg("-d").arg(dir);
-        match wt.spawn() {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let mut ps = Command::new("powershell.exe");
-                ps.arg("-NoExit")
-                    .current_dir(dir)
-                    .creation_flags(CREATE_NEW_CONSOLE);
-                run(ps)
-            }
-            Err(e) => Err(e),
-        }
     }
 }
 
@@ -75,12 +57,6 @@ mod sys {
         cmd.arg("-R").arg(path);
         run(cmd)
     }
-
-    pub fn terminal(dir: &Path) -> io::Result<()> {
-        let mut cmd = Command::new("open");
-        cmd.args(["-a", "Terminal"]).arg(dir);
-        run(cmd)
-    }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -102,13 +78,6 @@ mod sys {
         cmd.arg(dir);
         run(cmd)
     }
-
-    pub fn terminal(dir: &Path) -> io::Result<()> {
-        let term = std::env::var("TERMINAL").unwrap_or_else(|_| "x-terminal-emulator".into());
-        let mut cmd = Command::new(term);
-        cmd.current_dir(dir);
-        run(cmd)
-    }
 }
 
-pub use sys::{open_with, reveal, terminal};
+pub use sys::{open_with, reveal};
