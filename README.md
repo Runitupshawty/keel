@@ -1,48 +1,66 @@
 # Keel
 
-Keel is an open-source Windows file manager built in Rust with egui and a wgpu renderer. It is designed for fast everyday local file management, rich previews, and a path toward remote and cloud storage without telemetry.
+Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu), aiming for fast local file management, rich previews, and later remote and cloud storage, with no telemetry.
 
-## Phase 1 features
+## Status
 
-- Local filesystem browsing with dual panes, tabs, a sidebar, and details or grid views
-- Everything-powered search, a fuzzy folder jump, and filter-by-typing
-- Previews for code, images, PDFs, CSV files, DOCX documents, and video thumbnails
-- Copy, move, delete, and rename jobs with progress, plus Windows Open with support
-- Dark and light themes with an icon theme
-- Crash recovery and an installer-free Windows executable
+Keel is in development and not usable yet.
+
+- Working, with tests: `keel-vfs` (local filesystem provider), `keel-search` (per-OS search backends), `keel-preview` (code, image, PDF, CSV, DOCX previews; video thumbnails).
+- The `keel-app` window is a stub until the UI work (plan Task 5) lands.
 
 ## Build
 
-Install stable Rust with the `x86_64-pc-windows-msvc` target and the Microsoft C++ build tools, then run:
+Common to all platforms: install stable Rust with [rustup](https://rustup.rs). CI builds and tests on Windows, macOS and Linux.
+
+**Windows**: install the Visual Studio Build Tools (C++ workload), then:
 
 ```powershell
 pwsh scripts/fetch-deps.ps1
-cargo run --release
+cargo build --workspace
 ```
+
+**macOS**:
+
+```sh
+scripts/fetch-deps.sh
+cargo build --workspace
+```
+
+**Linux**:
+
+```sh
+sudo apt-get install libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev
+scripts/fetch-deps.sh
+cargo build --workspace
+```
+
+`fetch-deps` downloads the runtime libraries (pdfium, and Everything on Windows) into `target/deps/`; the build copies them next to the binary. Run the tests with `cargo test --workspace`.
+
+## Search backends
+
+| OS | Backend |
+| --- | --- |
+| Windows | Everything (voidtools; must be running) |
+| macOS | Spotlight via `mdfind` |
+| Linux | `plocate` or `locate` if installed, otherwise a directory walk |
+
+## Optional
+
+`ffmpeg` on `PATH` enables video thumbnails; without it, videos show no thumbnail.
 
 ## Roadmap
 
-- Phase 2: archive browsing and an embedded terminal
-- Phase 3: SFTP remotes and transfer jobs
-- Phase 4: Google Drive, Dropbox, and S3-compatible cloud providers
-- Phase 5: profiles, icon-theme management, Miller columns, a drop zone, Explorer drag-out, animations, a global hotkey, and a native NTFS indexer
-
-## Perf
-
-Run the local provider benchmark in an optimized build:
-
-```powershell
-cargo test -p keel-vfs --release -- --ignored perf --nocapture
-```
-
-The test creates 50,000 empty files once under `target/perf-list-50k`, prints that
-cache path, and requires the listing (including sorting) to finish in under 150 ms.
-Fixture creation is excluded from the timing. Normal test runs skip this benchmark.
+1. Phase 1: usable MVP (dual pane, tabs, search, previews, file jobs)
+2. Phase 2: archives as folders and an embedded terminal
+3. Phase 3: SFTP remotes
+4. Phase 4: Google Drive, Dropbox, S3/B2
+5. Phase 5: polish (profiles, icon themes, Miller columns, global hotkey, own indexer)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Keel is available under either the MIT License or the Apache License 2.0, at your option.
+Licensed under either the MIT License or the Apache License 2.0, at your option. Third-party components: see [THIRD_PARTY.md](THIRD_PARTY.md).

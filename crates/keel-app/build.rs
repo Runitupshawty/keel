@@ -1,69 +1,88 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+};
 
-const EXPECTED_DLLS: [&str; 2] = ["Everything64.dll", "pdfium.dll"];
+fn is_runtime_lib(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["dll", "dylib", "so"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
+}
+
+fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)?.flatten() {
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if src.is_dir() {
+            copy_dir(&src, &dst)?;
+        } else {
+            fs::copy(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
 
 fn main() {
-    let manifest_dir = PathBuf::from(
-        env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by Cargo"),
-    );
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("keel-app must be inside the workspace crates directory");
+    let (Some(manifest_dir), Some(out_dir)) = (
+        env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from),
+        env::var_os("OUT_DIR").map(PathBuf::from),
+    ) else {
+        println!("cargo:warning=CARGO_MANIFEST_DIR/OUT_DIR not set; skipping runtime library copy");
+        return;
+    };
+    let Some(workspace_root) = manifest_dir.ancestors().nth(2) else {
+        println!("cargo:warning=unexpected crate layout; skipping runtime library copy");
+        return;
+    };
     let deps_dir = workspace_root.join("target").join("deps");
     println!("cargo:rerun-if-changed={}", deps_dir.display());
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set by Cargo"));
-    let exe_dir = out_dir
-        .ancestors()
-        .nth(3)
-        .expect("OUT_DIR must be under target/<profile>/build/<package>/out");
+    // OUT_DIR is target/<profile>/build/<package>/out; the binary lives in target/<profile>.
+    let Some(exe_dir) = out_dir.ancestors().nth(3) else {
+        println!("cargo:warning=cannot derive binary directory from OUT_DIR; skipping runtime library copy");
+        return;
+    };
 
     let entries = match fs::read_dir(&deps_dir) {
         Ok(entries) => entries,
         Err(error) => {
             println!(
-                "cargo:warning=runtime dependency directory {} is unavailable: {error}",
+                "cargo:warning=runtime dependency directory {} is unavailable ({error}); run scripts/fetch-deps.ps1 or scripts/fetch-deps.sh",
                 deps_dir.display()
             );
-            for expected in EXPECTED_DLLS {
-                println!("cargo:warning=missing runtime dependency {expected}");
-            }
             return;
         }
     };
 
-    let mut copied = Vec::new();
+    let mut copied = 0;
     for entry in entries.flatten() {
-        let source = entry.path();
-        let is_dll = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"));
-        if !is_dll {
+        let src = entry.path();
+        if !src.is_file() || !is_runtime_lib(&src) {
             continue;
         }
-
-        let destination = exe_dir.join(entry.file_name());
-        fs::copy(&source, &destination).unwrap_or_else(|error| {
-            panic!(
-                "failed to copy {} to {}: {error}",
-                source.display(),
-                destination.display()
-            )
-        });
-        copied.push(entry.file_name());
+        let dst = exe_dir.join(entry.file_name());
+        match fs::copy(&src, &dst) {
+            Ok(_) => copied += 1,
+            Err(error) => println!(
+                "cargo:warning=could not copy {} to {} ({error}); it may be locked",
+                src.display(),
+                dst.display()
+            ),
+        }
+    }
+    if copied == 0 {
+        println!(
+            "cargo:warning=no .dll/.dylib/.so found in {}; run scripts/fetch-deps.ps1 or scripts/fetch-deps.sh",
+            deps_dir.display()
+        );
     }
 
-    for expected in EXPECTED_DLLS {
-        let was_copied = copied.iter().any(|name| {
-            name.to_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(expected))
-        });
-        if !was_copied {
-            println!(
-                "cargo:warning=missing runtime dependency {expected}; run scripts/fetch-deps.ps1"
-            );
+    let licenses = deps_dir.join("licenses");
+    if licenses.is_dir() {
+        if let Err(error) = copy_dir(&licenses, &exe_dir.join("licenses")) {
+            println!("cargo:warning=could not copy licenses ({error})");
         }
     }
 }
