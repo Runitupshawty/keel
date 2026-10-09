@@ -380,6 +380,8 @@ mod tests {
                             thumbs: &mut thumbs,
                             active: false,
                             banner: None,
+                            preview: None,
+                            column_widths: &mut Vec::new(),
                         };
                         super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
                     });

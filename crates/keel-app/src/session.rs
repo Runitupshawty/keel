@@ -12,6 +12,14 @@ pub struct Session {
     pub active: usize,
     /// The active tab of each pane.
     pub active_tab: [usize; 2],
+    // --- Task 23 ---
+    /// The view of each pane.
+    #[serde(default)]
+    pub views: [crate::pane::ViewMode; 2],
+    /// Columns view: per pane, per tab, the folders of the columns right of the tab.
+    #[serde(default)]
+    pub columns: Vec<Vec<Vec<VPath>>>,
+    // --- end Task 23 ---
 }
 
 impl Session {
@@ -21,6 +29,8 @@ impl Session {
             panes: vec![vec![dir.clone()], vec![dir]],
             active: 0,
             active_tab: [0, 0],
+            views: Default::default(),
+            columns: Vec::new(),
         }
     }
 
@@ -33,6 +43,8 @@ impl Session {
                 .collect(),
             active: state.active,
             active_tab: [state.panes[0].active, state.panes[1].active],
+            views: [state.panes[0].view, state.panes[1].view],
+            columns: crate::view_columns::session_chains(&state.panes),
         }
     }
 
@@ -99,6 +111,8 @@ mod tests {
             panes: vec![vec![home.clone(), gone.clone()], vec![]],
             active: 1,
             active_tab: [1, 7],
+            views: Default::default(),
+            columns: Vec::new(),
         };
         let file = tmp.join("session.json");
         assert_eq!(

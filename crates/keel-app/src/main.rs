@@ -25,6 +25,7 @@ mod tab;
 mod term_pane;
 mod theme;
 mod toast;
+mod view_columns;
 mod view_details;
 mod view_grid;
 mod worker;

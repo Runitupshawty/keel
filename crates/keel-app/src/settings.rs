@@ -39,6 +39,9 @@ pub struct Settings {
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
     /// keychain only.
     pub clouds: Vec<keel_vfs::CloudAccount>,
+    // --- Task 23 ---
+    /// Columns view: width of each column (0 or missing = default).
+    pub column_widths: Vec<f32>,
 }
 
 impl Default for Settings {
@@ -59,6 +62,7 @@ impl Default for Settings {
             one_transfer_per_drive: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
+            column_widths: Vec::new(),
         }
     }
 }

@@ -151,11 +151,15 @@ impl App {
             s.settings.sidebar_width = w;
         }
         self.seen_widths.0 = Some(w);
-        if s.preview.open {
+        // --- Task 23 ---: the columns view previews inline while the panel is closed.
+        let inline = !s.preview.open && crate::view_columns::wants_preview(&s.panes[s.active]);
+        if s.preview.open || inline {
             let target = s.preview_target();
             if s.preview.follow(ctx, target.as_ref()) {
                 s.toasts.error(crate::preview_panel::LOCKED);
             }
+        }
+        if s.preview.open {
             let panel = egui::SidePanel::right("preview")
                 .resizable(true)
                 .default_width(s.settings.preview_width)
@@ -261,6 +265,8 @@ impl App {
                         thumbs: &mut s.thumbs,
                         active: s.dual && s.active == p,
                         banner,
+                        preview: (inline && p == s.active).then_some(&mut s.preview),
+                        column_widths: &mut s.settings.column_widths,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     out.extend(acts.into_iter().map(|a| (p, a)));

@@ -263,10 +263,12 @@ impl AppState {
                 pane.active = active.min(pane.tabs.len() - 1);
                 pane
             });
-        let panes = [
+        let mut panes = [
             panes.next().expect("two panes"),
             panes.next().expect("two panes"),
         ];
+        // --- Task 23 ---
+        crate::view_columns::restore_session(&mut panes, &session.views, &session.columns);
         let mut preview = PreviewPanel::new(previewer);
         preview.open = settings.preview_open;
         preview.max_bytes = settings.max_preview_bytes();
@@ -385,6 +387,11 @@ impl AppState {
         }
         tab.refresh();
         let dir = tab.dir.clone();
+        self.spawn_listing(dir);
+    }
+
+    /// Lists `dir` on a worker unless a listing of it is already in flight.
+    fn spawn_listing(&mut self, dir: VPath) {
         if self.inflight.contains_key(&dir) {
             return;
         }
@@ -399,6 +406,46 @@ impl AppState {
             self.ctx.clone(),
         );
     }
+
+    // --- Task 23 ---
+    /// Columns view: lists columns that were just opened, and relists every column on
+    /// `changed` (a listing already in flight may predate the change: queued after it).
+    fn list_columns(&mut self, changed: Option<&VPath>) {
+        let mut want: Vec<(VPath, bool)> = Vec::new();
+        for col in self
+            .panes
+            .iter_mut()
+            .flat_map(|p| p.tabs.iter_mut())
+            .flat_map(|t| t.columns.cols.iter_mut())
+        {
+            if changed == Some(&col.dir) {
+                col.refresh();
+                want.push((col.dir.clone(), true));
+            } else if col.loading && col.listed_dir.is_none() && col.error.is_none() {
+                want.push((col.dir.clone(), false));
+            }
+        }
+        for (dir, stale) in want {
+            if !self.inflight.contains_key(&dir) {
+                self.spawn_listing(dir);
+            } else if stale {
+                self.pending_refresh.insert(dir, Instant::now());
+            }
+        }
+    }
+
+    /// Columns view: relists every column of pane `p`'s active tab (F5, a finished job).
+    fn relist_columns(&mut self, p: usize) {
+        let pane = &self.panes[p];
+        if pane.view != crate::pane::ViewMode::Columns {
+            return;
+        }
+        let dirs: Vec<VPath> = crate::view_columns::chain(&pane.tabs[pane.active]);
+        for dir in dirs {
+            self.list_columns(Some(&dir));
+        }
+    }
+    // --- end Task 23 ---
 
     fn list_active(&mut self, p: usize) {
         let t = self.panes[p].active;
@@ -422,6 +469,7 @@ impl AppState {
     fn relist_active(&mut self, p: usize) {
         let t = self.panes[p].active;
         self.relist(p, t);
+        self.relist_columns(p); // Task 23
     }
 
     /// Drains worker messages without blocking.
@@ -558,6 +606,19 @@ impl AppState {
                         }
                     }
                 }
+                // --- Task 23 ---: the same in columns on `dir`.
+                for col in self
+                    .panes
+                    .iter_mut()
+                    .flat_map(|p| p.tabs.iter_mut())
+                    .flat_map(|t| t.columns.cols.iter_mut())
+                    .filter(|c| c.dir == dir)
+                {
+                    col.selected = [name.clone()].into();
+                    col.cursor = Some(name.clone());
+                    col.anchor = Some(name.clone());
+                }
+                self.list_columns(Some(&dir));
             }
             Msg::Preview { key, preview } => self.preview.insert(&self.ctx, key, preview),
             Msg::Search { id, result } => self.searched(id, result),
@@ -775,6 +836,17 @@ impl AppState {
                 tab.dir == dir && req > tab.listed_req && !tab.is_search()
             })
             .collect();
+        // --- Task 23 ---: columns on `dir` take the listing too.
+        let Some(result) = crate::view_columns::fill(
+            &mut self.panes,
+            &dir,
+            req,
+            still_loading,
+            result,
+            hits.is_empty(),
+        ) else {
+            return;
+        };
         let Some((&last, rest)) = hits.split_last() else {
             return;
         };
@@ -886,8 +958,9 @@ impl AppState {
     /// while hidden: relist it.
     fn refresh_shown_tabs(&mut self) {
         for p in 0..2 {
-            let now =
-                (p == 0 || self.dual).then(|| (self.panes[p].active, self.tab(p).dir.clone()));
+            // The tab's own folder (Task 23: not its keyboard column).
+            let t = self.panes[p].active;
+            let now = (p == 0 || self.dual).then(|| (t, self.panes[p].tabs[t].dir.clone()));
             if now == self.shown[p] {
                 continue;
             }
@@ -954,6 +1027,7 @@ impl AppState {
                     }
                 }
             }
+            self.list_columns(Some(&dir)); // Task 23
         }
         if let Some(next) = self
             .pending_refresh
@@ -966,6 +1040,7 @@ impl AppState {
                 .request_repaint_after(next.saturating_duration_since(now));
         }
         self.tick_drives(now);
+        self.list_columns(None); // Task 23
         let mut next_search: Option<Instant> = None;
         for p in 0..2 {
             for t in 0..self.panes[p].tabs.len() {
@@ -1054,6 +1129,10 @@ impl AppState {
         if self.writes_into_archive(p, &action) {
             return self.toasts.error(READ_ONLY);
         }
+        // --- Task 23 ---: columns view navigation.
+        let Some(action) = crate::view_columns::intercept(self, p, action) else {
+            return;
+        };
         match action {
             Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
@@ -1671,6 +1750,8 @@ impl AppState {
         if new_tab {
             self.open_tab(q, dir);
         } else if !here {
+            let t = self.panes[q].active;
+            crate::view_columns::collapse(&mut self.panes[q].tabs[t]); // Task 23
             self.tab_mut(q).navigate(dir);
             self.list_active(q);
         }
@@ -2202,6 +2283,7 @@ mod tests {
             panes: vec![vec![inside.clone()], vec![folder.clone()]],
             active: 0,
             active_tab: [0, 0],
+            ..Session::single(folder.clone())
         };
         let json = tmp.join("session.json");
         saved.save_to(&json).unwrap();
