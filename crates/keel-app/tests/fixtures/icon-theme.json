@@ -1,0 +1,29 @@
+{
+  "iconDefinitions": {
+    "_file": { "iconPath": "./icons/file.svg" },
+    "_folder": { "iconPath": "./icons/folder.svg" },
+    "_folder_open": { "iconPath": "./icons/folder-open.svg" },
+    "ts": { "iconPath": "./icons/typescript.svg" },
+    "ts_light": { "iconPath": "./icons/typescript-light.svg" },
+    "dts": { "iconPath": "./icons/typescript-def.svg" },
+    "lang_ts": { "iconPath": "./icons/typescript-lang.svg" },
+    "json": { "iconPath": "./icons/json.svg" },
+    "npm": { "iconPath": "./icons/npm.svg" },
+    "rust": { "iconPath": "./icons/rust.png" },
+    "src": { "iconPath": "./icons/folder-src.svg" },
+    "src_open": { "iconPath": "./icons/folder-src-open.svg" },
+    "glyph": { "fontCharacter": "E001", "fontColor": "#ff0000" },
+    "escape": { "iconPath": "./../../../../outside.svg" }
+  },
+  "file": "_file",
+  "folder": "_folder",
+  "folderExpanded": "_folder_open",
+  "fileExtensions": { "ts": "ts", "d.ts": "dts", "JSON": "json", "glyph": "glyph" },
+  "fileNames": { "package.json": "npm", "Cargo.toml": "rust", "evil.txt": "escape" },
+  "folderNames": { "src": "src" },
+  "folderNamesExpanded": { "src": "src_open" },
+  "languageIds": { "rust": "rust", "typescript": "lang_ts" },
+  "light": { "fileExtensions": { "ts": "ts_light" } },
+  "highContrast": { "file": "_file" },
+  "hidesExplorerArrows": true
+}

@@ -7,7 +7,6 @@ use crate::tab::TabKind;
 use clap::Parser;
 use keel_vfs::VPath;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 #[derive(Parser, Debug, PartialEq)]
@@ -61,34 +60,17 @@ impl Cli {
     }
 }
 
-/// Profile names become a folder name: letters, digits, `-`, `_`, `.`, and not `.`/`..`.
+/// Profile names become a folder name (`profiles::valid_name`).
 fn profile_name(name: &str) -> Result<String, String> {
-    let ok = !name.is_empty()
-        && name.len() <= 64
-        && name != "."
-        && name != ".."
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if ok {
-        Ok(name.to_owned())
-    } else {
-        Err("use letters, digits, '-', '_' or '.' (at most 64)".into())
+    match crate::profiles::valid_name(name) {
+        true => Ok(name.to_owned()),
+        false => Err(crate::profiles::NAME_RULE.into()),
     }
 }
 
-static PROFILE: OnceLock<String> = OnceLock::new();
-
-/// Sets the profile for this run (once, before settings load).
-pub fn set_profile(name: Option<String>) {
-    if let Some(name) = name {
-        let _ = PROFILE.set(name);
-    }
-}
-
-/// `--profile`, else "default".
-pub fn profile() -> &'static str {
-    PROFILE.get().map_or("default", String::as_str)
+/// The profile in use: `--profile` at start, then whatever Settings → Profiles switched to.
+pub fn profile() -> String {
+    crate::profiles::current()
 }
 
 impl AppState {

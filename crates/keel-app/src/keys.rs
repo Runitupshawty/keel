@@ -109,6 +109,8 @@ pub enum Action {
     TogglePreview,
     /// Settings window (Ctrl+,).
     Settings,
+    /// Palette "Switch profile: <name>".
+    SwitchProfile(String),
     /// Archive targets: extract next to the archive.
     ExtractHere,
     /// Archive targets: extract into a new `<name>/` folder next to each archive.

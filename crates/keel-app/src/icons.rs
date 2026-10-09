@@ -1,7 +1,36 @@
-//! Default icon theme: Material Icon Theme SVGs (MIT), embedded in the binary.
+//! Icons: the active VS Code icon theme (`icon_theme`, set at runtime), else the built-in
+//! Material Icon Theme SVGs (MIT) embedded in the binary.
 
+use crate::icon_theme::Loaded;
 use egui::ImageSource;
 use keel_vfs::{Entry, Kind};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+
+/// The installed theme in use; None = built-in.
+static THEME: RwLock<Option<Arc<Loaded>>> = RwLock::new(None);
+/// A light color theme is active (icon themes may have a `light` variant).
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_theme(theme: Option<Arc<Loaded>>) {
+    *THEME.write().unwrap_or_else(|e| e.into_inner()) = theme;
+}
+
+#[cfg(test)]
+pub fn has_theme() -> bool {
+    THEME.read().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+pub fn set_light(light: bool) {
+    LIGHT.store(light, Ordering::Relaxed);
+}
+
+fn themed(
+    pick: impl FnOnce(&Loaded, bool) -> Option<ImageSource<'static>>,
+) -> Option<ImageSource<'static>> {
+    let theme = THEME.read().unwrap_or_else(|e| e.into_inner());
+    pick(theme.as_deref()?, LIGHT.load(Ordering::Relaxed))
+}
 
 macro_rules! icon {
     ($name:literal) => {
@@ -10,11 +39,21 @@ macro_rules! icon {
 }
 
 pub fn folder() -> ImageSource<'static> {
-    icon!("folder")
+    themed(|t, light| t.folder(None, false, light)).unwrap_or(icon!("folder"))
 }
 
 pub fn folder_open() -> ImageSource<'static> {
-    icon!("folder-open")
+    themed(|t, light| t.folder(None, true, light)).unwrap_or(icon!("folder-open"))
+}
+
+/// A file's icon by name alone (Settings → Icons preview).
+pub fn file_icon(name: &str) -> ImageSource<'static> {
+    themed(|t, light| t.file(name, light)).unwrap_or_else(|| {
+        let ext = std::path::Path::new(name)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase());
+        icon_for_ext(ext.as_deref().unwrap_or(""))
+    })
 }
 
 pub fn generic() -> ImageSource<'static> {
@@ -43,7 +82,15 @@ pub fn large(src: ImageSource<'static>) -> ImageSource<'static> {
 }
 
 pub fn icon_for(entry: &Entry) -> ImageSource<'static> {
-    if entry.kind == Kind::Dir {
+    let dir = entry.kind == Kind::Dir;
+    let found = themed(|t, light| match dir {
+        true => t.folder(Some(&entry.name), false, light),
+        false => t.file(&entry.name, light),
+    });
+    if let Some(src) = found {
+        return src;
+    }
+    if dir {
         return folder();
     }
     // `.tar.gz` and friends, and archives nested inside archives, open as folders.

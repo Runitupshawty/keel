@@ -6,6 +6,7 @@ mod clipboard;
 mod clouds;
 mod crash;
 mod dialogs;
+mod icon_theme;
 mod icons;
 mod jobs;
 mod jump;
@@ -14,6 +15,7 @@ mod palette;
 mod pane;
 mod platform;
 mod preview_panel;
+mod profiles;
 mod remotes;
 mod search_tab;
 mod session;
@@ -44,7 +46,9 @@ use std::path::Path;
 fn main() -> eframe::Result<()> {
     // --- Task 24 ---
     let cli = cli::Cli::from_env();
-    cli::set_profile(cli.profile.clone());
+    if let Some(name) = &cli.profile {
+        profiles::set_current(name);
+    }
     let request = cli.request();
     // --- end Task 24 ---
     tracing_subscriber::fmt()
@@ -88,7 +92,7 @@ fn main() -> eframe::Result<()> {
     // --- Task 24 ---
     // A running Keel takes the request (FOLDER / --search) and this process exits.
     let server = if settings.single_instance {
-        let name = single_instance::name(cli::profile());
+        let name = single_instance::name(&cli::profile());
         match single_instance::claim(&name, &request, !cli.new_window) {
             single_instance::Claim::Handed => return Ok(()),
             single_instance::Claim::Server(listener) => Some(listener),

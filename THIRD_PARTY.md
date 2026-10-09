@@ -20,6 +20,8 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
 
+**User-installed icon themes.** Settings → Icons can download a VS Code icon theme extension from the Visual Studio Marketplace at the user's request, after showing the extension's license (from the package when it has one) and asking the user to accept it. The theme is unpacked into the user's own config folder (`<config dir>/icons/<extension id>/`) for that user only. Keel does not bundle, mirror or redistribute these themes; they are not part of Keel's source or release archives, and their licenses are between the user and the theme's author.
+
 Licenses above are those declared in each crate's `Cargo.toml` at the version pinned in `Cargo.lock`. The `two-face` (MIT) syntax definitions and the `trash` and `sysinfo` crates are MIT/Apache-licensed like the rest of the Rust dependencies.
 
 Release archives (`keel-<version>-<platform>.zip` / `.tar.gz`) ship these libraries next to the binary together with `licenses/` (the notices above), `LICENSE-MIT`, `LICENSE-APACHE` and this file; the release job fails when a library or its notice is missing.

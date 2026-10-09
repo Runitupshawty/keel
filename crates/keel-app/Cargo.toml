@@ -42,6 +42,9 @@ natord = "1"
 egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
 ignore.workspace = true
 serde_json = "1"
+# VS Code icon themes: .vsix packages (zip, sometimes gzip-wrapped by the Marketplace).
+zip.workspace = true
+flate2.workspace = true
 # Wipes typed cloud secrets from memory (already in the tree through rustls / russh).
 zeroize = "1"
 # Folder picker (Extract to…) and SSH key file picker (Settings → Remotes); always called on
@@ -58,8 +61,6 @@ arboard = { version = "3.6", default-features = false }
 [dev-dependencies]
 # The real cloud provider over an in-memory service in the job tests.
 opendal = { workspace = true, features = ["services-memory"] }
-# Archive fixtures for the tests.
-zip.workspace = true
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }
 # examples/gen_icon.rs: assets/keel.svg -> keel.png + keel.ico
 image.workspace = true

@@ -1,4 +1,5 @@
-//! Open tabs, restored on the next start (`<cache dir>/session.json`).
+//! Open tabs, restored on the next start: `<cache dir>/session.json` for the default
+//! profile, `<cache dir>/profiles/<name>/session.json` for the others (`profiles`).
 
 use crate::state::AppState;
 use keel_vfs::VPath;
@@ -36,8 +37,9 @@ impl Session {
         }
     }
 
+    /// The current profile's session file.
     pub fn path() -> Option<PathBuf> {
-        crate::settings::cache_dir().map(|d| d.join("session.json"))
+        crate::profiles::session_path(&crate::profiles::current())
     }
 
     /// The saved session (None when there is none) and, when session.json could not be
@@ -56,11 +58,6 @@ impl Session {
             Ok(session) => (session, None),
             Err(notice) => (None, Some(notice)),
         }
-    }
-
-    pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::path().ok_or_else(|| anyhow::anyhow!("no cache folder"))?;
-        self.save_to(&path)
     }
 
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
