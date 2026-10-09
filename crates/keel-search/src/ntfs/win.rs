@@ -12,10 +12,11 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::{
-    FileIdType, FileNameInfo, GetDriveTypeW, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW, OpenFileById,
-    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR,
-    FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileIdType, FileNameInfo, GetDriveTypeW, GetFileAttributesExW, GetFileExInfoStandard,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives,
+    GetVolumeInformationW, OpenFileById, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, WIN32_FILE_ATTRIBUTE_DATA,
 };
 use windows::Win32::System::Ioctl::{
     FSCTL_ENUM_USN_DATA, FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_UNPRIVILEGED_USN_JOURNAL,
@@ -72,6 +73,32 @@ pub(crate) fn fixed_ntfs_volumes() -> Vec<VolumeId> {
             (String::from_utf16_lossy(&fs[..end]) == "NTFS").then_some(VolumeId { letter, serial })
         })
         .collect()
+}
+
+/// Size (0 for a folder) and last-write time of `path` from one GetFileAttributesExW
+/// call. Unlike `std::fs::metadata` it opens no handle: about 2x faster warm, and no
+/// open for antivirus filters to inspect. None when it fails (gone, or a path too long
+/// for the API).
+pub(crate) fn file_meta(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let mut data = WIN32_FILE_ATTRIBUTE_DATA::default();
+    // SAFETY: `data` is the out struct GetFileExInfoStandard fills; the name outlives
+    // the call.
+    unsafe {
+        GetFileAttributesExW(
+            &HSTRING::from(path.as_os_str()),
+            GetFileExInfoStandard,
+            &mut data as *mut _ as *mut c_void,
+        )
+    }
+    .ok()?;
+    let size = if data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+        0
+    } else {
+        u64::from(data.nFileSizeHigh) << 32 | u64::from(data.nFileSizeLow)
+    };
+    let written = data.ftLastWriteTime;
+    let filetime = u64::from(written.dwHighDateTime) << 32 | u64::from(written.dwLowDateTime);
+    Some((size, crate::everything::filetime_to_system_time(filetime)))
 }
 
 /// The root directory's file reference number (`C:\`).

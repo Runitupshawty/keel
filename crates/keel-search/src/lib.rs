@@ -3,6 +3,8 @@
 //! matching for Keel.
 
 #[cfg(windows)]
+mod composite;
+#[cfg(windows)]
 mod everything;
 mod fuzzy;
 #[cfg(target_os = "linux")]
@@ -32,6 +34,11 @@ pub struct Query {
     pub max: u32,
     pub regex: bool,
     pub match_case: bool,
+    /// Fill in every hit's size and date (the default). The Keel index has to ask
+    /// the file system per hit (cold disk: tens to hundreds of ms for 500 hits);
+    /// with `false` it skips that and the caller fills them later with
+    /// [`fill_meta`] (on a worker). Everything has them either way.
+    pub meta: bool,
 }
 
 impl Default for Query {
@@ -42,6 +49,7 @@ impl Default for Query {
             max: 500,
             regex: false,
             match_case: false,
+            meta: true,
         }
     }
 }
@@ -55,10 +63,27 @@ pub struct Hit {
     pub modified: Option<SystemTime>,
 }
 
+/// What a backend can do right now, for the status bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchState {
+    Ready,
+    /// Building its index (`done` entries so far); queries fail until it is ready.
+    Indexing {
+        done: usize,
+    },
+    Unavailable,
+}
+
 /// A pluggable file search backend.
 pub trait Searcher: Send + Sync {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
+    /// The last known state; never blocks.
     fn available(&self) -> bool;
+    /// Checks again whether the backend works (e.g. Everything started since) and
+    /// returns `available()`. May block on IPC: worker threads only.
+    fn probe(&self) -> bool {
+        self.available()
+    }
     /// A note for the status bar about what the backend covers (e.g. "user folders
     /// only"), None when there is nothing to say.
     fn status(&self) -> Option<String> {
@@ -67,6 +92,20 @@ pub trait Searcher: Send + Sync {
     /// The backend's name for the status bar ("Everything", "Keel index", ...).
     fn name(&self) -> &'static str {
         "Search"
+    }
+    /// Ready, still indexing, or unavailable. Never blocks.
+    fn state(&self) -> SearchState {
+        if self.available() {
+            SearchState::Ready
+        } else {
+            SearchState::Unavailable
+        }
+    }
+    /// The ready notification: true once each time the backend finished building
+    /// (or swapped in) an index since the last call, so the caller refreshes what it
+    /// derived from the old one (status, folder list). Poll it; never blocks.
+    fn take_ready(&self) -> bool {
+        false
     }
 }
 
@@ -99,15 +138,20 @@ impl Searcher for Unavailable {
 /// Probes the backend (IPC or a child process) and may load a saved index, so call
 /// it off the UI thread.
 ///
-/// Windows: Everything when it is running, else Keel's own index ([`NtfsSearcher`]:
-/// the saved drive index, or the user-folder walk when there is none and Keel is
-/// not elevated).
+/// Windows: Everything whenever it is running (checked per query, re-probed every
+/// 30 s while it is down), else Keel's own index ([`NtfsSearcher`]: the saved drive
+/// index, or the user-folder walk when there is none and Keel is not elevated).
 pub fn default_searcher() -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
-        (Ok(everything), _) if everything.available() => Box::new(everything),
-        (_, Some(dir)) => Box::new(NtfsSearcher::open(dir)),
-        (Ok(everything), None) => Box::new(everything),
+        (Ok(everything), dir) => Box::new(composite::Composite::new(
+            Box::new(everything),
+            dir.map(|dir| -> Box<dyn Fn() -> Box<dyn Searcher> + Send + Sync> {
+                Box::new(move || Box::new(NtfsSearcher::open(dir.clone())))
+            }),
+            composite::REPROBE,
+        )),
+        (Err(_), Some(dir)) => Box::new(NtfsSearcher::open(dir)),
         (Err(error), None) => Box::new(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
@@ -133,6 +177,7 @@ pub fn folder_index(searcher: &dyn Searcher) -> anyhow::Result<Vec<String>> {
     let hits = searcher.query(&Query {
         folders_only: true,
         max: 200_000,
+        meta: false,
         ..Query::default()
     })?;
 
@@ -174,6 +219,38 @@ pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
         }
     }
     hits
+}
+
+/// Fills in the size and date of `hits` (from a query run with `meta: false`) from
+/// the file system, in parallel. Hits that are gone keep 0 / None. Blocks on disk IO:
+/// worker threads only.
+pub fn fill_meta(hits: &mut [Hit]) {
+    let chunk = hits.len().div_ceil(8).max(64);
+    std::thread::scope(|s| {
+        for part in hits.chunks_mut(chunk) {
+            s.spawn(move || {
+                for hit in part {
+                    if let Some((size, modified)) = hit.path.to_local_path().and_then(|p| stat(&p))
+                    {
+                        hit.size = size;
+                        hit.modified = modified;
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Size (0 for a folder) and modification time.
+fn stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
+    // One GetFileAttributesExW call, no file handle: cheaper than std's metadata.
+    #[cfg(windows)]
+    if let Some(meta) = ntfs::file_meta(path) {
+        return Some(meta);
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    let size = if meta.is_dir() { 0 } else { meta.len() };
+    Some((size, meta.modified().ok()))
 }
 
 fn hit_for_path(path: &Path) -> Option<Hit> {
@@ -343,5 +420,31 @@ mod tests {
         assert!(query.folders_only);
         assert!(query.text.is_empty());
         assert_eq!(query.max, 200_000);
+        assert!(!query.meta, "folder paths need no size or date");
+    }
+
+    #[test]
+    fn fill_meta_adds_size_and_date() {
+        let dir = std::env::temp_dir().join(format!("keel-fill-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("five.txt"), b"12345").unwrap();
+        let hit = |path: std::path::PathBuf, is_dir| super::Hit {
+            path: keel_vfs::VPath::local(path),
+            is_dir,
+            size: 0,
+            modified: None,
+        };
+        let mut hits = vec![
+            hit(dir.join("five.txt"), false),
+            hit(dir.clone(), true),
+            hit(dir.join("gone.txt"), false),
+        ];
+        super::fill_meta(&mut hits);
+        assert_eq!(hits[0].size, 5);
+        assert!(hits[0].modified.is_some());
+        assert_eq!(hits[1].size, 0);
+        assert!(hits[1].modified.is_some());
+        assert_eq!((hits[2].size, hits[2].modified), (0, None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

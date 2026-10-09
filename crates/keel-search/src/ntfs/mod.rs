@@ -16,19 +16,20 @@ mod walk;
 mod win;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
-use crate::{Hit, Query, Searcher};
+use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index};
 use usn::Changes;
 use win::{Journal, Volume, VolumeId};
 
+pub(crate) use win::file_meta;
 pub use win::is_elevated;
 
 /// Shown while only the user folders are indexed.
@@ -39,19 +40,46 @@ pub const FALLBACK_STATUS: &str = "Indexing user folders only; run 'Index all dr
 pub const FROZEN_STATUS: &str = "The drive index is out of date; run 'Index all drives' as \
      administrator to refresh it.";
 const POLL: Duration = Duration::from_secs(2);
-/// Hits beyond this many skip the per-file size/date lookup (the folder index).
+/// Longest the walk index stays write-locked while watcher changes are applied;
+/// searches get the lock in between batches.
+const BATCH: Duration = Duration::from_millis(20);
+/// Least time between two full re-walks after lost watcher events.
+const RESCAN_GAP: Duration = Duration::from_secs(60);
+/// Hits beyond this many skip the per-file size/date lookup (a huge `max`).
 const STAT_LIMIT: usize = 2_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
 const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
 
-/// `KEEL_CONFIG_DIR` (portable and test setups) or `%LOCALAPPDATA%\Keel`, then
-/// `index`: the app's cache folder.
+/// Where the index lives: `KEEL_INDEX_DIR`, else `KEEL_CONFIG_DIR\index` (portable
+/// and test setups), else `%TEMP%\keel-test-index` inside a cargo test binary, else
+/// `%LOCALAPPDATA%\Keel\index`.
 pub fn index_dir() -> Option<PathBuf> {
-    let base = match std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => directories::BaseDirs::new()?.cache_dir().join("Keel"),
-    };
-    Some(base.join("index"))
+    let var = |name| std::env::var_os(name).filter(|d| !d.is_empty());
+    if let Some(dir) = var("KEEL_INDEX_DIR") {
+        return Some(dir.into());
+    }
+    if let Some(dir) = var("KEEL_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("index"));
+    }
+    if in_test_binary() {
+        return Some(std::env::temp_dir().join("keel-test-index"));
+    }
+    Some(
+        directories::BaseDirs::new()?
+            .cache_dir()
+            .join("Keel")
+            .join("index"),
+    )
+}
+
+// ponytail: cargo puts test binaries in `target\<profile>\deps`, so no test (here or
+// in keel-app, which builds whole Apps) can reach the real index; an explicit
+// `KEEL_INDEX_DIR` still wins.
+fn in_test_binary() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.file_name().map(|d| d == "deps"))
+        .unwrap_or(false)
 }
 
 /// Relaunches this executable as `keel --index-service <index dir>` through the UAC
@@ -77,11 +105,34 @@ pub fn run_index_service(dir: &Path) -> anyhow::Result<()> {
         bail!("the index service needs administrator rights");
     }
     std::fs::create_dir_all(dir)?;
-    for id in win::fixed_ntfs_volumes() {
+    each_volume(&win::fixed_ntfs_volumes(), |id| {
         let (index, meta) = build_volume(id)?;
-        db::save_full(&db_path(dir, id).with_extension("db.svc"), &index, &meta)?;
+        db::save_full(&db_path(dir, id).with_extension("db.svc"), &index, &meta)
+    })
+}
+
+/// Runs `index` on every volume; a failure is logged and the rest still run. Errors
+/// only when every volume failed.
+fn each_volume(
+    ids: &[VolumeId],
+    mut index: impl FnMut(VolumeId) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut last = None;
+    let mut done = 0;
+    for &id in ids {
+        match index(id) {
+            Ok(()) => done += 1,
+            Err(e) => {
+                let e = e.context(format!("indexing {}", id.drive()));
+                warn(&format!("{e:#}"));
+                last = Some(e);
+            }
+        }
     }
-    Ok(())
+    match last {
+        Some(e) if done == 0 => Err(e),
+        _ => Ok(()),
+    }
 }
 
 fn db_path(dir: &Path, id: VolumeId) -> PathBuf {
@@ -205,6 +256,18 @@ struct Shared {
     parts: RwLock<Vec<Part>>,
     status: Mutex<Option<String>>,
     ready: AtomicBool,
+    /// Entries found so far by the user-folder walk (before it is `ready`).
+    done: AtomicUsize,
+    /// An index was built or swapped in since the last `take_ready`.
+    fresh: AtomicBool,
+}
+
+impl Shared {
+    /// A finished index is in `parts`: searchable now, and the app is told.
+    fn finished(&self) {
+        self.ready.store(true, Ordering::Relaxed);
+        self.fresh.store(true, Ordering::Release);
+    }
 }
 
 /// Searcher over Keel's own index (see the module docs).
@@ -241,6 +304,8 @@ impl NtfsSearcher {
             ready: AtomicBool::new(!parts.is_empty()),
             parts: RwLock::new(parts),
             status: Mutex::new(None),
+            done: AtomicUsize::new(0),
+            fresh: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&shared);
         let _ = std::thread::Builder::new()
@@ -271,8 +336,8 @@ impl Searcher for NtfsSearcher {
         let mut found: Vec<Found> = {
             let parts = self.shared.parts.read();
             if parts.is_empty() {
-                let status = self.shared.status.lock().clone();
-                bail!(status.unwrap_or_else(|| "Keel is building its file index".into()));
+                let done = self.shared.done.load(Ordering::Relaxed);
+                bail!("Keel is indexing your files ({done} so far); search works when it is done");
             }
             parts
                 .iter()
@@ -281,19 +346,20 @@ impl Searcher for NtfsSearcher {
         };
         found.sort_by(rank);
         found.truncate(max);
-        let stat = found.len() <= STAT_LIMIT;
+        let mut hits: Vec<Hit> = found
+            .into_iter()
+            .map(|f| Hit {
+                path: keel_vfs::VPath::local(&f.path),
+                is_dir: f.is_dir,
+                size: 0,
+                modified: None,
+            })
+            .collect();
         // Size and date come from the file system: a few hundred lookups, in parallel.
-        let chunk = found.len().div_ceil(8).max(64);
-        Ok(std::thread::scope(|s| {
-            let workers: Vec<_> = found
-                .chunks(chunk)
-                .map(|part| s.spawn(move || part.iter().map(|f| hit(f, stat)).collect::<Vec<_>>()))
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        }))
+        if query.meta && hits.len() <= STAT_LIMIT {
+            crate::fill_meta(&mut hits);
+        }
+        Ok(hits)
     }
 
     /// True once any index (a volume or the user-folder walk) is loaded.
@@ -308,15 +374,20 @@ impl Searcher for NtfsSearcher {
     fn name(&self) -> &'static str {
         "Keel index"
     }
-}
 
-fn hit(found: &Found, stat: bool) -> Hit {
-    let meta = stat.then(|| std::fs::metadata(&found.path).ok()).flatten();
-    Hit {
-        path: keel_vfs::VPath::local(&found.path),
-        is_dir: found.is_dir,
-        size: meta.as_ref().filter(|m| m.is_file()).map_or(0, |m| m.len()),
-        modified: meta.and_then(|m| m.modified().ok()),
+    /// Indexing (with the walk's count so far) until the first index is in.
+    fn state(&self) -> SearchState {
+        if self.available() {
+            SearchState::Ready
+        } else {
+            SearchState::Indexing {
+                done: self.shared.done.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    fn take_ready(&self) -> bool {
+        self.shared.fresh.swap(false, Ordering::Acquire)
     }
 }
 
@@ -328,6 +399,10 @@ struct Worker {
     frozen: Vec<u32>,
     watcher: Option<notify::RecommendedWatcher>,
     events: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
+    /// The watcher lost events: walk the user folders again (at most every
+    /// [`RESCAN_GAP`]).
+    rescan: bool,
+    rescanned: Option<Instant>,
 }
 
 /// The background thread: bring saved volumes current (or build them when
@@ -340,6 +415,8 @@ fn run(weak: Weak<Shared>) {
         frozen: Vec::new(),
         watcher: None,
         events: None,
+        rescan: false,
+        rescanned: None,
     };
     let mut first = true;
     loop {
@@ -495,6 +572,7 @@ impl Worker {
                     usn::fill_names(&mut records, part.index(), |frn| volume.name_of(frn));
                 }
             }
+            usn::keep_linked(&mut records, |frn| volume.name_of(frn).is_some());
             let mut changes = Changes::default();
             if let Some(Part::Volume { index, meta, .. }) = shared
                 .parts
@@ -518,14 +596,39 @@ impl Worker {
                 }
             }
         }
-        if let Some(events) = &self.events {
-            let mut parts = shared.parts.write();
-            if let Some(Part::Walk(walk)) = parts.first_mut() {
-                for event in events.try_iter().flatten() {
-                    walk.apply(&event);
-                }
-            }
+        self.poll_walk(shared);
+    }
+
+    /// Applies the watcher's events to the user-folder walk. The disk is read (new
+    /// folders walked) before the index is locked, then the changes go in batches.
+    fn poll_walk(&mut self, shared: &Shared) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let events: Vec<_> = events.try_iter().collect();
+        if events.is_empty() && !self.rescan {
+            return;
         }
+        let deep = match shared.parts.read().first() {
+            Some(Part::Walk(walk)) => walk.deep.clone(),
+            _ => return,
+        };
+        let ops = walk::plan(&deep, events);
+        self.rescan |= ops.contains(&walk::Op::Rescan);
+        if self.rescan && self.rescanned.is_none_or(|at| at.elapsed() >= RESCAN_GAP) {
+            // Lost events: walk again off the lock (the old index keeps serving), then
+            // swap. Events arriving meanwhile stay queued for the next poll.
+            self.rescan = false;
+            self.rescanned = Some(Instant::now());
+            let (deep, shallow) = walk::roots();
+            let fresh = new_walk(&deep, &shallow, &AtomicUsize::new(0));
+            if let Some(slot @ Part::Walk(_)) = shared.parts.write().first_mut() {
+                *slot = Part::Walk(fresh);
+            }
+            shared.finished();
+            return;
+        }
+        apply_walk_ops(&shared.parts, &ops);
     }
 
     /// Indexes the user folders, watching first so nothing created meanwhile is lost.
@@ -543,15 +646,47 @@ impl Worker {
             w
         });
         self.events = Some(rx);
-        let mut walk = walk::Walk::new(&deep);
-        for s in &shallow {
-            walk.add_tree(s, Some(1));
-        }
-        for d in &deep {
-            walk.add_tree(d, None);
-        }
+        shared.done.store(0, Ordering::Relaxed);
+        let walk = new_walk(&deep, &shallow, &shared.done);
         shared.parts.write().push(Part::Walk(walk));
+        shared.finished();
     }
+}
+
+/// Walks the user folders into a new index (seconds to minutes for a big home
+/// folder; no lock), counting entries in `progress`.
+fn new_walk(deep: &[PathBuf], shallow: &[PathBuf], progress: &AtomicUsize) -> walk::Walk {
+    let mut walk = walk::Walk::new(deep);
+    for s in shallow {
+        walk.add_tree(s, Some(1), progress);
+    }
+    for d in deep {
+        walk.add_tree(d, None, progress);
+    }
+    walk
+}
+
+/// Applies `ops` to the walk index, write-locking it for about [`BATCH`] at a time
+/// and handing the lock to waiting searches in between. Returns the longest hold.
+fn apply_walk_ops(parts: &RwLock<Vec<Part>>, ops: &[walk::Op]) -> Duration {
+    let mut longest = Duration::ZERO;
+    let mut rest = ops;
+    while !rest.is_empty() {
+        let mut guard = parts.write();
+        let Some(Part::Walk(walk)) = guard.first_mut() else {
+            break;
+        };
+        let started = Instant::now();
+        let mut n = 0;
+        while n < rest.len() && (n == 0 || started.elapsed() < BATCH) {
+            walk.apply(&rest[n]);
+            n += 1;
+        }
+        longest = longest.max(started.elapsed());
+        rest = &rest[n..];
+        parking_lot::RwLockWriteGuard::unlock_fair(guard);
+    }
+    longest
 }
 
 fn has_volume(shared: &Shared, serial: u32) -> bool {
@@ -569,6 +704,8 @@ fn replace(shared: &Shared, part: Part) {
         Some(slot) => *slot = part,
         None => parts.push(part),
     }
+    drop(parts);
+    shared.finished();
 }
 
 // ponytail: stderr, not tracing; keel-search has no logging dependency yet.
@@ -651,6 +788,134 @@ mod tests {
         assert_eq!(removes, [12, 30]);
     }
 
+    /// Finding 22: while the first index is built, the searcher reports Indexing
+    /// with a count (not "unavailable"), and announces the finished index once.
+    #[test]
+    fn indexing_is_reported_and_completion_announced() {
+        let shared = Arc::new(Shared {
+            dir: PathBuf::new(),
+            parts: RwLock::new(Vec::new()),
+            status: Mutex::new(Some(FALLBACK_STATUS.into())),
+            ready: AtomicBool::new(false),
+            done: AtomicUsize::new(1234),
+            fresh: AtomicBool::new(false),
+        });
+        let searcher = NtfsSearcher {
+            shared: shared.clone(),
+        };
+        assert_eq!(searcher.state(), SearchState::Indexing { done: 1234 });
+        let err = searcher.query(&Query::default()).unwrap_err().to_string();
+        assert!(err.contains("indexing") && err.contains("1234"), "{err}");
+        assert!(!searcher.take_ready());
+
+        let mut walk = walk::Walk::new(&[]);
+        walk.add(Path::new(r"C:\KeelReadyNeedle.txt"), false);
+        shared.parts.write().push(Part::Walk(walk));
+        shared.finished();
+        assert_eq!(searcher.state(), SearchState::Ready);
+        assert!(searcher.take_ready());
+        assert!(!searcher.take_ready(), "once");
+        let hits = searcher
+            .query(&Query {
+                text: "keelreadyneedle".into(),
+                ..Query::default()
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    /// Finding 3: a 10k-file tree deleted from a 1M-entry walk index, as one folder
+    /// event and as one event per file; the write lock is held < 50 ms per batch, and
+    /// planning (which walks new folders) needs no lock at all.
+    #[test]
+    fn walk_changes_hold_the_index_lock_briefly() {
+        use notify::event::{CreateKind, RemoveKind};
+        use notify::{Event, EventKind};
+        let mut big = walk::Walk::new(&[]);
+        for d in 0..1_000 {
+            for f in 0..1_000 {
+                big.add(Path::new(&format!(r"C:\t\d{d}\f{f}.txt")), false);
+            }
+        }
+        for tree in ["one", "each"] {
+            for f in 0..10_000 {
+                let path = format!(r"C:\t\{tree}\s{}\f{f}.txt", f % 100);
+                big.add(Path::new(&path), false);
+            }
+        }
+        assert!(big.index.len() > 1_000_000);
+        let parts = RwLock::new(vec![Part::Walk(big)]);
+        let remove = |path: String| {
+            Ok(Event::new(EventKind::Remove(RemoveKind::Any)).add_path(PathBuf::from(path)))
+        };
+        let one = vec![remove(r"C:\t\one".into())];
+        let mut each: Vec<_> = (0..10_000)
+            .map(|f| remove(format!(r"C:\t\each\s{}\f{f}.txt", f % 100)))
+            .collect();
+        each.extend((0..100).map(|s| remove(format!(r"C:\t\each\s{s}"))));
+        each.push(remove(r"C:\t\each".into()));
+        for events in [one, each] {
+            let ops = walk::plan(&[], events);
+            let longest = apply_walk_ops(&parts, &ops);
+            println!("{} ops, longest write-lock hold {longest:?}", ops.len());
+            assert!(longest < Duration::from_millis(50), "lock held {longest:?}");
+        }
+        assert_eq!(parts.read()[0].index().len(), 1_001_002);
+
+        // A folder created under a deep root is walked while a search holds the lock.
+        let root = std::env::temp_dir().join(format!("keel-walk-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("new").join("deeper")).unwrap();
+        std::fs::write(root.join("new").join("deeper").join("x.txt"), b"x").unwrap();
+        let deep = walk::Walk::new(std::slice::from_ref(&root)).deep;
+        let created =
+            Ok(Event::new(EventKind::Create(CreateKind::Folder)).add_path(root.join("new")));
+        let ops = {
+            let _search = parts.write();
+            walk::plan(&deep, [created])
+        };
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn one_failing_volume_does_not_stop_the_others() {
+        let ids = [
+            VolumeId {
+                letter: 'C',
+                serial: 1,
+            },
+            VolumeId {
+                letter: 'D',
+                serial: 2,
+            },
+        ];
+        let mut seen = Vec::new();
+        let ok = each_volume(&ids, |id| {
+            seen.push(id.letter);
+            if id.letter == 'C' {
+                bail!("bad volume")
+            }
+            Ok(())
+        });
+        assert!(ok.is_ok());
+        assert_eq!(seen, ['C', 'D']);
+        let all = each_volume(&ids, |_| bail!("bad volume")).unwrap_err();
+        assert!(format!("{all:#}").contains("bad volume"));
+        assert!(each_volume(&[], |_| bail!("never")).is_ok());
+    }
+
+    #[test]
+    fn tests_never_use_the_real_index_folder() {
+        let dir = index_dir().unwrap();
+        let real = directories::BaseDirs::new().map(|b| b.cache_dir().join("Keel"));
+        assert!(
+            real.is_none_or(|real| !dir.starts_with(real)),
+            "{}",
+            dir.display()
+        );
+    }
+
     #[test]
     fn adopt_moves_service_output_into_place() {
         let dir = std::env::temp_dir().join(format!("keel-ntfs-adopt-{}", std::process::id()));
@@ -694,6 +959,7 @@ mod tests {
         db::save_full(&db_path(&dir, id), &index, &meta).unwrap();
         let searcher = NtfsSearcher::open(dir.clone());
         assert!(searcher.available());
+        assert_eq!(searcher.state(), SearchState::Ready);
         let hits = searcher
             .query(&Query {
                 text: "keelopenneedle".into(),
@@ -1030,6 +1296,45 @@ mod tests {
         );
     }
 
+    /// `query()` time over the user-folder walk of this machine, per pattern: cold,
+    /// then warm file-system cache, then `meta: false`. Patterns via `KEEL_PERF_QUERIES`
+    /// (comma-separated). `cargo test -p keel-search --release -- --ignored --nocapture
+    /// perf_query`
+    #[test]
+    #[ignore]
+    fn perf_query_times() {
+        let dir = std::env::temp_dir().join(format!("keel-index-perf-{}", std::process::id()));
+        let searcher = NtfsSearcher::open(dir.clone());
+        let started = Instant::now();
+        while !searcher.available() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        println!("{} entries in {:.2?}", searcher.len(), started.elapsed());
+        let patterns = std::env::var("KEEL_PERF_QUERIES")
+            .unwrap_or_else(|_| "*.dll,*.json,report,keel,a,*.png".into());
+        for text in patterns.split(',') {
+            let mut times = Vec::new();
+            for meta in [true, true, false] {
+                let started = Instant::now();
+                let hits = searcher
+                    .query(&Query {
+                        text: text.into(),
+                        meta,
+                        ..Query::default()
+                    })
+                    .unwrap();
+                times.push(format!(
+                    "{:>4} hits {:>9.2?}",
+                    hits.len(),
+                    started.elapsed()
+                ));
+            }
+            println!("{text:>10}: {}", times.join("  |  "));
+        }
+        drop(searcher);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The user-folder fallback on this machine: walk time and size.
     /// `cargo test -p keel-search --release -- --ignored --nocapture live_user_folder`
     #[test]
@@ -1051,6 +1356,9 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(searcher.status().as_deref(), Some(FALLBACK_STATUS));
+        assert_eq!(searcher.state(), SearchState::Ready);
+        assert!(searcher.take_ready(), "the finished walk is announced once");
+        assert!(!searcher.take_ready());
         let home = directories::UserDirs::new()
             .unwrap()
             .home_dir()
