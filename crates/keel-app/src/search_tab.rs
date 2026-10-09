@@ -47,7 +47,13 @@ pub fn probe(searcher: &dyn Searcher) -> Option<String> {
 
 /// The query box. Editing schedules the query `DEBOUNCE` later; Enter runs it now;
 /// Up/Down move the result cursor while typing.
-pub fn bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
+pub fn bar(
+    ui: &mut egui::Ui,
+    pane: &mut Pane,
+    platform: Option<&str>,
+    library: bool,
+    out: &mut Vec<Action>,
+) {
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     let (count, busy) = (tab.entries().len(), tab.loading);
@@ -55,6 +61,28 @@ pub fn bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         return;
     };
     ui.horizontal(|ui| {
+        // Task 29: the backend (the platform's, or the library index).
+        let platform = platform.unwrap_or("System");
+        let before = tab.library_search;
+        egui::ComboBox::from_id_salt("search-backend")
+            .width(110.0)
+            .selected_text(if tab.library_search {
+                "Library"
+            } else {
+                platform
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut tab.library_search, false, platform);
+                ui.add_enabled_ui(library, |ui| {
+                    ui.selectable_value(&mut tab.library_search, true, "Library")
+                        .on_disabled_hover_text("The library is off or still opening");
+                });
+            });
+        if tab.library_search != before {
+            // Run the query again on the other backend now.
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+        }
         let id = ui.id().with("search");
         if ui.memory(|m| m.has_focus(id)) {
             ui.input_mut(|i| {

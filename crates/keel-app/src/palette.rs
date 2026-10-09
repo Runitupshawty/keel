@@ -2,6 +2,7 @@
 //! fuzzy filtered. A few dozen labels match instantly, so this runs on the UI thread.
 
 use crate::keys::Action;
+use crate::library::LibCmd;
 use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
@@ -48,6 +49,8 @@ fn context_items() -> Vec<Item> {
         ("Extract to…", "", ExtractTo),
         ("Add to zip", "", AddToZip),
         ("Compress to zip…", "", CompressToZip),
+        ("Tag…", "Ctrl+Shift+T", Library(LibCmd::TagPicker)),
+        ("Toggle favorite", "Ctrl+D", Library(LibCmd::ToggleFavorite)),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),
@@ -99,6 +102,20 @@ fn global_items() -> Vec<Item> {
         ("Toggle terminal", "Ctrl+`", ToggleTerminal),
         ("Toggle dark / light theme", "", ToggleTheme),
         ("Settings", "Ctrl+,", Settings),
+        // --- Task 29 ---
+        ("Library overview", "", Library(LibCmd::Overview)),
+        ("Add library source…", "", Library(LibCmd::AddSource)),
+        ("Find duplicates", "", Library(LibCmd::Duplicates)),
+        (
+            "Favorites",
+            "",
+            Library(LibCmd::Query(crate::library::FAVORITES_QUERY.into())),
+        ),
+        (
+            "Recents",
+            "",
+            Library(LibCmd::Query(crate::library::RECENTS_QUERY.into())),
+        ),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),

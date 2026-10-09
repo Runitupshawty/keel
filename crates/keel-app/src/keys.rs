@@ -148,6 +148,9 @@ pub enum Action {
         mv: bool,
     },
     ClearStash,
+    // --- Task 29 ---
+    /// Library sidebar, overview, dialogs, tags (`library.rs`).
+    Library(crate::library::LibCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -189,6 +192,12 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::N, Action::NewFolder),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
     (CMD_SHIFT, Key::S, Action::StashSelection),
+    // Task 29: Ctrl+T stays New tab; the tag picker is Ctrl+Shift+T.
+    (
+        CMD_SHIFT,
+        Key::T,
+        Action::Library(crate::library::LibCmd::TagPicker),
+    ),
     (HIDDEN.0, HIDDEN.1, Action::ToggleHidden),
     (CMD, Key::P, Action::JumpFolder),
     (CMD, Key::Enter, Action::OpenLocation),
@@ -198,6 +207,11 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::T, Action::NewTab),
     (CMD, Key::W, Action::CloseTab),
     (CMD, Key::A, Action::SelectAll),
+    (
+        CMD,
+        Key::D,
+        Action::Library(crate::library::LibCmd::ToggleFavorite),
+    ),
     (CMD, Key::Comma, Action::Settings),
     (Modifiers::ALT, Key::ArrowUp, Action::Up),
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),

@@ -81,10 +81,13 @@ impl Sidebar {
         theme: &Theme,
         current: &VPath,
         archives: &[(usize, usize, VPath)],
+        library: &crate::library::LibraryUi,
         out: &mut Vec<Action>,
     ) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.style_mut().interaction.selectable_labels = false;
+            // --- Task 29 ---
+            crate::library_ui::sidebar(ui, library, theme, current, out);
             let item = |ui: &mut egui::Ui, path: &VPath, text: &str| {
                 let icon = if path == current {
                     crate::icons::folder_open()

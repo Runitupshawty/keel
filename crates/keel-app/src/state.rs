@@ -156,6 +156,8 @@ pub enum Msg {
     // --- Task 24 ---
     /// A later `keel` run handed over its command line (single instance).
     External(crate::cli::Request),
+    // --- Task 29 ---
+    Library(crate::library::LibMsg),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -227,6 +229,8 @@ pub struct AppState {
     shown: [Option<(usize, VPath, crate::pane::ViewMode)>; 2],
     /// The drop zone strip and its stash (Task 23).
     pub dropzone: crate::dropzone::DropZone,
+    /// Task 29: the library (opened by the app, see `library.rs`).
+    pub library: crate::library::LibraryUi,
 }
 
 impl AppState {
@@ -268,6 +272,7 @@ impl AppState {
         clouds.sync(&router, &settings.clouds);
         let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
+        let library = crate::library::LibraryUi::new(&router, tx.clone(), ctx.clone());
         let mut panes = session
             .panes
             .into_iter()
@@ -334,6 +339,7 @@ impl AppState {
             next_req: 0,
             shown: [None, None],
             dropzone: Default::default(),
+            library,
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -370,6 +376,7 @@ impl AppState {
             &mut self.icon_themes,
             &self.tx,
             self.searcher.as_ref().map(|x| x.name()), // Task 24
+            &mut self.library,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -387,6 +394,11 @@ impl AppState {
             self.theme = self.themes.get(&self.settings.theme);
             self.theme.apply(&self.ctx);
         }
+        // --- Task 29 ---
+        for cmd in std::mem::take(&mut self.library.pending) {
+            self.library_cmd(self.active, cmd);
+        }
+        self.library.apply_hashing(self.settings.library.hashing);
     }
 
     /// Loads the platform searcher off the UI thread (the Everything DLL load may block).
@@ -407,6 +419,9 @@ impl AppState {
     /// A search tab reruns its query instead.
     pub fn list(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
+        if tab.kind == TabKind::Overview {
+            return;
+        }
         if let TabKind::Search { due, .. } = &mut tab.kind {
             *due = Some(Instant::now());
             self.ctx.request_repaint();
@@ -718,6 +733,7 @@ impl AppState {
             }
             // --- Task 24 ---
             Msg::External(req) => self.external(req),
+            Msg::Library(msg) => self.library_msg(msg),
         }
     }
 
@@ -758,8 +774,19 @@ impl AppState {
             return;
         };
         // A remote or cloud tab searches names there (remotes.rs); Everything stays local.
-        let remote = crate::remotes::is_network(&tab.dir);
+        let remote = crate::remotes::is_network(&tab.dir) && !tab.library_search;
+        let library = (tab.library_search)
+            .then(|| self.library.lib.clone())
+            .flatten()
+            .map(|lib| Arc::new(crate::library::LibSearch(lib)) as Arc<dyn Searcher>);
         let searcher = match self.searcher.clone() {
+            _ if tab.library_search && library.is_none() => {
+                tab.loading = false;
+                tab.error = Some("The library is not open".into());
+                *due = None;
+                return;
+            }
+            _ if library.is_some() => library,
             _ if remote => None,
             Some(s) => Some(s),
             None => {
@@ -1126,6 +1153,7 @@ impl AppState {
                 .request_repaint_after(at.saturating_duration_since(now));
         }
         self.sync_watchers();
+        self.library_tick(); // Task 29
     }
 
     /// The local folders pane `p` shows: its active tab's and, in the columns view, its
@@ -1231,6 +1259,10 @@ impl AppState {
         }
         // --- Task 23 ---: columns view navigation.
         let Some(action) = crate::view_columns::intercept(self, p, action) else {
+            return;
+        };
+        // --- Task 29 ---
+        let Some(action) = self.library_intercept(p, action) else {
             return;
         };
         match action {
@@ -1730,6 +1762,8 @@ impl AppState {
             | Action::Unstash(_)
             | Action::StashPaste { .. }
             | Action::ClearStash => crate::dropzone::run(self, p, action),
+            // Handled by `library_intercept`.
+            Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;
@@ -2111,7 +2145,7 @@ mod tests {
         state.run(0, Action::Search);
         let query = |s: &AppState| match &s.tab(0).kind {
             TabKind::Search { query, .. } => Some(query.clone()),
-            TabKind::Dir => None,
+            TabKind::Dir | TabKind::Overview => None,
         };
         if let TabKind::Search { query, .. } = &mut state.tab_mut(0).kind {
             query.push_str("ab");

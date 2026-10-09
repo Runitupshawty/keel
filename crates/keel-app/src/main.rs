@@ -13,6 +13,8 @@ mod icons;
 mod jobs;
 mod jump;
 mod keys;
+mod library;
+mod library_ui;
 mod palette;
 mod pane;
 mod platform;

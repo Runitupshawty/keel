@@ -115,6 +115,11 @@ impl App {
             .is_some()
             .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx, not_server))
             .flatten();
+        // --- Task 29 ---: the library opens on a worker (not in tests: no persist).
+        if persist.is_some() && state.settings.library.enabled {
+            let name = state.settings.library.name.clone();
+            state.library.open(&name, state.router.clone());
+        }
         // --- end Task 24 ---
         Self {
             state,
@@ -208,8 +213,18 @@ impl App {
         if let Some(action) = crate::dropzone::panel(ctx, s) {
             out.push((s.active, action));
         }
-        egui::TopBottomPanel::bottom("jobs")
-            .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
+        // Task 29: library jobs (index, hash, operations) share the panel.
+        let library_jobs = !s.library.jobs.is_empty();
+        let mut job_acts = Vec::new();
+        egui::TopBottomPanel::bottom("jobs").show_animated(
+            ctx,
+            !s.jobs.list.is_empty() || library_jobs,
+            |ui| {
+                s.jobs.ui(ui);
+                crate::library_ui::jobs(ui, &s.library, &mut job_acts);
+            },
+        );
+        out.extend(job_acts.into_iter().map(|a| (s.active, a)));
         s.terminal.panel(ctx, &mut s.settings, &s.tx);
         let sidebar = egui::SidePanel::left("sidebar")
             .resizable(true)
@@ -219,7 +234,8 @@ impl App {
                 let mut acts = Vec::new();
                 let current = s.panes[s.active].tab().dir.clone();
                 let archives = s.open_archives();
-                s.sidebar.ui(ui, &s.theme, &current, &archives, &mut acts);
+                s.sidebar
+                    .ui(ui, &s.theme, &current, &archives, &s.library, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
         let w = sidebar.response.rect.width().round();
@@ -357,6 +373,10 @@ impl App {
                         banner,
                         preview: (inline && p == s.active).then_some(&mut s.preview),
                         column_widths: &mut s.settings.column_widths,
+                        library: &s.library,
+                        drives: &s.sidebar.drives,
+                        searcher: s.searcher.as_ref().map(|x| x.name()),
+                        tags_column: s.settings.library.tags_column,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {
@@ -391,6 +411,10 @@ impl App {
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
         }
+        // --- Task 29 ---
+        let mut acts = Vec::new();
+        crate::library_ui::windows(ctx, s, &mut acts);
+        out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {
                 out.push((s.active, action));
@@ -444,6 +468,8 @@ impl eframe::App for App {
             let session = self.save_session.then(|| Session::of(&self.state));
             persist.finish(&self.state.settings, session);
         }
+        // Task 29: jobs checkpoint and resume next time.
+        self.state.library.close_now();
     }
 }
 

@@ -32,6 +32,7 @@ roxmltree = "0.19"
 # `cargo check -p keel-app --target x86_64-unknown-linux-gnu --no-default-features`.
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
 keel-search = { path = "../keel-search" }
+keel-core = { path = "../keel-core" }
 keel-preview = { path = "../keel-preview" }
 keel-term = { path = "../keel-term" }
 vt100.workspace = true

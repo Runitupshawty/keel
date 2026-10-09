@@ -47,6 +47,14 @@ impl Toasts {
         }
     }
 
+    /// An info toast with a button (kept longer, so it can be clicked).
+    pub fn offer(&mut self, text: impl Into<String>, button: &str, action: Action) {
+        self.push(text.into(), Level::Info, Duration::from_secs(30));
+        if let Some(t) = self.list.last_mut() {
+            t.action = Some((button.into(), action));
+        }
+    }
+
     fn push(&mut self, text: String, level: Level, ttl: Duration) {
         // Repeats (e.g. a watcher refresh failing twice) extend the old toast.
         self.list.retain(|t| t.text != text);

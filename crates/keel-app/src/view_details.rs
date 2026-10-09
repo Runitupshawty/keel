@@ -6,6 +6,7 @@ use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::tab::{SortKey, Tab};
 use egui::{Align, Key, Layout, Sense};
 use egui_extras::{Column, TableBuilder};
+use keel_core::{SourceStatus, FAVORITES};
 use keel_vfs::{Entry, Kind};
 
 pub const ROW_H: f32 = 22.0;
@@ -57,6 +58,9 @@ pub fn ui(
         tab.cursor.as_deref(),
     );
     let selection = ui.visuals().selection.bg_fill;
+    // --- Task 29 ---: tags and favorites (library on), offline badges.
+    let lib = cx.library;
+    let tags_col = cx.tags_column && lib.is_open();
 
     let mut table = TableBuilder::new(ui)
         .id_salt(id)
@@ -74,6 +78,9 @@ pub fn ui(
         )
         .column(Column::initial(80.0).at_least(50.0))
         .column(Column::initial(124.0).at_least(60.0).clip(true));
+    if tags_col {
+        table = table.column(Column::initial(120.0).at_least(40.0).clip(true));
+    }
     if let Some(row) = tab.scroll_to.take() {
         table = table.scroll_to_row(row, None);
     }
@@ -102,6 +109,11 @@ pub fn ui(
                     }
                 });
             }
+            if tags_col {
+                header.col(|ui| {
+                    ui.strong("Tags");
+                });
+            }
         })
         .body(|body| {
             let vis = tab.visible_cached();
@@ -119,6 +131,16 @@ pub fn ui(
                     }
                 };
                 let color = (e.hidden).then_some(muted);
+                let real = lib
+                    .is_open()
+                    .then(|| crate::library::real_of(&lib.sources, &e.path))
+                    .flatten();
+                let source = real
+                    .as_ref()
+                    .and_then(|r| crate::library::source_of(&lib.sources, r))
+                    .map(|(s, _)| s);
+                let offline =
+                    source.filter(|s| matches!(s.status, keel_core::SourceStatus::Offline { .. }));
                 row.col(|ui| {
                     tint(ui);
                     ui.add(
@@ -155,11 +177,25 @@ pub fn ui(
                             ui.add(egui::Label::new(cell(shown, color)).truncate());
                         }
                     }
+                    if let Some(s) = offline {
+                        let SourceStatus::Offline { last_seen } = s.status else {
+                            unreachable!("filtered")
+                        };
+                        ui.label(egui::RichText::new("offline").small().color(muted))
+                            .on_hover_text(format!(
+                                "{} is offline (last seen {}): listed from the library index",
+                                s.label,
+                                crate::library::when(last_seen)
+                            ));
+                    }
                 });
                 row.col(|ui| {
                     tint(ui);
                     if search {
-                        let folder = e.path.parent().map(|d| d.display()).unwrap_or_default();
+                        let mut folder = e.path.parent().map(|d| d.display()).unwrap_or_default();
+                        if let Some(s) = source.filter(|_| tab.library_search) {
+                            folder = format!("{} · {folder}", s.label);
+                        }
                         ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate())
                             .on_hover_text(folder);
                     } else {
@@ -176,6 +212,27 @@ pub fn ui(
                     tint(ui);
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
+                if tags_col {
+                    row.col(|ui| {
+                        tint(ui);
+                        let Some(real) = real.as_ref().filter(|_| source.is_some()) else {
+                            return;
+                        };
+                        let on = lib.tagged.get(real).map_or(&[][..], |t| t.as_slice());
+                        let fav = on.contains(&FAVORITES);
+                        let star = egui::Button::new(if fav { "★" } else { "☆" }).frame(false);
+                        if ui.add(star).on_hover_text("Favorite (Ctrl+D)").clicked() {
+                            out.push(Action::Library(crate::library::LibCmd::TagPaths {
+                                paths: vec![e.path.clone()],
+                                tag: FAVORITES,
+                                on: !fav,
+                            }));
+                        }
+                        for tag in lib.tags.iter().filter(|t| on.contains(&t.id)) {
+                            crate::library_ui::chip(ui, tag);
+                        }
+                    });
+                }
                 let r = row.response();
                 r.context_menu(|ui| context_menu(ui, tab, Some(e), out));
                 clicks.push((r, e.clone()));
