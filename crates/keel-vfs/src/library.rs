@@ -98,6 +98,11 @@ impl Provider for LibraryProvider {
         Ok(entries)
     }
 
+    /// The index listing is the whole generation (no display cap, no cache to go stale).
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
+        self.list(dir)
+    }
+
     fn stat(&self, p: &VPath) -> Result<Entry> {
         let parent = p
             .parent()
@@ -127,6 +132,11 @@ impl Provider for LibraryProvider {
 
     fn remove(&self, p: &VPath) -> Result<()> {
         Err(Self::read_only(p))
+    }
+
+    /// `remove` is refused; Permanent is the honest label should a caller ask anyway.
+    fn remove_kind(&self) -> crate::RemoveKind {
+        crate::RemoveKind::Permanent
     }
 
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {

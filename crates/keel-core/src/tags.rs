@@ -2,8 +2,11 @@
 //!
 //! Tags are defined in `library.db`; every source store keeps a copy of the definitions next
 //! to its `record_tag` rows, so a store that travels alone keeps its organization (and its
-//! search can resolve tag names). Favorites are the reserved tag [`FAVORITES`]. Recents merge
-//! what the app opened (`note_open`) with what executed operations produced (op_log).
+//! search can resolve tag names). A store that comes back from another library has its tags
+//! merged in by name. Tag and record ids are never reused (AUTOINCREMENT), so a link or a
+//! recent left behind never lands on another tag or file. Favorites are the reserved tag
+//! [`FAVORITES`]. Recents merge what the app opened (`note_open`) with what executed
+//! operations produced (op_log).
 
 use crate::library::{RecordRef, Source};
 use crate::search::{hit_of, HIT_COLUMNS};
@@ -12,7 +15,10 @@ use anyhow::{Context, Result};
 use keel_vfs::VPath;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 pub type TagId = i64;
 
@@ -20,6 +26,10 @@ pub type TagId = i64;
 pub const FAVORITES: TagId = 1;
 /// Opened records remembered for recents.
 const OPENED_KEPT: i64 = 1_000;
+/// Store meta key: the library whose tags the store's `tag` table copies.
+const TAGS_FROM: &str = "tags_from";
+/// Attempts at a store write that another writer keeps busy (each waits the busy timeout).
+const STORE_ATTEMPTS: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
@@ -116,8 +126,100 @@ impl Library {
                 ins.execute(params![t.id, t.name, t.color, t.parent])?;
             }
         }
+        crate::db::set_meta(&tx, TAGS_FROM, &self.id.0)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The library tag named `name` (case-insensitively) under `parent`, created when
+    /// missing.
+    fn tag_named(&self, name: &str, color: Option<&str>, parent: Option<TagId>) -> Result<TagId> {
+        let c = self.shared.db.get()?;
+        let found: Option<TagId> = c
+            .query_row(
+                "SELECT id FROM tag WHERE coalesce(parent, 0) = coalesce(?2, 0)
+                     AND name = ?1 COLLATE NOCASE",
+                params![name, parent],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = found {
+            return Ok(id);
+        }
+        c.execute(
+            "INSERT INTO tag(name, color, parent) VALUES (?1, ?2, ?3)",
+            params![name, color, parent],
+        )?;
+        Ok(c.last_insert_rowid())
+    }
+
+    /// Brings every store's tags in line with the library before the library's copy
+    /// overwrites them: a store last mirrored from another library has its tags merged in by
+    /// name (created here when missing) and its links moved to them; links of this library's
+    /// tags that no longer exist are dropped.
+    pub(crate) fn reconcile_tags(&self) -> Result<()> {
+        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        for src in &sources {
+            let from = src.store.meta(TAGS_FROM)?;
+            let foreign = from.as_deref().is_some_and(|f| f != self.id.0);
+            let known: Vec<TagId> = self.tag_rows()?.iter().map(|t| t.id).collect();
+            let mut c = src.store.get()?;
+            if !foreign {
+                c.execute(
+                    "DELETE FROM record_tag WHERE tag NOT IN (SELECT value FROM json_each(?1))",
+                    [serde_json::to_string(&known)?],
+                )?;
+                continue;
+            }
+            let theirs: Vec<Tag> = {
+                let mut stmt = c.prepare("SELECT id, name, color, parent FROM tag")?;
+                let rows = stmt.query_map([], |r| {
+                    Ok(Tag {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        color: r.get(2)?,
+                        parent: r.get(3)?,
+                    })
+                })?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            // Parents first; a parent that never resolves (a cycle, a missing row) leaves
+            // its children at the top level.
+            let mut map: HashMap<TagId, TagId> = HashMap::from([(FAVORITES, FAVORITES)]);
+            let mut left: Vec<&Tag> = theirs.iter().filter(|t| t.id != FAVORITES).collect();
+            while !left.is_empty() {
+                let ready = left
+                    .iter()
+                    .position(|t| t.parent.is_none_or(|p| map.contains_key(&p)))
+                    .unwrap_or(0);
+                let t = left.remove(ready);
+                let parent = t.parent.and_then(|p| map.get(&p).copied());
+                let id = self.tag_named(&t.name, t.color.as_deref(), parent)?;
+                map.insert(t.id, id);
+            }
+            // Move the links: to negative ids first (old and new ids may overlap).
+            let tx = c.transaction()?;
+            let case: String = map
+                .iter()
+                .map(|(old, new)| format!(" WHEN {old} THEN {}", -new))
+                .collect();
+            if !map.is_empty() {
+                tx.execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO record_tag(record, tag)
+                         SELECT record, CASE tag{case} END FROM record_tag
+                         WHERE tag IN ({})",
+                        map.keys().map(i64::to_string).collect::<Vec<_>>().join(",")
+                    ),
+                    [],
+                )?;
+            }
+            tx.execute("DELETE FROM record_tag WHERE tag > 0", [])?;
+            tx.execute("UPDATE record_tag SET tag = -tag", [])?;
+            crate::db::set_meta(&tx, TAGS_FROM, &self.id.0)?;
+            tx.commit()?;
+        }
+        self.mirror_all()
     }
 
     fn mirror_all(&self) -> Result<()> {
@@ -228,9 +330,43 @@ impl Library {
         self.mirror_all()
     }
 
-    /// Deletes a tag and its record links; its nested tags move up to its parent.
+    /// Deletes a tag and its record links; its nested tags move up to its parent. The links
+    /// go first (retried while a store is busy): a failure leaves the tag in place, to be
+    /// deleted again, never links without their tag.
     pub fn delete_tag(&self, id: TagId) -> Result<()> {
         self.editable(id)?;
+        {
+            // Checked before anything goes: the nested tags must fit one level up.
+            let c = self.shared.db.get()?;
+            let clash: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tag a JOIN tag b
+                     ON coalesce(b.parent, 0) = coalesce((SELECT parent FROM tag WHERE id = ?1), 0)
+                     AND b.name = a.name COLLATE NOCASE AND b.id <> ?1
+                 WHERE a.parent = ?1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            anyhow::ensure!(!clash, "a nested tag's name clashes one level up");
+        }
+        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        for s in &sources {
+            let mut attempt = 1;
+            loop {
+                let deleted = s
+                    .store
+                    .get()
+                    .and_then(|c| Ok(c.execute("DELETE FROM record_tag WHERE tag = ?1", [id])?));
+                match deleted {
+                    Ok(_) => break,
+                    Err(_) if attempt < STORE_ATTEMPTS => attempt += 1,
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("remove tag {id} from source {}", s.def.label)
+                        })
+                    }
+                }
+            }
+        }
         {
             let mut c = self.shared.db.get()?;
             let tx = c.transaction()?;
@@ -241,12 +377,6 @@ impl Library {
             .context("a nested tag's name clashes one level up")?;
             tx.execute("DELETE FROM tag WHERE id = ?1", [id])?;
             tx.commit()?;
-        }
-        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
-        for s in &sources {
-            s.store
-                .get()?
-                .execute("DELETE FROM record_tag WHERE tag = ?1", [id])?;
         }
         self.mirror_all()
     }
@@ -363,7 +493,8 @@ impl Library {
     }
 
     /// Recently opened records and records produced by executed operations (copy and move
-    /// destinations, renamed items), newest first, each once.
+    /// destinations, renamed items), newest first, each once. Opened records that are gone
+    /// are forgotten.
     pub fn recents(&self, limit: usize) -> Result<Vec<LibraryHit>> {
         // (ts, sequence within its kind, record)
         let mut events: Vec<(i64, i64, RecordRef)> = Vec::new();
@@ -405,14 +536,25 @@ impl Library {
         events.sort_by_key(|e| std::cmp::Reverse((e.0, e.1)));
         let mut seen = HashSet::new();
         let mut out = Vec::new();
+        let mut gone = Vec::new();
         for (_, _, record) in events {
             if out.len() >= limit {
                 break;
             }
             if seen.insert(record.clone()) {
-                if let Some(hit) = self.record(&record)? {
-                    out.push(hit);
+                match self.record(&record)? {
+                    Some(hit) => out.push(hit),
+                    None => gone.push(record),
                 }
+            }
+        }
+        if !gone.is_empty() {
+            let c = self.shared.db.get()?;
+            for r in gone {
+                c.execute(
+                    "DELETE FROM opened WHERE source = ?1 AND record = ?2",
+                    params![r.source.0, r.id],
+                )?;
             }
         }
         Ok(out)
@@ -421,7 +563,7 @@ impl Library {
     /// Saves a view; `query` must parse as a [`LibraryQuery`].
     pub fn create_view(&self, name: &str, query: &str, layout: &str) -> Result<View> {
         check_name(name)?;
-        LibraryQuery::parse(query)?;
+        LibraryQuery::parse(query, 0)?;
         let c = self.shared.db.get()?;
         c.execute(
             "INSERT INTO view(name, query, layout) VALUES (?1, ?2, ?3)",
@@ -452,7 +594,7 @@ impl Library {
 
     pub fn update_view(&self, view: &View) -> Result<()> {
         check_name(&view.name)?;
-        LibraryQuery::parse(&view.query)?;
+        LibraryQuery::parse(&view.query, 0)?;
         let n = self.shared.db.get()?.execute(
             "UPDATE view SET name = ?2, query = ?3, layout = ?4 WHERE id = ?1",
             params![view.id, view.name, view.query, view.layout],

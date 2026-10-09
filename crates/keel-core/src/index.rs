@@ -6,7 +6,7 @@
 //! keeps the record id (tags and hashes stay attached).
 
 use crate::fsid::{self, Item, DANGLING, DIR, FILE};
-use crate::library::{Source, SourceStatus};
+use crate::library::{OfflineReason, Source, SourceStatus};
 use crate::Cancelled;
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -30,6 +30,16 @@ pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Attempts at taking the store's write lock (each waits the 5 s busy timeout).
 const BEGIN_ATTEMPTS: u32 = 4;
 
+/// The search filter indexes (as in `schema.sql`, source version 5).
+pub(crate) const FILTER_INDEXES: &str = "
+    CREATE INDEX IF NOT EXISTS record_mtime ON record(mtime) WHERE parent IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS record_size ON record(size) WHERE kind = 0;
+    CREATE INDEX IF NOT EXISTS record_kind ON record(kind, mtime) WHERE parent IS NOT NULL;";
+const DROP_FILTER_INDEXES: &str = "
+    DROP INDEX IF EXISTS record_mtime;
+    DROP INDEX IF EXISTS record_size;
+    DROP INDEX IF EXISTS record_kind;";
+
 pub(crate) const UNREADABLE: i64 = 1;
 pub(crate) const HIDDEN: i64 = 2;
 pub(crate) const LINK: i64 = 4;
@@ -52,15 +62,20 @@ pub enum ChangeEvent {
     Rescan,
 }
 
-/// The source's root cannot be reached: the walk stops without removing anything.
+/// The source's root cannot be reached, or is not the indexed folder: the walk stops
+/// without removing anything.
 #[derive(Debug)]
-struct Offline(String);
+struct Offline(OfflineReason, String);
 impl std::fmt::Display for Offline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "source offline: {}", self.0)
+        write!(f, "source offline: {}", self.1)
     }
 }
 impl std::error::Error for Offline {}
+
+fn unreachable(msg: String) -> anyhow::Error {
+    Offline(OfflineReason::Unreachable, msg).into()
+}
 
 enum Lister {
     Local,
@@ -75,7 +90,7 @@ impl Lister {
         router
             .provider_for(&src.def.root)
             .map(Lister::Remote)
-            .ok_or_else(|| Offline(format!("no provider for {}", src.def.root.display())).into())
+            .ok_or_else(|| unreachable(format!("no provider for {}", src.def.root.display())))
     }
 
     fn list(&self, dir: &VPath) -> Result<Vec<Item>> {
@@ -111,7 +126,7 @@ fn item_of(e: keel_vfs::Entry) -> Item {
     };
     Item {
         size: if kind == FILE { e.size as i64 } else { 0 },
-        mtime: e.modified.map(fsid::unix),
+        mtime: e.modified.map(fsid::unix_ns),
         ctime: None,
         hidden: e.hidden,
         link: e.is_link,
@@ -147,11 +162,32 @@ enum Outcome {
     Kept,
 }
 
+/// Is the file with native id `fs_id` still at the record path `old` (a hard link of it
+/// appeared at `new`, rather than the file moving there)?
+type StillAt<'a> = &'a dyn Fn(&str, &str, &str) -> bool;
+
+/// For a local source: `StillAt` by a stat of the old path.
+fn still_at(src: &Source) -> impl Fn(&str, &str, &str) -> bool + '_ {
+    move |old: &str, new: &str, fs_id: &str| {
+        // On a case-insensitive volume a case-only rename finds the file at its old name.
+        if src.nocase() && old.to_lowercase() == new.to_lowercase() {
+            return false;
+        }
+        src.absolute(old)
+            .to_local_path()
+            .and_then(|p| fsid::stat(&p).ok())
+            .and_then(|i| i.fs_id)
+            .is_some_and(|id| id == fs_id)
+    }
+}
+
 /// Writes `item` at `rel` (under `parent`), reusing the record with the same identity that
 /// this walk has not seen yet (`gen < unseen_below`), else the one at the same parent+name.
-/// For an item with a native id, a parent+name match with a different native id is reused
-/// only when `gone(that id)`: the file it described is no longer in this folder (a file
-/// replaced on save), not merely renamed next to the new one.
+/// A native-id match elsewhere is taken over only when `still` says the file is no longer
+/// at that record's path (a move, not a new hard link). For an item with a native id, a
+/// parent+name match with a different native id is reused only when `gone(that id)`: the
+/// file it described is no longer in this folder (a file replaced on save), not merely
+/// renamed next to the new one.
 #[allow(clippy::too_many_arguments)]
 fn upsert(
     c: &Connection,
@@ -162,42 +198,45 @@ fn upsert(
     item: &Item,
     fs_id: &str,
     gone: &dyn Fn(&str) -> bool,
+    still: StillAt,
 ) -> Result<(i64, Outcome)> {
-    type Found = (i64, Option<i64>, String, String, i64);
-    let row = |r: &rusqlite::Row| -> rusqlite::Result<Found> {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-    };
     let native = |id: &str| !id.starts_with("h:");
     // A hash identity is parent+name itself: the second lookup finds it.
     let mut found = None;
     if !fs_id.starts_with("h:") {
-        found = c
-            .prepare_cached(
-                "SELECT id, parent, name, path, kind FROM record
+        // Several records share a native id when the file has hard links: the one at this
+        // path, else one whose file has left its path (moved here).
+        let candidates: Vec<Found> = c
+            .prepare_cached(&format!(
+                "SELECT {FOUND} FROM record
                  WHERE fs_id = ?1 AND substr(fs_id, 1, 2) <> 'h:' AND gen < ?2
-                 ORDER BY (parent IS ?3 AND name = ?4) DESC LIMIT 1",
-            )?
-            .query_row(params![fs_id, unseen_below, parent, item.name], row)
-            .optional()?;
+                 ORDER BY (parent IS ?3 AND name = ?4) DESC"
+            ))?
+            .query_map(params![fs_id, unseen_below, parent, item.name], found_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        found = candidates.into_iter().find(|f| {
+            (f.parent == parent && f.name == item.name)
+                || f.path == rel
+                || !still(&f.path, rel, fs_id)
+        });
     }
     if found.is_none() {
-        let by_name: Option<(Found, String)> = c
-            .prepare_cached(
-                "SELECT id, parent, name, path, kind, fs_id FROM record
-                 WHERE parent IS ?1 AND name = ?2 AND kind = ?3 AND gen < ?4 LIMIT 1",
-            )?
-            .query_row(params![parent, item.name, item.kind, unseen_below], |r| {
-                Ok((row(r)?, r.get(5)?))
-            })
-            .optional()?;
-        found = by_name
-            .filter(|(_, old)| !(native(fs_id) && native(old) && old != fs_id) || gone(old))
-            .map(|(f, _)| f);
+        found = c
+            .prepare_cached(&format!(
+                "SELECT {FOUND} FROM record
+                 WHERE parent IS ?1 AND name = ?2 AND kind = ?3 AND gen < ?4 LIMIT 1"
+            ))?
+            .query_row(
+                params![parent, item.name, item.kind, unseen_below],
+                found_row,
+            )
+            .optional()?
+            .filter(|f| !(native(fs_id) && native(&f.fs_id) && f.fs_id != fs_id) || gone(&f.fs_id));
     }
     let flags = if item.hidden { HIDDEN } else { 0 }
         | if item.link { LINK } else { 0 }
         | if item.error.is_some() { UNREADABLE } else { 0 };
-    let Some((id, old_parent, old_name, old_path, old_kind)) = found else {
+    let Some(f) = found else {
         c.prepare_cached(
             "INSERT INTO record(parent, name, path, kind, size, mtime, ctime, fs_id, gen, flags, error)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -210,26 +249,72 @@ fn upsert(
     };
     let mut outcome = Outcome::Kept;
     // Separate statement: the FTS trigger fires whenever name/path are assigned.
-    if old_parent != parent || old_name != item.name || old_path != rel {
+    if f.parent != parent || f.name != item.name || f.path != rel {
         c.prepare_cached("UPDATE record SET parent = ?2, name = ?3, path = ?4 WHERE id = ?1")?
-            .execute(params![id, parent, item.name, rel])?;
-        if old_kind == DIR && old_path != rel {
-            rename_subtree(c, id, rel)?;
+            .execute(params![f.id, parent, item.name, rel])?;
+        if f.kind == DIR && f.path != rel {
+            rename_subtree(c, f.id, rel)?;
         }
         outcome = Outcome::Moved;
     }
-    // Content ids survive only while size, mtime and kind are unchanged.
+    let unchanged = (f.kind, f.size, f.mtime, f.ctime, f.flags)
+        == (item.kind, item.size, item.mtime, item.ctime, flags)
+        && f.fs_id == fs_id
+        && f.error == item.error;
+    if unchanged {
+        // Only seen again: no indexed column is rewritten.
+        c.prepare_cached("UPDATE record SET gen = ?2 WHERE id = ?1")?
+            .execute(params![f.id, gen])?;
+        return Ok((f.id, outcome));
+    }
+    // Content ids survive only while kind, size, mtime and change time (all at full
+    // precision) are unchanged.
     c.prepare_cached(
         "UPDATE record SET kind = ?2, size = ?3, mtime = ?4, ctime = ?5, fs_id = ?6, gen = ?7,
              flags = ?8, error = ?9,
-             cas_id = CASE WHEN size = ?3 AND mtime IS ?4 AND kind = ?2 THEN cas_id END,
-             sampled_hash = CASE WHEN size = ?3 AND mtime IS ?4 AND kind = ?2 THEN sampled_hash END
+             cas_id = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
+                 THEN cas_id END,
+             sampled_hash = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
+                 THEN sampled_hash END
          WHERE id = ?1",
     )?
     .execute(params![
-        id, item.kind, item.size, item.mtime, item.ctime, fs_id, gen, flags, item.error
+        f.id, item.kind, item.size, item.mtime, item.ctime, fs_id, gen, flags, item.error
     ])?;
-    Ok((id, outcome))
+    Ok((f.id, outcome))
+}
+
+/// A record `upsert` may reuse, as stored.
+struct Found {
+    id: i64,
+    parent: Option<i64>,
+    name: String,
+    path: String,
+    kind: i64,
+    size: i64,
+    mtime: Option<i64>,
+    ctime: Option<i64>,
+    fs_id: String,
+    flags: i64,
+    error: Option<String>,
+}
+
+const FOUND: &str = "id, parent, name, path, kind, size, mtime, ctime, fs_id, flags, error";
+
+fn found_row(r: &rusqlite::Row) -> rusqlite::Result<Found> {
+    Ok(Found {
+        id: r.get(0)?,
+        parent: r.get(1)?,
+        name: r.get(2)?,
+        path: r.get(3)?,
+        kind: r.get(4)?,
+        size: r.get(5)?,
+        mtime: r.get(6)?,
+        ctime: r.get(7)?,
+        fs_id: r.get(8)?,
+        flags: r.get(9)?,
+        error: r.get(10)?,
+    })
 }
 
 /// Rewrites the stored paths below a folder that moved to `rel` (ids are untouched).
@@ -354,7 +439,7 @@ impl Walk<'_> {
                 Ok(items) => items,
                 Err(e) => {
                     if let Err(root) = self.lister.stat(&self.src.def.root) {
-                        return Err(Offline(format!("{root:#}")).into());
+                        return Err(unreachable(format!("{root:#}")));
                     }
                     // Unreadable: keep the folder with its error and its last known contents.
                     self.begin()?;
@@ -374,6 +459,7 @@ impl Walk<'_> {
             };
             let listed: HashSet<String> = items.iter().filter_map(|i| i.fs_id.clone()).collect();
             let gone = |id: &str| !listed.contains(id);
+            let still = still_at(self.src);
             for item in items {
                 if item.hidden && !self.src.def.include_hidden {
                     continue;
@@ -396,6 +482,7 @@ impl Walk<'_> {
                     &item,
                     &fs_id,
                     &gone,
+                    &still,
                 )?;
                 if item.kind == DIR && !item.link {
                     stack.push(Pending {
@@ -477,6 +564,22 @@ impl Indexer {
             }
             let _cache = Cache(&conn);
             let total: i64 = conn.query_row("SELECT count(*) FROM record", [], |r| r.get(0))?;
+            // A first walk inserts every row: the search filter indexes are built once
+            // after it (seconds for 2M rows) rather than row by row (tripling the walk).
+            struct Filters<'a>(&'a Connection);
+            impl Drop for Filters<'_> {
+                fn drop(&mut self) {
+                    if let Err(e) = self.0.execute_batch(FILTER_INDEXES) {
+                        tracing::warn!("search filter indexes: {e:#}");
+                    }
+                }
+            }
+            let _filters = (total < BATCH as i64)
+                .then(|| {
+                    conn.execute_batch(DROP_FILTER_INDEXES)
+                        .map(|()| Filters(&conn))
+                })
+                .transpose()?;
             *src.status.write() = SourceStatus::Indexing {
                 done: 0,
                 total: total as u64,
@@ -491,7 +594,7 @@ impl Indexer {
             let lister = Lister::new(src, router)?;
             let mut root = lister
                 .stat(&src.def.root)
-                .map_err(|e| Offline(format!("{e:#}")))?;
+                .map_err(|e| unreachable(format!("{e:#}")))?;
             anyhow::ensure!(
                 root.kind == DIR,
                 "{} is not a folder",
@@ -508,10 +611,13 @@ impl Indexer {
                 (&root.fs_id, src.store.meta("root_id")?, adopt)
             {
                 if *now_id != was {
-                    return Err(Offline(format!(
-                        "{} is a different folder than the one indexed",
-                        src.def.root.display()
-                    ))
+                    return Err(Offline(
+                        OfflineReason::RootMismatch,
+                        format!(
+                            "{} is a different folder than the one indexed",
+                            src.def.root.display()
+                        ),
+                    )
                     .into());
                 }
             }
@@ -542,6 +648,7 @@ impl Indexer {
                 &root,
                 &root_fs,
                 &|_| true,
+                &|_, _, _| false,
             )?;
             let walked = walk.run(vec![Pending {
                 dir: src.def.root.clone(),
@@ -554,11 +661,14 @@ impl Indexer {
             walked?;
             // An empty root that had entries is more likely unmounted than emptied.
             if walk.done == 1 && total > 1 && !adopt {
-                return Err(Offline(format!(
-                    "{} is empty but had {} entries",
-                    src.def.root.display(),
-                    total - 1
-                ))
+                return Err(Offline(
+                    OfflineReason::Empty,
+                    format!(
+                        "{} is empty but had {} entries",
+                        src.def.root.display(),
+                        total - 1
+                    ),
+                )
                 .into());
             }
             let tx = conn.unchecked_transaction()?;
@@ -569,7 +679,10 @@ impl Indexer {
                     tx.execute("DELETE FROM meta WHERE key = 'root_id'", [])?;
                 }
             }
-            tx.execute("DELETE FROM meta WHERE key = 'adopt_root'", [])?;
+            tx.execute(
+                "DELETE FROM meta WHERE key IN ('adopt_root', 'offline_reason')",
+                [],
+            )?;
             crate::db::set_meta(&tx, "generation", &gen.to_string())?;
             crate::db::set_meta(&tx, "last_full_walk", &crate::now().to_string())?;
             tx.commit()?;
@@ -583,6 +696,8 @@ impl Indexer {
         drop(pending);
         match result {
             Ok(done) => {
+                // Released in the store by the walk's last transaction.
+                src.release_held();
                 src.generation.store(gen, Ordering::SeqCst);
                 *src.status.write() = SourceStatus::Online {
                     indexed_at: Some(crate::now()),
@@ -595,9 +710,17 @@ impl Indexer {
                     SourceStatus::Online {
                         indexed_at: last_walk,
                     }
-                } else if e.is::<Offline>() {
+                } else if let Some(Offline(reason, _)) = e.downcast_ref::<Offline>() {
+                    // A different folder or an empty root holds the source until a walk
+                    // finds the indexed folder again (or adopts the new one).
+                    if *reason != OfflineReason::Unreachable {
+                        if let Err(e) = src.hold(Some(*reason)) {
+                            tracing::warn!("hold {}: {e:#}", src.def.label);
+                        }
+                    }
                     SourceStatus::Offline {
                         last_seen: last_walk,
+                        reason: src.held().unwrap_or(*reason),
                     }
                 } else {
                     SourceStatus::Error(format!("{e:#}"))
@@ -609,6 +732,7 @@ impl Indexer {
 
     /// Accepts whatever is at the source's root now: the next full walk replaces the snapshot
     /// even when the root is a different folder or volume than the one indexed, or empty.
+    /// Until that walk the source stays held: changes are not applied to the old snapshot.
     pub fn adopt_root(src: &Source) -> Result<()> {
         src.store.set_meta("adopt_root", "1")
     }
@@ -617,17 +741,36 @@ impl Indexer {
     /// identity) or removes its record. A folder that appears from outside is indexed with
     /// its contents. Apply the events of a batch for paths that exist before those that do
     /// not, so a rename is seen as a move rather than a delete + insert.
+    /// Refused while the source is held (a different folder or an empty root is at its
+    /// root): that folder's changes do not belong in the snapshot.
     pub fn apply_change(src: &Source, ev: ChangeEvent) -> Result<()> {
         let path = match ev {
             ChangeEvent::Changed(p) | ChangeEvent::Removed(p) => p,
             ChangeEvent::Rescan => anyhow::bail!("a rescan needs Indexer::full_walk"),
         };
-        let rel = src
-            .relative(&path)
-            .with_context(|| format!("{} is outside source {}", path.display(), src.def.label))?;
-        let local = path
-            .to_local_path()
-            .context("changes apply to local sources (remote sources are polled)")?;
+        Self::apply_paths(src, std::slice::from_ref(&path), false)
+    }
+
+    /// `apply_change` for several local paths of `src` in one transaction, in order (present
+    /// paths before vanished ones, so a rename reads as a move). `walk_existing` also walks
+    /// folders that were already indexed (a copy merged into them), adding what is new.
+    pub(crate) fn apply_paths(src: &Source, paths: &[VPath], walk_existing: bool) -> Result<()> {
+        if let Some(reason) = src.held() {
+            anyhow::bail!(
+                "{} is held offline ({reason:?}): changes are not applied",
+                src.def.label
+            );
+        }
+        let mut at = Vec::with_capacity(paths.len());
+        for path in paths {
+            let rel = src.relative(path).with_context(|| {
+                format!("{} is outside source {}", path.display(), src.def.label)
+            })?;
+            let local = path
+                .to_local_path()
+                .context("changes apply to local sources (remote sources are polled)")?;
+            at.push((path, rel, local));
+        }
         let ignore = matcher(&src.def.ignore)?;
         let _w = src.write.lock();
         let gen = match src.pending_gen.load(Ordering::SeqCst) {
@@ -636,33 +779,38 @@ impl Indexer {
         } as i64;
         let conn = src.store.get()?;
         begin_immediate(&conn)?;
-        let result = apply(&conn, src, &ignore, gen, &path, &rel, &local);
+        let result = at
+            .iter()
+            .map(|(path, rel, local)| {
+                apply(&conn, src, &ignore, gen, path, rel, local, walk_existing)
+            })
+            .collect::<Result<Vec<_>>>();
         conn.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
         // A folder that appeared is walked in batches like a full walk (no long lock).
-        let Some(subtree) = result? else {
-            return Ok(());
-        };
         let lister = Lister::Local;
         let never = AtomicBool::new(false);
-        let mut walk = Walk {
-            src,
-            lister: &lister,
-            ignore: &ignore,
-            conn: &conn,
-            gen,
-            unseen_below: i64::MAX,
-            batched: true,
-            batch: 0,
-            batch_started: None,
-            done: 0,
-            total: 0,
-            current: String::new(),
-            progress: &|_| {},
-            cancel: &never,
-        };
-        let walked = walk.run(vec![subtree]);
-        walk.commit()?;
-        walked
+        for subtree in result?.into_iter().flatten() {
+            let mut walk = Walk {
+                src,
+                lister: &lister,
+                ignore: &ignore,
+                conn: &conn,
+                gen,
+                unseen_below: i64::MAX,
+                batched: true,
+                batch: 0,
+                batch_started: None,
+                done: 0,
+                total: 0,
+                current: String::new(),
+                progress: &|_| {},
+                cancel: &never,
+            };
+            let walked = walk.run(vec![subtree]);
+            walk.commit()?;
+            walked?;
+        }
+        Ok(())
     }
 
     /// `watch_with` with the defaults and the source's own poll interval.
@@ -684,13 +832,22 @@ impl Indexer {
         router: &Arc<Router>,
         cfg: WatchConfig,
     ) -> Result<WatchHandle> {
+        Self::watch_hooked(src, router, cfg, Box::new(|_| {}))
+    }
+
+    /// `watch_with`, calling `after_walk` after each completed full walk.
+    pub(crate) fn watch_hooked(
+        src: &Arc<Source>,
+        router: &Arc<Router>,
+        cfg: WatchConfig,
+        after_walk: Box<dyn Fn(&Source) + Send>,
+    ) -> Result<WatchHandle> {
         let cancel = Arc::new(AtomicBool::new(false));
         let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
         let (src, router, stop) = (src.clone(), router.clone(), cancel.clone());
-        let rescan = move |src: &Source| {
-            if let Err(e) = Indexer::full_walk(src, &router, &|_| {}, &stop) {
-                tracing::warn!("re-walk of {}: {e:#}", src.def.label);
-            }
+        let rescan = move |src: &Source| match Indexer::full_walk(src, &router, &|_| {}, &stop) {
+            Ok(()) => after_walk(src),
+            Err(e) => tracing::warn!("re-walk of {}: {e:#}", src.def.label),
         };
         let Some(root) = src.def.root.to_local_path() else {
             let thread = std::thread::Builder::new()
@@ -816,6 +973,10 @@ fn watch_loop(
         }
         burst = None;
         let mut paths = std::mem::take(&mut pending);
+        if src.held().is_some() {
+            // Another folder is at the root: its events stay out of the snapshot.
+            continue;
+        }
         paths.sort();
         paths.dedup();
         // Present paths first: a rename then reads as a move.
@@ -829,6 +990,7 @@ fn watch_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply(
     c: &Connection,
     src: &Source,
@@ -837,6 +999,7 @@ fn apply(
     path: &VPath,
     rel: &str,
     local: &std::path::Path,
+    walk_existing: bool,
 ) -> Result<Option<Pending>> {
     let nocase = src.nocase();
     let existing = resolve(c, rel, nocase)?;
@@ -873,6 +1036,7 @@ fn apply(
             &item,
             &item.fs_id.clone().unwrap_or(fs_id),
             &|_| true,
+            &|_, _, _| false,
         )?;
         return Ok(None);
     }
@@ -935,6 +1099,7 @@ fn apply(
         &item,
         &fs_id,
         &|old| !in_folder(old),
+        &still_at(src),
     )?;
     // Whatever else sat at this path was replaced, unless it was renamed within the folder
     // (its own event moves it).
@@ -949,15 +1114,15 @@ fn apply(
             delete_subtree(c, other)?;
         }
     }
-    // A new folder's contents: walked by the caller after this transaction.
-    Ok(
-        (item.kind == DIR && !item.link && outcome == Outcome::Inserted).then(|| Pending {
-            dir: path.clone(),
-            id,
-            rel: rel.to_owned(),
-            fs_id,
-        }),
-    )
+    // A new folder's contents (or all of a folder a copy merged into): walked by the caller
+    // after this transaction.
+    let walk = outcome == Outcome::Inserted || walk_existing;
+    Ok((item.kind == DIR && !item.link && walk).then(|| Pending {
+        dir: path.clone(),
+        id,
+        rel: rel.to_owned(),
+        fs_id,
+    }))
 }
 
 /// `BEGIN IMMEDIATE`, retried while another writer keeps the store busy.

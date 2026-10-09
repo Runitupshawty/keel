@@ -4,11 +4,12 @@
 //! typed request/response so a daemon can wrap it later.
 //!
 //! Blocking: every `Library` call reads or writes SQLite stores, and some also touch the
-//! filesystem or the network (`validate_preview_execute`, `Plan::execute`'s re-validation,
-//! `Indexer::full_walk`, `Indexer::apply_change`, `Library::close`). Call them off the UI
-//! thread; long work runs as jobs (`Library::index`, `Library::hash`, `Plan::execute`)
-//! whose progress arrives through `Jobs::subscribe`. Only `Library::activity`,
-//! `Library::sources`, `Library::refresh_status` and `Jobs::subscribe` return at once.
+//! filesystem or the network (`validate_preview_execute`, `Plan::execute` with `recheck`,
+//! `Indexer::full_walk`, `Indexer::apply_change`, `Library::close`, `Library::watch`). Call
+//! them off the UI thread; long work runs as jobs (`Library::index`, `Library::hash`,
+//! `Plan::execute`) whose progress arrives through `Jobs::subscribe`. Only
+//! `Library::note_activity`, `Library::sources`, `Library::refresh_status` and
+//! `Jobs::subscribe` return at once.
 
 mod db;
 mod fsid;
@@ -21,15 +22,18 @@ mod plan;
 mod search;
 mod tags;
 
-pub use hash::{on_battery, Copies, DupGroup, HashJob, VolumeRef, SAMPLE, WHOLE};
+pub use hash::{
+    on_battery, Copies, DupGroup, HashJob, HashResult, Location, SkipReason, SkippedSource, SAMPLE,
+    WHOLE,
+};
 pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
     RECONCILE_INTERVAL,
 };
 pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
-    Library, LibraryId, LibraryStats, LibrarySummary, RecordRef, Source, SourceDef, SourceId,
-    SourceKind, SourceStatus, SourceSummary,
+    Library, LibraryId, LibraryStats, LibrarySummary, OfflineReason, RecordRef, Source, SourceDef,
+    SourceId, SourceKind, SourceStatus, SourceSummary,
 };
 pub use oplog::OpLogEntry;
 pub use plan::{

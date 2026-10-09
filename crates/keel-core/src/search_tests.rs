@@ -13,6 +13,7 @@ fn parses_an_everything_like_query() {
     let q = LibraryQuery::parse_at(
         r#"ext:pdf;.DOCX size:>1mb dm:2026-10 tag:work "exact phrase" in:"My Drive" taxes 2025"#,
         NOW,
+        0,
     )
     .unwrap();
     assert_eq!(q.terms, ["taxes", "2025"]);
@@ -30,7 +31,7 @@ fn parses_an_everything_like_query() {
     assert_eq!(q.sources, ["My Drive"]);
     assert_eq!(q.max, DEFAULT_MAX);
 
-    let q = LibraryQuery::parse_at("size:1kb..2kb dm:today folder: kind:image", NOW).unwrap();
+    let q = LibraryQuery::parse_at("size:1kb..2kb dm:today folder: kind:image", NOW, 0).unwrap();
     assert_eq!((q.min_size, q.max_size), (Some(1024), Some(2048)));
     let today = NOW - NOW % 86_400;
     assert_eq!(
@@ -38,7 +39,7 @@ fn parses_an_everything_like_query() {
         (Some(today), Some(today + 86_400))
     );
     assert_eq!(q.kind, Some(KindFilter::Image));
-    let q = LibraryQuery::parse_at("size:<=10kb dm:<2026 C:\\x -", NOW).unwrap();
+    let q = LibraryQuery::parse_at("size:<=10kb dm:<2026 C:\\x -", NOW, 0).unwrap();
     assert_eq!((q.min_size, q.max_size), (None, Some(10 * 1024)));
     assert_eq!(
         q.modified_before,
@@ -49,9 +50,9 @@ fn parses_an_everything_like_query() {
         ["C:\\x"],
         "unknown keys are words; symbols alone are dropped"
     );
-    assert!(LibraryQuery::parse("size:lots").is_err());
-    assert!(LibraryQuery::parse("dm:2026-13").is_err());
-    assert!(LibraryQuery::parse("kind:smell").is_err());
+    assert!(LibraryQuery::parse("size:lots", 0).is_err());
+    assert!(LibraryQuery::parse("dm:2026-13", 0).is_err());
+    assert!(LibraryQuery::parse("kind:smell", 0).is_err());
     assert_eq!(days_from_civil(1970, 1, 1), 0);
     assert_eq!(days_from_civil(2000, 3, 1), 11_017);
 }
@@ -88,7 +89,7 @@ fn fixture() -> Fixture {
             .unwrap()
             .execute(
                 "UPDATE record SET mtime = ?2 WHERE id = ?1",
-                rusqlite::params![id_of(src, rel).unwrap(), t],
+                rusqlite::params![id_of(src, rel).unwrap(), t * 1_000_000_000],
             )
             .unwrap();
     };
@@ -117,7 +118,7 @@ fn fixture() -> Fixture {
 }
 
 fn names(lib: &Library, q: &str) -> Vec<String> {
-    lib.search(&LibraryQuery::parse(q).unwrap())
+    lib.search(&LibraryQuery::parse(q, 0).unwrap())
         .unwrap()
         .into_iter()
         .map(|h| h.name)
@@ -158,7 +159,7 @@ fn searches_every_source_with_filters() {
     assert_eq!(names(lib, "dm:2026-10-05"), ["report draft.docx"]);
     assert_eq!(names(lib, "nothing-like-this"), Vec::<String>::new());
     // Only filters: newest first.
-    let mut q = LibraryQuery::parse("kind:file").unwrap();
+    let mut q = LibraryQuery::parse("kind:file", 0).unwrap();
     q.max = 2;
     assert_eq!(lib.search(&q).unwrap().len(), 2);
 }
@@ -184,17 +185,19 @@ fn hits_carry_the_source_status_and_offline_sources_still_answer() {
     let f = fixture();
     *f.b.status.write() = SourceStatus::Offline {
         last_seen: Some(42),
+        reason: crate::OfflineReason::Unreachable,
     };
     let hits = f
         .lib
-        .search(&LibraryQuery::parse("draft").unwrap())
+        .search(&LibraryQuery::parse("draft", 0).unwrap())
         .unwrap();
     assert_eq!(hits.len(), 1);
     let h = &hits[0];
     assert_eq!(
         h.status,
         SourceStatus::Offline {
-            last_seen: Some(42)
+            last_seen: Some(42),
+            reason: crate::OfflineReason::Unreachable,
         }
     );
     assert_eq!(h.source_label, "My Drive");
@@ -282,10 +285,17 @@ fn two_million_row_search_is_fast() {
         "f09".to_owned(),
         "w4242 ext:dat size:>10kb".to_owned(),
         "f0999 kind:file in:perf".to_owned(),
+        // Filters only.
+        "kind:folder".to_owned(),
+        "size:>99990".to_owned(),
+        "size:<10 kind:file".to_owned(),
+        "dm:2023".to_owned(),
+        "ext:dat".to_owned(),
+        "kind:file".to_owned(),
     ];
     let mut timings = Vec::new();
     for q in &queries {
-        let q = LibraryQuery::parse(q).unwrap();
+        let q = LibraryQuery::parse(q, 0).unwrap();
         lib.search(&q).unwrap(); // warm the statement cache
         let start = Instant::now();
         let hits = lib.search(&q).unwrap();
@@ -353,6 +363,7 @@ fn realistic_paths_search_is_fast() {
         include_hidden: false,
         ignore: Vec::new(),
         poll_secs: None,
+        hash_shares: false,
     });
     let start = Instant::now();
     walk(&src, &router).unwrap();
@@ -373,7 +384,7 @@ fn realistic_paths_search_is_fast() {
     ];
     let mut timings = Vec::new();
     for q in queries {
-        let q = LibraryQuery::parse(q).unwrap();
+        let q = LibraryQuery::parse(q, 0).unwrap();
         lib.search(&q).unwrap();
         let start = Instant::now();
         let hits = lib.search(&q).unwrap();
@@ -384,4 +395,61 @@ fn realistic_paths_search_is_fast() {
         assert!(*hits > 0, "{q} found nothing");
         assert!(*t < Duration::from_millis(50), "{q} took {t:?}");
     }
+}
+
+/// Review item 16: `dm:` days are local days for the offset passed; `size:<0` matches
+/// nothing (not every size).
+#[test]
+fn dates_are_local_and_negative_sizes_match_nothing() {
+    // UTC-5: at 2026-10-09 03:00 UTC it is still the 8th.
+    let at = days_from_civil(2026, 10, 9) * 86_400 + 3 * 3_600;
+    let q = LibraryQuery::parse_at("dm:today", at, -5 * 3_600).unwrap();
+    let local_8th = days_from_civil(2026, 10, 8) * 86_400 + 5 * 3_600;
+    assert_eq!(
+        (q.modified_from, q.modified_before),
+        (Some(local_8th), Some(local_8th + 86_400))
+    );
+    let q = LibraryQuery::parse_at("dm:2026-10-09", at, 2 * 3_600).unwrap();
+    assert_eq!(
+        q.modified_from,
+        Some(days_from_civil(2026, 10, 9) * 86_400 - 2 * 3_600)
+    );
+    let f = fixture();
+    assert!(names(&f.lib, "size:<0").is_empty());
+    assert!(names(&f.lib, "size:<0 report").is_empty());
+    write(&f._files.path().join("a/empty.txt"), "");
+    walk(&f.a, &f.lib.router()).unwrap();
+    assert_eq!(names(&f.lib, "size:<=0 kind:file"), ["empty.txt"]);
+}
+
+/// Review item 5: a query too broad to rank (over 50,000 word matches) still applies its
+/// filters before taking candidates: a rare match is found.
+#[test]
+fn a_rare_filter_finds_its_match_among_too_many_word_matches() {
+    let (_data, lib, src) =
+        crate::index::tests::library_with(folder("big", std::path::Path::new("/nowhere")));
+    let now_ns = crate::now() * 1_000_000_000;
+    let old_ns = (crate::now() - 400 * 86_400) * 1_000_000_000;
+    src.store
+        .get()
+        .unwrap()
+        .execute_batch(&format!(
+            "INSERT INTO record(id, parent, name, path, kind, fs_id, gen)
+                 VALUES (1, NULL, 'big', '', 1, 'r', 1);
+             WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i + 1 FROM n WHERE i < 51000)
+             INSERT INTO record(id, parent, name, path, kind, size, mtime, fs_id, gen)
+                 SELECT i, 1, 'photos ' || i || '.jpg', 'photos ' || i || '.jpg', 0, 1,
+                     {old_ns}, 'h:' || i, 1 FROM n;
+             INSERT INTO record(id, parent, name, path, kind, size, mtime, fs_id, gen)
+                 VALUES (51001, 1, 'photos new.jpg', 'photos new.jpg', 0, 1, {now_ns}, 'h:n', 1);"
+        ))
+        .unwrap();
+    let q = LibraryQuery::parse("dm:today photos", 0).unwrap();
+    let hits: Vec<String> = lib
+        .search(&q)
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(hits, ["photos new.jpg"]);
 }

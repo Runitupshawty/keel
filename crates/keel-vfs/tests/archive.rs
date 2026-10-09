@@ -1302,6 +1302,12 @@ impl keel_vfs::Provider for Remote {
     fn remove(&self, _: &VPath) -> anyhow::Result<()> {
         unimplemented!()
     }
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
+    }
     fn local_copy(&self, _: &VPath) -> anyhow::Result<std::path::PathBuf> {
         panic!("remote archives must be fetched with local_copy_cancellable")
     }

@@ -531,6 +531,13 @@ impl Provider for ArchiveProvider {
     fn remove(&self, _: &VPath) -> Result<()> {
         bail!(READ_ONLY)
     }
+    /// The whole entry table is read; nothing is cut off.
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> crate::RemoveKind {
+        crate::RemoveKind::Permanent
+    }
 }
 
 /// Runs `work` on a thread and reads what it writes. At most two 64 KiB chunks are in

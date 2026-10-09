@@ -2,11 +2,11 @@
 //! built on its content ids.
 //!
 //! Every file gets a sampled hash: BLAKE3 of its size and its first, middle and last 64 KiB
-//! (the whole file up to [`WHOLE`] bytes). A record's `cas_id` is its sampled hash while that
-//! is unique in the library; when another record shares it, both get the full-file BLAKE3 as
-//! `cas_id`. So a content id is *confirmed* (equal ids mean equal bytes) when the file was
-//! hashed whole: small files always, large ones once `cas_id` differs from `sampled_hash`.
-//! Duplicates, last-copy and redundancy only trust confirmed ids.
+//! (the whole file up to [`WHOLE`] bytes). A record's `cas_id` is the BLAKE3 of its bytes,
+//! set only once known: files up to [`WHOLE`] are read whole anyway; a larger file is hashed
+//! whole when another record shares its sampled hash (both are then). So equal `cas_id`s
+//! mean equal bytes; a large file whose sampled hash is unique keeps `cas_id` NULL (no other
+//! file can hold its content). Duplicates, last-copy and redundancy only trust `cas_id`.
 
 use crate::index::{LINK, UNREADABLE};
 use crate::jobs::{Job, JobCtx, JobId};
@@ -16,16 +16,20 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
 /// Bytes per sample.
 pub const SAMPLE: u64 = 64 * 1024;
-/// Files up to this size are hashed whole, so their sampled hash is a confirmed content id.
+/// Files up to this size are hashed whole: their content id is known at once.
 pub const WHOLE: u64 = 3 * SAMPLE;
 /// Files per checkpoint.
 const CHECKPOINT_EVERY: usize = 1_000;
@@ -33,33 +37,64 @@ const CHECKPOINT_EVERY: usize = 1_000;
 const PAUSE_POLL: Duration = Duration::from_millis(200);
 /// How long a battery reading is trusted.
 const BATTERY_TTL: Duration = Duration::from_secs(30);
-
-/// SQL (on `record`): the content id is a whole-file hash. Literal of [`WHOLE`].
-pub(crate) const CONFIRMED: &str = "(size <= 196608 OR cas_id IS NOT sampled_hash)";
-const _: () = assert!(WHOLE == 196_608);
+/// Bytes read between stop checks when hashing a file whole.
+const CHUNK: usize = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DupGroup {
     pub cas_id: Vec<u8>,
     /// Bytes per copy.
     pub size: u64,
-    /// Two or more records, by source then id.
+    /// Two or more records, by source then id; hard links of one file appear once.
     pub records: Vec<RecordRef>,
 }
 
-/// Where a source's records physically live. Phase 7 adds drives, pools and failure domains;
-/// for now one source is one volume.
+/// A source holding a copy. Volumes (drives, pools, failure domains) come in Phase 7; until
+/// then a copy's location is its source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VolumeRef {
+pub struct Location {
     pub source: SourceId,
     pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Copies {
-    /// Records holding this content (at least 1: the record itself).
+    /// Files holding this content (at least 1: the record itself); hard links of one file
+    /// count once.
     pub count: u64,
-    pub volumes: Vec<VolumeRef>,
+    /// The distinct sources holding them.
+    pub locations: Vec<Location>,
+}
+
+/// Why a hash job left a source out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SkipReason {
+    /// Remote or cloud: hashing would download every file.
+    Remote,
+    /// A network share without `SourceDef::hash_shares`.
+    Share,
+    /// The root could not be reached.
+    Offline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedSource {
+    pub source: SourceId,
+    pub label: String,
+    pub reason: SkipReason,
+}
+
+/// What a hash job did (its `JobInfo::result`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HashResult {
+    pub hashed: u64,
+    /// Files hashed whole after a sampled-hash collision.
+    pub whole: u64,
+    /// Files that could not be read (marked unreadable until a walk refreshes them).
+    pub unreadable: u64,
+    /// Earlier collisions confirmed by the re-confirm pass.
+    pub reconfirmed: u64,
+    pub skipped: Vec<SkippedSource>,
 }
 
 /// The content changed (its size no longer matches the record): leave it to the indexer.
@@ -84,9 +119,10 @@ fn open(path: &Path, size: u64) -> io::Result<File> {
     Ok(f)
 }
 
-/// BLAKE3 of the size and the first, middle and last [`SAMPLE`] bytes (the whole file up to
-/// [`WHOLE`] bytes).
-pub(crate) fn sampled_hash(path: &Path, size: u64) -> io::Result<[u8; 32]> {
+/// The sampled hash: BLAKE3 of the size and the first, middle and last [`SAMPLE`] bytes (the
+/// whole file up to [`WHOLE`] bytes); for such a small file also its content id, BLAKE3 of
+/// the bytes.
+pub(crate) fn sampled_hash(path: &Path, size: u64) -> io::Result<([u8; 32], Option<[u8; 32]>)> {
     let mut f = open(path, size)?;
     let mut h = blake3::Hasher::new();
     h.update(&size.to_le_bytes());
@@ -97,23 +133,41 @@ pub(crate) fn sampled_hash(path: &Path, size: u64) -> io::Result<[u8; 32]> {
             return Err(changed());
         }
         h.update(&buf);
-    } else {
-        let mut buf = vec![0; SAMPLE as usize];
-        for at in [0, size / 2 - SAMPLE / 2, size - SAMPLE] {
-            f.seek(SeekFrom::Start(at))?;
-            f.read_exact(&mut buf)?;
-            h.update(&buf);
-        }
+        return Ok((
+            *h.finalize().as_bytes(),
+            Some(*blake3::hash(&buf).as_bytes()),
+        ));
     }
-    Ok(*h.finalize().as_bytes())
+    let mut buf = vec![0; SAMPLE as usize];
+    for at in [0, size / 2 - SAMPLE / 2, size - SAMPLE] {
+        f.seek(SeekFrom::Start(at))?;
+        f.read_exact(&mut buf)?;
+        h.update(&buf);
+    }
+    Ok((*h.finalize().as_bytes(), None))
 }
 
-/// BLAKE3 of the whole file.
-pub(crate) fn full_hash(path: &Path, size: u64) -> io::Result<[u8; 32]> {
+/// BLAKE3 of the whole file, in 1 MiB reads; `Err(Cancelled)` once `stop` is set.
+pub(crate) fn full_hash(path: &Path, size: u64, stop: &AtomicBool) -> Result<[u8; 32]> {
     let mut f = open(path, size)?;
     let mut h = blake3::Hasher::new();
-    if io::copy(&mut f, &mut h)? != size {
-        return Err(changed());
+    let mut buf = vec![0; CHUNK];
+    let mut read = 0u64;
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(Cancelled.into());
+        }
+        let n = match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        };
+        h.update(&buf[..n]);
+        read += n as u64;
+    }
+    if read != size {
+        return Err(changed().into());
     }
     Ok(*h.finalize().as_bytes())
 }
@@ -160,10 +214,24 @@ pub fn on_battery() -> bool {
     false
 }
 
+/// Why `src` is not hashed now, if it is not.
+fn skip_reason(src: &Source) -> Option<SkipReason> {
+    let Some(root) = src.def.root.to_local_path() else {
+        return Some(SkipReason::Remote);
+    };
+    if !src.hashable_share() {
+        return Some(SkipReason::Share);
+    }
+    (!root.is_dir()).then_some(SkipReason::Offline)
+}
+
 /// Hashes every file record without a sampled hash, source by source in id order, at idle
 /// priority on its own thread; pauses while the app reports activity or on battery.
-/// Remote and cloud sources are skipped (hashing would download every file), as are sources
-/// whose root cannot be reached.
+/// Remote and cloud sources are skipped (hashing would download every file), as are network
+/// shares (unless `hash_shares`) and sources whose root cannot be reached; the skips are in
+/// the job's [`HashResult`]. Ends with a pass that confirms sampled hashes shared by
+/// records that are still unconfirmed (a stop between the two halves of a collision, a
+/// source that was offline).
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct HashJob {
     /// Sources still to do; the first is in progress.
@@ -176,26 +244,39 @@ pub struct HashJob {
     /// Files whose sampled hash collided (hashed whole).
     pub full: u64,
     pub errors: u64,
+    #[serde(default)]
+    reconfirmed: u64,
+    #[serde(default)]
+    skipped: Vec<SkippedSource>,
     #[serde(skip)]
     battery: Option<(Instant, bool)>,
 }
 
-/// One file record to hash.
+/// One file record to hash, with the metadata the hash is valid for.
 struct Pending {
     id: i64,
     path: String,
     size: u64,
+    mtime: Option<i64>,
+    ctime: Option<i64>,
 }
 
 impl HashJob {
+    fn new(lib: &Shared) -> HashJob {
+        HashJob {
+            sources: lib.sources.read().iter().map(|s| s.id.clone()).collect(),
+            ..HashJob::default()
+        }
+    }
+
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
         loop {
             if ctx.stopping() {
                 return Err(Cancelled.into());
             }
             let lib = &ctx.lib;
-            let busy = lib.activity.load(Ordering::SeqCst)
-                || (lib.pause_on_battery.load(Ordering::SeqCst) && self.on_battery());
+            let busy =
+                lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && self.on_battery());
             if !busy {
                 return Ok(());
             }
@@ -222,19 +303,33 @@ impl HashJob {
         }
     }
 
+    fn skip(&mut self, ctx: &JobCtx, src: &Source, reason: SkipReason) -> Result<()> {
+        let why = match reason {
+            SkipReason::Remote => "not local",
+            SkipReason::Share => "network share (hash_shares is off)",
+            SkipReason::Offline => "offline",
+        };
+        if !self.skipped.iter().any(|s| s.source == src.id) {
+            self.skipped.push(SkippedSource {
+                source: src.id.clone(),
+                label: src.def.label.clone(),
+                reason,
+            });
+        }
+        ctx.log(&format!("{}: {why}, skipped", src.def.label))
+    }
+
     /// Hashes the pending records of `src` (stops early when the source goes away).
     fn hash_source(&mut self, ctx: &JobCtx, src: &Source) -> Result<()> {
-        let Some(root) = src.def.root.to_local_path() else {
-            return ctx.log(&format!("{}: not local, skipped", src.def.label));
-        };
-        if !root.is_dir() {
-            return ctx.log(&format!("{}: offline, skipped", src.def.label));
+        if let Some(reason) = skip_reason(src) {
+            return self.skip(ctx, src, reason);
         }
+        let root = src.def.root.to_local_path().context("local root")?;
         loop {
             let batch: Vec<Pending> = {
                 let c = src.store.get()?;
                 let mut stmt = c.prepare_cached(
-                    "SELECT id, path, size FROM record
+                    "SELECT id, path, size, mtime, ctime FROM record
                      WHERE id > ?1 AND kind = 0 AND flags & ?2 = 0 AND sampled_hash IS NULL
                      ORDER BY id LIMIT ?3",
                 )?;
@@ -245,6 +340,8 @@ impl HashJob {
                             id: r.get(0)?,
                             path: r.get(1)?,
                             size: r.get::<_, i64>(2)? as u64,
+                            mtime: r.get(3)?,
+                            ctime: r.get(4)?,
                         })
                     },
                 )?;
@@ -259,13 +356,13 @@ impl HashJob {
                 }
                 self.wait_until_idle(ctx)?;
                 let path = root.join(&rec.path);
-                match hash_one(&ctx.lib, src, &rec, &path) {
+                match hash_one(ctx, src, &rec, &path) {
                     Ok(full) => self.full += u64::from(full),
                     Err(e) => match e.downcast_ref::<io::Error>() {
                         None => return Err(e),
                         Some(io) if is_changed(io) => {}
                         Some(_) if !root.is_dir() => {
-                            return ctx.log(&format!("{}: went offline", src.def.label));
+                            return self.skip(ctx, src, SkipReason::Offline);
                         }
                         Some(io) => {
                             self.errors += 1;
@@ -282,6 +379,76 @@ impl HashJob {
             ctx.checkpoint(self.checkpoint(), self.progress())?;
         }
     }
+
+    /// Hashes whole the unconfirmed records whose sampled hash another record shares.
+    fn reconfirm(&mut self, ctx: &JobCtx) -> Result<()> {
+        let sources: Vec<Arc<Source>> = ctx.lib.sources.read().clone();
+        let scratch = Connection::open("")?;
+        scratch.execute_batch(
+            "CREATE TABLE c(sampled BLOB, src INTEGER, id INTEGER, path TEXT, size INTEGER,
+                 confirmed INTEGER)",
+        )?;
+        for (i, s) in sources.iter().enumerate() {
+            let path = s.store_dir().join("source.db");
+            scratch.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
+            let copied = scratch.execute(
+                "INSERT INTO c SELECT sampled_hash, ?1, id, path, size, cas_id IS NOT NULL
+                 FROM s.record WHERE kind = 0 AND size > ?2 AND sampled_hash IS NOT NULL",
+                params![i as i64, WHOLE as i64],
+            );
+            scratch.execute("DETACH DATABASE s", [])?;
+            copied?;
+        }
+        let todo: Vec<(usize, i64, String, i64, Vec<u8>)> = {
+            let mut stmt = scratch.prepare(
+                "SELECT src, id, path, size, sampled FROM c WHERE NOT confirmed AND sampled IN
+                     (SELECT sampled FROM c GROUP BY sampled HAVING count(*) > 1)
+                 ORDER BY src, id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as usize,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (i, id, rel, size, sampled) in todo {
+            let s = &sources[i];
+            if skip_reason(s).is_some() || s.removed.load(Ordering::SeqCst) {
+                continue;
+            }
+            let Some(path) = s.absolute(&rel).to_local_path() else {
+                continue;
+            };
+            self.wait_until_idle(ctx)?;
+            match full_hash(&path, size as u64, ctx.stop_flag()) {
+                Ok(full) => {
+                    self.reconfirmed += s.store.get()?.execute(
+                        "UPDATE record SET cas_id = ?2
+                         WHERE id = ?1 AND sampled_hash = ?3 AND cas_id IS NULL",
+                        params![id, &full[..], sampled],
+                    )? as u64;
+                }
+                Err(e) if e.is::<Cancelled>() => return Err(e),
+                Err(e) => tracing::debug!("reconfirm {}: {e:#}", path.display()),
+            }
+        }
+        Ok(())
+    }
+
+    fn result(&self) -> HashResult {
+        HashResult {
+            hashed: self.done,
+            whole: self.full,
+            unreadable: self.errors,
+            reconfirmed: self.reconfirmed,
+            skipped: self.skipped.clone(),
+        }
+    }
 }
 
 fn is_changed(e: &io::Error) -> bool {
@@ -290,33 +457,43 @@ fn is_changed(e: &io::Error) -> bool {
 
 /// Hashes one record (sampled; whole when another record shares the sampled hash, which is
 /// then hashed whole too). Returns whether it was hashed whole because of a collision.
-fn hash_one(lib: &Shared, src: &Source, rec: &Pending, path: &Path) -> Result<bool> {
-    let sampled = sampled_hash(path, rec.size)?;
-    let collides = rec.size > WHOLE && confirm_others(lib, src, rec.id, &sampled)?;
-    let cas = if collides {
-        full_hash(path, rec.size)?
-    } else {
-        sampled
+fn hash_one(ctx: &JobCtx, src: &Source, rec: &Pending, path: &Path) -> Result<bool> {
+    let (sampled, small) = sampled_hash(path, rec.size)?;
+    let (cas, collided) = match small {
+        Some(cas) => (Some(cas), false),
+        None if confirm_others(ctx, src, rec.id, &sampled)? => {
+            (Some(full_hash(path, rec.size, ctx.stop_flag())?), true)
+        }
+        None => (None, false),
     };
     // Guarded: a record the indexer changed meanwhile keeps its reset hashes.
     src.store.get()?.execute(
-        "UPDATE record SET sampled_hash = ?2, cas_id = ?3 WHERE id = ?1 AND size = ?4 AND kind = 0",
-        params![rec.id, &sampled[..], &cas[..], rec.size as i64],
+        "UPDATE record SET sampled_hash = ?2, cas_id = ?3
+         WHERE id = ?1 AND kind = 0 AND size = ?4 AND sampled_hash IS NULL
+             AND mtime IS ?5 AND ctime IS ?6",
+        params![
+            rec.id,
+            &sampled[..],
+            cas.as_ref().map(|c| &c[..]),
+            rec.size as i64,
+            rec.mtime,
+            rec.ctime
+        ],
     )?;
-    Ok(collides)
+    Ok(collided)
 }
 
 /// Whether any other record has `sampled` as its sampled hash; those not yet hashed whole are
-/// hashed whole now (records on sources that cannot be read stay unconfirmed).
-fn confirm_others(lib: &Shared, me: &Source, my_id: i64, sampled: &[u8]) -> Result<bool> {
-    let sources: Vec<Arc<Source>> = lib.sources.read().clone();
+/// hashed whole now (records on sources that are not hashed stay unconfirmed).
+fn confirm_others(ctx: &JobCtx, me: &Source, my_id: i64, sampled: &[u8]) -> Result<bool> {
+    let sources: Vec<Arc<Source>> = ctx.lib.sources.read().clone();
     let mut any = false;
     for s in &sources {
         let others: Vec<(i64, String, i64, bool)> = {
             let c = s.store.get()?;
-            let mut stmt = c.prepare_cached(&format!(
-                "SELECT id, path, size, {CONFIRMED} FROM record WHERE sampled_hash = ?1"
-            ))?;
+            let mut stmt = c.prepare_cached(
+                "SELECT id, path, size, cas_id IS NOT NULL FROM record WHERE sampled_hash = ?1",
+            )?;
             let rows = stmt.query_map([sampled], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })?;
@@ -327,20 +504,22 @@ fn confirm_others(lib: &Shared, me: &Source, my_id: i64, sampled: &[u8]) -> Resu
                 continue;
             }
             any = true;
-            if confirmed {
+            if confirmed || skip_reason(s).is_some() {
                 continue;
             }
             let Some(path) = s.absolute(&rel).to_local_path() else {
                 continue;
             };
-            match full_hash(&path, size as u64) {
+            match full_hash(&path, size as u64, ctx.stop_flag()) {
                 Ok(full) => {
                     s.store.get()?.execute(
-                        "UPDATE record SET cas_id = ?2 WHERE id = ?1 AND sampled_hash = ?3",
+                        "UPDATE record SET cas_id = ?2
+                         WHERE id = ?1 AND sampled_hash = ?3 AND cas_id IS NULL",
                         params![id, &full[..], sampled],
                     )?;
                 }
-                Err(e) => tracing::debug!("confirm {}: {e}", path.display()),
+                Err(e) if e.is::<Cancelled>() => return Err(e),
+                Err(e) => tracing::debug!("confirm {}: {e:#}", path.display()),
             }
         }
     }
@@ -356,33 +535,55 @@ impl Job for HashJob {
         background_thread();
         let lib = ctx.lib.clone();
         let source = |id: &SourceId| lib.sources.read().iter().find(|s| &s.id == id).cloned();
-        if !self.counted {
-            for id in &self.sources {
-                if let Some(s) = source(id) {
-                    self.total += s.store.get()?.query_row(
-                        "SELECT count(*) FROM record
-                         WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL",
-                        [UNREADABLE | LINK],
-                        |r| r.get::<_, i64>(0),
-                    )? as u64;
+        loop {
+            if !self.counted {
+                for id in &self.sources {
+                    if let Some(s) = source(id) {
+                        self.total += s.store.get()?.query_row(
+                            "SELECT count(*) FROM record
+                             WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL",
+                            [UNREADABLE | LINK],
+                            |r| r.get::<_, i64>(0),
+                        )? as u64;
+                    }
                 }
+                self.counted = true;
+                ctx.checkpoint(self.checkpoint(), self.progress())?;
             }
-            self.counted = true;
-            ctx.checkpoint(self.checkpoint(), 0.0)?;
-        }
-        while let Some(id) = self.sources.first().cloned() {
-            // A removed source is simply skipped.
-            if let Some(src) = source(&id) {
-                self.hash_source(ctx, &src)?;
+            while let Some(id) = self.sources.first().cloned() {
+                // A removed source is simply skipped.
+                if let Some(src) = source(&id) {
+                    self.hash_source(ctx, &src)?;
+                }
+                self.sources.remove(0);
+                self.after = 0;
+                ctx.checkpoint(self.checkpoint(), self.progress())?;
             }
-            self.sources.remove(0);
-            self.after = 0;
-            ctx.checkpoint(self.checkpoint(), self.progress())?;
+            // Hashing was asked for again meanwhile (a walk found new files): once more.
+            let mut slot = lib.hash_job.lock();
+            if lib.hash_again.swap(false, Ordering::SeqCst) {
+                drop(slot);
+                *self = HashJob {
+                    total: self.total,
+                    done: self.done,
+                    full: self.full,
+                    errors: self.errors,
+                    skipped: std::mem::take(&mut self.skipped),
+                    ..HashJob::new(&lib)
+                };
+                continue;
+            }
+            if *slot == Some(ctx.id) {
+                *slot = None;
+            }
+            break;
         }
+        self.reconfirm(ctx)?;
         ctx.log(&format!(
             "hashed {} files, {} whole after a collision, {} unreadable",
             self.done, self.full, self.errors
         ))?;
+        ctx.set_result(serde_json::to_value(self.result())?)?;
         crate::library::count_unique(&lib)?;
         Ok(())
     }
@@ -396,53 +597,102 @@ impl Job for HashJob {
     }
 }
 
-/// Confirmed records holding `cas`, per source (sources without one left out).
-pub(crate) fn copies(lib: &Shared, cas: &[u8]) -> Result<Vec<(Arc<Source>, u64)>> {
+/// The newest queued or running hash job in `library.db`.
+fn pending_hash_job(lib: &Shared) -> Result<Option<JobId>> {
+    Ok(lib
+        .db
+        .get()?
+        .query_row(
+            "SELECT id FROM job WHERE kind = 'hash' AND status IN ('queued', 'running')
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// `Library::hash`: the hash job that is running (it goes over every source once more when
+/// it is done), a pending one left by an earlier session (resumed now), else a new one.
+pub(crate) fn schedule(lib: &Arc<Shared>) -> Result<JobId> {
+    let mut slot = lib.hash_job.lock();
+    let pending = match *slot {
+        Some(id) if crate::jobs::is_running(lib, id) => Some(id),
+        _ => pending_hash_job(lib)?,
+    };
+    let id = match pending {
+        Some(id) if crate::jobs::is_running(lib, id) || crate::jobs::resume(lib, id)? => {
+            lib.hash_again.store(true, Ordering::SeqCst);
+            id
+        }
+        _ => crate::jobs::spawn(lib, Box::new(HashJob::new(lib)))?,
+    };
+    *slot = Some(id);
+    Ok(id)
+}
+
+/// Starts hashing after a completed walk of `src` when that is on and `src` has files to
+/// hash.
+pub(crate) fn after_walk(lib: &Arc<Shared>, src: &Source) {
+    if !lib.hash_after_walk.load(Ordering::SeqCst) || lib.closing() || skip_reason(src).is_some() {
+        return;
+    }
+    let unhashed = src.store.get().and_then(|c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM record
+                 WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL)",
+            [UNREADABLE | LINK],
+            |r| r.get::<_, bool>(0),
+        )?)
+    });
+    match unhashed {
+        Ok(true) => {
+            if let Err(e) = schedule(lib) {
+                tracing::warn!("hashing after a walk of {}: {e:#}", src.def.label);
+            }
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!("hashing after a walk of {}: {e:#}", src.def.label),
+    }
+}
+
+/// Per source, a key for each file holding confirmed content `cas` (its native file id, so
+/// hard links of one file share a key; else its record).
+pub(crate) fn copies(lib: &Shared, cas: &[u8]) -> Result<Vec<(Arc<Source>, Vec<String>)>> {
     let sources: Vec<Arc<Source>> = lib.sources.read().clone();
     let mut out = Vec::new();
     for s in sources {
-        let n: i64 = s.store.get()?.query_row(
-            &format!("SELECT count(*) FROM record WHERE cas_id = ?1 AND kind = 0 AND {CONFIRMED}"),
-            [cas],
-            |r| r.get(0),
-        )?;
-        if n > 0 {
-            out.push((s, n as u64));
+        let keys: Vec<String> = {
+            let c = s.store.get()?;
+            let mut stmt = c.prepare_cached(
+                "SELECT CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id ELSE 'r' || id END
+                 FROM record WHERE cas_id = ?1 AND kind = 0",
+            )?;
+            let rows = stmt.query_map([cas], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        if !keys.is_empty() {
+            out.push((s, keys));
         }
     }
     Ok(out)
 }
 
-/// `(cas_id, confirmed)` of a record.
-fn content_of(c: &Connection, id: i64) -> Result<(Option<Vec<u8>>, bool)> {
-    c.query_row(
-        &format!("SELECT cas_id, {CONFIRMED} FROM record WHERE id = ?1"),
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .optional()?
-    .with_context(|| format!("no record {id}"))
-}
-
 impl Library {
-    /// Hashes every file still without a content id, as a durable idle-priority job.
+    /// Hashes every file still without a sampled hash, as a durable idle-priority job: the
+    /// one already running (it goes over every source once more when it is done), else a
+    /// new one.
     pub fn hash(&self) -> Result<JobId> {
-        let sources = self
-            .shared
-            .sources
-            .read()
-            .iter()
-            .map(|s| s.id.clone())
-            .collect();
-        self.jobs().spawn(Box::new(HashJob {
-            sources,
-            ..HashJob::default()
-        }))
+        schedule(&self.shared)
     }
 
-    /// Set by the app while the user is interacting: hashing pauses until it is cleared.
-    pub fn activity(&self) -> &std::sync::atomic::AtomicBool {
-        &self.shared.activity
+    /// Tells hashing the user is busy: it pauses for the next 5 s (call it on input).
+    pub fn note_activity(&self) {
+        let until = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| {
+                (d + crate::library::ACTIVITY_PAUSE).as_millis() as u64
+            });
+        self.shared.busy_until.fetch_max(until, Ordering::SeqCst);
     }
 
     /// Whether hashing pauses on battery power (default on).
@@ -450,30 +700,33 @@ impl Library {
         self.shared.pause_on_battery.store(pause, Ordering::SeqCst);
     }
 
-    /// Groups of two or more files of at least `min_size` bytes with the same confirmed
-    /// content id, across every source; biggest first.
+    /// Groups of two or more files of at least `min_size` bytes with the same content id,
+    /// across every source; biggest first. Hard links of one file count as one file.
     pub fn duplicates(&self, min_size: u64) -> Result<Vec<DupGroup>> {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         // A private on-disk scratch database (SQLite spills it to a temp file).
         let scratch = Connection::open("")?;
-        scratch.execute_batch("CREATE TABLE c(cas BLOB, src INTEGER, id INTEGER, size INTEGER)")?;
+        scratch.execute_batch(
+            "CREATE TABLE c(cas BLOB, src INTEGER, id INTEGER, size INTEGER, file TEXT)",
+        )?;
         for (i, s) in sources.iter().enumerate() {
             let path = s.store_dir().join("source.db");
             scratch.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
             let copied = scratch.execute(
-                &format!(
-                    "INSERT INTO c SELECT cas_id, ?1, id, size FROM s.record
-                     WHERE kind = 0 AND cas_id IS NOT NULL AND size >= ?2 AND {CONFIRMED}"
-                ),
+                "INSERT INTO c SELECT cas_id, ?1, id, size,
+                     CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id ELSE ?1 || ':' || id END
+                 FROM s.record WHERE kind = 0 AND cas_id IS NOT NULL AND size >= ?2 ORDER BY id",
                 params![i as i64, min_size as i64],
             );
             scratch.execute("DETACH DATABASE s", [])?;
             copied?;
         }
-        scratch.execute_batch("CREATE INDEX c_cas ON c(cas)")?;
+        scratch.execute_batch("CREATE INDEX c_cas ON c(cas, file)")?;
+        // One record per file (the first of its hard links), in groups of 2+ files.
         let mut stmt = scratch.prepare(
             "SELECT cas, src, id, size FROM c
-             WHERE cas IN (SELECT cas FROM c GROUP BY cas HAVING count(*) > 1)
+             WHERE rowid IN (SELECT min(rowid) FROM c GROUP BY cas, file)
+                 AND cas IN (SELECT cas FROM c GROUP BY cas HAVING count(DISTINCT file) > 1)
              ORDER BY size DESC, cas, src, id",
         )?;
         let mut rows = stmt.query([])?;
@@ -497,37 +750,49 @@ impl Library {
         Ok(groups)
     }
 
-    /// True unless another record is known to hold the same content (also true while the
-    /// record has no confirmed content id yet: no other copy is known).
+    /// True unless another file is known to hold the same content (also true while the
+    /// record has no content id yet: no other copy is known). A hard link of the same file
+    /// is not another copy.
     pub fn last_copy(&self, record: &RecordRef) -> Result<bool> {
         Ok(self.redundancy(record)?.count <= 1)
     }
 
-    /// How many records hold this record's content, and on which volumes.
+    /// How many files hold this record's content (hard links of one file count once), and
+    /// in which sources.
     pub fn redundancy(&self, record: &RecordRef) -> Result<Copies> {
         let src = self
             .source(&record.source)
             .with_context(|| format!("no source {}", record.source))?;
-        let (cas, confirmed) = content_of(&*src.store.get()?, record.id)?;
+        let cas: Option<Vec<u8>> = src
+            .store
+            .get()?
+            .query_row(
+                "SELECT cas_id FROM record WHERE id = ?1",
+                [record.id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("no record {}", record.id))?;
         let alone = || Copies {
             count: 1,
-            volumes: vec![VolumeRef {
+            locations: vec![Location {
                 source: src.id.clone(),
                 label: src.def.label.clone(),
             }],
         };
-        let Some(cas) = cas.filter(|_| confirmed) else {
+        let Some(cas) = cas else {
             return Ok(alone());
         };
         let copies = copies(&self.shared, &cas)?;
         if copies.is_empty() {
             return Ok(alone());
         }
+        let files: HashSet<&String> = copies.iter().flat_map(|(_, keys)| keys).collect();
         Ok(Copies {
-            count: copies.iter().map(|(_, n)| n).sum(),
-            volumes: copies
-                .into_iter()
-                .map(|(s, _)| VolumeRef {
+            count: files.len() as u64,
+            locations: copies
+                .iter()
+                .map(|(s, _)| Location {
                     source: s.id.clone(),
                     label: s.def.label.clone(),
                 })

@@ -8,7 +8,7 @@ use crate::{Cancelled, Indexer, SourceId};
 use anyhow::{Context, Result};
 use keel_vfs::Router;
 use parking_lot::Mutex;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -27,8 +27,8 @@ pub type Restore = fn(serde_json::Value) -> Result<Box<dyn Job>>;
 
 pub trait Job: Send {
     fn kind(&self) -> &'static str;
-    /// Does the work, calling `ctx.checkpoint` after each durable step; returns
-    /// `Err(Cancelled)` (what `checkpoint` returns once stopped) when asked to stop.
+    /// Does the work, calling `ctx.checkpoint` (or `ctx.cursor`) after each durable step;
+    /// returns `Err(Cancelled)` (what those return once stopped) when asked to stop.
     fn run(&mut self, ctx: &JobCtx) -> Result<()>;
     /// Everything `restore` needs to continue after the last completed step.
     fn checkpoint(&self) -> serde_json::Value;
@@ -89,14 +89,15 @@ pub struct JobInfo {
     pub log: String,
     pub created: i64,
     pub updated: i64,
+    /// What the job reported (`JobCtx::set_result`), kept after it ends; a hash job's is a
+    /// [`crate::HashResult`].
+    pub result: Option<serde_json::Value>,
 }
 
 /// What a running job gets: its id, stop signal, checkpointing and the library.
 pub struct JobCtx {
     pub id: JobId,
     stop: Arc<AtomicBool>,
-    closing: Arc<AtomicBool>,
-    db: Pool,
     pub(crate) lib: Arc<Shared>,
 }
 
@@ -112,16 +113,31 @@ impl JobCtx {
 
     /// The stop is the library closing (the job resumes later), not a cancel.
     pub fn closing(&self) -> bool {
-        self.closing.load(Ordering::SeqCst)
+        self.lib.jobs.closing.load(Ordering::SeqCst)
     }
 
     /// Persists `state` (and progress 0..=1). The step it describes is durable: a restart
     /// continues from here. Returns `Err(Cancelled)` once the job should stop.
     pub fn checkpoint(&self, state: serde_json::Value, progress: f32) -> Result<()> {
-        self.db.get()?.execute(
-            "UPDATE job SET state = ?2, progress = ?3, updated = ?4 WHERE id = ?1",
+        self.lib.db.get()?.execute(
+            "UPDATE job SET state = ?2, cursor = NULL, progress = ?3, updated = ?4 WHERE id = ?1",
             params![self.id, state.to_string(), progress, crate::now()],
         )?;
+        self.written(progress)
+    }
+
+    /// `checkpoint` for a job with a big fixed part (an operation's path list, stored once
+    /// at spawn): persists only `cursor`, an object whose keys are laid over the last full
+    /// state when the job is restored.
+    pub fn cursor(&self, cursor: serde_json::Value, progress: f32) -> Result<()> {
+        self.lib.db.get()?.execute(
+            "UPDATE job SET cursor = ?2, progress = ?3, updated = ?4 WHERE id = ?1",
+            params![self.id, cursor.to_string(), progress, crate::now()],
+        )?;
+        self.written(progress)
+    }
+
+    fn written(&self, progress: f32) -> Result<()> {
         self.running(progress);
         if self.stopping() {
             return Err(Cancelled.into());
@@ -130,11 +146,20 @@ impl JobCtx {
     }
 
     pub fn progress(&self, progress: f32) -> Result<()> {
-        self.db.get()?.execute(
+        self.lib.db.get()?.execute(
             "UPDATE job SET progress = ?2, updated = ?3 WHERE id = ?1",
             params![self.id, progress, crate::now()],
         )?;
         self.running(progress);
+        Ok(())
+    }
+
+    /// Records the job's structured result (`JobInfo::result`).
+    pub fn set_result(&self, result: serde_json::Value) -> Result<()> {
+        self.lib.db.get()?.execute(
+            "UPDATE job SET result = ?2, updated = ?3 WHERE id = ?1",
+            params![self.id, result.to_string(), crate::now()],
+        )?;
         Ok(())
     }
 
@@ -149,7 +174,7 @@ impl JobCtx {
     /// Appends a line to the job's log (redacted like the op log).
     pub fn log(&self, line: &str) -> Result<()> {
         let line = crate::oplog::redact_text(line, &crate::oplog::roots(&self.lib));
-        append_log(&self.db, self.id, &line)
+        append_log(&self.lib.db, self.id, &line)
     }
 
     pub fn router(&self) -> Arc<Router> {
@@ -170,22 +195,23 @@ struct Running {
     thread: JoinHandle<()>,
 }
 
+/// The job runner's state. It lives in the library's shared state, so a job can start
+/// another (a completed walk schedules hashing).
+#[derive(Default)]
+pub(crate) struct JobState {
+    kinds: Mutex<HashMap<String, Restore>>,
+    running: Mutex<HashMap<JobId, Running>>,
+    pub(crate) closing: AtomicBool,
+}
+
 /// The library's job runner: one thread per running job.
 pub struct Jobs {
     lib: Arc<Shared>,
-    kinds: Mutex<HashMap<String, Restore>>,
-    running: Mutex<HashMap<JobId, Running>>,
-    closing: Arc<AtomicBool>,
 }
 
 impl Jobs {
     pub(crate) fn new(lib: Arc<Shared>) -> Jobs {
-        Jobs {
-            lib,
-            kinds: Mutex::new(HashMap::new()),
-            running: Mutex::new(HashMap::new()),
-            closing: Arc::new(AtomicBool::new(false)),
-        }
+        Jobs { lib }
     }
 
     /// Progress and end events of every job from now on (bounded: a subscriber that does
@@ -198,44 +224,24 @@ impl Jobs {
 
     /// Makes `kind` restorable by `resume_all`.
     pub fn register(&self, kind: &str, restore: Restore) {
-        self.kinds.lock().insert(kind.to_owned(), restore);
+        self.lib.jobs.kinds.lock().insert(kind.to_owned(), restore);
     }
 
     /// Resumes the queued and running jobs (left by an earlier session) of every registered
     /// kind; returns their ids. Call it once the library is set up (router set, app kinds
     /// registered): a job resumed earlier would run without them.
     pub fn resume_all(&self) -> Result<Vec<JobId>> {
-        let pending: Vec<(JobId, String, String)> = {
+        let pending: Vec<JobId> = {
             let conn = self.lib.db.get()?;
-            let mut stmt = conn.prepare(
-                "SELECT id, kind, state FROM job WHERE status IN ('queued', 'running') ORDER BY id",
-            )?;
-            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            let mut stmt = conn
+                .prepare("SELECT id FROM job WHERE status IN ('queued', 'running') ORDER BY id")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut resumed = Vec::new();
-        for (id, kind, state) in pending {
-            let Some(restore) = self.kinds.lock().get(&kind).copied() else {
-                continue;
-            };
-            if self.running.lock().contains_key(&id) {
-                continue;
-            }
-            match serde_json::from_str(&state)
-                .map_err(anyhow::Error::from)
-                .and_then(restore)
-            {
-                Ok(job) => {
-                    append_log(&self.lib.db, id, "resumed")?;
-                    self.start(id, job)?;
-                    resumed.push(id);
-                }
-                Err(e) => self.finish(
-                    id,
-                    JobStatus::Failed,
-                    None,
-                    Some(&format!("restore: {e:#}")),
-                )?,
+        for id in pending {
+            if resume(&self.lib, id)? {
+                resumed.push(id);
             }
         }
         Ok(resumed)
@@ -243,104 +249,25 @@ impl Jobs {
 
     /// Persists `job` and starts it.
     pub fn spawn(&self, job: Box<dyn Job>) -> Result<JobId> {
-        let now = crate::now();
-        let id = {
-            let conn = self.lib.db.get()?;
-            conn.execute(
-                "INSERT INTO job(kind, state, status, created, updated) VALUES (?1, ?2, 'running', ?3, ?3)",
-                params![job.kind(), job.checkpoint().to_string(), now],
-            )?;
-            conn.last_insert_rowid()
-        };
-        self.start(id, job)?;
-        Ok(id)
-    }
-
-    fn start(&self, id: JobId, mut job: Box<dyn Job>) -> Result<()> {
-        let stop = Arc::new(AtomicBool::new(self.closing.load(Ordering::SeqCst)));
-        let ctx = JobCtx {
-            id,
-            stop: stop.clone(),
-            closing: self.closing.clone(),
-            db: self.lib.db.clone(),
-            lib: self.lib.clone(),
-        };
-        let closing = self.closing.clone();
-        self.lib.db.get()?.execute(
-            "UPDATE job SET status = 'running', updated = ?2 WHERE id = ?1",
-            params![id, crate::now()],
-        )?;
-        let thread = std::thread::Builder::new()
-            .name(format!("keel-job-{id}"))
-            .spawn(move || {
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&ctx)))
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("job panicked")));
-                let state = job.checkpoint();
-                let (status, error) = match result {
-                    Ok(()) => (JobStatus::Done, None),
-                    // Closing the library: stays running, resumes on the next open.
-                    Err(_) if closing.load(Ordering::SeqCst) => (JobStatus::Running, None),
-                    Err(e) if e.is::<Cancelled>() || ctx.stopping() => (JobStatus::Cancelled, None),
-                    Err(e) => {
-                        let roots = crate::oplog::roots(&ctx.lib);
-                        let error = crate::oplog::redact_text(&format!("{e:#}"), &roots);
-                        (JobStatus::Failed, Some(error))
-                    }
-                };
-                if let Err(e) = finish(&ctx.db, id, status, Some(state), error.as_deref()) {
-                    tracing::warn!("job {id}: recording its end failed: {e:#}");
-                }
-                let progress = if status == JobStatus::Done { 1.0 } else { 0.0 };
-                let progress = ctx
-                    .db
-                    .get()
-                    .and_then(|c| {
-                        Ok(
-                            c.query_row("SELECT progress FROM job WHERE id = ?1", [id], |r| {
-                                r.get::<_, f64>(0)
-                            })?,
-                        )
-                    })
-                    .map_or(progress, |p| p as f32);
-                ctx.lib.emit(JobEvent {
-                    id,
-                    status,
-                    progress,
-                });
-            })?;
-        let mut running = self.running.lock();
-        running.retain(|_, r| !r.thread.is_finished());
-        running.insert(id, Running { stop, thread });
-        Ok(())
-    }
-
-    fn finish(
-        &self,
-        id: JobId,
-        status: JobStatus,
-        state: Option<serde_json::Value>,
-        error: Option<&str>,
-    ) -> Result<()> {
-        finish(&self.lib.db, id, status, state, error)
+        spawn(&self.lib, job)
     }
 
     /// Asks a running job to stop (it ends as Cancelled); a queued one is cancelled at once.
     pub fn cancel(&self, id: JobId) -> Result<()> {
-        if let Some(r) = self.running.lock().get(&id) {
+        if let Some(r) = self.lib.jobs.running.lock().get(&id) {
             r.stop.store(true, Ordering::SeqCst);
             return Ok(());
         }
         let info = self.info(id)?;
         if matches!(info.status, JobStatus::Queued | JobStatus::Running) {
-            self.finish(id, JobStatus::Cancelled, None, None)?;
+            finish(&self.lib.db, id, JobStatus::Cancelled, None, None)?;
         }
         Ok(())
     }
 
     /// Waits for a job started in this session to end; returns its final record.
     pub fn wait(&self, id: JobId) -> Result<JobInfo> {
-        let running = self.running.lock().remove(&id);
+        let running = self.lib.jobs.running.lock().remove(&id);
         if let Some(r) = running {
             let _ = r.thread.join();
         }
@@ -352,7 +279,7 @@ impl Jobs {
             .db
             .get()?
             .query_row(
-                "SELECT id, kind, status, progress, log, created, updated FROM job WHERE id = ?1",
+                &format!("SELECT {INFO_COLUMNS} FROM job WHERE id = ?1"),
                 [id],
                 row_info,
             )
@@ -362,21 +289,150 @@ impl Jobs {
     /// Every job, newest first.
     pub fn list(&self) -> Result<Vec<JobInfo>> {
         let conn = self.lib.db.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, kind, status, progress, log, created, updated FROM job ORDER BY id DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!("SELECT {INFO_COLUMNS} FROM job ORDER BY id DESC"))?;
         let rows = stmt.query_map([], row_info)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub(crate) fn running(&self) -> usize {
-        self.running
+        self.lib
+            .jobs
+            .running
             .lock()
             .values()
             .filter(|r| !r.thread.is_finished())
             .count()
     }
 }
+
+/// Whether job `id` runs in this session.
+pub(crate) fn is_running(lib: &Shared, id: JobId) -> bool {
+    lib.jobs
+        .running
+        .lock()
+        .get(&id)
+        .is_some_and(|r| !r.thread.is_finished())
+}
+
+/// `state` with the keys of `cursor` (an object) laid over it.
+fn merged(state: &str, cursor: Option<&str>) -> Result<serde_json::Value> {
+    let mut state: serde_json::Value = serde_json::from_str(state)?;
+    if let (Some(cursor), Some(obj)) = (cursor, state.as_object_mut()) {
+        if let serde_json::Value::Object(c) = serde_json::from_str(cursor)? {
+            obj.extend(c);
+        }
+    }
+    Ok(state)
+}
+
+/// Restores and starts job `id` (queued or running, left by an earlier session) when its
+/// kind is registered and it is not running yet; false otherwise.
+pub(crate) fn resume(lib: &Arc<Shared>, id: JobId) -> Result<bool> {
+    if is_running(lib, id) {
+        return Ok(false);
+    }
+    let row: Option<(String, String, Option<String>)> = lib
+        .db
+        .get()?
+        .query_row(
+            "SELECT kind, state, cursor FROM job WHERE id = ?1 AND status IN ('queued', 'running')",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((kind, state, cursor)) = row else {
+        return Ok(false);
+    };
+    let Some(restore) = lib.jobs.kinds.lock().get(&kind).copied() else {
+        return Ok(false);
+    };
+    match merged(&state, cursor.as_deref()).and_then(restore) {
+        Ok(job) => {
+            append_log(&lib.db, id, "resumed")?;
+            start(lib, id, job)?;
+            Ok(true)
+        }
+        Err(e) => {
+            let error = format!("restore: {e:#}");
+            finish(&lib.db, id, JobStatus::Failed, None, Some(&error))?;
+            Ok(false)
+        }
+    }
+}
+
+/// Persists `job` and starts it.
+pub(crate) fn spawn(lib: &Arc<Shared>, job: Box<dyn Job>) -> Result<JobId> {
+    let now = crate::now();
+    let id = {
+        let conn = lib.db.get()?;
+        conn.execute(
+            "INSERT INTO job(kind, state, status, created, updated) VALUES (?1, ?2, 'running', ?3, ?3)",
+            params![job.kind(), job.checkpoint().to_string(), now],
+        )?;
+        conn.last_insert_rowid()
+    };
+    start(lib, id, job)?;
+    Ok(id)
+}
+
+fn start(lib: &Arc<Shared>, id: JobId, mut job: Box<dyn Job>) -> Result<()> {
+    let stop = Arc::new(AtomicBool::new(lib.jobs.closing.load(Ordering::SeqCst)));
+    let ctx = JobCtx {
+        id,
+        stop: stop.clone(),
+        lib: lib.clone(),
+    };
+    lib.db.get()?.execute(
+        "UPDATE job SET status = 'running', updated = ?2 WHERE id = ?1",
+        params![id, crate::now()],
+    )?;
+    let thread = std::thread::Builder::new()
+        .name(format!("keel-job-{id}"))
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&ctx)))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("job panicked")));
+            let (status, error) = match result {
+                Ok(()) => (JobStatus::Done, None),
+                // Closing the library: stays running, resumes on the next open.
+                Err(_) if ctx.closing() => (JobStatus::Running, None),
+                Err(e) if e.is::<Cancelled>() || ctx.stopping() => (JobStatus::Cancelled, None),
+                Err(e) => {
+                    let roots = crate::oplog::roots(&ctx.lib);
+                    let error = crate::oplog::redact_text(&format!("{e:#}"), &roots);
+                    (JobStatus::Failed, Some(error))
+                }
+            };
+            // Only a job that resumes needs its state again.
+            let state = (status == JobStatus::Running).then(|| job.checkpoint());
+            if let Err(e) = finish(&ctx.lib.db, id, status, state, error.as_deref()) {
+                tracing::warn!("job {id}: recording its end failed: {e:#}");
+            }
+            let progress = if status == JobStatus::Done { 1.0 } else { 0.0 };
+            let progress = ctx
+                .lib
+                .db
+                .get()
+                .and_then(|c| {
+                    Ok(
+                        c.query_row("SELECT progress FROM job WHERE id = ?1", [id], |r| {
+                            r.get::<_, f64>(0)
+                        })?,
+                    )
+                })
+                .map_or(progress, |p| p as f32);
+            ctx.lib.emit(JobEvent {
+                id,
+                status,
+                progress,
+            });
+        })?;
+    let mut running = lib.jobs.running.lock();
+    running.retain(|_, r| !r.thread.is_finished());
+    running.insert(id, Running { stop, thread });
+    Ok(())
+}
+
+const INFO_COLUMNS: &str = "id, kind, status, progress, log, created, updated, result";
 
 fn row_info(r: &rusqlite::Row) -> rusqlite::Result<JobInfo> {
     Ok(JobInfo {
@@ -387,6 +443,9 @@ fn row_info(r: &rusqlite::Row) -> rusqlite::Result<JobInfo> {
         log: r.get(4)?,
         created: r.get(5)?,
         updated: r.get(6)?,
+        result: r
+            .get::<_, Option<String>>(7)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -403,8 +462,10 @@ fn finish(
         _ => Some(serde_json::Value::Null),
     };
     let conn = db.get()?;
+    // A full state supersedes the cursor laid over the old one.
     conn.execute(
         "UPDATE job SET status = ?2, state = coalesce(?3, state),
+             cursor = CASE WHEN ?3 IS NULL THEN cursor END,
              progress = CASE WHEN ?2 = 'done' THEN 1 ELSE progress END, updated = ?4
          WHERE id = ?1",
         params![
@@ -421,26 +482,24 @@ fn finish(
     Ok(())
 }
 
-impl Jobs {
-    /// Stops every job at its next checkpoint (they stay `running` in the database and
-    /// resume on the next open) and waits up to `timeout`; false when some job is still busy
-    /// (a step such as a slow listing or transfer cannot be interrupted): it is left to
-    /// finish its step on its own.
-    pub(crate) fn shutdown(&self, timeout: Duration) -> bool {
-        self.closing.store(true, Ordering::SeqCst);
-        let running: Vec<_> = self.running.lock().drain().collect();
-        for (_, r) in &running {
-            r.stop.store(true, Ordering::SeqCst);
-        }
-        let deadline = Instant::now() + timeout;
-        while running.iter().any(|(_, r)| !r.thread.is_finished()) {
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        true
+/// Stops every job at its next checkpoint (they stay `running` in the database and resume
+/// on the next open) and waits up to `timeout`; false when some job is still busy (a step
+/// such as a slow listing or transfer cannot be interrupted): it finishes that step on its
+/// own, and the library stays locked until it has.
+pub(crate) fn shutdown(lib: &Shared, timeout: Duration) -> bool {
+    lib.jobs.closing.store(true, Ordering::SeqCst);
+    let running: Vec<_> = lib.jobs.running.lock().drain().collect();
+    for (_, r) in &running {
+        r.stop.store(true, Ordering::SeqCst);
     }
+    let deadline = Instant::now() + timeout;
+    while running.iter().any(|(_, r)| !r.thread.is_finished()) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
 }
 
 /// Ended jobs kept in `library.db` (older ones are pruned on open).
@@ -460,13 +519,8 @@ pub(crate) fn prune(db: &Pool) -> Result<()> {
 /// How long dropping a library waits for its jobs.
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl Drop for Jobs {
-    fn drop(&mut self) {
-        self.shutdown(CLOSE_TIMEOUT);
-    }
-}
-
 /// A full walk of one source as a durable job (a restart walks again; walks are idempotent).
+/// A completed walk schedules hashing (`Library::set_hash_after_walk`).
 #[derive(Serialize, Deserialize)]
 pub(crate) struct IndexJob {
     pub(crate) source: SourceId,
@@ -494,7 +548,9 @@ impl Job for IndexJob {
                 }
             },
             ctx.stop_flag(),
-        )
+        )?;
+        crate::hash::after_walk(&ctx.lib, &src);
+        Ok(())
     }
     fn checkpoint(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -636,6 +692,7 @@ mod tests {
             include_hidden: false,
             ignore: Vec::new(),
             poll_secs: None,
+            hash_shares: false,
         };
         let lib = Library::open(data.path(), "j").unwrap();
         let source = lib.add_source(def).unwrap();
@@ -726,7 +783,9 @@ mod tests {
     #[test]
     fn close_waits_for_jobs_up_to_a_timeout() {
         let data = tempfile::tempdir().unwrap();
-        let lib = Library::open(data.path(), "j").unwrap();
+        // Closed through one handle while another exists (the app's UI holds Arcs).
+        let lib = Arc::new(Library::open(data.path(), "j").unwrap());
+        let other = lib.clone();
         lib.jobs()
             .spawn(count(&data.path().join("c.txt"), 100_000))
             .unwrap();
@@ -734,12 +793,26 @@ mod tests {
             lib.close(Duration::from_secs(10)),
             "a checkpointing job stops"
         );
+        let start = Instant::now();
+        drop((lib, other));
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "a cheap last drop"
+        );
 
         let lib = Library::open(data.path(), "j").unwrap();
         lib.jobs().spawn(Box::new(Stuck)).unwrap();
         let start = Instant::now();
         assert!(!lib.close(Duration::from_millis(100)));
         assert!(start.elapsed() < Duration::from_secs(1));
+        drop(lib);
+        // The detached job still runs: the library stays locked (no second session could
+        // resume its jobs while it runs), until it ends.
+        let err = Library::open(data.path(), "j").err().unwrap();
+        assert!(err.to_string().contains("already open"), "{err}");
+        crate::index::tests::eventually("the stuck job ends", || {
+            Library::open(data.path(), "j").is_ok()
+        });
     }
 
     #[test]

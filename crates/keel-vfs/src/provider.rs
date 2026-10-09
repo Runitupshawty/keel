@@ -32,10 +32,9 @@ pub trait Provider: Send + Sync {
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>>;
     fn stat(&self, p: &VPath) -> Result<Entry>;
     /// `list` for indexing: read fresh (no cache), and an error rather than a listing cut
-    /// off at a display cap (an index would take the missing entries as deleted).
-    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
-        self.list(dir)
-    }
+    /// off at a display cap (an index would take the missing entries as deleted). No
+    /// default: a wrapper must forward it (or say why its `list` already qualifies).
+    fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>>;
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
     /// Call `flush()` and check its result when done: providers that stage writes (SFTP)
     /// commit there, and a writer dropped without a successful `flush()` is discarded
@@ -84,10 +83,9 @@ pub trait Provider: Send + Sync {
     }
     /// Local: OS trash only, never a permanent delete.
     fn remove(&self, p: &VPath) -> Result<()>;
-    /// What `remove` does here; permanent unless the provider says otherwise.
-    fn remove_kind(&self) -> RemoveKind {
-        RemoveKind::Permanent
-    }
+    /// What `remove` does here (delete confirmations and plan warnings). No default: a
+    /// wrapper must forward it, or a trash-backed provider reads as permanent.
+    fn remove_kind(&self) -> RemoveKind;
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
     /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
     fn local_copy_cancellable(

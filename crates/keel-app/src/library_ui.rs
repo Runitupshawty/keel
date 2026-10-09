@@ -130,11 +130,12 @@ pub fn sidebar(
             } else {
                 ("Pause hashing", LibCmd::PauseHashing(true))
             };
-            for (text, cmd) in [
+            let adopt = (s.adopt).then(|| ("Adopt new root", LibCmd::AdoptRoot(s.id.clone())));
+            for (text, cmd) in adopt.into_iter().chain([
                 ("Index now", LibCmd::IndexNow(s.id.clone())),
                 pause,
                 ("Remove…", LibCmd::RemoveSource(s.id.clone())),
-            ] {
+            ]) {
                 if ui.button(text).clicked() {
                     out.push(lib(cmd));
                     ui.close_menu();
@@ -486,6 +487,7 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                                 .map(str::to_owned)
                                 .collect(),
                             poll_secs: None,
+                            hash_shares: false,
                         })));
                     }
                 }

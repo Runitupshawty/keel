@@ -3,14 +3,14 @@
 //! paths the index does not know; execution re-validates, runs as a durable job and writes a
 //! (redacted) op_log entry.
 
-use crate::index::{resolve, ChangeEvent};
+use crate::index::resolve;
 use crate::jobs::{Job, JobCtx, JobId};
-use crate::library::{relative, Shared, Source, SourceStatus};
+use crate::library::{relative, OfflineReason, Shared, Source, SourceStatus};
 use crate::{oplog, Cancelled, Indexer, Library, SourceId};
 use anyhow::{Context, Result};
 use keel_vfs::{ops::Conflict, Kind, VPath};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnConflict {
@@ -150,8 +150,9 @@ pub fn validate_preview_execute(lib: &Library, op: Op) -> Result<Plan> {
     preview(&lib.shared, op)
 }
 
-/// `Plan::execute` refused because the preview no longer matches (changes or warnings):
-/// the fresh plan is inside, for the user to confirm instead.
+/// `Plan::execute` refused because the preview no longer matches (its actions, paths or
+/// kinds of warnings; counts and sizes may drift, a log file keeps growing): the fresh plan
+/// is inside, for the user to confirm instead.
 #[derive(Debug)]
 pub struct PlanChanged(pub Box<Plan>);
 
@@ -163,21 +164,50 @@ impl std::fmt::Display for PlanChanged {
 
 impl std::error::Error for PlanChanged {}
 
+/// A warning without its counts.
+fn kind_of(w: &Warning) -> Warning {
+    match w.clone() {
+        Warning::LastCopy { path, .. } => Warning::LastCopy { path, files: 0 },
+        Warning::ContentUnverified { path, .. } => Warning::ContentUnverified { path, files: 0 },
+        w => w,
+    }
+}
+
+/// Same operation, actions, paths and kinds of warnings (counts and sizes may differ).
+fn same_shape(a: &Plan, b: &Plan) -> bool {
+    let changes = |p: &Plan| -> Vec<(Action, VPath, Option<VPath>)> {
+        p.changes
+            .iter()
+            .map(|c| (c.action, c.from.clone(), c.to.clone()))
+            .collect()
+    };
+    let warnings = |p: &Plan| p.warnings.iter().map(kind_of).collect::<Vec<_>>();
+    a.op == b.op && changes(a) == changes(b) && warnings(a) == warnings(b)
+}
+
 impl Plan {
-    /// Re-validates against the current state (a path that vanished fails here) and runs the
-    /// operation as a durable job that logs to op_log, but only when the fresh preview is
-    /// the one that was confirmed: otherwise `Err(PlanChanged(fresh))`.
-    pub fn execute(self, lib: &Library) -> Result<JobId> {
-        let fresh = preview(&lib.shared, self.op.clone())?;
-        if fresh != self {
-            return Err(PlanChanged(Box::new(fresh)).into());
-        }
+    /// Runs the operation as a durable job that logs to op_log, but only while a fresh
+    /// preview has the shape of this confirmed one (`PlanChanged` otherwise; a path that
+    /// vanished fails too). `recheck`: preview again here, on the calling thread (it stats
+    /// live paths), returning `Err(PlanChanged(fresh))`; else the job does it before its
+    /// first step and fails with that error in its log.
+    pub fn execute(self, lib: &Library, recheck: bool) -> Result<JobId> {
+        let expect = if recheck {
+            let fresh = preview(&lib.shared, self.op.clone())?;
+            if !same_shape(&fresh, &self) {
+                return Err(PlanChanged(Box::new(fresh)).into());
+            }
+            None
+        } else {
+            Some(self.clone())
+        };
         lib.jobs().spawn(Box::new(ExecJob {
-            op: fresh.op,
+            op: self.op,
+            expect,
             next: 0,
             skipped: 0,
             log_id: None,
-            started: None,
+            marks: Vec::new(),
         }))
     }
 }
@@ -384,67 +414,95 @@ fn exists(lib: &Shared, p: &VPath) -> bool {
     }
 }
 
-/// `LastCopy` for each deleted path holding files whose content id has no confirmed record
-/// outside the deletion; `ContentUnverified` for files without a content id yet.
+/// Whether no record other than one has sampled hash `h`: content no other file holds.
+fn sampled_alone(lib: &Shared, h: &[u8]) -> Result<bool> {
+    let sources: Vec<Arc<Source>> = lib.sources.read().clone();
+    let mut n = 0;
+    for s in sources {
+        n += s.store.get()?.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM record WHERE sampled_hash = ?1 LIMIT 2)",
+            [h],
+            |r| r.get::<_, i64>(0),
+        )?;
+        if n > 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `LastCopy` for each deleted path holding files whose content no record outside the
+/// deletion holds (by content id, or a sampled hash no other record shares);
+/// `ContentUnverified` for the other files without a content id yet.
 fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Result<()> {
     /// (content id, files with it) under one deleted path.
     type Contents = Vec<(Vec<u8>, u64)>;
     let mut deleted: HashMap<Vec<u8>, u64> = HashMap::new();
-    let mut per_path: Vec<(VPath, Contents)> = Vec::new();
+    // (path, its content ids, its files whose sampled hash is unique)
+    let mut per_path: Vec<(VPath, Contents, u64)> = Vec::new();
     for p in paths {
         let Some((src, rel)) = lib.source_for(p) else {
             continue;
         };
-        let c = src.store.get()?;
-        let Some((id, _)) = resolve(&c, &rel, src.nocase())? else {
-            continue;
+        let (cas, pending) = {
+            let c = src.store.get()?;
+            let Some((id, _)) = resolve(&c, &rel, src.nocase())? else {
+                continue;
+            };
+            let cas: Contents = c
+                .prepare_cached(
+                    "WITH RECURSIVE sub(id) AS (
+                         SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
+                     SELECT cas_id, count(*) FROM record
+                     WHERE id IN (SELECT id FROM sub) AND cas_id IS NOT NULL GROUP BY cas_id",
+                )?
+                .query_map([id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let pending: Vec<Option<Vec<u8>>> = c
+                .prepare_cached(
+                    "WITH RECURSIVE sub(id) AS (
+                         SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
+                     SELECT sampled_hash FROM record
+                     WHERE id IN (SELECT id FROM sub) AND kind = 0 AND cas_id IS NULL",
+                )?
+                .query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            (cas, pending)
         };
-        let mut stmt = c.prepare_cached(
-            "WITH RECURSIVE sub(id) AS (
-                 SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
-             SELECT cas_id, count(*) FROM record
-             WHERE id IN (SELECT id FROM sub) AND cas_id IS NOT NULL GROUP BY cas_id",
-        )?;
-        let cas: Contents = stmt
-            .query_map([id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
-            .collect::<rusqlite::Result<_>>()?;
-        let unverified: i64 = c
-            .prepare_cached(
-                "WITH RECURSIVE sub(id) AS (
-                     SELECT ?1 UNION ALL SELECT r.id FROM record r JOIN sub ON r.parent = sub.id)
-                 SELECT count(*) FROM record
-                 WHERE id IN (SELECT id FROM sub) AND kind = 0 AND cas_id IS NULL",
-            )?
-            .query_row([id], |r| r.get(0))?;
+        let (mut unverified, mut alone) = (0, 0);
+        for sampled in pending {
+            match sampled {
+                Some(h) if sampled_alone(lib, &h)? => alone += 1,
+                _ => unverified += 1,
+            }
+        }
         if unverified > 0 {
             warnings.push(Warning::ContentUnverified {
                 path: p.clone(),
-                files: unverified as u64,
+                files: unverified,
             });
         }
         for (c, n) in &cas {
             *deleted.entry(c.clone()).or_default() += n;
         }
-        per_path.push((p.clone(), cas));
+        per_path.push((p.clone(), cas, alone));
     }
-    if deleted.is_empty() {
-        return Ok(());
-    }
-    // Copies elsewhere count only with a confirmed (whole-file) content id: an unconfirmed
-    // shared sampled hash is not proof of a second copy.
+    // A hard link outside the deletion keeps the content too: records are counted here,
+    // not files.
     // ponytail: one count per content id per source; batch it if deletes of huge hashed
     // trees get slow.
     let mut total: HashMap<&[u8], u64> = HashMap::new();
     for cas in deleted.keys() {
-        let n = crate::hash::copies(lib, cas)?.iter().map(|(_, n)| n).sum();
-        total.insert(cas, n);
+        let copies = crate::hash::copies(lib, cas)?;
+        total.insert(cas, copies.iter().map(|(_, keys)| keys.len() as u64).sum());
     }
-    for (path, cas) in per_path {
-        let files: u64 = cas
-            .iter()
-            .filter(|(c, _)| total[c.as_slice()] <= deleted[c])
-            .map(|(_, n)| n)
-            .sum();
+    for (path, cas, alone) in per_path {
+        let files: u64 = alone
+            + cas
+                .iter()
+                .filter(|(c, _)| total[c.as_slice()] <= deleted[c])
+                .map(|(_, n)| n)
+                .sum::<u64>();
         if files > 0 {
             warnings.push(Warning::LastCopy { path, files });
         }
@@ -452,24 +510,36 @@ fn last_copies(lib: &Shared, paths: &[VPath], warnings: &mut Vec<Warning>) -> Re
     Ok(())
 }
 
-/// Runs an `Op` one top-level path per step; the op_log row is written before the first
-/// step and completed at the end.
+/// Items per batch: a batch's marks are written together before any of its items runs, a
+/// copy or move transfers the batch in one call, and one cursor write ends it.
+const STEP_BATCH: usize = 64;
+
+/// Runs an `Op` in batches of top-level paths; the op_log row is written before the first
+/// batch and completed at the end. The op (with the plan to check) is stored once, at
+/// spawn; each batch writes only the cursor (`JobCtx::cursor`), once.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ExecJob {
     op: Op,
+    /// The confirmed plan, checked against a fresh preview before the first step
+    /// (`Plan::execute` without `recheck`).
+    #[serde(default)]
+    expect: Option<Plan>,
     next: usize,
     skipped: usize,
     log_id: Option<i64>,
-    /// Checkpointed before item `next`'s side effects: after a crash the step may or may not
-    /// have happened, and the resumed job checks before doing it again.
+    /// The items from `next` on that may have begun: written with the cursor before a
+    /// batch's side effects, so a resumed job checks each before doing it again.
     #[serde(default)]
-    started: Option<Started>,
+    marks: Vec<Started>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Started {
     item: usize,
-    /// The copy/move/rename target name existed before the step.
+    /// The copy/move target name existed before the step. Probed only where a re-run is
+    /// not safe (rename on conflict: it would copy again under a new name); elsewhere true,
+    /// so a begun step simply runs again (skip and overwrite are idempotent, and a skip
+    /// merges into a folder copied halfway).
     target_existed: bool,
 }
 
@@ -488,13 +558,159 @@ fn live(ctx: &JobCtx, p: &VPath) -> bool {
         .is_some_and(|provider| provider.stat(p).is_ok())
 }
 
-/// After a crash between a step's checkpoint and the next: did the step already happen?
-/// A move, delete or rename did when its source is gone; a copy when its target appeared.
-/// (A copy that renames on conflict onto a name that existed cannot tell; it runs again.)
-fn already_done(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> bool {
+/// The marks of the batch starting at item `from`: up to [`STEP_BATCH`] items, cut short
+/// so a resumed batch can tell what ran (no two targets with one name, no item inside
+/// another, a rename-on-conflict onto a taken name only last).
+fn batch_marks(ctx: &JobCtx, op: &Op, items: &[VPath], from: usize) -> Vec<Started> {
+    let renames_new = matches!(
+        op,
+        Op::Copy {
+            on_conflict: OnConflict::RenameNew,
+            ..
+        } | Op::Move {
+            on_conflict: OnConflict::RenameNew,
+            ..
+        }
+    );
+    let mut marks: Vec<Started> = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for (i, item) in items.iter().enumerate().skip(from).take(STEP_BATCH) {
+        let to = target(op, item);
+        let clash = to
+            .as_ref()
+            .is_some_and(|t| !names.insert(t.name().to_lowercase()));
+        let nested = marks.iter().any(|m| {
+            let other = &items[m.item];
+            relative(other, item).is_some() || relative(item, other).is_some()
+        });
+        if !marks.is_empty() && (clash || nested) {
+            break;
+        }
+        let target_existed = to.is_some_and(|t| !renames_new || live(ctx, &t));
+        marks.push(Started {
+            item: i,
+            target_existed,
+        });
+        if target_existed && renames_new {
+            break;
+        }
+    }
+    marks
+}
+
+/// What a resumed job does with an item whose step may have begun before a crash.
+enum Resume {
+    /// The step happened: only the index catches up.
+    Done,
+    /// It began (its target appeared): run it again as a merge that skips what exists, so
+    /// a folder copy killed halfway gets its remaining files.
+    Merge,
+    Run,
+}
+
+/// A move, delete or rename happened when its source is gone; a copy of a file when its
+/// target appeared (files are placed whole). A folder copy or move whose target appeared
+/// may be partial: merged. (A copy that renames on conflict onto a name that existed
+/// cannot tell; it runs again.)
+fn resume(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> Resume {
+    let appeared = !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t));
+    let is_dir = || {
+        ctx.router()
+            .provider_for(item)
+            .and_then(|p| p.stat(item).ok())
+            .is_some_and(|e| e.kind == Kind::Dir)
+    };
     match op {
-        Op::Copy { .. } => !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t)),
-        _ => !live(ctx, item),
+        Op::Copy { .. } if appeared && is_dir() => Resume::Merge,
+        Op::Copy { .. } if appeared => Resume::Done,
+        Op::Copy { .. } => Resume::Run,
+        _ if !live(ctx, item) => Resume::Done,
+        Op::Move { .. } if appeared => Resume::Merge,
+        _ => Resume::Run,
+    }
+}
+
+impl ExecJob {
+    fn cursor(&self) -> serde_json::Value {
+        serde_json::json!({
+            "next": self.next,
+            "skipped": self.skipped,
+            "log_id": self.log_id,
+            "marks": self.marks,
+        })
+    }
+
+    fn count(&mut self, ctx: &JobCtx, item: &VPath, ran: bool) -> Result<()> {
+        if !ran {
+            self.skipped += 1;
+            let line = format!("skipped (no longer exists): {}", item.display());
+            ctx.log(&oplog::redact_text(&line, &oplog::roots(&ctx.lib)))?;
+        }
+        Ok(())
+    }
+
+    fn steps(&mut self, ctx: &JobCtx, items: &[VPath], mut marked: bool) -> Result<()> {
+        let n = items.len();
+        // Marks left by an earlier session: their items may have begun, each is settled
+        // on its own.
+        if !marked {
+            // Settled marks go one by one: a stop here keeps the rest for the next resume.
+            while let Some(s) = self.marks.first().copied().filter(|s| s.item == self.next) {
+                if ctx.stopping() {
+                    return Err(Cancelled.into());
+                }
+                let item = &items[self.next];
+                let ran = match resume(ctx, &self.op, item, s) {
+                    Resume::Done => {
+                        ctx.log("resumed after the step had run")?;
+                        after(ctx, &self.op, std::slice::from_ref(item));
+                        true
+                    }
+                    Resume::Merge => {
+                        ctx.log("resumed a step that had begun: merging")?;
+                        step(ctx, &self.op, item, Some(OnConflict::Skip))?
+                    }
+                    Resume::Run => step(ctx, &self.op, item, None)?,
+                };
+                self.count(ctx, item, ran)?;
+                self.marks.remove(0);
+                self.next += 1;
+            }
+        }
+        while self.next < n {
+            if ctx.stopping() {
+                return Err(Cancelled.into());
+            }
+            if !marked {
+                self.marks = batch_marks(ctx, &self.op, items, self.next);
+                ctx.cursor(self.cursor(), self.next as f32 / n as f32)?;
+            }
+            let batch = &items[self.next..self.next + self.marks.len()];
+            let ran = run_batch(ctx, &self.op, batch)?;
+            for (item, ran) in batch.iter().zip(ran) {
+                self.count(ctx, item, ran)?;
+            }
+            // One write: this batch done, and the next one marked.
+            self.next += batch.len();
+            self.marks = batch_marks(ctx, &self.op, items, self.next);
+            marked = true;
+            ctx.cursor(self.cursor(), self.next as f32 / n as f32)?;
+        }
+        // A target renamed to avoid a conflict is found by listing its folder, once.
+        if let Op::Copy {
+            dst_dir,
+            on_conflict: OnConflict::RenameNew,
+            ..
+        }
+        | Op::Move {
+            dst_dir,
+            on_conflict: OnConflict::RenameNew,
+            ..
+        } = &self.op
+        {
+            refresh_children(ctx, dst_dir);
+        }
+        Ok(())
     }
 }
 
@@ -505,56 +721,39 @@ impl Job for ExecJob {
 
     fn run(&mut self, ctx: &JobCtx) -> Result<()> {
         let lib = ctx.lib.clone();
+        let items = self.op.items();
+        let n = items.len();
+        // The marks were written in this session: their items have not begun.
+        let mut marked = false;
         let log_id = match self.log_id {
             Some(id) => id,
             None => {
+                if let Some(expect) = &self.expect {
+                    let now = preview(&lib, self.op.clone())?;
+                    if !same_shape(&now, expect) {
+                        return Err(PlanChanged(Box::new(now)).into());
+                    }
+                }
                 let id = oplog::record(&lib, self.op.kind(), &self.op.payload(), "running")?;
                 self.log_id = Some(id);
-                ctx.checkpoint(self.checkpoint(), 0.0)?;
+                if self.marks.is_empty() {
+                    self.marks = batch_marks(ctx, &self.op, &items, self.next);
+                    marked = true;
+                }
+                ctx.cursor(self.cursor(), 0.0)?;
                 id
             }
         };
-        let items = self.op.items();
-        let result = (|| -> Result<()> {
-            while self.next < items.len() {
-                if ctx.stopping() {
-                    return Err(Cancelled.into());
-                }
-                let item = &items[self.next];
-                let resumed = self.started.filter(|s| s.item == self.next);
-                let ran = if resumed.is_some_and(|s| already_done(ctx, &self.op, item, s)) {
-                    ctx.log("resumed after the step had run")?;
-                    after(ctx, &self.op, item)?;
-                    true
-                } else {
-                    self.started = Some(Started {
-                        item: self.next,
-                        target_existed: target(&self.op, item).is_some_and(|t| live(ctx, &t)),
-                    });
-                    let progress = self.next as f32 / items.len() as f32;
-                    ctx.checkpoint(self.checkpoint(), progress)?;
-                    step(ctx, &self.op, item)?
-                };
-                if !ran {
-                    self.skipped += 1;
-                    let line = format!("skipped (no longer exists): {}", item.display());
-                    ctx.log(&oplog::redact_text(&line, &oplog::roots(&lib)))?;
-                }
-                self.next += 1;
-                self.started = None;
-                ctx.checkpoint(self.checkpoint(), self.next as f32 / items.len() as f32)?;
-            }
-            Ok(())
-        })();
+        let result = self.steps(ctx, &items, marked);
         let summary = match &result {
             Ok(()) if self.skipped == 0 => "ok".to_owned(),
             Ok(()) => format!("{} skipped", self.skipped),
             // Resumes on the next open.
             Err(_) if ctx.closing() => return result,
             Err(e) if e.is::<Cancelled>() || ctx.stopping() => {
-                format!("cancelled after {} of {}", self.next, items.len())
+                format!("cancelled after {} of {}", self.next, n)
             }
-            Err(e) => format!("failed after {} of {}: {e:#}", self.next, items.len()),
+            Err(e) => format!("failed after {} of {}: {e:#}", self.next, n),
         };
         oplog::set_result(&lib, log_id, &summary, result.is_ok())?;
         result
@@ -569,30 +768,90 @@ impl Job for ExecJob {
     }
 }
 
-/// One top-level path; false when it no longer exists (skipped). Fails when the path's
-/// source cannot be reached (the rest of the operation is not run against it).
-fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
+/// Whether `item` exists; fails when it is missing because its source cannot be reached
+/// (the rest of the operation is not run against it).
+fn present(ctx: &JobCtx, item: &VPath) -> Result<bool> {
     let router = ctx.router();
     let provider = router
         .provider_for(item)
         .with_context(|| format!("no provider for {}", item.display()))?;
-    if provider.stat(item).is_err() {
-        if let Some((src, _)) = ctx.lib.source_for(item) {
-            let reachable = router
-                .provider_for(&src.def.root)
-                .is_some_and(|p| p.stat(&src.def.root).is_ok());
-            if !reachable {
-                *src.status.write() = SourceStatus::Offline {
-                    last_seen: src
-                        .store
-                        .meta("last_full_walk")?
-                        .and_then(|t| t.parse().ok()),
-                };
-                anyhow::bail!("source {} is offline", src.def.label);
-            }
+    if provider.stat(item).is_ok() {
+        return Ok(true);
+    }
+    if let Some((src, _)) = ctx.lib.source_for(item) {
+        let reachable = router
+            .provider_for(&src.def.root)
+            .is_some_and(|p| p.stat(&src.def.root).is_ok());
+        if !reachable {
+            *src.status.write() = SourceStatus::Offline {
+                last_seen: src
+                    .store
+                    .meta("last_full_walk")?
+                    .and_then(|t| t.parse().ok()),
+                reason: OfflineReason::Unreachable,
+            };
+            anyhow::bail!("source {} is offline", src.def.label);
         }
+    }
+    Ok(false)
+}
+
+/// One batch; per item, false when it no longer exists (skipped). A copy or move is one
+/// transfer of the batch's present items.
+fn run_batch(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
+    let (Op::Copy {
+        dst_dir,
+        on_conflict,
+        ..
+    }
+    | Op::Move {
+        dst_dir,
+        on_conflict,
+        ..
+    }) = op
+    else {
+        return batch
+            .iter()
+            .map(|item| {
+                if ctx.stopping() {
+                    return Err(Cancelled.into());
+                }
+                step(ctx, op, item, None)
+            })
+            .collect();
+    };
+    let ran = batch
+        .iter()
+        .map(|item| present(ctx, item))
+        .collect::<Result<Vec<bool>>>()?;
+    let todo: Vec<VPath> = batch
+        .iter()
+        .zip(&ran)
+        .filter(|(_, ran)| **ran)
+        .map(|(item, _)| item.clone())
+        .collect();
+    if !todo.is_empty() {
+        keel_vfs::ops::transfer(
+            &todo,
+            dst_dir,
+            matches!(op, Op::Move { .. }),
+            (*on_conflict).into(),
+            &|_| {},
+            ctx.stop_flag(),
+            &ctx.router(),
+        )?;
+        after(ctx, op, &todo);
+    }
+    Ok(ran)
+}
+
+/// One top-level path (with `conflict` instead of the op's own, when given); false when it
+/// no longer exists (skipped).
+fn step(ctx: &JobCtx, op: &Op, item: &VPath, conflict: Option<OnConflict>) -> Result<bool> {
+    if !present(ctx, item)? {
         return Ok(false);
     }
+    let router = ctx.router();
     match op {
         Op::Copy {
             dst_dir,
@@ -604,71 +863,67 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
             on_conflict,
             ..
         } => {
-            let mv = matches!(op, Op::Move { .. });
             keel_vfs::ops::transfer(
                 std::slice::from_ref(item),
                 dst_dir,
-                mv,
-                (*on_conflict).into(),
+                matches!(op, Op::Move { .. }),
+                conflict.unwrap_or(*on_conflict).into(),
                 &|_| {},
                 ctx.stop_flag(),
                 &router,
             )?;
         }
-        Op::Delete { .. } => provider.remove(item)?,
+        Op::Delete { .. } => router
+            .provider_for(item)
+            .with_context(|| format!("no provider for {}", item.display()))?
+            .remove(item)?,
         Op::Rename { .. } => {
             let to =
                 target(op, item).with_context(|| format!("cannot rename {}", item.display()))?;
-            provider.rename(item, &to)?;
+            router
+                .provider_for(item)
+                .with_context(|| format!("no provider for {}", item.display()))?
+                .rename(item, &to)?;
         }
     }
-    after(ctx, op, item)?;
+    after(ctx, op, std::slice::from_ref(item));
     Ok(true)
 }
 
-/// Updates the index for what a step changed.
-fn after(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<()> {
-    match op {
-        Op::Copy { dst_dir, .. } | Op::Move { dst_dir, .. } => {
-            // Destination first: a same-volume move is then found by identity.
-            reindex(ctx, &dst_dir.join(item.name()), true);
-            refresh_children(ctx, dst_dir);
-            if matches!(op, Op::Move { .. }) {
-                reindex(ctx, item, false);
-            }
-        }
-        Op::Delete { .. } => reindex(ctx, item, false),
-        Op::Rename { .. } => {
-            let to =
-                target(op, item).with_context(|| format!("cannot rename {}", item.display()))?;
-            reindex(ctx, &to, true);
-            reindex(ctx, item, false);
-        }
-    }
-    Ok(())
-}
-
-/// Brings the index up to date for a local path the job changed (the watcher, if any,
-/// would get there too; remote sources catch up at their next poll).
-fn reindex(ctx: &JobCtx, p: &VPath, present: bool) {
-    let Some((src, _)) = ctx.lib.source_for(p) else {
-        return;
-    };
-    if p.to_local_path().is_none() {
-        return;
-    }
-    let ev = if present {
-        ChangeEvent::Changed(p.clone())
-    } else {
-        ChangeEvent::Removed(p.clone())
-    };
-    if let Err(e) = Indexer::apply_change(&src, ev) {
-        tracing::debug!("reindex after op: {e:#}");
+/// Updates the index for what steps changed: destinations first (a same-volume move is
+/// then found by identity; a folder copied into an existing one is walked whole), then the
+/// paths that went away.
+fn after(ctx: &JobCtx, op: &Op, items: &[VPath]) {
+    let targets: Vec<VPath> = items.iter().filter_map(|i| target(op, i)).collect();
+    reindex(ctx, &targets, true);
+    if !matches!(op, Op::Copy { .. }) {
+        reindex(ctx, items, false);
     }
 }
 
-/// Indexes children of a local folder that the index does not have yet (a copy that
-/// renamed its target to avoid a conflict).
+/// Brings the index up to date for local paths the job changed, one transaction per
+/// source (the watcher, if any, would get there too; remote sources catch up at their next
+/// poll). `walk`: walk folders whole.
+fn reindex(ctx: &JobCtx, paths: &[VPath], walk: bool) {
+    let mut by_source: Vec<(Arc<Source>, Vec<VPath>)> = Vec::new();
+    for p in paths.iter().filter(|p| p.to_local_path().is_some()) {
+        let Some((src, _)) = ctx.lib.source_for(p) else {
+            continue;
+        };
+        match by_source.iter_mut().find(|(s, _)| s.id == src.id) {
+            Some((_, ps)) => ps.push(p.clone()),
+            None => by_source.push((src, vec![p.clone()])),
+        }
+    }
+    for (src, ps) in by_source {
+        if let Err(e) = Indexer::apply_paths(&src, &ps, walk) {
+            tracing::debug!("reindex after op: {e:#}");
+        }
+    }
+}
+
+/// Indexes children of a local folder that the index does not have yet (targets a copy
+/// renamed to avoid a conflict).
 fn refresh_children(ctx: &JobCtx, dir: &VPath) {
     let (Some((src, rel)), Some(local)) = (ctx.lib.source_for(dir), dir.to_local_path()) else {
         return;
@@ -681,19 +936,22 @@ fn refresh_children(ctx: &JobCtx, dir: &VPath) {
     } else {
         format!("{rel}/")
     };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let known = src
-            .store
-            .get()
-            .ok()
-            .and_then(|c| resolve(&c, &format!("{prefix}{name}"), src.nocase()).ok())
-            .flatten()
-            .is_some();
-        if !known {
-            reindex(ctx, &dir.join(&name), true);
-        }
-    }
+    let Ok(c) = src.store.get() else {
+        return;
+    };
+    let unknown: Vec<VPath> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            resolve(&c, &format!("{prefix}{name}"), src.nocase())
+                .ok()
+                .flatten()
+                .is_none()
+        })
+        .map(|name| dir.join(&name))
+        .collect();
+    drop(c);
+    reindex(ctx, &unknown, true);
 }
 
 #[cfg(test)]

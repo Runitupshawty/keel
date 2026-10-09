@@ -570,6 +570,13 @@ impl Provider for SftpProvider {
         }
         Ok(())
     }
+    /// Read straight from the server to the end of the folder (no cache, no cap).
+    fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(dir)
+    }
+    fn remove_kind(&self) -> crate::RemoveKind {
+        crate::RemoveKind::Permanent
+    }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.download(p, &|_| {}, &AtomicBool::new(false))
     }

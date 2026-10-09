@@ -178,14 +178,14 @@ pub fn ui(
                         }
                     }
                     if let Some(s) = offline {
-                        let SourceStatus::Offline { last_seen } = s.status else {
+                        let SourceStatus::Offline { last_seen, reason } = s.status else {
                             unreachable!("filtered")
                         };
                         ui.label(egui::RichText::new("offline").small().color(muted))
                             .on_hover_text(format!(
-                                "{} is offline (last seen {}): listed from the library index",
+                                "{} is {}: listed from the library index",
                                 s.label,
-                                crate::library::when(last_seen)
+                                crate::library::offline_text(last_seen, reason)
                             ));
                     }
                 });

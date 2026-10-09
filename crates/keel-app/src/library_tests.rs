@@ -28,6 +28,7 @@ fn fixture(name: &str, hash: bool) -> (PathBuf, Arc<Library>, SourceId) {
             include_hidden: false,
             ignore: Vec::new(),
             poll_secs: None,
+            hash_shares: false,
         })
         .unwrap();
     let job = lib.index(&id).unwrap();
@@ -86,9 +87,30 @@ fn sidebar_rows_follow_source_status_and_stats() {
                 total: 5_000,
             },
         ),
-        summary("C", SourceStatus::Offline { last_seen: None }),
+        summary(
+            "C",
+            SourceStatus::Offline {
+                last_seen: None,
+                reason: OfflineReason::Unreachable,
+            },
+        ),
         summary("D", SourceStatus::Error("denied".into())),
+        summary(
+            "E",
+            SourceStatus::Offline {
+                last_seen: None,
+                reason: OfflineReason::RootMismatch,
+            },
+        ),
     ]);
+    let adopt: Vec<bool> = rows.iter().map(|r| r.adopt).collect();
+    assert_eq!(adopt, [false, false, false, false, true]);
+    assert!(
+        rows[4].detail.contains("different folder"),
+        "{}",
+        rows[4].detail
+    );
+    let rows = &rows[..4];
     let got: Vec<(Dot, &str)> = rows.iter().map(|r| (r.dot, r.detail.as_str())).collect();
     assert_eq!(
         got,
@@ -141,7 +163,10 @@ fn library_tab_lists_from_the_index_and_works_offline() {
     });
 
     // Offline: still listed (last generation); reading says why it cannot.
-    *lib.source(&id).unwrap().status.write() = SourceStatus::Offline { last_seen: Some(0) };
+    *lib.source(&id).unwrap().status.write() = SourceStatus::Offline {
+        last_seen: Some(0),
+        reason: OfflineReason::Unreachable,
+    };
     s.run(0, Action::Refresh);
     let before = s.tab(0).listed_req;
     pump_until(&mut s, "relisted offline", |s| s.tab(0).listed_req > before);
@@ -503,6 +528,7 @@ fn library_live() {
             include_hidden: false,
             ignore: Vec::new(),
             poll_secs: None,
+            hash_shares: false,
         })),
     );
     wait(&mut h, "source added", &|s| !s.library.sources.is_empty());

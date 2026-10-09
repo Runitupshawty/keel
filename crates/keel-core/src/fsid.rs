@@ -1,6 +1,8 @@
 //! Local directory listing with stable file identity: volume serial + file id on Windows
 //! (one `FileIdExtdDirectoryInfo` enumeration per directory, no per-file opens), dev + inode
 //! elsewhere. `fs_id` is None where the filesystem has no stable ids (FAT, some shares).
+//! Times are unix nanoseconds; `ctime` is the change time (inode change on unix, ChangeTime
+//! on Windows), which any write moves even when the mtime is put back.
 
 use std::{io, path::Path};
 
@@ -23,16 +25,17 @@ pub(crate) struct Item {
     pub error: Option<String>,
 }
 
-/// Unix seconds (negative before 1970).
-pub(crate) fn unix(t: std::time::SystemTime) -> i64 {
+/// Unix nanoseconds (negative before 1970; saturating outside 1678..2262).
+pub(crate) fn unix_ns(t: std::time::SystemTime) -> i64 {
+    let ns = |d: std::time::Duration| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX);
     match t.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64,
-        Err(e) => -(e.duration().as_secs() as i64),
+        Ok(d) => ns(d),
+        Err(e) => -ns(e.duration()),
     }
 }
 
-fn secs(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {
-    t.ok().map(unix)
+fn nanos(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {
+    t.ok().map(unix_ns)
 }
 
 /// From `std` metadata (not followed); used where the native enumeration is unavailable.
@@ -65,16 +68,22 @@ fn from_metadata(name: String, path: &Path, md: io::Result<std::fs::Metadata>) -
     #[cfg(not(windows))]
     let hidden = name.starts_with('.');
     #[cfg(unix)]
-    let fs_id = {
+    let (fs_id, ctime) = {
         use std::os::unix::fs::MetadataExt;
-        Some(format!("{:x}:{:x}", md.dev(), md.ino()))
+        (
+            Some(format!("{:x}:{:x}", md.dev(), md.ino())),
+            md.ctime()
+                .checked_mul(1_000_000_000)
+                .and_then(|s| s.checked_add(md.ctime_nsec())),
+        )
     };
+    // Std has no change time on Windows: `win::stat` reads it from the handle.
     #[cfg(not(unix))]
-    let fs_id = None;
+    let (fs_id, ctime) = (None, None);
     Item {
         size: if kind == FILE { md.len() as i64 } else { 0 },
-        mtime: secs(md.modified()),
-        ctime: secs(md.created()),
+        mtime: nanos(md.modified()),
+        ctime,
         hidden,
         link,
         kind,
@@ -118,10 +127,10 @@ mod win {
     use windows::core::{HRESULT, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
-        GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        CreateFileW, FileBasicInfo, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo,
+        FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
     const ATTR_HIDDEN: u32 = 0x2;
@@ -177,9 +186,23 @@ mod win {
         format!("{serial:x}:{}", hex.trim_start_matches('0'))
     }
 
-    /// FILETIME (100 ns since 1601) to unix seconds; None for 0 (unknown).
-    fn secs(t: i64) -> Option<i64> {
-        (t != 0).then(|| t.div_euclid(10_000_000) - 11_644_473_600)
+    fn basic(h: &Handle) -> io::Result<FILE_BASIC_INFO> {
+        let mut info = FILE_BASIC_INFO::default();
+        // SAFETY: `info` is a FILE_BASIC_INFO of the size passed.
+        unsafe {
+            GetFileInformationByHandleEx(
+                h.0,
+                FileBasicInfo,
+                (&mut info as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        }?;
+        Ok(info)
+    }
+
+    /// FILETIME (100 ns since 1601) to unix nanoseconds; None for 0 (unknown).
+    fn nanos(t: i64) -> Option<i64> {
+        (t != 0).then(|| (t - 116_444_736_000_000_000).saturating_mul(100))
     }
 
     pub(crate) fn list(dir: &Path) -> io::Result<Vec<Item>> {
@@ -239,8 +262,8 @@ mod win {
                     };
                     out.push(Item {
                         size: if kind == FILE { info.EndOfFile } else { 0 },
-                        mtime: secs(info.LastWriteTime),
-                        ctime: secs(info.CreationTime),
+                        mtime: nanos(info.LastWriteTime),
+                        ctime: nanos(info.ChangeTime),
                         hidden: attrs & ATTR_HIDDEN != 0,
                         link,
                         kind,
@@ -263,10 +286,16 @@ mod win {
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let mut item = super::from_metadata(name, path, Ok(md));
-        item.fs_id = open(path, FILE_READ_ATTRIBUTES.0)
-            .and_then(|h| file_id(&h))
-            .ok()
-            .map(|id| fs_id(id.VolumeSerialNumber, id.FileId.Identifier));
+        if let Ok(h) = open(path, FILE_READ_ATTRIBUTES.0) {
+            item.fs_id = file_id(&h)
+                .ok()
+                .map(|id| fs_id(id.VolumeSerialNumber, id.FileId.Identifier));
+            // The times `list` reads, at the same precision.
+            if let Ok(b) = basic(&h) {
+                item.mtime = nanos(b.LastWriteTime).or(item.mtime);
+                item.ctime = nanos(b.ChangeTime);
+            }
+        }
         Ok(item)
     }
 }
@@ -288,7 +317,10 @@ mod tests {
             ("a.txt", FILE, 5)
         );
         assert_eq!((items[1].name.as_str(), items[1].kind), ("sub", DIR));
-        assert!(items[0].mtime.unwrap() > 1_600_000_000);
+        assert!(items[0].mtime.unwrap() > 1_600_000_000_000_000_000);
+        assert!(items[0].ctime.is_some(), "change time");
+        let a = stat(&dir.path().join("a.txt")).unwrap();
+        assert_eq!((a.mtime, a.ctime), (items[0].mtime, items[0].ctime));
         let id = items[0].fs_id.clone().expect("temp dirs have file ids");
         assert_eq!(
             stat(&dir.path().join("a.txt")).unwrap().fs_id,

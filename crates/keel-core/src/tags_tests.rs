@@ -120,7 +120,7 @@ fn tags_apply_in_bulk_nest_in_queries_and_persist() {
     );
     assert_eq!(names(lib.records_with_tag(client).unwrap()), ["d.txt"]);
     let search = |q: &str| {
-        let mut n = names(lib.search(&LibraryQuery::parse(q).unwrap()).unwrap());
+        let mut n = names(lib.search(&LibraryQuery::parse(q, 0).unwrap()).unwrap());
         n.sort();
         n
     };
@@ -201,7 +201,7 @@ fn recents_merge_opens_and_executed_operations() {
         },
     )
     .unwrap();
-    let job = plan.execute(lib).unwrap();
+    let job = plan.execute(lib, true).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
     let copy = validate_preview_execute(
         lib,
@@ -212,7 +212,7 @@ fn recents_merge_opens_and_executed_operations() {
         },
     )
     .unwrap();
-    let job = copy.execute(lib).unwrap();
+    let job = copy.execute(lib, true).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
 
     let recents = lib.recents(10).unwrap();
@@ -252,4 +252,103 @@ fn views_are_saved_listed_updated_and_deleted() {
         (views[0].query.as_str(), views[0].layout.as_str()),
         ("ext:pdf;docx", "grid")
     );
+}
+
+/// Review item 14: tag ids are never reused, and links of a tag whose deletion did not reach
+/// a store never land on another tag.
+#[test]
+fn tag_ids_are_never_reused() {
+    let f = fixture();
+    let a = r(&f.src, "a.txt");
+    let old = f.lib.create_tag("old", None, None).unwrap();
+    f.lib.set_tag(old, std::slice::from_ref(&a), true).unwrap();
+    f.lib.delete_tag(old).unwrap();
+    // A leftover link, as if the store missed the deletion.
+    f.src
+        .store
+        .get()
+        .unwrap()
+        .execute(
+            "INSERT INTO record_tag(record, tag) VALUES (?1, ?2)",
+            [a.id, old],
+        )
+        .unwrap();
+    let new = f.lib.create_tag("new", None, None).unwrap();
+    assert!(new > old);
+    assert!(f.lib.records_with_tag(new).unwrap().is_empty());
+    // Dropped when the library opens again.
+    let Fixture { data, lib, src, .. } = f;
+    drop((lib, src));
+    let lib = Library::open(data.path(), "t").unwrap();
+    assert!(lib.tags_of(&a).unwrap().is_empty());
+}
+
+/// Review item 14: a store last mirrored from another library has its tags merged in by
+/// name, not overwritten.
+#[test]
+fn a_store_from_another_library_merges_its_tags_by_name() {
+    let f = fixture();
+    let (a, b) = (r(&f.src, "a.txt"), r(&f.src, "b.txt"));
+    let work = f.lib.create_tag("Work", None, None).unwrap();
+    f.lib.set_tag(work, std::slice::from_ref(&a), true).unwrap();
+    // The store comes back from another library, where id `work` meant "Travel".
+    f.src
+        .store
+        .get()
+        .unwrap()
+        .execute_batch(&format!(
+            "DELETE FROM tag; DELETE FROM record_tag;
+             INSERT INTO tag(id, name, color, parent) VALUES
+                 (1, 'Favorites', NULL, NULL), ({work}, 'Travel', '#123456', NULL),
+                 (40, 'work', NULL, NULL), (41, 'Trips', NULL, {work});
+             INSERT INTO record_tag(record, tag) VALUES ({}, {work}), ({}, 40), ({}, 41), ({}, 1);
+             UPDATE meta SET value = 'elsewhere' WHERE key = 'tags_from';",
+            a.id, b.id, b.id, a.id
+        ))
+        .unwrap();
+    let Fixture { data, lib, src, .. } = f;
+    drop((lib, src));
+    let lib = Library::open(data.path(), "t").unwrap();
+    let id_of_tag = |name: &str| {
+        lib.tags()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no tag {name}"))
+    };
+    let travel = id_of_tag("Travel");
+    assert_eq!(travel.color.as_deref(), Some("#123456"));
+    assert_eq!(id_of_tag("Trips").parent, Some(travel.id), "nesting kept");
+    let mut on_a = lib.tags_of(&a).unwrap();
+    on_a.sort();
+    assert_eq!(on_a, [FAVORITES, travel.id]);
+    let mut on_b = lib.tags_of(&b).unwrap();
+    on_b.sort();
+    assert_eq!(on_b, [work, id_of_tag("Trips").id], "work matched by name");
+}
+
+/// Review item 15: a recent never resolves to another file that reused a record id.
+#[test]
+fn recents_never_point_at_a_reused_record_id() {
+    let f = fixture();
+    // The newest record: a plain rowid would hand its id to the next file.
+    write(&f.files.path().join("z.txt"), "z");
+    walk(&f.src, &f.lib.router()).unwrap();
+    let c = r(&f.src, "z.txt");
+    f.lib.note_open(&c).unwrap();
+    std::fs::remove_file(f.files.path().join("z.txt")).unwrap();
+    walk(&f.src, &f.lib.router()).unwrap();
+    write(&f.files.path().join("other.txt"), "o");
+    walk(&f.src, &f.lib.router()).unwrap();
+    assert!(r(&f.src, "other.txt").id > c.id, "a fresh id");
+    assert!(f.lib.recents(10).unwrap().is_empty());
+    let left: i64 = f
+        .lib
+        .shared
+        .db
+        .get()
+        .unwrap()
+        .query_row("SELECT count(*) FROM opened", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "forgotten");
 }

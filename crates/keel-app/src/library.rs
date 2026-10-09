@@ -1,7 +1,7 @@
 //! The library in the app (spec 2.10, Task 29): opening it off the UI thread, the index
 //! behind the `library://` provider, sidebar data, library job rows, tags, plans
 //! (validate → preview → execute) and the duplicate finder. Every keel-core call that
-//! reads a store runs on a worker; only `sources()`, `activity()`, `refresh_status()` and
+//! reads a store runs on a worker; only `sources()`, `note_activity()`, `refresh_status()` and
 //! `Jobs::subscribe` (which return at once) run on the UI thread. Drawing is in
 //! `library_ui`.
 
@@ -13,8 +13,9 @@ use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
 use keel_core::{
     Indexer, JobEvent, JobId, JobInfo, JobStatus, Library, LibraryHit, LibraryStats,
-    LibrarySummary, OnConflict, Op, Plan, PlanChanged, RecordRef, SourceDef, SourceId, SourceKind,
-    SourceStatus, SourceSummary, Tag, TagId, View, Warning, WatchConfig, WatchHandle, FAVORITES,
+    LibrarySummary, OfflineReason, OnConflict, Op, Plan, PlanChanged, RecordRef, SourceDef,
+    SourceId, SourceKind, SourceStatus, SourceSummary, Tag, TagId, View, Warning, WatchConfig,
+    WatchHandle, FAVORITES,
 };
 use keel_search::{Hit, Query, Searcher};
 use keel_vfs::library as vlib;
@@ -33,8 +34,6 @@ pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const META_EVERY: Duration = Duration::from_secs(30);
 const STATS_EVERY: Duration = Duration::from_secs(5);
 const STATUS_EVERY: Duration = Duration::from_secs(60);
-/// Idle-only hashing: input within this long counts as busy.
-const IDLE_AFTER: Duration = Duration::from_secs(5);
 /// A watcher that could not start (source offline) is tried again after this long.
 const WATCH_RETRY: Duration = Duration::from_secs(300);
 /// Finished library job rows leave the jobs panel after this long (failures stay).
@@ -105,6 +104,9 @@ pub enum LibCmd {
     Overview,
     OpenSource(SourceId),
     IndexNow(SourceId),
+    /// A source held offline because another folder (or nothing) is at its root: index
+    /// whatever is there now (`Indexer::adopt_root`).
+    AdoptRoot(SourceId),
     /// Asks first.
     RemoveSource(SourceId),
     RemoveConfirmed(SourceId),
@@ -279,6 +281,24 @@ pub struct SourceRow {
     pub dot: Dot,
     /// Short status text ("indexing 1,200 / 5,000", "offline since …").
     pub detail: String,
+    /// Held offline over its root (offer "Adopt new root").
+    pub adopt: bool,
+}
+
+/// Why a source is offline, for its tooltip and read errors.
+pub fn offline_text(last_seen: Option<i64>, reason: OfflineReason) -> String {
+    let seen = when(last_seen);
+    match reason {
+        OfflineReason::Unreachable => format!("offline (last seen {seen})"),
+        OfflineReason::RootMismatch => format!(
+            "offline (last seen {seen}): a different folder is at its root; \
+             right-click → Adopt new root to index it"
+        ),
+        OfflineReason::Empty => format!(
+            "offline (last seen {seen}): its root is empty (unmounted?); \
+             right-click → Adopt new root to index it anyway"
+        ),
+    }
 }
 
 pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
@@ -299,10 +319,9 @@ pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
                     Dot::Indexing,
                     format!("indexing {} / {}", count(*done), count(*total)),
                 ),
-                SourceStatus::Offline { last_seen } => (
-                    Dot::Offline,
-                    format!("offline (last seen {})", when(*last_seen)),
-                ),
+                SourceStatus::Offline { last_seen, reason } => {
+                    (Dot::Offline, offline_text(*last_seen, *reason))
+                }
                 SourceStatus::Error(e) => (Dot::Error, e.clone()),
             };
             SourceRow {
@@ -310,6 +329,13 @@ pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
                 label: s.label.clone(),
                 dot,
                 detail,
+                adopt: matches!(
+                    s.status,
+                    SourceStatus::Offline {
+                        reason: OfflineReason::RootMismatch | OfflineReason::Empty,
+                        ..
+                    }
+                ),
             }
         })
         .collect()
@@ -532,7 +558,6 @@ pub struct LibraryUi {
     /// Index jobs being started (no watcher may start meanwhile).
     starting_index: usize,
     pub hash_paused: bool,
-    last_input: Instant,
     next_meta: Instant,
     next_stats: Instant,
     next_status: Instant,
@@ -579,7 +604,6 @@ impl LibraryUi {
             watchers: HashMap::new(),
             starting_index: 0,
             hash_paused: false,
-            last_input: now,
             next_meta: now,
             next_stats: now,
             next_status: now,
@@ -617,6 +641,7 @@ impl LibraryUi {
                 let first_run = !root.join("library").join(&name).exists();
                 let lib = Library::open(&root, &name)?;
                 lib.set_router(router);
+                lib.set_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
                 lib.jobs().resume_all()?;
                 let jobs = lib.jobs().list()?;
                 Ok((lib, first_run, jobs))
@@ -661,14 +686,8 @@ impl LibraryUi {
     pub fn close_now(&mut self) {
         if let Some((lib, handles)) = self.take() {
             drop(handles);
-            match Arc::try_unwrap(lib) {
-                Ok(lib) => {
-                    if !lib.close(CLOSE_TIMEOUT) {
-                        tracing::warn!("library: a job was still busy at exit");
-                    }
-                }
-                // A worker still holds it; its drop closes it.
-                Err(_) => tracing::info!("library: closed by its last user"),
+            if !lib.close(CLOSE_TIMEOUT) {
+                tracing::warn!("library: a job was still busy at exit");
             }
         }
     }
@@ -679,9 +698,7 @@ impl LibraryUi {
             let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
             worker::spawn("keel-library-close", move || {
                 drop(handles);
-                if let Ok(lib) = Arc::try_unwrap(lib) {
-                    lib.close(CLOSE_TIMEOUT);
-                }
+                lib.close(CLOSE_TIMEOUT);
                 worker::send(&tx, &ctx, Msg::Library(LibMsg::Closed));
             });
         }
@@ -760,14 +777,24 @@ impl LibraryUi {
         });
     }
 
-    /// Settings → Library → Hashing: off cancels a running hash job.
+    /// Settings → Library → Hashing.
     pub fn apply_hashing(&mut self, policy: Hashing) {
         if self.lib.is_none() || self.policy == policy {
             return;
         }
         self.policy = policy;
-        if policy != Hashing::Off {
-            self.start_hashing(policy);
+        self.sync_hashing();
+    }
+
+    /// Off (by policy or paused by hand) cancels a running hash job and keeps walks from
+    /// starting one; on starts one.
+    fn sync_hashing(&mut self) {
+        let on = self.policy != Hashing::Off && !self.hash_paused;
+        if let Some(lib) = &self.lib {
+            lib.set_hash_after_walk(on);
+        }
+        if on {
+            self.start_hashing();
         } else {
             let running: Vec<JobId> = (self.jobs.iter())
                 .filter(|(_, j)| j.kind == "hash" && j.active())
@@ -782,9 +809,12 @@ impl LibraryUi {
         }
     }
 
-    /// Starts hashing unless it is off or already running.
-    fn start_hashing(&mut self, policy: Hashing) {
-        if policy == Hashing::Off || self.jobs.values().any(|j| j.kind == "hash" && j.active()) {
+    /// Starts hashing unless it is off, paused or already running.
+    fn start_hashing(&mut self) {
+        if self.policy == Hashing::Off
+            || self.hash_paused
+            || self.jobs.values().any(|j| j.kind == "hash" && j.active())
+        {
             return;
         }
         self.spawn("keel-library-hash", |lib| {
@@ -863,12 +893,8 @@ impl vlib::LibraryIndex for AppIndex {
             .source(&SourceId(source.into()))
             .context("this source is no longer in the library")?;
         let status = src.status.read().clone();
-        if let SourceStatus::Offline { last_seen } = status {
-            anyhow::bail!(
-                "{} is offline (last seen {})",
-                src.def.label,
-                when(last_seen)
-            );
+        if let SourceStatus::Offline { last_seen, reason } = status {
+            anyhow::bail!("{} is {}", src.def.label, offline_text(last_seen, reason));
         }
         Ok(src.absolute(rel))
     }
@@ -968,9 +994,8 @@ impl AppState {
                         l.refresh_stats();
                         l.refresh_dups();
                         l.refresh_libraries();
-                        let policy = self.settings.library.hashing;
-                        self.library.policy = policy;
-                        self.library.start_hashing(policy);
+                        self.library.policy = self.settings.library.hashing;
+                        self.library.sync_hashing();
                         if first_run {
                             self.toasts.offer(
                                 "Keel can index your files into a library, even offline",
@@ -1081,21 +1106,13 @@ impl AppState {
         let busy_input = self
             .ctx
             .input(|i| !i.events.is_empty() || i.pointer.is_moving());
-        let policy = self.settings.library.hashing;
         let rescan = Duration::from_secs(self.settings.library.rescan_minutes.max(1) * 60);
         let l = &mut self.library;
-        if busy_input {
-            l.last_input = Instant::now();
-        }
         let Some(lib) = l.lib.clone() else { return };
         let now = Instant::now();
-        // Hashing pauses while the user works (idle only) or when paused by hand.
-        let idle = l.last_input.elapsed() >= IDLE_AFTER;
-        let busy = l.hash_paused || (policy == Hashing::IdleOnly && !idle);
-        lib.activity()
-            .store(busy, std::sync::atomic::Ordering::Relaxed);
-        if policy == Hashing::IdleOnly && !idle {
-            self.ctx.request_repaint_after(IDLE_AFTER);
+        // Idle only: hashing pauses for 5 s after each input.
+        if busy_input && l.policy == Hashing::IdleOnly {
+            lib.note_activity();
         }
         let mut ended: Vec<String> = Vec::new();
         let mut unknown = false;
@@ -1144,7 +1161,7 @@ impl AppState {
             l.refresh_meta();
             l.refresh_stats();
             if ended.iter().any(|k| k == "index") {
-                l.start_hashing(policy);
+                l.start_hashing();
             }
             // The Overview's duplicate summary (and an open finder) follow new content ids.
             if ended.iter().any(|k| k == "hash") {
@@ -1177,6 +1194,28 @@ impl AppState {
         } else {
             self.ctx.request_repaint_after(STATS_EVERY);
         }
+    }
+
+    /// Indexes a source now; `adopt`: first accept whatever is at its root.
+    fn index_now(&mut self, id: SourceId, adopt: bool) {
+        // Its watcher stops first (both would walk the source).
+        let watch = self.library.watchers.remove(&id);
+        self.library.starting_index += 1;
+        self.library.spawn("keel-library-index", move |lib| {
+            drop(watch);
+            let adopted = match lib.source(&id) {
+                Some(src) if adopt => Indexer::adopt_root(&src),
+                _ => Ok(()),
+            };
+            let started = adopted.and_then(|()| lib.index(&id));
+            if let Err(e) = &started {
+                tracing::warn!("index {}: {e:#}", id.0);
+            }
+            Some(LibMsg::Spawned {
+                kind: "index",
+                id: started.ok(),
+            })
+        });
     }
 
     /// Relists every tab on a `library://` folder (its index changed).
@@ -1395,18 +1434,8 @@ impl AppState {
                 self.library.refresh_dups();
             }
             LibCmd::OpenSource(id) => self.run(p, Action::Navigate(vlib::path(&id.0, ""))),
-            LibCmd::IndexNow(id) => {
-                // Its watcher stops first (both would walk the source).
-                let watch = self.library.watchers.remove(&id);
-                self.library.starting_index += 1;
-                self.library.spawn("keel-library-index", move |lib| {
-                    drop(watch);
-                    Some(LibMsg::Spawned {
-                        kind: "index",
-                        id: lib.index(&id).ok(),
-                    })
-                });
-            }
+            LibCmd::IndexNow(id) => self.index_now(id, false),
+            LibCmd::AdoptRoot(id) => self.index_now(id, true),
             LibCmd::RemoveSource(id) => {
                 let label = label_of(&id.0).unwrap_or_default();
                 self.dialog = Some(crate::dialogs::Dialog::Confirm {
@@ -1426,7 +1455,10 @@ impl AppState {
                         Ok(None)
                     });
             }
-            LibCmd::PauseHashing(on) => self.library.hash_paused = on,
+            LibCmd::PauseHashing(on) => {
+                self.library.hash_paused = on;
+                self.library.sync_hashing();
+            }
             LibCmd::AddSource => {
                 let root = self
                     .tab(p)
@@ -1457,6 +1489,7 @@ impl AppState {
                         include_hidden: false,
                         ignore: Vec::new(),
                         poll_secs: None,
+                        hash_shares: false,
                     }),
                 );
             }
@@ -1560,8 +1593,8 @@ impl AppState {
                 dialog.running = true;
                 let plan = dialog.plan.clone();
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                self.library
-                    .spawn("keel-library-execute", move |lib| match plan.execute(lib) {
+                self.library.spawn("keel-library-execute", move |lib| {
+                    match plan.execute(lib, true) {
                         Ok(id) => {
                             worker::send(
                                 &tx,
@@ -1580,7 +1613,8 @@ impl AppState {
                                 None
                             }
                         },
-                    });
+                    }
+                });
                 // The dialog closes; a refused plan comes back as `Changed`.
                 self.library.plan = None;
             }

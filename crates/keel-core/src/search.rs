@@ -23,6 +23,10 @@ const RANK_CAP: usize = 50_000;
 const DIRECT: i64 = 5_000;
 /// Score bonus for each query word found in the name (not only in the path).
 const NAME_BOOST: f64 = 2.0;
+/// Filter-only queries narrow through an index (extension, size) when it yields at most
+/// this many records; broader filters walk the records newest first instead.
+const NARROW_CAP: i64 = 20_000;
+const NS: i64 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KindFilter {
@@ -77,7 +81,8 @@ impl KindFilter {
 /// words (prefix match on name or path words), `"exact phrase"`, `ext:pdf;docx`,
 /// `size:>1mb` / `size:<=10kb` / `size:1mb..5mb`, `dm:2026-10` / `dm:>=2026-01-15` /
 /// `dm:2026-01..2026-03` / `dm:today`, `kind:image` (also `file:` and `folder:`),
-/// `tag:work`, `in:"source label"`. Dates are UTC.
+/// `tag:work`, `in:"source label"`. Dates are local days for the UTC offset passed to
+/// `parse`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryQuery {
     pub terms: Vec<String>,
@@ -175,10 +180,11 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// `[start, end)` in unix seconds of `2026`, `2026-10`, `2026-10-09`, `today`, `yesterday`.
-fn date_range(s: &str, now: i64) -> Option<(i64, i64)> {
+/// `[start, end)` in unix seconds of `2026`, `2026-10`, `2026-10-09`, `today`, `yesterday`,
+/// as local dates `offset` seconds east of UTC.
+fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
     const DAY: i64 = 86_400;
-    let today = now.div_euclid(DAY) * DAY;
+    let today = (now + offset).div_euclid(DAY) * DAY - offset;
     match s.to_ascii_lowercase().as_str() {
         "today" => return Some((today, today + DAY)),
         "yesterday" => return Some((today - DAY, today)),
@@ -188,7 +194,7 @@ fn date_range(s: &str, now: i64) -> Option<(i64, i64)> {
         .split(['-', '/', '.'])
         .map(|p| p.parse().ok())
         .collect::<Option<_>>()?;
-    let day = |y, m, d| days_from_civil(y, m, d) * DAY;
+    let day = |y, m, d| days_from_civil(y, m, d) * DAY - offset;
     match parts[..] {
         [y] => Some((day(y, 1, 1), day(y + 1, 1, 1))),
         [y, m] if (1..=12).contains(&m) => {
@@ -228,11 +234,12 @@ fn range_filter(
 }
 
 impl LibraryQuery {
-    pub fn parse(s: &str) -> Result<LibraryQuery> {
-        Self::parse_at(s, crate::now())
+    /// `utc_offset`: seconds east of UTC of the user's local time, for `dm:` dates.
+    pub fn parse(s: &str, utc_offset: i64) -> Result<LibraryQuery> {
+        Self::parse_at(s, crate::now(), utc_offset)
     }
 
-    fn parse_at(s: &str, now: i64) -> Result<LibraryQuery> {
+    fn parse_at(s: &str, now: i64, utc_offset: i64) -> Result<LibraryQuery> {
         let mut q = LibraryQuery::default();
         for tok in tokens(s) {
             if tok.starts_with('"') {
@@ -261,10 +268,14 @@ impl LibraryQuery {
                     })
                     .with_context(|| format!("bad size: {value}"))?;
                     q.min_size = from.map(|b| b as u64);
-                    q.max_size = before.map(|b| (b - 1) as u64);
+                    q.max_size = before.map(|b| (b - 1).max(0) as u64);
+                    if before.is_some_and(|b| b <= 0) {
+                        // `size:<0`: nothing (an empty range, not every size).
+                        q.min_size = Some(1);
+                    }
                 }
                 "dm" | "datemodified" | "modified" => {
-                    let (from, before) = range_filter(&value, |x| date_range(x, now))
+                    let (from, before) = range_filter(&value, |x| date_range(x, now, utc_offset))
                         .with_context(|| format!("bad date: {value}"))?;
                     q.modified_from = from;
                     q.modified_before = before;
@@ -311,20 +322,30 @@ impl LibraryQuery {
         parts
     }
 
-    /// Extensions are name tokens too: a text-less `ext:` query narrows through the index
-    /// before the exact LIKE check.
+    /// The extensions a match must have (`ext:`, narrowed by `kind:`); empty for any, None
+    /// when none can match.
+    fn extensions(&self) -> Option<Vec<&str>> {
+        let mut ext: Vec<&str> = self.ext.iter().map(String::as_str).collect();
+        if let Some(k) = self.kind.filter(|k| !k.extensions().is_empty()) {
+            if ext.is_empty() {
+                ext = k.extensions().to_vec();
+            } else {
+                ext.retain(|e| k.extensions().contains(e));
+                if ext.is_empty() {
+                    return None;
+                }
+            }
+        }
+        Some(ext)
+    }
+
+    /// Extensions are name tokens too: a query with `ext:` (or a `kind:` that implies
+    /// extensions) narrows through the index before the exact LIKE check.
     fn ext_match(&self) -> Option<String> {
-        let usable = !self.ext.is_empty()
-            && self
-                .ext
-                .iter()
-                .all(|e| e.chars().any(char::is_alphanumeric));
+        let ext = self.extensions()?;
+        let usable = !ext.is_empty() && ext.iter().all(|e| e.chars().any(char::is_alphanumeric));
         usable.then(|| {
-            let any: Vec<String> = self
-                .ext
-                .iter()
-                .map(|e| format!("name : {}", quote(e)))
-                .collect();
+            let any: Vec<String> = ext.iter().map(|e| format!("name : {}", quote(e))).collect();
             any.join(" OR ")
         })
     }
@@ -344,22 +365,13 @@ impl LibraryQuery {
     fn filters(&self) -> Option<(String, Vec<Value>)> {
         let mut sql = String::from(" AND r.parent IS NOT NULL");
         let mut args = Vec::new();
-        let mut ext: Vec<&str> = self.ext.iter().map(String::as_str).collect();
+        let ext = self.extensions()?;
+        if self.min_size.zip(self.max_size).is_some_and(|(a, b)| a > b) {
+            return None;
+        }
         match self.kind {
             Some(KindFilter::Folder) => sql.push_str(" AND r.kind = 1"),
-            Some(k) => {
-                sql.push_str(" AND r.kind = 0");
-                if !k.extensions().is_empty() {
-                    if ext.is_empty() {
-                        ext = k.extensions().to_vec();
-                    } else {
-                        ext.retain(|e| k.extensions().contains(e));
-                        if ext.is_empty() {
-                            return None;
-                        }
-                    }
-                }
-            }
+            Some(_) => sql.push_str(" AND r.kind = 0"),
             None => {}
         }
         if !ext.is_empty() {
@@ -379,10 +391,11 @@ impl LibraryQuery {
                 args.push(Value::Integer(b.min(i64::MAX as u64) as i64));
             }
         }
+        // Stored in nanoseconds.
         for (bound, op) in [(self.modified_from, ">="), (self.modified_before, "<")] {
             if let Some(t) = bound {
                 sql.push_str(&format!(" AND r.mtime {op} ?"));
-                args.push(Value::Integer(t));
+                args.push(Value::Integer(t.saturating_mul(NS)));
             }
         }
         // Tag names resolve through the store's copy of the library's tags (nested included).
@@ -451,13 +464,19 @@ pub(crate) fn hit_of(src: &Source, r: &rusqlite::Row, score: f64) -> rusqlite::R
         name: r.get(2)?,
         is_dir: r.get::<_, i64>(3)? == crate::fsid::DIR,
         size: r.get::<_, i64>(4)? as u64,
-        modified: r.get(5)?,
+        modified: r.get::<_, Option<i64>>(5)?.map(|ns| ns.div_euclid(NS)),
         score,
     })
 }
 
+/// The recency part of a hit's score (`r` = record): up to [`RECENCY`] off for a fresh file.
+fn recency(now: i64) -> String {
+    format!("{RECENCY} / (1.0 + max(0, {now} - coalesce(r.mtime, 0) / {NS}) / {RECENCY_SCALE})")
+}
+
 /// Runs one candidate query (`id`, `rank` columns) through the filters, best first: the
 /// candidate's rank, minus [`NAME_BOOST`] for each word found in the name, minus recency.
+/// The candidates drive the join (`CROSS JOIN`), never an index on a broad filter.
 fn run(
     src: &Source,
     q: &LibraryQuery,
@@ -489,12 +508,68 @@ fn run(
     }
     args.push(Value::Integer(q.max as i64));
     let sql = format!(
-        "SELECT {HIT_COLUMNS},
-                cand.rank - {NAME_BOOST} * ({boost})
-                    - {RECENCY} / (1.0 + max(0, {now} - coalesce(r.mtime, 0)) / {RECENCY_SCALE})
-                    AS score
-         FROM ({cand}) AS cand JOIN record r ON r.id = cand.id
-         WHERE 1{filters} ORDER BY score LIMIT ?"
+        "SELECT {HIT_COLUMNS}, cand.rank - {NAME_BOOST} * ({boost}) - {} AS score
+         FROM ({cand}) AS cand CROSS JOIN record r ON r.id = cand.id
+         WHERE 1{filters} ORDER BY score LIMIT ?",
+        recency(now)
+    );
+    let c = src.store.get()?;
+    let mut stmt = c.prepare_cached(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
+        let score = r.get(6)?;
+        hit_of(src, r, score)
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Rows `sql` (a candidate query) yields, counted up to `cap + 1`.
+fn count_upto(src: &Source, sql: &str, args: &[Value], cap: i64) -> Result<i64> {
+    let mut all = args.to_vec();
+    all.push(Value::Integer(cap + 1));
+    Ok(src.store.get()?.query_row(
+        &format!("SELECT count(*) FROM ({sql} LIMIT ?)"),
+        rusqlite::params_from_iter(all),
+        |r| r.get(0),
+    )?)
+}
+
+/// A filter-only query: through the index of a selective filter (an extension or a size
+/// range) when it yields at most [`NARROW_CAP`] records, all of them scored; else
+/// the records newest first (the mtime and kind indexes), checked until enough pass, so a
+/// broad filter stops early.
+fn search_filters(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
+    let mut narrow: Vec<(String, Vec<Value>)> = Vec::new();
+    if let Some(e) = q.ext_match() {
+        narrow.push((
+            "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?".into(),
+            vec![Value::Text(e)],
+        ));
+    }
+    if q.min_size.is_some() || q.max_size.is_some() {
+        narrow.push((
+            "SELECT id, 0.0 AS rank FROM record INDEXED BY record_size
+             WHERE kind = 0 AND size >= ? AND size <= ?"
+                .into(),
+            vec![
+                Value::Integer(q.min_size.unwrap_or(0).min(i64::MAX as u64) as i64),
+                Value::Integer(q.max_size.unwrap_or(u64::MAX).min(i64::MAX as u64) as i64),
+            ],
+        ));
+    }
+    for (sql, args) in narrow {
+        if count_upto(src, &sql, &args, NARROW_CAP)? <= NARROW_CAP {
+            return run(src, q, now, &sql, args, &[]);
+        }
+    }
+    let Some((filters, mut args)) = q.filters() else {
+        return Ok(Vec::new());
+    };
+    args.push(Value::Integer(q.max as i64));
+    // Newest first is best first here (no words: the score is recency alone).
+    let sql = format!(
+        "SELECT {HIT_COLUMNS}, 0.0 - {} AS score FROM record r
+         WHERE 1{filters} ORDER BY r.mtime DESC LIMIT ?",
+        recency(now)
     );
     let c = src.store.get()?;
     let mut stmt = c.prepare_cached(&sql)?;
@@ -508,25 +583,7 @@ fn run(
 fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
     let parts = q.text_parts(false);
     if parts.is_empty() {
-        // No words: filters only, newest first.
-        return match q.ext_match() {
-            Some(e) => run(
-                src,
-                q,
-                now,
-                "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?",
-                vec![Value::Text(e)],
-                &[],
-            ),
-            None => run(
-                src,
-                q,
-                now,
-                "SELECT id, 0.0 AS rank FROM record",
-                Vec::new(),
-                &[],
-            ),
-        };
+        return search_filters(src, q, now);
     }
     let hits = search_text(src, q, now, parts)?;
     if hits.is_empty() && q.terms.len() > 1 {
@@ -570,13 +627,24 @@ fn search_text(
     }
     if matches as usize > RANK_CAP {
         // ponytail: too broad to rank within budget (about 1 us a match): the first matches
-        // by record id, scored. A narrower query ranks.
+        // by record id that pass the filters (checked before the limit, so a rare filter
+        // still finds its few), scored. A narrower query ranks.
+        let Some((filters, filter_args)) = q.filters() else {
+            return Ok(Vec::new());
+        };
+        let mut args = vec![Value::Text(m)];
+        args.extend(filter_args);
+        args.push(Value::Integer(candidates));
         return run(
             src,
             q,
             now,
-            &format!("{ALL} LIMIT ?"),
-            vec![Value::Text(m), Value::Integer(candidates)],
+            &format!(
+                "SELECT record_fts.rowid AS id, 0.0 AS rank
+                 FROM record_fts JOIN record r ON r.id = record_fts.rowid
+                 WHERE record_fts MATCH ?{filters} LIMIT ?"
+            ),
+            args,
             &[],
         );
     }
@@ -640,7 +708,7 @@ pub struct LibrarySearcher(pub Arc<Library>);
 
 impl keel_search::Searcher for LibrarySearcher {
     fn query(&self, q: &keel_search::Query) -> Result<Vec<keel_search::Hit>> {
-        let mut lq = LibraryQuery::parse(&q.text)?;
+        let mut lq = LibraryQuery::parse(&q.text, self.0.utc_offset())?;
         if q.folders_only {
             lq.kind = Some(KindFilter::Folder);
         }
