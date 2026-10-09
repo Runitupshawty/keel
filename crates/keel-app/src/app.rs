@@ -1,7 +1,7 @@
 //! The eframe app: message drain, keyboard, sidebar, dual panes, status bar, toasts.
 
 use crate::keys::{self, Action};
-use crate::pane::{self, ViewCx};
+use crate::pane::{self, DragPayload, ViewCx};
 use crate::state::AppState;
 use egui::{pos2, Rect, Sense, UiBuilder};
 use humansize::{format_size, DECIMAL};
@@ -29,12 +29,17 @@ impl eframe::App for App {
         let s = &mut self.state;
         s.drain();
         s.tick();
-        for action in keys::actions(ctx) {
-            s.run(s.active, action);
+        s.jobs.tick();
+        if s.dialog.is_none() {
+            for action in keys::actions(ctx) {
+                s.run(s.active, action);
+            }
         }
 
         let mut out: Vec<(usize, Action)> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
+        egui::TopBottomPanel::bottom("jobs")
+            .show_animated(ctx, !s.jobs.list.is_empty(), |ui| s.jobs.ui(ui));
         egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(210.0)
@@ -70,12 +75,31 @@ impl eframe::App for App {
                 } else {
                     vec![full]
                 };
-                let pressed = ctx.input(|i| {
-                    i.pointer
-                        .any_pressed()
-                        .then(|| i.pointer.interact_pos())
-                        .flatten()
+                let (pressed, released, dropped, hover) = ctx.input(|i| {
+                    let at = |yes: bool| yes.then(|| i.pointer.interact_pos()).flatten();
+                    (
+                        at(i.pointer.any_pressed()),
+                        at(i.pointer.any_released()),
+                        i.raw.dropped_files.clone(),
+                        i.pointer.hover_pos(),
+                    )
                 });
+                // Files dropped from another app land in the pane under the pointer.
+                let dropped: Vec<_> = dropped.into_iter().filter_map(|f| f.path).collect();
+                if !dropped.is_empty() {
+                    let p = hover
+                        .and_then(|pos| rects.iter().position(|r| r.contains(pos)))
+                        .unwrap_or(s.active);
+                    let dst = s.tab(p).dir.clone();
+                    out.push((
+                        p,
+                        Action::Drop {
+                            paths: dropped,
+                            from: None,
+                            dst,
+                        },
+                    ));
+                }
                 for (p, rect) in rects.into_iter().enumerate() {
                     if pressed.is_some_and(|pos| rect.contains(pos)) {
                         s.active = p;
@@ -92,8 +116,38 @@ impl eframe::App for App {
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     out.extend(acts.into_iter().map(|a| (p, a)));
+                    // An in-app drag released over the pane but not on a folder row.
+                    if released.is_some_and(|pos| rect.contains(pos)) {
+                        if let Some(drag) = egui::DragAndDrop::take_payload::<DragPayload>(ctx) {
+                            out.push((
+                                p,
+                                Action::Drop {
+                                    paths: drag.local_paths(),
+                                    from: Some((drag.pane, drag.dir.clone())),
+                                    dst: s.tab(p).dir.clone(),
+                                },
+                            ));
+                        }
+                    }
                 }
             });
+        if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
+            let verb = if ctx.input(|i| i.modifiers.shift) {
+                "Move"
+            } else {
+                "Copy / move"
+            };
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            egui::show_tooltip_at_pointer(
+                ctx,
+                egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("keel-drag")),
+                egui::Id::new("keel-drag-tip"),
+                |ui| ui.label(format!("{verb} {}", crate::jobs::items(drag.paths.len()))),
+            );
+        }
+        if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
+            out.push((s.active, action));
+        }
         for (p, action) in out {
             s.run(p, action);
         }

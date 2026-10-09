@@ -1,8 +1,10 @@
 //! Keyboard map: one pass over the frame's input producing `Action`s.
 
+use crate::jobs::Transfer;
 use crate::tab::Nav;
 use egui::{Event, Key, Modifiers};
-use keel_vfs::VPath;
+use keel_vfs::{Conflict, VPath};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -30,12 +32,34 @@ pub enum Action {
     SwitchPane,
     /// Start inline rename (F2).
     Rename,
-    /// Commit an inline rename. Task 6 executes it.
+    /// Commit an inline rename.
     RenameTo {
         from: VPath,
         to: String,
     },
+    /// Asks before trashing the targets.
     Delete,
+    /// Confirmed: send these to the OS trash.
+    Trash(Vec<VPath>),
+    /// A transfer whose conflict policy is decided.
+    StartTransfer {
+        op: Transfer,
+        conflict: Conflict,
+        from_clipboard: bool,
+    },
+    /// Files dropped on `dst`: from another app (`from` None) or dragged from a pane
+    /// (`from` = that pane and its folder).
+    Drop {
+        paths: Vec<PathBuf>,
+        from: Option<(usize, VPath)>,
+        dst: VPath,
+    },
+    /// New folder / file dialog answered.
+    Create {
+        dir: VPath,
+        name: String,
+        folder: bool,
+    },
     Copy,
     Cut,
     Paste,
@@ -107,7 +131,7 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
     if ctx.wants_keyboard_input() {
         return Vec::new();
     }
-    ctx.input_mut(|i| {
+    let (mut out, paste_event, v_released) = ctx.input_mut(|i| {
         let mut out = Vec::new();
         for (mods, key, action) in SHORTCUTS {
             if i.consume_key(*mods, *key) {
@@ -122,11 +146,20 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
             }
         }
         let typing_allowed = !i.modifiers.command && !i.modifiers.alt;
+        let (mut paste_event, mut v_released) = (false, false);
         for event in &i.events {
             match event {
                 Event::Copy => out.push(Action::Copy),
+                // egui-winit turns Shift+Delete into Cut on Windows; Phase 1 trashes.
+                Event::Cut if i.modifiers.shift && !i.modifiers.command => out.push(Action::Delete),
                 Event::Cut => out.push(Action::Cut),
-                Event::Paste(_) => out.push(Action::Paste),
+                Event::Paste(_) => paste_event = true,
+                Event::Key {
+                    key: Key::V,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } if modifiers.command => v_released = true,
                 // Space toggles selection; it never starts a filter.
                 Event::Text(t) if typing_allowed && !t.trim().is_empty() => {
                     out.push(Action::Type(t.clone()))
@@ -134,6 +167,21 @@ pub fn actions(ctx: &egui::Context) -> Vec<Action> {
                 _ => {}
             }
         }
-        out
-    })
+        (out, paste_event, v_released)
+    });
+    // egui-winit only sends `Event::Paste` when the clipboard holds text, so files on the
+    // clipboard show up only as the Ctrl+V key release. Paste once per press either way.
+    let seen = egui::Id::new("keel-paste-event");
+    if paste_event {
+        ctx.data_mut(|d| d.insert_temp(seen, true));
+        out.push(Action::Paste);
+    }
+    if v_released
+        && !ctx
+            .data_mut(|d| d.remove_temp::<bool>(seen))
+            .unwrap_or(false)
+    {
+        out.push(Action::Paste);
+    }
+    out
 }

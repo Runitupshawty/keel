@@ -1,6 +1,9 @@
 //! Application state and the message loop. All IO happens in `worker`; this file only
 //! reacts to messages and user actions.
 
+use crate::clipboard::Clipboard;
+use crate::dialogs::{self, Dialog};
+use crate::jobs::{self, Jobs, Source, Transfer};
 use crate::keys::Action;
 use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
@@ -14,6 +17,7 @@ use crossbeam_channel::{Receiver, Sender};
 use keel_vfs::{Entry, Kind, Router, VPath};
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,16 +52,24 @@ pub enum Msg {
         key: PreviewKey,
         preview: keel_preview::Preview,
     },
-    /// Task 6: file operation jobs.
-    #[allow(dead_code)]
     JobProgress {
         id: u64,
         p: keel_vfs::Progress,
     },
-    #[allow(dead_code)]
     JobDone {
         id: u64,
         result: anyhow::Result<()>,
+    },
+    /// Sources resolved and `dst` scanned for name clashes; start or ask.
+    Planned {
+        op: Transfer,
+        conflicts: Vec<String>,
+        from_clipboard: bool,
+    },
+    /// `name` was created or renamed in `dir`: relist and put the cursor on it.
+    Select {
+        dir: VPath,
+        name: String,
     },
     /// Task 7: search tab results.
     #[allow(dead_code)]
@@ -70,10 +82,6 @@ pub enum Msg {
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
 type WatchSlot = (Option<VPath>, Option<Box<dyn Any + Send>>);
 
-/// Task 6 replaces this with the job queue (`jobs.rs`).
-#[derive(Default)]
-pub struct Jobs;
-
 pub struct AppState {
     pub router: Arc<Router>,
     pub panes: [Pane; 2],
@@ -83,8 +91,9 @@ pub struct AppState {
     pub sidebar: Sidebar,
     #[allow(dead_code)]
     pub preview: PreviewPanel,
-    #[allow(dead_code)]
     pub jobs: Jobs,
+    pub clipboard: Clipboard,
+    pub dialog: Option<Dialog>,
     pub toasts: Toasts,
     pub theme: Theme,
     pub thumbs: Thumbs,
@@ -113,7 +122,9 @@ impl AppState {
             show_hidden: false,
             sidebar: Sidebar::default(),
             preview: PreviewPanel::default(),
-            jobs: Jobs,
+            jobs: Jobs::new(ctx.clone()),
+            clipboard: Clipboard::default(),
+            dialog: None,
             toasts: Toasts::default(),
             theme,
             thumbs,
@@ -184,11 +195,94 @@ impl AppState {
             Msg::Drives(drives) => self.sidebar.drives = drives,
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
-            Msg::Preview { .. }
-            | Msg::JobProgress { .. }
-            | Msg::JobDone { .. }
-            | Msg::Search { .. } => {}
+            Msg::JobProgress { id, p } => self.jobs.progress(id, p),
+            Msg::JobDone { id, result } => {
+                self.jobs.finish(id, result);
+                // Watchers usually beat us to it; network folders may not have one.
+                for p in 0..2 {
+                    self.list_active(p);
+                }
+            }
+            Msg::Planned {
+                op,
+                conflicts,
+                from_clipboard,
+            } => {
+                if conflicts.is_empty() {
+                    // Skip: a clash that appeared since the scan is never overwritten.
+                    self.start_transfer(op, keel_vfs::Conflict::Skip, from_clipboard);
+                } else {
+                    self.dialog = Some(Dialog::Conflict {
+                        names: conflicts,
+                        op,
+                        from_clipboard,
+                    });
+                }
+            }
+            Msg::Select { dir, name } => {
+                for p in 0..2 {
+                    for t in 0..self.panes[p].tabs.len() {
+                        let tab = &mut self.panes[p].tabs[t];
+                        if tab.dir == dir {
+                            tab.selected = [name.clone()].into();
+                            tab.cursor = Some(name.clone());
+                            tab.anchor = Some(name.clone());
+                            self.list(p, t);
+                        }
+                    }
+                }
+            }
+            Msg::Preview { .. } | Msg::Search { .. } => {}
         }
+    }
+
+    fn start_transfer(&mut self, op: Transfer, conflict: keel_vfs::Conflict, from_clipboard: bool) {
+        if from_clipboard && op.mv {
+            // A cut pastes once, as in Explorer.
+            self.clipboard.set(Vec::new(), false);
+        }
+        self.jobs.start(op, conflict, self.tx.clone());
+    }
+
+    /// Local paths of the targets, or a toast when some are remote (Phase 2+).
+    fn local_targets(&mut self, p: usize) -> Option<Vec<PathBuf>> {
+        let targets: Vec<VPath> = self
+            .tab(p)
+            .targets()
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        if targets.is_empty() {
+            return None;
+        }
+        let local: Option<Vec<PathBuf>> = targets.iter().map(VPath::to_local_path).collect();
+        if local.is_none() {
+            self.toasts
+                .error("Only local files can be copied or moved for now");
+        }
+        local
+    }
+
+    /// Runs a provider call for `dir` off the UI thread; success selects `name`.
+    fn spawn_in_dir(
+        &self,
+        dir: VPath,
+        name: String,
+        f: impl FnOnce(&dyn keel_vfs::Provider, &VPath) -> anyhow::Result<()> + Send + 'static,
+    ) {
+        let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-io", move || {
+            let target = dir.join(&name);
+            let msg = match router
+                .provider_for(&dir)
+                .ok_or_else(|| anyhow::anyhow!("no provider for {}", dir.display()))
+                .and_then(|p| f(p.as_ref(), &target))
+            {
+                Ok(()) => Msg::Select { dir, name },
+                Err(e) => Msg::Toast(format!("{e:#}")),
+            };
+            worker::send(&tx, &ctx, msg);
+        });
     }
 
     fn listed(&mut self, pane: usize, tab: usize, dir: VPath, result: anyhow::Result<Vec<Entry>>) {
@@ -436,13 +530,102 @@ impl AppState {
                 self.theme = Theme::load(if self.theme.dark { "light" } else { "dark" });
                 self.theme.apply(&self.ctx);
             }
-            Action::RenameTo { .. } => self.toasts.not_yet("Rename"),
-            Action::Delete => self.toasts.not_yet("Delete"),
-            Action::Copy => self.toasts.not_yet("Copy"),
-            Action::Cut => self.toasts.not_yet("Cut"),
-            Action::Paste => self.toasts.not_yet("Paste"),
-            Action::NewFolder => self.toasts.not_yet("New folder"),
-            Action::NewFile => self.toasts.not_yet("New file"),
+            Action::RenameTo { from, to } => {
+                if let Some(why) = dialogs::invalid_name(&to) {
+                    return self.toasts.error(why);
+                }
+                let Some(dir) = from.parent() else { return };
+                self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
+            }
+            Action::Delete => {
+                let paths: Vec<VPath> = self
+                    .tab(p)
+                    .targets()
+                    .iter()
+                    .map(|e| e.path.clone())
+                    .collect();
+                if !paths.is_empty() {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: format!("Move {} to the trash?", jobs::items(paths.len())),
+                        on_yes: Action::Trash(paths),
+                    });
+                }
+            }
+            Action::Trash(paths) => {
+                self.jobs
+                    .delete(paths, self.router.clone(), self.tx.clone());
+            }
+            Action::Copy | Action::Cut => {
+                let cut = action == Action::Cut;
+                if let Some(paths) = self.local_targets(p) {
+                    let n = paths.len();
+                    self.clipboard.set(paths, cut);
+                    let verb = if cut { "Cut" } else { "Copied" };
+                    self.toasts.info(format!("{verb} {}", jobs::items(n)));
+                }
+            }
+            Action::Paste => match self.tab(p).dir.to_local_path() {
+                Some(dst) => jobs::spawn_plan(
+                    Source::Clipboard(self.clipboard.clone()),
+                    dst,
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                ),
+                None => self
+                    .toasts
+                    .error("Paste into remote folders is not supported yet"),
+            },
+            Action::StartTransfer {
+                op,
+                conflict,
+                from_clipboard,
+            } => self.start_transfer(op, conflict, from_clipboard),
+            Action::Drop { paths, from, dst } => {
+                let Some(dst_local) = dst.to_local_path() else {
+                    return self
+                        .toasts
+                        .error("Drop into remote folders is not supported yet");
+                };
+                if paths.is_empty() || from.as_ref().is_some_and(|(_, dir)| *dir == dst) {
+                    return;
+                }
+                // Shift = move; within one pane a drag into a subfolder moves, like Explorer.
+                let shift = self.ctx.input(|i| i.modifiers.shift);
+                let mv = shift || from.is_some_and(|(pane, _)| pane == p);
+                jobs::spawn_plan(
+                    Source::Paths(paths, mv),
+                    dst_local,
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                );
+            }
+            Action::NewFolder | Action::NewFile => {
+                let folder = action == Action::NewFolder;
+                self.dialog = Some(Dialog::NewItem {
+                    dir: self.tab(p).dir.clone(),
+                    folder,
+                    text: if folder { "New folder" } else { "New file.txt" }.to_owned(),
+                    focus: true,
+                });
+            }
+            Action::Create { dir, name, folder } => {
+                if let Some(why) = dialogs::invalid_name(&name) {
+                    return self.toasts.error(why);
+                }
+                self.spawn_in_dir(dir, name, move |p, target| {
+                    // ponytail: stat-then-create race; Provider has no create_new yet.
+                    anyhow::ensure!(
+                        p.stat(target).is_err(),
+                        "{} already exists",
+                        target.display()
+                    );
+                    if folder {
+                        p.mkdir(target)
+                    } else {
+                        p.write(target).map(drop)
+                    }
+                });
+            }
             Action::Properties => self.toasts.not_yet("Properties"),
             Action::Search => self.toasts.not_yet("Search"),
             Action::JumpFolder => self.toasts.not_yet("Jump to folder"),

@@ -1,5 +1,7 @@
 //! Virtual filesystem providers and shared file operation types for Keel.
 
+#[cfg(windows)]
+pub mod clipboard;
 pub mod path;
 pub use path::VPath;
 pub mod entry;

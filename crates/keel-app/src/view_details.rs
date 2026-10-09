@@ -1,7 +1,7 @@
 //! Details view: a virtual-row table (Name / Ext / Size / Modified).
 
 use crate::keys::Action;
-use crate::pane::{context_menu, handle_click, ViewCx};
+use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::tab::{SortKey, Tab};
 use egui::{Align, Key, Layout, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -49,7 +49,7 @@ pub fn ui(
         .id_salt(id)
         .striped(true)
         .resizable(true)
-        .sense(Sense::click())
+        .sense(Sense::click_and_drag())
         .auto_shrink([false, true])
         .max_scroll_height(f32::INFINITY)
         .cell_layout(Layout::left_to_right(Align::Center))
@@ -136,6 +136,7 @@ pub fn ui(
 
     for (r, e) in clicks {
         handle_click(&r, tab, &e, out);
+        drag_and_drop(&r, id.0, tab, &e, out);
     }
     if !rename_done {
         tab.renaming = renaming;

@@ -2447,6 +2447,7 @@ name = "keel-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "chrono",
  "crossbeam-channel",
  "directories",
@@ -2466,7 +2467,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "windows 0.58.0",
 ]
 
 [[package]]

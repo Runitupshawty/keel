@@ -19,7 +19,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
-windows.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
@@ -31,6 +30,10 @@ open = "5"
 humansize = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 natord = "1"
+
+# Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
+[target.'cfg(not(windows))'.dependencies]
+arboard = { version = "3.6", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

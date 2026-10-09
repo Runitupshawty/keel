@@ -7,12 +7,12 @@ use crossbeam_channel::{Sender, TrySendError};
 use keel_vfs::{Entry, Router, VPath};
 use std::sync::Arc;
 
-fn send(tx: &Sender<Msg>, ctx: &egui::Context, msg: Msg) {
+pub fn send(tx: &Sender<Msg>, ctx: &egui::Context, msg: Msg) {
     let _ = tx.send(msg);
     ctx.request_repaint();
 }
 
-fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
+pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
     if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(f) {
         tracing::error!("spawn {name}: {e}");
     }

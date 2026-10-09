@@ -401,6 +401,61 @@ pub fn handle_click(
     }
 }
 
+/// In-app drag payload: entries dragged out of pane `pane` showing folder `dir`.
+pub struct DragPayload {
+    pub pane: usize,
+    pub dir: VPath,
+    pub paths: Vec<VPath>,
+}
+
+impl DragPayload {
+    pub fn local_paths(&self) -> Vec<std::path::PathBuf> {
+        self.paths.iter().filter_map(VPath::to_local_path).collect()
+    }
+}
+
+/// Shared row/tile drag handling: a drag starts with the row's selection (selecting the
+/// row first if needed); folders accept drops.
+pub fn drag_and_drop(
+    r: &egui::Response,
+    pane: usize,
+    tab: &mut Tab,
+    entry: &keel_vfs::Entry,
+    out: &mut Vec<Action>,
+) {
+    if r.drag_started() {
+        if !tab.selected.contains(&entry.name) {
+            tab.click(&entry.name, false, false);
+        }
+        let paths = tab.targets().iter().map(|e| e.path.clone()).collect();
+        r.dnd_set_drag_payload(DragPayload {
+            pane,
+            dir: tab.dir.clone(),
+            paths,
+        });
+    }
+    if entry.kind == keel_vfs::Kind::File {
+        return;
+    }
+    if let Some(p) = r.dnd_hover_payload::<DragPayload>() {
+        if !p.paths.contains(&entry.path) {
+            let stroke = r.ctx.style().visuals.selection.stroke;
+            r.ctx
+                .layer_painter(egui::LayerId::new(egui::Order::Foreground, r.id))
+                .rect_stroke(r.rect, 3.0, stroke, egui::StrokeKind::Inside);
+        }
+    }
+    if let Some(p) = r.dnd_release_payload::<DragPayload>() {
+        if !p.paths.contains(&entry.path) {
+            out.push(Action::Drop {
+                paths: p.local_paths(),
+                from: Some((p.pane, p.dir.clone())),
+                dst: entry.path.clone(),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
