@@ -62,6 +62,8 @@ pub struct App {
     pub crashed: bool,
     /// False after a crash reset the panes: the saved session keeps the tabs from before.
     pub save_session: bool,
+    /// The session (without its stash) and stash version handed to `persist` last.
+    seen_session: Option<(Session, u64)>,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
     // --- Task 24 ---
@@ -121,12 +123,37 @@ impl App {
             persist,
             crashed: false,
             save_session: true,
+            seen_session: None,
             seen_widths: (None, None),
             drag_out: Default::default(),
             hotkey,
             #[cfg(test)]
             panic_next_frame: false,
         }
+    }
+
+    /// The session to save, when it changed since it was last handed over (None: keep
+    /// what was saved). The tabs are compared every frame; the stash (up to 50k paths)
+    /// only by its version, and copied only when that moved.
+    fn changed_session(&mut self) -> Option<Session> {
+        if !self.save_session {
+            return None;
+        }
+        let s = &self.state;
+        let tabs = Session::of_tabs(s);
+        let version = s.dropzone.version;
+        if self
+            .seen_session
+            .as_ref()
+            .is_some_and(|(seen, v)| *seen == tabs && *v == version)
+        {
+            return None;
+        }
+        self.seen_session = Some((tabs.clone(), version));
+        Some(Session {
+            stash: s.dropzone.items().to_vec(),
+            ..tabs
+        })
     }
 
     /// A frame panicked (the hook wrote crash.log): drop popups, reset both panes to one
@@ -162,7 +189,13 @@ impl App {
         s.tick();
         s.jobs.tick();
         // Every frame, so key state stays right while a modal is open.
-        let keys_on = s.dialog.is_none() && !s.jump.open && !s.palette.open && !self.crashed;
+        // A context menu acts on what it was opened on: no key may move the focus or
+        // selection under it (Task 23: the columns view's keyboard column).
+        let keys_on = s.dialog.is_none()
+            && !s.jump.open
+            && !s.palette.open
+            && !self.crashed
+            && !ctx.is_context_menu_open();
         for action in keys::actions_with_terminal(ctx, keys_on, s.terminal.focused(ctx)) {
             s.run(s.active, action);
         }
@@ -274,21 +307,26 @@ impl App {
                 }
                 if let Some((_, at)) = &self.pending_drop {
                     let target = match moved {
-                        Some(pos) => Some(
+                        Some(pos) => Some((
                             rects
                                 .iter()
                                 .position(|r| r.contains(pos))
                                 .filter(|&p| p == 0 || s.dual)
                                 .unwrap_or(s.active),
-                        ),
-                        None if at.elapsed() >= DROP_WAIT => Some(s.active),
+                            Some(pos),
+                        )),
+                        None if at.elapsed() >= DROP_WAIT => Some((s.active, None)),
                         None => {
                             ctx.request_repaint_after(Duration::from_millis(50));
                             None
                         }
                     };
-                    if let (Some(p), Some((paths, _))) = (target, self.pending_drop.take()) {
-                        let dst = s.tab(p).dir.clone();
+                    if let (Some((p, pos)), Some((paths, _))) = (target, self.pending_drop.take()) {
+                        // Task 23: the column under the pointer, not the keyboard column.
+                        let dst = pos
+                            .filter(|_| s.panes[p].view == pane::ViewMode::Columns)
+                            .and_then(|pos| crate::view_columns::folder_at(ctx, p, pos))
+                            .unwrap_or_else(|| s.tab(p).dir.clone());
                         out.push((
                             p,
                             Action::Drop {
@@ -391,8 +429,9 @@ impl eframe::App for App {
         if self.crashed {
             crate::crash::modal(ctx, &mut self.crashed);
         }
-        if let Some(persist) = &mut self.persist {
-            let session = self.save_session.then(|| Session::of(&self.state));
+        if self.persist.is_some() {
+            let session = self.changed_session();
+            let persist = self.persist.as_mut().expect("checked");
             persist.update(&self.state.settings, session);
             if let Some(e) = persist.error() {
                 self.state.toasts.error(e);

@@ -102,6 +102,8 @@ pub enum Msg {
     },
     /// Sources of a failed cut-move that still exist: the cut to put back.
     RestoreCut(Vec<VPath>),
+    /// Stashed items a Move here job moved away: they leave the drop zone.
+    StashMoved(Vec<VPath>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
     Select {
         dir: VPath,
@@ -157,7 +159,10 @@ pub enum Msg {
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
-type WatchSlot = (Option<VPath>, Option<Box<dyn Any + Send>>);
+type WatchSlot = (VPath, Option<Box<dyn Any + Send>>);
+/// Columns view: at most this many folders of one pane are watched (the tab's own folder
+/// and the deepest columns).
+const MAX_WATCHED: usize = 8;
 
 pub struct AppState {
     pub terminal: crate::term_pane::TermPane,
@@ -208,8 +213,8 @@ pub struct AppState {
     pub tx: Sender<Msg>,
     pub rx: Receiver<Msg>,
     pub ctx: egui::Context,
-    /// One watcher per pane.
-    watchers: [WatchSlot; 2],
+    /// Per pane: its active tab's folder and, in the columns view, its columns' folders.
+    watchers: [Vec<WatchSlot>; 2],
     pending_refresh: HashMap<VPath, Instant>,
     /// Folders being listed, with their request number and start; tabs on them share the
     /// answer.
@@ -217,9 +222,9 @@ pub struct AppState {
     /// `LIST_TIMEOUT` (shorter in tests).
     list_timeout: Duration,
     next_req: u64,
-    /// The (tab, folder) each visible pane showed last frame; a change relists a tab
-    /// that was in the background (it had no watcher).
-    shown: [Option<(usize, VPath)>; 2],
+    /// The (tab, folder, view) each visible pane showed last frame; a change relists a
+    /// tab that was in the background (it had no watcher).
+    shown: [Option<(usize, VPath, crate::pane::ViewMode)>; 2],
     /// The drop zone strip and its stash (Task 23).
     pub dropzone: crate::dropzone::DropZone,
 }
@@ -330,7 +335,7 @@ impl AppState {
             shown: [None, None],
             dropzone: Default::default(),
         };
-        state.dropzone.items = session.stash; // Task 23
+        state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
         state.theme.apply(&state.ctx);
         // Tabs are only listed when asked; restored background tabs need it now.
@@ -412,6 +417,20 @@ impl AppState {
         self.spawn_listing(dir);
     }
 
+    /// Lists `dir` unless a listing of it is running. When that listing started at or
+    /// before request `since` it may predate a change: another is queued for when it
+    /// answers. `since: None` never queues (the running listing will do).
+    fn want_listing(&mut self, dir: VPath, since: Option<u64>) {
+        match self.inflight.get(&dir) {
+            None => self.spawn_listing(dir),
+            Some(&(req, _)) if since.is_some_and(|s| req <= s) => {
+                self.pending_refresh.insert(dir, Instant::now());
+                self.ctx.request_repaint();
+            }
+            Some(_) => {}
+        }
+    }
+
     /// Lists `dir` on a worker unless a listing of it is already in flight.
     fn spawn_listing(&mut self, dir: VPath) {
         if self.inflight.contains_key(&dir) {
@@ -430,41 +449,46 @@ impl AppState {
     }
 
     // --- Task 23 ---
-    /// Columns view: lists columns that were just opened, and relists every column on
-    /// `changed` (a listing already in flight may predate the change: queued after it).
-    fn list_columns(&mut self, changed: Option<&VPath>) {
+    /// Columns view, visible tabs only: lists columns that were just opened, and relists
+    /// the columns on `changed`, a change seen when the last request was `since` (a
+    /// listing of it that started at or before then is followed by another). One listing
+    /// per folder, however many columns show it.
+    fn list_columns(&mut self, changed: Option<(&VPath, u64)>) {
         let mut want: Vec<(VPath, bool)> = Vec::new();
-        for col in self
-            .panes
-            .iter_mut()
-            .flat_map(|p| p.tabs.iter_mut())
-            .flat_map(|t| t.columns.cols.iter_mut())
-        {
-            if changed == Some(&col.dir) {
-                col.refresh();
-                want.push((col.dir.clone(), true));
-            } else if col.loading && col.listed_dir.is_none() && col.error.is_none() {
-                want.push((col.dir.clone(), false));
+        for p in 0..2 {
+            let pane = &mut self.panes[p];
+            if !(p == 0 || self.dual) || pane.view != crate::pane::ViewMode::Columns {
+                continue;
+            }
+            for col in pane.tabs[pane.active].columns.cols.iter_mut() {
+                let stale = changed.is_some_and(|(d, _)| *d == col.dir);
+                if stale {
+                    col.refresh();
+                } else if !(col.loading && col.listed_dir.is_none() && col.error.is_none()) {
+                    continue;
+                }
+                match want.iter_mut().find(|(d, _)| *d == col.dir) {
+                    Some(w) => w.1 |= stale,
+                    None => want.push((col.dir.clone(), stale)),
+                }
             }
         }
         for (dir, stale) in want {
-            if !self.inflight.contains_key(&dir) {
-                self.spawn_listing(dir);
-            } else if stale {
-                self.pending_refresh.insert(dir, Instant::now());
-            }
+            let since = changed.filter(|_| stale).map(|(_, s)| s);
+            self.want_listing(dir, since);
         }
     }
 
-    /// Columns view: relists every column of pane `p`'s active tab (F5, a finished job).
-    fn relist_columns(&mut self, p: usize) {
+    /// Columns view: relists every column of pane `p`'s active tab (F5, a finished job)
+    /// for a change seen at request `since`.
+    fn relist_columns(&mut self, p: usize, since: u64) {
         let pane = &self.panes[p];
         if pane.view != crate::pane::ViewMode::Columns {
             return;
         }
         let dirs: Vec<VPath> = crate::view_columns::chain(&pane.tabs[pane.active]);
         for dir in dirs {
-            self.list_columns(Some(&dir));
+            self.list_columns(Some((&dir, since)));
         }
     }
     // --- end Task 23 ---
@@ -475,23 +499,23 @@ impl AppState {
     }
 
     /// Like `list`, for when the folder's contents may have changed (F5, a rename, a
-    /// finished job): a listing already in flight may predate the change, so another one
-    /// is queued for when it answers.
-    pub fn relist(&mut self, p: usize, t: usize) {
+    /// finished job) when the last request was `since`: a listing in flight that started
+    /// at or before then may predate the change, so another one is queued for when it
+    /// answers.
+    fn relist_since(&mut self, p: usize, t: usize, since: u64) {
         let dir = self.panes[p].tabs[t].dir.clone();
         if self.inflight.contains_key(&dir) && !self.panes[p].tabs[t].is_search() {
             self.panes[p].tabs[t].refresh();
-            self.pending_refresh.insert(dir, Instant::now());
-            self.ctx.request_repaint();
+            self.want_listing(dir, Some(since));
         } else {
             self.list(p, t);
         }
     }
 
-    fn relist_active(&mut self, p: usize) {
+    fn relist_active(&mut self, p: usize, since: u64) {
         let t = self.panes[p].active;
-        self.relist(p, t);
-        self.relist_columns(p); // Task 23
+        self.relist_since(p, t, since);
+        self.relist_columns(p, since); // Task 23
     }
 
     /// Drains worker messages without blocking.
@@ -526,8 +550,11 @@ impl AppState {
                     .or_insert_with(|| Instant::now() + REFRESH_COALESCE);
             }
             Msg::Watching { pane, dir, watcher } => {
-                if self.watchers[pane].0.as_ref() == Some(&dir) {
-                    self.watchers[pane].1 = Some(watcher);
+                if let Some(slot) = self.watchers[pane]
+                    .iter_mut()
+                    .find(|w| w.0 == dir && w.1.is_none())
+                {
+                    slot.1 = Some(watcher);
                 }
             }
             Msg::Drives(drives) => {
@@ -565,10 +592,12 @@ impl AppState {
                         self.toasts.error(format!("{e:#}"));
                     }
                 }
+                self.stash_job_done(id); // Task 23
                 self.jobs.finish(id, result);
                 // Watchers usually beat us to it; network folders may not have one.
+                let since = self.next_req;
                 for p in 0..2 {
-                    self.relist_active(p);
+                    self.relist_active(p, since);
                 }
             }
             Msg::Planned {
@@ -593,6 +622,7 @@ impl AppState {
                     });
                 }
             }
+            Msg::StashMoved(paths) => self.dropzone.remove_all(&paths),
             Msg::RestoreCut(paths) => {
                 // Only when nothing was copied since, here or in another app.
                 if !paths.is_empty()
@@ -613,6 +643,7 @@ impl AppState {
                 self.toasts.error(text);
             }
             Msg::Select { dir, name } => {
+                let since = self.next_req;
                 for p in 0..2 {
                     for t in 0..self.panes[p].tabs.len() {
                         let tab = &mut self.panes[p].tabs[t];
@@ -624,7 +655,7 @@ impl AppState {
                             tab.cursor = Some(name.clone());
                             tab.anchor = Some(name.clone());
                             tab.reveal = true;
-                            self.relist(p, t);
+                            self.relist_since(p, t, since);
                         }
                     }
                 }
@@ -640,7 +671,7 @@ impl AppState {
                     col.cursor = Some(name.clone());
                     col.anchor = Some(name.clone());
                 }
-                self.list_columns(Some(&dir));
+                self.list_columns(Some((&dir, since)));
             }
             Msg::Preview { key, preview } => self.preview.insert(&self.ctx, key, preview),
             Msg::Search { id, result } => self.searched(id, result),
@@ -807,12 +838,14 @@ impl AppState {
             // A cut pastes once, as in Explorer.
             self.clipboard.set(Vec::new(), false);
         }
+        let stashed = self.dropzone.claim(&op, from_clipboard); // Task 23
         let id = self
             .jobs
             .start(op, conflict, self.router.clone(), self.tx.clone());
         if let Some(src) = cut {
             self.cut_job = Some((id, src));
         }
+        self.stash_job_started(id, stashed);
     }
 
     fn target_paths(&self, p: usize) -> Vec<VPath> {
@@ -965,11 +998,16 @@ impl AppState {
             .collect();
         for dir in stuck {
             self.inflight.remove(&dir);
-            for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+            let stop = |tab: &mut Tab| {
                 if tab.dir == dir && tab.loading && !tab.is_search() {
                     tab.loading = false;
                     tab.error = Some(format!("{} is not responding", dir.display()));
                 }
+            };
+            for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+                stop(tab);
+                // Columns too: a column left loading would be asked again every tick.
+                tab.columns.cols.iter_mut().for_each(stop);
             }
         }
         if let Some(next) = self.inflight.values().map(|(_, at)| *at).min() {
@@ -984,17 +1022,22 @@ impl AppState {
         for p in 0..2 {
             // The tab's own folder (Task 23: not its keyboard column).
             let t = self.panes[p].active;
-            let now = (p == 0 || self.dual).then(|| (t, self.panes[p].tabs[t].dir.clone()));
+            let view = self.panes[p].view;
+            let now = (p == 0 || self.dual).then(|| (t, self.panes[p].tabs[t].dir.clone(), view));
             if now == self.shown[p] {
                 continue;
             }
-            self.shown[p] = now.clone();
-            if let Some((t, _)) = now {
-                let tab = &self.panes[p].tabs[t];
-                if !tab.loading && !tab.is_search() && tab.listed_dir.is_some() {
-                    self.relist(p, t);
-                }
+            let before = std::mem::replace(&mut self.shown[p], now.clone());
+            let Some((t, dir, _)) = now else { continue };
+            // Only the view changed: the tab itself was watched all along.
+            let tab_shown = before.is_some_and(|(bt, bd, _)| bt == t && bd == dir);
+            let since = self.next_req;
+            let tab = &self.panes[p].tabs[t];
+            if !tab_shown && !tab.loading && !tab.is_search() && tab.listed_dir.is_some() {
+                self.relist_since(p, t, since);
             }
+            // Task 23: its columns had no watcher either.
+            self.relist_columns(p, since);
         }
     }
 
@@ -1043,6 +1086,7 @@ impl AppState {
                 continue;
             }
             self.pending_refresh.remove(&dir);
+            let since = self.next_req;
             for p in 0..2 {
                 for t in 0..self.panes[p].tabs.len() {
                     let tab = &self.panes[p].tabs[t];
@@ -1051,7 +1095,7 @@ impl AppState {
                     }
                 }
             }
-            self.list_columns(Some(&dir)); // Task 23
+            self.list_columns(Some((&dir, since))); // Task 23
         }
         if let Some(next) = self
             .pending_refresh
@@ -1084,65 +1128,97 @@ impl AppState {
         self.sync_watchers();
     }
 
-    /// One watcher per visible pane, on its active tab's local folder, plus one on its
-    /// parent so a rename or delete of the folder itself is noticed (the folder's own
-    /// watcher does not report that). Created off-thread because opening a dead network
-    /// folder can block.
+    /// The local folders pane `p` shows: its active tab's and, in the columns view, its
+    /// deepest columns' (at most `MAX_WATCHED` in all).
+    fn watched_dirs(&self, p: usize) -> Vec<VPath> {
+        let pane = &self.panes[p];
+        let tab = &pane.tabs[pane.active];
+        if !(p == 0 || self.dual) || tab.is_search() {
+            return Vec::new();
+        }
+        let cols: &[Tab] = if pane.view == crate::pane::ViewMode::Columns {
+            &tab.columns.cols
+        } else {
+            &[]
+        };
+        let deepest = &cols[cols.len().saturating_sub(MAX_WATCHED - 1)..];
+        let mut dirs: Vec<VPath> = Vec::new();
+        for dir in std::iter::once(&tab.dir).chain(deepest.iter().map(|c| &c.dir)) {
+            if dir.to_local_path().is_some() && !dirs.contains(dir) {
+                dirs.push(dir.clone());
+            }
+        }
+        dirs
+    }
+
+    /// A watcher on every folder a visible pane shows (`watched_dirs`), plus one on each
+    /// folder's parent so a rename or delete of the folder itself is noticed (the
+    /// folder's own watcher does not report that). Created off-thread because opening a
+    /// dead network folder can block.
     fn sync_watchers(&mut self) {
         for p in 0..2 {
-            let wanted = (p == 0 || self.dual)
-                .then(|| self.tab(p))
-                .filter(|t| !t.is_search())
-                .map(|t| t.dir.clone())
-                .filter(|d| d.to_local_path().is_some());
-            if self.watchers[p].0 == wanted {
+            let wanted = self.watched_dirs(p);
+            if self.watchers[p].len() == wanted.len()
+                && self.watchers[p].iter().zip(&wanted).all(|(w, d)| w.0 == *d)
+            {
                 continue;
             }
-            self.watchers[p] = (wanted.clone(), None);
-            let Some(dir) = wanted else { continue };
-            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-            std::thread::Builder::new()
-                .name("keel-watch".into())
-                .spawn(move || {
-                    let local = dir.to_local_path().expect("filtered to local paths");
-                    let (wtx, wrx) = crossbeam_channel::bounded(1);
-                    let Ok(watcher) = keel_vfs::watch(&local, wtx) else {
-                        return;
-                    };
-                    let (ptx, prx) = crossbeam_channel::bounded(1);
-                    let parent = local
-                        .parent()
-                        .and_then(|parent| keel_vfs::watch(parent, ptx).ok());
-                    let prx = if parent.is_some() {
-                        prx
-                    } else {
-                        crossbeam_channel::never()
-                    };
-                    let _ = tx.send(Msg::Watching {
-                        pane: p,
-                        dir: dir.clone(),
-                        watcher: Box::new((watcher, parent)),
-                    });
-                    ctx.request_repaint();
-                    // Ends when the UI drops the watchers.
-                    loop {
-                        crossbeam_channel::select! {
-                            recv(wrx) -> event => if event.is_err() { break },
-                            recv(prx) -> event => {
-                                // Something next to the folder changed: only its own
-                                // disappearance matters here.
-                                if event.is_err() || local.try_exists().unwrap_or(true) {
-                                    continue;
-                                }
+            // Keep the live watchers still wanted; start the others.
+            let mut old = std::mem::take(&mut self.watchers[p]);
+            for dir in wanted {
+                if let Some(i) = old.iter().position(|w| w.0 == dir) {
+                    self.watchers[p].push(old.swap_remove(i));
+                    continue;
+                }
+                self.watchers[p].push((dir.clone(), None));
+                self.spawn_watcher(p, dir);
+            }
+        }
+    }
+
+    fn spawn_watcher(&self, p: usize, dir: VPath) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        std::thread::Builder::new()
+            .name("keel-watch".into())
+            .spawn(move || {
+                let local = dir.to_local_path().expect("filtered to local paths");
+                let (wtx, wrx) = crossbeam_channel::bounded(1);
+                let Ok(watcher) = keel_vfs::watch(&local, wtx) else {
+                    return;
+                };
+                let (ptx, prx) = crossbeam_channel::bounded(1);
+                let parent = local
+                    .parent()
+                    .and_then(|parent| keel_vfs::watch(parent, ptx).ok());
+                let prx = if parent.is_some() {
+                    prx
+                } else {
+                    crossbeam_channel::never()
+                };
+                let _ = tx.send(Msg::Watching {
+                    pane: p,
+                    dir: dir.clone(),
+                    watcher: Box::new((watcher, parent)),
+                });
+                ctx.request_repaint();
+                // Ends when the UI drops the watchers.
+                loop {
+                    crossbeam_channel::select! {
+                        recv(wrx) -> event => if event.is_err() { break },
+                        recv(prx) -> event => {
+                            // Something next to the folder changed: only its own
+                            // disappearance matters here.
+                            if event.is_err() || local.try_exists().unwrap_or(true) {
+                                continue;
                             }
                         }
-                        let _ = tx.send(Msg::Changed { dir: dir.clone() });
-                        ctx.request_repaint();
                     }
-                })
-                .map_err(|e| tracing::error!("spawn watcher: {e}"))
-                .ok();
-        }
+                    let _ = tx.send(Msg::Changed { dir: dir.clone() });
+                    ctx.request_repaint();
+                }
+            })
+            .map_err(|e| tracing::error!("spawn watcher: {e}"))
+            .ok();
     }
 
     pub fn run(&mut self, p: usize, action: Action) {
@@ -1181,7 +1257,10 @@ impl AppState {
                     self.list_active(p);
                 }
             }
-            Action::Refresh => self.relist_active(p),
+            Action::Refresh => {
+                let since = self.next_req;
+                self.relist_active(p, since);
+            }
             Action::Navigate(to) => {
                 self.tab_mut(p).navigate(to);
                 self.list_active(p);
@@ -2474,7 +2553,9 @@ mod tests {
         state.dual = false;
         state.tick();
         settle(&mut state, |s| {
-            s.watchers[0].1.is_some() && !s.tab(0).loading
+            !s.watchers[0].is_empty()
+                && s.watchers[0].iter().all(|w| w.1.is_some())
+                && !s.tab(0).loading
         });
         std::thread::sleep(Duration::from_millis(200));
         std::fs::rename(tmp.join("open"), tmp.join("renamed")).unwrap();
@@ -2610,5 +2691,140 @@ mod tests {
         let tab = state.tab(0);
         assert_eq!(tab.dir, home);
         assert!(tab.future.is_empty());
+    }
+
+    // --- fixH: columns listing ---
+    /// Ticks and applies worker messages for `dur`.
+    fn pump(s: &mut AppState, dur: Duration) {
+        let until = Instant::now() + dur;
+        while Instant::now() < until {
+            s.tick();
+            if let Ok(msg) = s.rx.recv_timeout(Duration::from_millis(10)) {
+                s.apply(msg);
+            }
+        }
+    }
+
+    /// Ticks until `done` (or 10 s).
+    fn pump_until(s: &mut AppState, done: impl Fn(&AppState) -> bool) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !done(s) && Instant::now() < until {
+            pump(s, Duration::from_millis(20));
+        }
+        assert!(done(s), "timed out");
+    }
+
+    fn idle(s: &AppState) -> bool {
+        s.inflight.is_empty()
+            && s.pending_refresh.is_empty()
+            && s.panes.iter().all(|p| {
+                p.tabs
+                    .iter()
+                    .flat_map(|t| std::iter::once(t).chain(&t.columns.cols))
+                    .all(|t| t.listed_dir.is_some() && !t.loading)
+            })
+    }
+
+    #[test]
+    fn a_change_lists_a_folder_once_however_many_columns_show_it() {
+        use crate::pane::ViewMode;
+        let tmp = tempfile_dir("keel-columns-once");
+        std::fs::create_dir_all(tmp.join("a")).unwrap();
+        std::fs::write(tmp.join("a").join("f.txt"), "x").unwrap();
+        let x = VPath::local(&tmp);
+        let a = x.join("a");
+        let new = || AppState::new(egui::Context::default(), Arc::new(Router::new()), x.clone());
+
+        // Pane 1's tab is on X\a and pane 0 shows X\a as a column.
+        let mut s = new();
+        s.dual = true;
+        s.panes[0].view = ViewMode::Columns;
+        crate::view_columns::restore(&mut s.panes[0].tabs[0], std::slice::from_ref(&a));
+        s.run(1, Action::Navigate(a.clone()));
+        pump_until(&mut s, idle);
+        let before = s.next_req;
+        s.apply(Msg::Changed { dir: a.clone() });
+        pump(&mut s, Duration::from_millis(1200));
+        assert!(idle(&s));
+        assert_eq!(s.next_req - before, 1, "one listing per change");
+        let before = s.next_req;
+        s.apply(Msg::Select {
+            dir: a.clone(),
+            name: "f.txt".into(),
+        });
+        pump(&mut s, Duration::from_millis(600));
+        assert!(idle(&s));
+        assert_eq!(s.next_req - before, 1, "one listing per rename");
+
+        // Two columns on one folder, no tab on it.
+        let mut s = new();
+        s.dual = true;
+        for p in 0..2 {
+            s.panes[p].view = ViewMode::Columns;
+            crate::view_columns::restore(&mut s.panes[p].tabs[0], std::slice::from_ref(&a));
+        }
+        pump_until(&mut s, idle);
+        let before = s.next_req;
+        s.apply(Msg::Changed { dir: a.clone() });
+        pump(&mut s, Duration::from_millis(1200));
+        assert!(idle(&s));
+        assert_eq!(s.next_req - before, 1, "one listing for both columns");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_hung_column_listing_is_not_asked_again() {
+        use crate::pane::ViewMode;
+        let root = VPath::local(std::env::temp_dir());
+        let hung = VPath::parse("mem://hung/x").unwrap();
+        let mut s = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            root.clone(),
+        );
+        s.dual = false;
+        s.panes[0].view = ViewMode::Columns;
+        s.shown[0] = Some((0, root, ViewMode::Columns));
+        s.panes[0].tabs[0].columns.cols.push(Tab::new(hung.clone()));
+        s.list_timeout = Duration::from_secs(1);
+        // Its listing started long ago and never answered.
+        s.inflight.insert(
+            hung.clone(),
+            (s.next_req, Instant::now() - Duration::from_secs(60)),
+        );
+        let before = s.next_req;
+        s.tick();
+        s.tick();
+        let col = &s.panes[0].tabs[0].columns.cols[0];
+        assert!(!col.loading);
+        assert_eq!(col.error.as_deref(), Some("mem://hung/x is not responding"));
+        assert_eq!(s.next_req, before, "no second request");
+    }
+
+    #[test]
+    fn an_outside_change_in_column_0_shows_while_column_2_has_focus() {
+        use crate::pane::ViewMode;
+        let tmp = tempfile_dir("keel-columns-watch");
+        std::fs::create_dir_all(tmp.join("a").join("b")).unwrap();
+        let x = VPath::local(&tmp);
+        let mut s = AppState::new(egui::Context::default(), Arc::new(Router::new()), x.clone());
+        s.dual = false;
+        s.panes[0].view = ViewMode::Columns;
+        let chain = [x.join("a"), x.join("a").join("b")];
+        crate::view_columns::restore(&mut s.panes[0].tabs[0], &chain);
+        assert_eq!(s.panes[0].tabs[0].columns.focus, 2);
+        pump_until(&mut s, |s| {
+            idle(s) && s.watchers[0].len() == 3 && s.watchers[0].iter().all(|w| w.1.is_some())
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(tmp.join("outside.txt"), "x").unwrap();
+        pump_until(&mut s, |s| {
+            s.panes[0].tabs[0]
+                .entries()
+                .iter()
+                .any(|e| e.name == "outside.txt")
+        });
+        assert_eq!(s.panes[0].tabs[0].columns.focus, 2, "focus untouched");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
