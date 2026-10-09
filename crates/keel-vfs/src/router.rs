@@ -1,9 +1,18 @@
 use crate::{Provider, VPath};
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-pub struct Router {
+/// Providers by scheme plus remote providers by host id. Shared weakly with the archive
+/// provider so it can resolve an archive's OUTER path, including a remote one.
+pub(crate) struct Table {
     providers: Vec<Arc<dyn Provider>>,
-    remotes: std::collections::HashMap<String, Arc<dyn Provider>>,
+    remotes: HashMap<String, Arc<dyn Provider>>,
+}
+pub(crate) type Registry = RwLock<Table>;
+
+pub struct Router {
+    registry: Arc<Registry>,
     remote_events: crossbeam_channel::Sender<crate::RemoteEvent>,
     events: crossbeam_channel::Receiver<crate::RemoteEvent>,
 }
@@ -14,27 +23,33 @@ impl Default for Router {
 }
 impl Router {
     pub fn new() -> Self {
+        Self::with_archive_cache(Arc::default())
+    }
+    pub fn with_archive_cache(cache: Arc<crate::archive::cache::MaterialiseCache>) -> Self {
         let (remote_events, events) = crossbeam_channel::unbounded();
-        Self {
+        let registry: Arc<Registry> = Arc::new(RwLock::new(Table {
             providers: vec![Arc::new(crate::LocalProvider)],
-            remotes: Default::default(),
+            remotes: HashMap::new(),
+        }));
+        let archive = crate::archive::ArchiveProvider::new(cache, Arc::downgrade(&registry));
+        registry.write().providers.push(Arc::new(archive));
+        Self {
+            registry,
             remote_events,
             events,
         }
     }
+    /// Paths with a `!/` archive boundary go to the archive provider, `sftp://<id>/...` to that
+    /// host's provider, the rest by scheme.
     pub fn provider_for(&self, p: &VPath) -> Option<Arc<dyn Provider>> {
-        if p.scheme == "sftp" {
-            return self.remotes.get(&p.authority).cloned();
-        }
-        self.providers
-            .iter()
-            .find(|provider| provider.scheme() == p.scheme)
-            .cloned()
+        find(&self.registry, p)
     }
     pub fn register(&mut self, p: Arc<dyn Provider>) {
-        self.providers
+        let mut table = self.registry.write();
+        table
+            .providers
             .retain(|existing| existing.scheme() != p.scheme());
-        self.providers.push(p);
+        table.providers.push(p);
     }
     pub fn register_remote(&mut self, host: crate::RemoteHost) {
         self.register_remote_provider(
@@ -43,9 +58,28 @@ impl Router {
         );
     }
     pub fn register_remote_provider(&mut self, id: String, provider: Arc<dyn Provider>) {
-        self.remotes.insert(id, provider);
+        self.registry.write().remotes.insert(id, provider);
     }
     pub fn remote_events(&self) -> crossbeam_channel::Receiver<crate::RemoteEvent> {
         self.events.clone()
     }
+}
+
+pub(crate) fn find(registry: &Registry, p: &VPath) -> Option<Arc<dyn Provider>> {
+    let table = registry.read();
+    if p.split_archive().is_some() {
+        return table
+            .providers
+            .iter()
+            .find(|provider| provider.scheme() == "archive")
+            .cloned();
+    }
+    if p.scheme == "sftp" {
+        return table.remotes.get(&p.authority).cloned();
+    }
+    table
+        .providers
+        .iter()
+        .find(|provider| provider.scheme() == p.scheme)
+        .cloned()
 }
