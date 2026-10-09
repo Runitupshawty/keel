@@ -906,6 +906,31 @@ fn removing_a_source_stops_its_walk_and_watchers() {
     drop(handle);
 }
 
+/// Windows names are case-insensitive: an event may carry the old casing.
+#[cfg(windows)]
+#[test]
+fn a_case_only_rename_takes_the_name_on_disk() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("ä.txt"), "a");
+    let (_data, lib, src) = library_with(folder("c", files.path()));
+    walk(&src, &lib.router()).unwrap();
+    let id = id_of(&src, "ä.txt").unwrap();
+    // Renaming to a case variant is allowed (it is not "already exists").
+    let plan = crate::validate_preview_execute(
+        &lib,
+        crate::Op::Rename {
+            path: VPath::local(files.path().join("ä.txt")),
+            new_name: "Ä.txt".into(),
+        },
+    );
+    assert!(plan.is_ok(), "{:?}", plan.err());
+    std::fs::rename(files.path().join("ä.txt"), files.path().join("Ä.txt")).unwrap();
+    let old_case = VPath::local(files.path().join("ä.txt"));
+    Indexer::apply_change(&src, ChangeEvent::Changed(old_case)).unwrap();
+    assert_eq!(paths(&src), ["", "Ä.txt"]);
+    assert_eq!(id_of(&src, "Ä.txt"), Some(id));
+}
+
 #[test]
 fn watch_polls_remote_sources() {
     let state = Arc::new(Mutex::new(State {

@@ -878,6 +878,21 @@ fn apply(
     }
     let (parent_rel, name) = rel.rsplit_once('/').unwrap_or(("", rel));
     item.name = name.to_owned();
+    // An event can carry the old casing of a case-only rename: take the name on disk.
+    if nocase && !item.link {
+        let real = std::fs::canonicalize(local)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        if let Some(real) = real.filter(|r| r.to_lowercase() == name.to_lowercase()) {
+            item.name = real;
+        }
+    }
+    let real_name = item.name.clone();
+    let real_rel = match parent_rel {
+        "" => real_name.clone(),
+        parent => format!("{parent}/{real_name}"),
+    };
+    let (name, rel) = (real_name.as_str(), real_rel.as_str());
     // A parent that is not indexed (hidden, ignored, never walked): nothing to do.
     let Some((parent_id, parent_fs)) = resolve(c, parent_rel, nocase)? else {
         return Ok(None);

@@ -266,7 +266,7 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             let to = parent.join(new_name);
             // A case-only rename finds the same entry; the provider decides.
             let same = if cfg!(windows) {
-                to.path.eq_ignore_ascii_case(&path.path)
+                to.path.to_lowercase() == path.path.to_lowercase()
             } else {
                 to == *path
             };

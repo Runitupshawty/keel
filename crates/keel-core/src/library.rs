@@ -183,14 +183,23 @@ pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
     }
     let base = root.path.trim_end_matches('/');
     let path = p.path.trim_end_matches('/');
-    // Local Windows paths are case-insensitive.
-    let rest = if cfg!(windows) && root.scheme == "file" {
-        let (lower, base) = (path.to_lowercase(), base.to_lowercase());
-        let len = lower.strip_prefix(&base)?.len();
-        path.get(path.len().checked_sub(len)?..)?
-    } else {
-        path.strip_prefix(base)?
-    };
+    // Local Windows paths are case-insensitive: compare whole components (lowercasing can
+    // change a string's length, so no byte offsets carry over).
+    if cfg!(windows) && root.scheme == "file" {
+        let mut rest = Some(path);
+        for comp in base.split('/') {
+            let (head, tail) = match rest?.split_once('/') {
+                Some((h, t)) => (h, Some(t)),
+                None => (rest?, None),
+            };
+            if head.to_lowercase() != comp.to_lowercase() {
+                return None;
+            }
+            rest = tail;
+        }
+        return Some(rest.unwrap_or("").to_owned());
+    }
+    let rest = path.strip_prefix(base)?;
     if rest.is_empty() {
         Some(String::new())
     } else {
@@ -718,6 +727,17 @@ pub(crate) mod tests {
         assert_eq!(
             relative(&VPath::local(r"D:\"), &VPath::local(r"D:\x")).as_deref(),
             Some("x")
+        );
+        // Lowercasing İ changes its length.
+        #[cfg(windows)]
+        assert_eq!(
+            relative(&VPath::local(r"D:\Dir"), &VPath::local(r"d:\dir\İx\y")).as_deref(),
+            Some("İx/y")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            relative(&VPath::local(r"D:\Dir"), &VPath::local(r"D:\Dirt\a")),
+            None
         );
     }
 
