@@ -13,7 +13,10 @@ rm -rf "$dist"
 mkdir -p "$dist"
 wasm-bindgen --target web --no-typescript --out-dir "$dist" "$target/wasm32-unknown-unknown/release/keel_web.wasm"
 cp "$root"/crates/keel-web/static/* "$dist/"
-# The service worker's cache key: a new build replaces the old shell.
-ver="$( (sha256sum "$dist/keel_web_bg.wasm" 2>/dev/null || shasum -a 256 "$dist/keel_web_bg.wasm") | cut -c1-16)"
+# The service worker's cache key: a hash of every file of the build (a change to any shell
+# file, not only the wasm, replaces the old cache).
+hash256() { sha256sum 2>/dev/null || shasum -a 256; }
+ver="$(cd "$dist" && LC_ALL=C ls | LC_ALL=C sort | while read -r f; do cat "$f"; done | hash256 | cut -c1-16)"
 sed -i.bak "s/__KEEL_BUILD__/$ver/" "$dist/sw.js" && rm -f "$dist/sw.js.bak"
+grep -q "const VERSION = \"$ver\";" "$dist/sw.js"
 echo "web client in $dist; now build keel-daemon"

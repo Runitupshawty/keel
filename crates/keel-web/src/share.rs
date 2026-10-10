@@ -1,9 +1,11 @@
 //! The share-sheet flow (tested natively). "Share → Keel" posts the files to the daemon's
-//! `/share`, which parks them and opens the client at `/?share=<id>`. The client takes the
-//! id from the address (and removes it), claims the upload with `share.claim` once it is
-//! signed in (the token goes over `/rpc`, never with the share), lets the user pick one
-//! paired device, and sends exactly the claimed files to exactly that device with
-//! `spacedrop.send`, which the plan dialog previews and executes.
+//! `/share`, which parks them and opens the client at `/?share=<id>&files=<n>&bytes=<b>`.
+//! The client takes the id from the address (and removes it), asks "Open N shared files?"
+//! (any link can carry an id, so nothing is claimed unasked), claims the upload with
+//! `share.claim` once the user says yes and it is signed in (the token goes over `/rpc`,
+//! never with the share), lets the user pick one paired device, and sends exactly the
+//! claimed files to exactly that device with `spacedrop.send`, which the plan dialog
+//! previews and executes.
 
 use serde_json::{json, Value};
 
@@ -18,7 +20,14 @@ pub struct SharedFile {
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
     None,
-    /// The address named an upload: claimed once signed in.
+    /// The address named an upload: the user is asked before it is claimed. The counts
+    /// come from the address (unchecked until the claim lists the files).
+    Asking {
+        id: String,
+        files: Option<u64>,
+        bytes: Option<u64>,
+    },
+    /// The user said open: claimed once signed in.
     Waiting(String),
     /// `share.claim` sent.
     Claiming(String),
@@ -40,6 +49,15 @@ pub fn share_id(query: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// A number parameter of an address's query.
+fn number(query: &str, key: &str) -> Option<u64> {
+    query
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|p| p.strip_prefix(key)?.strip_prefix('='))
+        .and_then(|v| v.parse().ok())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flow {
     pub state: State,
@@ -49,8 +67,32 @@ impl Flow {
     /// From `location.search` at start.
     pub fn from_query(query: &str) -> Self {
         Self {
-            state: share_id(query).map_or(State::None, State::Waiting),
+            state: share_id(query).map_or(State::None, |id| State::Asking {
+                id,
+                files: number(query, "files"),
+                bytes: number(query, "bytes"),
+            }),
         }
+    }
+
+    /// The user said open: the upload is claimed (now, or once signed in).
+    pub fn accept(&mut self) {
+        if let State::Asking { id, .. } = &self.state {
+            self.state = State::Waiting(id.clone());
+        }
+    }
+
+    /// One file's "Send to device…". Refused (false) while the share sheet's files are being
+    /// asked about, claimed or sent, so they are not dropped.
+    pub fn send_one(&mut self, file: SharedFile) -> bool {
+        if !matches!(self.state, State::None | State::Failed(_)) {
+            return false;
+        }
+        self.state = State::Claimed {
+            files: vec![file],
+            peer: None,
+        };
+        true
     }
 
     pub fn active(&self) -> bool {
@@ -156,8 +198,54 @@ mod tests {
     }
 
     #[test]
+    fn asks_before_claiming() {
+        let mut f = Flow::from_query(&format!("?share={ID}&files=3&bytes=12345"));
+        assert_eq!(
+            f.state,
+            State::Asking {
+                id: ID.into(),
+                files: Some(3),
+                bytes: Some(12345)
+            }
+        );
+        assert!(f.active(), "the question shows");
+        assert!(f.claim().is_none(), "nothing is claimed unasked");
+        assert!(!f.send_one(file("x")), "a pending share is not dropped");
+        f.accept();
+        assert_eq!(f.state, State::Waiting(ID.into()));
+        assert!(!f.send_one(file("x")));
+        assert!(f.claim().is_some());
+        assert!(!f.send_one(file("x")), "nor while it is claimed");
+        // Dismissed: nothing claimed.
+        let mut f = Flow::from_query(&format!("?share={ID}&files=x"));
+        assert!(matches!(
+            f.state,
+            State::Asking {
+                files: None,
+                bytes: None,
+                ..
+            }
+        ));
+        f.close();
+        assert!(f.claim().is_none());
+        // With no share going on, "Send to device…" opens the window with that file.
+        assert!(f.send_one(file("a.jpg")));
+        assert!(matches!(&f.state, State::Claimed { files, .. } if files[0].name == "a.jpg"));
+        assert!(!f.send_one(file("b.jpg")), "one at a time");
+    }
+
+    fn file(name: &str) -> SharedFile {
+        SharedFile {
+            name: name.into(),
+            path: format!("/x/{name}"),
+            size: 1,
+        }
+    }
+
+    #[test]
     fn claims_once_signed_in_then_sends_only_to_the_picked_device() {
         let mut f = Flow::from_query(&format!("?share={ID}"));
+        f.accept();
         assert_eq!(f.state, State::Waiting(ID.into()));
         assert_eq!(f.send_params(), None);
         let (method, params) = f.claim().unwrap();
@@ -188,6 +276,7 @@ mod tests {
     #[test]
     fn a_refused_or_empty_claim_fails() {
         let mut f = Flow::from_query(&format!("?share={ID}"));
+        f.accept();
         f.on_claimed(Ok(json!({"files": []})));
         assert_eq!(f.state, State::Waiting(ID.into()), "an answer to no claim");
         f.claim();
@@ -196,6 +285,7 @@ mod tests {
         f.pick("peer");
         assert_eq!(f.send_params(), None);
         let mut f = Flow::from_query(&format!("?share={ID}"));
+        f.accept();
         f.claim();
         f.on_claimed(Ok(json!({"files": []})));
         assert!(matches!(f.state, State::Failed(_)));

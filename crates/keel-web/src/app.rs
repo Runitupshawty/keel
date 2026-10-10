@@ -829,15 +829,16 @@ impl WebApp {
             Act::Download(path) => self.call("file.get", json!({ "path": path }), Want::Link),
             Act::Delete(path) => self.plan("plan", json!({"op": "delete", "paths": [path]})),
             Act::Send(e) => {
-                self.share.state = share::State::Claimed {
-                    files: vec![SharedFile {
-                        name: e.name,
-                        path: e.path,
-                        size: e.size,
-                    }],
-                    peer: None,
+                let file = SharedFile {
+                    name: e.name,
+                    path: e.path,
+                    size: e.size,
                 };
-                self.call("devices.list", json!({}), Want::Devices);
+                if self.share.send_one(file) {
+                    self.call("devices.list", json!({}), Want::Devices);
+                } else {
+                    self.notice = Some("Finish or cancel the shared files first.".into());
+                }
             }
         }
     }
@@ -1076,7 +1077,10 @@ impl WebApp {
     fn pull_to_refresh(&mut self, ui: &egui::Ui, rect: egui::Rect, offset: f32) {
         let (down, dy) = ui.input(|i| (i.pointer.primary_down(), i.pointer.delta().y));
         let over = ui.rect_contains_pointer(rect);
-        if self.pull.update(offset <= 1.0, down && over, dy) {
+        if self
+            .pull
+            .update_on(self.screen.phone(), offset <= 1.0, down && over, dy)
+        {
             self.refresh();
         }
     }
@@ -1309,6 +1313,7 @@ impl WebApp {
         let mut close = false;
         let mut send = None;
         let mut pick = None;
+        let mut open = false;
         let width = (ctx.screen_rect().width() - 24.0).min(420.0);
         egui::Window::new("Send with Spacedrop")
             .collapsible(false)
@@ -1317,6 +1322,23 @@ impl WebApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| match &self.share.state {
                 share::State::None => {}
+                share::State::Asking { files, bytes, .. } => {
+                    let what = match (files, bytes) {
+                        (Some(n), Some(b)) => format!("Open {n} shared file(s), {}?", human(*b)),
+                        (Some(n), None) => format!("Open {n} shared file(s)?"),
+                        _ => "Open the shared files?".to_owned(),
+                    };
+                    ui.strong(what);
+                    ui.label("Only if you just shared them to Keel from this device.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Open").clicked() {
+                            open = true;
+                        }
+                        if ui.button("Dismiss").clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 share::State::Waiting(_) | share::State::Claiming(_) => {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -1375,6 +1397,14 @@ impl WebApp {
                     });
                 }
             });
+        if open {
+            self.share.accept();
+            if self.conn.state == State::Online {
+                if let Some((method, params)) = self.share.claim() {
+                    self.call(method, params, Want::Claim);
+                }
+            }
+        }
         if let Some(id) = pick {
             self.share.pick(&id);
         }

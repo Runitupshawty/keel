@@ -449,7 +449,11 @@ fn share(
             "303 See Other",
             host,
             &[
-                ("Location", format!("/?share={id}")),
+                // The counts are only for the client's question before it claims.
+                ("Location", {
+                    let (n, bytes) = shared.uploads.summary(&id).unwrap_or_default();
+                    format!("/?share={id}&files={n}&bytes={bytes}")
+                }),
                 ("Content-Type", "text/plain; charset=utf-8".into()),
             ],
             b"Shared: open Keel to send it.",

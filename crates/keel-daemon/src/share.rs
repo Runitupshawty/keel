@@ -266,6 +266,14 @@ impl Uploads {
         }
     }
 
+    /// How many files a received upload holds and their bytes (for the client's "Open N
+    /// shared files?" question).
+    pub(crate) fn summary(&self, id: &str) -> Option<(usize, u64)> {
+        let uploads = self.uploads.lock();
+        let u = uploads.get(id)?;
+        Some((u.files.len(), u.files.iter().map(|f| f.1).sum()))
+    }
+
     /// `share.claim`: hands the upload's files to the signed-in client, once.
     pub(crate) fn claim(&self, id: &str) -> Result<Value, String> {
         self.sweep();

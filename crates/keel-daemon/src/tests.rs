@@ -716,6 +716,20 @@ fn web_serves_the_pwa_manifest_icons_and_service_worker() {
         sw.contains("req.method !== \"GET\""),
         "only GETs are looked up"
     );
+    // A built client's worker carries its build's version (scripts/build-web.* stamp it).
+    if crate::web::FILES.iter().any(|(n, _)| *n == "index.html") {
+        let version = sw
+            .split("const VERSION = \"")
+            .nth(1)
+            .and_then(|v| v.split('"').next())
+            .unwrap();
+        assert!(
+            version.len() == 16 && version.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{version}"
+        );
+    } else {
+        assert!(sw.contains("__KEEL_BUILD__"), "the unbuilt template");
+    }
 
     let csp = headers
         .lines()
@@ -833,12 +847,14 @@ fn web_share_target_parks_files_until_the_signed_in_client_claims_them() {
         &body,
     );
     assert_eq!(status, "HTTP/1.1 303 See Other");
-    let id = got
+    let location = got
         .lines()
         .find_map(|l| l.strip_prefix("location: /?share="))
-        .unwrap()
-        .to_owned();
+        .unwrap();
+    let (id, counts) = location.split_once('&').unwrap();
+    let id = id.to_owned();
     assert_eq!(id.len(), 24, "{got}");
+    assert_eq!(counts, "files=2&bytes=15", "{got}");
 
     // Claiming needs the token.
     let claim = json!({"jsonrpc":"2.0","id":1,"method":"share.claim","params":{"id": id}});

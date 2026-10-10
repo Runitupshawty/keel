@@ -30,6 +30,16 @@ impl Pull {
         std::mem::take(&mut self.dist) >= PULL_REFRESH
     }
 
+    /// [`Pull::update`] where pulling applies: only the phone layout refreshes this way (on
+    /// a desktop a drag over a list selects or scrolls, it never reloads).
+    pub fn update_on(&mut self, phone: bool, at_top: bool, down: bool, dy: f32) -> bool {
+        if !phone {
+            self.dist = 0.0;
+            return false;
+        }
+        self.update(at_top, down, dy)
+    }
+
     /// 0..=1, for the "release to refresh" hint.
     pub fn progress(&self) -> f32 {
         (self.dist / PULL_REFRESH).min(1.0)
@@ -82,6 +92,20 @@ mod tests {
         assert!(!p.update(true, true, 30.0));
         assert!(!p.update(false, true, -20.0), "pushed back up");
         assert!(!p.update(true, false, 0.0), "short pull");
+    }
+
+    #[test]
+    fn only_the_phone_layout_pulls_to_refresh() {
+        let mut p = Pull::default();
+        for _ in 0..5 {
+            assert!(!p.update_on(false, true, true, 30.0));
+        }
+        assert_eq!(p.progress(), 0.0, "a desktop drag builds no pull");
+        assert!(!p.update_on(false, true, false, 0.0), "never refreshes");
+        for _ in 0..5 {
+            assert!(!p.update_on(true, true, true, 30.0));
+        }
+        assert!(p.update_on(true, true, false, 0.0), "the phone does");
     }
 
     #[test]

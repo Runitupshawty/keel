@@ -41,6 +41,13 @@ jobs:
           key: wasm
       - run: cargo build --locked -p keel-web --target wasm32-unknown-unknown
       - run: cargo clippy --locked -p keel-web --target wasm32-unknown-unknown --all-targets -- -D warnings
+      # The release bundle the daemon embeds: wasm-bindgen-cli of the version in Cargo.lock,
+      # then the service worker must carry the build's version.
+      - name: wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli --version "$(cargo pkgid wasm-bindgen | sed 's/.*@//')"
+      - run: bash scripts/build-web.sh
+      - name: Service worker stamped
+        run: grep -Eq 'const VERSION = "[0-9a-f]{16}";' crates/keel-web/dist/sw.js
 
   # Licenses, advisories, banned crates and sources; policy in deny.toml.
   deny:

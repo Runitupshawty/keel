@@ -14,8 +14,16 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 wasm-bindgen --target web --no-typescript --out-dir $dist (Join-Path $target 'wasm32-unknown-unknown\release\keel_web.wasm')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Copy-Item (Join-Path $root 'crates\keel-web\static\*') $dist
-# The service worker's cache key: a new build replaces the old shell.
-$ver = (Get-FileHash (Join-Path $dist 'keel_web_bg.wasm') -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
+# The service worker's cache key: a hash of every file of the build (a change to any shell
+# file, not only the wasm, replaces the old cache).
+$all = New-Object IO.MemoryStream
+Get-ChildItem $dist -File | Sort-Object Name | ForEach-Object {
+    $bytes = [IO.File]::ReadAllBytes($_.FullName)
+    $all.Write($bytes, 0, $bytes.Length)
+}
+$all.Position = 0
+$ver = (Get-FileHash -InputStream $all -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
 $sw = Join-Path $dist 'sw.js'
 [IO.File]::WriteAllText($sw, [IO.File]::ReadAllText($sw).Replace('__KEEL_BUILD__', $ver), (New-Object Text.UTF8Encoding $false))
+if (-not ([IO.File]::ReadAllText($sw).Contains("const VERSION = `"$ver`";"))) { throw "sw.js was not stamped" }
 Write-Output "web client in $dist; now build keel-daemon"
