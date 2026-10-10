@@ -2,7 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] - 2026-10-10
 
 ### Added
 
@@ -24,7 +24,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Web client: a share link no longer claims by itself (the client asks "Open N shared files?" first); "Send to device…" no longer drops a share in progress; pull to refresh is phone-only; the service worker cache is keyed by every shell file and the shell is loaded from the daemon first, so an update is never served stale. CI builds the release bundle and checks the service worker's version stamp.
 - README counts 39 operations (with Spacedrop); `keel-daemon --help` describes `--web-host` for loopback binds behind a proxy too.
 
-## [0.8.0] - 2026-10-09
+## [0.8.0] - 2026-10-10
 
 Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
 
