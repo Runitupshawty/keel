@@ -81,9 +81,22 @@ impl Host {
         self
     }
 
-    /// Closes the node and the library (jobs stop at their next checkpoint and resume on
-    /// the next open). False when a job was still busy after `CLOSE_WAIT`.
+    /// Serves `mounts.*` (keel-daemon): mounts live until [`Host::close`]. Remote writes
+    /// spool in `<data dir>/mount-spool`.
+    pub fn with_mounts(mut self, data_dir: &std::path::Path) -> Self {
+        let mounts = Arc::new(keel_mount::Mounts::new(data_dir.join("mount-spool")));
+        if let Some(ctx) = Arc::get_mut(&mut self.ctx) {
+            ctx.mounts = Some(mounts);
+        }
+        self
+    }
+
+    /// Unmounts, then closes the node and the library (jobs stop at their next checkpoint
+    /// and resume on the next open). False when a job was still busy after `CLOSE_WAIT`.
     pub fn close(&self) -> bool {
+        if let Some(m) = &self.ctx.mounts {
+            m.unmount_all();
+        }
         if let (Some(node), Some(rt)) = (&self.ctx.node, &self.rt) {
             rt.block_on(node.close());
         }

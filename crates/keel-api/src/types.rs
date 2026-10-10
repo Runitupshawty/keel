@@ -519,3 +519,37 @@ pub struct Revoked {
 pub struct Done {
     pub ok: bool,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MountParams {
+    /// A library source id.
+    pub source: String,
+    /// Slash-separated, relative to the source; "" (default) = all of it.
+    #[serde(default)]
+    pub subtree: String,
+    /// A drive letter (`K:`, Windows) or an absolute folder (Windows: one that does not
+    /// exist yet; Linux and macOS: an existing empty folder).
+    pub target: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnmountParams {
+    /// The mount's drive letter or folder, as `mounts.list` shows it.
+    pub target: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MountInfo {
+    /// `K:` or the mount folder.
+    pub target: String,
+    pub source: String,
+    pub source_label: String,
+    /// Relative to the source; "" = all of it.
+    pub subtree: String,
+    /// What the mount shows: the source root joined with the subtree.
+    pub root: String,
+    /// `winfsp` or `fuse`.
+    pub backend: String,
+}

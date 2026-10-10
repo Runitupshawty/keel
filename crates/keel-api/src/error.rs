@@ -36,6 +36,8 @@ impl ApiError {
     pub const NET_DISABLED: i64 = -32005;
     /// The request did not finish within the host's per-request timeout.
     pub const TIMEOUT: i64 = -32006;
+    /// Mounts need keel-daemon built with a mount backend (WinFsp or FUSE).
+    pub const MOUNTS_UNAVAILABLE: i64 = -32007;
 
     pub fn new(code: i64, message: impl Into<String>) -> Self {
         Self {

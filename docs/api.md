@@ -72,12 +72,25 @@ return what they removed.
 | `shares.list` | read | Grants to paired devices |
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
 | `shares.revoke` | direct | Revoke a grant at once |
+| `mounts.list` | read | Sources keel-daemon serves as drives or mount folders |
+| `mounts.add` | preview | Mount a source or a subtree (`source`, `subtree`, `target`: `K:` or a folder) |
+| `mounts.remove` | preview | Unmount (`target`); writes still in progress there are discarded |
 
 Devices and shares need keel-net: `[net] enabled = true` in the profile's
 `config.toml` (`<config dir>/profiles/<profile>/config.toml`), and keel-daemon running
 (it owns the profile's one node); otherwise they fail with `NET_DISABLED`. Serving
 sources to peers arrives with the remote-source work (Task 36): until then a grant is
 recorded but the node offers no sources.
+
+Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
+command exits) and need a daemon built with a mount backend (`--features winfsp` on
+Windows, `--features fuse` on Linux and macOS; see the README's Mounts section);
+otherwise `mounts.add` fails with `MOUNTS_UNAVAILABLE`. The `mounts.add` preview checks the
+target is free and the source or subtree can be listed, and warns when the source is
+offline (`source_offline`: the mount then lists it from the index and cannot read or change files)
+or deletes are permanent there (`deletes_permanent`: SFTP, S3). The `mounts.remove`
+preview warns when files are still being written through the mount (`discards_writes`).
+Mounts are unmounted when the daemon stops.
 
 The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 `.result()` in Rust.
@@ -96,6 +109,7 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32004 | the sources changed since the preview; `data` is the new preview |
 | -32005 | devices are off (keel-net disabled) |
 | -32006 | the request timed out (the daemon answers within 120 s) |
+| -32007 | mounts unavailable: not served by this host (no daemon) or no mount backend built in |
 
 ## keel-daemon (JSON-RPC)
 
@@ -149,6 +163,9 @@ keel plan delete <paths…> [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel devices | keel shares
+keel mount <source id or label> <K:|folder> [--subtree PATH]
+keel unmount <K:|folder>
+keel mounts
 keel daemon start|stop|status
 keel mcp
 ```
@@ -156,7 +173,7 @@ keel mcp
 All take `--profile NAME` and `--json`. Exit codes: 0 ok, 1 the operation failed, 2
 usage. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
-job. Other mutating subcommands (`tag`, `sources add|index`) print the preview and
+job. Other mutating subcommands (`tag`, `sources add|index`, `mount`, `unmount`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the
 library folder (`api-plans.json`), so `keel plan` and a later `keel execute` work without
 a daemon too. Release builds on Windows are GUI programs that attach to the calling

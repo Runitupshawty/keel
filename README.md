@@ -154,6 +154,38 @@ If a known host presents a different key, Keel refuses to connect and says so. R
 
 Passwords and key passphrases live in the operating system's keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux) and are never written to `config.toml`, logs or toasts. Host keys are checked against your `~/.ssh/known_hosts`; an unknown key needs your explicit approval and a changed key is a hard error. Uploads are written to a temporary file next to the target and renamed only when complete, so a dropped connection does not leave a half-written file under the real name.
 
+## Mounts
+
+keel-daemon can serve a library source, or a folder in it, as a drive letter or mount folder that any program can open:
+
+```
+keel daemon start
+keel mount Photos K: --subtree 2026     # Windows: a drive letter, or a folder that does not exist yet
+keel mount Photos ~/mnt/photos          # Linux, macOS: an existing empty folder
+keel mounts
+keel unmount K:
+```
+
+The source is given by id or label (`keel sources`). Mounts belong to the daemon: they last until `keel unmount` or until the daemon stops (which unmounts them). The JSON-RPC and MCP operations are `mounts.list`, `mounts.add` and `mounts.remove` ([docs/api.md](docs/api.md)).
+
+| | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Backend | WinFsp | FUSE (through `fusermount3` or `fusermount`; no libfuse needed) | macFUSE |
+| Build `keel-daemon` with | `--features winfsp` (needs LLVM/libclang for bindgen) | `--features fuse` | `--features fuse` (needs macFUSE and `pkg-config` at build time) |
+| Driver to install | [WinFsp](https://winfsp.dev) | `fuse3` (usually present) | [macFUSE](https://macfuse.github.io) |
+| Target | `K:` or a new folder | existing empty folder | existing empty folder |
+
+Release builds do not include a backend yet: build `keel-daemon` yourself with the feature for your platform (`cargo build --release -p keel-daemon --features winfsp`). Without one, `keel mount` says so. A daemon built with `winfsp` still starts where WinFsp is not installed; only mounting fails. Note that the `winfsp` feature links winfsp-rs, which is GPL-3.0 licensed (see [THIRD_PARTY.md](THIRD_PARTY.md)): a `keel-daemon` built with it may only be distributed under the GPL-3.0.
+
+What a mount does:
+
+- **Listings** come from the source while it is online and from the library index while it is offline, so an unplugged drive or an unreachable server still shows its folders (files cannot be opened or changed until it is back).
+- **Reads** are on demand: a program reading part of a file reads that range through Keel's VFS (local, SFTP, cloud), nothing is downloaded up front.
+- **Writes** go to a `.keel-partial-…` staging file next to the target (for remote sources, a local spool uploaded on close) and replace the file atomically when the program closes it, so other programs never see a half-written file and an aborted or interrupted write leaves the old file (or none) in place. If publishing fails, the data is kept (as the staging file, or in `mount-spool` under the data folder) and the daemon log says where.
+- **Deletes** go to the trash for local sources, like Keel's own delete; on SFTP and S3 they are permanent (the `mounts.add` preview says so).
+
+Limits: file times, attributes and permissions are the source's and cannot be changed through the mount; a file being written cannot be renamed until it is closed; staging files and (on Windows) names Windows cannot show (`aux.txt`, `a:b`, names differing only in case on a case-sensitive source) are hidden; the free space shown for the drive is a placeholder; on Windows only the current user, SYSTEM and Administrators can open the drive. keel-daemon reaches local sources (folders, drives, shares) today; SFTP and cloud sources mount the same way once the daemon registers remotes and cloud accounts (keel-mount itself handles them).
+
 ## Install
 
 Download the archive for your system from [Releases](https://github.com/Runitupshawty/keel/releases). The builds are not signed yet.

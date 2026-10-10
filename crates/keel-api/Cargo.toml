@@ -21,6 +21,7 @@ directories.workspace = true
 keel-core = { path = "../keel-core" }
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud"] }
 keel-net = { path = "../keel-net" }
+keel-mount = { path = "../keel-mount" }
 schemars = "1.2"
 async-trait = "0.1"
 interprocess = "2.4.4"

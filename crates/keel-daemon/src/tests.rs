@@ -116,6 +116,18 @@ fn serves_the_api_on_the_local_socket() {
         c.call("devices.list", Value::Null).unwrap_err().code,
         ApiError::NET_DISABLED
     );
+    // The daemon serves mounts; without a backend built in, adding one says so.
+    assert_eq!(c.call("mounts.list", Value::Null).unwrap(), json!([]));
+    if keel_mount::backend().is_none() {
+        let e = c
+            .call(
+                "mounts.add",
+                json!({"source": id, "target": "/nonexistent"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, ApiError::MOUNTS_UNAVAILABLE, "{e:?}");
+        assert!(e.message.contains("--features"), "{e:?}");
+    }
 }
 
 #[test]

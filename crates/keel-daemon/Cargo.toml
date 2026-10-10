@@ -9,6 +9,10 @@ description = "Headless Keel: the library (and keel-net) behind JSON-RPC on a pe
 [features]
 default = ["rar"]
 rar = ["keel-vfs/rar"]
+# Mount backends for `mounts.*` (off by default; each needs its driver installed, see the
+# README's Mounts section). `winfsp` links winfsp-rs, which is GPL-3.0 (THIRD_PARTY.md).
+winfsp = ["keel-mount/winfsp"]
+fuse = ["keel-mount/fuse"]
 
 [[bin]]
 name = "keel-daemon"
@@ -26,6 +30,7 @@ keel-api = { path = "../keel-api" }
 keel-core = { path = "../keel-core" }
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
 keel-net = { path = "../keel-net" }
+keel-mount = { path = "../keel-mount" }
 clap = { version = "4.6.7", features = ["derive"] }
 interprocess = "2.4.4"
 # WebSocket transport (no TLS: loopback by default).
