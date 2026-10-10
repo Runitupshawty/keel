@@ -182,7 +182,8 @@ fn perf_watcher_burst_10k() {
          ({seen} of {want} records)"
     );
     assert_eq!(seen, want, "events lost");
-    assert!(took < Duration::from_secs(30), "{took:?}");
+    // 5.5 s in 0.15 (a transaction per event).
+    assert!(took < Duration::from_secs(5), "{took:?}");
     lib.unwatch(&id);
 }
 

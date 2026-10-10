@@ -1491,14 +1491,24 @@ fn watch_loop(
         paths.dedup();
         // Present paths first: a rename then reads as a move.
         paths.sort_by_key(|p| p.symlink_metadata().is_err());
-        for p in paths {
-            let ev = ChangeEvent::Changed(VPath::local(&p));
-            if let Err(e) = Indexer::apply_change(src, ev) {
-                tracing::debug!("index change {}: {e:#}", p.display());
+        // A transaction per chunk, not per path (a 10,000-file burst committed 10,000
+        // times); a chunk that fails goes again path by path, so a bad path costs only itself.
+        for chunk in paths.chunks(APPLY_CHUNK) {
+            let batch: Vec<VPath> = chunk.iter().map(VPath::local).collect();
+            if Indexer::apply_paths(src, &batch, false).is_ok() {
+                continue;
+            }
+            for p in batch {
+                if let Err(e) = Indexer::apply_paths(src, std::slice::from_ref(&p), false) {
+                    tracing::debug!("index change {}: {e:#}", p.display());
+                }
             }
         }
     }
 }
+
+/// Watcher events applied per transaction.
+const APPLY_CHUNK: usize = 1_000;
 
 #[allow(clippy::too_many_arguments)]
 fn apply(
