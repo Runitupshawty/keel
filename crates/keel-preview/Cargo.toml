@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "keel-preview"
 version.workspace = true
 edition.workspace = true

@@ -10,6 +10,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
 - WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
 - Add to 7z, tar and tar.gz archives (not only zip): new entries are written to a staging file beside the archive and renamed over it, so cancel or an error leaves the original untouched. RAR stays read-only.
+- One-line installers: `scripts/install.ps1` (Windows, per user, Start menu shortcut, optional Desktop shortcut and `PATH`, Settings, Apps entry, `-Uninstall`) and `scripts/install.sh` (macOS, Linux, `--uninstall`). Both verify the download against the release's `SHA256SUMS`.
+- Releases now include `SHA256SUMS` and, for Linux, a `.deb` package.
+- CI: `cargo deny` (licenses, advisories, bans, sources; `deny.toml`) is required via the `check` job, and pull requests get GitHub dependency review. The workspace crates are marked `publish = false`.
 
 ### Changed
 

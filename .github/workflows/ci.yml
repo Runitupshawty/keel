@@ -27,8 +27,28 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # Licenses, advisories, banned crates and sources; policy in deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  # Pull requests only: flags newly added dependencies with known vulnerabilities or disallowed licenses.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+
+  # The single required status check for branch protection.
   check:
-    needs: build
+    needs: [build, deny]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
@@ -112,12 +132,15 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then cp assets/keel.desktop assets/keel.png "dist/$name/"; fi
           cd dist
           if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
+          # Debian/Ubuntu package from the same tree (dpkg-deb only, see scripts/make-deb.sh).
+          if [ "$RUNNER_OS" = Linux ]; then bash ../scripts/make-deb.sh "$name" "$GITHUB_REF_NAME" .; fi
       - uses: actions/upload-artifact@v4
         with:
           name: keel-${{ matrix.name }}
           path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/*.deb
           if-no-files-found: error
 
   # One job creates the release, so parallel uploads cannot race on it.
@@ -131,6 +154,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # One checksum file for every artifact; scripts/install.ps1 and install.sh verify against it.
+      - name: Checksums
+        run: cd dist && sha256sum -- *.zip *.tar.gz *.deb > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
@@ -140,3 +166,5 @@ jobs:
           files: |
             dist/*.zip
             dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
