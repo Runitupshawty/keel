@@ -484,6 +484,8 @@ impl Walk<'_> {
                         return Err(Cancelled.into());
                     }
                     let items = self.lister.list(&p.dir);
+                    #[cfg(test)]
+                    tests::LISTINGS.with(|n| n.set(n.get() + 1));
                     rows += items.as_ref().map_or(1, Vec::len);
                     listed.push((p, items));
                     if rows >= LIST_AHEAD_ROWS || started.elapsed() >= LIST_AHEAD_TIME {
@@ -493,11 +495,29 @@ impl Walk<'_> {
                 // Written in listing order.
                 listed.reverse();
             }
-            let Some((p, items)) = listed.pop() else {
+            let Some((mut p, items)) = listed.pop() else {
                 continue;
             };
             if self.cancelled() {
                 return Err(Cancelled.into());
+            }
+            // Listed ahead, outside the transaction: the watcher may have moved or removed
+            // the folder since. Gone: nothing to write; moved: listed again where it is now.
+            self.begin()?;
+            let now: Option<String> = self
+                .conn
+                .prepare_cached("SELECT path FROM record WHERE id = ?1")?
+                .query_row([p.id], |r| r.get(0))
+                .optional()?;
+            match now {
+                None => continue,
+                Some(rel) if rel != p.rel => {
+                    p.dir = self.src.absolute(&rel);
+                    p.rel = rel;
+                    stack.push(p);
+                    continue;
+                }
+                Some(_) => {}
             }
             self.current.clone_from(&p.rel);
             let items = match items {
@@ -1703,7 +1723,22 @@ fn apply_batch(
                 None => found = false,
             }
         }
-        // A folder that appeared is walked in batches like a full walk (no long lock).
+        // A deep walk covers the folders below it: a new tree (every folder of it new in
+        // this transaction) is walked once, from its top, not again from each level.
+        walks.sort_by(|a, b| a.0.rel.cmp(&b.0.rel));
+        let mut covered: Vec<(String, bool)> = Vec::new();
+        walks.retain(|(p, prune, deep)| {
+            let under = covered
+                .iter()
+                .any(|(top, pruned)| (*pruned || !prune) && is_below(&p.rel, top));
+            if !under && *deep {
+                covered.push((p.rel.clone(), *prune));
+            }
+            !under
+        });
+        // A folder that appeared is walked in batches like a full walk (no long lock). One
+        // that fails leaves the others to be walked (its error is returned after them).
+        let mut failed = None;
         for (folder, prune, deep) in walks {
             let mut walk = Walk {
                 src,
@@ -1725,9 +1760,15 @@ fn apply_batch(
             };
             let walked = walk.run(vec![folder]);
             walk.commit()?;
-            walked?;
+            if let Err(e) = walked {
+                let stop = e.is::<Cancelled>() || e.is::<Offline>();
+                failed.get_or_insert(e);
+                if stop {
+                    break;
+                }
+            }
         }
-        Ok(found)
+        failed.map_or(Ok(found), Err)
     })();
     drop(w);
     // Only a change to the index is worth a recount (an ignored path, or a file whose
@@ -1738,6 +1779,12 @@ fn apply_batch(
         }
     }
     result
+}
+
+/// `rel` lies below folder `top` (every path lies below the root, `""`).
+fn is_below(rel: &str, top: &str) -> bool {
+    top.is_empty() && !rel.is_empty()
+        || rel.len() > top.len() && rel.starts_with(top) && rel.as_bytes()[top.len()] == b'/'
 }
 
 /// `BEGIN IMMEDIATE`, retried while another writer keeps the store busy.

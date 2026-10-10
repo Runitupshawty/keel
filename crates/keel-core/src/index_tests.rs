@@ -5,6 +5,11 @@ use keel_vfs::{Caps, Entry, Kind};
 use parking_lot::Mutex;
 use std::{path::Path, sync::atomic::AtomicUsize};
 
+thread_local! {
+    /// Folders the walks on this thread listed.
+    pub(super) static LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 type Listing = dyn Fn(&str) -> Result<Vec<(String, bool, u64)>> + Send + Sync;
 
 /// A provider serving `fake://<any>/...` from a closure: `(name, is_dir, size)` per folder.
@@ -1765,4 +1770,76 @@ fn folder_polls_take_their_folders_in_turn() {
     mem.put("/srv/again.txt", "a");
     assert!(Indexer::poll_folders(&src, &provider, 2, &never).unwrap());
     assert!(id_of(&src, "again.txt").is_some());
+}
+
+/// A new tree arrives as one burst (every folder of it new in the same transaction): it is
+/// listed once a folder, not again from each level below its top.
+#[test]
+fn a_new_nested_tree_in_one_burst_lists_each_folder_once() {
+    let files = tempfile::tempdir().unwrap();
+    let (_data, _lib, src) = library_with(folder("F", files.path()));
+    walk(&src, &Router::new()).unwrap();
+    // 5 levels, 4 subfolders a folder: 341 folders, 2 files each.
+    let mut burst = Vec::new();
+    let mut stack = vec![(files.path().join("top"), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        std::fs::create_dir(&d).unwrap();
+        for f in 0..2 {
+            let file = d.join(format!("f{f}.txt"));
+            write(&file, "x");
+            burst.push(file);
+        }
+        if depth < 4 {
+            stack.extend((0..4).map(|s| (d.join(format!("s{s}")), depth + 1)));
+        }
+        burst.push(d);
+    }
+    burst.sort();
+    let burst: Vec<VPath> = burst.iter().map(VPath::local).collect();
+    LISTINGS.with(|n| n.set(0));
+    Indexer::apply_paths(&src, &burst, false).unwrap();
+    assert_eq!(LISTINGS.with(std::cell::Cell::get), 341);
+    assert_eq!(paths(&src).len(), 1 + 341 * 3);
+}
+
+/// A walk lists folders ahead of writing them: one the watcher moves or removes in between
+/// is listed again where it is now, or not written at all.
+#[test]
+fn a_folder_moved_or_removed_after_its_listing_is_not_written_back() {
+    let src_cell: Arc<std::sync::OnceLock<Arc<Source>>> = Arc::default();
+    let cell = src_cell.clone();
+    let moved = AtomicBool::new(false);
+    let router = Router::new();
+    router.register(Arc::new(fake(move |path: &str| {
+        let renamed = moved.load(Ordering::SeqCst);
+        match path {
+            "/" if renamed => Ok(vec![("c".into(), true, 0)]),
+            "/" => Ok(vec![("a".into(), true, 0), ("b".into(), true, 0)]),
+            "/a" | "/c" => {
+                // As "/a" is listed (after "/b"), the watcher applies a rename and a delete.
+                if path == "/a" && !moved.swap(true, Ordering::SeqCst) {
+                    let c = cell.get().unwrap().store.get()?;
+                    c.execute_batch(
+                        "UPDATE record SET name = 'c', path = 'c' WHERE path = 'a';
+                         DELETE FROM record WHERE path = 'b';",
+                    )?;
+                }
+                Ok(vec![("x.txt".into(), false, 1)])
+            }
+            "/b" => Ok(vec![("y.txt".into(), false, 1)]),
+            _ => anyhow::bail!("no such folder {path}"),
+        }
+    })));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "race".into(),
+        root: VPath::parse("fake://race/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    });
+    src_cell.set(src.clone()).ok().unwrap();
+    walk(&src, &router).unwrap();
+    assert_eq!(paths(&src), ["", "c", "c/x.txt"]);
 }
