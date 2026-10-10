@@ -3,7 +3,10 @@
 mod docx;
 mod hex;
 mod image;
+mod odf;
+mod office;
 mod pdf;
+mod pptx;
 mod table;
 mod text;
 mod video;
@@ -89,6 +92,8 @@ pub fn accepts(ext: &str) -> bool {
         || table::accepts(&ext)
         || pdf::accepts(&ext)
         || docx::accepts(&ext)
+        || pptx::accepts(&ext)
+        || odf::accepts(&ext)
         || video::accepts(&ext)
 }
 
@@ -136,6 +141,9 @@ fn preview_inner(req: &Request) -> Preview {
     if image::accepts(&ext) {
         return image::render(req, &ext);
     }
+    if odf::accepts(&ext) {
+        return odf::render(req, &ext);
+    }
     if table::accepts(&ext) {
         return table::render(req, &ext);
     }
@@ -144,6 +152,9 @@ fn preview_inner(req: &Request) -> Preview {
     }
     if docx::accepts(&ext) {
         return docx::render(req);
+    }
+    if pptx::accepts(&ext) {
+        return pptx::render(req);
     }
     if video::accepts(&ext) {
         return video::render(req);

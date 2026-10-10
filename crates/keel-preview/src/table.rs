@@ -2,7 +2,7 @@ use crate::{Preview, Request};
 use calamine::{open_workbook_auto, Data, Reader, Sheets};
 use std::io::BufRead;
 
-const TABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "xlsx", "xls", "xlsb", "ods"];
+const TABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "xlsx", "xls", "xlsb"];
 const MAX_ROWS: usize = 2000;
 /// A stray cell at column XFD must not allocate 16k empty strings per row.
 const MAX_COLS: usize = 512;
@@ -73,7 +73,7 @@ fn workbook(req: &Request) -> Result<TableData, String> {
     if let Sheets::Xlsx(xlsx) = &mut workbook {
         return xlsx_streamed(xlsx);
     }
-    // ponytail: xls/xlsb/ods have no streaming reader in calamine 0.26, so the whole first
+    // ponytail: xls/xlsb have no streaming reader in calamine 0.26, so the whole first
     // sheet is materialised as a dense Range (bounded by MAX_PREVIEW_BYTES on disk); stream
     // them too if calamine grows a cells reader for those formats.
     let range = workbook

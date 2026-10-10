@@ -7,6 +7,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Library search media filters: `camera:`, `taken:`, `w:` / `h:`, `duration:`, `has:gps` and `kind:photo`, from the sidecar media rows. Words that match no name or path also match camera and keywords, ranked below name hits.
+- Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
 
 ### Fixed
 
