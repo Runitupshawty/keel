@@ -870,7 +870,7 @@ mod tests {
         wait_listed(&mut harness);
         let listed = t.elapsed();
         eprintln!(
-            "PERF first_frame: app built {built:?}, first frame rendered {first:?},              both panes listed {listed:?}"
+            "PERF first_frame: app built {built:?}, first frame rendered {first:?}, both panes listed {listed:?}"
         );
         assert!(first < std::time::Duration::from_secs(3), "{first:?}");
     }

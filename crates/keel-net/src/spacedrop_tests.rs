@@ -856,7 +856,7 @@ fn two_thousand_files_arrive_in_linear_time() {
     send(&files[1000..]);
     let took = started.elapsed();
     eprintln!(
-        "PERF spacedrop_2000: {took:?} (first 1,000 {first:?}; budget {budget:?}, bare          requests {:?})",
+        "PERF spacedrop_2000: {took:?} (first 1,000 {first:?}; budget {budget:?}, bare requests {:?})",
         floor_took
     );
     assert_eq!(
