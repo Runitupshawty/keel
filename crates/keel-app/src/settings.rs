@@ -59,6 +59,80 @@ pub struct Settings {
     pub media_tile: crate::media::TileSize,
     /// Media view: date headers.
     pub media_dates: bool,
+    /// `[archive]`: Compress dialog defaults.
+    pub archive: ArchiveSettings,
+}
+
+/// Formats the Compress dialog can write (and Add to can extend).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    #[default]
+    #[serde(rename = "zip")]
+    Zip,
+    #[serde(rename = "7z")]
+    SevenZ,
+    #[serde(rename = "tar")]
+    Tar,
+    #[serde(rename = "tar.gz")]
+    TarGz,
+}
+
+impl ArchiveFormat {
+    pub const ALL: [ArchiveFormat; 4] = [Self::Zip, Self::SevenZ, Self::Tar, Self::TarGz];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Zip => ".zip",
+            Self::SevenZ => ".7z",
+            Self::Tar => ".tar",
+            Self::TarGz => ".tar.gz",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Zip => "Zip",
+            Self::SevenZ => "7z",
+            Self::Tar => "Tar",
+            Self::TarGz => "Tar.gz",
+        }
+    }
+
+    /// The format a file name ends in (`.jar` is a zip, `.tgz` a tar.gz); None for
+    /// anything `add_to_archive` cannot write (rar, bz2, ...).
+    pub fn of_name(name: &str) -> Option<Self> {
+        let n = name.to_ascii_lowercase();
+        if n.ends_with(".zip") || n.ends_with(".jar") {
+            Some(Self::Zip)
+        } else if n.ends_with(".7z") {
+            Some(Self::SevenZ)
+        } else if n.ends_with(".tar.gz") || n.ends_with(".tgz") {
+            Some(Self::TarGz)
+        } else if n.ends_with(".tar") {
+            Some(Self::Tar)
+        } else {
+            None
+        }
+    }
+
+    /// `name` with this format's extension: an extension of `from` is swapped, a name
+    /// without one gets this one appended.
+    pub fn apply(self, name: &str, from: Self) -> String {
+        let name = name.trim();
+        let stem = match name.len().checked_sub(from.ext().len()) {
+            Some(i) if name.is_char_boundary(i) && name[i..].eq_ignore_ascii_case(from.ext()) => {
+                &name[..i]
+            }
+            _ => name,
+        };
+        format!("{stem}{}", self.ext())
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ArchiveSettings {
+    pub default_format: ArchiveFormat,
 }
 
 impl Default for Settings {
@@ -86,6 +160,7 @@ impl Default for Settings {
             media_tile: Default::default(),
             media_dates: false,
             library: Default::default(),
+            archive: Default::default(),
         }
     }
 }
@@ -504,7 +579,7 @@ pub fn window(
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{ArchiveFormat, ArchiveSettings, Settings};
 
     #[test]
     fn a_bad_cloud_or_remote_entry_drops_only_itself() {
@@ -529,6 +604,28 @@ label = "nas"
         assert_eq!(dropped, [r#"[[clouds]] "My Box""#, r#"[[remotes]] "nas""#]);
         // Broken TOML is still an error for the whole file.
         assert!(super::parse_lenient("theme = [").is_err());
+    }
+
+    #[test]
+    fn archive_default_format_round_trips() {
+        assert_eq!(
+            toml::from_str::<Settings>("theme = 'dark'")
+                .unwrap()
+                .archive
+                .default_format,
+            ArchiveFormat::Zip
+        );
+        for f in ArchiveFormat::ALL {
+            let s = Settings {
+                archive: ArchiveSettings { default_format: f },
+                ..Settings::default()
+            };
+            let text = toml::to_string(&s).unwrap();
+            assert!(text.contains("[archive]"), "{text}");
+            assert_eq!(toml::from_str::<Settings>(&text).unwrap(), s);
+        }
+        let s: Settings = toml::from_str("[archive]\ndefault_format = \"tar.gz\"").unwrap();
+        assert_eq!(s.archive.default_format, ArchiveFormat::TarGz);
     }
 
     #[test]

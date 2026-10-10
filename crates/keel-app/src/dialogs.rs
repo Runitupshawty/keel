@@ -5,6 +5,7 @@ pub mod properties;
 
 use crate::jobs::Transfer;
 use crate::keys::Action;
+use crate::settings::ArchiveFormat;
 use egui::{Id, Key, Modal};
 use keel_vfs::{Conflict, VPath};
 use std::path::PathBuf;
@@ -32,6 +33,9 @@ pub enum Dialog {
         src: Vec<PathBuf>,
         text: String,
         focus: bool,
+        format: ArchiveFormat,
+        /// The user typed in the name field: a format change leaves it alone.
+        edited: bool,
     },
     /// Properties of `paths`; `info` arrives from a worker.
     Properties {
@@ -63,6 +67,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     let yes = ui.button(match on_yes {
                         Action::DeleteRemote(_) if !text.starts_with("Move ") => "Delete",
                         Action::Cloud { .. } => "Remove",
+                        Action::ZipTo { .. } => "Add",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");
@@ -142,26 +147,35 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 src,
                 text,
                 focus,
+                format,
+                edited,
             } => {
                 ui.label(format!("Compress {} to", crate::jobs::items(src.len())));
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                *edited |= r.changed();
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.horizontal(|ui| {
+                    for f in ArchiveFormat::ALL {
+                        if ui.selectable_label(*format == f, f.label()).clicked() {
+                            pick_format(text, format, *edited, f);
+                        }
+                    }
+                });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if (ui.button("Compress").clicked() || enter) && !text.trim().is_empty() {
                         let name = text.trim();
-                        let has_ext = name.to_ascii_lowercase().ends_with(".zip");
-                        let name = if has_ext {
-                            name.to_owned()
-                        } else {
-                            format!("{name}.zip")
+                        let (name, format) = match ArchiveFormat::of_name(name) {
+                            Some(f) => (name.to_owned(), f),
+                            None => (format!("{name}{}", format.ext()), *format),
                         };
-                        out = Some(Action::ZipTo {
+                        out = Some(Action::CompressTo {
                             zip: dir.join(name),
                             src: src.clone(),
+                            format,
                         });
                     }
                     cancel |= ui.button("Cancel").clicked();
@@ -202,6 +216,19 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
         *dialog = None;
     }
     out
+}
+
+/// The Compress dialog's format choice: swaps the name's extension unless the user edited it.
+pub fn pick_format(
+    text: &mut String,
+    current: &mut ArchiveFormat,
+    edited: bool,
+    new: ArchiveFormat,
+) {
+    if !edited {
+        *text = new.apply(text, *current);
+    }
+    *current = new;
 }
 
 /// Why `name` cannot be a file name here, if it cannot.
@@ -260,5 +287,23 @@ mod tests {
         for ok in ["a:b", "CON", "q?", "dot."] {
             assert_eq!(invalid_name_for(ok, false), None, "{ok} on Unix");
         }
+    }
+
+    #[test]
+    fn format_choice_rewrites_the_extension_only_when_untouched() {
+        use ArchiveFormat::*;
+        let (mut text, mut fmt) = ("photos.zip".to_string(), Zip);
+        pick_format(&mut text, &mut fmt, false, TarGz);
+        assert_eq!((text.as_str(), fmt), ("photos.tar.gz", TarGz));
+        pick_format(&mut text, &mut fmt, false, SevenZ);
+        assert_eq!((text.as_str(), fmt), ("photos.7z", SevenZ));
+        // Edited: the name stays, the format still changes.
+        let mut text = "mine.zip".to_string();
+        let mut fmt = Zip;
+        pick_format(&mut text, &mut fmt, true, Tar);
+        assert_eq!((text.as_str(), fmt), ("mine.zip", Tar));
+        // An extension-less name gets the new one; a dotted stem keeps its dots.
+        assert_eq!(Tar.apply("a.b", Zip), "a.b.tar");
+        assert_eq!(Zip.apply("v1.2.TAR.GZ", TarGz), "v1.2.zip");
     }
 }

@@ -7,6 +7,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Add to 7z, tar and tar.gz archives (not only zip): new entries are written to a staging file beside the archive and renamed over it, so cancel or an error leaves the original untouched. RAR stays read-only.
+- Compress dialog: choose Zip, 7z, Tar or Tar.gz (the name's extension follows unless you edited it; the choice is remembered as `archive.default_format`). New **Add to "name"…** context-menu entry when you select one zip, 7z, tar or tar.gz plus items beside it, and dropping files on such an archive row does the same; both ask first and run as a job with progress and cancel.
 
 ### Changed
 

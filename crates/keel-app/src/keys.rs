@@ -130,6 +130,19 @@ pub enum Action {
         zip: PathBuf,
         src: Vec<PathBuf>,
     },
+    /// The Compress dialog's answer: `ZipTo`, and `format` becomes the default.
+    CompressTo {
+        zip: PathBuf,
+        src: Vec<PathBuf>,
+        format: crate::settings::ArchiveFormat,
+    },
+    /// Targets: one existing archive plus items beside it; confirm, then `ZipTo`.
+    AddToArchive,
+    /// Items dropped on an archive row: confirm, then `ZipTo`.
+    AddTo {
+        archive: VPath,
+        src: Vec<VPath>,
+    },
     /// Show tab `tab` of pane `pane` (sidebar "Open archives").
     FocusTab {
         pane: usize,

@@ -11,7 +11,7 @@ use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::search_tab::DEBOUNCE;
 use crate::session::Session;
-use crate::settings::Settings;
+use crate::settings::{ArchiveFormat, Settings};
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH, DRIVES_TIMEOUT};
 use crate::tab::{Listing, Tab, TabKind};
 use crate::theme::{Theme, Themes};
@@ -1755,11 +1755,14 @@ impl AppState {
                         },
                     );
                 } else {
+                    let fmt = self.settings.archive.default_format;
                     self.dialog = Some(Dialog::ZipName {
                         dir,
                         src,
-                        text: name,
+                        text: fmt.apply(&name, ArchiveFormat::Zip),
                         focus: true,
+                        format: fmt,
+                        edited: false,
                     });
                 }
             }
@@ -1770,6 +1773,24 @@ impl AppState {
                 }
                 self.jobs.add_to_zip(zip, src, self.tx.clone());
             }
+            Action::CompressTo { zip, src, format } => {
+                self.settings.archive.default_format = format;
+                self.run(p, Action::ZipTo { zip, src });
+            }
+            Action::AddToArchive => {
+                let targets = self.tab(p).targets();
+                let Some((archive, others)) = jobs::add_target(&targets) else {
+                    return self
+                        .toasts
+                        .error("Select one zip, 7z, tar or tar.gz and the items to add beside it");
+                };
+                let (archive, src) = (
+                    archive.path.clone(),
+                    others.iter().map(|e| e.path.clone()).collect(),
+                );
+                self.confirm_add(archive, src);
+            }
+            Action::AddTo { archive, src } => self.confirm_add(archive, src),
             // --- Task 23 ---
             Action::ToggleDropZone
             | Action::StashSelection
@@ -1788,6 +1809,27 @@ impl AppState {
         }
     }
 
+    /// Asks before adding `src` to the local archive `archive`; yes runs `ZipTo`.
+    fn confirm_add(&mut self, archive: VPath, src: Vec<VPath>) {
+        let (Some(zip), Some(src)) = (
+            archive.to_local_path(),
+            src.iter()
+                .map(VPath::to_local_path)
+                .collect::<Option<Vec<_>>>(),
+        ) else {
+            return self
+                .toasts
+                .error("Only local files can be added to an archive for now");
+        };
+        if src.is_empty() {
+            return;
+        }
+        self.dialog = Some(Dialog::Confirm {
+            text: format!("Add {} to \"{}\"?", jobs::items(src.len()), archive.name()),
+            on_yes: Action::ZipTo { zip, src },
+        });
+    }
+
     /// Writes refused inside archives (read-only in this version). A drag out of an
     /// archive that ends back in its own folder is not a write.
     fn writes_into_archive(&self, p: usize, action: &Action) -> bool {
@@ -1800,6 +1842,7 @@ impl AppState {
             | Action::NewFolder
             | Action::NewFile
             | Action::AddToZip
+            | Action::AddToArchive
             | Action::CompressToZip => inside(&self.tab(p).dir),
             Action::RenameTo { from: dir, .. }
             | Action::Create { dir, .. }

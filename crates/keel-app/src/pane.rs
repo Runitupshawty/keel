@@ -520,6 +520,14 @@ pub fn context_menu(
         let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
         item(ui, &add, "", Action::AddToZip);
         item(ui, "Compress to zip…", "", Action::CompressToZip);
+        if let Some((archive, _)) = crate::jobs::add_target(&tab.targets()) {
+            item(
+                ui,
+                &format!("Add to \"{}\"…", archive.name),
+                "",
+                Action::AddToArchive,
+            );
+        }
     }
     ui.separator();
     item(ui, "New folder", "Ctrl+Shift+N", Action::NewFolder);
@@ -566,6 +574,21 @@ pub struct DragPayload {
 }
 
 impl DragPayload {
+    /// Dropping this on the archive `archive`: add to it (entries from inside an archive
+    /// are not files on disk, so they extract nowhere and the drop is ignored).
+    pub fn add_action(&self, archive: VPath) -> Action {
+        match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
+            Some(_) => Action::Drop {
+                paths: Vec::new(),
+                from: None,
+                dst: archive,
+            },
+            None => Action::AddTo {
+                archive,
+                src: self.paths.clone(),
+            },
+        }
+    }
     /// Dropping this on `dst`: entries dragged out of an archive extract, others copy/move.
     pub fn action(&self, dst: VPath) -> Action {
         match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
@@ -599,7 +622,8 @@ pub fn drag_and_drop(
             paths,
         });
     }
-    if entry.kind != keel_vfs::Kind::Dir {
+    let archive = crate::jobs::is_addable_archive(entry);
+    if entry.kind != keel_vfs::Kind::Dir && !archive {
         return;
     }
     if let Some(p) = r.dnd_hover_payload::<DragPayload>() {
@@ -612,7 +636,11 @@ pub fn drag_and_drop(
     }
     if let Some(p) = r.dnd_release_payload::<DragPayload>() {
         if !p.paths.contains(&entry.path) {
-            out.push(p.action(entry.path.clone()));
+            out.push(if archive {
+                p.add_action(entry.path.clone())
+            } else {
+                p.action(entry.path.clone())
+            });
         }
     }
 }
