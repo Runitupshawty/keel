@@ -156,7 +156,37 @@ Passwords and key passphrases live in the operating system's keychain (Windows C
 
 ## Install
 
-Download the archive for your system from [Releases](https://github.com/Runitupshawty/keel/releases). The builds are not signed yet.
+The builds are not signed yet. The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS`, and install for your user only (no admin, no root).
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\Keel`, adds a Start menu shortcut and an entry in Settings, Apps (uninstall there). For a Desktop shortcut or `keel` on your `PATH`, or to remove it again:
+
+```powershell
+$i = [scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1))
+& $i -Desktop -AddToPath
+& $i -Uninstall
+```
+
+**macOS and Linux**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.sh | bash
+```
+
+Installs to `~/.local/share/keel` with `keel` in `~/.local/bin`; macOS also gets `~/Applications/Keel.app`, Linux a launcher entry. Remove with `... | bash -s -- --uninstall`.
+
+**Debian and Ubuntu**: download `keel_<version>_amd64.deb` from Releases and `sudo apt install ./keel_*.deb`.
+
+Run the scripts again to update. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`.
+
+### Manual install
+
+Download the archive for your system from Releases.
 
 **Windows** (`keel-<version>-win64.zip`): extract anywhere and run `keel.exe`; keep the DLLs next to it. No Visual C++ redistributable is needed (the runtime is linked statically). SmartScreen may warn about an unknown publisher (More info, Run anyway). Optional: install and start Everything for search.
 
