@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "keel-term"
 version.workspace = true
 edition.workspace = true

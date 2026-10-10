@@ -8,6 +8,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - One-line installers: `scripts/install.ps1` (Windows, per user, Start menu shortcut, optional Desktop shortcut and `PATH`, Settings, Apps entry, `-Uninstall`) and `scripts/install.sh` (macOS, Linux, `--uninstall`). Both verify the download against the release's `SHA256SUMS`.
 - Releases now include `SHA256SUMS` and, for Linux, a `.deb` package.
+- CI: `cargo deny` (licenses, advisories, bans, sources; `deny.toml`) is required via the `check` job, and pull requests get GitHub dependency review. The workspace crates are marked `publish = false`.
 
 ## [0.6.0] - 2026-10-09
 

@@ -27,8 +27,28 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # Licenses, advisories, banned crates and sources; policy in deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  # Pull requests only: flags newly added dependencies with known vulnerabilities or disallowed licenses.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+
+  # The single required status check for branch protection.
   check:
-    needs: build
+    needs: [build, deny]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
