@@ -997,3 +997,32 @@ fn forgetting_a_device_drops_its_offers_and_staging() {
     assert!(staged(inbox.path()).is_none());
     pair.close();
 }
+
+#[test]
+fn received_files_and_pairings_are_never_dropped_from_events() {
+    let pair = pair();
+    let events = pair.host.events();
+    for _ in 0..300 {
+        pair.host.emit(NetEvent::GrantChanged);
+    }
+    let guest = PeerId(pair.guest.id());
+    pair.host.emit(NetEvent::DropReceived {
+        peer: guest,
+        id: "x".into(),
+        path: PathBuf::from("a.txt"),
+    });
+    // Requests are coalesced: one event a second per device.
+    pair.host.emit_request(guest, "list");
+    pair.host.emit_request(guest, "list");
+    let got: Vec<NetEvent> = events.try_iter().collect();
+    assert_eq!(
+        got.len(),
+        257,
+        "256 refreshable events, then only what matters"
+    );
+    assert!(matches!(got.last(), Some(NetEvent::DropReceived { .. })));
+    let rest = pair.host.events();
+    pair.host.emit_request(guest, "stat");
+    assert_eq!(rest.try_iter().count(), 0, "within the same second");
+    pair.close();
+}

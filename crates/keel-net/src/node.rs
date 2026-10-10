@@ -17,6 +17,10 @@ use std::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub const ALPN: &[u8] = b"keel/net/1";
+/// Events a subscriber may fall behind by before refreshable ones are dropped.
+const EVENT_BACKLOG: usize = 256;
+/// `NetEvent::Request` comes at most this often per device.
+const REQUEST_EVENT_EVERY: Duration = Duration::from_secs(1);
 /// Live connections accepted per peer; normally one is held.
 pub(crate) const MAX_CONNECTIONS_PER_PEER: usize = 4;
 
@@ -100,6 +104,8 @@ pub struct Node {
     pub(crate) weak: Weak<Node>,
     pub(crate) pairing: tokio::sync::Mutex<Option<crate::pairing::Invitation>>,
     subscribers: Mutex<Vec<crossbeam_channel::Sender<NetEvent>>>,
+    /// When each device's last `NetEvent::Request` went out.
+    request_events: Mutex<std::collections::HashMap<PeerId, std::time::Instant>>,
     /// Spacedrop: incoming offers by device and drop id.
     pub(crate) drops: Mutex<crate::spacedrop::Drops>,
 }
@@ -165,6 +171,7 @@ impl Node {
             weak: weak.clone(),
             pairing: tokio::sync::Mutex::new(None),
             subscribers: Mutex::new(Vec::new()),
+            request_events: Mutex::default(),
             drops: Mutex::default(),
         });
         crate::spacedrop::register_node(&node);
@@ -219,19 +226,36 @@ impl Node {
     pub fn grants(&self) -> Vec<Grant> {
         self.state.lock().data.grants.clone()
     }
-    /// Each call subscribes independently (capacity 256). Slow consumers can lose
-    /// events; refresh `peers()` / `grants()` to obtain the current state.
+    /// Each call subscribes independently. `Paired` and `DropReceived` always arrive; the
+    /// other events describe state (refresh `peers()` / `grants()`) and are dropped while
+    /// 256 events wait unread. `Request` comes at most once a second per device.
     pub fn events(&self) -> crossbeam_channel::Receiver<NetEvent> {
-        let (tx, rx) = crossbeam_channel::bounded(256);
+        let (tx, rx) = crossbeam_channel::unbounded();
         self.subscribers.lock().push(tx);
         rx
     }
     pub(crate) fn emit(&self, event: NetEvent) {
-        self.subscribers.lock().retain(|tx| {
-            !matches!(
-                tx.try_send(event.clone()),
-                Err(crossbeam_channel::TrySendError::Disconnected(_))
-            )
+        let keep = matches!(event, NetEvent::Paired(_) | NetEvent::DropReceived { .. });
+        self.subscribers
+            .lock()
+            .retain(|tx| (!keep && tx.len() >= EVENT_BACKLOG) || tx.send(event.clone()).is_ok());
+    }
+    /// `NetEvent::Request`, coalesced: the first request of each second per device.
+    pub(crate) fn emit_request(&self, peer: PeerId, what: &str) {
+        let now = std::time::Instant::now();
+        {
+            let mut last = self.request_events.lock();
+            if last
+                .get(&peer)
+                .is_some_and(|t| now.duration_since(*t) < REQUEST_EVENT_EVERY)
+            {
+                return;
+            }
+            last.insert(peer, now);
+        }
+        self.emit(NetEvent::Request {
+            peer,
+            what: what.into(),
         });
     }
     pub fn grant(&self, g: Grant) -> Result<()> {

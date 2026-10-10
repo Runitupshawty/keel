@@ -115,7 +115,7 @@ impl Node {
                                 && (permitted(&state.data.grants,peer,&req) || node.drop_permits(peer, &req))
                         };
                         tracing::debug!(peer = %peer.0, what = req.name(), allowed, "net request");
-                        node.emit(NetEvent::Request { peer, what: req.name().into() });
+                        node.emit_request(peer, req.name());
                         if !allowed { wire::send(&mut send, &Response::Denied("grant required".into())).await?; return Ok(()); }
                         node.answer(peer,req,&mut send,recv).await
                     } => result,

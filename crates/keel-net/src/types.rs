@@ -75,6 +75,7 @@ pub enum NetEvent {
     PeerOffline(PeerId),
     Paired(Peer),
     GrantChanged,
+    /// A device asked something (the first request of each second per device).
     Request {
         peer: PeerId,
         what: String,

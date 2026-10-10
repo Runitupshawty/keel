@@ -4,8 +4,10 @@
 //! pairing and closing run on workers, never on the UI thread.
 //!
 //! The node opens once the library is open (it serves the library's sources and runs
-//! Spacedrop as library jobs) and Settings → Devices is on. Its identity lives in the OS
-//! keychain; `KEEL_NET_SECRET=memory` keeps it in memory instead (tests, live checks).
+//! Spacedrop as library jobs) and Settings → Devices is on. Devices are off by default:
+//! turning them on creates this device's identity, in the OS keychain;
+//! `KEEL_NET_SECRET=memory` keeps it in memory instead (a developer setting for tests and
+//! live checks: the device gets a new identity each run).
 
 use crate::keys::Action;
 use crate::state::{AppState, Msg};
@@ -30,10 +32,12 @@ const PING_EVERY: Duration = Duration::from_secs(30);
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct DeviceSettings {
+    /// Off until the user turns Devices on (that creates the device identity).
     pub enabled: bool,
     /// This device's name on the others ("" = keep the current one).
     pub label: String,
-    /// The Spacedrop inbox ("" = `<Downloads>/Keel Drops`).
+    /// The Spacedrop inbox ("" = `<Downloads>/Keel Drops`, or `<data dir>/inbox` without a
+    /// Downloads folder).
     pub inbox: String,
     /// Devices (ids) whose drops are accepted without asking.
     pub auto_accept: Vec<String>,
@@ -44,7 +48,7 @@ pub struct DeviceSettings {
 impl Default for DeviceSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             label: String::new(),
             inbox: String::new(),
             auto_accept: Vec::new(),
@@ -55,15 +59,61 @@ impl Default for DeviceSettings {
 
 impl DeviceSettings {
     pub fn inbox_dir(&self) -> Option<PathBuf> {
-        match self.inbox.trim() {
-            "" => Some(
-                directories::UserDirs::new()?
-                    .download_dir()?
-                    .join("Keel Drops"),
-            ),
-            dir => Some(dir.into()),
-        }
+        inbox_in(&self.inbox, downloads(), keel_core::data_dir())
     }
+}
+
+/// The user's Downloads folder, if the desktop has one.
+fn downloads() -> Option<PathBuf> {
+    Some(directories::UserDirs::new()?.download_dir()?.to_owned())
+}
+
+/// The inbox: `set` when given, else `<downloads>/Keel Drops`, else `<data>/inbox`.
+pub fn inbox_in(set: &str, downloads: Option<PathBuf>, data: Option<PathBuf>) -> Option<PathBuf> {
+    match set.trim() {
+        "" => downloads
+            .map(|d| d.join("Keel Drops"))
+            .or_else(|| data.map(|d| d.join("inbox"))),
+        dir => Some(dir.into()),
+    }
+}
+
+/// The offer prompt: who, how many files and bytes (sums saturate: the sizes come from the
+/// other device), and the first few names.
+pub fn offer_text(from: &str, files: &[(String, u64)]) -> String {
+    const SHOWN: usize = 3;
+    let bytes = files
+        .iter()
+        .fold(0u64, |sum, (_, n)| sum.saturating_add(*n));
+    let mut text = format!(
+        "{from} wants to send {} file(s) ({})",
+        files.len(),
+        humansize::format_size(bytes, humansize::DECIMAL)
+    );
+    for (name, _) in files.iter().take(SHOWN) {
+        text += &format!("\n• {name}");
+    }
+    if files.len() > SHOWN {
+        text += &format!("\n…and {} more", files.len() - SHOWN);
+    }
+    text
+}
+
+/// Node events into a channel the UI drains each frame, asking for a repaint as each one
+/// arrives (an idle UI otherwise sleeps). Ends when the node or the UI side goes.
+pub fn forward(events: Receiver<NetEvent>, ctx: egui::Context) -> Receiver<NetEvent> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let _ = std::thread::Builder::new()
+        .name("keel-net-events".into())
+        .spawn(move || {
+            for ev in events {
+                if tx.send(ev).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        });
+    rx
 }
 
 /// `node://<id>/`: a device's granted sources.
@@ -584,7 +634,7 @@ impl AppState {
                 match result {
                     Ok((node, handler)) if current => {
                         tracing::info!("devices: node {} open", node.id());
-                        d.events = Some(node.events());
+                        d.events = Some(forward(node.events(), d.ctx.clone()));
                         d.node = Some(node);
                         d.handler = Some(handler);
                         d.next_ping = Instant::now();
@@ -1097,7 +1147,6 @@ fn offers(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let mut y = -140.0;
     for offer in s.devices.offers.iter_mut() {
         let d = &offer.drop;
-        let bytes: u64 = d.files.iter().map(|(_, n)| n).sum();
         let from = if d.label.trim().is_empty() {
             label_of(&peers, &d.peer)
         } else {
@@ -1109,11 +1158,7 @@ fn offers(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(420.0);
-                    ui.label(format!(
-                        "{from} wants to send {} file(s) ({})",
-                        d.files.len(),
-                        humansize::format_size(bytes, humansize::DECIMAL)
-                    ));
+                    ui.label(offer_text(&from, &d.files));
                     ui.checkbox(&mut offer.always, "Always accept from this device");
                     ui.horizontal(|ui| {
                         for (text, accept) in [("Accept", true), ("Decline", false)] {
@@ -1160,6 +1205,20 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
                     .desired_width(240.0),
             );
             ui.end_row();
+            if ds.inbox.trim().is_empty() && downloads().is_none() {
+                ui.label("");
+                match ds.inbox_dir() {
+                    Some(dir) => ui.weak(format!(
+                        "No Downloads folder: drops go to {}",
+                        dir.display()
+                    )),
+                    None => ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "No inbox: drops are declined until you set one",
+                    ),
+                };
+                ui.end_row();
+            }
             ui.label("Relays");
             ui.checkbox(&mut ds.relay, "Use public relays when no direct path works")
                 .on_hover_text("Applies the next time devices start");
@@ -1351,6 +1410,82 @@ mod tests {
         let ids: Vec<_> = shareable(&sources).iter().map(|s| s.id.0.clone()).collect();
         assert_eq!(ids, ["a", "b"], "device sources are never re-shared");
         assert_eq!(clean_subtree(" \\photos\\2024/ "), "photos/2024");
+    }
+
+    #[test]
+    fn devices_are_off_until_turned_on() {
+        assert!(!DeviceSettings::default().enabled);
+        let saved: DeviceSettings = toml::from_str("relay = false").unwrap();
+        assert!(!saved.enabled, "a config without the switch stays off");
+        let on: DeviceSettings = toml::from_str("enabled = true").unwrap();
+        assert!(on.enabled && on.relay);
+    }
+
+    #[test]
+    fn the_inbox_falls_back_to_the_data_folder() {
+        let (dl, data) = (PathBuf::from("dl"), PathBuf::from("data"));
+        let at = |set: &str, dl: &Option<PathBuf>, data: &Option<PathBuf>| {
+            inbox_in(set, dl.clone(), data.clone())
+        };
+        let (some_dl, some_data) = (Some(dl.clone()), Some(data.clone()));
+        assert_eq!(at("", &some_dl, &some_data), Some(dl.join("Keel Drops")));
+        assert_eq!(at(" ", &None, &some_data), Some(data.join("inbox")));
+        assert_eq!(at("", &None, &None), None);
+        assert_eq!(at(" mine ", &None, &None), Some(PathBuf::from("mine")));
+    }
+
+    #[test]
+    fn the_offer_prompt_names_files_and_never_overflows() {
+        let files = vec![
+            ("a.txt".to_string(), u64::MAX),
+            ("b.txt".to_string(), u64::MAX),
+            ("dir/c.txt".to_string(), 1),
+            ("d.txt".to_string(), 1),
+            ("e.txt".to_string(), 1),
+        ];
+        let text = offer_text("Desk", &files);
+        assert!(text.starts_with("Desk wants to send 5 file(s) ("), "{text}");
+        assert!(
+            text.contains("• a.txt") && text.contains("• dir/c.txt"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("d.txt") && text.ends_with("…and 2 more"),
+            "{text}"
+        );
+        let one = offer_text("Desk", &files[2..3]);
+        assert!(one.ends_with("• dir/c.txt"), "{one}");
+    }
+
+    #[test]
+    fn node_events_are_forwarded_with_a_repaint_and_none_are_lost() {
+        let (tx, events) = crossbeam_channel::unbounded();
+        let ctx = egui::Context::default();
+        let rx = forward(events, ctx);
+        for i in 0..1_000u32 {
+            tx.send(NetEvent::Request {
+                peer: peer(1),
+                what: i.to_string(),
+            })
+            .unwrap();
+        }
+        tx.send(NetEvent::Paired(Peer {
+            id: peer(2),
+            label: "Desk".into(),
+            last_seen: None,
+            link: Link::Offline,
+            storage: None,
+        }))
+        .unwrap();
+        let got: Vec<NetEvent> = (0..1_001)
+            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        assert!(matches!(got.last(), Some(NetEvent::Paired(p)) if p.label == "Desk"));
+        drop(tx);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_err(),
+            "ends with the node"
+        );
     }
 
     #[test]
