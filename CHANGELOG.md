@@ -6,8 +6,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
-### Added
-
 - Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
 - Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
 - Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
@@ -18,7 +16,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
 - `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
 
-
 ### Changed
 
 - 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
@@ -28,6 +25,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
+
 ## [0.8.0] - 2026-10-09
 Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
 - Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.

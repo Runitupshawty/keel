@@ -42,10 +42,12 @@ pub enum Dialog {
         paths: Vec<VPath>,
         info: Option<Result<properties::Props, String>>,
     },
-    /// Linux "Open with": `(name, desktop id)` of the applications for `path`.
+    /// Open with…: `recent` apps for the extension, then the system's `(name, app)` list.
     OpenWith {
-        path: PathBuf,
+        paths: Vec<PathBuf>,
+        recent: Vec<String>,
         apps: Vec<(String, String)>,
+        remember: bool,
     },
 }
 
@@ -186,29 +188,64 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.add_space(8.0);
                 cancel |= ui.button("Close").clicked();
             }
-            Dialog::OpenWith { path, apps } => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                ui.label(format!("Open \"{name}\" with"));
+            Dialog::OpenWith {
+                paths,
+                recent,
+                apps,
+                remember,
+            } => {
+                let name = paths[0].file_name().unwrap_or_default().to_string_lossy();
+                ui.label(match paths.len() {
+                    1 => format!("Open \"{name}\" with"),
+                    n => format!("Open {n} files with"),
+                });
                 ui.add_space(4.0);
-                if apps.is_empty() {
-                    ui.weak("No applications are registered for this file type");
+                let ext = paths[0]
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase());
+                ui.checkbox(
+                    remember,
+                    match &ext {
+                        Some(e) => format!("Remember for .{e} files"),
+                        None => "Remember for files without an extension".to_owned(),
+                    },
+                );
+                ui.add_space(4.0);
+                let shown: Vec<(String, String)> = (recent.iter())
+                    .map(|a| (crate::platform::app_label(a), a.clone()))
+                    .chain(apps.iter().filter(|(_, a)| !recent.contains(a)).cloned())
+                    .collect();
+                if shown.is_empty() {
+                    ui.weak("No applications are known for this file type");
                 }
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        for (label, id) in apps.iter() {
+                        for (label, app) in &shown {
                             let button = egui::Button::new(label.as_str())
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
-                            if ui.add(button).on_hover_text(id.as_str()).clicked() {
-                                out = Some(Action::LaunchWith {
-                                    id: id.clone(),
-                                    path: path.clone(),
+                            if ui.add(button).on_hover_text(app.as_str()).clicked() {
+                                out = Some(Action::OpenWithApp {
+                                    paths: paths.clone(),
+                                    app: app.clone(),
+                                    remember: *remember,
                                 });
                             }
                         }
                     });
                 ui.add_space(8.0);
-                cancel |= ui.button("Cancel").clicked();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse…").clicked() {
+                        out = Some(Action::OpenWithBrowse {
+                            paths: paths.clone(),
+                            remember: *remember,
+                        });
+                    }
+                    if cfg!(windows) && ui.button("System chooser…").clicked() {
+                        out = Some(Action::OpenWithSystem(paths[0].clone()));
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
             }
         }
     });

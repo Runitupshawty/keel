@@ -80,12 +80,23 @@ pub enum Action {
     NewFolder,
     NewFile,
     CopyPath,
+    /// Open with… (Ctrl+Shift+O): Keel's picker for the targets.
     OpenWith,
-    /// Linux "Open with": launch the picked application (desktop id) on `path`.
-    LaunchWith {
-        id: String,
-        path: PathBuf,
+    /// Open `paths` with `app`; `remember` puts it in the recent list for their extension.
+    OpenWithApp {
+        paths: Vec<PathBuf>,
+        app: String,
+        remember: bool,
     },
+    /// The picker's Browse…: choose an executable or .app, then as `OpenWithApp`.
+    OpenWithBrowse {
+        paths: Vec<PathBuf>,
+        remember: bool,
+    },
+    /// Windows: the system "Open with" chooser for the first of `paths`.
+    OpenWithSystem(PathBuf),
+    /// A recent app from the context menu, on the current targets.
+    OpenWithRecent(String),
     Properties,
     /// Explorer's own Properties sheet (Windows).
     ShellProperties(PathBuf),
@@ -203,6 +214,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
+    (CMD_SHIFT, Key::O, Action::OpenWith),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
     (CMD_SHIFT, Key::S, Action::StashSelection),
     // Task 29: Ctrl+T stays New tab; the tag picker is Ctrl+Shift+T.
