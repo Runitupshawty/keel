@@ -326,6 +326,11 @@ impl Provider for NodeProvider {
             .with_context(|| p.display())
             .map(drop)
     }
+    /// The host's rename never replaces (it fails on an existing target), so it meets the
+    /// atomic contract: a new name is placed, an existing one is refused untouched.
+    fn rename_replace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.rename(from, to)
+    }
     fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
         let (peer, source, from_path) = file_target(from)?;
         let (to_peer, to_source, to_path) = file_target(to)?;

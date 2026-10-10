@@ -206,6 +206,10 @@ impl FileSystemContext for Fs {
 
     fn cleanup(&self, f: &File, _file_name: Option<&U16CStr>, flags: u32) {
         if flags & CLEANUP_DELETE == 0 {
+            // CloseHandle: the only writer publishes now (Close may come much later).
+            if let Err(e) = self.fs.flush(f.h) {
+                tracing::warn!("mount: close: {e}");
+            }
             return;
         }
         let result = self.fs.handle_path(f.h).and_then(|p| {

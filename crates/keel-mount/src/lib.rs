@@ -4,8 +4,12 @@
 //! [`MountFs`] is the backend-agnostic filesystem: listings come from the VFS when the
 //! source is online and from the library index when it is offline; reads are on-demand
 //! range reads through the VFS provider; writes go to a `.keel-partial-<pid>-<n>` staging
-//! file next to the target and are published atomically when the last handle closes, so
-//! another program never sees a half-written file and an aborted write leaves none.
+//! file next to the target (a spool file for remote sources) and are published atomically
+//! when the writer closes the file. Until then only the writing handles see the new
+//! content: listings show the published file and other opens of it are refused as busy
+//! (a sharing violation on Windows), so another program never sees a half-written file;
+//! an aborted write leaves none, and a write that cannot be published is kept as
+//! `<name> (unsaved <date>).<ext>`. Unmounting drops writes still open.
 //! Backends: WinFsp (feature `winfsp`, Windows) and FUSE (feature `fuse`, Linux / macFUSE),
 //! both off by default. [`Mounts`] keeps the active mounts; dropping one unmounts it.
 
@@ -116,6 +120,38 @@ fn check_free(target: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuses a mount folder inside the folder it would show (the mount would contain itself).
+fn check_outside(target: &str, root: &Path) -> anyhow::Result<()> {
+    let target = Path::new(target);
+    if !target.is_absolute() {
+        return Ok(()); // a drive letter
+    }
+    // The nearest existing ancestor, resolved like the root (symlinks, case, `\\?\`).
+    let mut base = target;
+    let mut rest = Vec::new();
+    let resolved = loop {
+        if let Ok(r) = std::fs::canonicalize(base) {
+            break rest.iter().rev().fold(r, |p: PathBuf, n| p.join(n));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                base = parent;
+            }
+            _ => return Ok(()),
+        }
+    };
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_owned());
+    if resolved.starts_with(&root) {
+        bail!(
+            "{} is inside the folder it would show ({}): pick a target outside it",
+            target.display(),
+            root.display()
+        );
+    }
+    Ok(())
+}
+
 impl Mounts {
     /// Remote writes spool under `spool` until they are uploaded.
     pub fn new(spool: PathBuf) -> Self {
@@ -180,6 +216,9 @@ impl Mounts {
             .and_then(|a| fs.list(&MountPath::root()).map(|_| a))
             .with_context(|| format!("{} cannot be listed", fs.map().root.display()))?;
         anyhow::ensure!(attr.is_dir, "{} is not a folder", fs.map().root.display());
+        if let Some(root) = fs.map().root.to_local_path() {
+            check_outside(&target, &root)?;
+        }
         Ok((target, fs))
     }
 
@@ -235,8 +274,9 @@ impl Mounts {
 }
 
 fn unmount(a: Active) -> MountInfo {
-    drop(a.session);
+    // First: a close the backend processes while it shuts down must not publish.
     a.fs.abort_all();
+    drop(a.session);
     tracing::info!("unmounted {}", a.info.target);
     a.info
 }

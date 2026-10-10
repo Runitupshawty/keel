@@ -140,11 +140,21 @@ fn new_files_appear_outside_the_mount_only_when_closed() {
     assert_eq!(attr.size, 0);
     m.write(h, 0, b"hello ").unwrap();
     m.write(h, 6, b"world").unwrap();
-    // The mount shows the file being written; the folder does not have it yet.
+    // Only the writer sees the file being written; listings show the published state.
+    assert_eq!(m.handle_attr(h).unwrap().size, 11);
     let listed = m.list(&mp("docs")).unwrap();
-    let new = listed.iter().find(|e| e.name == "new.txt").unwrap();
-    assert_eq!(new.attr.size, 11);
-    assert_eq!(m.stat(&mp("docs/new.txt")).unwrap().size, 11);
+    assert!(!listed.iter().any(|e| e.name == "new.txt"), "{listed:?}");
+    assert_eq!(
+        m.stat(&mp("docs/new.txt")).unwrap_err().kind(),
+        io::ErrorKind::ResourceBusy,
+        "being created: busy, not missing"
+    );
+    assert_eq!(
+        m.open(&mp("docs/new.txt"), false, false)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::ResourceBusy
+    );
     assert!(!docs.join("new.txt").exists());
     let mut buf = [0; 5];
     m.read(h, 6, &mut buf).unwrap();
@@ -152,9 +162,10 @@ fn new_files_appear_outside_the_mount_only_when_closed() {
     assert_eq!(m.pending_writes(), 1);
     assert_eq!(
         m.create(&mp("docs/new.txt")).unwrap_err().kind(),
-        io::ErrorKind::AlreadyExists
+        io::ErrorKind::ResourceBusy
     );
     m.release(h).unwrap();
+    assert_eq!(m.stat(&mp("docs/new.txt")).unwrap().size, 11);
     assert_eq!(fs::read(docs.join("new.txt")).unwrap(), b"hello world");
     assert_eq!(m.pending_writes(), 0);
     let left: Vec<_> = on_disk(&docs)
@@ -221,6 +232,12 @@ fn unmount_and_delete_drop_unfinished_writes() {
         m.release(h).unwrap();
         assert!(m.stat(&mp("docs/half.txt")).is_err());
         m.abort_all();
+        // Closes processed while the backend shuts down never publish.
+        m.flush(e).unwrap();
+        m.release(e).unwrap();
+        assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"0123456789");
+        assert!(m.open(&mp("docs/a.txt"), true, false).is_err(), "closing");
+        assert!(m.create(&mp("docs/late.txt")).is_err(), "closing");
     }
     assert_eq!(on_disk(&docs), before, "no new or staging files");
     assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"0123456789");
@@ -426,4 +443,281 @@ fn mounting_without_a_backend_says_how_to_get_one() {
     }
     assert!(mounts.list().is_empty());
     assert!(mounts.remove("Q:").is_err());
+}
+
+#[test]
+fn a_pending_write_is_private_to_its_writers() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let (early, _) = m.open(&mp("docs/a.txt"), false, false).unwrap();
+    let (w, _) = m.open(&mp("docs/a.txt"), true, false).unwrap();
+    // A writer that has not written yet hides nothing.
+    let (r, _) = m.open(&mp("docs/a.txt"), false, false).unwrap();
+    m.release(r).unwrap();
+    m.write(w, 10, b"XYZ").unwrap();
+    assert_eq!(
+        m.handle_attr(w).unwrap().size,
+        13,
+        "the writer sees its write"
+    );
+    assert_eq!(
+        m.open(&mp("docs/a.txt"), false, false).unwrap_err().kind(),
+        io::ErrorKind::ResourceBusy,
+        "a second open while the write is pending"
+    );
+    let listed = m.list(&mp("docs")).unwrap();
+    let a = listed.iter().find(|e| e.name == "a.txt").unwrap();
+    assert_eq!(a.attr.size, 10, "listings show the published size");
+    assert_eq!(m.stat(&mp("docs/a.txt")).unwrap().size, 10);
+    let mut buf = [0; 13];
+    assert_eq!(m.read(early, 0, &mut buf).unwrap(), 10, "published content");
+    assert_eq!(m.handle_attr(early).unwrap().size, 10);
+    m.release(early).unwrap();
+    m.release(w).unwrap();
+    let (r, attr) = m.open(&mp("docs/a.txt"), false, false).unwrap();
+    assert_eq!(attr.size, 13);
+    m.release(r).unwrap();
+}
+
+#[test]
+fn flush_publishes_when_the_only_writer_closes() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let a = f.files.path().join("docs/a.txt");
+    let (w1, _) = m.open(&mp("docs/a.txt"), true, false).unwrap();
+    let (w2, _) = m.open(&mp("docs/a.txt"), true, false).unwrap();
+    m.write(w1, 0, b"AB").unwrap();
+    m.flush(w1).unwrap();
+    assert_eq!(
+        fs::read(&a).unwrap(),
+        b"0123456789",
+        "another writer is open"
+    );
+    m.release(w1).unwrap();
+    m.flush(w2).unwrap();
+    assert_eq!(
+        fs::read(&a).unwrap(),
+        b"AB23456789",
+        "published by the flush, before release"
+    );
+    assert_eq!(m.pending_writes(), 0);
+    let (r, attr) = m.open(&mp("docs/a.txt"), false, false).unwrap();
+    assert_eq!(attr.size, 10);
+    m.release(r).unwrap();
+    // A write after the flush (a dup'd descriptor) stages again from the new content.
+    m.write(w2, 9, b"!").unwrap();
+    assert_eq!(fs::read(&a).unwrap(), b"AB23456789");
+    m.release(w2).unwrap();
+    assert_eq!(fs::read(&a).unwrap(), b"AB2345678!");
+    let partials = on_disk(&f.files.path().join("docs"))
+        .into_iter()
+        .filter(|n| keel_vfs::ops::is_partial(n))
+        .count();
+    assert_eq!(partials, 1, "only the fixture's leftover");
+}
+
+#[test]
+fn a_failed_publish_keeps_the_data_under_an_unsaved_name() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let docs = f.files.path().join("docs");
+    let (h, _) = m.create(&mp("docs/report.txt")).unwrap();
+    m.write(h, 0, b"precious").unwrap();
+    // Something else puts a folder there: the publishing rename fails.
+    fs::create_dir(docs.join("report.txt")).unwrap();
+    fs::write(docs.join("report.txt/inside"), b"x").unwrap();
+    assert!(m.release(h).is_err(), "the failure is reported");
+    let kept: Vec<_> = on_disk(&docs)
+        .into_iter()
+        .filter(|n| n.starts_with("report (unsaved "))
+        .collect();
+    assert_eq!(kept.len(), 1, "{:?}", on_disk(&docs));
+    assert!(kept[0].ends_with(").txt"), "{kept:?}");
+    assert!(!keel_vfs::ops::is_partial(&kept[0]), "not swept");
+    assert_eq!(fs::read(docs.join(&kept[0])).unwrap(), b"precious");
+    assert_eq!(m.pending_writes(), 0);
+}
+
+#[test]
+fn a_mount_target_inside_the_source_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("sub")).unwrap();
+    let inside = root.path().join("sub").join("mnt");
+    assert!(check_outside(inside.to_str().unwrap(), root.path()).is_err());
+    assert!(check_outside(root.path().to_str().unwrap(), root.path()).is_err());
+    let outside = other.path().join("mnt");
+    check_outside(outside.to_str().unwrap(), root.path()).unwrap();
+    check_outside("Q:", root.path()).unwrap();
+}
+
+/// A memory cloud whose `read` and `rename_replace` can be held (a slow remote).
+struct Gated {
+    inner: Arc<keel_vfs::CloudProvider>,
+    hold_read: std::sync::atomic::AtomicBool,
+    hold_rename: std::sync::atomic::AtomicBool,
+    entered: crossbeam_channel::Sender<&'static str>,
+    gate: crossbeam_channel::Receiver<()>,
+}
+
+impl Gated {
+    fn wait(&self, flag: &std::sync::atomic::AtomicBool, what: &'static str) {
+        if flag.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.send(what).unwrap();
+            self.gate.recv().unwrap();
+        }
+    }
+}
+
+impl keel_vfs::Provider for Gated {
+    fn scheme(&self) -> &'static str {
+        self.inner.scheme()
+    }
+    fn caps(&self) -> keel_vfs::Caps {
+        self.inner.caps()
+    }
+    fn list(&self, d: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        self.inner.list(d)
+    }
+    fn stat(&self, p: &VPath) -> anyhow::Result<keel_vfs::Entry> {
+        self.inner.stat(p)
+    }
+    fn list_complete(&self, d: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        self.inner.list_complete(d)
+    }
+    fn read(&self, p: &VPath) -> anyhow::Result<Box<dyn Read + Send>> {
+        self.wait(&self.hold_read, "read");
+        self.inner.read(p)
+    }
+    fn write(&self, p: &VPath) -> anyhow::Result<Box<dyn Write + Send>> {
+        self.inner.write(p)
+    }
+    fn create_new(&self, p: &VPath) -> anyhow::Result<Box<dyn Write + Send>> {
+        self.inner.create_new(p)
+    }
+    fn mkdir(&self, p: &VPath) -> anyhow::Result<()> {
+        self.inner.mkdir(p)
+    }
+    fn rename(&self, a: &VPath, b: &VPath) -> anyhow::Result<()> {
+        self.inner.rename(a, b)
+    }
+    fn rename_replace(&self, a: &VPath, b: &VPath) -> anyhow::Result<()> {
+        self.wait(&self.hold_rename, "rename");
+        self.inner.rename_replace(a, b)
+    }
+    fn remove(&self, p: &VPath) -> anyhow::Result<()> {
+        self.inner.remove(p)
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        self.inner.remove_kind()
+    }
+    fn local_copy(&self, p: &VPath) -> anyhow::Result<std::path::PathBuf> {
+        self.inner.local_copy(p)
+    }
+}
+
+type Gate = (
+    Arc<Gated>,
+    crossbeam_channel::Receiver<&'static str>,
+    crossbeam_channel::Sender<()>,
+);
+
+/// A remote source `cloud://mem/` holding `Docs/notes.txt` = "abcdefghij", behind a gate.
+fn gated(f: &Fixture) -> (SourceId, Gate) {
+    use keel_vfs::Provider;
+    let cloud = memory_cloud();
+    let root = VPath::parse("cloud://mem/").unwrap();
+    cloud.mkdir(&root.join("Docs")).unwrap();
+    let mut w = cloud.write(&root.join("Docs/notes.txt")).unwrap();
+    w.write_all(b"abcdefghij").unwrap();
+    w.flush().unwrap();
+    drop(w);
+    let (entered_tx, entered) = crossbeam_channel::unbounded();
+    let (open, gate) = crossbeam_channel::unbounded();
+    let g = Arc::new(Gated {
+        inner: cloud,
+        hold_read: false.into(),
+        hold_rename: false.into(),
+        entered: entered_tx,
+        gate,
+    });
+    f.router.register_cloud_provider("mem".into(), g.clone());
+    (add(f, root, SourceKind::Cloud), (g, entered, open))
+}
+
+const SOON: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[test]
+fn a_slow_remote_stage_does_not_block_listings() {
+    let f = fixture();
+    let (id, (g, entered, open)) = gated(&f);
+    let m = Arc::new(mount_fs(&f, &id, "", false));
+    let (w, _) = m.open(&mp("Docs/notes.txt"), true, false).unwrap();
+    g.hold_read.store(true, std::sync::atomic::Ordering::SeqCst);
+    let writer = {
+        let m = m.clone();
+        std::thread::spawn(move || m.write(w, 0, b"ABC").map(drop))
+    };
+    assert_eq!(entered.recv_timeout(SOON).unwrap(), "read");
+    // The download is held: the mount still answers.
+    let (tx, rx) = crossbeam_channel::unbounded();
+    {
+        let m = m.clone();
+        std::thread::spawn(move || {
+            let listed = m.list(&mp("Docs")).map(|l| l.len());
+            let stat = m.stat(&mp("Docs/notes.txt")).map(|a| a.size);
+            let pending = m.pending_writes();
+            tx.send((listed.ok(), stat.ok(), pending)).unwrap();
+        });
+    }
+    assert_eq!(rx.recv_timeout(SOON).unwrap(), (Some(1), Some(10), 0));
+    open.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    m.release(w).unwrap();
+    assert_eq!(m.stat(&mp("Docs/notes.txt")).unwrap().size, 10);
+}
+
+#[test]
+fn a_write_stays_pending_until_its_publish_returns() {
+    let f = fixture();
+    let (id, (g, entered, open)) = gated(&f);
+    let m = Arc::new(mount_fs(&f, &id, "", false));
+    let (w, _) = m.open(&mp("Docs/notes.txt"), true, false).unwrap();
+    m.write(w, 0, b"ABC").unwrap();
+    g.hold_rename
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let closer = {
+        let m = m.clone();
+        std::thread::spawn(move || m.release(w))
+    };
+    assert_eq!(entered.recv_timeout(SOON).unwrap(), "rename");
+    // The upload is done but not placed: a new open waits for it instead of reading (or
+    // staging from) the old content.
+    let (tx, rx) = crossbeam_channel::unbounded();
+    {
+        let m = m.clone();
+        std::thread::spawn(move || {
+            let r = m
+                .open(&mp("Docs/notes.txt"), false, false)
+                .and_then(|(h, _)| {
+                    let mut buf = [0; 10];
+                    let n = m.read(h, 0, &mut buf)?;
+                    m.release(h)?;
+                    Ok(buf[..n].to_vec())
+                });
+            tx.send(r.map_err(|e| e.kind())).unwrap();
+        });
+    }
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "the open waits while the publish runs"
+    );
+    open.send(()).unwrap();
+    closer.join().unwrap().unwrap();
+    assert_eq!(rx.recv_timeout(SOON).unwrap().unwrap(), b"ABCdefghij");
+    assert_eq!(m.pending_writes(), 0);
 }

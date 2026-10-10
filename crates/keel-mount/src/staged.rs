@@ -5,12 +5,15 @@
 //! publishing is one rename); for a remote target it is a temp file that publishing uploads
 //! to `<name>.keel-partial-<pid>-<n>` next to the target and then renames over it. Until
 //! then other programs see the old file (or none); an aborted write leaves no file behind
-//! (staging names are hidden by the mount and swept by `keel_vfs::ops` after a day).
+//! (staging names are hidden by the mount and swept by `keel_vfs::ops` after a day). A
+//! write that cannot be published is kept under `<name> (unsaved <date>).<ext>` (beside a
+//! local target, in the spool folder for a remote one), a name nothing sweeps.
 
 use keel_vfs::{Provider, VPath};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) enum Spool {
     /// Next to a local target.
@@ -161,9 +164,12 @@ impl Staged {
         matches!(self.state, State::Open(_))
     }
 
+    pub(crate) fn is_published(&self) -> bool {
+        matches!(self.state, State::Published)
+    }
+
     /// Places the spool at the target atomically (replacing it). On failure nothing visible
-    /// changes and the written data is kept: a local spool stays as its `.keel-partial`
-    /// file, a remote one is kept in the spool folder (both logged).
+    /// changes, the error is returned and the written data is kept (see [`Staged::keep`]).
     pub(crate) fn publish(&mut self, provider: &dyn Provider) -> io::Result<()> {
         let spool = match std::mem::replace(&mut self.state, State::Aborted) {
             State::Open(spool) => spool,
@@ -180,11 +186,7 @@ impl Staged {
                     fs::rename(&path, &local)
                 });
                 if let Err(e) = &result {
-                    tracing::error!(
-                        "mount: could not save {} ({e}); the data is in {}",
-                        self.target.display(),
-                        path.display()
-                    );
+                    self.keep(&path, e);
                 }
                 result?;
             }
@@ -201,23 +203,61 @@ impl Staged {
                     if let Some(p) = &partial {
                         let _ = provider.remove(p);
                     }
-                    match tmp.keep() {
-                        Ok((_, kept)) => tracing::error!(
-                            "mount: could not save {} ({e}); the data is in {}",
-                            self.target.display(),
-                            kept.display()
-                        ),
-                        Err(k) => tracing::error!(
-                            "mount: could not save {} ({e}); the data is lost ({k})",
-                            self.target.display()
-                        ),
-                    }
+                    self.keep_temp(tmp, e);
                 }
                 result?;
             }
         }
         self.state = State::Published;
         Ok(())
+    }
+
+    /// Closes the write without publishing it (the source cannot be reached) and keeps the
+    /// data like a failed [`Staged::publish`].
+    pub(crate) fn keep_unsaved(&mut self, why: &io::Error) {
+        match std::mem::replace(&mut self.state, State::Aborted) {
+            State::Open(Spool::Beside { file, path }) => {
+                drop(file);
+                self.keep(&path, why);
+            }
+            State::Open(Spool::Temp(tmp)) => self.keep_temp(tmp, why),
+            other => self.state = other,
+        }
+    }
+
+    fn keep_temp(&self, tmp: tempfile::NamedTempFile, why: &io::Error) {
+        match tmp.keep() {
+            Ok((file, kept)) => {
+                drop(file);
+                self.keep(&kept, why);
+            }
+            Err(k) => tracing::error!(
+                "mount: could not save {} ({why}); the data is lost ({k})",
+                self.target.display()
+            ),
+        }
+    }
+
+    /// Renames the spool at `path` to `<name> (unsaved <date>).<ext>` in its folder, a name
+    /// nothing sweeps, and logs where the data is.
+    fn keep(&self, path: &Path, why: &io::Error) {
+        let kept = (1..100)
+            .map(|n| path.with_file_name(unsaved_name(self.target.name(), n)))
+            .find(|p| fs::symlink_metadata(p).is_err())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))
+            .and_then(|p| fs::rename(path, &p).map(|()| p));
+        match kept {
+            Ok(p) => tracing::error!(
+                "mount: could not save {} ({why}); the data is in {}",
+                self.target.display(),
+                p.display()
+            ),
+            Err(e) => tracing::error!(
+                "mount: could not save {} ({why}); the data is in {} (not renamed: {e})",
+                self.target.display(),
+                path.display()
+            ),
+        }
     }
 
     /// Drops the written data; the target is untouched and no spool is left.
@@ -229,6 +269,39 @@ impl Staged {
         }
         // A `Temp` spool deletes itself on drop.
     }
+}
+
+/// `report.txt` -> `report (unsaved 2026-10-10 153000).txt` (UTC; `n` > 1 adds ` n`).
+fn unsaved_name(name: &str, n: u32) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => name.split_at(i),
+        _ => (name, ""),
+    };
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Days to a civil date (Howard Hinnant's civil_from_days).
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let t = secs % 86_400;
+    let more = if n > 1 {
+        format!(" {n}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{stem} (unsaved {y:04}-{m:02}-{d:02} {:02}{:02}{:02}{more}){ext}",
+        t / 3600,
+        t % 3600 / 60,
+        t % 60
+    )
 }
 
 fn upload(

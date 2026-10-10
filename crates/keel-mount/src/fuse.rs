@@ -331,15 +331,17 @@ impl Filesystem for Fuse {
         }
     }
 
+    /// Every `close(2)`: the only writer publishes here, before `close` returns (release
+    /// comes later, asynchronously).
     fn flush(
         &self,
         _req: &Request,
         _ino: INodeNo,
-        _fh: FileHandle,
+        fh: FileHandle,
         _lock_owner: fuser::LockOwner,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        Self::done(reply, self.fs.flush(fh.0));
     }
 
     fn release(
@@ -363,7 +365,7 @@ impl Filesystem for Fuse {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        // The staged copy is made durable when it is published (on close).
+        // The staged copy is made durable when it is published (on flush / close).
         reply.ok();
     }
 

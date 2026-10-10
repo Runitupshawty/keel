@@ -89,9 +89,18 @@ pub trait Provider: Send + Sync {
     fn canonicalize(&self, p: &VPath) -> Result<VPath> {
         Ok(p.clone())
     }
-    /// Atomically replace a destination with a completed staged file.
+    /// Atomically replace a destination with a completed staged file. Contract: when it
+    /// returns, `to` is either the old entry (and an error is returned) or `from`'s
+    /// content, never missing or half-written in between, and nothing else is touched (a
+    /// delete-then-rename is not an implementation). Transfers that overwrite and mount
+    /// saves rely on it. No silent fallback: the default refuses, so a provider has to
+    /// implement it (a no-replace rename qualifies when it fails on an existing `to`).
     fn rename_replace(&self, from: &VPath, to: &VPath) -> Result<()> {
-        self.rename(from, to)
+        anyhow::bail!(
+            "replacing rename unsupported: {} -> {}",
+            from.display(),
+            to.display()
+        )
     }
     /// Must fail if the directory is no longer empty.
     fn remove_empty_dir(&self, p: &VPath) -> Result<()> {

@@ -1,5 +1,13 @@
 //! [`MountFs`]: the filesystem every backend serves. Paths are [`MountPath`]s; errors are
 //! `io::Error`s (backends turn them into errno values or NTSTATUS codes).
+//!
+//! A write in progress is private to its writing handles: they read and stat the staged
+//! copy, while listings and every other program see the published file; opening a file
+//! with a staged write (or looking up one being created) is refused as busy (a sharing
+//! violation on Windows) until it is published. The write is published when its only
+//! writer closes ([`MountFs::flush`], synchronous with `close(2)` / `CloseHandle`) and at
+//! the latest on the last release; its entry stays until the publish returns, so a new
+//! open waits for it rather than seeing the old content.
 
 use crate::path::{MountPath, PathMap};
 use crate::staged::{io_err, Staged};
@@ -9,7 +17,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,14 +49,28 @@ struct Open {
     cursor: Option<Cursor>,
 }
 
-/// The write in progress on one file, shared by its writing handles; published when the
-/// last one closes.
+/// The write in progress on one file, shared by its writing handles.
+// Lock order: a `Pending::state` may take the `writes` table lock, never the reverse
+// (table users clone the Arc and drop the table lock before locking the state).
 struct Pending {
     path: MountPath,
+    state: Mutex<WriteState>,
+}
+
+#[derive(Default)]
+struct WriteState {
     /// None until the first write (a handle opened for writing that never writes leaves the
-    /// file alone).
+    /// file alone); Published after a flush (a later write stages again).
     staged: Option<Staged>,
     writers: usize,
+    /// Closed and out of the table: a writer that finds it joins a new entry.
+    gone: bool,
+}
+
+impl WriteState {
+    fn open(&self) -> bool {
+        self.staged.as_ref().is_some_and(Staged::is_open)
+    }
 }
 
 fn not_found() -> io::Error {
@@ -57,6 +79,14 @@ fn not_found() -> io::Error {
 
 fn busy(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::ResourceBusy, what.to_owned())
+}
+
+fn being_written() -> io::Error {
+    busy("the file is being written through the mount")
+}
+
+fn closing() -> io::Error {
+    io::Error::new(io::ErrorKind::NotConnected, "the mount is closing")
 }
 
 fn unix_time(secs: Option<i64>) -> Option<SystemTime> {
@@ -71,10 +101,12 @@ pub struct MountFs {
     map: PathMap,
     spool: PathBuf,
     next: AtomicU64,
+    /// Set by [`MountFs::abort_all`]: nothing is published or staged any more.
+    closing: AtomicBool,
     // ponytail: one lock for the handle table and one for pending writes; per-file I/O runs
     // under the per-handle / per-file mutexes, so only table lookups serialize.
     handles: Mutex<HashMap<Handle, Arc<Mutex<Open>>>>,
-    writes: Mutex<HashMap<String, Arc<Mutex<Pending>>>>,
+    writes: Mutex<HashMap<String, Arc<Pending>>>,
 }
 
 impl MountFs {
@@ -105,6 +137,7 @@ impl MountFs {
             source: source.clone(),
             spool,
             next: AtomicU64::new(1),
+            closing: AtomicBool::new(false),
             handles: Mutex::default(),
             writes: Mutex::default(),
         })
@@ -143,6 +176,10 @@ impl MountFs {
             ));
         }
         self.provider()
+    }
+
+    fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
     }
 
     /// The indexed children of `dir` (the source is offline or did not answer).
@@ -198,67 +235,43 @@ impl MountFs {
         }
     }
 
-    fn pending(&self, p: &MountPath) -> Option<Arc<Mutex<Pending>>> {
+    fn pending(&self, p: &MountPath) -> Option<Arc<Pending>> {
         self.writes.lock().get(&self.map.key(p)).cloned()
     }
 
-    /// Size of a pending write that has data (it shows in place of the file).
-    fn pending_attr(&self, p: &MountPath) -> io::Result<Option<(MountPath, Attr)>> {
-        let Some(pending) = self.pending(p) else {
-            return Ok(None);
-        };
-        let mut pending = pending.lock();
-        let path = pending.path.clone();
-        Ok(match pending.staged.as_mut() {
-            Some(s) if s.is_open() => Some((
-                path,
-                Attr {
-                    is_dir: false,
-                    size: s.len()?,
-                    modified: Some(SystemTime::now()),
-                },
-            )),
-            _ => None,
+    /// `p` has staged data that is not published yet (waits for a publish in progress).
+    fn write_pending(&self, p: &MountPath) -> bool {
+        self.pending(p).is_some_and(|w| {
+            let st = w.state.lock();
+            !st.gone && st.open()
         })
     }
 
-    /// Lists `dir`: from the source when online, from the library index when offline;
-    /// staging files, names the mount cannot show and case twins are left out, and files
-    /// being written through the mount show with their new size.
+    /// Lists `dir` as published: from the source when online, from the library index when
+    /// offline; staging files, names the mount cannot show and case twins are left out.
+    /// Writes in progress do not show until they are published.
     pub fn list(&self, dir: &MountPath) -> io::Result<Vec<DirEntry>> {
-        let mut entries = self.map.filter(self.source_list(dir)?, |e| &e.name);
-        let pending: Vec<_> = self
-            .writes
-            .lock()
-            .values()
-            .filter(|w| {
-                w.lock()
-                    .path
-                    .parent()
-                    .is_some_and(|p| self.map.key(&p) == self.map.key(dir))
-            })
-            .cloned()
-            .collect();
-        for w in pending {
-            let path = w.lock().path.clone();
-            if let Some((_, attr)) = self.pending_attr(&path)? {
-                match entries
-                    .iter_mut()
-                    .find(|e| self.map.same_name(&e.name, path.name()))
-                {
-                    Some(e) => e.attr = attr,
-                    None => entries.push(DirEntry {
-                        name: path.name().to_owned(),
-                        attr,
-                    }),
-                }
-            }
-        }
-        Ok(entries)
+        Ok(self.map.filter(self.source_list(dir)?, |e| &e.name))
     }
 
-    /// The entry at `p` with the name as the source spells it.
+    /// The published entry at `p` with the name as the source spells it. A file being
+    /// created through the mount (not published yet) is busy rather than missing.
     pub fn lookup(&self, p: &MountPath) -> io::Result<(MountPath, Attr)> {
+        self.lookup_source(p).map_err(|e| {
+            let creating = e.kind() == io::ErrorKind::NotFound
+                && self.pending(p).is_some_and(|w| {
+                    // Locked: a publish is in progress.
+                    w.state.try_lock().is_none_or(|st| !st.gone && st.open())
+                });
+            if creating {
+                being_written()
+            } else {
+                e
+            }
+        })
+    }
+
+    fn lookup_source(&self, p: &MountPath) -> io::Result<(MountPath, Attr)> {
         let Some(parent) = p.parent() else {
             return Ok((
                 MountPath::root(),
@@ -269,9 +282,6 @@ impl MountFs {
                 },
             ));
         };
-        if let Some(found) = self.pending_attr(p)? {
-            return Ok(found);
-        }
         if !self.map.shown(p.name()) {
             return Err(not_found());
         }
@@ -295,7 +305,7 @@ impl MountFs {
                 }
             }
         }
-        let (parent, _) = self.lookup(&parent)?;
+        let (parent, _) = self.lookup_source(&parent)?;
         let entries = self.list(&parent)?;
         let found = entries
             .iter()
@@ -325,15 +335,24 @@ impl MountFs {
         let h = self.next.fetch_add(1, Ordering::Relaxed);
         if writer {
             let key = self.map.key(&path);
-            let mut writes = self.writes.lock();
-            let w = writes.entry(key).or_insert_with(|| {
-                Arc::new(Mutex::new(Pending {
-                    path: path.clone(),
-                    staged: None,
-                    writers: 0,
-                }))
-            });
-            w.lock().writers += 1;
+            loop {
+                let w = self
+                    .writes
+                    .lock()
+                    .entry(key.clone())
+                    .or_insert_with(|| {
+                        Arc::new(Pending {
+                            path: path.clone(),
+                            state: Mutex::default(),
+                        })
+                    })
+                    .clone();
+                let mut st = w.state.lock();
+                if !st.gone {
+                    st.writers += 1;
+                    break;
+                }
+            }
         }
         self.handles.lock().insert(
             h,
@@ -347,14 +366,20 @@ impl MountFs {
     }
 
     /// Opens an existing file or folder. `write`: writes go to a staged copy published on
-    /// the last close; `truncate`: that copy starts empty.
+    /// close; `truncate`: that copy starts empty. A read-only open of a file with a staged
+    /// write is busy.
     pub fn open(&self, p: &MountPath, write: bool, truncate: bool) -> io::Result<(Handle, Attr)> {
         let (path, attr) = self.lookup(p)?;
         if write && attr.is_dir {
             return Err(io::Error::from(io::ErrorKind::IsADirectory));
         }
         if write {
+            if self.is_closing() {
+                return Err(closing());
+            }
             self.online_provider()?;
+        } else if !attr.is_dir && self.write_pending(&path) {
+            return Err(being_written());
         }
         let h = self.insert(path, write);
         if truncate {
@@ -366,7 +391,7 @@ impl MountFs {
         Ok((h, self.handle_attr(h)?))
     }
 
-    /// Creates a new empty file (not visible outside the mount until its last close).
+    /// Creates a new empty file (not visible outside the mount until it is closed).
     pub fn create(&self, p: &MountPath) -> io::Result<(Handle, Attr)> {
         let Some(parent) = p.parent() else {
             return Err(io::Error::from(io::ErrorKind::AlreadyExists));
@@ -376,6 +401,9 @@ impl MountFs {
                 io::ErrorKind::InvalidInput,
                 "the mount does not allow that name",
             ));
+        }
+        if self.is_closing() {
+            return Err(closing());
         }
         let provider = self.online_provider()?;
         let (parent, parent_attr) = self.lookup(&parent)?;
@@ -390,14 +418,43 @@ impl MountFs {
         let path = parent.join(p.name())?;
         let staged = Staged::begin(&*provider, &self.map.vpath(&path), false, &self.spool)?;
         let h = self.insert(path.clone(), true);
-        if let Some(w) = self.pending(&path) {
-            w.lock().staged = Some(staged);
+        let raced = match self.pending(&path) {
+            Some(w) => {
+                let mut st = w.state.lock();
+                let raced = st.staged.is_some();
+                if !raced {
+                    st.staged = Some(staged);
+                }
+                raced
+            }
+            None => true,
+        };
+        if raced {
+            let _ = self.release(h);
+            return Err(being_written());
         }
         Ok((h, self.handle_attr(h)?))
     }
 
+    /// What `h` sees: a writer its staged copy, everyone else the published file.
     pub fn handle_attr(&self, h: Handle) -> io::Result<Attr> {
-        let path = self.handle(h)?.lock().path.clone();
+        let (path, writer) = {
+            let o = self.handle(h)?;
+            let o = o.lock();
+            (o.path.clone(), o.writer)
+        };
+        if writer {
+            if let Some(w) = self.pending(&path) {
+                let mut st = w.state.lock();
+                if let Some(s) = st.staged.as_mut().filter(|s| s.is_open()) {
+                    return Ok(Attr {
+                        is_dir: false,
+                        size: s.len()?,
+                        modified: Some(SystemTime::now()),
+                    });
+                }
+            }
+        }
         self.stat(&path)
     }
 
@@ -406,8 +463,9 @@ impl MountFs {
     }
 
     /// The pending write of writer handle `h`, staged (from the current content) if it has
-    /// not been yet.
-    fn staged(&self, h: Handle, keep: bool) -> io::Result<Arc<Mutex<Pending>>> {
+    /// not been yet or was published by a flush. Staging runs outside the file's lock: a
+    /// remote target is downloaded first.
+    fn staged(&self, h: Handle, keep: bool) -> io::Result<Arc<Pending>> {
         let (path, writer) = {
             let o = self.handle(h)?;
             let o = o.lock();
@@ -416,26 +474,28 @@ impl MountFs {
         if !writer {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
-        let w = self.pending(&path).ok_or_else(not_found)?;
-        {
-            let mut pending = w.lock();
-            if pending.staged.is_none() {
-                let provider = self.online_provider()?;
-                pending.staged = Some(Staged::begin(
-                    &*provider,
-                    &self.map.vpath(&path),
-                    keep,
-                    &self.spool,
-                )?);
-            }
+        if self.is_closing() {
+            return Err(closing());
         }
+        let w = self.pending(&path).ok_or_else(not_found)?;
+        let needs = |st: &WriteState| st.staged.as_ref().is_none_or(Staged::is_published);
+        if !needs(&w.state.lock()) {
+            return Ok(w);
+        }
+        let provider = self.online_provider()?;
+        let fresh = Staged::begin(&*provider, &self.map.vpath(&path), keep, &self.spool)?;
+        let mut st = w.state.lock();
+        if needs(&st) {
+            st.staged = Some(fresh);
+        }
+        drop(st);
         Ok(w)
     }
 
     pub fn write(&self, h: Handle, offset: u64, data: &[u8]) -> io::Result<usize> {
         let w = self.staged(h, true)?;
-        let mut w = w.lock();
-        w.staged
+        let mut st = w.state.lock();
+        st.staged
             .as_mut()
             .ok_or_else(not_found)?
             .write_at(offset, data)
@@ -443,20 +503,22 @@ impl MountFs {
 
     pub fn set_len(&self, h: Handle, len: u64) -> io::Result<()> {
         let w = self.staged(h, len > 0)?;
-        let mut w = w.lock();
-        w.staged.as_mut().ok_or_else(not_found)?.set_len(len)
+        let mut st = w.state.lock();
+        st.staged.as_mut().ok_or_else(not_found)?.set_len(len)
     }
 
-    /// Reads at `offset`: from the pending write when the file is being written through
-    /// the mount, else a range of the source file (a sequential reader continues where the
-    /// previous read ended; a jump starts a new one).
+    /// Reads at `offset`: a writer handle reads its staged write, anyone else a range of
+    /// the source file (a sequential reader continues where the previous read ended; a
+    /// jump starts a new one).
     pub fn read(&self, h: Handle, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let o = self.handle(h)?;
         let mut o = o.lock();
-        if let Some(w) = self.pending(&o.path) {
-            let mut w = w.lock();
-            if let Some(s) = w.staged.as_mut().filter(|s| s.is_open()) {
-                return s.read_at(offset, buf);
+        if o.writer {
+            if let Some(w) = self.pending(&o.path) {
+                let mut st = w.state.lock();
+                if let Some(s) = st.staged.as_mut().filter(|s| s.is_open()) {
+                    return s.read_at(offset, buf);
+                }
             }
         }
         let provider = self.online_provider()?;
@@ -490,35 +552,78 @@ impl MountFs {
         Ok(n)
     }
 
-    /// Closes `h`; the last writer of a file publishes its staged write.
+    /// Publishes a staged write (never while closing). A source that cannot be reached
+    /// keeps the data under an "unsaved" name and reports the error.
+    fn publish(&self, st: &mut WriteState) -> io::Result<()> {
+        if self.is_closing() {
+            return Ok(());
+        }
+        let Some(s) = st.staged.as_mut().filter(|s| s.is_open()) else {
+            return Ok(());
+        };
+        match self.provider() {
+            Ok(p) => s.publish(&*p),
+            Err(e) => {
+                s.keep_unsaved(&e);
+                Err(e)
+            }
+        }
+    }
+
+    /// A program closed `h` (FUSE `flush` on `close(2)`, WinFsp cleanup): when `h` is the
+    /// only writer of its file the write is published now, before `close` returns, so the
+    /// program reads back what it wrote. Errors reach the program's `close`.
+    pub fn flush(&self, h: Handle) -> io::Result<()> {
+        let Ok(o) = self.handle(h) else {
+            return Ok(());
+        };
+        let (path, writer) = {
+            let o = o.lock();
+            (o.path.clone(), o.writer)
+        };
+        if !writer {
+            return Ok(());
+        }
+        let Some(w) = self.pending(&path) else {
+            return Ok(());
+        };
+        let mut st = w.state.lock();
+        if st.writers != 1 || st.gone {
+            return Ok(());
+        }
+        self.publish(&mut st)
+    }
+
+    /// Closes `h`; the last writer of a file publishes its staged write (if a flush has not)
+    /// and only then takes the write out of the table.
     pub fn release(&self, h: Handle) -> io::Result<()> {
         let Some(o) = self.handles.lock().remove(&h) else {
             return Ok(());
         };
-        let o = o.lock();
-        if !o.writer {
+        let (path, writer) = {
+            let o = o.lock();
+            (o.path.clone(), o.writer)
+        };
+        if !writer {
             return Ok(());
         }
-        let key = self.map.key(&o.path);
-        let last = {
-            let mut writes = self.writes.lock();
-            let Some(w) = writes.get(&key).cloned() else {
-                return Ok(());
-            };
-            let mut pending = w.lock();
-            pending.writers = pending.writers.saturating_sub(1);
-            if pending.writers > 0 {
-                return Ok(());
-            }
-            writes.remove(&key);
-            drop(pending);
-            w
+        let key = self.map.key(&path);
+        let Some(w) = self.writes.lock().get(&key).cloned() else {
+            return Ok(());
         };
-        let mut pending = last.lock();
-        match pending.staged.as_mut() {
-            Some(s) if s.is_open() => s.publish(&*self.provider()?),
-            _ => Ok(()),
+        let mut st = w.state.lock();
+        st.writers = st.writers.saturating_sub(1);
+        if st.writers > 0 || st.gone {
+            return Ok(());
         }
+        let result = self.publish(&mut st);
+        st.gone = true;
+        st.staged = None;
+        let mut writes = self.writes.lock();
+        if writes.get(&key).is_some_and(|x| Arc::ptr_eq(x, &w)) {
+            writes.remove(&key);
+        }
+        result
     }
 
     pub fn mkdir(&self, p: &MountPath) -> io::Result<()> {
@@ -541,8 +646,8 @@ impl MountFs {
         let provider = self.online_provider()?;
         let mut dropped = false;
         if let Some(w) = self.pending(p) {
-            let mut w = w.lock();
-            if let Some(s) = w.staged.as_mut() {
+            let mut st = w.state.lock();
+            if let Some(s) = st.staged.as_mut() {
                 dropped = s.is_open();
                 s.abort();
             }
@@ -579,12 +684,11 @@ impl MountFs {
     /// Renames or moves within the mount. `replace`: an existing file at `to` is replaced.
     pub fn rename(&self, from: &MountPath, to: &MountPath, replace: bool) -> io::Result<()> {
         let provider = self.online_provider()?;
-        let busy_paths =
-            |p: &MountPath| self.writes.lock().values().any(|w| w.lock().path.within(p));
+        let busy_paths = |p: &MountPath| self.writes.lock().values().any(|w| w.path.within(p));
         // ponytail: a file being written (or a folder holding one) cannot be renamed until
         // its writers close; retargeting the pending write would lift this.
         if busy_paths(from) || busy_paths(to) {
-            return Err(busy("a file there is being written through the mount"));
+            return Err(being_written());
         }
         let (from, attr) = self.lookup(from)?;
         let (to_parent, _) = self.lookup(&to.parent().ok_or_else(|| busy("the mount root"))?)?;
@@ -619,17 +723,20 @@ impl MountFs {
 
     /// Writes in progress (they are discarded by [`MountFs::abort_all`]).
     pub fn pending_writes(&self) -> usize {
-        self.writes
-            .lock()
-            .values()
-            .filter(|w| w.lock().staged.as_ref().is_some_and(Staged::is_open))
-            .count()
+        let all: Vec<_> = self.writes.lock().values().cloned().collect();
+        all.iter().filter(|w| w.state.lock().open()).count()
     }
 
-    /// Drops every write in progress (unmounting): their targets stay as they were.
+    /// Unmounting: from now on nothing is staged or published, and every write in progress
+    /// is dropped (its target stays as it was). Call it before the backend is torn down so
+    /// a close processed during teardown cannot publish a half-written file.
     pub fn abort_all(&self) {
-        for (_, w) in self.writes.lock().drain() {
-            if let Some(s) = w.lock().staged.as_mut() {
+        self.closing.store(true, Ordering::Release);
+        let all: Vec<_> = self.writes.lock().drain().map(|(_, w)| w).collect();
+        for w in all {
+            let mut st = w.state.lock();
+            st.gone = true;
+            if let Some(s) = st.staged.as_mut() {
                 s.abort();
             }
         }
