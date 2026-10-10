@@ -100,6 +100,49 @@ fn perf_index_200k_files() {
     assert!(store < 200_000_000, "source.db {store} bytes");
 }
 
+/// The same tree as `perf_index_200k_files`, generated (no disk, no native ids): what the
+/// store costs for 20,000 folders of 10 files. Each folder was its own transaction (and FTS5
+/// segment) until 0.16: 12.0 s, then 5.5 s.
+#[test]
+#[ignore = "release measurement: 220,200 generated records in small folders"]
+fn perf_index_small_folders_generated() {
+    let router = Router::new();
+    router.register(Arc::new(fake(|path: &str| {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        Ok(match segs.len() {
+            0 => (0..200)
+                .map(|a| (format!("area {a:03}"), true, 0))
+                .collect(),
+            1 => (0..100)
+                .map(|b| (format!("folder {b:03}"), true, 0))
+                .collect(),
+            _ => {
+                let (a, b) = (&segs[0][5..], &segs[1][7..]);
+                (0..10)
+                    .map(|f| (format!("report {a}-{b}-{f}.txt"), false, 1))
+                    .collect()
+            }
+        })
+    })));
+    let (_data, _lib, src) = library_with(SourceDef {
+        label: "perf".into(),
+        root: VPath::parse("fake://perf/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    });
+    let start = Instant::now();
+    walk(&src, &router).unwrap();
+    let took = start.elapsed();
+    eprintln!(
+        "PERF index_small_folders: 220,201 generated records in 20,200 folders {took:?} ({:.0} records/s)",
+        220_201.0 / took.as_secs_f64()
+    );
+    assert!(took < Duration::from_secs(9), "{took:?}");
+}
+
 /// A watched source takes in a burst of 10,000 new files (10 folders of 1,000): from the
 /// first write to every file indexed.
 #[test]
