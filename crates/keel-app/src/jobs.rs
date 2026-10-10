@@ -522,7 +522,8 @@ pub fn archive_stem(name: &str) -> &str {
 /// Add to "<name>.zip": one target names it (a file without its extension), several take
 /// the folder's name.
 pub fn zip_name(tab: &crate::tab::Tab) -> String {
-    let stem = match tab.targets().as_slice() {
+    let targets = tab.targets();
+    let stem = match targets.as_slice() {
         [one] if one.kind == keel_vfs::Kind::Dir => one.name.clone(),
         [one] => match one.name.rsplit_once('.') {
             Some((stem, _)) if !stem.is_empty() => stem.to_owned(),
@@ -533,7 +534,13 @@ pub fn zip_name(tab: &crate::tab::Tab) -> String {
             name => name.trim_end_matches(':').to_owned(),
         },
     };
-    format!("{stem}.zip")
+    let name = format!("{stem}.zip");
+    // Never one of the items being added: "Add to "site.zip"" on site.zip itself could
+    // only fail ("cannot add an archive to itself").
+    if targets.iter().any(|t| t.name.eq_ignore_ascii_case(&name)) {
+        return format!("{name}.zip");
+    }
+    name
 }
 
 /// A Recycle Bin / Trash job (`trash_op`).
@@ -993,6 +1000,17 @@ mod tests {
         assert_eq!(zip_name(&tab), "src.zip");
         tab.select_all();
         assert_eq!(zip_name(&tab), "work.zip");
+        // QA walkthrough 2026-10-10: a zip's own menu offered to add it to itself.
+        tab.set_entries(vec![
+            crate::tab::test_entry(&dir, "site.zip", keel_vfs::Kind::File, 1),
+            crate::tab::test_entry(&dir, "work.zip", keel_vfs::Kind::File, 1),
+        ]);
+        tab.visible(false);
+        tab.selected.clear();
+        tab.cursor = Some("site.zip".into());
+        assert_eq!(zip_name(&tab), "site.zip.zip");
+        tab.select_all();
+        assert_eq!(zip_name(&tab), "work.zip.zip");
         assert_eq!(ArchiveSrc::picked(&dir, &[dir.join("src")]), None);
     }
 
