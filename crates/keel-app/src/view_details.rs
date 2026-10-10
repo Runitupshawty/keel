@@ -65,8 +65,10 @@ pub fn ui(
     // --- Task 33 ---: copies badge (library on).
     let copies_col = lib.is_open();
 
+    // Column widths are remembered per table: a folder tab that becomes the Recycle Bin
+    // (or a search) gets the wide Original location (Folder) column, not the Ext width.
     let mut table = TableBuilder::new(ui)
-        .id_salt(id)
+        .id_salt((id, search, trash))
         .striped(true)
         .resizable(true)
         .sense(Sense::click_and_drag())

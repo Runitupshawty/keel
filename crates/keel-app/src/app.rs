@@ -820,6 +820,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A Recycle Bin with one item, never the real one.
+    struct FakeTrash;
+    impl keel_vfs::Provider for FakeTrash {
+        fn scheme(&self) -> &'static str {
+            keel_vfs::trashbin::SCHEME
+        }
+        fn caps(&self) -> keel_vfs::Caps {
+            keel_vfs::Caps::default()
+        }
+        fn list(&self, dir: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+            let kind = keel_vfs::Kind::File;
+            Ok(vec![crate::tab::test_entry(dir, "old.txt", kind, 1)])
+        }
+        fn stat(&self, _: &VPath) -> anyhow::Result<keel_vfs::Entry> {
+            anyhow::bail!("fake")
+        }
+        fn read(&self, _: &VPath) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+            anyhow::bail!("fake")
+        }
+        fn write(&self, _: &VPath) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
+            anyhow::bail!("fake")
+        }
+        fn mkdir(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("fake")
+        }
+        fn rename(&self, _: &VPath, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("fake")
+        }
+        fn remove(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("fake")
+        }
+        fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+            self.list(dir)
+        }
+        fn remove_kind(&self) -> keel_vfs::RemoveKind {
+            keel_vfs::RemoveKind::Permanent
+        }
+        fn local_copy(&self, _: &VPath) -> anyhow::Result<PathBuf> {
+            anyhow::bail!("fake")
+        }
+    }
+
+    /// QA walkthrough 2026-10-10: a folder tab opened on the Recycle Bin kept the folder's
+    /// narrow Ext column for Original location ("Original…").
+    #[test]
+    fn a_tab_turned_recycle_bin_gets_the_wide_location_column() {
+        use egui_kittest::kittest::Queryable;
+        let start = fixture("keel-trash-column-fixture");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        wait_listed(&mut harness);
+        harness.state().state.router.register(Arc::new(FakeTrash));
+        let bin = keel_vfs::trashbin::root();
+        harness.state_mut().state.run(0, Action::Navigate(bin));
+        wait_listed(&mut harness);
+        harness.run_steps(3);
+        // The left pane's columns (the right pane has a Size column too).
+        let x = |h: &Harness<App>, label: &str| {
+            (h.query_all_by_label(label))
+                .map(|n| n.raw_bounds().unwrap().x0)
+                .fold(f64::MAX, f64::min)
+        };
+        let width = x(&harness, "Size") - x(&harness, "Original location");
+        assert!(width > 150.0, "{width}");
+    }
+
     #[test]
     fn panicking_frame_is_logged_and_survived() {
         let start = fixture("keel-crash-fixture");
