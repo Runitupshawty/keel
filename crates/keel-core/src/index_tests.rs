@@ -982,8 +982,10 @@ fn watch_polls_remote_sources() {
     }));
     let router = Arc::new(Router::new());
     let (_data, _lib, src) = library_with(fake_source(&router, &state, SourceKind::Cloud));
+    // No change feed and no folder times: walked every `walk`.
     let cfg = WatchConfig {
         poll: Duration::from_millis(20),
+        walk: Duration::from_millis(20),
         ..WatchConfig::default()
     };
     let handle = Indexer::watch_with(&src, &router, cfg).unwrap();
@@ -1504,4 +1506,196 @@ fn steady_changes_recount_within_the_maximum_delay() {
         assert!(recounted, "no recount while changes kept coming");
         quit.store(true, Ordering::SeqCst);
     });
+}
+
+// --- Remote change feeds and folder times ---------------------------------------------
+
+use keel_vfs::memory::MemoryProvider;
+
+/// A `MemoryProvider` served as SFTP host `mem` (a.txt, d/b.txt and gone.txt under /srv,
+/// x.txt outside it) and a source on `sftp://mem/srv`, in a library using that router.
+fn memory_source() -> (
+    Arc<MemoryProvider>,
+    Arc<Router>,
+    tempfile::TempDir,
+    Library,
+    Arc<Source>,
+) {
+    let mem = Arc::new(MemoryProvider::new());
+    for p in [
+        "/srv/a.txt",
+        "/srv/d/b.txt",
+        "/srv/gone.txt",
+        "/elsewhere/x.txt",
+    ] {
+        mem.put(p, "data");
+    }
+    let router = Arc::new(Router::new());
+    router.register_remote_provider("mem".into(), mem.clone());
+    let (data, lib, src) = library_with(crate::library::tests::remote("mem", "sftp://mem/srv"));
+    lib.set_router(router.clone());
+    (mem, router, data, lib, src)
+}
+
+fn mem_path(p: &str) -> VPath {
+    VPath::parse(&format!("sftp://mem{p}")).unwrap()
+}
+
+fn size_of(src: &Source, rel: &str) -> Option<i64> {
+    let c = src.store.get().unwrap();
+    c.query_row("SELECT size FROM record WHERE path = ?1", [rel], |r| {
+        r.get(0)
+    })
+    .optional()
+    .unwrap()
+}
+
+fn cursor_of(src: &Source) -> Option<String> {
+    src.store.meta(CURSOR).unwrap()
+}
+
+/// Polls every 20 ms; walks only when asked (`walk`, `reconcile`: an hour).
+fn fast_polls() -> WatchConfig {
+    WatchConfig {
+        poll: Duration::from_millis(20),
+        walk: Duration::from_secs(3600),
+        reconcile: Duration::from_secs(3600),
+    }
+}
+
+#[test]
+fn a_change_feed_brings_creates_changes_and_removes_without_a_walk() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    let handle = Indexer::watch_with(&src, &router, fast_polls()).unwrap();
+    eventually("first walk", || cursor_of(&src).is_some());
+    let generation = src.generation.load(Ordering::SeqCst);
+    assert_eq!(generation, 1);
+    assert_eq!(size_of(&src, "a.txt"), Some(4));
+    mem.put("/srv/d/e/new.txt", "new");
+    mem.put_at("/srv/a.txt", "changed", 1_700_000_100);
+    mem.remove(&mem_path("/srv/gone.txt")).unwrap();
+    mem.put("/elsewhere/y.txt", "not ours");
+    eventually("changes applied", || {
+        id_of(&src, "d/e/new.txt").is_some()
+            && id_of(&src, "gone.txt").is_none()
+            && size_of(&src, "a.txt") == Some(7)
+    });
+    assert!(id_of(&src, "d/e").is_some(), "the new folder is indexed");
+    assert_eq!(src.generation.load(Ordering::SeqCst), generation, "no walk");
+    assert_eq!(cursor_of(&src).as_deref(), Some("8"), "cursor advanced");
+    drop(handle);
+    assert!(paths(&src)
+        .iter()
+        .all(|p| !p.contains("elsewhere") && !p.contains("y.txt")));
+}
+
+#[test]
+fn a_rejected_cursor_walks_once_and_starts_a_new_cursor() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    let handle = Indexer::watch_with(&src, &router, fast_polls()).unwrap();
+    eventually("first walk", || cursor_of(&src).is_some());
+    mem.reject_cursor.store(true, Ordering::SeqCst);
+    eventually("walked again", || {
+        src.generation.load(Ordering::SeqCst) == 2
+    });
+    // The new cursor is followed: a later change arrives without another walk.
+    let asked = mem.feed_calls.load(Ordering::SeqCst);
+    eventually("polls continue", || {
+        mem.feed_calls.load(Ordering::SeqCst) >= asked + 3
+    });
+    mem.put("/srv/later.txt", "l");
+    eventually("later change", || id_of(&src, "later.txt").is_some());
+    assert_eq!(src.generation.load(Ordering::SeqCst), 2, "one walk");
+    drop(handle);
+}
+
+#[test]
+fn without_a_feed_the_source_is_walked() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    mem.no_feed.store(true, Ordering::SeqCst);
+    let cfg = WatchConfig {
+        walk: Duration::from_millis(20),
+        ..fast_polls()
+    };
+    let handle = Indexer::watch_with(&src, &router, cfg).unwrap();
+    eventually("first walk", || src.generation.load(Ordering::SeqCst) >= 1);
+    mem.put("/srv/walked.txt", "w");
+    eventually("walked in", || id_of(&src, "walked.txt").is_some());
+    assert!(src.generation.load(Ordering::SeqCst) >= 2);
+    assert_eq!(cursor_of(&src), None);
+    drop(handle);
+}
+
+/// One feed page is one protection recount request, however many changes it holds; a
+/// page that changes nothing in the index asks for none.
+#[test]
+fn a_feed_page_schedules_one_recount() {
+    let (mem, router, _data, lib, src) = memory_source();
+    walk(&src, &router).unwrap();
+    let provider = router.provider_for(&src.def.root).unwrap();
+    let never = AtomicBool::new(false);
+    let scheduled = || lib.shared.recount_pending.lock().scheduled;
+    let before = scheduled();
+    mem.put("/srv/one.txt", "1");
+    mem.put("/srv/two.txt", "2");
+    mem.remove(&mem_path("/srv/gone.txt")).unwrap();
+    let page = mem.changes(None).unwrap();
+    assert!(page.changes.is_empty());
+    let page = mem
+        .changes(Some(keel_vfs::ChangeCursor("4".into())))
+        .unwrap();
+    assert_eq!(page.changes.len(), 3);
+    assert!(Indexer::apply_feed(&src, &provider, &page.changes, &never).unwrap());
+    assert_eq!(scheduled(), before + 1);
+    assert!(id_of(&src, "one.txt").is_some() && id_of(&src, "gone.txt").is_none());
+    // The same page again: nothing changes, nothing is recounted.
+    assert!(Indexer::apply_feed(&src, &provider, &page.changes, &never).unwrap());
+    assert_eq!(scheduled(), before + 1);
+}
+
+/// `Unknown`: the folder is listed again with everything below it; an unknown root, or
+/// a folder the index does not have, asks for a walk.
+#[test]
+fn an_unknown_folder_is_listed_again_with_its_subtree() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    walk(&src, &router).unwrap();
+    let provider = router.provider_for(&src.def.root).unwrap();
+    let never = AtomicBool::new(false);
+    mem.put("/srv/d/e/deep.txt", "x");
+    mem.remove(&mem_path("/srv/d/b.txt")).unwrap();
+    let unknown = |p: &str| keel_vfs::ChangedPath {
+        path: mem_path(p),
+        kind: keel_vfs::ChangeKind::Unknown,
+    };
+    assert!(Indexer::apply_feed(&src, &provider, &[unknown("/srv/d")], &never).unwrap());
+    assert_eq!(
+        paths(&src),
+        ["", "a.txt", "d", "d/e", "d/e/deep.txt", "gone.txt"]
+    );
+    assert_eq!(src.generation.load(Ordering::SeqCst), 1);
+    assert!(!Indexer::apply_feed(&src, &provider, &[unknown("/srv")], &never).unwrap());
+    assert!(!Indexer::apply_feed(&src, &provider, &[unknown("/")], &never).unwrap());
+    assert!(!Indexer::apply_feed(&src, &provider, &[unknown("/srv/nope")], &never).unwrap());
+    // Elsewhere in the account: not this source's business.
+    assert!(Indexer::apply_feed(&src, &provider, &[unknown("/elsewhere")], &never).unwrap());
+}
+
+/// No feed, but folder times that move when entries come and go (SFTP): only the folders
+/// whose time moved are listed again, without a walk.
+#[test]
+fn folder_times_find_added_and_removed_entries_without_a_walk() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    mem.no_feed.store(true, Ordering::SeqCst);
+    mem.folder_times.store(true, Ordering::SeqCst);
+    let handle = Indexer::watch_with(&src, &router, fast_polls()).unwrap();
+    eventually("first walk", || src.generation.load(Ordering::SeqCst) == 1);
+    mem.put("/srv/d/e/new.txt", "n");
+    mem.remove(&mem_path("/srv/gone.txt")).unwrap();
+    eventually("changes found", || {
+        id_of(&src, "d/e/new.txt").is_some() && id_of(&src, "gone.txt").is_none()
+    });
+    mem.put("/srv/d/second.txt", "s");
+    eventually("second change", || id_of(&src, "d/second.txt").is_some());
+    assert_eq!(src.generation.load(Ordering::SeqCst), 1, "no walk");
+    drop(handle);
 }

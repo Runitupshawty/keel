@@ -324,6 +324,12 @@ impl Provider for LazyCloud {
     fn share_link(&self, p: &VPath, create: bool) -> anyhow::Result<ShareLink> {
         self.get()?.share_link(p, create)
     }
+    fn changes(
+        &self,
+        cursor: Option<keel_vfs::ChangeCursor>,
+    ) -> anyhow::Result<keel_vfs::ChangeFeed> {
+        self.get()?.changes(cursor)
+    }
 }
 
 pub struct Clouds {

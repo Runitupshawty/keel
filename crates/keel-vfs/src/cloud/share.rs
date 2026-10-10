@@ -30,7 +30,7 @@ pub(super) fn content_base(kind: CloudKind) -> &'static str {
 }
 
 /// The body of a 2xx answer.
-fn ok(p: &VPath, (status, body): (u16, Value)) -> Result<Value> {
+pub(super) fn ok(p: &VPath, (status, body): (u16, Value)) -> Result<Value> {
     match status {
         200..=299 => Ok(body),
         s => Err(http_error(p, s)),

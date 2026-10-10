@@ -739,6 +739,10 @@ impl Provider for SftpProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.download(p, &|_| {}, &AtomicBool::new(false))
     }
+    /// POSIX servers move a folder's time when an entry is added, removed or renamed.
+    fn folder_times_track_entries(&self) -> bool {
+        true
+    }
     fn local_copy_cancellable(
         &self,
         p: &VPath,

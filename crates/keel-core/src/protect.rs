@@ -195,6 +195,9 @@ pub(crate) struct PendingRecount {
     worker: bool,
     /// That thread (`Library::close` waits for it: it holds the library while it counts).
     pub(crate) thread: Option<std::thread::JoinHandle<()>>,
+    /// Calls of `schedule_recount`.
+    #[cfg(test)]
+    pub(crate) scheduled: u64,
 }
 
 #[cfg(test)]
@@ -214,6 +217,10 @@ pub(crate) fn schedule_recount(lib: &Arc<Shared>, src: &Source) {
         return;
     }
     let mut pending = lib.recount_pending.lock();
+    #[cfg(test)]
+    {
+        pending.scheduled += 1;
+    }
     let now = Instant::now();
     pending.last = Some(now);
     pending.first.get_or_insert(now);

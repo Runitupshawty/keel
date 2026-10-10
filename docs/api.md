@@ -151,7 +151,9 @@ folder is created owner-only when the host creates it. A host's node serves the
 library's sources to the devices granted them (as the window does), and `node://<device
 id>/` paths (`list`, `stat`, `read`) browse what paired devices share with this one.
 keel-daemon also keeps every source current: each one is watched (local folders live,
-the others re-walked periodically; a completed walk schedules hashing) once no index job
+the others asked what changed every `[library] remote_poll_secs`, default 120, read when
+the daemon starts: Drive and Dropbox through their change feeds, SFTP by its folders'
+times, S3 and WebDAV by walks; a completed walk schedules hashing) once no index job
 walks it.
 
 SFTP remotes in `[[remotes]]` take `use_ssh_config` (default `true`, so remotes saved

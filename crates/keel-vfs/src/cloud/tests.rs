@@ -2784,3 +2784,199 @@ fn cancelling_stops_a_single_request_upload_on_the_wire() {
         "{err}"
     );
 }
+
+// --- Change feeds -----------------------------------------------------------------------
+
+fn feed(changes: &[crate::ChangedPath]) -> Vec<(String, crate::ChangeKind)> {
+    changes
+        .iter()
+        .map(|c| (c.path.path.clone(), c.kind))
+        .collect()
+}
+fn cursor(s: &str) -> Option<crate::ChangeCursor> {
+    Some(crate::ChangeCursor(s.into()))
+}
+fn feed_error(e: &anyhow::Error) -> Option<crate::FeedError> {
+    e.downcast_ref::<crate::FeedError>().copied()
+}
+
+/// Drive: the start token, every item remembered (two pages), then `changes.list` pages:
+/// a trashed file, a file moved and renamed, a new file in a folder not seen yet (asked
+/// for by id), a file deleted for good, a Google Doc and an item outside the drive's tree.
+#[test]
+fn drive_changes_follow_the_page_tokens_through_removes_and_moves() {
+    use crate::ChangeKind::*;
+    let item = |id: &str, name: &str, parent: &str| json!({"id": id, "name": name, "parents": [parent], "mimeType": "text/plain"});
+    let (api, log) = api_fake(move |path, query, _| match path {
+        "/drive/v3/files/root" => json_reply(200, json!({"id": "R"})),
+        "/drive/v3/changes/startPageToken" => json_reply(200, json!({"startPageToken": "10"})),
+        "/drive/v3/files" => {
+            assert_eq!(query["q"], "trashed = false");
+            match query.get("pageToken").map(String::as_str) {
+                None => json_reply(
+                    200,
+                    json!({"nextPageToken": "p2", "files": [
+                        {"id": "D1", "name": "docs", "parents": ["R"],
+                         "mimeType": "application/vnd.google-apps.folder"},
+                        item("F1", "a.txt", "D1"),
+                    ]}),
+                ),
+                Some("p2") => json_reply(
+                    200,
+                    json!({"files": [
+                        item("F2", "b.txt", "R"),
+                        item("F3", "old.txt", "D1"),
+                        item("X", "theirs.txt", "S"),
+                    ]}),
+                ),
+                other => panic!("page {other:?}"),
+            }
+        }
+        "/drive/v3/files/D2" => json_reply(200, json!({"name": "sub", "parents": ["D1"]})),
+        "/drive/v3/files/S" => json_reply(404, json!({})),
+        "/drive/v3/changes" => match query["pageToken"].as_str() {
+            "10" => {
+                assert_eq!(query["includeRemoved"], "true");
+                json_reply(
+                    200,
+                    json!({"nextPageToken": "11", "changes": [
+                        {"fileId": "F1", "file": {"name": "a.txt", "parents": ["D1"], "trashed": true}},
+                        {"fileId": "F3", "file": {"name": "new.txt", "parents": ["R"]}},
+                        {"fileId": "F4", "file": {"name": "c.txt", "parents": ["D2"]}},
+                        {"fileId": "F2", "removed": true},
+                        {"fileId": "G1", "file": {"name": "Notes", "parents": ["R"],
+                            "mimeType": "application/vnd.google-apps.document"}},
+                        {"fileId": "X", "file": {"name": "theirs.txt", "parents": ["S"]}},
+                    ]}),
+                )
+            }
+            "11" => json_reply(
+                200,
+                json!({"newStartPageToken": "12", "changes": [
+                    {"fileId": "F5", "file": {"name": "d.txt", "parents": ["R"]}},
+                    {"fileId": "F4", "file": {"name": "c.txt", "parents": ["D2"]}},
+                ]}),
+            ),
+            _ => json_reply(404, json!({"error": "notFound"})),
+        },
+        other => panic!("unexpected request {other}"),
+    });
+    let drive = api_cloud(account("drive", CloudKind::GoogleDrive), &api);
+    // A cursor from before this provider existed: where items were is not known.
+    let err = drive.changes(cursor("9")).unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::CursorRejected));
+    let start = drive.changes(None).unwrap();
+    assert_eq!((start.cursor.0.as_str(), start.changes.len()), ("10", 0));
+    let page = drive.changes(Some(start.cursor)).unwrap();
+    assert_eq!(
+        feed(&page.changes),
+        [
+            ("/docs/a.txt".into(), Removed),
+            ("/docs/old.txt".into(), Removed),
+            ("/new.txt".into(), Created),
+            ("/docs/sub/c.txt".into(), Created),
+            ("/b.txt".into(), Removed),
+        ]
+    );
+    assert_eq!((page.cursor.0.as_str(), page.more), ("11", true));
+    assert!(page.changes.iter().all(|c| c.path.authority == "drive"));
+    let page = drive.changes(Some(page.cursor)).unwrap();
+    assert_eq!(
+        feed(&page.changes),
+        [
+            ("/d.txt".into(), Created),
+            ("/docs/sub/c.txt".into(), Modified)
+        ]
+    );
+    assert_eq!((page.cursor.0.as_str(), page.more), ("12", false));
+    let asked = |p: &str| log.lock().iter().filter(|(_, path, ..)| path == p).count();
+    assert_eq!(asked("/drive/v3/files/D2"), 1, "a folder is asked for once");
+    // An old token is refused: the caller walks and starts again.
+    let err = drive.changes(cursor("3")).unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::CursorRejected));
+    assert!(log.lock().iter().all(|(m, ..)| m == "GET"), "read-only");
+}
+
+/// Dropbox: `get_latest_cursor` on the account's folder, `continue` pages (paths below
+/// it, the folder itself left out), and `reset` refuses the cursor.
+#[test]
+fn dropbox_changes_continue_from_the_cursor_until_a_reset() {
+    use crate::ChangeKind::*;
+    let (api, log) = api_fake(|path, _, body| match path {
+        "/2/files/list_folder/get_latest_cursor" => {
+            assert_eq!(body["path"], "/Work");
+            assert_eq!(body["recursive"], true);
+            assert_eq!(body["include_deleted"], true);
+            json_reply(200, json!({"cursor": "c1"}))
+        }
+        "/2/files/list_folder/continue" => match body["cursor"].as_str().unwrap() {
+            "c1" => json_reply(
+                200,
+                json!({"cursor": "c2", "has_more": true, "entries": [
+                    {".tag": "folder", "path_display": "/Work"},
+                    {".tag": "file", "path_display": "/Work/a.txt"},
+                    {".tag": "deleted", "path_display": "/Work/Old"},
+                    {".tag": "folder", "path_display": "/Work/New"},
+                ]}),
+            ),
+            "c2" => json_reply(
+                200,
+                json!({"cursor": "c3", "has_more": false, "entries": [
+                    {".tag": "file", "path_display": "/Work/New/x.txt"},
+                ]}),
+            ),
+            _ => json_reply(409, json!({"error": {".tag": "reset"}})),
+        },
+        other => panic!("unexpected request {other}"),
+    });
+    let mut a = account("dbx", CloudKind::Dropbox);
+    a.root = Some("/Work".into());
+    let dbx = api_cloud(a, &api);
+    let start = dbx.changes(None).unwrap();
+    assert_eq!((start.cursor.0.as_str(), start.changes.len()), ("c1", 0));
+    let page = dbx.changes(Some(start.cursor)).unwrap();
+    assert_eq!(
+        feed(&page.changes),
+        [
+            ("/a.txt".into(), Modified),
+            ("/Old".into(), Removed),
+            ("/New".into(), Modified),
+        ]
+    );
+    assert_eq!((page.cursor.0.as_str(), page.more), ("c2", true));
+    let page = dbx.changes(Some(page.cursor)).unwrap();
+    assert_eq!(feed(&page.changes), [("/New/x.txt".into(), Modified)]);
+    assert_eq!((page.cursor.0.as_str(), page.more), ("c3", false));
+    let err = dbx.changes(cursor("c0")).unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::CursorRejected));
+    assert!(log.lock().iter().all(|(m, ..)| m == "POST"));
+}
+
+/// S3 has no feed: a bucket of one list page is fingerprinted (unchanged: nothing to
+/// walk; changed: its root is `Unknown`), a bigger one is `Unsupported`, as is WebDAV.
+#[test]
+fn s3_fingerprints_a_small_bucket_and_gives_up_on_a_big_one() {
+    let (base, fake) = s3_fake();
+    let cloud = s3_cloud(&base);
+    put(&cloud, "cloud://fake/a.txt", b"hello");
+    let start = cloud.changes(None).unwrap();
+    assert!(start.changes.is_empty());
+    let same = cloud.changes(Some(start.cursor.clone())).unwrap();
+    assert!(same.changes.is_empty());
+    assert_eq!(same.cursor, start.cursor);
+    put(&cloud, "cloud://fake/docs/b.txt", b"bee");
+    let changed = cloud.changes(Some(same.cursor)).unwrap();
+    assert_eq!(
+        feed(&changed.changes),
+        [("/".into(), crate::ChangeKind::Unknown)]
+    );
+    for i in 0..1000 {
+        fake.lock().objects.insert(format!("many/{i}"), vec![1]);
+    }
+    let err = cloud.changes(Some(changed.cursor)).unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::Unsupported));
+    let err = memory_cloud_of("dav", CloudKind::WebDav)
+        .changes(None)
+        .unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::Unsupported));
+}
