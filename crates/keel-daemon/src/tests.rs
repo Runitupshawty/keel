@@ -1103,3 +1103,41 @@ fn device_settings_apply_live() {
     assert_eq!(done["restart"], true);
     assert_eq!(done["settings"]["relay"], false, "as it started");
 }
+
+/// Review 46 minor 4: the recount after a watched change is announced as `library.changed`
+/// `protection.recount`.
+#[test]
+fn a_watched_change_announces_the_protection_recount() {
+    let env = env();
+    let daemon = start(&env, None);
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let id = add_source(&mut c, &env);
+    let job = apply(&mut c, "sources.index", json!({ "id": id }))["job"]
+        .as_i64()
+        .unwrap();
+    wait_job(&mut c, job);
+    // The walks' own recounts first: wait until the counters settle.
+    let revision = || daemon.ctx().lib.protection_revision();
+    let mut settled = revision();
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        if revision() == settled {
+            break;
+        }
+        settled = revision();
+    }
+    let mut sub = Client::connect(daemon.name()).unwrap();
+    sub.call("subscribe", Value::Null).unwrap();
+    std::fs::write(env.files.path().join("notes.txt"), b"changed notes").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        assert!(Instant::now() < deadline, "no protection.recount");
+        let n = sub.next_notification(Duration::from_secs(60)).unwrap();
+        if n["method"] == "library.changed"
+            && n["params"]["kind"] == "protection.recount"
+            && revision() > settled
+        {
+            break;
+        }
+    }
+}

@@ -962,7 +962,7 @@ fn input_notes_activity_whatever_the_hashing_policy() {
     let (tmp, lib, _) = fixture("activity", false);
     let mut s = state_with(&lib, &tmp);
     s.library.policy = Hashing::PauseOnBattery;
-    s.library.sync_hashing();
+    s.library.sync_hashing(None);
     s.library_tick();
     assert!(!lib.user_active(), "no input yet");
     let mut input = egui::RawInput::default();
@@ -974,6 +974,39 @@ fn input_notes_activity_whatever_the_hashing_policy() {
     assert!(
         lib.user_active(),
         "input pauses the media and integrity jobs"
+    );
+    s.library.close_now();
+}
+
+/// Review 45 minor 8: the library's remote hashing policy wins over settings.toml (a
+/// client's `hashing.set` is adopted, not reverted); a change made in Settings is sent.
+#[test]
+fn the_library_remote_hashing_policy_wins_over_settings_toml() {
+    let (tmp, lib, _) = fixture("hashpolicy", false);
+    let mut s = state_with(&lib, &tmp);
+    let client = keel_core::RemoteHashSettings {
+        hash_cloud: true,
+        ..Default::default()
+    };
+    lib.set_remote_hash_settings(client).unwrap();
+    // Opening pushes no remote policy.
+    s.library.sync_hashing(None);
+    assert_eq!(lib.remote_hash_settings(), client);
+    let read = LibraryBackend::InProcess(lib.clone())
+        .remote_hashing()
+        .unwrap()
+        .unwrap();
+    s.apply(Msg::Library(LibMsg::RemoteHashing(read)));
+    assert!(s.settings.library.hash_cloud, "written to settings.toml");
+    let settings = s.settings.library.clone();
+    s.library.apply_hashing(&settings);
+    assert_eq!(lib.remote_hash_settings(), client, "not reverted");
+    s.settings.library.hash_cloud = false;
+    let settings = s.settings.library.clone();
+    s.library.apply_hashing(&settings);
+    assert!(
+        !lib.remote_hash_settings().hash_cloud,
+        "a change in Settings is sent"
     );
     s.library.close_now();
 }

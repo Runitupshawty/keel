@@ -254,6 +254,11 @@ impl Provider for LazyCloud {
     fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
         self.get()?.list_complete(dir)
     }
+    fn cancel_requests(&self) {
+        if let Some(inner) = &*self.inner.lock() {
+            inner.cancel_requests();
+        }
+    }
     /// The inner provider's answer; before it exists, the same from the account kind (no
     /// keychain read just to word a warning).
     fn remove_kind(&self) -> keel_vfs::RemoveKind {
@@ -390,7 +395,9 @@ impl Clouds {
         for old in &self.accounts {
             if !accounts.iter().any(|a| a.id == old.id) {
                 router.unregister_cloud(&old.id);
-                self.providers.remove(&old.id);
+                if let Some(gone) = self.providers.remove(&old.id) {
+                    gone.cancel_requests();
+                }
                 self.quota.remove(&old.id);
                 removed.push(old.id.clone());
             }
@@ -414,7 +421,9 @@ impl Clouds {
             last: Mutex::default(),
         });
         router.register_cloud_provider(a.id.clone(), provider.clone());
-        self.providers.insert(a.id.clone(), provider);
+        if let Some(old) = self.providers.insert(a.id.clone(), provider) {
+            old.cancel_requests();
+        }
         // A changed account or a new sign-in: its quota is asked again.
         self.quota.remove(&a.id);
         self.status
@@ -614,10 +623,11 @@ fn remove_ui(ctx: &egui::Context, a: &CloudAccount) -> Option<Option<CloudCmd>> 
 }
 
 /// "Create a link anyone can open?": Some(yes) once answered.
-fn link_ui(ctx: &egui::Context, question: &str) -> Option<bool> {
+fn link_ui(ctx: &egui::Context, name: &str, question: &str) -> Option<bool> {
     let mut answer = None;
     let modal = Modal::new(Id::new("keel-cloud-link")).show(ctx, |ui| {
         ui.set_width(380.0);
+        ui.strong(name);
         ui.label(question);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -1452,9 +1462,15 @@ impl AppState {
         );
     }
 
-    /// "Copy link" on the selected cloud item (the context menu offers it only there).
-    pub fn copy_link(&mut self, p: usize) {
-        let target = self.tab(p).targets().first().map(|e| (*e).clone());
+    /// "Copy link" on the cloud item `path` (the one the context menu was opened on, among
+    /// the targets; the menu offers it only there).
+    pub fn copy_link(&mut self, p: usize, path: &VPath) {
+        let target = self
+            .tab(p)
+            .targets()
+            .into_iter()
+            .find(|e| &e.path == path)
+            .cloned();
         match target {
             Some(e) if can_link(&self.ctx, &e) => self.clouds.want_link(e.path, false),
             _ => self.toasts.info("Copy link works on cloud files"),
@@ -1468,6 +1484,13 @@ impl AppState {
                 self.ctx.copy_text(url);
                 self.toasts.info(note);
             }
+            // One question at a time: a second would replace the first one's dialog.
+            Ok(ShareLink::Confirm { .. }) if self.clouds.link_ask.is_some() => {
+                self.toasts.info(format!(
+                    "Copy link: answer the open question first, then ask again for {}",
+                    path.name()
+                ));
+            }
             Ok(ShareLink::Confirm { question }) => self.clouds.link_ask = Some((path, question)),
             Err(e) => self.toasts.error(format!("Copy link: {e:#}")),
         }
@@ -1478,7 +1501,7 @@ impl AppState {
     /// secrets are read.
     pub fn cloud_modals(&mut self, ctx: &egui::Context) {
         if let Some((path, question)) = self.clouds.link_ask.clone() {
-            if let Some(yes) = link_ui(ctx, &question) {
+            if let Some(yes) = link_ui(ctx, path.name(), &question) {
                 self.clouds.link_ask = None;
                 if yes {
                     self.clouds.want_link(path, true);
@@ -2277,13 +2300,13 @@ mod tests {
         ]));
         // An existing link: copied at once, with the note.
         state.tab_mut(0).click("a.txt", false, false);
-        state.run(0, Action::CopyLink);
+        state.run(0, Action::CopyLink(remote.join("a.txt")));
         pump(&mut state, |_| copied(&ctx).len() == 1);
         assert_eq!(copied(&ctx), ["https://share.example/a.txt"]);
         assert!(state.toasts.list.iter().any(|t| t.text == "Link copied."));
         // None yet: the question first, nothing copied; the yes makes and copies it.
         state.tab_mut(0).click("new.txt", false, false);
-        state.run(0, Action::CopyLink);
+        state.run(0, Action::CopyLink(remote.join("new.txt")));
         pump(&mut state, |s| s.clouds.link_ask.is_some());
         let (path, question) = state.clouds.link_ask.clone().unwrap();
         assert_eq!(question, "Create a link anyone can open?");
@@ -2305,6 +2328,31 @@ mod tests {
             .iter()
             .any(|t| t.text == "Copy link: cloud HTTP 409"));
         assert_eq!(copied(&ctx).len(), 2);
+        // Review 45 minor 4: with several items selected, the right-clicked one is asked
+        // for; a second question waits until the first is answered.
+        state.tab_mut(0).click("a.txt", false, false);
+        state.tab_mut(0).click("new.txt", true, false);
+        let other = remote.join("other.txt");
+        state.apply(Msg::CloudLink {
+            path: other.clone(),
+            result: Ok(ShareLink::Confirm {
+                question: "Create a link anyone can open?".into(),
+            }),
+        });
+        assert_eq!(state.clouds.link_ask.as_ref().unwrap().0, other);
+        state.run(0, Action::CopyLink(remote.join("new.txt")));
+        pump(&mut state, |s| {
+            s.toasts
+                .list
+                .iter()
+                .any(|t| t.text.contains("answer the open question first"))
+        });
+        assert_eq!(state.clouds.link_ask.as_ref().unwrap().0, other, "kept");
+        assert_eq!(
+            answers.asked.load(Ordering::SeqCst),
+            4,
+            "new.txt, not a.txt"
+        );
     }
 
     #[test]

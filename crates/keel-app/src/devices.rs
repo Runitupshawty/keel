@@ -223,9 +223,27 @@ fn node_parts(dir: &VPath) -> Option<(String, Option<String>, String)> {
 /// unknown).
 pub fn node_title(dir: &VPath) -> Option<String> {
     match node_parts(dir)? {
-        (device, None, _) => Some(device),
-        (device, Some(source), rest) if rest.is_empty() => Some(format!("{device} / {source}")),
+        (device, None, _) => Some(capped(&device)),
+        (device, Some(source), rest) if rest.is_empty() => {
+            Some(capped(&format!("{device} / {source}")))
+        }
         _ => None,
+    }
+}
+
+/// Names a paired device chose (up to 256 B) or its sources' labels (up to 16 KiB), cut to
+/// 64 characters for a tab title or a breadcrumb; `node_location` has them whole.
+fn capped(text: &str) -> String {
+    const MAX: usize = 64;
+    match text.char_indices().nth(MAX) {
+        Some(_) => {
+            let cut = text
+                .char_indices()
+                .nth(MAX - 1)
+                .map_or(text.len(), |(i, _)| i);
+            format!("{}…", &text[..cut])
+        }
+        None => text.to_owned(),
     }
 }
 
@@ -233,8 +251,8 @@ pub fn node_title(dir: &VPath) -> Option<String> {
 /// label at a shared source (None elsewhere).
 pub fn node_crumb(dir: &VPath) -> Option<String> {
     match node_parts(dir)? {
-        (device, None, _) => Some(device),
-        (_, Some(source), rest) if rest.is_empty() => Some(source),
+        (device, None, _) => Some(capped(&device)),
+        (_, Some(source), rest) if rest.is_empty() => Some(capped(&source)),
         _ => None,
     }
 }
@@ -661,6 +679,8 @@ impl Devices {
         self.peers.clear();
         self.grants.clear();
         self.offers.clear();
+        // Devices off, another profile or a failed open: no device names stay behind.
+        note_peers(&[]);
         self.inbox = None;
         self.lib = lib.clone();
         let rt = self.rt();
@@ -1910,8 +1930,24 @@ mod tests {
         assert_eq!(tab("/src1").title(), "Laptop / Photos");
         note_source(&at("/src2"), "Docs", false);
         assert_eq!(tab("/src2").title(), "Laptop / Docs");
-        // Forgotten: the id again.
-        note_peers(&[]);
+        // Review 45 minor 6: a long label is cut for the title, whole in the hover.
+        let long = "S".repeat(500);
+        note_source(&at("/src3"), &long, false);
+        let title = tab("/src3").title();
+        assert_eq!(title.chars().count(), 64);
+        assert!(
+            title.starts_with("Laptop / SSS") && title.ends_with('…'),
+            "{title}"
+        );
+        assert_eq!(node_crumb(&at("/src3")).unwrap().chars().count(), 64);
+        assert!(node_location(&at("/src3")).unwrap().ends_with(&long));
+        // Forgotten (review 45 minor 5: Devices turned off): the id again.
+        let dir = VPath::local(std::env::temp_dir());
+        let router = Arc::new(Router::new());
+        let mut state = crate::state::AppState::new(egui::Context::default(), router.clone(), dir);
+        state
+            .devices
+            .reopen(None, &DeviceSettings::default(), &router);
         assert_eq!(tab("/").title(), unknown);
         assert_eq!(tab("/src1").title(), "src1");
         assert_eq!(node_location(&at("/src1")), None);

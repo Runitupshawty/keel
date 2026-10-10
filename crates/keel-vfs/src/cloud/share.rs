@@ -74,6 +74,11 @@ impl Core {
         let url = format!("{}{path_and_query}", self.api);
         let (mut attempt, mut refreshed) = (0, false);
         loop {
+            // The account was removed or replaced: no more requests (a Drive path walk
+            // makes one per folder).
+            if self.stop.load(Ordering::SeqCst) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
+            }
             let token = oauth.access.lock().clone();
             let generation = self.generation.load(Ordering::SeqCst);
             let req = match post {
@@ -100,7 +105,7 @@ impl Core {
             };
             match backoff(attempt, jitter()) {
                 Some(delay) => {
-                    sleep_unless_cancelled(delay, &NEVER)?;
+                    sleep_unless_cancelled(delay, &self.stop)?;
                     attempt += 1;
                 }
                 None => {

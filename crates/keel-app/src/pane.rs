@@ -405,7 +405,10 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                         }
                         _ => dir.display(),
                     };
-                    let r = ui.add(egui::Button::new(label).frame(false));
+                    let mut r = ui.add(egui::Button::new(label).frame(false));
+                    if let Some(full) = crate::devices::node_location(dir) {
+                        r = r.on_hover_text(full);
+                    }
                     if r.clicked() {
                         out.push(Action::Navigate(dir.clone()));
                     } else if r.middle_clicked() {
@@ -544,8 +547,8 @@ pub fn context_menu(
         item(ui, "Mount this folder…", "", a);
     }
     item(ui, "Copy path", "", Action::CopyPath);
-    if entry.is_some_and(|e| crate::clouds::can_link(ui.ctx(), e)) {
-        item(ui, "Copy link", "", Action::CopyLink);
+    if let Some(e) = entry.filter(|e| crate::clouds::can_link(ui.ctx(), e)) {
+        item(ui, "Copy link", "", Action::CopyLink(e.path.clone()));
     }
     if on_item {
         ui.separator();

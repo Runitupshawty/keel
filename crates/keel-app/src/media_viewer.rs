@@ -489,7 +489,7 @@ impl AppState {
                     if video {
                         ui.menu_button("⋯", |ui| {
                             let why = if strip_tex == Tex::Failed {
-                                "Run ffmpeg for this video's strip again (it failed or timed                                  out before; a timeout is otherwise retried after a week)"
+                                "Run ffmpeg for this video's strip again (it failed or timed out before; a timeout is otherwise retried after a week)"
                             } else {
                                 "Run ffmpeg for this video's strip again"
                             };

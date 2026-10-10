@@ -1538,7 +1538,7 @@ impl AppState {
                     n => format!("Copied {n} paths"),
                 });
             }
-            Action::CopyLink => self.copy_link(p),
+            Action::CopyLink(path) => self.copy_link(p, &path),
             Action::OpenWith => {
                 // Keel's picker: the system's apps for the first file (a worker lists them).
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());

@@ -142,6 +142,9 @@ pub trait Provider: Send + Sync {
         let _ = create;
         anyhow::bail!("{} has no share links", p.display())
     }
+    /// The provider is being replaced or removed: `quota` and `share_link` calls in flight
+    /// stop at their next request or retry wait (they fail).
+    fn cancel_requests(&self) {}
     /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
     fn local_copy_cancellable(
         &self,

@@ -2016,3 +2016,28 @@ fn s3_links_are_presigned_for_an_hour_after_a_yes() {
         .unwrap_err();
     assert!(format!("{err:#}").contains("no share links"), "{err:#}");
 }
+
+/// Review 45 minor 9: a link request retrying a failing service (here in the middle of a
+/// Drive path walk) stops once the provider is replaced.
+#[test]
+fn cancel_requests_ends_a_retrying_link_request() {
+    let (api, log) = api_fake(|_, _, _| json_reply(503, json!({})));
+    let drive = Arc::new(api_cloud(account("drive", CloudKind::GoogleDrive), &api));
+    let asking = drive.clone();
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || asking.share_link(&vp("cloud://drive/a/b.txt"), false));
+    while log.lock().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drive.cancel_requests();
+    assert!(worker.join().unwrap().is_err());
+    if std::env::var_os("CI").is_none() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+    let asked = log.lock().len();
+    assert!(asked <= 2, "{asked} requests");
+}

@@ -110,7 +110,7 @@ pub static OPS: &[Operation] = &[
         PathParams => Copies, redundancy, json!({"path": example_file()})),
     now!("redundancy.folder", "The copies of every indexed file in a folder (the first 5000 files).",
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
-    now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline).",
+    now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
         NoParams => Protection, protection_summary, json!({})),
@@ -1005,6 +1005,7 @@ impl From<keel_core::Redundancy> for Copies {
 
 fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
     let s = ctx.lib.stats();
+    let hashing = ctx.lib.remote_hash_settings();
     Ok(LibraryStats {
         sources: s.sources,
         offline_sources: s.offline_sources,
@@ -1027,6 +1028,11 @@ fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
                 offline: p.offline,
             })
             .collect(),
+        hashing: Some(RemoteHashing {
+            remote: hashing.hash_remote,
+            cloud: hashing.hash_cloud,
+            max_remote_bytes: hashing.remote_hash_max_bytes,
+        }),
     })
 }
 

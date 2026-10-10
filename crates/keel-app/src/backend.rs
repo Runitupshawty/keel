@@ -579,27 +579,45 @@ impl LibraryBackend {
     }
 
     /// Settings → Library → Hashing; `on` also starts hashing (or keeps the running job).
+    /// `remote`: a new remote policy (None keeps the library's).
     pub fn set_hashing(
         &self,
         on: bool,
         idle_only: bool,
-        remote: keel_core::RemoteHashSettings,
+        remote: Option<keel_core::RemoteHashSettings>,
     ) -> Result<Option<JobId>> {
         match self {
             LibraryBackend::InProcess(lib) => {
-                lib.set_remote_hash_settings(remote)?;
+                if let Some(remote) = remote {
+                    lib.set_remote_hash_settings(remote)?;
+                }
                 lib.set_hash_after_walk(on);
                 lib.set_hash_idle_only(idle_only);
                 Ok(None)
             }
             LibraryBackend::Daemon(r) => {
-                let done = r.apply(
-                    "hashing.set",
-                    json!({"on": on, "idle_only": idle_only,
-                    "remote": remote.hash_remote, "cloud": remote.hash_cloud,
-                    "max_remote_bytes": remote.remote_hash_max_bytes}),
-                )?;
-                Ok(done.job)
+                let mut params = json!({"on": on, "idle_only": idle_only});
+                if let Some(remote) = remote {
+                    params["remote"] = json!(remote.hash_remote);
+                    params["cloud"] = json!(remote.hash_cloud);
+                    params["max_remote_bytes"] = json!(remote.remote_hash_max_bytes);
+                }
+                Ok(r.apply("hashing.set", params)?.job)
+            }
+        }
+    }
+
+    /// The library's remote hashing policy (None: a daemon from before 0.12 does not say).
+    pub fn remote_hashing(&self) -> Result<Option<keel_core::RemoteHashSettings>> {
+        match self {
+            LibraryBackend::InProcess(lib) => Ok(Some(lib.remote_hash_settings())),
+            LibraryBackend::Daemon(r) => {
+                let s: api::LibraryStats = r.call("library.stats", json!({}))?;
+                Ok(s.hashing.map(|h| keel_core::RemoteHashSettings {
+                    hash_remote: h.remote,
+                    hash_cloud: h.cloud,
+                    remote_hash_max_bytes: h.max_remote_bytes,
+                }))
             }
         }
     }

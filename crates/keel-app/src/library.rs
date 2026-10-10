@@ -268,6 +268,8 @@ pub enum LibMsg {
     /// From the daemon connection `id`'s subscription.
     Remote(u64, Event),
     Stats(LibraryStats),
+    /// The library's remote hashing policy (read when it opens).
+    RemoteHashing(keel_core::RemoteHashSettings),
     Meta {
         tags: Vec<Tag>,
         views: Vec<View>,
@@ -1008,16 +1010,18 @@ impl LibraryUi {
             return;
         }
         self.policy = policy;
+        // The remote policy is the library's: sent only when the user changed it here.
+        let changed = self.remote_hash_settings != remote;
         self.remote_hash_settings = remote;
-        self.sync_hashing();
+        self.sync_hashing(changed.then_some(remote));
     }
 
     /// Off (by policy or paused by hand) cancels a running hash job and keeps walks from
     /// starting one; on starts one. A daemon gets the policy through `hashing.set`.
-    fn sync_hashing(&mut self) {
+    /// `remote`: a new remote policy for the library (None keeps the library's own).
+    pub(crate) fn sync_hashing(&mut self, remote: Option<keel_core::RemoteHashSettings>) {
         let on = self.policy != Hashing::Off && !self.hash_paused;
         let idle_only = self.policy == Hashing::IdleOnly;
-        let remote = self.remote_hash_settings;
         if self.remote().is_some() {
             self.spawn("keel-library-hashing", move |b| {
                 let id = (b.set_hashing(on, idle_only, remote))
@@ -1032,7 +1036,7 @@ impl LibraryUi {
             return;
         }
         if let Some(lib) = &self.lib {
-            if let Err(e) = lib.set_remote_hash_settings(remote) {
+            if let Some(Err(e)) = remote.map(|r| lib.set_remote_hash_settings(r)) {
                 tracing::warn!("remote hashing settings: {e:#}");
                 return;
             }
@@ -1379,9 +1383,21 @@ impl AppState {
                         l.refresh_dups();
                         l.refresh_libraries();
                         self.library.policy = self.settings.library.hashing;
+                        // The library's remote policy wins over settings.toml (a client's
+                        // `hashing.set` may have changed it): read here, never pushed.
                         self.library.remote_hash_settings =
                             self.settings.library.remote_hash_settings();
-                        self.library.sync_hashing();
+                        self.library.sync_hashing(None);
+                        self.library.spawn("keel-library-hashing-policy", |b| {
+                            match b.remote_hashing() {
+                                Ok(Some(r)) => Some(LibMsg::RemoteHashing(r)),
+                                Ok(None) => None,
+                                Err(e) => {
+                                    tracing::warn!("remote hashing policy: {e:#}");
+                                    None
+                                }
+                            }
+                        });
                         self.library.start_media(); // Task 32
                         if first_run {
                             self.toasts.offer(
@@ -1429,6 +1445,13 @@ impl AppState {
                 }
             }
             LibMsg::Stats(stats) => l.stats = stats,
+            LibMsg::RemoteHashing(r) => {
+                // Adopted on both sides: `apply_hashing` sees no change to send back.
+                l.remote_hash_settings = r;
+                let s = &mut self.settings.library;
+                (s.hash_remote, s.hash_cloud, s.remote_hash_max_bytes) =
+                    (r.hash_remote, r.hash_cloud, r.remote_hash_max_bytes);
+            }
             LibMsg::Meta {
                 tags,
                 views,
@@ -1971,7 +1994,7 @@ impl AppState {
             }
             LibCmd::PauseHashing(on) => {
                 self.library.hash_paused = on;
-                self.library.sync_hashing();
+                self.library.sync_hashing(None);
             }
             LibCmd::AddSource => {
                 let root = self

@@ -835,6 +835,21 @@ pub struct LibraryStats {
     /// Each source's own counts (absent from daemons before 0.12).
     #[serde(default)]
     pub per_source: Vec<SourceStats>,
+    /// Which remote files hashing downloads, as `hashing.set` last set them (absent from
+    /// daemons before 0.12). Windows read it from here rather than from their settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashing: Option<RemoteHashing>,
+}
+
+/// The library's remote hashing policy (`hashing.set`'s remote, cloud, max_remote_bytes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RemoteHashing {
+    /// SFTP and other non-cloud remotes.
+    pub remote: bool,
+    /// Cloud accounts.
+    pub cloud: bool,
+    /// Remote files over this size are not hashed.
+    pub max_remote_bytes: u64,
 }
 
 /// One source's counts on the Overview, from its index as last walked.

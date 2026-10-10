@@ -640,6 +640,8 @@ struct Core {
     upload_limit: Option<u64>,
     /// The service's own API (quota, share links): scheme and host, no trailing slash.
     api: String,
+    /// Set by `cancel_requests`: quota and link requests stop retrying.
+    stop: AtomicBool,
 }
 
 /// One cloud account. Cheap to share: the router holds it as `Arc<dyn Provider>`.
@@ -826,6 +828,7 @@ impl CloudProvider {
                 listings: Mutex::default(),
                 ttl: Duration::from_secs(60),
                 list_cap: LIST_CAP,
+                stop: AtomicBool::new(false),
             }),
         })
     }
@@ -1638,6 +1641,9 @@ impl Provider for Fresh<'_> {
 impl Provider for CloudProvider {
     fn scheme(&self) -> &'static str {
         "cloud"
+    }
+    fn cancel_requests(&self) {
+        self.core.stop.store(true, Ordering::SeqCst);
     }
     fn caps(&self) -> Caps {
         Caps {

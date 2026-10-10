@@ -1368,3 +1368,35 @@ fn activity_note_marks_the_user_busy() {
     assert_eq!(done["ok"], true);
     assert!(f.ctx.lib.user_active());
 }
+
+/// Review 46 minor 5: the `library.stats` example in docs/api.md is a `LibraryStats` and
+/// valid under the operation's result schema, and so is a real answer.
+#[test]
+fn library_stats_example_and_answer_match_the_result_schema() {
+    let doc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/api.md")).unwrap();
+    let after = &doc[doc.find("`library.stats` answers").expect("the example")..];
+    let start = after.find("```json").unwrap() + "```json".len();
+    let end = start + after[start..].find("```").unwrap();
+    let example: Value = serde_json::from_str(&after[start..end]).unwrap();
+    let typed: LibraryStats = serde_json::from_value(example.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&typed).unwrap(),
+        example,
+        "every field known"
+    );
+    let op = OPS.iter().find(|o| o.name == "library.stats").unwrap();
+    let validator = jsonschema::validator_for(&(op.result)()).unwrap();
+    let errors =
+        |v: &Value| -> Vec<String> { validator.iter_errors(v).map(|e| e.to_string()).collect() };
+    assert!(errors(&example).is_empty(), "{:?}", errors(&example));
+    let f = fixture(None);
+    add_and_index(&f);
+    let answer = call(&f.ctx, "library.stats", Value::Null).unwrap();
+    assert!(errors(&answer).is_empty(), "{:?}", errors(&answer));
+    assert_eq!(
+        answer["hashing"]["max_remote_bytes"],
+        1u64 << 30,
+        "{answer}"
+    );
+}

@@ -330,13 +330,10 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     assert!(b.dups(1).unwrap().is_empty());
     wait_job(&b, b.index(&id, false).unwrap());
     // "Hash now" keeps the daemon's idle-only policy.
-    b.set_hashing(true, true, Default::default()).unwrap();
+    b.set_hashing(true, true, None).unwrap();
     wait_job(&b, b.hash(true).unwrap());
     assert!(s.daemon.ctx().lib.hash_idle_only());
-    assert_eq!(
-        b.set_hashing(false, true, Default::default()).unwrap(),
-        None
-    );
+    assert_eq!(b.set_hashing(false, true, None).unwrap(), None);
     wait_job(&b, b.integrity(1.0).unwrap());
     wait_job(&b, b.media_job(&id).unwrap());
     let kinds = b.job_kinds().unwrap();
@@ -810,7 +807,7 @@ fn attached_media_tiles_come_from_the_daemons_sidecars() {
     let remote = Remote::connect(s.daemon.name()).unwrap();
     let b = LibraryBackend::Daemon(remote.clone());
     wait_job(&b, b.add_source(def(s.files.path())).unwrap());
-    b.set_hashing(true, false, Default::default()).unwrap();
+    b.set_hashing(true, false, None).unwrap();
     wait_job(&b, b.hash(false).unwrap());
     b.sources().unwrap();
     let ctx = egui::Context::default();
