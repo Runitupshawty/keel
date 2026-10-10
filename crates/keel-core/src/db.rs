@@ -138,6 +138,7 @@ impl Pool {
     }
 
     pub(crate) fn get(&self) -> Result<Conn<'_>> {
+        let io = crate::hash::StoreIo::enter();
         let conn = match self.0.idle.lock().pop() {
             Some(conn) => conn,
             None => {
@@ -149,6 +150,7 @@ impl Pool {
         Ok(Conn {
             pool: &self.0,
             conn: Some(conn),
+            _io: io,
         })
     }
 
@@ -182,6 +184,8 @@ pub(crate) fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> 
 pub(crate) struct Conn<'a> {
     pool: &'a Inner,
     conn: Option<Connection>,
+    // Dropped after the connection is back in the pool.
+    _io: crate::hash::StoreIo,
 }
 
 impl Deref for Conn<'_> {
