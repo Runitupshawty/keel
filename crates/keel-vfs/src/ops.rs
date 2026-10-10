@@ -1052,35 +1052,19 @@ fn copy_archive_bytes(
     }
 }
 
-/// Adds files and folders (recursively, as `<inner_dir>/<name>/...`) to the zip at
-/// `zip_path`, creating it if missing. Entries with the same name are replaced, all others
-/// are copied over without recompression. The new zip is written beside the old one and
-/// renamed over it, so cancel or an error leaves the original untouched.
-#[cfg(feature = "zip")]
-pub fn add_to_zip(
-    zip_path: &Path,
-    src: &[PathBuf],
-    inner_dir: &str,
-    progress: &dyn Fn(Progress),
-    cancel: &AtomicBool,
-) -> Result<()> {
-    use std::collections::BTreeMap;
-    check_cancel(cancel)?;
-    let zip_path = long(zip_path)?;
-    let exists = match fs::symlink_metadata(&zip_path) {
-        Ok(meta) => {
-            anyhow::ensure!(meta.is_file(), "not a zip file: {}", zip_path.display());
-            true
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-        Err(e) => return Err(e.into()),
-    };
+/// What `add_*` writes: archive entry name (folders end in `/`) -> source path and metadata.
+#[cfg(any(feature = "zip", feature = "sevenz", feature = "tar"))]
+pub(crate) type AddFiles = std::collections::BTreeMap<String, (PathBuf, fs::Metadata)>;
+
+/// Walks `src` into `<inner_dir>/<name>/...` entries, refusing links and `archive` itself.
+#[cfg(any(feature = "zip", feature = "sevenz", feature = "tar"))]
+fn collect_add(archive: &Path, exists: bool, src: &[PathBuf], inner_dir: &str) -> Result<AddFiles> {
     let prefix = if inner_dir.trim_matches('/').is_empty() {
         String::new()
     } else {
         format!("{}/", crate::archive::safe_name(inner_dir)?)
     };
-    let mut files = BTreeMap::new();
+    let mut files = AddFiles::new();
     for root in src {
         let root = long(root)?;
         let parent = root.parent().context("cannot add a root")?;
@@ -1092,8 +1076,8 @@ pub fn add_to_zip(
             let meta = fs::symlink_metadata(item.path())?;
             ensure_regular(item.path(), &meta)?;
             anyhow::ensure!(
-                !(exists && same_file::is_same_file(item.path(), &zip_path)?),
-                "cannot add a zip to itself"
+                !(exists && same_file::is_same_file(item.path(), archive)?),
+                "cannot add an archive to itself"
             );
             let relative = item
                 .path()
@@ -1111,11 +1095,16 @@ pub fn add_to_zip(
                 files
                     .insert(name.clone(), (item.path().to_path_buf(), meta))
                     .is_none(),
-                "two sources map to the same zip entry: {name}"
+                "two sources map to the same archive entry: {name}"
             );
         }
     }
-    let mut state = Progress {
+    Ok(files)
+}
+
+#[cfg(any(feature = "zip", feature = "sevenz", feature = "tar"))]
+fn add_progress(files: &AddFiles) -> Result<Progress> {
+    Ok(Progress {
         done_bytes: 0,
         total_bytes: files
             .values()
@@ -1127,7 +1116,172 @@ pub fn add_to_zip(
         done_items: 0,
         total_items: files.len(),
         skipped: 0,
+    })
+}
+
+/// Reads `inner` while counting bytes into `state` and failing once `cancel` is set.
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+pub(crate) struct Feed<'a> {
+    pub inner: &'a mut dyn io::Read,
+    pub state: &'a mut Progress,
+    pub progress: &'a dyn Fn(Progress),
+    pub cancel: &'a AtomicBool,
+}
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+impl io::Read for Feed<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::other("operation cancelled"));
+        }
+        let n = self.inner.read(buf)?;
+        self.state.done_bytes = self.state.done_bytes.saturating_add(n as u64);
+        (self.progress)(self.state.clone());
+        Ok(n)
+    }
+}
+
+/// A staging file path; the file is removed on drop unless committed.
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+struct Staging(Option<PathBuf>);
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Adds files and folders to the archive at `archive` (zip, 7z, `.tar`, `.tar.gz`/`.tgz`),
+/// creating it if missing. Same-named entries are replaced. The new archive is staged beside
+/// the old one (`.keel-partial-<pid>-<n>`), fsynced and renamed over it, so cancel or an
+/// error leaves the original alone and no staging file behind. 7z entries are re-encoded
+/// (the writer has no raw copy); tar entries are streamed through.
+pub fn add_to_archive(
+    archive: &Path,
+    src: &[PathBuf],
+    inner_dir: &str,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let name = archive
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    #[cfg(feature = "zip")]
+    if name.ends_with(".zip") || name.ends_with(".jar") {
+        return add_to_zip(archive, src, inner_dir, progress, cancel);
+    }
+    #[cfg(feature = "sevenz")]
+    if name.ends_with(".7z") {
+        return rewrite_archive(archive, src, inner_dir, progress, cancel, |job| {
+            crate::archive::sevenz_rewrite(job)
+        });
+    }
+    #[cfg(feature = "tar")]
+    if name.ends_with(".tar") || name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        let gzip = !name.ends_with(".tar");
+        return rewrite_archive(archive, src, inner_dir, progress, cancel, move |job| {
+            crate::archive::tar_rewrite(job, gzip)
+        });
+    }
+    let _ = (src, inner_dir, progress, cancel);
+    if name.ends_with(".rar") {
+        anyhow::bail!("RAR archives are read-only; cannot add to {name}");
+    }
+    anyhow::bail!("cannot add to {name}: only zip, 7z, tar and tar.gz archives can be changed")
+}
+
+/// Everything a format writer needs to rewrite one archive.
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+pub(crate) struct Rewrite<'a> {
+    /// The archive being replaced, if it exists.
+    pub old: Option<&'a Path>,
+    pub files: AddFiles,
+    pub out: &'a mut fs::File,
+    pub state: &'a mut Progress,
+    pub progress: &'a dyn Fn(Progress),
+    pub cancel: &'a AtomicBool,
+}
+
+#[cfg(any(feature = "sevenz", feature = "tar"))]
+fn rewrite_archive(
+    archive: &Path,
+    src: &[PathBuf],
+    inner_dir: &str,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    write: impl FnOnce(Rewrite<'_>) -> Result<()>,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let archive = long(archive)?;
+    let exists = match fs::symlink_metadata(&archive) {
+        Ok(meta) => {
+            anyhow::ensure!(meta.is_file(), "not an archive file: {}", archive.display());
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.into()),
     };
+    let files = collect_add(&archive, exists, src, inner_dir)?;
+    let mut state = add_progress(&files)?;
+    progress(state.clone());
+    let parent = archive.parent().context("archive has no parent folder")?;
+    let leaf = archive.file_name().context("archive has no name")?;
+    let staged = parent.join(partial_name(&leaf.to_string_lossy()));
+    // Declared before `out` so the handle closes before the file is removed (Windows).
+    let mut staging = Staging(None);
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .with_context(|| format!("create {}", staged.display()))?;
+    staging.0 = Some(staged.clone());
+    if exists {
+        // Keeps the mode bits of the old archive (a new file gets the umask default).
+        out.set_permissions(fs::metadata(&archive)?.permissions())?;
+    }
+    write(Rewrite {
+        old: exists.then_some(archive.as_path()),
+        files,
+        out: &mut out,
+        state: &mut state,
+        progress,
+        cancel,
+    })?;
+    check_cancel(cancel)?;
+    out.sync_all()?;
+    drop(out);
+    fs::rename(&staged, &archive).with_context(|| format!("replace {}", archive.display()))?;
+    staging.0 = None;
+    progress(state);
+    Ok(())
+}
+
+/// Adds files and folders (recursively, as `<inner_dir>/<name>/...`) to the zip at
+/// `zip_path`, creating it if missing. Entries with the same name are replaced, all others
+/// are copied over without recompression. The new zip is written beside the old one and
+/// renamed over it, so cancel or an error leaves the original untouched.
+#[cfg(feature = "zip")]
+pub fn add_to_zip(
+    zip_path: &Path,
+    src: &[PathBuf],
+    inner_dir: &str,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+) -> Result<()> {
+    check_cancel(cancel)?;
+    let zip_path = long(zip_path)?;
+    let exists = match fs::symlink_metadata(&zip_path) {
+        Ok(meta) => {
+            anyhow::ensure!(meta.is_file(), "not a zip file: {}", zip_path.display());
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.into()),
+    };
+    let files = collect_add(&zip_path, exists, src, inner_dir)?;
+    let mut state = add_progress(&files)?;
     progress(state.clone());
     let parent = zip_path.parent().context("zip has no parent folder")?;
     // A new zip gets the usual umask-filtered mode, not the temp file's private 0600.

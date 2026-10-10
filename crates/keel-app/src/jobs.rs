@@ -201,7 +201,7 @@ impl Jobs {
         let name = zip.file_name().map(|n| n.to_string_lossy().into_owned());
         let title = format!("Adding to {}", name.unwrap_or_default());
         self.spawn(title, tx, move |report, cancel| {
-            keel_vfs::ops::add_to_zip(&zip, &src, "", report, cancel)
+            keel_vfs::ops::add_to_archive(&zip, &src, "", report, cancel)
         })
     }
 

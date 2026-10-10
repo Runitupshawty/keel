@@ -10,6 +10,11 @@ mod tar;
 #[cfg(feature = "zip")]
 mod zip;
 
+#[cfg(feature = "sevenz")]
+pub(crate) use sevenz::rewrite as sevenz_rewrite;
+#[cfg(feature = "tar")]
+pub(crate) use tar::rewrite as tar_rewrite;
+
 use crate::{Caps, Entry, Kind, Provider, VPath};
 use anyhow::{bail, Context, Result};
 use cache::{CacheKey, MaterialiseCache, Pinned};

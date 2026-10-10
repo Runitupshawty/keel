@@ -128,7 +128,7 @@ fn sevenz_metadata_and_single_entry() {
     fs::create_dir(&src).unwrap();
     fs::write(src.join("a.txt"), b"seven hello").unwrap();
     let path = tmp.path().join("seven.bin");
-    sevenz_rust::compress_to_path(&src, &path).unwrap();
+    sevenz_rust2::compress_to_path(&src, &path).unwrap();
     let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
     let entries = archive.entries().unwrap();
     let entry = entries.iter().find(|e| e.inner == "a.txt").unwrap();
@@ -609,7 +609,7 @@ fn corrupt_archives_are_errors_not_panics() {
     fs::create_dir(&src).unwrap();
     fs::write(src.join("a.txt"), [9; 4096]).unwrap();
     let seven = tmp.path().join("good.7z");
-    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    sevenz_rust2::compress_to_path(&src, &seven).unwrap();
     let seven = fs::read(seven).unwrap();
     let mut cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty.zip", Vec::new()),
@@ -692,7 +692,7 @@ fn extracts_7z_folders_and_archives_nested_in_archives() {
     fs::write(src.join("sub/b.txt"), b"seven b").unwrap();
     fs::write(src.join("empty.txt"), b"").unwrap();
     let seven = tmp.path().join("s.7z");
-    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    sevenz_rust2::compress_to_path(&src, &seven).unwrap();
     let dst = tmp.path().join("out7");
     fs::create_dir(&dst).unwrap();
     extract_all(&VPath::local(&seven), &dst, &router).unwrap();
@@ -1035,7 +1035,7 @@ fn solid_7z(tmp: &Path) -> std::path::PathBuf {
         fs::write(src.join(name), format!("file {n} ").repeat(1000)).unwrap();
     }
     let path = tmp.join("solid.7z");
-    let mut writer = sevenz_rust::SevenZWriter::create(&path).unwrap();
+    let mut writer = sevenz_rust2::ArchiveWriter::create(&path).unwrap();
     writer.push_source_path(&src, |_| true).unwrap();
     writer.finish().unwrap();
     path
