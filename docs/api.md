@@ -78,12 +78,12 @@ also act directly: they change no file.
 | `duplicates` | read | Same-content groups, most wasted bytes first |
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
-| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below) |
+| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below); `hashing`: the remote hashing policy (`remote`, `cloud`, `max_remote_bytes`, as `hashing.set` last set them) |
 | `protection.summary` | read | The protection card: `single_copy`, `single_domain`, `unbacked`, `drifted`, `unchecked` (not hashed yet, in none of the other counts), `offline_volumes` |
 | `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
 | `volumes.set` | preview | Set a volume's `state` (`archived` / `lost` / `retired`; `online` makes it automatic again), `backup` mark or `failure_domain` (`""`: the detected one) |
 | `integrity.check` | preview | Re-hash `sample_pct` % (default 1) of the hashed files of one `source` or all, as a job; with `due_days`, only when the last check of every source is that old (the first call starts the clock; `job` absent when nothing is due) |
-| `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one. Optional `remote` (hash SFTP sources, default true), `cloud` (hash cloud sources, default false: downloads can cost egress fees) and `max_remote_bytes` (remote files bigger than this are not hashed, default 1073741824) are kept with the library; omitted ones stay as they are. The preview states all three |
+| `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one. Optional `remote` (hash SFTP sources, default true), `cloud` (hash cloud sources, default false: downloads can cost egress fees) and `max_remote_bytes` (remote files bigger than this are not hashed, default 1073741824) are kept with the library (`library.stats` `hashing` reports them); omitted ones stay as they are. Turning `remote` or `cloud` off stops a running job's downloads from those sources at once. The preview states all three |
 | `media.index` | preview | Thumbnails and metadata for a source's photos and videos, as an idle-priority job |
 | `activity.note` | direct | The user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s (an attached window sends it on input, at most every 4 s) |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`) |
@@ -110,13 +110,17 @@ also act directly: they change no file.
 {"sources":1,"offline_sources":0,"records":1302,"files":1200,"bytes":5368709120,
  "unique_content":580,"running_jobs":0,
  "per_source":[{"id":"3f2a","label":"Photos","files":1200,"folders":101,"bytes":5368709120,
-   "hashed_files":600,"last_walk":1790000000,"offline":false}]}
+   "hashed_files":600,"last_walk":1790000000,"offline":false}],
+ "hashing":{"remote":true,"cloud":false,"max_remote_bytes":1073741824}}
 ```
 
 `folders` counts the folders below the root, `hashed_files` the files with a content hash
 (only those are checked for copies), and `last_walk` (absent before the first walk) is the
 last completed full walk. The counts come from each store's counters and indexes, not a
-scan (about 2 ms for 100,000 records).
+scan (about 2 ms for 100,000 records). `hashing` is kept in the library (`library.db`), not
+in a window's settings: a window reads it when it opens the library (and writes it to its
+`settings.toml`), and sends it only when the user changes it in Settings, so a client's
+`hashing.set` is never reverted by a window opening.
 
 Devices and shares need keel-net: the window's Settings → Devices switch, written as
 `[devices] enabled = true` with `explicit = true` in the profile's `config.toml`
@@ -347,7 +351,12 @@ keel mcp [--allow-execute]
 
 All take `--profile NAME` and `--json`; `--json` prints exactly one JSON document per
 invocation (`sources add` returns the source with its index job under `job`; a failure
-is `{"error": {"code", "message", "data"?}}`). Exit codes: 0 ok, 1 the operation failed,
+is `{"error": {"code", "message", "data"?}}`). `keel sources --json` lists each source as
+`sources.list` does (`id`, `label`, `root`, `kind`, `status`, `indexed_at`, `last_seen`,
+`detail`, `generation`) with its `library.stats` counts added: `files`, `folders`,
+`bytes`, `hashed_files` and `last_walk`. `last_walk` duplicates `indexed_at` (the end of
+the last completed walk, under the name `library.stats` uses), but is kept while the
+source is offline, where `indexed_at` is absent. Exit codes: 0 ok, 1 the operation failed,
 2 usage. Typed at a terminal, a lone argument that names an existing folder opens that
 folder in the window even when it is a subcommand name (`keel devices` where `devices` is
 a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
