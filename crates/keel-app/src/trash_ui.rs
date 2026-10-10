@@ -9,7 +9,7 @@ use keel_vfs::{trashbin, Entry};
 pub fn menu(on_item: bool) -> Vec<(String, &'static str, Action)> {
     let mut items = Vec::new();
     if on_item {
-        items.push(("Restore".to_owned(), "", Action::RestoreTrash));
+        items.push((restore_label().to_owned(), "", Action::RestoreTrash));
         items.push(("Delete permanently".to_owned(), "Del", Action::Delete));
         items.push((String::new(), "", Action::Refresh));
     }
@@ -35,6 +35,16 @@ pub fn context_menu(ui: &mut egui::Ui, entry: Option<&Entry>, out: &mut Vec<Acti
             out.push(action);
             ui.close_menu();
         }
+    }
+}
+
+/// "Restore" puts items back where they came from; on macOS, whose Trash does not record
+/// that, "Restore to…" asks for a folder.
+pub fn restore_label() -> &'static str {
+    if trashbin::KNOWS_ORIGIN {
+        "Restore"
+    } else {
+        "Restore to\u{2026}"
     }
 }
 
@@ -102,6 +112,8 @@ mod tests {
         };
         let row = actions(true);
         assert!(row.contains(&Action::RestoreTrash));
+        assert!(menu(true).iter().any(|(t, ..)| t == restore_label()));
+        assert_eq!(restore_label() == "Restore", !cfg!(target_os = "macos"));
         assert!(row.contains(&Action::Delete));
         assert!(row.contains(&Action::EmptyTrash));
         for no in [Action::Copy, Action::Cut, Action::Paste, Action::Rename] {

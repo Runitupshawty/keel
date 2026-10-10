@@ -16,7 +16,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb), Word documents (docx, with headings, lists, tables and page breaks), PowerPoint slide text (pptx), OpenDocument text, spreadsheets and presentations (odt, ods, odp), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
 - **File operations**: copy, move, rename (F2; Ctrl+F2 renames many at once), new folder/file, and delete to the OS trash (never a permanent delete), with progress, cancel, and skip/overwrite/rename prompts on name clashes. Drag and drop between panes and from other apps.
 - **System clipboard**: Ctrl+C / Ctrl+X / Ctrl+V exchange files with Explorer (including cut) and Finder / file managers on Linux (copy only for now).
-- **Recycle Bin / Trash**: the sidebar's Recycle Bin (Windows) or Trash (Linux) entry opens your bin as a folder showing where each item came from and when it was deleted. Right-click to Restore, Delete permanently or Empty; both deletes ask first. See [Recycle Bin and Trash](#recycle-bin-and-trash).
+- **Recycle Bin / Trash**: the sidebar's Recycle Bin (Windows) or Trash (macOS, Linux) entry opens your bin as a folder showing when each item was deleted and, on Windows and Linux, where it came from. Right-click to Restore (macOS: Restore to…), Delete permanently or Empty; both deletes ask first. See [Recycle Bin and Trash](#recycle-bin-and-trash).
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too; entries of a zip can be deleted, renamed, moved and added. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](#remotes-over-ssh).
@@ -284,7 +284,9 @@ Everything else is read-only: 7z, tar and RAR archives, an archive inside an arc
 
 ## Recycle Bin and Trash
 
-Open **Recycle Bin** (Windows) or **Trash** (Linux, any freedesktop-compliant desktop) in the sidebar. Columns: Name, Original location, Size, Deleted on. **Restore** moves the selected items back to their original folders; if something with the same name is already there Keel stops and says so instead of overwriting it. **Delete permanently** and **Empty Recycle Bin** remove items for good and ask first (Empty shows the item count). The folder is read-only otherwise: nothing can be pasted, created or renamed in it, and a trashed folder cannot be browsed until it is restored. The preview panel shows trashed files where the system keeps them at a normal path (Windows `$R` files, Linux `files/`); otherwise it says there is no preview. macOS is not supported yet.
+Open **Recycle Bin** (Windows) or **Trash** (macOS; Linux, any freedesktop-compliant desktop) in the sidebar. Columns: Name, Original location, Size, Deleted on. **Restore** moves the selected items back to their original folders; if something with the same name is already there Keel stops and says so instead of overwriting it. **Delete permanently** and **Empty Recycle Bin** remove items for good and ask first (Empty shows the item count). The folder is read-only otherwise: nothing can be pasted, created or renamed in it, and a trashed folder cannot be browsed until it is restored. The preview panel shows trashed files where the system keeps them at a normal path (Windows `$R` files, Linux `files/`, every item on macOS); otherwise it says there is no preview.
+
+**macOS.** The Trash entry lists your Trash folder (`~/.Trash`) and the Trash folder of each mounted volume (`/Volumes/<name>/.Trashes/<your user id>`) as plain folders, so Size and Deleted on (the time the item was moved there) are shown but Original location stays empty: macOS keeps Finder's "Put Back" location where other apps cannot read it reliably. **Restore to…** asks for a folder and moves the selected items into it; it stops before moving anything when a name is already there or two items share a name, and an item on another volume than the folder you pick is refused (pick a folder on that volume, or copy it out). **Delete permanently** and **Empty Trash** remove the items for good after the same confirmations. macOS lets an app read the Trash only with Full Disk Access: without it the Trash tab says so (System Settings → Privacy & Security → Full Disk Access).
 
 ## Terminal
 
@@ -476,7 +478,7 @@ What is next, from the known limitations still open:
 
 - Signed and notarized builds, and release builds that include a mount backend.
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
-- Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, the Recycle Bin / Trash folder on macOS, and the native Windows shell context menu.
+- Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, and the native Windows shell context menu.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.

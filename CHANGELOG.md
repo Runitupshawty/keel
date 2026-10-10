@@ -6,14 +6,17 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
+- **Trash on macOS**: the sidebar's Trash entry opens a `trash://` tab on macOS too. It lists `~/.Trash` and the Trash folder of every mounted volume (`/Volumes/<name>/.Trashes/<user id>`) with Size and Deleted on (when the item was moved there). **Restore to…** (the context menu's restore on macOS) asks for a folder and moves the items into it, refusing before anything moves when a name is taken there; **Delete permanently** and **Empty Trash** remove items for good after a confirmation, as on Windows and Linux. Previews work for every trashed item.
 - Devices find each other on the local network (mDNS, iroh's local discovery, service `keelnet1`) next to iroh's internet discovery and relays, which stay as they were, as does the **Relay** setting in Settings → Devices. A short code entered on a device on the same Wi-Fi or LAN reaches the device that shows it with no internet, relay or DNS (about a second on one test machine), and paired devices find each other there after an address change. The codes and tickets are unchanged; the pairing dialog says the code also works on the same network without internet. Local discovery runs only while Devices are on.
 
 ### Fixed
 
+- The Trash is browsable on macOS, which lifts the 0.8.0 limitation that the Recycle Bin / Trash folder was not available there.
 - Short-code pairing works on a network without internet, which lifts the 0.8.0 known limitation that the short code needed internet discovery and only the full ticket worked offline. **Show code** no longer fails with "pairing relay unavailable" when no relay answers: after 5 seconds it shows a code that works on the same network.
 
 ### Known limitations
 
+- On macOS the Trash's Original location column is empty and items cannot go back to where they came from on their own: Finder keeps its "Put Back" locations where Keel does not read them, so you pick the folder. A folder picked on another volume than the item is refused (the move is a rename), and listing the Trash needs Full Disk Access for Keel; without it the tab says so.
 - Where multicast is blocked (a firewall, some guest or corporate networks), local discovery cannot start or hear other devices; Keel logs it once and the short code needs internet discovery there, as before. Devices on different subnets do not see each other.
 - A code shown while no relay answered works on the same network only until the relay connects; its QR code and full ticket carry this device's network addresses but no relay.
 
