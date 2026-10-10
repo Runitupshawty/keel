@@ -2,7 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.16.0] - 2026-10-10
 
 ### Changed
 
@@ -15,8 +15,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Inside an archive or a remote folder the context menu no longer offers Add to zip and Compress to zip, which could only fail there ("Zips can only be made in local folders").
-
-Found by a QA walkthrough of the window ([docs/qa/2026-10-10-walkthrough.md](docs/qa/2026-10-10-walkthrough.md)).
 - F2 selects the name before its extension, so typing a new name replaces it; it used to put the caret after the name and append what you typed ("todo.txtchores"). A folder's whole name is selected.
 - The path bar shows whole parts, as many as fit, with the rest in a **…** menu at its start, the nearest parent first (a long list scrolls). In a narrow pane it used to run under the view buttons, cut its first visible part (or the current folder itself) in half, and draw a scroll bar over the path on hover.
 - With a modal open (Settings → Remotes → Add host…, the cloud account wizard, an icon theme's license), keys no longer reach the file list behind it: a typed letter opened the list's filter, which took the focus from the field being typed in, and Del asked to trash the selected file.
