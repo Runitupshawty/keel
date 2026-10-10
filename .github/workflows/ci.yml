@@ -27,8 +27,23 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  # The web client (crates/keel-web) for the browser: its UI and glue only build for wasm32.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - run: cargo build --locked -p keel-web --target wasm32-unknown-unknown
+      - run: cargo clippy --locked -p keel-web --target wasm32-unknown-unknown --all-targets -- -D warnings
+
   check:
-    needs: build
+    needs: [build, wasm]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok

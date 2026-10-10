@@ -41,7 +41,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// A library path's real path (where its source is); other paths as they are.
-fn real(ctx: &Ctx, p: &VPath) -> Result<VPath> {
+pub(crate) fn real(ctx: &Ctx, p: &VPath) -> Result<VPath> {
     let Some((id, rel)) = keel_vfs::library::split(p) else {
         return Ok(p.clone());
     };

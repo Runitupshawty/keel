@@ -814,13 +814,15 @@ fn plan(ctx: &Ctx, p: PlanParams) -> Result<PlanPreview> {
     if p.paths.is_empty() {
         return Err(ApiError::invalid_params("no paths"));
     }
+    // Library paths (library://<source>/<rel>) are planned on their real paths.
+    let real = |s: &str| crate::files::real(ctx, &vpath(s)?);
     let paths = p
         .paths
         .iter()
-        .map(|s| vpath(s))
+        .map(|s| real(s))
         .collect::<Result<Vec<_>>>()?;
     let dst = || -> Result<VPath> {
-        vpath(
+        real(
             p.to.as_deref()
                 .ok_or_else(|| ApiError::invalid_params("copy and move need `to`"))?,
         )

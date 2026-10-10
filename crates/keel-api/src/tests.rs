@@ -487,3 +487,29 @@ fn reads_ranges_previews_thumbs_and_one_time_links() {
     );
     assert!(crate::files::open_link(&f.ctx, "0".repeat(64).as_str()).is_err());
 }
+
+#[test]
+fn file_plans_take_library_paths() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let preview: PlanPreview = serde_json::from_value(
+        call(
+            &f.ctx,
+            "plan",
+            json!({"op": "rename", "paths": [format!("library://{id}/docs/notes.txt")], "new_name": "notes-2026.txt"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let done = call(
+        &f.ctx,
+        "execute",
+        json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
+    )
+    .unwrap();
+    let job = done["job"].as_i64().unwrap();
+    let info = f.ctx.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert!(f.files.path().join("docs/notes-2026.txt").is_file());
+    assert!(!f.files.path().join("docs/notes.txt").exists());
+}
