@@ -100,8 +100,8 @@ pub struct Node {
     pub(crate) weak: Weak<Node>,
     pub(crate) pairing: tokio::sync::Mutex<Option<crate::pairing::Invitation>>,
     subscribers: Mutex<Vec<crossbeam_channel::Sender<NetEvent>>>,
-    /// Spacedrop: accepted incoming drops by id.
-    pub(crate) drops: Mutex<std::collections::HashMap<String, crate::spacedrop::Incoming>>,
+    /// Spacedrop: incoming offers by device and drop id.
+    pub(crate) drops: Mutex<crate::spacedrop::Drops>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -286,6 +286,7 @@ impl Node {
         state.disconnect(peer);
         state.dialing.remove(peer);
         drop(state);
+        self.forget_drops(peer);
         self.emit(NetEvent::PeerOffline(*peer));
         self.emit(NetEvent::GrantChanged);
         Ok(())

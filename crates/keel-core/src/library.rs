@@ -877,6 +877,12 @@ impl Library {
             .collect()
     }
 
+    /// Appends finished operations (redacted like every entry) in one transaction: what a
+    /// busy logger batches (the library database syncs every commit).
+    pub fn log_ops(&self, entries: &[crate::OpDone]) -> Result<()> {
+        crate::oplog::record_done(&self.shared, entries)
+    }
+
     /// Appends a finished operation (redacted like every entry); returns its id.
     pub fn log_op(
         &self,

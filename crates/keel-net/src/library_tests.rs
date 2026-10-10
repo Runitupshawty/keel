@@ -8,7 +8,12 @@ use std::{
     sync::Arc,
 };
 
+/// Pairs share the machine; a timed test runs alone (`alone`).
+static LOAD: parking_lot::RwLock<()> = parking_lot::RwLock::new(());
+
 pub(crate) struct Pair {
+    /// Held while this pair lives (`alone` gives it up).
+    load: Option<parking_lot::RwLockReadGuard<'static, ()>>,
     pub rt: tokio::runtime::Runtime,
     pub host: Arc<Node>,
     pub guest: Arc<Node>,
@@ -35,6 +40,7 @@ pub(crate) fn folder(root: &Path) -> SourceDef {
 
 /// A host serving a library with one folder source, and a paired guest.
 pub(crate) fn pair() -> Pair {
+    let load = Some(LOAD.read_recursive());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -70,6 +76,7 @@ pub(crate) fn pair() -> Pair {
         (host, guest)
     });
     Pair {
+        load,
         rt,
         host,
         guest,
@@ -80,6 +87,13 @@ pub(crate) fn pair() -> Pair {
         guest_secrets,
         dirs,
     }
+}
+
+/// Waits until no other pair is running, then keeps new ones from starting while the
+/// returned guard lives.
+pub(crate) fn alone(pair: &mut Pair) -> parking_lot::RwLockWriteGuard<'static, ()> {
+    pair.load = None;
+    LOAD.write()
 }
 
 impl Pair {
@@ -119,6 +133,21 @@ impl Pair {
             self.host.close().await;
             self.guest.close().await;
         });
+    }
+}
+
+/// The op log once `done` holds for it (the handler writes it in batches, a moment later).
+pub(crate) fn log_until(
+    lib: &Library,
+    done: impl Fn(&[keel_core::OpLogEntry]) -> bool,
+) -> Vec<keel_core::OpLogEntry> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let log = lib.op_log(10_000).unwrap();
+        if done(&log) || std::time::Instant::now() > deadline {
+            return log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -209,7 +238,7 @@ fn node_provider_round_trip_over_the_library_handler() {
         .flatten()
         .all(|e| !e.file_name().to_string_lossy().starts_with(".keel-partial")));
 
-    let log = pair.lib.op_log(10_000).unwrap();
+    let log = log_until(&pair.lib, |log| log.iter().any(|e| e.kind == "net.rename"));
     let guest = pair.guest.id().to_string();
     assert!(log
         .iter()
@@ -270,7 +299,10 @@ fn links_out_of_the_grant_are_refused_by_the_handler() {
         "nothing was written through the link"
     );
     assert!(!root.join("shared/s.txt").exists());
-    let refused = pair.lib.op_log(100).unwrap();
+    let refused = log_until(&pair.lib, |log| {
+        log.iter()
+            .any(|e| e.kind == "net.stat" && e.ok == Some(false))
+    });
     assert!(refused
         .iter()
         .any(|e| e.kind == "net.stat" && e.ok == Some(false)));

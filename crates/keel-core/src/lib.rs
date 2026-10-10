@@ -43,7 +43,7 @@ pub use library::{
     SourceId, SourceKind, SourceStatus, SourceSummary,
 };
 pub use media::{ffmpeg_available, read_meta, MediaMeta, MAX_PIXELS};
-pub use oplog::OpLogEntry;
+pub use oplog::{OpDone, OpLogEntry};
 pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
 };

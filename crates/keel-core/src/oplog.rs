@@ -156,6 +156,32 @@ pub(crate) fn record(lib: &Shared, kind: &str, payload: &Value, result: &str) ->
     Ok(conn.last_insert_rowid())
 }
 
+/// A finished operation for `record_done`: kind, payload, result, ok.
+pub type OpDone = (String, Value, String, bool);
+
+/// Logs finished operations (redacted) in one transaction: one sync for the lot.
+pub(crate) fn record_done(lib: &Shared, entries: &[OpDone]) -> Result<()> {
+    let roots = roots(lib);
+    let conn = lib.db.get()?;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO op_log(ts, kind, payload, result, ok) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for (kind, payload, result, ok) in entries {
+            stmt.execute(params![
+                crate::now(),
+                kind,
+                redact(payload, &roots).to_string(),
+                redact_text(result, &roots),
+                ok
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub(crate) fn set_result(lib: &Shared, id: i64, result: &str, ok: bool) -> Result<()> {
     let result = redact_text(result, &roots(lib));
     lib.db.get()?.execute(

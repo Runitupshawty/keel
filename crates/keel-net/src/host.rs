@@ -12,55 +12,59 @@ use keel_vfs::{Entry, Kind, Provider, VPath};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::{
-    collections::HashMap,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
 };
-use tokio::{io::AsyncRead, sync::watch};
+use tokio::io::AsyncRead;
 
 pub struct LibraryHandler {
     lib: Arc<Library>,
     /// Spacedrop: the inbox and who decides on offers (`on_drop`).
     drops: Mutex<Option<(PathBuf, Ask)>>,
-    /// Offers being decided or decided, by drop id (a sender re-offers while waiting).
-    offers: Mutex<HashMap<String, watch::Receiver<Option<bool>>>>,
+    /// Op log entries, written in batches by a logger thread (each library commit syncs;
+    /// one per served request or received file would cap a drop of small files at a few
+    /// dozen a second).
+    log: crossbeam_channel::Sender<keel_core::OpDone>,
 }
 
 type Ask = Arc<dyn Fn(IncomingDrop) + Send + Sync>;
 
-/// A Spacedrop offer waiting for an answer (`LibraryHandler::on_drop`).
-pub struct IncomingDrop {
-    pub peer: PeerId,
-    /// The sending device's label.
-    pub label: String,
-    pub id: String,
-    /// Relative paths and sizes.
-    pub files: Vec<(String, u64)>,
-    pub reply: DropReply,
-}
-
-/// Answers an offer once; dropped unanswered, the offer is declined.
-pub struct DropReply(watch::Sender<Option<bool>>);
-impl DropReply {
-    pub fn answer(self, accept: bool) {
-        let _ = self.0.send(Some(accept));
-    }
-}
-
 impl LibraryHandler {
     pub fn new(lib: Arc<Library>) -> Self {
+        let (log, entries) = crossbeam_channel::unbounded::<keel_core::OpDone>();
+        let logger = lib.clone();
+        // Ends (after writing what is queued) once the handler is gone.
+        let _ = std::thread::Builder::new()
+            .name("keel-net-oplog".into())
+            .spawn(move || {
+                while let Ok(first) = entries.recv() {
+                    let mut batch = vec![first];
+                    batch.extend(entries.try_iter().take(999));
+                    if let Err(e) = logger.log_ops(&batch) {
+                        tracing::warn!("op log: {e:#}");
+                    }
+                }
+            });
         Self {
             lib,
             drops: Mutex::default(),
-            offers: Mutex::default(),
+            log,
         }
     }
 
+    fn log_op(&self, kind: String, payload: serde_json::Value, result: String, ok: bool) {
+        let _ = self.log.send((kind, payload, result, ok));
+    }
+
     /// Accepts Spacedrop offers into `inbox` when `ask` answers yes (it may answer later,
-    /// from another thread). Without this, every offer is declined.
+    /// from another thread; it must not block). Without this, every offer is declined.
+    /// Staging folders in `inbox` that an earlier session left untouched for
+    /// `spacedrop::STALE` are swept (in the background).
     pub fn on_drop(&self, inbox: PathBuf, ask: impl Fn(IncomingDrop) + Send + Sync + 'static) {
+        let swept = inbox.clone();
+        std::thread::spawn(move || crate::spacedrop::sweep(&swept, crate::spacedrop::STALE));
         *self.drops.lock() = Some((inbox, Arc::new(ask)));
     }
 
@@ -84,29 +88,27 @@ impl LibraryHandler {
             Ok(_) => ("ok".to_owned(), true),
             Err(e) => (format!("{e:#}"), false),
         };
-        if let Err(e) = self.lib.log_op(&format!("net.{op}"), &payload, &text, ok) {
-            tracing::warn!("op log: {e:#}");
-        }
+        self.log_op(format!("net.{op}"), payload, text, ok);
         result
     }
 }
 
-/// The source `id` as served to devices (a device source is never re-shared).
+/// Whether a source may be served to devices: another device's source never is.
+fn served(def: &keel_core::SourceDef) -> bool {
+    def.kind != SourceKind::Device && def.root.scheme != "node"
+}
+
+/// The source `id` as served to devices.
 fn source(lib: &Library, id: &str) -> Result<Arc<keel_core::Source>> {
     lib.source(&SourceId(id.into()))
-        .filter(|s| s.def.kind != SourceKind::Device)
+        .filter(|s| served(&s.def))
         .context("no such source")
 }
 
+/// Canonical paths compare exactly: a case or Unicode variant of a name is refused (the
+/// real name is what a listing shows).
 fn same(a: &VPath, b: &VPath) -> bool {
-    let nocase = a.scheme == "file" && cfg!(any(windows, target_os = "macos"));
-    a.scheme == b.scheme
-        && a.authority == b.authority
-        && if nocase {
-            a.path.to_lowercase() == b.path.to_lowercase()
-        } else {
-            a.path == b.path
-        }
+    a.scheme == b.scheme && a.authority == b.authority && a.path == b.path
 }
 
 /// `rel` inside source `id` and its provider, refused when the real location is not
@@ -233,7 +235,7 @@ impl Handler for LibraryHandler {
         self.lib
             .sources()
             .into_iter()
-            .filter(|s| s.kind != SourceKind::Device)
+            .filter(|s| s.kind != SourceKind::Device && s.root.scheme != "node")
             .map(|s| SourceInfo {
                 id: s.id.0,
                 label: s.label,
@@ -383,39 +385,19 @@ impl Handler for LibraryHandler {
         })
         .await
     }
-    /// Asks `on_drop`'s callback once per drop id; a re-offer while it is being decided
-    /// waits for the same answer.
-    async fn drop_offer(
-        &self,
-        ctx: &RequestCtx,
-        id: &str,
-        files: &[(String, u64)],
-    ) -> Option<PathBuf> {
+    /// Hands the offer to `on_drop`'s callback (the node asks once per device, drop id
+    /// and file list).
+    fn drop_offer(&self, offer: IncomingDrop) -> Option<PathBuf> {
         let (inbox, ask) = self.drops.lock().clone()?;
-        let mut rx = {
-            let mut offers = self.offers.lock();
-            match offers.get(id) {
-                Some(rx) => rx.clone(),
-                None => {
-                    let (tx, rx) = watch::channel(None);
-                    offers.insert(id.to_owned(), rx.clone());
-                    ask(IncomingDrop {
-                        peer: ctx.peer,
-                        label: ctx.label.clone(),
-                        id: id.to_owned(),
-                        files: files.to_vec(),
-                        reply: DropReply(tx),
-                    });
-                    rx
-                }
-            }
-        };
-        let accepted = rx.wait_for(Option::is_some).await.ok().and_then(|v| *v) == Some(true);
-        let payload = json!({"peer": ctx.peer.0.to_string(), "device": ctx.label,
-            "drop": id, "files": files.len()});
-        let result = if accepted { "accepted" } else { "declined" };
-        let _ = self.lib.log_op("net.drop-offer", &payload, result, true);
-        accepted.then_some(inbox)
+        ask(offer);
+        Some(inbox)
+    }
+    /// `net.<op>` with the device's id and label.
+    fn log(&self, ctx: &RequestCtx, op: &str, mut payload: serde_json::Value, ok: bool) {
+        payload["peer"] = json!(ctx.peer.0.to_string());
+        payload["device"] = json!(ctx.label);
+        let result = if ok { "ok" } else { "declined or failed" };
+        self.log_op(format!("net.{op}"), payload, result.into(), ok);
     }
     /// Every local volume together.
     async fn storage(&self, _: &RequestCtx) -> Option<Storage> {

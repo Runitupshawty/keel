@@ -12,7 +12,7 @@ use crate::state::{AppState, Msg};
 use crate::worker;
 use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
-use keel_core::{Library, SourceKind, SourceSummary};
+use keel_core::{Library, SourceId, SourceKind, SourceSummary};
 use keel_net::{
     Access, Grant, IncomingDrop, LibraryHandler, Link, NetEvent, Node, NodeOptions, NodeProvider,
     PairCode, Peer, PeerId, Request,
@@ -236,6 +236,20 @@ pub fn shareable(sources: &[SourceSummary]) -> Vec<&SourceSummary> {
     sources
         .iter()
         .filter(|s| s.kind != SourceKind::Device)
+        .collect()
+}
+
+/// The library's device sources that browse `peer` (they leave with it when it is
+/// forgotten: what they claim to hold is that device's word).
+pub fn device_sources_of(sources: &[SourceSummary], peer: &PeerId) -> Vec<SourceId> {
+    sources
+        .iter()
+        .filter(|s| {
+            s.root.scheme == "node"
+                && (s.root.authority.eq_ignore_ascii_case(&peer.0.to_string())
+                    || s.root.authority.parse::<keel_net::NodeId>().ok() == Some(peer.0))
+        })
+        .map(|s| s.id.clone())
         .collect()
 }
 
@@ -519,6 +533,8 @@ impl Devices {
                 drop,
                 always: false,
             }));
+        // The sender cancelled, or the device was forgotten.
+        self.offers.retain(|o| !o.drop.reply.withdrawn());
         self.refresh();
         if let (Some(node), Some(rt)) = (&self.node, &self.rt) {
             if Instant::now() >= self.next_ping {
@@ -726,6 +742,9 @@ impl AppState {
                     self.toasts
                         .error(format!("Could not forget the device: {e:#}"));
                 }
+                for id in device_sources_of(&self.library.sources, &peer) {
+                    self.library_cmd(p, crate::library::LibCmd::RemoveConfirmed(id));
+                }
                 self.devices.refresh();
             }
             DevCmd::Answer { id, accept, always } => {
@@ -846,7 +865,8 @@ pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "Forget {label}? Its shares end now; pair again to reconnect."
+                    "Forget {label}? Its shares end now and its folders leave the library; \
+                     pair again to reconnect."
                 ));
                 ui.horizontal(|ui| {
                     if ui.button("Forget").clicked() {
@@ -1331,5 +1351,24 @@ mod tests {
         let ids: Vec<_> = shareable(&sources).iter().map(|s| s.id.0.clone()).collect();
         assert_eq!(ids, ["a", "b"], "device sources are never re-shared");
         assert_eq!(clean_subtree(" \\photos\\2024/ "), "photos/2024");
+    }
+
+    #[test]
+    fn forgetting_a_device_takes_its_sources_along() {
+        let at = |id: &str, root: &str| SourceSummary {
+            root: VPath::parse(root).unwrap(),
+            ..source(id, id, SourceKind::Device)
+        };
+        let sources = vec![
+            at("mine", &format!("node://{}/docs", peer(1).0)),
+            at("also", &format!("node://{}/photos", peer(1).0)),
+            at("other", &format!("node://{}/docs", peer(2).0)),
+            source("local", "Local", SourceKind::Folder),
+        ];
+        let ids: Vec<_> = device_sources_of(&sources, &peer(1))
+            .into_iter()
+            .map(|s| s.0)
+            .collect();
+        assert_eq!(ids, ["mine", "also"]);
     }
 }
