@@ -33,6 +33,7 @@ roxmltree = "0.19"
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
 keel-search = { path = "../keel-search" }
 keel-core = { path = "../keel-core" }
+keel-api = { path = "../keel-api" }
 keel-preview = { path = "../keel-preview" }
 keel-term = { path = "../keel-term" }
 keel-net = { path = "../keel-net" }
@@ -69,15 +70,10 @@ global-hotkey = "0.8.0"
 [target.'cfg(not(windows))'.dependencies]
 arboard = { version = "3.6", default-features = false }
 
-# Single instance: the user's uid for the socket folder and peer checks.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-# Single instance: the pipe's security descriptor (SDDL) for interprocess.
-[target.'cfg(windows)'.dependencies]
-widestring = "1"
-
 [dev-dependencies]
+# tests/cli.rs: temp library folders, unique profile names.
+tempfile = "3"
+getrandom.workspace = true
 # The real cloud provider over an in-memory service in the job tests.
 opendal = { workspace = true, features = ["services-memory"] }
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

@@ -8,3 +8,4 @@ target/deps/
 *.old.png
 *.new.png
 crates/keel-app/tests/snapshots/*.png
+tmp/

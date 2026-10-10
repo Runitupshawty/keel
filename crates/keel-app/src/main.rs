@@ -41,6 +41,7 @@ mod view_media;
 mod worker;
 // --- Task 24 ---
 mod cli;
+mod commands; // Task 37
 mod dragout;
 mod hotkey;
 mod index_ui;
@@ -60,6 +61,20 @@ fn main() -> eframe::Result<()> {
     }
     let request = cli.request();
     // --- end Task 24 ---
+    // --- Task 37 ---
+    // `keel <subcommand>`: no window, output on the shell's console.
+    if let Some(cmd) = cli.command.clone() {
+        #[cfg(windows)]
+        if cmd != cli::Command::Mcp {
+            keel_vfs::desktop::attach_parent_console();
+        }
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter("warn")
+            .init();
+        std::process::exit(commands::run(cmd, &cli::profile(), cli.json));
+    }
+    // --- end Task 37 ---
     tracing_subscriber::fmt()
         .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
         .init();
