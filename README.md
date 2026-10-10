@@ -66,6 +66,7 @@ The guide covers everyday use; these pages hold the details.
 | Devices and Spacedrop, library sync, web client, phones | [docs/devices.md](docs/devices.md) |
 | Daemon, CLI and MCP, mounts | [docs/daemon.md](docs/daemon.md) |
 | Every operation of the API, with schemas and examples | [docs/api.md](docs/api.md) |
+| Measured speed on realistic data, what scales how, running the measurements | [docs/performance.md](docs/performance.md) |
 | Changes and known limitations of each release | [CHANGELOG.md](CHANGELOG.md) |
 
 ### Phones

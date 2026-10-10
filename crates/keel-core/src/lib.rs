@@ -21,6 +21,8 @@ mod jobs;
 mod library;
 mod media;
 mod oplog;
+#[cfg(test)]
+mod perf_tests;
 mod plan;
 mod protect;
 mod search;

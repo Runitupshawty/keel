@@ -245,19 +245,76 @@ pub(crate) fn full_hash(path: &Path, size: u64, stop: &AtomicBool) -> Result<[u8
     Ok(*h.finalize().as_bytes())
 }
 
+#[cfg(windows)]
+thread_local! {
+    /// Set when this thread is in Windows background mode (`background_thread`): how many
+    /// pooled connections it holds (`StoreIo`).
+    static BACKGROUND: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(windows)]
+fn background_mode(on: bool) -> bool {
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+        THREAD_MODE_BACKGROUND_END,
+    };
+    let mode = if on {
+        THREAD_MODE_BACKGROUND_BEGIN
+    } else {
+        THREAD_MODE_BACKGROUND_END
+    };
+    // SAFETY: the pseudo handle of the calling thread.
+    unsafe { SetThreadPriority(GetCurrentThread(), mode) }.is_ok()
+}
+
+/// Held with a pooled store connection: a thread in Windows background mode leaves it
+/// meanwhile, as background I/O priority makes every SQLite commit wait (2 ms instead of
+/// 40 us: 10,000 small files hashed in 28 s instead of 3 s). The files a job reads are
+/// still read in background mode. Not `Send` (it is the calling thread's priority).
+pub(crate) struct StoreIo(std::marker::PhantomData<*const ()>);
+
+impl StoreIo {
+    pub(crate) fn enter() -> StoreIo {
+        #[cfg(windows)]
+        BACKGROUND.with(|b| match b.get() {
+            Some(0) => {
+                background_mode(false);
+                b.set(Some(1));
+            }
+            Some(n) => b.set(Some(n + 1)),
+            None => {}
+        });
+        StoreIo(std::marker::PhantomData)
+    }
+}
+
+impl Drop for StoreIo {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        BACKGROUND.with(|b| match b.get() {
+            Some(1) => {
+                background_mode(true);
+                b.set(Some(0));
+            }
+            Some(n) if n > 1 => b.set(Some(n - 1)),
+            _ => {}
+        });
+    }
+}
+
 /// Lowest scheduling priority for the calling thread (Windows and macOS also lower its IO
-/// priority). Best effort.
+/// priority, Windows only while it holds no pooled store connection). Best effort.
 pub(crate) fn background_thread() {
     #[cfg(windows)]
     {
         use windows::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, THREAD_PRIORITY_IDLE,
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE,
         };
-        // SAFETY: the pseudo handle of the calling thread.
-        unsafe {
-            if SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN).is_err() {
-                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
-            }
+        if background_mode(true) {
+            BACKGROUND.with(|b| b.set(Some(0)));
+        } else {
+            // SAFETY: the pseudo handle of the calling thread.
+            let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) };
         }
     }
     #[cfg(target_os = "macos")]

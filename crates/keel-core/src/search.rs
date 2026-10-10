@@ -556,13 +556,7 @@ impl LibraryQuery {
         }
         // Tag names resolve through the store's copy of the library's tags (nested included).
         for tag in &self.tags {
-            sql.push_str(
-                " AND r.id IN (SELECT record FROM record_tag WHERE tag IN (
-                     WITH RECURSIVE t(id) AS (
-                         SELECT id FROM tag WHERE name = ? COLLATE NOCASE
-                         UNION SELECT tag.id FROM tag JOIN t ON tag.parent = t.id)
-                     SELECT id FROM t))",
-            );
+            sql.push_str(&format!(" AND r.id IN ({TAGGED})"));
             args.push(Value::Text(tag.clone()));
         }
         Some((sql, args))
@@ -756,6 +750,13 @@ fn search_filters(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Librar
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The records carrying the tag named by the one parameter, or a tag nested in it.
+const TAGGED: &str = "SELECT record FROM record_tag WHERE tag IN (
+    WITH RECURSIVE t(id) AS (
+        SELECT id FROM tag WHERE name = ? COLLATE NOCASE
+        UNION SELECT tag.id FROM tag JOIN t ON tag.parent = t.id)
+    SELECT id FROM t)";
+
 /// Rank of a media-only (camera or keyword) hit: worse than any name or path hit.
 const MEDIA_RANK: f64 = 10.0;
 
@@ -814,6 +815,18 @@ fn search_text(
             .join(" AND ")
     };
     let m = all_of(&parts);
+    // A tag holding few records: those that match, scored (ranking every match and then
+    // dropping the untagged ones read all of a common word's matches twice).
+    if let Some(tag) = q.tags.first() {
+        let tag = Value::Text(tag.clone());
+        if count_upto(src, TAGGED, std::slice::from_ref(&tag), NARROW_CAP)? <= NARROW_CAP {
+            let cand = format!(
+                "SELECT DISTINCT record AS id, 0.0 AS rank FROM ({TAGGED})
+                 WHERE record IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)"
+            );
+            return run(src, q, now, &cand, vec![tag, Value::Text(m)], &[]);
+        }
+    }
     let matches = count(src, &m)?;
     let candidates = (q.max * 4).max(1_000) as i64;
     const ALL: &str = "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?";
