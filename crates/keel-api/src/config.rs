@@ -1,6 +1,7 @@
 //! What a host (daemon or in-process CLI) reads from Keel's settings: the library name,
 //! whether keel-net is on and the SFTP hosts and cloud accounts, from
-//! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `[devices] enabled`,
+//! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `remote_poll_secs`,
+//! `[devices] enabled`,
 //! `[devices] inbox`, `auto_accept` and `relay`, `[[remotes]]`, `[[clouds]]`); the daemon's
 //! socket name and WebSocket token.
 
@@ -60,6 +61,9 @@ pub struct HostConfig {
     /// check (keel-app's Settings → Library).
     pub integrity_days: u32,
     pub integrity_pct: f64,
+    /// `[library] remote_poll_secs`: how often watched remote and cloud sources are asked
+    /// what changed (keel-app's Settings → Library; default 120).
+    pub remote_poll_secs: u64,
     pub net: bool,
     /// `[devices] inbox`: where Spacedrops land on this machine (None: `<data dir>/inbox`).
     pub inbox: Option<PathBuf>,
@@ -139,6 +143,11 @@ impl HostConfig {
                 .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
                 .filter(|p| *p > 0.0 && *p <= 100.0)
                 .unwrap_or(keel_core::DEFAULT_SAMPLE_PCT),
+            remote_poll_secs: get("library", "remote_poll_secs")
+                .and_then(|v| v.as_integer())
+                .and_then(|s| u64::try_from(s).ok())
+                .filter(|s| *s > 0)
+                .unwrap_or(keel_core::POLL_INTERVAL.as_secs()),
             net,
             inbox: get("devices", "inbox")
                 .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
@@ -263,16 +272,18 @@ mod tests {
         let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
         assert_eq!((cfg.library.as_str(), cfg.net), (DEFAULT_LIBRARY, false));
         assert_eq!((cfg.integrity_days, cfg.integrity_pct), (7, 1.0));
+        assert_eq!(cfg.remote_poll_secs, 120);
         let p = dir.path().join("profiles/work");
         std::fs::create_dir_all(&p).unwrap();
         std::fs::write(
             p.join("config.toml"),
-            "theme = \"dark\"\n[library]\nname = \"lab\"\nintegrity_days = 0\nintegrity_pct = 2.5\n[net]\nenabled = true\n",
+            "theme = \"dark\"\n[library]\nname = \"lab\"\nintegrity_days = 0\nintegrity_pct = 2.5\nremote_poll_secs = 30\n[net]\nenabled = true\n",
         )
         .unwrap();
         let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
         assert_eq!((cfg.library.as_str(), cfg.net), ("lab", true));
         assert_eq!((cfg.integrity_days, cfg.integrity_pct), (0, 2.5));
+        assert_eq!(cfg.remote_poll_secs, 30);
         // `[devices] enabled` (the app's switch) wins once it is explicit.
         std::fs::write(
             p.join("config.toml"),

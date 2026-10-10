@@ -1009,13 +1009,18 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                 lib_settings.remote_hash_max_bytes = mib << 20;
             }
             ui.end_row();
-            ui.label("Rescan remote sources");
+            ui.label("Check remote sources every");
             ui.add(
-                egui::Slider::new(&mut lib_settings.rescan_minutes, 5..=1440)
+                egui::Slider::new(&mut lib_settings.remote_poll_secs, 30..=3600)
                     .logarithmic(true)
-                    .suffix(" min"),
+                    .suffix(" s"),
             )
-            .on_hover_text("Local sources are watched live (from the next start for this value)");
+            .on_hover_text(
+                "Google Drive and Dropbox report their changes, SFTP folders are checked for \
+                 new and removed files, other sources are walked again (every 5 minutes or \
+                 this interval, whichever is longer); local sources are watched live. From the \
+                 next start for this value.",
+            );
             ui.end_row();
             ui.label("Details view");
             ui.checkbox(&mut lib_settings.tags_column, "Tags column");

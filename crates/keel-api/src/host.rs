@@ -85,6 +85,7 @@ impl Host {
         })?;
         let router = Arc::new(router(cfg));
         lib.set_router(router.clone());
+        lib.set_remote_poll(std::time::Duration::from_secs(cfg.remote_poll_secs));
         let lib = Arc::new(lib);
         let mut ctx = Ctx::new(lib.clone(), router);
         ctx.config_dir = Some(cfg.config_dir.clone());

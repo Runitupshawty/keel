@@ -2,6 +2,27 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Remote and cloud library sources follow changes between walks. Every 2 minutes Keel asks each one what changed and applies it to the index the way a local folder's changes are applied: new, changed, renamed, moved and deleted files and folders show up in library views and search without walking the source, a new folder is indexed with everything in it, and the protection counters are recounted once per batch of changes. Google Drive sources read Drive's change feed (`changes.list`, with removed and trashed files), Dropbox sources theirs (`list_folder/continue`). Each source keeps its position in the feed with its index, taken just before each walk so nothing that changes during the walk is missed. A source is walked again at once when the service no longer accepts that position (an old Drive page token, a Dropbox `reset`) or reports a change it cannot place, and every 6 hours like a local source.
+- SFTP sources are checked cheaply every 2 minutes: every indexed folder's modified time is read, and only the folders whose time moved are listed again (a POSIX server moves a folder's time when an entry is added, removed or renamed in it). New, deleted and renamed files and new folders appear without a walk; a full walk still runs every 6 hours.
+- S3 sources whose bucket (or prefix) holds at most 1,000 objects are checked with one list request every 2 minutes and walked only when the object count, total size or newest modification time changed. Bigger buckets and WebDAV accounts are walked every 5 minutes, or at the check interval when that is longer (they were walked every 15 minutes).
+- Settings → Library → **Check remote sources every** (`[library] remote_poll_secs` in the profile's `config.toml`, 120 seconds by default, 30 seconds to an hour) sets how often remote and cloud sources are asked what changed. It replaces **Rescan remote sources** (`rescan_minutes`, which is no longer read). keel-daemon reads it when it starts.
+- keel-vfs: `Provider::changes` (a change feed: `ChangeFeed`, `ChangeCursor`, `ChangedPath`, `ChangeKind`, and `FeedError::Unsupported` or `CursorRejected`) and `Provider::folder_times_track_entries`. keel-core: `Library::set_remote_poll`, `WatchConfig::walk` and `WatchConfig::for_source`, `WALK_INTERVAL`; `POLL_INTERVAL` is now 2 minutes.
+
+### Fixed
+
+- Remote and cloud sources no longer wait up to 15 minutes for a full re-walk to show changes: Google Drive and Dropbox follow their change feeds and SFTP sources their folders' times, which lifts the 0.6.0 known limitation that remote and cloud sources were found changed only by re-walking on a poll interval. S3 buckets of up to 1,000 objects are walked only when they changed; bigger buckets and WebDAV accounts are still walked, every 5 minutes.
+
+### Known limitations
+
+- On SFTP, a change inside an existing file (same name, nothing added or removed in its folder) is found by the 6-hour walk, as is an entry added in the same second the folder was last listed (SFTP folder times are whole seconds). Each check reads every indexed folder's time one after another, which takes a while for tens of thousands of folders.
+- A watched Google Drive source keeps every item of the drive in memory by id (about 100 bytes each) to place moves and renames.
+- Dropbox sources are asked every check interval; Dropbox's long poll is not used.
+- A new **Check remote sources every** value applies from the next start, like the rescan interval it replaces.
+
 ## [0.12.0] - 2026-10-10
 
 ### Added

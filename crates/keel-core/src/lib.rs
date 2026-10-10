@@ -35,7 +35,7 @@ pub use hash::{
 };
 pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
-    RECONCILE_INTERVAL,
+    RECONCILE_INTERVAL, WALK_INTERVAL,
 };
 pub use integrity::{IntegrityJob, IntegrityResult, DEFAULT_SAMPLE_PCT, INTEGRITY_EVERY};
 pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};

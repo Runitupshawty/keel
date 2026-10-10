@@ -59,8 +59,9 @@ pub struct SourceDef {
     pub include_hidden: bool,
     /// gitignore-style patterns, matched against paths relative to `root`.
     pub ignore: Vec<String>,
-    /// Remote and cloud sources: seconds between polls by `Indexer::watch` (None: every
-    /// `POLL_INTERVAL`).
+    /// Remote and cloud sources: seconds between polls by `Indexer::watch`, and between
+    /// walks of a source with no change feed (None: the library's `remote_poll`, by default
+    /// `POLL_INTERVAL`, and `WALK_INTERVAL`).
     #[serde(default)]
     pub poll_secs: Option<u64>,
     /// Hash this source although it is a network share (a UNC path or `SourceKind::Share`).
@@ -487,6 +488,8 @@ pub(crate) struct Shared {
     pub(crate) protection_revision: AtomicU64,
     /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
     pub(crate) utc_offset: AtomicI64,
+    /// Seconds between remote change polls of watched sources (`Library::set_remote_poll`).
+    pub(crate) remote_poll: AtomicU64,
     /// `Jobs::subscribe` receivers.
     pub(crate) job_events: Mutex<Vec<crossbeam_channel::Sender<crate::JobEvent>>>,
     pub(crate) jobs: JobState,
@@ -539,10 +542,11 @@ impl Shared {
         if self.closing() || src.removed.load(Ordering::SeqCst) {
             return;
         }
-        let mut cfg = WatchConfig::default();
-        if let Some(secs) = src.def.poll_secs {
-            cfg.poll = Duration::from_secs(secs);
+        let cfg = WatchConfig {
+            poll: Duration::from_secs(self.remote_poll.load(Ordering::SeqCst).max(1)),
+            ..WatchConfig::default()
         }
+        .for_source(src);
         let weak = Arc::downgrade(self);
         let after_walk = move |s: &Source| {
             if let Some(lib) = Weak::upgrade(&weak) {
@@ -712,6 +716,7 @@ impl Library {
             recount_pending: Mutex::default(),
             protection_revision: AtomicU64::new(0),
             utc_offset: AtomicI64::new(0),
+            remote_poll: AtomicU64::new(crate::POLL_INTERVAL.as_secs()),
             job_events: Mutex::new(Vec::new()),
             jobs: JobState::default(),
             watchers: Mutex::new(HashMap::new()),
@@ -986,6 +991,12 @@ impl Library {
     /// on.
     pub fn set_hash_after_walk(&self, on: bool) {
         self.shared.hash_after_walk.store(on, Ordering::SeqCst);
+    }
+
+    /// How often watched remote and cloud sources are asked what changed (`[library]
+    /// remote_poll_secs`; default `POLL_INTERVAL`). Watchers armed from now on use it.
+    pub fn set_remote_poll(&self, every: Duration) {
+        (self.shared.remote_poll).store(every.as_secs().max(1), Ordering::SeqCst);
     }
 
     /// Seconds east of UTC (local time) for `dm:` dates in `LibrarySearcher` queries;

@@ -88,9 +88,10 @@ pub struct LibrarySettings {
     pub hash_remote: bool,
     pub hash_cloud: bool,
     pub remote_hash_max_bytes: u64,
-    /// Remote and cloud sources are re-walked this often (local sources are watched live
-    /// and reconciled every 6 hours).
-    pub rescan_minutes: u64,
+    /// Remote and cloud sources are asked what changed this often, in seconds (their change
+    /// feed, or the times of their folders on SFTP; local sources are watched live). All
+    /// sources are walked in full every 6 hours.
+    pub remote_poll_secs: u64,
     /// Details view: the Tags column.
     pub tags_column: bool,
     // --- Task 33 ---
@@ -113,7 +114,7 @@ impl Default for LibrarySettings {
             hash_remote: remote.hash_remote,
             hash_cloud: remote.hash_cloud,
             remote_hash_max_bytes: remote.remote_hash_max_bytes,
-            rescan_minutes: 15,
+            remote_poll_secs: keel_core::POLL_INTERVAL.as_secs(),
             tags_column: true,
             integrity_pct: keel_core::DEFAULT_SAMPLE_PCT,
             integrity_days: 7,
@@ -1108,7 +1109,7 @@ impl LibraryUi {
 
     /// A watcher per source once no index job runs (both would walk the source). In this
     /// process only: keel-daemon watches its sources itself.
-    fn sync_watchers(&mut self, rescan: Duration) {
+    fn sync_watchers(&mut self, poll: Duration) {
         let Some(lib) = self.lib.clone() else { return };
         let indexing =
             self.starting_index > 0 || self.jobs.values().any(|j| j.kind == "index" && j.active());
@@ -1138,11 +1139,12 @@ impl LibraryUi {
             self.watchers.insert(id.clone(), Watch::Starting);
             let (tx, ctx, lib) = (self.tx.clone(), self.ctx.clone(), lib.clone());
             worker::spawn("keel-library-watch", move || {
-                let cfg = WatchConfig {
-                    poll: rescan,
-                    ..WatchConfig::default()
-                };
                 let handle = lib.source(&id).and_then(|src| {
+                    let cfg = WatchConfig {
+                        poll,
+                        ..WatchConfig::default()
+                    }
+                    .for_source(&src);
                     Indexer::watch_with(&src, &lib.router(), cfg)
                         .map_err(|e| tracing::warn!("watch {}: {e:#}", src.def.label))
                         .ok()
@@ -1554,7 +1556,7 @@ impl AppState {
         let busy_input = self
             .ctx
             .input(|i| !i.events.is_empty() || i.pointer.is_moving());
-        let rescan = Duration::from_secs(self.settings.library.rescan_minutes.max(1) * 60);
+        let poll = Duration::from_secs(self.settings.library.remote_poll_secs.max(1));
         let l = &mut self.library;
         if l.backend.is_none() || l.lost {
             return;
@@ -1687,7 +1689,7 @@ impl AppState {
             }
         }
         l.ask_badges();
-        l.sync_watchers(rescan);
+        l.sync_watchers(poll);
         let indexing = l
             .sources
             .iter()

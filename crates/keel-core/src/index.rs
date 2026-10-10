@@ -1,5 +1,6 @@
 //! The indexer: streaming full walks in 5,000-row transactions, single-path change
-//! application, and watching (notify for local sources, polling for remote/cloud ones).
+//! application, and watching (notify for local sources; for remote and cloud ones the
+//! provider's change feed, or the times of their folders, between full walks).
 //!
 //! Identity: a record is found again by `fs_id` (volume serial + file id, dev + inode) before
 //! falling back to parent + name, so a move or rename updates name/parent/path in place and
@@ -10,7 +11,7 @@ use crate::library::{OfflineReason, Source, SourceStatus};
 use crate::Cancelled;
 use anyhow::{Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use keel_vfs::{Provider, Router, VPath};
+use keel_vfs::{ChangeCursor, ChangeKind, ChangedPath, FeedError, Provider, Router, VPath};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     collections::HashSet,
@@ -23,10 +24,16 @@ use std::{
 
 /// Rows per write transaction during a walk.
 pub const BATCH: u64 = 5_000;
-/// How often `Indexer::watch` re-walks a remote or cloud source.
-pub const POLL_INTERVAL: Duration = Duration::from_secs(15 * 60);
-/// How often `Indexer::watch` re-walks a local source besides applying change events.
+/// How often `Indexer::watch` asks a remote or cloud source what changed (its change feed,
+/// or the times of its folders); `[library] remote_poll_secs` in the app and daemon.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(120);
+/// How often `Indexer::watch` walks a remote source that has neither (WebDAV, an S3
+/// bucket of more than 1,000 objects).
+pub const WALK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How often `Indexer::watch` re-walks a source besides applying changes.
 pub const RECONCILE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// `store` meta key: a remote source's change feed cursor, taken before its last walk.
+const CURSOR: &str = "change_cursor";
 /// Attempts at taking the store's write lock (each waits the 5 s busy timeout).
 const BEGIN_ATTEMPTS: u32 = 4;
 
@@ -419,6 +426,11 @@ struct Walk<'a> {
     unseen_below: i64,
     /// Own the transactions (a full walk); false inside a caller's transaction.
     batched: bool,
+    /// A listed folder's records that the listing no longer has are removed (a folder
+    /// listed again outside a full walk).
+    prune: bool,
+    /// Walk every folder found (else only the ones that are new to the index).
+    deep: bool,
     batch: u64,
     batch_started: Option<Instant>,
     done: u64,
@@ -483,6 +495,7 @@ impl Walk<'_> {
             let listed: HashSet<String> = items.iter().filter_map(|i| i.fs_id.clone()).collect();
             let gone = |id: &str| !listed.contains(id);
             let still = still_at(self.src);
+            let mut kept = Vec::new();
             for item in items {
                 if item.hidden && !self.src.def.include_hidden {
                     continue;
@@ -496,7 +509,7 @@ impl Walk<'_> {
                     .clone()
                     .unwrap_or_else(|| name_hash(&p.fs_id, &item.name));
                 self.begin()?;
-                let (id, _) = upsert(
+                let (id, outcome) = upsert(
                     self.conn,
                     self.gen,
                     self.unseen_below,
@@ -507,6 +520,7 @@ impl Walk<'_> {
                     &gone,
                     &still,
                 )?;
+                kept.push(id);
                 if matches!(self.lister, Lister::Remote(_)) && item.kind == FILE {
                     // What a device claims (absent: no claim) stays apart from confirmed
                     // content ids: it never counts as a copy.
@@ -518,7 +532,7 @@ impl Walk<'_> {
                         )?
                         .execute(params![id, claim])?;
                 }
-                if item.kind == DIR && !item.link {
+                if item.kind == DIR && !item.link && (self.deep || outcome == Outcome::Inserted) {
                     stack.push(Pending {
                         dir: p.dir.join(&item.name),
                         id,
@@ -532,9 +546,64 @@ impl Walk<'_> {
                     self.commit()?;
                 }
             }
+            if self.prune {
+                self.begin()?;
+                prune_children(self.conn, p.id, &kept)?;
+            }
         }
         Ok(())
     }
+}
+
+/// Removes the records below folder `parent` that its new listing did not keep.
+fn prune_children(c: &Connection, parent: i64, kept: &[i64]) -> Result<()> {
+    let kept: HashSet<i64> = kept.iter().copied().collect();
+    let children: Vec<i64> = c
+        .prepare_cached("SELECT id FROM record WHERE parent = ?1")?
+        .query_map([parent], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in children.into_iter().filter(|id| !kept.contains(id)) {
+        delete_subtree(c, id)?;
+    }
+    Ok(())
+}
+
+/// The folder record (id, fs_id) at `rel`; None when it is not indexed or not a folder.
+fn folder_at(c: &Connection, rel: &str, nocase: bool) -> Result<Option<(i64, String)>> {
+    let Some((id, fs_id)) = resolve(c, rel, nocase)? else {
+        return Ok(None);
+    };
+    let kind: i64 = c.query_row("SELECT kind FROM record WHERE id = ?1", [id], |r| r.get(0))?;
+    Ok((kind == DIR).then_some((id, fs_id)))
+}
+
+/// `rel`, or the first folder above it that the index does not have.
+fn first_missing(c: &Connection, rel: &str, nocase: bool) -> Result<String> {
+    let mut at = 0;
+    while let Some(slash) = rel[at..].find('/') {
+        let folder = &rel[..at + slash];
+        if resolve(c, folder, nocase)?.is_none() {
+            return Ok(folder.to_owned());
+        }
+        at += slash + 1;
+    }
+    Ok(rel.to_owned())
+}
+
+/// The error (or one it wraps) says the path is not there.
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+/// What `apply` reconciles a path with.
+enum At {
+    /// A local path, stat'ed inside the transaction.
+    Local(std::path::PathBuf),
+    /// A remote entry stat'ed before it (a network call): None when it is not there.
+    Remote(Option<Item>),
 }
 
 pub struct Indexer;
@@ -679,6 +748,8 @@ impl Indexer {
                 gen: gen as i64,
                 unseen_below: gen as i64,
                 batched: true,
+                prune: false,
+                deep: true,
                 batch: 0,
                 batch_started: None,
                 done: 1,
@@ -818,74 +889,155 @@ impl Indexer {
             let local = path
                 .to_local_path()
                 .context("changes apply to local sources (remote sources are polled)")?;
-            at.push((path, rel, local));
+            at.push((path.clone(), rel, At::Local(local)));
         }
-        let ignore = matcher(&src.def.ignore)?;
-        let _w = src.write.lock();
-        let gen = match src.pending_gen.load(Ordering::SeqCst) {
-            0 => src.generation.load(Ordering::SeqCst),
-            pending => pending,
-        } as i64;
-        let conn = src.store.get()?;
-        let changes = conn.total_changes();
-        begin_immediate(&conn)?;
-        let result = at
-            .iter()
-            .map(|(path, rel, local)| {
-                apply(&conn, src, &ignore, gen, path, rel, local, walk_existing)
-            })
-            .collect::<Result<Vec<_>>>();
-        conn.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
-        // A folder that appeared is walked in batches like a full walk (no long lock).
-        let lister = Lister::Local;
         let never = AtomicBool::new(false);
-        for subtree in result?.into_iter().flatten() {
-            let mut walk = Walk {
-                src,
-                lister: &lister,
-                ignore: &ignore,
-                conn: &conn,
-                gen,
-                unseen_below: i64::MAX,
-                batched: true,
-                batch: 0,
-                batch_started: None,
-                done: 0,
-                total: 0,
-                current: String::new(),
-                progress: &|_| {},
-                cancel: &never,
-            };
-            let walked = walk.run(vec![subtree]);
-            walk.commit()?;
-            walked?;
+        apply_batch(src, &Lister::Local, &at, &[], walk_existing, &never).map(|_| ())
+    }
+
+    /// Applies one page of a remote source's change feed as local watcher events are
+    /// applied: a created or modified path is stat'ed (before any lock: a network call)
+    /// and inserted or updated, a removed one deleted with what is below it, and an
+    /// `Unknown` folder listed again with its subtree; one protection recount follows
+    /// when the index changed. Paths outside the source are skipped. Ok(false): only a
+    /// full walk catches up (the source is held, its root changed in a way the feed cannot
+    /// name, or an `Unknown` folder is not indexed).
+    pub(crate) fn apply_feed(
+        src: &Source,
+        provider: &Arc<dyn Provider>,
+        changes: &[ChangedPath],
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        if src.held().is_some() {
+            return Ok(false);
         }
-        drop(_w);
-        // Only a change to the index is worth a recount (an ignored path, or a file whose
-        // record is unchanged, is not: a recount must never set off the next one).
-        if conn.total_changes() != changes {
-            if let Some(lib) = src.owner.read().upgrade() {
-                crate::protect::schedule_recount(&lib, src);
+        let root = &src.def.root;
+        let conn = src.store.get()?;
+        let mut at = Vec::new();
+        let mut relist = Vec::new();
+        // Paths stat'ed in this page (their state now: once is enough).
+        let mut stated = HashSet::new();
+        for c in changes {
+            // The provider's path, at the address the source reaches it by.
+            let path = VPath {
+                path: c.path.path.clone(),
+                ..root.clone()
+            };
+            let Some(rel) = src.relative(&path) else {
+                // A folder above the source's root: the root may have changed.
+                if c.kind == ChangeKind::Unknown && crate::library::relative(&path, root).is_some()
+                {
+                    return Ok(false);
+                }
+                continue;
+            };
+            match c.kind {
+                // The root itself gone or unknown: a walk says whether it is offline.
+                ChangeKind::Removed | ChangeKind::Unknown if rel.is_empty() => return Ok(false),
+                ChangeKind::Unknown => relist.push((rel, true)),
+                ChangeKind::Removed => {
+                    stated.remove(&rel);
+                    at.push((path, rel, At::Remote(None)));
+                }
+                ChangeKind::Created | ChangeKind::Modified => {
+                    // In a folder the index does not have yet: that folder (the first one
+                    // missing on the way down) is applied instead, and walked.
+                    let rel = first_missing(&conn, &rel, src.nocase())?;
+                    if !stated.insert(rel.clone()) {
+                        continue;
+                    }
+                    let path = src.absolute(&rel);
+                    let item = match provider.stat(&path) {
+                        Ok(e) => Some(item_of(e)),
+                        Err(e) if is_not_found(&e) && !rel.is_empty() => None,
+                        Err(e) => return Err(e),
+                    };
+                    at.push((path, rel, At::Remote(item)));
+                }
             }
         }
-        Ok(())
+        drop(conn);
+        if at.is_empty() && relist.is_empty() {
+            return Ok(true);
+        }
+        let lister = Lister::Remote(provider.clone());
+        apply_batch(src, &lister, &at, &relist, false, cancel)
+    }
+
+    /// One cheap poll of a remote source whose folder times move when entries come and go
+    /// (SFTP): every indexed folder is stat'ed and the ones whose time moved are listed
+    /// again (vanished entries removed, new ones added, new folders walked). Changes inside
+    /// a file do not move its folder's time: the full walk every `reconcile` finds those.
+    /// Ok(false): only a full walk catches up (the source is held).
+    /// ponytail: one stat after another; tens of thousands of folders want them pipelined.
+    pub(crate) fn poll_folders(
+        src: &Source,
+        provider: &Arc<dyn Provider>,
+        cancel: &AtomicBool,
+    ) -> Result<bool> {
+        if src.held().is_some() {
+            return Ok(false);
+        }
+        let folders: Vec<(String, Option<i64>)> = src
+            .store
+            .get()?
+            .prepare("SELECT path, mtime FROM record WHERE kind = ?1 AND flags & ?2 = 0")?
+            .query_map(params![DIR, LINK], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut moved = Vec::new();
+        for (rel, was) in folders {
+            if cancel.load(Ordering::Relaxed) || src.removed.load(Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+            match provider.stat(&src.absolute(&rel)) {
+                Ok(e) => {
+                    let now = e.modified.map(fsid::unix_ns);
+                    if now != was {
+                        moved.push((rel, now));
+                    }
+                }
+                // Gone: the time of the folder it was in moved too.
+                Err(e) if is_not_found(&e) && !rel.is_empty() => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if moved.is_empty() {
+            return Ok(true);
+        }
+        moved.sort();
+        let relist: Vec<(String, bool)> =
+            moved.iter().map(|(rel, _)| (rel.clone(), false)).collect();
+        let lister = Lister::Remote(provider.clone());
+        if !apply_batch(src, &lister, &[], &relist, false, cancel)? {
+            return Ok(false);
+        }
+        // Each folder's time as it was before its listing: a change made meanwhile moves
+        // it again. Written after the batch: a time is no reason to recount.
+        let c = src.store.get()?;
+        for (rel, now) in moved {
+            c.execute(
+                "UPDATE record SET mtime = ?2 WHERE path = ?1 AND kind = ?3",
+                params![rel, now, DIR],
+            )?;
+        }
+        Ok(true)
     }
 
     /// `watch_with` with the defaults and the source's own poll interval.
     pub fn watch(src: &Arc<Source>, router: &Arc<Router>) -> Result<WatchHandle> {
-        let mut cfg = WatchConfig::default();
-        if let Some(secs) = src.def.poll_secs {
-            cfg.poll = Duration::from_secs(secs);
-        }
-        Self::watch_with(src, router, cfg)
+        Self::watch_with(src, router, WatchConfig::default().for_source(src))
     }
 
     /// Keeps a source current until the handle is dropped, starting with a full walk (what
     /// changed while nobody watched). Local sources: a recursive notify watcher, debounced
     /// (500 ms quiet, 5 s at most), applied with `apply_change`; lost events (a rescan flag or
-    /// a watcher error) and every `cfg.reconcile` trigger a full walk. Other sources: a full
-    /// walk (a new generation snapshot) every `cfg.poll`. A completed walk recounts the
-    /// protection counters; applied changes recount them 5 s after the last one.
+    /// a watcher error) and every `cfg.reconcile` trigger a full walk. Other sources, every
+    /// `cfg.poll`: the provider's change feed from the cursor taken before the last walk
+    /// (applied like local events), else the times of the indexed folders where they track
+    /// their entries (SFTP), with a full walk every `cfg.reconcile`, or when the feed
+    /// refuses its cursor or names a change it cannot place; a source with neither is
+    /// walked every `cfg.walk`. A completed walk recounts the protection counters; applied
+    /// changes recount them 5 s after the last one.
     pub fn watch_with(
         src: &Arc<Source>,
         router: &Arc<Router>,
@@ -912,27 +1064,17 @@ impl Indexer {
     ) -> Result<WatchHandle> {
         let cancel = Arc::new(AtomicBool::new(false));
         let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
-        let (src, router, stop) = (src.clone(), router.clone(), cancel.clone());
-        let rescan = move |src: &Source| match Indexer::full_walk(src, &router, &|_| {}, &stop) {
+        let (src, stop) = (src.clone(), cancel.clone());
+        let walker = router.clone();
+        let rescan = move |src: &Source| match Indexer::full_walk(src, &walker, &|_| {}, &stop) {
             Ok(()) => after_walk(src),
             Err(e) => tracing::warn!("re-walk of {}: {e:#}", src.def.label),
         };
         let Some(root) = src.def.root.to_local_path() else {
+            let (router, quit) = (router.clone(), cancel.clone());
             let thread = std::thread::Builder::new()
                 .name("keel-poll".into())
-                .spawn(move || loop {
-                    rescan(&src);
-                    let next = Instant::now() + cfg.poll;
-                    while Instant::now() < next {
-                        if src.removed.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        match stop_rx.recv_timeout(TICK) {
-                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                            _ => return,
-                        }
-                    }
-                })?;
+                .spawn(move || poll_loop(&src, &router, cfg, &stop_rx, &quit, &rescan))?;
             return Ok(WatchHandle {
                 cancel,
                 stop: stop_tx,
@@ -965,10 +1107,14 @@ impl Indexer {
 /// How `Indexer::watch_with` keeps a source current.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WatchConfig {
-    /// Remote and cloud sources: a full walk this often.
+    /// Remote and cloud sources: asked what changed this often.
     pub poll: Duration,
-    /// Local sources: a full walk this often on top of change events, which can be lost
-    /// without notice (a Windows change buffer overflow is not reported).
+    /// Remote sources with no change feed whose folder times do not track their entries:
+    /// a full walk this often (or every `poll`, when that is longer).
+    pub walk: Duration,
+    /// A full walk this often on top of change events, which can be lost without notice
+    /// (a Windows change buffer overflow is not reported; a feed can miss what it cannot
+    /// place).
     pub reconcile: Duration,
 }
 
@@ -976,8 +1122,145 @@ impl Default for WatchConfig {
     fn default() -> Self {
         WatchConfig {
             poll: POLL_INTERVAL,
+            walk: WALK_INTERVAL,
             reconcile: RECONCILE_INTERVAL,
         }
+    }
+}
+
+impl WatchConfig {
+    /// A source's own `poll_secs` (when it has one) for both `poll` and `walk`.
+    pub fn for_source(mut self, src: &Source) -> Self {
+        if let Some(secs) = src.def.poll_secs {
+            self.poll = Duration::from_secs(secs);
+            self.walk = self.poll;
+        }
+        self
+    }
+}
+
+/// How a remote source is kept current between its full walks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Between {
+    /// `Provider::changes` from the cursor saved with the last walk.
+    Feed,
+    /// `Indexer::poll_folders`.
+    FolderTimes,
+    /// Nothing: a full walk every `WatchConfig::walk` (or `poll`, when that is longer).
+    Walks,
+}
+
+/// The remote poll loop: a full walk first (with a feed cursor taken just before it),
+/// then every `cfg.poll` the feed or the folder times, and a full walk again every
+/// `cfg.reconcile` (`cfg.walk` without either), at once when the feed asks for one, and
+/// at the next poll after a walk that failed (an offline source stays offline until then).
+/// Ends when `quit` is set, the source is removed or `stop` disconnects.
+fn poll_loop(
+    src: &Source,
+    router: &Router,
+    cfg: WatchConfig,
+    stop: &crossbeam_channel::Receiver<()>,
+    quit: &AtomicBool,
+    rescan: &dyn Fn(&Source),
+) {
+    let mut between = Between::Walks;
+    let mut walk_at = Instant::now();
+    while !quit.load(Ordering::SeqCst) && !src.removed.load(Ordering::SeqCst) {
+        let provider = router.provider_for(&src.def.root);
+        if Instant::now() >= walk_at {
+            // The cursor is taken before the walk: what changes while it runs comes again.
+            let mut cursor = None;
+            if let Some(p) = &provider {
+                between = match p.changes(None) {
+                    Ok(feed) => {
+                        cursor = Some(feed.cursor);
+                        Between::Feed
+                    }
+                    Err(e) if e.downcast_ref::<FeedError>().is_some() => {
+                        match p.folder_times_track_entries() {
+                            true => Between::FolderTimes,
+                            false => Between::Walks,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("change feed of {}: {e:#}", src.def.label);
+                        Between::Walks
+                    }
+                };
+            }
+            let generation = src.generation.load(Ordering::SeqCst);
+            rescan(src);
+            if src.generation.load(Ordering::SeqCst) != generation {
+                if let Err(e) = save_cursor(src, cursor.as_ref()) {
+                    tracing::warn!("change cursor of {}: {e:#}", src.def.label);
+                }
+                walk_at = Instant::now()
+                    + match between {
+                        Between::Walks => cfg.walk.max(cfg.poll),
+                        Between::Feed | Between::FolderTimes => cfg.reconcile,
+                    };
+            } else {
+                walk_at = Instant::now() + cfg.poll;
+            }
+        } else if let Some(p) = provider {
+            let caught_up = match between {
+                Between::Feed => follow_feed(src, &p, quit),
+                Between::FolderTimes => Indexer::poll_folders(src, &p, quit),
+                Between::Walks => Ok(true),
+            };
+            match caught_up {
+                Ok(true) => {}
+                Ok(false) => walk_at = Instant::now(),
+                // The cursor stays: asked again at the next poll.
+                Err(e) => tracing::debug!("changes of {}: {e:#}", src.def.label),
+            }
+        }
+        let next = (Instant::now() + cfg.poll).min(walk_at);
+        while Instant::now() < next {
+            if src.removed.load(Ordering::SeqCst) {
+                return;
+            }
+            match stop.recv_timeout(TICK) {
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                _ => return,
+            }
+        }
+    }
+}
+
+fn save_cursor(src: &Source, cursor: Option<&ChangeCursor>) -> Result<()> {
+    match cursor {
+        Some(c) => src.store.set_meta(CURSOR, &c.0),
+        None => {
+            (src.store.get()?).execute("DELETE FROM meta WHERE key = ?1", [CURSOR])?;
+            Ok(())
+        }
+    }
+}
+
+/// Applies a remote source's change feed from its saved cursor, page by page (the cursor
+/// saved after each). Ok(false): only a walk catches up (no cursor, a refused cursor, or
+/// `Indexer::apply_feed` says so). An error keeps the cursor for the next poll.
+fn follow_feed(src: &Source, provider: &Arc<dyn Provider>, cancel: &AtomicBool) -> Result<bool> {
+    let Some(saved) = src.store.meta(CURSOR)? else {
+        return Ok(false);
+    };
+    let mut cursor = ChangeCursor(saved);
+    loop {
+        let feed = match provider.changes(Some(cursor.clone())) {
+            Err(e) if e.downcast_ref::<FeedError>().is_some() => return Ok(false),
+            feed => feed?,
+        };
+        if !Indexer::apply_feed(src, provider, &feed.changes, cancel)? {
+            return Ok(false);
+        }
+        if feed.cursor != cursor {
+            src.store.set_meta(CURSOR, &feed.cursor.0)?;
+        }
+        if !feed.more {
+            return Ok(true);
+        }
+        cursor = feed.cursor;
     }
 }
 
@@ -1097,12 +1380,17 @@ fn apply(
     gen: i64,
     path: &VPath,
     rel: &str,
-    local: &std::path::Path,
+    at: &At,
     walk_existing: bool,
 ) -> Result<Option<Pending>> {
     let nocase = src.nocase();
     let existing = resolve(c, rel, nocase)?;
-    let mut item = match fsid::stat(local) {
+    let stat = match at {
+        At::Local(local) => fsid::stat(local),
+        At::Remote(Some(item)) => Ok(item.clone()),
+        At::Remote(None) => Err(std::io::ErrorKind::NotFound.into()),
+    };
+    let mut item = match stat {
         Ok(item) => item,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some((id, _)) = existing {
@@ -1142,7 +1430,7 @@ fn apply(
     let (parent_rel, name) = rel.rsplit_once('/').unwrap_or(("", rel));
     item.name = name.to_owned();
     // An event can carry the old casing of a case-only rename: take the name on disk.
-    if nocase && !item.link {
+    if let (true, false, At::Local(local)) = (nocase, item.link, at) {
         let real = std::fs::canonicalize(local)
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -1176,12 +1464,14 @@ fn apply(
         .unwrap_or_else(|| name_hash(&parent_fs, name));
     // The native ids in the parent folder, listed only when a name is contested.
     let listed: std::cell::OnceCell<HashSet<String>> = std::cell::OnceCell::new();
+    let dir = match at {
+        At::Local(local) => local.parent(),
+        At::Remote(_) => None,
+    };
     let in_folder = |id: &str| {
         listed
             .get_or_init(|| {
-                local
-                    .parent()
-                    .and_then(|dir| fsid::list(dir).ok())
+                dir.and_then(|dir| fsid::list(dir).ok())
                     .into_iter()
                     .flatten()
                     .filter_map(|i| i.fs_id)
@@ -1222,6 +1512,94 @@ fn apply(
         rel: rel.to_owned(),
         fs_id,
     }))
+}
+
+/// Applies `at` in order in one transaction, then walks the folders that appeared (all
+/// folders with `walk_existing`) and lists each `relist` folder again (pruning what is
+/// gone; `true`: its whole subtree), in batches like a full walk. One protection recount
+/// follows when the index changed. Ok(false): a `relist` folder is not indexed.
+fn apply_batch(
+    src: &Source,
+    lister: &Lister,
+    at: &[(VPath, String, At)],
+    relist: &[(String, bool)],
+    walk_existing: bool,
+    cancel: &AtomicBool,
+) -> Result<bool> {
+    let ignore = matcher(&src.def.ignore)?;
+    let w = src.write.lock();
+    let gen = match src.pending_gen.load(Ordering::SeqCst) {
+        0 => src.generation.load(Ordering::SeqCst),
+        pending => pending,
+    } as i64;
+    let conn = src.store.get()?;
+    let changes = conn.total_changes();
+    let result = (|| -> Result<bool> {
+        begin_immediate(&conn)?;
+        let applied = at
+            .iter()
+            .map(|(path, rel, at)| apply(&conn, src, &ignore, gen, path, rel, at, walk_existing))
+            .collect::<Result<Vec<_>>>();
+        conn.execute_batch(if applied.is_ok() {
+            "COMMIT"
+        } else {
+            "ROLLBACK"
+        })?;
+        // (folder, prune it, walk all of it)
+        let mut walks: Vec<(Pending, bool, bool)> = (applied?.into_iter().flatten())
+            .map(|p| (p, false, true))
+            .collect();
+        let mut found = true;
+        for (rel, deep) in relist {
+            match folder_at(&conn, rel, src.nocase())? {
+                Some((id, fs_id)) => walks.push((
+                    Pending {
+                        dir: src.absolute(rel),
+                        id,
+                        rel: rel.clone(),
+                        fs_id,
+                    },
+                    true,
+                    *deep,
+                )),
+                None => found = false,
+            }
+        }
+        // A folder that appeared is walked in batches like a full walk (no long lock).
+        for (folder, prune, deep) in walks {
+            let mut walk = Walk {
+                src,
+                lister,
+                ignore: &ignore,
+                conn: &conn,
+                gen,
+                unseen_below: i64::MAX,
+                batched: true,
+                prune,
+                deep,
+                batch: 0,
+                batch_started: None,
+                done: 0,
+                total: 0,
+                current: String::new(),
+                progress: &|_| {},
+                cancel,
+            };
+            let walked = walk.run(vec![folder]);
+            walk.commit()?;
+            walked?;
+        }
+        Ok(found)
+    })();
+    drop(w);
+    // Only a change to the index is worth a recount (an ignored path, or a file whose
+    // record is unchanged, is not: a recount must never set off the next one).
+    if conn.total_changes() != changes {
+        if let Some(lib) = src.owner.read().upgrade() {
+            crate::protect::schedule_recount(&lib, src);
+        }
+    }
+    result
 }
 
 /// `BEGIN IMMEDIATE`, retried while another writer keeps the store busy.
