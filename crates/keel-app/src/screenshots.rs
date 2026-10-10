@@ -363,6 +363,12 @@ fn harness(
 
 /// Steps until `done` (at most `secs`); false when it timed out.
 pub(crate) fn wait(h: &mut Harness<App>, secs: u64, done: &dyn Fn(&AppState) -> bool) -> bool {
+    // Shared CI machines are several times slower than a desktop: give them more time.
+    let secs = if std::env::var_os("CI").is_some() {
+        secs * 3
+    } else {
+        secs
+    };
     let end = Instant::now() + Duration::from_secs(secs);
     while !done(&h.state().state) {
         if Instant::now() > end {
