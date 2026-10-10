@@ -2,6 +2,16 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Hashing is much faster on Windows: it runs in background mode, whose very low I/O priority made each library write wait about 2 ms, and now leaves it while it writes to the library (files are still read at background priority); the sidecar job and integrity checks do the same. 10,000 small files hash in 1.1-1.4 s instead of 27.6 s on the test PC.
+- Indexing a tree of many small folders is faster: a walk lists several folders before writing them in one transaction, instead of one transaction per folder. 200,000 files in 20,200 folders index in 9.1 s instead of 14.9 s (17.3 s from a cold disk cache); the same tree generated, without the disk, in 5.1 s instead of 12.0 s.
+- A watched source takes in a burst of changes faster: they are applied 1,000 at a time instead of one per transaction. 10,000 new files are all indexed 3.5 s after the first is written, instead of 5.5 s.
+- A library search for words with a `tag:` starts from the tag's records when the tag holds at most 20,000: `tag:work invoice` over 200,000 records answers in 9 ms instead of 34 ms.
+- [docs/performance.md](docs/performance.md): measured speed on realistic data (indexing, search, hashing, duplicates, sidecars, zips, Spacedrop, the daemon, the web client's size, startup), what grows with what, and `scripts/perf.sh`, which runs every release-mode measurement and prints a table.
+
 ## [0.15.0] - 2026-10-10
 
 ### Changed
