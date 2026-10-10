@@ -716,6 +716,9 @@ fn a_copy_on_an_sftp_host_is_its_own_failure_domain() {
         (1, 1, 0),
         "{p:?}"
     );
+}
+
+#[test]
 fn pending_recount_defers_to_walk_and_stops_on_close() {
     use crate::index::tests::eventually;
     let files = tempfile::tempdir().unwrap();
