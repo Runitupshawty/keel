@@ -60,7 +60,7 @@ impl Job {
 }
 
 /// A copy, move or extraction waiting for its conflict policy (local or remote on either
-/// side; extraction only into local folders).
+/// side, extraction too).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
     pub src: Vec<VPath>,
@@ -178,12 +178,21 @@ impl Jobs {
         tx: Sender<Msg>,
     ) -> u64 {
         let title = format!("Extracting {}", src.archive.name());
-        self.spawn(title, tx, move |report, cancel| {
-            let dst = dst.to_local_path().ok_or_else(|| {
-                anyhow::anyhow!("Extract into remote folders is not supported yet")
-            })?;
-            std::fs::create_dir_all(&dst)?;
-            keel_vfs::extract_under(
+        let remote = crate::remotes::is_network(&dst);
+        let id = self.spawn(title, tx, move |report, cancel| {
+            match dst.to_local_path() {
+                Some(local) => std::fs::create_dir_all(local)?,
+                // Extract to folder on a host: the new folder first.
+                None => {
+                    let provider = router
+                        .provider_for(&dst)
+                        .ok_or_else(|| anyhow::anyhow!("no provider for {}", dst.display()))?;
+                    if provider.stat(&dst).is_err() {
+                        provider.mkdir(&dst)?;
+                    }
+                }
+            }
+            keel_vfs::extract_to(
                 &src.archive,
                 &src.base,
                 &src.entries,
@@ -193,7 +202,9 @@ impl Jobs {
                 cancel,
                 &router,
             )
-        })
+        });
+        self.mark_remote(id, remote);
+        id
     }
 
     /// Adds `src` to `zip` (created when missing; same-named entries are replaced).
@@ -638,19 +649,23 @@ impl Drop for DriveLock {
 /// `dst` is remote). Local names go through the extended-length form, so long paths and
 /// names ending in a dot or space are found too. Blocks: workers only.
 pub fn plan_conflicts(src: &[VPath], dst: &VPath, router: &Router) -> Vec<String> {
-    let exists = |name: &str| match dst.to_local_path() {
+    src.iter()
+        .map(VPath::name)
+        .filter(|name| exists_in(dst, name, router))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether `dst` holds `name` (a stat on the host when `dst` is remote).
+fn exists_in(dst: &VPath, name: &str, router: &Router) -> bool {
+    match dst.to_local_path() {
         Some(dir) => {
             keel_vfs::long(&dir.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
         }
         None => router
             .provider_for(dst)
             .is_some_and(|p| p.stat(&dst.join(name)).is_ok()),
-    };
-    src.iter()
-        .map(VPath::name)
-        .filter(|name| exists(name))
-        .map(str::to_owned)
-        .collect()
+    }
 }
 
 /// Top-level names an extraction of `src` would create that already exist in `dst`.
@@ -659,9 +674,6 @@ fn archive_conflicts(
     dst: &VPath,
     router: &Router,
 ) -> anyhow::Result<Vec<String>> {
-    let dst = dst
-        .to_local_path()
-        .ok_or_else(|| anyhow::anyhow!("Extract into remote folders is not supported yet"))?;
     let names: Vec<String> = if src.entries.is_empty() {
         let dir = VPath::join_archive(&src.archive, &src.base);
         let provider = router
@@ -674,9 +686,7 @@ fn archive_conflicts(
     };
     Ok(names
         .into_iter()
-        .filter(|name| {
-            keel_vfs::long(&dst.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
-        })
+        .filter(|name| exists_in(dst, name, router))
         .collect())
 }
 

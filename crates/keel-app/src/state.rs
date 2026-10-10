@@ -1995,9 +1995,10 @@ impl AppState {
                 self.palette.show(selection);
             }
             Action::TogglePreview => self.preview.open = !self.preview.open,
-            Action::ExtractHere | Action::ExtractToFolder | Action::ExtractTo => {
-                self.extract_targets(p, action)
-            }
+            Action::ExtractHere
+            | Action::ExtractToFolder
+            | Action::ExtractTo
+            | Action::ExtractToOther => self.extract_targets(p, action),
             Action::Extract { src, dst } => {
                 // A drag that ends where it started (inside the archive): nothing to do.
                 if dst.split_archive().is_some() {
@@ -2152,24 +2153,46 @@ impl AppState {
         if archives.is_empty() {
             return self.toasts.error("Select an archive to extract");
         }
-        // Next to each archive (search results live in many folders).
+        if action == Action::ExtractToOther {
+            let other = 1 - p;
+            if !self.dual || self.tab(other).is_search() || self.tab(other).is_trash() {
+                return self
+                    .toasts
+                    .error("Open the folder to extract into in the other pane (Ctrl+Shift+D)");
+            }
+            let dst = self.tab(other).dir.clone();
+            if dst.split_archive().is_some() {
+                return self
+                    .toasts
+                    .error("Extract into a folder outside archives (paste copies into a zip)");
+            }
+            for archive in archives {
+                self.plan_extract(ArchiveSrc::whole(archive), dst.clone());
+            }
+            return;
+        }
+        // Next to each archive (search results live in many folders; any provider).
         let Some(folders) = archives
             .iter()
-            .map(|a| a.parent().and_then(|d| d.to_local_path()))
+            .map(|a| a.parent().filter(|d| d.split_archive().is_none()))
             .collect::<Option<Vec<_>>>()
         else {
-            return self.toasts.error(READ_ONLY);
+            return self.toasts.error(
+                "Extract here works for archives outside archives: use Extract to…, or copy the archive out first",
+            );
         };
         if action == Action::ExtractTo {
             let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
-            let start = folders[0].clone();
+            let start = folders[0]
+                .to_local_path()
+                .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()));
             // The OS dialog blocks: never on the UI thread.
             worker::spawn("keel-pick", move || {
-                let Some(dst) = rfd::FileDialog::new()
-                    .set_title("Extract to")
-                    .set_directory(&start)
-                    .pick_folder()
-                else {
+                let mut dialog = rfd::FileDialog::new().set_title("Extract to");
+                if let Some(start) = &start {
+                    dialog = dialog.set_directory(start);
+                }
+                let Some(dst) = dialog.pick_folder() else {
                     return;
                 };
                 for archive in archives {
@@ -2188,7 +2211,7 @@ impl AppState {
             } else {
                 folder
             };
-            self.plan_extract(ArchiveSrc::whole(archive), VPath::local(dst));
+            self.plan_extract(ArchiveSrc::whole(archive), dst);
         }
     }
 
@@ -2807,6 +2830,53 @@ mod tests {
         assert!(state.toasts.list[0]
             .text
             .contains("Moving out of an archive"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn archives_extract_into_a_folder_on_another_provider() {
+        use keel_vfs::Provider;
+        let tmp = tempfile_dir("keel-archive-remote");
+        demo_zip(&tmp);
+        let router = Arc::new(Router::new());
+        let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+        router.register(mem.clone());
+        let remote = VPath::parse("memory://host/inbox").unwrap();
+        mem.mkdir(&remote).unwrap();
+        mem.put("/inbox/a.txt", "mine");
+        let mut state = AppState::new(egui::Context::default(), router, VPath::local(&tmp));
+        settle(&mut state, |s| !s.tab(0).loading);
+        // The other pane shows the remote folder: Extract to the other pane.
+        state.dual = true;
+        state.run(1, Action::Navigate(remote.clone()));
+        state.tab_mut(0).cursor = Some("demo.zip".into());
+        state.run(0, Action::ExtractToOther);
+        settle(&mut state, |s| s.dialog.is_some());
+        let Some(Dialog::Conflict { names, op, .. }) = state.dialog.take() else {
+            panic!("conflict dialog");
+        };
+        assert_eq!(names, ["a.txt"]);
+        state.run(
+            0,
+            Action::StartTransfer {
+                op,
+                conflict: keel_vfs::Conflict::RenameNew,
+                from_clipboard: false,
+            },
+        );
+        settle(&mut state, |s| {
+            s.jobs.list.first().is_some_and(|j| j.done.is_some())
+        });
+        assert!(state.jobs.list[0].done.as_ref().unwrap().is_ok());
+        let files: Vec<(String, Vec<u8>)> = mem.files();
+        assert_eq!(
+            files,
+            [
+                ("/inbox/a (2).txt".to_owned(), b"alpha".to_vec()),
+                ("/inbox/a.txt".to_owned(), b"mine".to_vec()),
+                ("/inbox/dir/b.txt".to_owned(), b"beta".to_vec()),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

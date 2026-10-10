@@ -82,6 +82,8 @@ tempfile = "3"
 # backend tests: a keel-daemon in the test process for the window to attach to.
 keel-daemon = { path = "../keel-daemon" }
 getrandom.workspace = true
+# `MemoryProvider` (a writable folder on "another provider") in the extraction tests.
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud", "test-util"] }
 # The real cloud provider over an in-memory service in the job tests.
 opendal = { workspace = true, features = ["services-memory"] }
 egui_kittest = { version = "0.31", features = ["wgpu", "snapshot", "eframe"] }

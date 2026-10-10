@@ -888,85 +888,19 @@ pub fn extract_under(
     cancel: &AtomicBool,
     router: &crate::Router,
 ) -> Result<()> {
-    use crate::archive::safe_name;
     check_cancel(cancel)?;
-    let base = if base.trim_matches('/').is_empty() {
-        String::new()
-    } else {
-        safe_name(base)?
-    };
-    let relative = |name: &str| -> Option<String> {
-        if base.is_empty() {
-            return Some(name.to_owned());
-        }
-        let rest = name.strip_prefix(&base)?.strip_prefix('/')?;
-        Some(rest.to_owned())
-    };
-    let archive = match archive.split_archive() {
-        Some((outer, inner)) if inner.trim_matches('/').is_empty() => outer,
-        _ => archive.clone(),
-    };
-    let local = router
-        .provider_for(&archive)
-        .with_context(|| format!("no provider for {}", archive.display()))?
-        .local_copy_cancellable(&archive, progress, cancel)?;
-    let mut reader = crate::archive::open_archive(&local)?;
+    let (mut reader, chosen) = open_selection(archive, base, entries, progress, cancel, router)?;
+    let Selection {
+        dirs,
+        files,
+        total_bytes,
+    } = chosen;
     let dst = long(dst_dir)?;
     anyhow::ensure!(
         dst.is_dir(),
         "destination is not a directory: {}",
         dst_dir.display()
     );
-    let selection = entries
-        .iter()
-        .map(|s| safe_name(s))
-        .collect::<Result<Vec<_>>>()?;
-    let under = |name: &str, root: &str| {
-        name.strip_prefix(root)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    };
-    let (mut dirs, mut files) = (Vec::new(), std::collections::HashMap::new());
-    let mut total_bytes = 0u64;
-    for entry in reader.entries()? {
-        // A tarball's own `./` entry names the destination itself.
-        if entry.is_dir
-            && entry
-                .inner
-                .split(['/', '\\'])
-                .all(|p| p.is_empty() || p == ".")
-        {
-            continue;
-        }
-        let name = safe_name(&entry.inner)?;
-        if !selection.is_empty() && !selection.iter().any(|s| under(&name, s)) {
-            continue;
-        }
-        let Some(name) = relative(&name) else {
-            continue;
-        };
-        anyhow::ensure!(
-            !entry.encrypted,
-            "password-protected archive entry: {}",
-            entry.inner
-        );
-        if entry.is_dir {
-            dirs.push(name);
-        } else {
-            total_bytes = total_bytes
-                .checked_add(entry.size)
-                .context("archive size overflow")?;
-            files.insert(entry.inner, (name, entry.size));
-        }
-    }
-    for wanted in &selection {
-        anyhow::ensure!(
-            relative(wanted).is_some_and(|w| dirs
-                .iter()
-                .chain(files.values().map(|(n, _)| n))
-                .any(|n| under(n, &w))),
-            "not in the archive: {wanted}"
-        );
-    }
     if let Some(free) = free_space(&dst) {
         anyhow::ensure!(
             total_bytes <= free,
@@ -1030,6 +964,320 @@ pub fn extract_under(
     })?;
     progress(state);
     Ok(())
+}
+
+/// `extract_under` into any writable folder: a local one, or a folder on another provider
+/// (an SFTP host, a cloud account), where each entry is streamed
+/// through the provider (one pass over the archive, no copy of the extracted tree on disk):
+/// written as a staging file beside its target (`<name>.keel-partial-<pid>-<n>`), its size
+/// checked against the archive's, then renamed into place, so cancel or an error never
+/// leaves a half-written file. Clashes follow `on_conflict` (folders merge). Not into a
+/// folder inside an archive: `transfer` copies entries into a zip.
+#[allow(clippy::too_many_arguments)]
+pub fn extract_to(
+    archive: &crate::VPath,
+    base: &str,
+    entries: &[String],
+    dst_dir: &crate::VPath,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+) -> Result<()> {
+    if let Some(local) = dst_dir.to_local_path() {
+        return extract_under(
+            archive,
+            base,
+            entries,
+            &local,
+            on_conflict,
+            progress,
+            cancel,
+            router,
+        );
+    }
+    check_cancel(cancel)?;
+    anyhow::ensure!(
+        dst_dir.split_archive().is_none(),
+        "cannot extract into a folder inside an archive (paste copies entries into a zip): {}",
+        dst_dir.display()
+    );
+    let dst = routed(router, dst_dir)?;
+    let folder = dst.stat(dst_dir)?;
+    anyhow::ensure!(
+        folder.kind == crate::Kind::Dir && !folder.is_link,
+        "destination is not a directory: {}",
+        dst_dir.display()
+    );
+    let (mut reader, chosen) = open_selection(archive, base, entries, progress, cancel, router)?;
+    let Selection {
+        dirs,
+        files,
+        total_bytes,
+    } = chosen;
+    let mut state = Progress {
+        done_bytes: 0,
+        total_bytes,
+        current: String::new(),
+        done_items: 0,
+        total_items: dirs.len() + files.len(),
+        skipped: 0,
+    };
+    progress(state.clone());
+    let mut job = RemoteExtract {
+        dst,
+        root: dst_dir.clone(),
+        ready: Default::default(),
+        swept: Default::default(),
+    };
+    for name in &dirs {
+        check_cancel(cancel)?;
+        job.folder(name)?;
+        state.done_items += 1;
+    }
+    reader.visit(&|raw| files.contains_key(raw), &mut |raw, input| {
+        check_cancel(cancel)?;
+        let (name, size) = &files[raw];
+        state.current = name.clone();
+        job.file(
+            name,
+            *size,
+            input,
+            on_conflict,
+            &mut state,
+            progress,
+            cancel,
+        )?;
+        state.done_items += 1;
+        progress(state.clone());
+        Ok(())
+    })?;
+    progress(state);
+    Ok(())
+}
+
+/// An extraction into a folder on another provider.
+struct RemoteExtract {
+    dst: std::sync::Arc<dyn crate::Provider>,
+    root: crate::VPath,
+    /// Folders known to exist (made or found) during this extraction.
+    ready: std::collections::HashSet<String>,
+    /// Folders already swept for stale staging files.
+    swept: std::collections::HashSet<String>,
+}
+impl RemoteExtract {
+    fn path(&self, name: &str) -> crate::VPath {
+        name.split('/')
+            .fold(self.root.clone(), |p, part| p.join(part))
+    }
+    /// `name` and the folders above it, made where missing; a file in the way fails.
+    fn folder(&mut self, name: &str) -> Result<()> {
+        let mut done = String::new();
+        for part in name.split('/') {
+            done = if done.is_empty() {
+                part.to_owned()
+            } else {
+                format!("{done}/{part}")
+            };
+            if self.ready.contains(&done) {
+                continue;
+            }
+            let path = self.path(&done);
+            match maybe_stat(&*self.dst, &path)? {
+                Some(e) => anyhow::ensure!(
+                    e.kind == crate::Kind::Dir && !e.is_link,
+                    "not a folder: {}",
+                    path.display()
+                ),
+                None => self.dst.mkdir(&path)?,
+            }
+            self.ready.insert(done.clone());
+        }
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn file(
+        &mut self,
+        name: &str,
+        size: u64,
+        input: &mut dyn io::Read,
+        conflict: Conflict,
+        state: &mut Progress,
+        progress: &dyn Fn(Progress),
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", name));
+        if !parent.is_empty() {
+            self.folder(parent)?;
+        }
+        let folder = if parent.is_empty() {
+            self.root.clone()
+        } else {
+            self.path(parent)
+        };
+        let mut target = folder.join(leaf);
+        let mut replace = false;
+        if let Some(existing) = maybe_stat(&*self.dst, &target)? {
+            match conflict {
+                Conflict::Skip => {
+                    state.skipped += 1;
+                    state.done_bytes = state.done_bytes.saturating_add(size);
+                    return Ok(());
+                }
+                Conflict::Overwrite => {
+                    anyhow::ensure!(
+                        existing.kind == crate::Kind::File && !existing.is_link,
+                        "refusing to replace {}",
+                        target.display()
+                    );
+                    replace = true;
+                }
+                Conflict::RenameNew => {
+                    let (stem, ext) = leaf
+                        .rsplit_once('.')
+                        .filter(|(s, _)| !s.is_empty())
+                        .map_or((leaf, None), |(s, e)| (s, Some(e)));
+                    for n in 2u64.. {
+                        let candidate = folder.join(&match ext {
+                            Some(ext) => format!("{stem} ({n}).{ext}"),
+                            None => format!("{stem} ({n})"),
+                        });
+                        if maybe_stat(&*self.dst, &candidate)?.is_none() {
+                            target = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if self.swept.insert(folder.display()) {
+            sweep_provider(&*self.dst, &folder);
+        }
+        let partial = folder.join(&partial_name(target.name()));
+        let mut writer = self.dst.create_new_cancellable(&partial, cancel)?;
+        let mut guard = ProviderPartial {
+            provider: self.dst.clone(),
+            path: Some(partial.clone()),
+        };
+        let copied = copy_archive_bytes(input, &mut writer, state, progress, cancel)?;
+        anyhow::ensure!(copied == size, "archive entry is truncated: {name}");
+        check_cancel(cancel)?;
+        writer.flush()?;
+        drop(writer);
+        anyhow::ensure!(
+            self.dst.stat(&partial)?.size == copied,
+            "upload size mismatch: {}",
+            target.display()
+        );
+        if replace {
+            self.dst.rename_replace(&partial, &target)?;
+        } else {
+            self.dst.rename_noreplace(&partial, &target)?;
+        }
+        guard.path = None;
+        Ok(())
+    }
+}
+
+/// What an extraction writes: folders and files (by raw name: normalised name relative
+/// to the base, declared size) and their total size.
+struct Selection {
+    dirs: Vec<String>,
+    files: std::collections::HashMap<String, (String, u64)>,
+    total_bytes: u64,
+}
+
+/// Opens the archive (fetching or materialising it when it is not a local file) and picks
+/// the entries to extract. Every name is checked first: one unsafe name refuses the whole
+/// archive, as does a password-protected entry or a selected name that is not there.
+fn open_selection(
+    archive: &crate::VPath,
+    base: &str,
+    entries: &[String],
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+) -> Result<(Box<dyn crate::archive::ArchiveReader>, Selection)> {
+    use crate::archive::safe_name;
+    let base = if base.trim_matches('/').is_empty() {
+        String::new()
+    } else {
+        safe_name(base)?
+    };
+    let relative = |name: &str| -> Option<String> {
+        if base.is_empty() {
+            return Some(name.to_owned());
+        }
+        let rest = name.strip_prefix(&base)?.strip_prefix('/')?;
+        Some(rest.to_owned())
+    };
+    let archive = match archive.split_archive() {
+        Some((outer, inner)) if inner.trim_matches('/').is_empty() => outer,
+        _ => archive.clone(),
+    };
+    let local = router
+        .provider_for(&archive)
+        .with_context(|| format!("no provider for {}", archive.display()))?
+        .local_copy_cancellable(&archive, progress, cancel)?;
+    let mut reader = crate::archive::open_archive(&local)?;
+    let selection = entries
+        .iter()
+        .map(|s| safe_name(s))
+        .collect::<Result<Vec<_>>>()?;
+    let under = |name: &str, root: &str| {
+        name.strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
+    let (mut dirs, mut files) = (Vec::new(), std::collections::HashMap::new());
+    let mut total_bytes = 0u64;
+    for entry in reader.entries()? {
+        // A tarball's own `./` entry names the destination itself.
+        if entry.is_dir
+            && entry
+                .inner
+                .split(['/', '\\'])
+                .all(|p| p.is_empty() || p == ".")
+        {
+            continue;
+        }
+        let name = safe_name(&entry.inner)?;
+        if !selection.is_empty() && !selection.iter().any(|s| under(&name, s)) {
+            continue;
+        }
+        let Some(name) = relative(&name) else {
+            continue;
+        };
+        anyhow::ensure!(
+            !entry.encrypted,
+            "password-protected archive entry: {}",
+            entry.inner
+        );
+        if entry.is_dir {
+            dirs.push(name);
+        } else {
+            total_bytes = total_bytes
+                .checked_add(entry.size)
+                .context("archive size overflow")?;
+            files.insert(entry.inner, (name, entry.size));
+        }
+    }
+    for wanted in &selection {
+        anyhow::ensure!(
+            relative(wanted).is_some_and(|w| dirs
+                .iter()
+                .chain(files.values().map(|(n, _)| n))
+                .any(|n| under(n, &w))),
+            "not in the archive: {wanted}"
+        );
+    }
+    Ok((
+        reader,
+        Selection {
+            dirs,
+            files,
+            total_bytes,
+        },
+    ))
 }
 
 /// `dst` joined with the `/`-separated `name`, refusing any existing link (or junction) on
@@ -1421,3 +1669,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "zip"))]
+#[path = "extract_tests.rs"]
+mod extract_tests;

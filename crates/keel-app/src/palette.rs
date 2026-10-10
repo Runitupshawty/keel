@@ -48,6 +48,7 @@ fn context_items() -> Vec<Item> {
         ("Extract here", "", ExtractHere),
         ("Extract to folder", "", ExtractToFolder),
         ("Extract to…", "", ExtractTo),
+        ("Extract to the other pane", "", ExtractToOther),
         ("Add to zip", "", AddToZip),
         ("Compress to zip…", "", CompressToZip),
         ("Tag…", "Ctrl+Shift+T", Library(LibCmd::TagPicker)),

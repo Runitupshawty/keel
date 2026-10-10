@@ -139,6 +139,8 @@ pub enum Action {
     ExtractToFolder,
     /// Archive targets: extract into a folder picked with the OS dialog.
     ExtractTo,
+    /// Archive targets: extract into the other pane's folder (any provider: SFTP, cloud).
+    ExtractToOther,
     /// Extract entries dragged out of an archive onto `dst`.
     Extract {
         src: ArchiveSrc,
