@@ -464,7 +464,7 @@ fn mount_target(t: &str) -> String {
     abs(t)
 }
 
-/// A source id, or the id of the one source with this label (case-insensitive).
+/// The id of the one source with this label (case-insensitive), else `given` as an id.
 fn source_id(b: &mut dyn Backend, given: &str) -> Result<String, Fail> {
     let list = b.call("sources.list", Value::Null)?;
     let sources = list.as_array().cloned().unwrap_or_default();
@@ -481,7 +481,8 @@ fn source_id(b: &mut dyn Backend, given: &str) -> Result<String, Fail> {
         .collect();
     match labelled.as_slice() {
         [one] => Ok(one["id"].as_str().unwrap_or_default().to_owned()),
-        [] => Err(Usage(format!("no source {given} (see `keel sources`)")).into()),
+        // Not a label: the operation reports the unknown id.
+        [] => Ok(given.to_owned()),
         _ => Err(Usage(format!("several sources are labelled {given}: give the id")).into()),
     }
 }
