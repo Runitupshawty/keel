@@ -533,6 +533,7 @@ pub fn context_menu(
             );
             item(ui, &folder, "", Action::ExtractToFolder);
             item(ui, "Extract to…", "", Action::ExtractTo);
+            item(ui, "Extract to the other pane", "", Action::ExtractToOther);
         }
         ui.separator();
         item(ui, "Copy", "Ctrl+C", Action::Copy);

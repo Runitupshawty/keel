@@ -320,8 +320,8 @@ pub fn run(s: &mut AppState, p: usize, action: Action) {
                     .error("Open a folder first (search results have no folder)");
             }
             let dst = tab.dir.clone();
-            if dst.split_archive().is_some() {
-                return s.toasts.error(crate::state::READ_ONLY);
+            if let Some(why) = crate::state::archive_refusal(&dst) {
+                return s.toasts.error(why);
             }
             let paths = s.dropzone.paste_paths();
             let skipped = s.dropzone.items.len() - paths.len();

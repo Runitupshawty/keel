@@ -948,3 +948,104 @@ fn a_resumed_copy_keeps_the_name_it_picked() {
     assert_eq!(tree(&root.join("dst/album (2)")), tree(&root.join("album")));
     assert_eq!(tree(&root.join("dst/album")).len(), 1);
 }
+
+#[test]
+fn zip_entries_are_changed_through_plans_with_one_rewrite_each() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    write(&root.join("src/a.txt"), "alpha");
+    write(&root.join("src/dir/b.txt"), "beta");
+    write(&root.join("new.txt"), "new");
+    let zip = root.join("x.zip");
+    keel_vfs::add_to_zip(
+        &zip,
+        &[root.join("src")],
+        "",
+        &|_| {},
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let (_data, lib, _src) = library_with(folder("f", root));
+    let inside = |n: &str| VPath::join_archive(&v(&zip), n);
+    let names = |dir: &str| -> Vec<String> {
+        let p = inside(dir);
+        let router = lib.router();
+        let provider = router.provider_for(&p).unwrap();
+        provider
+            .list(&p)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect()
+    };
+    let size = std::fs::metadata(&zip).unwrap().len();
+    let paths = vec![inside("src/dir"), inside("src/a.txt")];
+    let plan = validate_preview_execute(
+        &lib,
+        Op::Delete {
+            paths: paths.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.warnings[0],
+        Warning::RewritesArchive {
+            path: v(&zip),
+            bytes: size,
+        }
+    );
+    assert_eq!(
+        plan.warnings
+            .iter()
+            .filter(|w| matches!(w, Warning::RewritesArchive { .. }))
+            .count(),
+        1,
+        "once per archive"
+    );
+    assert_eq!(
+        plan.changes
+            .iter()
+            .map(|c| (c.files, c.bytes))
+            .collect::<Vec<_>>(),
+        [(1, 4), (1, 5)]
+    );
+    let info = run(&lib, Op::Delete { paths });
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert!(names("src").is_empty(), "the folder stays, empty");
+    // Pasted in, then renamed inside the archive.
+    let info = run(
+        &lib,
+        Op::Copy {
+            src: vec![v(&root.join("new.txt"))],
+            dst_dir: inside("src"),
+            on_conflict: OnConflict::Skip,
+        },
+    );
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let info = run(
+        &lib,
+        Op::Rename {
+            path: inside("src/new.txt"),
+            new_name: "renamed.txt".into(),
+        },
+    );
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert_eq!(names("src"), ["renamed.txt"]);
+    // Moves out of an archive, and writes into other formats, are refused up front.
+    let out = validate_preview_execute(
+        &lib,
+        Op::Move {
+            src: vec![inside("src/renamed.txt")],
+            dst_dir: v(root),
+            on_conflict: OnConflict::Skip,
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{out:#}").contains("cannot move out of an archive"));
+    let seven = VPath::join_archive(&v(&root.join("x.7z")), "a.txt");
+    let refused = validate_preview_execute(&lib, Op::Delete { paths: vec![seven] }).unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("7z archives are read-only"),
+        "{refused:#}"
+    );
+}

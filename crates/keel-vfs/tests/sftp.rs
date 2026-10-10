@@ -750,3 +750,78 @@ fn live_write_at_and_a_resumed_upload() {
     assert!(back == big);
     assert_eq!(names(&provider, &run.0), ["big.bin", "w.txt"]);
 }
+
+/// A zip extracted straight into a folder on the host (each entry streamed through the
+/// SFTP provider), then listed back.
+#[cfg(feature = "zip")]
+#[test]
+fn live_extract_zip_into_remote_folder() {
+    let Some((host, base)) = live() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = tmp.path().join("fixture.zip");
+    {
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+        for (name, body) in [
+            ("readme.txt", "hello"),
+            ("docs/a.txt", "alpha"),
+            ("docs/deep/b.txt", "bravo"),
+        ] {
+            w.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(body.as_bytes()).unwrap();
+        }
+        w.add_directory("empty", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.finish().unwrap();
+    }
+    let run = run_dir(&base, "extract");
+    let router = Router::new();
+    let provider = std::sync::Arc::new(SftpProvider::new(host, crossbeam_channel::unbounded().0));
+    router.register_remote_provider("live-test".into(), provider.clone());
+    let cancel = AtomicBool::new(false);
+    keel_vfs::extract_to(
+        &VPath::local(&zip),
+        "",
+        &[],
+        &run.0,
+        Conflict::Skip,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(names(&provider, &run.0), ["docs", "empty", "readme.txt"]);
+    assert_eq!(names(&provider, &run.0.join("docs")), ["a.txt", "deep"]);
+    let mut body = String::new();
+    provider
+        .read(&run.0.join("docs/deep/b.txt"))
+        .unwrap()
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(body, "bravo");
+    eprintln!(
+        "live extract: {}",
+        ssh(&format!(
+            "cd '{}' && find . | sort | tr '\n' ' '",
+            run.0.path
+        ))
+    );
+    // Again with Keep both: every file lands a second time beside the first.
+    keel_vfs::extract_to(
+        &VPath::local(&zip),
+        "",
+        &[],
+        &run.0,
+        Conflict::RenameNew,
+        &|_| {},
+        &cancel,
+        &router,
+    )
+    .unwrap();
+    assert_eq!(
+        names(&provider, &run.0),
+        ["docs", "empty", "readme (2).txt", "readme.txt"]
+    );
+}

@@ -60,7 +60,7 @@ impl Job {
 }
 
 /// A copy, move or extraction waiting for its conflict policy (local or remote on either
-/// side; extraction only into local folders).
+/// side, extraction too).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transfer {
     pub src: Vec<VPath>,
@@ -178,12 +178,21 @@ impl Jobs {
         tx: Sender<Msg>,
     ) -> u64 {
         let title = format!("Extracting {}", src.archive.name());
-        self.spawn(title, tx, move |report, cancel| {
-            let dst = dst.to_local_path().ok_or_else(|| {
-                anyhow::anyhow!("Extract into remote folders is not supported yet")
-            })?;
-            std::fs::create_dir_all(&dst)?;
-            keel_vfs::extract_under(
+        let remote = crate::remotes::is_network(&dst);
+        let id = self.spawn(title, tx, move |report, cancel| {
+            match dst.to_local_path() {
+                Some(local) => std::fs::create_dir_all(local)?,
+                // Extract to folder on a host: the new folder first.
+                None => {
+                    let provider = router
+                        .provider_for(&dst)
+                        .ok_or_else(|| anyhow::anyhow!("no provider for {}", dst.display()))?;
+                    if provider.stat(&dst).is_err() {
+                        provider.mkdir(&dst)?;
+                    }
+                }
+            }
+            keel_vfs::extract_to(
                 &src.archive,
                 &src.base,
                 &src.entries,
@@ -193,7 +202,9 @@ impl Jobs {
                 cancel,
                 &router,
             )
-        })
+        });
+        self.mark_remote(id, remote);
+        id
     }
 
     /// Adds `src` to `zip` (created when missing; same-named entries are replaced).
@@ -236,6 +247,15 @@ impl Jobs {
     /// Sends each path to the OS trash (remote: deletes it; the user confirmed that); stops
     /// at the first failure.
     pub fn delete(&mut self, paths: Vec<VPath>, router: Arc<Router>, tx: Sender<Msg>) -> u64 {
+        // Entries of a zip: one rewrite of the archive for all of them, progress by bytes.
+        if let Some((archive, _)) = paths.first().and_then(VPath::split_archive) {
+            if paths.iter().all(|p| p.split_archive().is_some()) {
+                let title = format!("Deleting {} from {}", items(paths.len()), archive.name());
+                return self.spawn(title, tx, move |report, cancel| {
+                    keel_vfs::ops::remove_entries(&paths, report, cancel)
+                });
+            }
+        }
         let remote = paths.first().is_some_and(crate::remotes::is_network);
         let (title, did) = if remote {
             (format!("Deleting {}", items(paths.len())), "deleted")
@@ -629,19 +649,23 @@ impl Drop for DriveLock {
 /// `dst` is remote). Local names go through the extended-length form, so long paths and
 /// names ending in a dot or space are found too. Blocks: workers only.
 pub fn plan_conflicts(src: &[VPath], dst: &VPath, router: &Router) -> Vec<String> {
-    let exists = |name: &str| match dst.to_local_path() {
+    src.iter()
+        .map(VPath::name)
+        .filter(|name| exists_in(dst, name, router))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether `dst` holds `name` (a stat on the host when `dst` is remote).
+fn exists_in(dst: &VPath, name: &str, router: &Router) -> bool {
+    match dst.to_local_path() {
         Some(dir) => {
             keel_vfs::long(&dir.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
         }
         None => router
             .provider_for(dst)
             .is_some_and(|p| p.stat(&dst.join(name)).is_ok()),
-    };
-    src.iter()
-        .map(VPath::name)
-        .filter(|name| exists(name))
-        .map(str::to_owned)
-        .collect()
+    }
 }
 
 /// Top-level names an extraction of `src` would create that already exist in `dst`.
@@ -650,9 +674,6 @@ fn archive_conflicts(
     dst: &VPath,
     router: &Router,
 ) -> anyhow::Result<Vec<String>> {
-    let dst = dst
-        .to_local_path()
-        .ok_or_else(|| anyhow::anyhow!("Extract into remote folders is not supported yet"))?;
     let names: Vec<String> = if src.entries.is_empty() {
         let dir = VPath::join_archive(&src.archive, &src.base);
         let provider = router
@@ -665,10 +686,24 @@ fn archive_conflicts(
     };
     Ok(names
         .into_iter()
-        .filter(|name| {
-            keel_vfs::long(&dst.join(name)).is_ok_and(|p| std::fs::symlink_metadata(p).is_ok())
-        })
+        .filter(|name| exists_in(dst, name, router))
         .collect())
+}
+
+/// The paths an `ArchiveSrc` names (the children of its folder when it names none).
+fn archive_paths(src: &ArchiveSrc, router: &Router) -> anyhow::Result<Vec<VPath>> {
+    let dir = VPath::join_archive(&src.archive, &src.base);
+    if !src.entries.is_empty() {
+        return Ok(src
+            .entries
+            .iter()
+            .map(|e| VPath::join_archive(&src.archive, e))
+            .collect());
+    }
+    let provider = router
+        .provider_for(&dir)
+        .ok_or_else(|| anyhow::anyhow!("no provider for {}", dir.display()))?;
+    Ok(provider.list(&dir)?.into_iter().map(|e| e.path).collect())
 }
 
 /// Same folder: local paths compare as paths (separators, trailing slash), others as VPaths.
@@ -716,6 +751,25 @@ pub fn spawn_plan(
 /// `spawn_plan`'s body, for callers already on a worker (the folder picker).
 pub fn plan(source: Source, dst: VPath, router: &Router, tx: &Sender<Msg>, ctx: &egui::Context) {
     let (src, mv, from_clipboard) = match source {
+        // Into a folder inside a zip: entries are copied over (raw within one zip), not
+        // extracted.
+        Source::Archive { src, clipboard } if dst.split_archive().is_some() => {
+            match archive_paths(&src, router) {
+                Ok(paths) => (paths, false, clipboard),
+                Err(e) => {
+                    let text = format!("{e:#}");
+                    let from_clipboard = clipboard;
+                    return send(
+                        tx,
+                        ctx,
+                        Msg::PlanFailed {
+                            text,
+                            from_clipboard,
+                        },
+                    );
+                }
+            }
+        }
         Source::Archive { src, clipboard } => {
             let msg = match archive_conflicts(&src, &dst, router) {
                 Ok(conflicts) => Msg::Planned {
@@ -751,14 +805,38 @@ pub fn plan(source: Source, dst: VPath, router: &Router, tx: &Sender<Msg>, ctx: 
             }
         },
     };
-    // ops::transfer cannot read archives yet: entries from inside one are extracted.
-    if let Some(src) = src
+    // Entries from inside an archive are extracted (one pass over the archive), unless
+    // they go into a zip; they never move out of it.
+    if let Some(picked) = src
         .first()
         .and_then(VPath::parent)
         .and_then(|dir| ArchiveSrc::picked(&dir, &src))
     {
-        let clipboard = from_clipboard;
-        return plan(Source::Archive { src, clipboard }, dst, router, tx, ctx);
+        let into_same = dst.split_archive().map(|(a, _)| a) == Some(picked.archive.clone());
+        if mv && !into_same {
+            let text = "Moving out of an archive is not supported: copy, then delete".into();
+            return send(
+                tx,
+                ctx,
+                Msg::PlanFailed {
+                    text,
+                    from_clipboard,
+                },
+            );
+        }
+        if dst.split_archive().is_none() {
+            let clipboard = from_clipboard;
+            return plan(
+                Source::Archive {
+                    src: picked,
+                    clipboard,
+                },
+                dst,
+                router,
+                tx,
+                ctx,
+            );
+        }
     }
     let src: Vec<VPath> = src
         .into_iter()

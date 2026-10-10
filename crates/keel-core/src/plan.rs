@@ -145,6 +145,9 @@ pub enum Warning {
     ContentUnverified { path: VPath, files: u64 },
     /// `files` deleted files' content survives only on offline or archived volumes.
     CopiesOffline { path: VPath, files: u64 },
+    /// The operation changes entries inside the zip `path` (`bytes` big): the whole
+    /// archive is written again beside it and then replaces it.
+    RewritesArchive { path: VPath, bytes: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +183,7 @@ fn kind_of(w: &Warning) -> Warning {
         Warning::SingleDomain { path, .. } => Warning::SingleDomain { path, files: 0 },
         Warning::ContentUnverified { path, .. } => Warning::ContentUnverified { path, files: 0 },
         Warning::CopiesOffline { path, .. } => Warning::CopiesOffline { path, files: 0 },
+        Warning::RewritesArchive { path, .. } => Warning::RewritesArchive { path, bytes: 0 },
         w => w,
     }
 }
@@ -227,6 +231,7 @@ struct Probe {
 fn preview(lib: &Shared, op: Op) -> Result<Plan> {
     let mut warnings = Vec::new();
     let mut changes = Vec::new();
+    archive_writes(lib, &op, &mut warnings)?;
     match &op {
         Op::Copy {
             src,
@@ -329,6 +334,57 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
     })
 }
 
+/// Refuses writes into archives that cannot be changed (7z, tar, RAR, archives inside
+/// archives or on other providers) and moves out of an archive, and warns once per zip
+/// that is rewritten.
+fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<()> {
+    let outer = |p: &VPath| p.split_archive().map(|(o, _)| o);
+    let written: Vec<&VPath> = match op {
+        Op::Copy { dst_dir, .. } => vec![dst_dir],
+        Op::Move { src, dst_dir, .. } => {
+            for s in src.iter().filter(|s| outer(s).is_some()) {
+                anyhow::ensure!(
+                    outer(s) == outer(dst_dir),
+                    "cannot move out of an archive (copy instead): {}",
+                    s.display()
+                );
+            }
+            vec![dst_dir]
+        }
+        Op::Delete { paths } => paths.iter().collect(),
+        Op::Rename { path, .. } => vec![path],
+    };
+    for p in written {
+        let Some(archive) = outer(p) else { continue };
+        keel_vfs::archive::editable(p)?;
+        let bytes = lib
+            .router
+            .read()
+            .provider_for(&archive)
+            .and_then(|provider| provider.stat(&archive).ok())
+            .map_or(0, |e| e.size);
+        warnings.push(Warning::RewritesArchive {
+            path: archive,
+            bytes,
+        });
+    }
+    Ok(())
+}
+
+/// Files and bytes under a folder inside an archive (its listing is cached).
+fn archive_tree(provider: &dyn keel_vfs::Provider, dir: &VPath, depth: usize) -> (u64, u64) {
+    let mut total = (0, 0);
+    for e in provider.list(dir).unwrap_or_default() {
+        let (bytes, files) = if e.kind == Kind::Dir && depth < 256 {
+            archive_tree(provider, &e.path, depth + 1)
+        } else {
+            (e.size, 1)
+        };
+        total = (total.0 + bytes, total.1 + files);
+    }
+    total
+}
+
 fn check_name(name: &str) -> Result<()> {
     let bad_windows = cfg!(windows)
         && (name.contains(['<', '>', ':', '"', '|', '?', '*']) || name.ends_with(['.', ' ']));
@@ -358,9 +414,10 @@ fn probe(lib: &Shared, p: &VPath, warnings: &mut Vec<Warning>) -> Result<Probe> 
     }
     warnings.push(Warning::NotIndexed { path: p.clone() });
     let router = lib.router.read().clone();
-    let entry = router
+    let provider = router
         .provider_for(p)
-        .with_context(|| format!("no provider for {}", p.display()))?
+        .with_context(|| format!("no provider for {}", p.display()))?;
+    let entry = provider
         .stat(p)
         .with_context(|| format!("{} does not exist", p.display()))?;
     let is_dir = entry.kind == Kind::Dir;
@@ -368,6 +425,7 @@ fn probe(lib: &Shared, p: &VPath, warnings: &mut Vec<Warning>) -> Result<Probe> 
         (false, _) => (entry.size, 1),
         // Counts folders too; good enough for a preview of an unindexed folder.
         (true, Some(local)) => keel_vfs::plan_size(&[local]).map_or((0, 0), |(b, n)| (b, n as u64)),
+        (true, None) if p.split_archive().is_some() => archive_tree(&*provider, p, 0),
         (true, None) => (0, 0),
     };
     Ok(Probe {
@@ -808,6 +866,10 @@ impl ExecJob {
             let batch = &items[self.next..self.next + self.marks.len()];
             let done = if self.transfers() {
                 self.transfer_batch(ctx, batch, n, None)?
+            } else if matches!(self.op, Op::Delete { .. })
+                && batch.iter().all(|i| i.split_archive().is_some())
+            {
+                delete_entries(ctx, &self.op, batch)?
             } else {
                 batch
                     .iter()
@@ -1035,6 +1097,26 @@ fn present(ctx: &JobCtx, item: &VPath) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Deletes of entries inside zips: one rewrite of each archive for the whole batch. Per
+/// item, false when it no longer exists (skipped).
+fn delete_entries(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
+    let ran = batch
+        .iter()
+        .map(|item| present(ctx, item))
+        .collect::<Result<Vec<bool>>>()?;
+    let todo: Vec<VPath> = batch
+        .iter()
+        .zip(&ran)
+        .filter(|(_, ran)| **ran)
+        .map(|(item, _)| item.clone())
+        .collect();
+    if !todo.is_empty() {
+        keel_vfs::ops::remove_entries(&todo, &|_| {}, ctx.stop_flag())?;
+        after(ctx, op, &todo);
+    }
+    Ok(ran)
 }
 
 /// One delete or rename of a top-level path; false when it no longer exists (skipped).

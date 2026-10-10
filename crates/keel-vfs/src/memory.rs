@@ -1,6 +1,7 @@
 //! An in-memory provider for tests (the `test-util` feature): files by path, folders
 //! implied by them or made with `mkdir`, plus switches that take it offline, make it
-//! read-only, fail the reads of chosen paths or slow every read down. `put` and `remove`
+//! read-only, fail the reads of chosen paths or slow every read down. A writer's file is
+//! placed whole on `flush()` (`write_at` puts each write in place). `put` and `remove`
 //! feed `changes` (its cursor is a position in the change log), which can be switched off
 //! or made to refuse its cursor once; `folder_times` gives folders a modified time that
 //! moves when an entry is added or removed, as on an SFTP server.
@@ -138,6 +139,20 @@ impl MemoryProvider {
         self.files.lock().keys().cloned().collect()
     }
 
+    /// Every file's path (`VPath::path`) and contents, in path order.
+    pub fn files(&self) -> Vec<(String, Vec<u8>)> {
+        let files = self.files.lock();
+        files
+            .iter()
+            .map(|(p, (d, _))| (p.clone(), d.clone()))
+            .collect()
+    }
+
+    /// Folders made with `mkdir`.
+    pub fn dirs(&self) -> Vec<String> {
+        self.dirs.lock().iter().cloned().collect()
+    }
+
     fn up(&self) -> Result<()> {
         if self.offline.load(Ordering::SeqCst) {
             bail!("memory provider is offline");
@@ -153,17 +168,22 @@ impl MemoryProvider {
         Ok(())
     }
 
-    /// A file or folder at `path`.
-    fn exists(&self, path: &str) -> bool {
-        let below = format!("{}/", path.trim_end_matches('/'));
-        let files = self.files.lock();
-        files.contains_key(path)
-            || files.keys().any(|k| k.starts_with(&below))
+    /// A folder at `path`: the root, one made with `mkdir`, or one with files under it.
+    fn is_dir(&self, path: &str) -> bool {
+        let path = path.trim_end_matches('/');
+        let below = format!("{path}/");
+        below == "/"
+            || self.files.lock().keys().any(|k| k.starts_with(&below))
             || self
                 .dirs
                 .lock()
                 .iter()
                 .any(|d| d == path || d.starts_with(&below))
+    }
+
+    /// A file or folder at `path`.
+    fn exists(&self, path: &str) -> bool {
+        self.files.lock().contains_key(path) || self.is_dir(path)
     }
 
     fn entry(p: &VPath, kind: Kind, size: u64, modified: Option<SystemTime>) -> Entry {
@@ -188,6 +208,9 @@ impl MemoryProvider {
         self.writable(p)?;
         if mode == Mode::New && self.exists(&p.path) {
             bail!("{} exists", p.display());
+        }
+        if self.is_dir(&p.path) {
+            bail!("{} is a folder", p.display());
         }
         Ok(Box::new(MemoryWrite {
             files: self.files.clone(),
@@ -326,7 +349,7 @@ impl Provider for MemoryProvider {
             out.insert(e.name.clone(), e);
         }
         for d in self.dirs.lock().iter() {
-            if let Some(rest) = d.strip_prefix(&prefix) {
+            if let Some(rest) = d.strip_prefix(&prefix).filter(|r| !r.is_empty()) {
                 let sub = rest.split('/').next().unwrap_or(rest);
                 out.entry(sub.to_owned())
                     .or_insert_with(|| Self::entry(&dir.join(sub), Kind::Dir, 0, None));
@@ -342,7 +365,7 @@ impl Provider for MemoryProvider {
         if let Some((data, mtime)) = self.files.lock().get(&p.path) {
             return Ok(Self::entry(p, Kind::File, data.len() as u64, Some(*mtime)));
         }
-        if prefix(p) == "/" || self.exists(&p.path) {
+        if self.is_dir(&p.path) {
             return Ok(Self::entry(p, Kind::Dir, 0, self.dir_time(&p.path)));
         }
         Err(std::io::Error::new(
@@ -394,7 +417,9 @@ impl Provider for MemoryProvider {
         if self.exists(&p.path) {
             bail!("{} exists", p.display());
         }
-        self.dirs.lock().insert(p.path.clone());
+        self.dirs
+            .lock()
+            .insert(p.path.trim_end_matches('/').to_owned());
         Ok(())
     }
     /// Never replaces an existing target.

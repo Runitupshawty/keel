@@ -12,7 +12,7 @@ pub mod drag_out;
 // --- end Task 24 ---
 pub mod library;
 /// In-memory provider for tests.
-#[cfg(feature = "test-util")]
+#[cfg(any(test, feature = "test-util"))]
 pub mod memory;
 pub mod path;
 /// Per-user named pipe security (single instance, Windows).
@@ -54,7 +54,9 @@ use ops_unix as sys;
 mod ops_windows;
 #[cfg(feature = "zip")]
 pub use ops::{add_to_archive, add_to_zip};
-pub use ops::{copy_local, extract, extract_under, move_local, plan_size, Conflict, Progress};
+pub use ops::{
+    copy_local, extract, extract_to, extract_under, move_local, plan_size, Conflict, Progress,
+};
 #[cfg(windows)]
 use ops_windows as sys;
 

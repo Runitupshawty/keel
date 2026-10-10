@@ -163,6 +163,11 @@ fn image_meta(path: &Path) -> Result<MediaMeta> {
     if let Some(exif) = &exif {
         apply_exif(&mut meta, exif);
     }
+    if is_tiff(path) {
+        if let Some(o) = tiff_orientation(path)? {
+            meta.orientation = o;
+        }
+    }
     let dims = match ImageReader::open(path)?
         .with_guessed_format()?
         .into_dimensions()
@@ -210,17 +215,97 @@ fn heif_dimensions(path: &Path, _exif: Option<&exif::Exif>) -> Result<Option<(u3
 }
 
 /// TIFFs bigger than this are not searched for EXIF: kamadak-exif reads a whole TIFF
-/// into memory first (other containers are scanned).
+/// into memory first (other containers are scanned). Their orientation still comes from
+/// [`tiff_orientation`].
 const TIFF_EXIF_MAX: u64 = 64 << 20;
+
+fn is_tiff(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("tif") || e.eq_ignore_ascii_case("tiff"))
+}
+
+/// Most entries read from a TIFF's first IFD (each 12 bytes, 20 in a BigTIFF).
+const TIFF_IFD_MAX: u64 = 4096;
+
+/// The orientation (tag 0x0112, 1..=8) in a TIFF's first IFD, read from the header and
+/// that one directory (a few KiB, whatever the file's size): little- and big-endian,
+/// classic and BigTIFF. None when the file is not a TIFF or has no valid tag.
+pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let mut head = [0u8; 16];
+    if file.read_exact(&mut head[..8]).is_err() {
+        return Ok(None);
+    }
+    let le = match &head[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Ok(None),
+    };
+    let u16_at = |b: &[u8]| {
+        let b = [b[0], b[1]];
+        if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        }
+    };
+    let u32_at = |b: &[u8]| {
+        let b = [b[0], b[1], b[2], b[3]];
+        if le {
+            u32::from_le_bytes(b)
+        } else {
+            u32::from_be_bytes(b)
+        }
+    };
+    let u64_at = |b: &[u8]| {
+        let b: [u8; 8] = b[..8].try_into().expect("8 bytes");
+        if le {
+            u64::from_le_bytes(b)
+        } else {
+            u64::from_be_bytes(b)
+        }
+    };
+    // (count field size, entry size, value offset in an entry, first IFD offset)
+    let (count_len, entry_len, value_at, ifd) = match u16_at(&head[2..4]) {
+        42 => (2usize, 12usize, 8usize, u64::from(u32_at(&head[4..8]))),
+        43 => {
+            if file.read_exact(&mut head[8..16]).is_err() {
+                return Ok(None);
+            }
+            (8, 20, 12, u64_at(&head[8..16]))
+        }
+        _ => return Ok(None),
+    };
+    let mut count = [0u8; 8];
+    file.seek(SeekFrom::Start(ifd))?;
+    if file.read_exact(&mut count[..count_len]).is_err() {
+        return Ok(None);
+    }
+    let n = if count_len == 2 {
+        u64::from(u16_at(&count))
+    } else {
+        u64_at(&count)
+    };
+    let mut entries = vec![0u8; n.min(TIFF_IFD_MAX) as usize * entry_len];
+    if file.read_exact(&mut entries).is_err() {
+        return Ok(None);
+    }
+    for e in entries.chunks_exact(entry_len) {
+        // SHORT (type 3): the first value sits at the start of the value field.
+        if u16_at(&e[0..2]) == 0x0112 && u16_at(&e[2..4]) == 3 {
+            let o = u16_at(&e[value_at..value_at + 2]);
+            return Ok((1..=8).contains(&o).then_some(o as u8));
+        }
+    }
+    Ok(None)
+}
 
 /// None when the file has no (readable) EXIF, or is a TIFF over [`TIFF_EXIF_MAX`].
 fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     let file = File::open(path)?;
-    let tiff = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("tif") || e.eq_ignore_ascii_case("tiff"));
-    if tiff && file.metadata()?.len() > TIFF_EXIF_MAX {
+    if is_tiff(path) && file.metadata()?.len() > TIFF_EXIF_MAX {
         return Ok(None);
     }
     let mut r = BufReader::new(file);
@@ -551,6 +636,11 @@ pub(crate) fn decode_image(path: &Path) -> Result<DynamicImage> {
 }
 
 fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
+    if is_tiff(path) {
+        let o = tiff_orientation(path)?.unwrap_or(1);
+        return Ok(image::metadata::Orientation::from_exif(o)
+            .unwrap_or(image::metadata::Orientation::NoTransforms));
+    }
     let o = read_exif(path)?
         .and_then(|e| {
             e.get_field(exif::Tag::Orientation, exif::In::PRIMARY)

@@ -28,8 +28,21 @@ use std::time::{Duration, Instant};
 
 /// Watcher events for a folder are coalesced for this long before relisting.
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
-/// Toast for writes (delete, rename, new, paste, drop) inside an archive.
-pub const READ_ONLY: &str = "Archives are read-only in this version";
+/// Toast for Compress / Add to inside an archive (they work on files on this computer).
+pub const READ_ONLY: &str = "Compress and Add to work on files outside archives";
+
+/// Why nothing can be written in `dir` when it is inside an archive that cannot be
+/// changed (7z, tar, RAR, an archive inside an archive or on another provider); None
+/// outside archives and in zips on this computer. By name: no file is read.
+pub fn archive_refusal(dir: &VPath) -> Option<String> {
+    dir.split_archive()?;
+    let why = format!("{:#}", keel_vfs::archive::editable(dir).err()?);
+    let mut chars = why.chars();
+    Some(match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => why,
+    })
+}
 /// A listing that has not answered after this long stops its spinner and says so (a
 /// late answer still fills the tab).
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1354,8 +1367,8 @@ impl AppState {
                 keel_vfs::trashbin::label()
             ));
         }
-        if self.writes_into_archive(p, &action) {
-            return self.toasts.error(READ_ONLY);
+        if let Some(why) = self.archive_write_refusal(p, &action) {
+            return self.toasts.error(why);
         }
         // --- Task 32 ---: Space / Enter on a photo or video in the media view.
         let Some(action) = crate::media_viewer::intercept(self, p, action) else {
@@ -1738,6 +1751,18 @@ impl AppState {
                     });
                     return;
                 }
+                if let Some((archive, _)) = paths.first().and_then(VPath::split_archive) {
+                    // Inside a zip: gone for good, and the archive is written again.
+                    self.dialog = Some(Dialog::Confirm {
+                        text: format!(
+                            "Delete {} from {} for good? The archive is written again without them.",
+                            jobs::items(paths.len()),
+                            archive.name()
+                        ),
+                        on_yes: Action::DeleteRemote(paths),
+                    });
+                    return;
+                }
                 let remote = paths.first().filter(|p| p.scheme == "sftp");
                 let cloud = paths.first().filter(|p| p.scheme == "cloud");
                 let cloud = cloud.map(|p| (p, self.clouds.account(&p.authority)));
@@ -1906,7 +1931,8 @@ impl AppState {
                     if folder {
                         p.mkdir(target)
                     } else {
-                        p.create_new(target).map(drop)
+                        // Providers that place files on flush (SFTP, zips) need it.
+                        p.create_new(target).and_then(|mut w| Ok(w.flush()?))
                     }
                 });
             }
@@ -1969,9 +1995,10 @@ impl AppState {
                 self.palette.show(selection);
             }
             Action::TogglePreview => self.preview.open = !self.preview.open,
-            Action::ExtractHere | Action::ExtractToFolder | Action::ExtractTo => {
-                self.extract_targets(p, action)
-            }
+            Action::ExtractHere
+            | Action::ExtractToFolder
+            | Action::ExtractTo
+            | Action::ExtractToOther => self.extract_targets(p, action),
             Action::Extract { src, dst } => {
                 // A drag that ends where it started (inside the archive): nothing to do.
                 if dst.split_archive().is_some() {
@@ -2081,29 +2108,36 @@ impl AppState {
         });
     }
 
-    /// Writes refused inside archives (read-only in this version). A drag out of an
-    /// archive that ends back in its own folder is not a write.
-    fn writes_into_archive(&self, p: usize, action: &Action) -> bool {
+    /// Why a write inside an archive is refused (only zips on this computer can be
+    /// changed; Compress and Add to never work inside one). A drag out of an archive that
+    /// ends back in its own folder is not a write.
+    fn archive_write_refusal(&self, p: usize, action: &Action) -> Option<String> {
         let inside = |dir: &VPath| dir.split_archive().is_some();
+        let here = &self.tab(p).dir;
         match action {
-            Action::BulkRenameApply { renames } => renames.iter().any(|(f, _)| inside(f)),
+            Action::BulkRenameApply { renames } => renames
+                .iter()
+                .any(|(f, _)| inside(f))
+                .then(|| "Bulk rename does not work inside archives: rename one at a time".into()),
+            Action::AddToZip | Action::AddToArchive | Action::CompressToZip => {
+                inside(here).then(|| READ_ONLY.into())
+            }
             Action::Rename
             | Action::Delete
             | Action::Cut
             | Action::Paste
             | Action::NewFolder
-            | Action::NewFile
-            | Action::AddToZip
-            | Action::AddToArchive
-            | Action::CompressToZip => inside(&self.tab(p).dir),
+            | Action::NewFile => archive_refusal(here),
             Action::RenameTo { from: dir, .. }
             | Action::Create { dir, .. }
-            | Action::Drop { dst: dir, .. } => inside(dir),
-            Action::Trash(paths) => paths.iter().any(inside),
-            Action::Extract { src, dst } => {
-                inside(dst) && *dst != VPath::join_archive(&src.archive, &src.base)
+            | Action::Drop { dst: dir, .. } => archive_refusal(dir),
+            Action::Trash(paths) => paths.iter().find_map(archive_refusal),
+            Action::Extract { src, dst }
+                if *dst != VPath::join_archive(&src.archive, &src.base) =>
+            {
+                archive_refusal(dst)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -2119,24 +2153,46 @@ impl AppState {
         if archives.is_empty() {
             return self.toasts.error("Select an archive to extract");
         }
-        // Next to each archive (search results live in many folders).
+        if action == Action::ExtractToOther {
+            let other = 1 - p;
+            if !self.dual || self.tab(other).is_search() || self.tab(other).is_trash() {
+                return self
+                    .toasts
+                    .error("Open the folder to extract into in the other pane (Ctrl+Shift+D)");
+            }
+            let dst = self.tab(other).dir.clone();
+            if dst.split_archive().is_some() {
+                return self
+                    .toasts
+                    .error("Extract into a folder outside archives (paste copies into a zip)");
+            }
+            for archive in archives {
+                self.plan_extract(ArchiveSrc::whole(archive), dst.clone());
+            }
+            return;
+        }
+        // Next to each archive (search results live in many folders; any provider).
         let Some(folders) = archives
             .iter()
-            .map(|a| a.parent().and_then(|d| d.to_local_path()))
+            .map(|a| a.parent().filter(|d| d.split_archive().is_none()))
             .collect::<Option<Vec<_>>>()
         else {
-            return self.toasts.error(READ_ONLY);
+            return self.toasts.error(
+                "Extract here works for archives outside archives: use Extract to…, or copy the archive out first",
+            );
         };
         if action == Action::ExtractTo {
             let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
-            let start = folders[0].clone();
+            let start = folders[0]
+                .to_local_path()
+                .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()));
             // The OS dialog blocks: never on the UI thread.
             worker::spawn("keel-pick", move || {
-                let Some(dst) = rfd::FileDialog::new()
-                    .set_title("Extract to")
-                    .set_directory(&start)
-                    .pick_folder()
-                else {
+                let mut dialog = rfd::FileDialog::new().set_title("Extract to");
+                if let Some(start) = &start {
+                    dialog = dialog.set_directory(start);
+                }
+                let Some(dst) = dialog.pick_folder() else {
                     return;
                 };
                 for archive in archives {
@@ -2155,7 +2211,7 @@ impl AppState {
             } else {
                 folder
             };
-            self.plan_extract(ArchiveSrc::whole(archive), VPath::local(dst));
+            self.plan_extract(ArchiveSrc::whole(archive), dst);
         }
     }
 
@@ -2631,23 +2687,42 @@ mod tests {
             ("demo.zip", Some(folder.clone()))
         );
 
-        // Writes inside the archive are refused with one toast.
+        // Compress and Add to never work inside an archive; a delete asks first.
         state.tab_mut(0).cursor = Some("b.txt".into());
-        for action in [
-            Action::Delete,
-            Action::Rename,
-            Action::NewFolder,
-            Action::NewFile,
-            Action::Paste,
-            Action::Cut,
-            Action::AddToZip,
-        ] {
+        for action in [Action::AddToZip, Action::CompressToZip] {
             state.toasts.list.clear();
             state.run(0, action.clone());
             let texts: Vec<&str> = state.toasts.list.iter().map(|t| t.text.as_str()).collect();
             assert_eq!(texts, [READ_ONLY], "{action:?}");
         }
-        assert!(state.dialog.is_none() && state.tab(0).renaming.is_none());
+        assert!(state.dialog.is_none());
+        state.run(0, Action::Delete);
+        match state.dialog.take() {
+            Some(Dialog::Confirm {
+                text,
+                on_yes: Action::DeleteRemote(paths),
+            }) => {
+                assert!(text.contains("from demo.zip for good"), "{text}");
+                assert_eq!(paths, [state.tab(0).dir.join("b.txt")]);
+            }
+            _ => panic!("delete confirmation"),
+        }
+        // Inside an archive inside an archive (or a 7z), every write is refused.
+        let nested = VPath::join_archive(&root.join("inner.zip"), "");
+        state.toasts.list.clear();
+        state.run(
+            0,
+            Action::Create {
+                dir: nested,
+                name: "x".into(),
+                folder: true,
+            },
+        );
+        assert!(
+            state.toasts.list[0].text.contains("inside another archive"),
+            "{}",
+            state.toasts.list[0].text
+        );
 
         state.run(0, Action::Up);
         state.run(0, Action::Up);
@@ -2666,6 +2741,142 @@ mod tests {
         state.toasts.list.clear();
         state.open_entry(0, locked);
         assert_eq!(state.toasts.list[0].text, crate::preview_panel::LOCKED);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn zip_entries_are_deleted_created_renamed_and_pasted() {
+        use std::io::Read;
+        let tmp = tempfile_dir("keel-archive-edit");
+        let file = demo_zip(&tmp);
+        std::fs::write(tmp.join("pasted.txt"), "pasted").unwrap();
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            VPath::local(&tmp),
+        );
+        settle(&mut state, |s| !s.tab(0).loading);
+        let root = VPath::join_archive(&VPath::local(&file), "");
+        state.run(0, Action::Navigate(root.clone()));
+        settle(&mut state, |s| !s.tab(0).loading);
+        let done =
+            |s: &AppState, n: usize| s.jobs.list.len() == n && s.jobs.list[n - 1].done.is_some();
+        // Delete (confirmed): one job, progress by bytes, the listing follows.
+        state.run(0, Action::DeleteRemote(vec![root.join("a.txt")]));
+        assert_eq!(state.jobs.list[0].title, "Deleting 1 item from demo.zip");
+        settle(&mut state, |s| done(s, 1));
+        assert!(state.jobs.list[0].done.as_ref().unwrap().is_ok());
+        settle(&mut state, |s| {
+            !s.tab(0).loading && s.tab(0).entries().len() == 1
+        });
+        // A new folder and a new (empty) file, then a rename.
+        for (name, folder) in [("made", true), ("note.txt", false)] {
+            state.run(
+                0,
+                Action::Create {
+                    dir: root.clone(),
+                    name: name.into(),
+                    folder,
+                },
+            );
+            settle(&mut state, |s| s.tab(0).cursor.as_deref() == Some(name));
+        }
+        state.run(
+            0,
+            Action::RenameTo {
+                from: root.join("note.txt"),
+                to: "renamed.txt".into(),
+            },
+        );
+        settle(&mut state, |s| {
+            s.tab(0).cursor.as_deref() == Some("renamed.txt")
+        });
+        // A file from outside pasted into a folder of the archive.
+        jobs::plan(
+            Source::Paths(vec![VPath::local(tmp.join("pasted.txt"))], false),
+            root.join("made"),
+            &state.router,
+            &state.tx,
+            &state.ctx,
+        );
+        settle(&mut state, |s| s.jobs.list.len() == 2);
+        settle(&mut state, |s| done(s, 2));
+        assert!(state.jobs.list[1].done.as_ref().unwrap().is_ok());
+        let provider = state.router.provider_for(&root).unwrap();
+        let mut body = String::new();
+        provider
+            .read(&root.join("made/pasted.txt"))
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, "pasted");
+        let names: Vec<String> = provider
+            .list(&root)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["dir", "made", "renamed.txt"]);
+        // Entries cut inside the archive cannot be moved out of it.
+        state.toasts.list.clear();
+        jobs::plan(
+            Source::Paths(vec![root.join("renamed.txt")], true),
+            VPath::local(&tmp),
+            &state.router,
+            &state.tx,
+            &state.ctx,
+        );
+        settle(&mut state, |s| !s.toasts.list.is_empty());
+        assert!(state.toasts.list[0]
+            .text
+            .contains("Moving out of an archive"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn archives_extract_into_a_folder_on_another_provider() {
+        use keel_vfs::Provider;
+        let tmp = tempfile_dir("keel-archive-remote");
+        demo_zip(&tmp);
+        let router = Arc::new(Router::new());
+        let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+        router.register(mem.clone());
+        let remote = VPath::parse("memory://host/inbox").unwrap();
+        mem.mkdir(&remote).unwrap();
+        mem.put("/inbox/a.txt", "mine");
+        let mut state = AppState::new(egui::Context::default(), router, VPath::local(&tmp));
+        settle(&mut state, |s| !s.tab(0).loading);
+        // The other pane shows the remote folder: Extract to the other pane.
+        state.dual = true;
+        state.run(1, Action::Navigate(remote.clone()));
+        state.tab_mut(0).cursor = Some("demo.zip".into());
+        state.run(0, Action::ExtractToOther);
+        settle(&mut state, |s| s.dialog.is_some());
+        let Some(Dialog::Conflict { names, op, .. }) = state.dialog.take() else {
+            panic!("conflict dialog");
+        };
+        assert_eq!(names, ["a.txt"]);
+        state.run(
+            0,
+            Action::StartTransfer {
+                op,
+                conflict: keel_vfs::Conflict::RenameNew,
+                from_clipboard: false,
+            },
+        );
+        settle(&mut state, |s| {
+            s.jobs.list.first().is_some_and(|j| j.done.is_some())
+        });
+        assert!(state.jobs.list[0].done.as_ref().unwrap().is_ok());
+        let files: Vec<(String, Vec<u8>)> = mem.files();
+        assert_eq!(
+            files,
+            [
+                ("/inbox/a (2).txt".to_owned(), b"alpha".to_vec()),
+                ("/inbox/a.txt".to_owned(), b"mine".to_vec()),
+                ("/inbox/dir/b.txt".to_owned(), b"beta".to_vec()),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
