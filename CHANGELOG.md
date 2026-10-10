@@ -13,6 +13,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - SFTP: `russh` 0.50 to 0.64 and `russh-sftp` 2.4 to 3.0, fixing unbounded memory allocation driven by a hostile server (RUSTSEC-2026-0154, RUSTSEC-2026-0153). Host key trust, key file, agent and password logins, keepalive and cancellation behave as before; a host certificate offered by a server is refused.
+- Spreadsheet previews: `calamine` 0.26 to 0.36, which moves its XML parser to `quick-xml` 0.41 and fixes a quadratic-time attribute check and a namespace allocation DoS on crafted xlsx/ods files (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
 
 ## [0.6.0] - 2026-10-09
 
