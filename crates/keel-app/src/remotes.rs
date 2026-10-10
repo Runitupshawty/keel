@@ -277,7 +277,11 @@ impl Remotes {
             self.confirm_remove = None;
             let (tx, ctx) = (tx.clone(), ui.ctx().clone());
             spawn("keel-keychain", move || {
+                // Tests never touch the keychain.
+                #[cfg(not(test))]
                 keel_vfs::sftp::auth::forget_secrets(&id);
+                #[cfg(test)]
+                let _ = id;
                 send(&tx, &ctx, Msg::Info("Remote host removed".into()));
             });
         }

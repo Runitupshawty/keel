@@ -45,6 +45,8 @@ mod view_columns;
 mod view_details;
 mod view_grid;
 mod view_media;
+#[cfg(test)]
+mod walkthrough_tests; // the QA walkthrough (scripts/walkthrough.sh)
 mod worker;
 #[cfg(any(target_os = "linux", test))]
 mod x11_clipboard;
