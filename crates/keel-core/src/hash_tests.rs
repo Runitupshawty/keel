@@ -373,7 +373,7 @@ fn ten_thousand_small_files_hash_fast() {
     let took = start.elapsed();
     eprintln!("hashed 10,000 small files in {took:?}");
     assert_eq!(hashed(&s[0]), 10_000);
-    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
 }
 
 /// Review item 7: hard links of one file are one file to duplicates and redundancy.

@@ -24,6 +24,10 @@ use std::{
 
 /// Rows per write transaction during a walk.
 pub const BATCH: u64 = 5_000;
+/// A walk lists folders ahead (no lock held) until they hold this many entries, or for
+/// this long, then writes them in one transaction.
+const LIST_AHEAD_ROWS: usize = 2_000;
+const LIST_AHEAD_TIME: Duration = Duration::from_millis(200);
 /// How often `Indexer::watch` asks a remote or cloud source what changed (its change feed,
 /// or the times of its folders); `[library] remote_poll_secs` in the app and daemon.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(120);
@@ -441,6 +445,10 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed) || self.src.removed.load(Ordering::Relaxed)
+    }
+
     fn begin(&mut self) -> Result<()> {
         if self.batched && self.batch_started.is_none() {
             begin_immediate(self.conn)?;
@@ -463,16 +471,40 @@ impl Walk<'_> {
     }
 
     fn run(&mut self, mut stack: Vec<Pending>) -> Result<()> {
-        while let Some(p) = stack.pop() {
-            if self.cancel.load(Ordering::Relaxed) || self.src.removed.load(Ordering::Relaxed) {
+        let mut listed = Vec::new();
+        while !stack.is_empty() || !listed.is_empty() {
+            if listed.is_empty() {
+                // Never list (slow on remotes and dead drives) while holding the write lock;
+                // several folders are listed before their rows are written, so a tree of
+                // small folders is not one commit (and one FTS segment) per folder.
+                self.commit()?;
+                let (started, mut rows) = (Instant::now(), 0);
+                while let Some(p) = stack.pop() {
+                    if self.cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    let items = self.lister.list(&p.dir);
+                    rows += items.as_ref().map_or(1, Vec::len);
+                    listed.push((p, items));
+                    if rows >= LIST_AHEAD_ROWS || started.elapsed() >= LIST_AHEAD_TIME {
+                        break;
+                    }
+                }
+                // Written in listing order.
+                listed.reverse();
+            }
+            let Some((p, items)) = listed.pop() else {
+                continue;
+            };
+            if self.cancelled() {
                 return Err(Cancelled.into());
             }
-            // Never list (slow on remotes and dead drives) while holding the write lock.
-            self.commit()?;
             self.current.clone_from(&p.rel);
-            let items = match self.lister.list(&p.dir) {
+            let items = match items {
                 Ok(items) => items,
                 Err(e) => {
+                    // A network call: not under the write lock either.
+                    self.commit()?;
                     if let Err(root) = self.lister.stat(&self.src.def.root) {
                         return Err(unreachable(format!("{root:#}")));
                     }
@@ -1459,14 +1491,24 @@ fn watch_loop(
         paths.dedup();
         // Present paths first: a rename then reads as a move.
         paths.sort_by_key(|p| p.symlink_metadata().is_err());
-        for p in paths {
-            let ev = ChangeEvent::Changed(VPath::local(&p));
-            if let Err(e) = Indexer::apply_change(src, ev) {
-                tracing::debug!("index change {}: {e:#}", p.display());
+        // A transaction per chunk, not per path (a 10,000-file burst committed 10,000
+        // times); a chunk that fails goes again path by path, so a bad path costs only itself.
+        for chunk in paths.chunks(APPLY_CHUNK) {
+            let batch: Vec<VPath> = chunk.iter().map(VPath::local).collect();
+            if Indexer::apply_paths(src, &batch, false).is_ok() {
+                continue;
+            }
+            for p in batch {
+                if let Err(e) = Indexer::apply_paths(src, std::slice::from_ref(&p), false) {
+                    tracing::debug!("index change {}: {e:#}", p.display());
+                }
             }
         }
     }
 }
+
+/// Watcher events applied per transaction.
+const APPLY_CHUNK: usize = 1_000;
 
 #[allow(clippy::too_many_arguments)]
 fn apply(

@@ -836,6 +836,7 @@ fn two_thousand_files_arrive_in_linear_time() {
         };
         assert!(matches!(raw(&pair, status), Response::Partial { .. }));
     }
+    let floor_took = floor.elapsed();
     // Plus one fsync per file (the `published` marker is synced as each file lands).
     let synced = Instant::now();
     let mut marker = std::fs::File::create(inbox.path().join("sync-probe")).unwrap();
@@ -854,6 +855,10 @@ fn two_thousand_files_arrive_in_linear_time() {
     assert_eq!(std::fs::read(&meta).unwrap(), written, "meta written once");
     send(&files[1000..]);
     let took = started.elapsed();
+    eprintln!(
+        "PERF spacedrop_2000: {took:?} (first 1,000 {first:?}; budget {budget:?}, bare requests {:?})",
+        floor_took
+    );
     assert_eq!(
         std::fs::read_dir(inbox.path().join("d")).unwrap().count(),
         2000

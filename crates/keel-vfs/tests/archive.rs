@@ -1191,6 +1191,35 @@ fn perf_zip_extract_3k_under_2s() {
     );
 }
 
+#[test]
+#[ignore = "10,000-entry ZIP extraction timing; run in release mode"]
+fn perf_zip_extract_10k() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("many.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&file).unwrap());
+    for i in 0..10_000 {
+        zip.start_file(
+            format!("dir {}/file-{i}.txt", i / 1_000),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(format!("body {i} ").repeat(50).as_bytes())
+            .unwrap();
+    }
+    zip.finish().unwrap();
+    let dst = tmp.path().join("dst");
+    fs::create_dir(&dst).unwrap();
+    let start = std::time::Instant::now();
+    extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap();
+    let took = start.elapsed();
+    eprintln!(
+        "PERF zip_extract_10k: {took:?} ({:.0} entries/s)",
+        10_000.0 / took.as_secs_f64()
+    );
+    assert_eq!(fs::read_dir(dst.join("dir 9")).unwrap().count(), 1_000);
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+}
+
 /// Rewrites the uncompressed size in both the local and the central header of the only entry.
 fn patch_zip_size(file: &Path, size: u32) {
     let mut bytes = fs::read(file).unwrap();

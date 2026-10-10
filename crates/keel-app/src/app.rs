@@ -1051,4 +1051,74 @@ mod tests {
         harness.run_steps(4);
         harness.snapshot("main");
     }
+
+    /// Startup to the first frame (release, GPU): the window state built (`App::new`, wgpu
+    /// set up), the first frame run and rendered, both panes listed.
+    /// `cargo test -p keel-app --release perf_first_frame -- --ignored --nocapture`
+    #[test]
+    #[ignore = "release measurement; needs a GPU"]
+    fn perf_first_frame() {
+        let start = fixture("keel-perf-first-frame");
+        let t = std::time::Instant::now();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .wgpu()
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        let built = t.elapsed();
+        harness.step();
+        harness.render().unwrap();
+        let first = t.elapsed();
+        wait_listed(&mut harness);
+        let listed = t.elapsed();
+        eprintln!(
+            "PERF first_frame: app built {built:?}, first frame rendered {first:?}, both panes listed {listed:?}"
+        );
+        assert!(first < std::time::Duration::from_secs(3), "{first:?}");
+    }
+
+    /// Opening a folder of 100,000 files (kept under `target/perf-list-100k`) in both panes:
+    /// listing, sorting and the first frame that shows it, then a frame with it shown.
+    /// `cargo test -p keel-app --release perf_open_100k -- --ignored --nocapture`
+    #[test]
+    #[ignore = "release measurement: 100,000 files under target/"]
+    fn perf_open_100k_folder() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/perf-list-100k");
+        let done = dir.with_extension("complete");
+        if !done.exists() {
+            std::fs::create_dir_all(&dir).unwrap();
+            for n in 0..100_000 {
+                std::fs::write(dir.join(format!("File {n} report-{}.txt", n % 977)), b"").unwrap();
+            }
+            std::fs::write(&done, b"").unwrap();
+        }
+        let t = std::time::Instant::now();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(VPath::local(&dir))));
+        for _ in 0..1_000 {
+            harness.step();
+            let s = &harness.state().state;
+            if !s.tab(0).loading && !s.tab(1).loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        harness.step();
+        let shown = t.elapsed();
+        assert_eq!(harness.state().state.tab(0).entries().len(), 100_000);
+        let frames = (0..20)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                harness.step();
+                t.elapsed()
+            })
+            .max()
+            .unwrap();
+        eprintln!(
+            "PERF open_100k: both panes listed and shown {shown:?}, slowest frame after {frames:?}"
+        );
+        assert!(shown < std::time::Duration::from_secs(5), "{shown:?}");
+        assert!(frames < std::time::Duration::from_millis(50), "{frames:?}");
+    }
 }

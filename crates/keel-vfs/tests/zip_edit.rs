@@ -536,3 +536,48 @@ fn a_transfer_into_a_zip_resumed_after_its_rewrite_adds_nothing_twice() {
     assert_eq!(tree(&zip)["late.txt"], b"late");
     assert!(!src.join("late.txt").exists());
 }
+
+/// Deleting one entry from a 1 GiB zip (1,024 stored entries of 1 MiB, kept under
+/// `target/perf-zip-1g.zip`): one rewrite copying the rest byte for byte.
+/// `cargo test -p keel-vfs --release --test zip_edit -- --ignored --nocapture perf_`
+#[test]
+#[ignore = "1 GiB ZIP rewrite timing; run in release mode"]
+fn perf_zip_delete_one_entry_of_1gib() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/perf-zip-1g.zip");
+    if !fixture.exists() {
+        let part = fixture.with_extension("part");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&part).unwrap());
+        let stored = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .large_file(false);
+        let mut body: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+        for i in 0..1_024u32 {
+            body[..4].copy_from_slice(&i.to_le_bytes());
+            zip.start_file(format!("data/f{i:04}.bin"), stored).unwrap();
+            zip.write_all(&body).unwrap();
+        }
+        zip.finish().unwrap();
+        fs::rename(&part, &fixture).unwrap();
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = tmp.path().join("big.zip");
+    fs::copy(&fixture, &zip).unwrap();
+    let router = router(tmp.path());
+    let p = router.provider_for(&at(&zip, "data")).unwrap();
+    let start = std::time::Instant::now();
+    p.remove(&at(&zip, "data/f0512.bin")).unwrap();
+    let took = start.elapsed();
+    let size = fs::metadata(&zip).unwrap().len();
+    eprintln!(
+        "PERF zip_delete_1gib: {took:?} ({:.0} MB/s rewritten)",
+        size as f64 / 1e6 / took.as_secs_f64()
+    );
+    assert_eq!(
+        zip::ZipArchive::new(fs::File::open(&zip).unwrap())
+            .unwrap()
+            .len(),
+        1_023
+    );
+    assert!(leftovers(tmp.path()).is_empty());
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+}
