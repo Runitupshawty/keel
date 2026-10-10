@@ -13,7 +13,7 @@ use crate::layout::{Screen, Tab as PhoneTab};
 use crate::refresh::Refresh;
 use crate::share::{self, SharedFile};
 use crate::types::*;
-use crate::util::{human, node_title, parent};
+use crate::util::{ago, human, node_title, parent};
 use crate::web::{self, Events, Socket};
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -32,6 +32,7 @@ const THUMBS_IN_FLIGHT: usize = 6;
 enum Want {
     Version,
     Sources,
+    Stats,
     Devices,
     Inbox,
     Jobs,
@@ -119,6 +120,8 @@ pub struct WebApp {
     // library
     library: String,
     sources: Vec<SourceInfo>,
+    /// `library.stats` `per_source`: each source's counts.
+    per_source: Vec<SourceStats>,
     devices: Result<Devices, String>,
     inbox: Result<Inbox, String>,
     jobs: Vec<JobInfo>,
@@ -228,6 +231,7 @@ impl WebApp {
             base_style: cc.egui_ctx.style(),
             library: String::new(),
             sources: Vec::new(),
+            per_source: Vec::new(),
             devices: Err(String::new()),
             inbox: Err(String::new()),
             jobs: Vec::new(),
@@ -324,6 +328,7 @@ impl WebApp {
         }
         if r.sources {
             self.call("sources.list", json!({}), Want::Sources);
+            self.call("library.stats", json!({}), Want::Stats);
         }
         if r.jobs {
             self.call("jobs.list", json!({}), Want::Jobs);
@@ -431,6 +436,11 @@ impl WebApp {
                 Ok(s) => self.sources = s,
                 Err(e) => self.error = Some(e),
             },
+            Want::Stats => {
+                if let Ok(stats) = parse::<LibraryStats>(r.result) {
+                    self.per_source = stats.per_source;
+                }
+            }
             Want::Devices => self.devices = parse(r.result),
             Want::Inbox => self.inbox = parse(r.result),
             Want::Jobs => {
@@ -571,6 +581,11 @@ impl WebApp {
                 if now - self.jobs_asked > 1.0 {
                     self.jobs_asked = now;
                     self.call("jobs.list", json!({}), Want::Jobs);
+                }
+                // A job that ended (an index or hashing run) changed the counts.
+                let status = params["status"].as_str().unwrap_or_default();
+                if ["done", "failed", "cancelled"].contains(&status) {
+                    self.call("library.stats", json!({}), Want::Stats);
                 }
                 let Some(dialog) = &mut self.plan else { return };
                 if let PlanState::Running { job, progress } = &mut dialog.state {
@@ -755,6 +770,41 @@ impl WebApp {
         if self.sources.is_empty() {
             ui.weak("No sources yet.");
         }
+        self.counts_ui(ui);
+    }
+
+    /// Each source's counts (`library.stats` `per_source`), as the desktop Overview shows.
+    fn counts_ui(&self, ui: &mut egui::Ui) {
+        if self.per_source.is_empty() {
+            return;
+        }
+        let now = web::now();
+        egui::CollapsingHeader::new("Counts")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("keel-web-source-counts")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for h in ["Source", "Files", "Folders", "Size", "Hashed", "Walked"] {
+                            ui.label(egui::RichText::new(h).small().strong());
+                        }
+                        ui.end_row();
+                        for s in &self.per_source {
+                            let label = if s.offline {
+                                format!("{} (offline)", s.label)
+                            } else {
+                                s.label.clone()
+                            };
+                            ui.label(label);
+                            ui.label(s.files.to_string());
+                            ui.label(s.folders.to_string());
+                            ui.label(human(s.bytes));
+                            ui.label(s.hashed_files.to_string());
+                            ui.label(ago(s.last_walk, now));
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 
     /// A `node://` path with the device's name and the source's label (`util::node_title`).

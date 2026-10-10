@@ -716,4 +716,88 @@ fn a_copy_on_an_sftp_host_is_its_own_failure_domain() {
         (1, 1, 0),
         "{p:?}"
     );
+fn pending_recount_defers_to_walk_and_stops_on_close() {
+    use crate::index::tests::eventually;
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "a");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, sources) = library(data.path(), &[files.path()]);
+    let src = &sources[0];
+    let quiet = || lib.shared.recount_pending.lock().last = Some(Instant::now() - RECOUNT_DEBOUNCE);
+    let idle = || lib.shared.recount_pending.lock().idle();
+    let revision = lib.protection_revision();
+    // A walk is running: the recount waits for it.
+    src.pending_gen.store(2, Ordering::SeqCst);
+    schedule_recount(&lib.shared, src);
+    quiet();
+    std::thread::sleep(RECOUNT_TICK * 4);
+    assert_eq!(lib.protection_revision(), revision);
+    assert!(!idle());
+    // The walk failed (no new generation): the changes are still counted.
+    src.pending_gen.store(0, Ordering::SeqCst);
+    eventually("recount after a failed walk", || {
+        lib.protection_revision() == revision + 1 && idle()
+    });
+    // A completed walk recounts its new generation itself.
+    src.pending_gen.store(2, Ordering::SeqCst);
+    schedule_recount(&lib.shared, src);
+    quiet();
+    src.generation.fetch_add(1, Ordering::SeqCst);
+    src.pending_gen.store(0, Ordering::SeqCst);
+    eventually("walk supersedes recount", idle);
+    assert_eq!(lib.protection_revision(), revision + 1);
+    // Closing cancels a pending recount.
+    schedule_recount(&lib.shared, src);
+    quiet();
+    assert!(lib.close(Duration::from_secs(5)));
+    eventually("recount thread ended", idle);
+    assert!(recount(&lib.shared).is_err());
+    assert_eq!(lib.protection_revision(), revision + 1);
+}
+
+/// Run with `cargo test -p keel-core --release recount_100k -- --ignored --nocapture`.
+#[test]
+#[ignore = "release scan measurement on a 100,000-record fixture"]
+fn recount_100k() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "scan").unwrap();
+    for i in 0..2 {
+        let root = files.path().join(format!("s{i}"));
+        std::fs::create_dir(&root).unwrap();
+        let id = lib
+            .add_source(folder(&format!("source-{i}"), &root))
+            .unwrap();
+        let src = lib.source(&id).unwrap();
+        put_on(&lib, &src, &format!("volume-{i}"), &format!("domain-{i}"));
+        src.store
+            .get()
+            .unwrap()
+            .execute(
+                "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<49999)
+             INSERT INTO record(name,path,kind,size,fs_id,cas_id,sampled_hash,gen,parent)
+             SELECT 'file-'||x, 'file-'||x, 0, 1024, ?1||':'||x,
+                    CAST(printf('%032d', x) AS BLOB), CAST(printf('%032d', x) AS BLOB), 1, 1
+             FROM n",
+                [i],
+            )
+            .unwrap();
+    }
+    let start = Instant::now();
+    lib.recount_protection().unwrap();
+    println!(
+        "100000 records, two sources: protection scan {:?}",
+        start.elapsed()
+    );
+    let start = Instant::now();
+    let stats = lib.stats();
+    println!(
+        "100000 records, two sources: library stats with per-source counts {:?}",
+        start.elapsed()
+    );
+    assert_eq!(stats.per_source[0].hashed_files, 50_000);
+    let summary = lib.protection_summary().unwrap();
+    assert_eq!(summary.single_copy, 0);
+    assert_eq!(summary.single_domain, 0);
+    assert_eq!(summary.unbacked, 50_000);
 }

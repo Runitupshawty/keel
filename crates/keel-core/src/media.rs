@@ -60,9 +60,23 @@ pub struct MediaMeta {
     pub error: Option<String>,
     /// Image sidecars that cannot be made, by file name (`thumb-256.webp`, `strip.webp`):
     /// why. Each kind fails on its own (a strip that fails leaves the thumbnail usable);
-    /// recorded once per key like `error`. Timeouts are not recorded (retried).
+    /// recorded once per key like `error`. Timeouts are not recorded here (see `timed_out`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub failed: std::collections::BTreeMap<String, String>,
+    /// Video strips whose `ffmpeg` ran out of time, by file name (`strip.webp`): tried
+    /// again only after [`crate::STRIP_RETRY`] or when the file changes
+    /// ([`crate::strip_retry_due`]), or when asked (`Sidecars::retry`).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub timed_out: std::collections::BTreeMap<String, TimedOutAt>,
+}
+
+/// When a sidecar timed out, and the file as it was then.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimedOutAt {
+    /// Unix seconds.
+    pub at: i64,
+    pub mtime: i64,
+    pub size: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +118,7 @@ pub(crate) fn is_corrupt(e: &anyhow::Error) -> bool {
 }
 
 /// A tool ran past [`TOOL_TIMEOUT`]: maybe a slow disk or a busy machine, not the file's
-/// fault, so not recorded (tried again next time).
+/// fault, so not recorded as a failure (a strip's is remembered for a while, `timed_out`).
 #[derive(Debug)]
 pub(crate) struct TimedOut;
 impl std::fmt::Display for TimedOut {
@@ -636,7 +650,7 @@ pub(crate) fn strip(path: &Path, duration_ms: Option<u64>) -> Result<Vec<u8>> {
     let mut command = Command::new(ffmpeg);
     command.args(["-v", "error", "-nostdin", "-y"]);
     // ponytail: past a minute only keyframes are decoded so long videos fit in the 10 s
-    // limit; a feature film can still time out (retried next time). Per-frame seeks
+    // limit; a feature film can still time out (retried after a week). Per-frame seeks
     // (20 runs of `-ss t -frames:v 1`) if that bites.
     if secs > 60.0 {
         command.args(["-skip_frame", "nokey"]);
@@ -690,7 +704,7 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
 }
 
 /// Runs with piped output and a hard [`TOOL_TIMEOUT`] (no console window on Windows); a
-/// timeout is [`TimedOut`] (tried again next time, not recorded).
+/// timeout is [`TimedOut`] (not a failure of the file).
 fn run(mut command: Command) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     command
         .stdin(Stdio::null())

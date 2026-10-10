@@ -614,6 +614,45 @@ fn volume(id: &str, state: VolumeState, backup: bool, capacity: Option<(u64, u64
 }
 
 #[test]
+fn per_source_table_model() {
+    let stats = |label: &str, files, hashed, last_walk, offline| keel_core::SourceStats {
+        id: SourceId(label.to_lowercase()),
+        label: label.into(),
+        files,
+        folders: 1_200,
+        bytes: 3_000_000,
+        hashed_files: hashed,
+        last_walk,
+        offline,
+    };
+    let rows = source_count_rows(&[
+        stats("Photos", 12_345, 9_876, Some(1_700_000_000), false),
+        stats("Empty", 0, 0, None, true),
+    ]);
+    let r = &rows[0];
+    assert_eq!(
+        (
+            r.label.as_str(),
+            r.files.as_str(),
+            r.folders.as_str(),
+            r.size.as_str(),
+            r.hashed.as_str(),
+            r.offline
+        ),
+        ("Photos", "12,345", "1,200", "3 MB", "80 %", false)
+    );
+    assert_eq!(r.last_walk, when(Some(1_700_000_000)));
+    assert_eq!(
+        (
+            rows[1].hashed.as_str(),
+            rows[1].last_walk.as_str(),
+            rows[1].offline
+        ),
+        ("—", "never", true)
+    );
+}
+
+#[test]
 fn volume_table_and_protection_card_models() {
     let rows = volume_rows(&[
         volume("a", VolumeState::Online, true, Some((1_000_000, 4_000_000))),
@@ -800,6 +839,40 @@ fn overview_reads_protection_and_volumes_and_badges_load_off_the_ui_thread() {
         }
         s.drain();
     }
+}
+
+#[test]
+fn a_recount_after_watcher_changes_reads_protection_and_badges_again() {
+    let (tmp, lib, id) = fixture("recount", true);
+    let mut s = state_with(&lib, &tmp);
+    s.library.follow_recounts();
+    s.library.refresh_stats();
+    pump_until(&mut s, "protection", |s| s.library.protection.is_some());
+    let a = VPath::local(tmp.join("docs").join("a.txt"));
+    assert!(s.library.badge(&a).is_none(), "its folder is asked for");
+    s.library.ask_badges();
+    pump_until(&mut s, "badges", |s| s.library.badges.contains_key(&a));
+    assert_eq!(s.library.protection.as_ref().unwrap().single_copy, 1);
+    // What a watcher does when sub/b.txt is deleted outside Keel.
+    let b = tmp.join("docs").join("sub").join("b.txt");
+    std::fs::remove_file(&b).unwrap();
+    let revision = lib.protection_revision();
+    let src = lib.source(&id).unwrap();
+    Indexer::apply_change(&src, keel_core::ChangeEvent::Removed(VPath::local(&b))).unwrap();
+    let end = Instant::now() + Duration::from_secs(60);
+    while lib.protection_revision() == revision {
+        assert!(Instant::now() < end, "timed out: recount");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    s.library.follow_recounts();
+    assert!(s.library.badges.is_empty(), "badges are read again");
+    s.library.refresh_stats();
+    pump_until(&mut s, "recounted card", |s| {
+        s.library
+            .protection
+            .as_ref()
+            .is_some_and(|p| p.single_copy == 2)
+    });
 }
 
 /// Manual end-to-end check (GPU), like `library_live`: `KEEL_LIVE_ROOT=C:\KeelDemo

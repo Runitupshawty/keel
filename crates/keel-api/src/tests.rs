@@ -1202,6 +1202,15 @@ fn the_apps_library_operations() {
     let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
     assert_eq!(stats["sources"], 1, "{stats}");
     assert_eq!(stats["files"], 2, "{stats}");
+    let one = &stats["per_source"][0];
+    assert_eq!(one["id"], id.as_str(), "{stats}");
+    assert_eq!(one["files"], 2, "{stats}");
+    assert_eq!(one["offline"], false, "{stats}");
+    assert!(one["last_walk"].as_i64().is_some_and(|t| t > 0), "{stats}");
+    assert!(
+        one["folders"].is_u64() && one["hashed_files"].is_u64(),
+        "{stats}"
+    );
 
     let invoice = s(&f.files.path().join("docs").join("invoice-2026.pdf"));
     let preview = call(

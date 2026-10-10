@@ -90,9 +90,8 @@ pub fn of(params: &Value) -> Refresh {
             ..none
         },
         // Nothing this client shows.
-        "recents.note" | "volumes.set" | "devices.pair_code" | "mounts.add" | "mounts.remove" => {
-            none
-        }
+        "protection.recount" | "recents.note" | "volumes.set" | "devices.pair_code"
+        | "mounts.add" | "mounts.remove" => none,
         _ => Refresh::ALL,
     }
 }
@@ -155,6 +154,7 @@ mod tests {
         assert!(change("shares.revoke").devices && !change("shares.revoke").sources);
         assert!(change("spacedrop.answer").inbox);
         for no_op in [
+            "protection.recount",
             "recents.note",
             "volumes.set",
             "devices.pair_code",

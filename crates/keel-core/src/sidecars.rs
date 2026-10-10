@@ -4,7 +4,7 @@
 //! kept by LRU eviction that never deletes a pinned key. `index.db` in the same folder tracks
 //! each key's bytes and last use.
 
-use crate::media::{self, MediaMeta, MediaType};
+use crate::media::{self, MediaMeta, MediaType, TimedOutAt};
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -23,6 +23,29 @@ use std::{
 pub const DEFAULT_BUDGET: u64 = 10 << 30;
 /// Writes between budget checks made by `ensure` itself.
 const EVICT_EVERY: u64 = 64;
+/// A video strip that timed out is tried again after this long (or when the file changes).
+pub const STRIP_RETRY: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// Whether a strip that timed out (`t`) is tried again now (unix seconds) for a file of
+/// this `mtime` and `size`: a week later, once the file changed, or when the clock went back.
+pub fn strip_retry_due(t: &TimedOutAt, now: i64, mtime: i64, size: u64) -> bool {
+    let age = now - t.at;
+    !(0..STRIP_RETRY.as_secs() as i64).contains(&age) || t.mtime != mtime || t.size != size
+}
+
+/// A strip that timed out recently: not tried again yet (`Sidecars::ensure`).
+#[derive(Debug)]
+pub struct StripWaits(pub TimedOutAt);
+impl std::fmt::Display for StripWaits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the strip timed out at {} (unix): tried again a week later, when the file              changes, or with Retry strip",
+            self.0.at
+        )
+    }
+}
+impl std::error::Error for StripWaits {}
 
 /// Identifies one file's content: its content id when known, else its path, mtime and size.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -204,8 +227,9 @@ impl Sidecars {
     /// A kind that cannot be made (a corrupt or oversized file, a video ffmpeg cannot read)
     /// gets its error recorded in `meta.json` once, per kind, and is not tried again for
     /// this key: `Meta` then still succeeds (with `error` set), an image kind fails at once
-    /// (`MediaMeta::failure`). Other kinds are unaffected; timeouts and IO errors are not
-    /// recorded.
+    /// (`MediaMeta::failure`). Other kinds are unaffected; IO errors are not recorded. A
+    /// strip whose `ffmpeg` timed out is remembered (`MediaMeta::timed_out`) and fails at
+    /// once with [`StripWaits`] until `strip_retry_due` (or `retry`).
     pub fn ensure(&self, key: &SidecarKey, kind: SidecarKind, source: &Path) -> Result<PathBuf> {
         if let Some(path) = self.get(key, kind) {
             return Ok(path);
@@ -218,6 +242,15 @@ impl Sidecars {
                 .and_then(|m| m.failure(kind).map(str::to_owned))
             {
                 return Err(media::corrupt(error));
+            }
+        }
+        if kind == SidecarKind::Strip {
+            let waits = self
+                .meta(key)
+                .and_then(|m| m.timed_out.get(kind.file_name()).copied())
+                .filter(|t| !strip_retry_due(t, crate::now(), key.mtime, key.size));
+            if let Some(t) = waits {
+                return Err(StripWaits(t).into());
             }
         }
         let made = match kind {
@@ -244,9 +277,41 @@ impl Sidecars {
                 }
                 return Err(e);
             }
+            Err(e) if kind == SidecarKind::Strip && e.is::<media::TimedOut>() => {
+                self.record_timeout(key, crate::now())?;
+                return Err(e);
+            }
             Err(e) => return Err(e),
         };
         self.write(key, kind, &bytes)
+    }
+
+    /// Remembers that `key`'s strip timed out at `at` (its `meta.json` is there: the strip
+    /// is made after it).
+    pub(crate) fn record_timeout(&self, key: &SidecarKey, at: i64) -> Result<()> {
+        let mut meta = self.meta(key).unwrap_or_default();
+        let t = TimedOutAt {
+            at,
+            mtime: key.mtime,
+            size: key.size,
+        };
+        meta.timed_out
+            .insert(SidecarKind::Strip.file_name().to_owned(), t);
+        self.write(key, SidecarKind::Meta, &serde_json::to_vec_pretty(&meta)?)?;
+        Ok(())
+    }
+
+    /// Forgets that `kind` failed or timed out for `key`, so the next `ensure` tries it
+    /// again (the viewer's Retry strip).
+    pub fn retry(&self, key: &SidecarKey, kind: SidecarKind) -> Result<()> {
+        let Some(mut meta) = self.meta(key) else {
+            return Ok(());
+        };
+        let name = kind.file_name();
+        if meta.failed.remove(name).is_some() | meta.timed_out.remove(name).is_some() {
+            self.write(key, SidecarKind::Meta, &serde_json::to_vec_pretty(&meta)?)?;
+        }
+        Ok(())
     }
 
     /// Writes one sidecar atomically and accounts for it.

@@ -114,6 +114,21 @@ fn json_output_is_one_document() {
     let added = doc(&["sources", "add", &s(env.files.path()), "--json"]);
     assert!(added["id"].is_string(), "{added}");
     assert_eq!(added["job"]["status"], "done", "{added}");
+    // `keel sources` carries each source's counts.
+    let listed = doc(&["sources", "--json"]);
+    let one = &listed[0];
+    assert_eq!(one["id"], added["id"], "{listed}");
+    assert_eq!(
+        (one["files"].as_u64(), one["folders"].as_u64()),
+        (Some(2), Some(1)),
+        "{listed}"
+    );
+    assert!(
+        one["last_walk"].is_i64() && one["hashed_files"].is_u64(),
+        "{listed}"
+    );
+    let text = env.ok(&["sources"]);
+    assert!(text.contains("files 2, folders 1, size "), "{text}");
     let tagged = doc(&["tag", "add", "receipts", &env.file("notes.txt"), "--json"]);
     assert_eq!(tagged["records"], 1, "{tagged}");
     let dst = tempfile::tempdir().unwrap();

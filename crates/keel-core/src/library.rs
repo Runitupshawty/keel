@@ -125,6 +125,8 @@ pub struct Source {
     pub id: SourceId,
     pub def: SourceDef,
     pub(crate) store: Pool,
+    /// The library holding it (set when it is opened or added).
+    pub(crate) owner: RwLock<Weak<Shared>>,
     /// The last completed full walk (records of older generations were removed by it).
     pub generation: AtomicU64,
     pub status: RwLock<SourceStatus>,
@@ -173,6 +175,7 @@ impl Source {
             id,
             def,
             store,
+            owner: RwLock::new(Weak::new()),
             generation: AtomicU64::new(generation),
             status: RwLock::new(status),
             pending_gen: AtomicU64::new(0),
@@ -425,6 +428,24 @@ pub struct LibraryStats {
     /// `count_unique_content`).
     pub unique_content: u64,
     pub running_jobs: usize,
+    /// Each source's own counts, in the library's order.
+    pub per_source: Vec<SourceStats>,
+}
+
+/// One source's counts (`LibraryStats::per_source`), from its store as last indexed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceStats {
+    pub id: SourceId,
+    pub label: String,
+    pub files: u64,
+    /// Folders below the root.
+    pub folders: u64,
+    pub bytes: u64,
+    /// Files with a content hash (a sampled hash at least).
+    pub hashed_files: u64,
+    /// The last completed full walk (unix seconds).
+    pub last_walk: Option<i64>,
+    pub offline: bool,
 }
 
 /// Unix milliseconds.
@@ -458,6 +479,10 @@ pub(crate) struct Shared {
     pub(crate) hash_finishing: AtomicI64,
     /// Protection recounts read and write as one (the last to start writes last).
     pub(crate) recounting: Mutex<()>,
+    /// Changes waiting for a debounced recount (`protect::schedule_recount`).
+    pub(crate) recount_pending: Mutex<crate::protect::PendingRecount>,
+    /// Completed recounts (`Library::protection_revision`).
+    pub(crate) protection_revision: AtomicU64,
     /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
     pub(crate) utc_offset: AtomicI64,
     /// `Jobs::subscribe` receivers.
@@ -681,12 +706,17 @@ impl Library {
             hash_again: AtomicBool::new(false),
             hash_finishing: AtomicI64::new(0),
             recounting: Mutex::new(()),
+            recount_pending: Mutex::default(),
+            protection_revision: AtomicU64::new(0),
             utc_offset: AtomicI64::new(0),
             job_events: Mutex::new(Vec::new()),
             jobs: JobState::default(),
             watchers: Mutex::new(HashMap::new()),
             _lock: lock,
         });
+        for source in shared.sources.read().iter() {
+            *source.owner.write() = Arc::downgrade(&shared);
+        }
         let lib = Library {
             id: LibraryId(id),
             name: name.to_owned(),
@@ -824,6 +854,7 @@ impl Library {
             "INSERT INTO source(id, def, created) VALUES (?1, ?2, ?3)",
             rusqlite::params![id.0, serde_json::to_string(&source.def)?, crate::now()],
         )?;
+        *source.owner.write() = Arc::downgrade(&self.shared);
         sources.push(Arc::new(source));
         Ok(id)
     }
@@ -1048,23 +1079,48 @@ impl Library {
             running_jobs: self.jobs.running(),
             ..LibraryStats::default()
         };
-        let counts = |s: &Source| -> Result<(u64, u64, u64)> {
-            Ok(s.store
-                .get()?
-                .query_row("SELECT records, files, bytes FROM counts", [], |r| {
+        // From the trigger-kept `counts` row and two partial indexes (no table scan).
+        let counts = |s: &Source| -> Result<(u64, SourceStats)> {
+            let c = s.store.get()?;
+            let (records, files, bytes, folders, hashed, walked) = c.query_row(
+                "SELECT records, files, bytes,
+                     (SELECT count(*) FROM record WHERE kind = 1 AND parent IS NOT NULL),
+                     (SELECT count(*) FROM record WHERE sampled_hash IS NOT NULL),
+                     (SELECT value FROM meta WHERE key = 'last_full_walk')
+                 FROM counts",
+                [],
+                |r| {
                     Ok((
                         r.get::<_, i64>(0)? as u64,
                         r.get::<_, i64>(1)? as u64,
                         r.get::<_, i64>(2)? as u64,
+                        r.get::<_, i64>(3)? as u64,
+                        r.get::<_, i64>(4)? as u64,
+                        r.get::<_, Option<String>>(5)?,
                     ))
-                })?)
+                },
+            )?;
+            Ok((
+                records,
+                SourceStats {
+                    id: s.id.clone(),
+                    label: s.def.label.clone(),
+                    files,
+                    folders,
+                    bytes,
+                    hashed_files: hashed,
+                    last_walk: walked.and_then(|t| t.parse().ok()),
+                    offline: matches!(*s.status.read(), SourceStatus::Offline { .. }),
+                },
+            ))
         };
         for s in &sources {
             match counts(s) {
-                Ok((records, files, bytes)) => {
+                Ok((records, one)) => {
                     stats.records += records;
-                    stats.files += files;
-                    stats.bytes += bytes;
+                    stats.files += one.files;
+                    stats.bytes += one.bytes;
+                    stats.per_source.push(one);
                 }
                 Err(e) => tracing::warn!("stats for source {}: {e:#}", s.def.label),
             }
@@ -1340,6 +1396,41 @@ pub(crate) mod tests {
             .unwrap();
         let stats = lib.stats();
         assert_eq!((stats.records, stats.files, stats.bytes), (5, 3, 115));
+        // Per source: a folder below the root, a hashed file and the last walk.
+        src.store
+            .get()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO record(name, path, kind, size, fs_id, gen, parent)
+                     VALUES ('docs', 'docs', 1, 0, 'd', 1, 1);
+                 UPDATE record SET sampled_hash = x'09' WHERE name = 'x';",
+            )
+            .unwrap();
+        src.store.set_meta("last_full_walk", "1700000000").unwrap();
+        let stats = lib.stats();
+        let per: Vec<_> = stats
+            .per_source
+            .iter()
+            .map(|s| {
+                (
+                    s.label.as_str(),
+                    s.files,
+                    s.folders,
+                    s.bytes,
+                    s.hashed_files,
+                    s.last_walk,
+                    s.offline,
+                )
+            })
+            .collect();
+        assert_eq!(
+            per,
+            [
+                ("a", 1, 1, 100, 1, Some(1_700_000_000), false),
+                ("b", 2, 0, 15, 0, None, false)
+            ]
+        );
+        assert_eq!(stats.per_source[0].id, src.id);
     }
 
     #[test]

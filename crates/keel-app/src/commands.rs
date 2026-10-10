@@ -501,7 +501,23 @@ fn sources(
     };
     Ok(match action {
         None => {
-            let list = b.call("sources.list", Value::Null)?;
+            let mut list = b.call("sources.list", Value::Null)?;
+            // Each source's counts (`library.stats` `per_source`), merged in by id.
+            let stats = b.call("library.stats", Value::Null)?;
+            for s in list.as_array_mut().into_iter().flatten() {
+                let counts = stats["per_source"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|c| c["id"] == s["id"]);
+                if let (Some(s), Some(c)) = (s.as_object_mut(), counts) {
+                    for k in ["files", "folders", "bytes", "hashed_files", "last_walk"] {
+                        if !c[k].is_null() {
+                            s.insert(k.into(), c[k].clone());
+                        }
+                    }
+                }
+            }
             if json {
                 return Ok(Some(list));
             } else {
@@ -514,6 +530,20 @@ fn sources(
                         s["label"].as_str().unwrap_or(""),
                         s["root"].as_str().unwrap_or("")
                     );
+                    if let Some(files) = s["files"].as_u64() {
+                        let _ = writeln!(
+                            out,
+                            "    files {}, folders {}, size {}, hashed {}, last walk {}",
+                            crate::library::count(files),
+                            crate::library::count(s["folders"].as_u64().unwrap_or(0)),
+                            humansize::format_size(
+                                s["bytes"].as_u64().unwrap_or(0),
+                                humansize::DECIMAL
+                            ),
+                            crate::library::count(s["hashed_files"].as_u64().unwrap_or(0)),
+                            crate::library::when(s["last_walk"].as_i64())
+                        );
+                    }
                 }
             }
             None

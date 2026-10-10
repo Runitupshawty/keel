@@ -858,6 +858,10 @@ impl Indexer {
             walk.commit()?;
             walked?;
         }
+        drop(_w);
+        if let Some(lib) = src.owner.read().upgrade() {
+            crate::protect::schedule_recount(&lib, src);
+        }
         Ok(())
     }
 
@@ -874,13 +878,23 @@ impl Indexer {
     /// changed while nobody watched). Local sources: a recursive notify watcher, debounced
     /// (500 ms quiet, 5 s at most), applied with `apply_change`; lost events (a rescan flag or
     /// a watcher error) and every `cfg.reconcile` trigger a full walk. Other sources: a full
-    /// walk (a new generation snapshot) every `cfg.poll`.
+    /// walk (a new generation snapshot) every `cfg.poll`. A completed walk recounts the
+    /// protection counters; applied changes recount them 5 s after the last one.
     pub fn watch_with(
         src: &Arc<Source>,
         router: &Arc<Router>,
         cfg: WatchConfig,
     ) -> Result<WatchHandle> {
-        Self::watch_hooked(src, router, cfg, Box::new(|_| {}))
+        Self::watch_hooked(
+            src,
+            router,
+            cfg,
+            Box::new(|src| {
+                if let Some(lib) = src.owner.read().upgrade() {
+                    crate::protect::after_walk(&lib, src);
+                }
+            }),
+        )
     }
 
     /// `watch_with`, calling `after_walk` after each completed full walk.

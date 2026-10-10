@@ -460,3 +460,40 @@ fn the_media_cache_never_lands_in_the_real_cache_folder() {
         }
     }
 }
+
+/// Retry strip: the file's failed strips (viewer and grid sizes) are dropped at once and
+/// made again on a worker, whatever the queue holds.
+#[test]
+fn retry_strip_drops_failed_strips_and_makes_it_again() {
+    let (ctx, mut m) = idle_media();
+    let dir = VPath::parse("mem://t/").unwrap();
+    let v = crate::tab::test_entry(&dir, "clip.mp4", Kind::File, 1);
+    let (viewer, tile) = (
+        TexKey::of(&v, SidecarKind::Strip, 0),
+        tile_key(&v, true, 96),
+    );
+    for key in [&viewer, &tile] {
+        m.sh.tx
+            .send(Loaded {
+                key: key.clone(),
+                image: None,
+            })
+            .unwrap();
+    }
+    m.upload(&ctx);
+    assert_eq!((m.get(&viewer), m.get(&tile)), (Tex::Failed, Tex::Failed));
+    let req = Req {
+        entry: v.clone(),
+        real: v.path.clone(),
+    };
+    m.retry(viewer.clone(), req);
+    assert_eq!((m.get(&viewer), m.get(&tile)), (Tex::Missing, Tex::Missing));
+    // No provider for mem:// here: the worker answers that it cannot be made.
+    let end = Instant::now() + Duration::from_secs(20);
+    while m.get(&viewer) == Tex::Missing {
+        assert!(Instant::now() < end, "timed out: retry");
+        std::thread::sleep(Duration::from_millis(20));
+        m.upload(&ctx);
+    }
+    assert_eq!(m.get(&viewer), Tex::Failed);
+}

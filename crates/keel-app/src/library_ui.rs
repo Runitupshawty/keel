@@ -4,8 +4,8 @@
 
 use crate::keys::Action;
 use crate::library::{
-    count, protection_lines, reclaimable, source_rows, state_text, volume_rows, Dot, Hashing,
-    LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
+    count, protection_lines, reclaimable, source_count_rows, source_rows, state_text, volume_rows,
+    Dot, Hashing, LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
 };
 use crate::pane::ViewCx;
 use crate::state::AppState;
@@ -368,6 +368,8 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                 );
             });
         }
+        ui.add_space(8.0);
+        source_table(ui, l, out);
         // --- Task 33 ---
         ui.add_space(8.0);
         volume_table(ui, l, out);
@@ -388,6 +390,53 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
             });
         }
     });
+}
+
+/// Each source's counts: files, folders, size, how much is hashed, the last walk.
+fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
+    let rows = source_count_rows(&l.stats.per_source);
+    if rows.is_empty() {
+        return;
+    }
+    ui.label(RichText::new("Per source").strong())
+        .on_hover_text("Counts from each source's index as last walked or changed.");
+    egui::Grid::new("keel-source-counts")
+        .num_columns(6)
+        .striped(true)
+        .spacing([14.0, 6.0])
+        .show(ui, |ui| {
+            for h in ["Source", "Files", "Folders", "Size", "Hashed", "Last walk"] {
+                ui.label(RichText::new(h).small().strong());
+            }
+            ui.end_row();
+            for r in rows {
+                let link = ui.link(&r.label);
+                let link = if r.offline {
+                    link.on_hover_text("Offline: the counts are from its last walk")
+                } else {
+                    link
+                };
+                if link.clicked() {
+                    out.push(lib(LibCmd::OpenSource(r.id.clone())));
+                }
+                ui.label(&r.files);
+                ui.label(&r.folders);
+                ui.label(&r.size);
+                ui.label(&r.hashed)
+                    .on_hover_text("Files with a content hash: only those are checked for copies");
+                let walk = RichText::new(if r.offline {
+                    format!("{} (offline)", r.last_walk)
+                } else {
+                    r.last_walk.clone()
+                });
+                ui.label(if r.offline {
+                    walk.color(ui.visuals().warn_fg_color)
+                } else {
+                    walk
+                });
+                ui.end_row();
+            }
+        });
 }
 
 // --- Task 33 ---

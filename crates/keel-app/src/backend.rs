@@ -463,6 +463,20 @@ impl LibraryBackend {
                     bytes: s.bytes,
                     unique_content: s.unique_content,
                     running_jobs: s.running_jobs,
+                    per_source: s
+                        .per_source
+                        .into_iter()
+                        .map(|p| keel_core::SourceStats {
+                            id: SourceId(p.id),
+                            label: p.label,
+                            files: p.files,
+                            folders: p.folders,
+                            bytes: p.bytes,
+                            hashed_files: p.hashed_files,
+                            last_walk: p.last_walk,
+                            offline: p.offline,
+                        })
+                        .collect(),
                 })
             }
         }

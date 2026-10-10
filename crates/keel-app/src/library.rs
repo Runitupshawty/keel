@@ -251,7 +251,7 @@ pub fn refresh_for(kind: &str) -> Refresh {
         }
         // Devices follow `net.event` and their own poll.
         "devices.settings_set" => Refresh::Nothing,
-        "volumes.set" => Refresh::Protection,
+        "volumes.set" | "protection.recount" => Refresh::Protection,
         "recents.note" => Refresh::Recents,
         _ => Refresh::All,
     }
@@ -735,6 +735,8 @@ pub struct LibraryUi {
     // --- Task 33 ---
     /// The Overview's protection card and volume table (None until first read).
     pub protection: Option<ProtectionSummary>,
+    /// `Library::protection_revision` last seen (in process).
+    protection_revision: u64,
     pub volumes: Vec<Volume>,
     /// Details view copies badges by real path; folders wanted (`badge`), and asked for.
     pub badges: HashMap<VPath, Badge>,
@@ -791,6 +793,7 @@ impl LibraryUi {
             remote_hash_settings: Default::default(),
             media_again: false,
             protection: None,
+            protection_revision: 0,
             volumes: Vec::new(),
             badges: HashMap::new(),
             badge_wanted: parking_lot::Mutex::new(HashSet::new()),
@@ -1534,6 +1537,7 @@ impl AppState {
             return;
         }
         let lib = l.lib.clone();
+        l.follow_recounts();
         let now = Instant::now();
         // Media and integrity jobs pause for 5 s after each input; hashing too when idle
         // only (`sync_hashing`). Attached, the daemon is told (`activity.note`) at most
@@ -2352,6 +2356,19 @@ impl LibraryUi {
         self.badge_wanted.lock().clear();
     }
 
+    /// A recount keel-core ran on its own thread (after watcher changes): counts and badges
+    /// are read again. Seen at the next tick, at most `STATS_EVERY` later; attached, the
+    /// daemon says `protection.recount` instead.
+    pub(crate) fn follow_recounts(&mut self) {
+        let Some(revision) = self.lib.as_ref().map(|l| l.protection_revision()) else {
+            return;
+        };
+        if revision != self.protection_revision {
+            self.protection_revision = revision;
+            self.protection_changed();
+        }
+    }
+
     /// A volume changed: counts and badges are read again.
     fn protection_changed(&mut self) {
         self.forget_badges();
@@ -2480,6 +2497,38 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
                 })
                 .unwrap_or_default(),
             last_seen: when((v.last_seen > 0).then_some(v.last_seen)),
+        })
+        .collect()
+}
+
+/// One row of the Overview's per-source table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceCountRow {
+    pub id: SourceId,
+    pub label: String,
+    pub files: String,
+    pub folders: String,
+    pub size: String,
+    /// "80 %" of the files hashed ("—" without files).
+    pub hashed: String,
+    pub last_walk: String,
+    pub offline: bool,
+}
+
+pub fn source_count_rows(per: &[keel_core::SourceStats]) -> Vec<SourceCountRow> {
+    per.iter()
+        .map(|s| SourceCountRow {
+            id: s.id.clone(),
+            label: s.label.clone(),
+            files: count(s.files),
+            folders: count(s.folders),
+            size: humansize::format_size(s.bytes, humansize::DECIMAL),
+            hashed: match s.files {
+                0 => "—".into(),
+                n => format!("{} %", s.hashed_files.min(n) * 100 / n),
+            },
+            last_walk: when(s.last_walk),
+            offline: s.offline,
         })
         .collect()
 }
