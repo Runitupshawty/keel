@@ -73,6 +73,16 @@ impl std::fmt::Display for Offline {
 }
 impl std::error::Error for Offline {}
 
+/// `full_walk` refused: another walk of the source (a watcher's) is running.
+#[derive(Debug)]
+pub(crate) struct Busy(String);
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is already being indexed", self.0)
+    }
+}
+impl std::error::Error for Busy {}
+
 fn unreachable(msg: String) -> anyhow::Error {
     Offline(OfflineReason::Unreachable, msg).into()
 }
@@ -541,11 +551,9 @@ impl Indexer {
         let ignore = matcher(&src.def.ignore)?;
         let gen = {
             let _w = src.write.lock();
-            anyhow::ensure!(
-                src.pending_gen.load(Ordering::SeqCst) == 0,
-                "{} is already being indexed",
-                src.def.label
-            );
+            if src.pending_gen.load(Ordering::SeqCst) != 0 {
+                return Err(Busy(src.def.label.clone()).into());
+            }
             // Above every generation an earlier (possibly abandoned) walk wrote.
             let used: u64 = src
                 .store

@@ -551,16 +551,21 @@ impl Job for IndexJob {
             .find(|s| s.id == self.source)
             .cloned()
             .with_context(|| format!("no source {}", self.source))?;
-        Indexer::full_walk(
-            &src,
-            &ctx.router(),
-            &|p| {
-                if p.total > 0 {
-                    let _ = ctx.progress((p.done as f32 / p.total as f32).min(0.99));
+        let progress = |p: crate::IndexProgress| {
+            if p.total > 0 {
+                let _ = ctx.progress((p.done as f32 / p.total as f32).min(0.99));
+            }
+        };
+        // A watcher's walk (each starts with one: the daemon arms a new source while its
+        // index job is queued) holds the source: wait for it to end, then walk.
+        loop {
+            match Indexer::full_walk(&src, &ctx.router(), &progress, ctx.stop_flag()) {
+                Err(e) if e.is::<crate::index::Busy>() && !ctx.stopping() => {
+                    std::thread::sleep(Duration::from_millis(50));
                 }
-            },
-            ctx.stop_flag(),
-        )?;
+                walked => break walked?,
+            }
+        }
         crate::protect::after_walk(&ctx.lib, &src);
         crate::hash::after_walk(&ctx.lib, &src);
         Ok(())
@@ -873,6 +878,33 @@ mod tests {
             lib.source(&id).unwrap().generation.load(Ordering::SeqCst),
             1
         );
+        assert_eq!(lib.stats().records, 2);
+    }
+
+    /// The daemon arms a watcher (which starts with a walk) on a new source while its
+    /// index job is queued: the job waits for that walk instead of failing.
+    #[test]
+    fn an_index_job_waits_for_a_walk_already_running() {
+        let data = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        std::fs::write(files.path().join("a.txt"), b"a").unwrap();
+        let lib = Library::open(data.path(), "j").unwrap();
+        let id = lib.add_source(folder("F", files.path())).unwrap();
+        let src = lib.source(&id).unwrap();
+        // Another walk holds the source.
+        src.pending_gen.store(u64::MAX, Ordering::SeqCst);
+        let job = lib.index(&id).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let info = lib.jobs().info(job).unwrap();
+        assert!(
+            matches!(info.status, JobStatus::Queued | JobStatus::Running),
+            "{:?}: {}",
+            info.status,
+            info.log
+        );
+        src.pending_gen.store(0, Ordering::SeqCst);
+        let info = lib.jobs().wait(job).unwrap();
+        assert_eq!(info.status, JobStatus::Done, "{}", info.log);
         assert_eq!(lib.stats().records, 2);
     }
 }
