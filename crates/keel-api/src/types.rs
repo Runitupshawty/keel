@@ -205,7 +205,7 @@ pub struct TagInfo {
 pub struct TagParams {
     /// A tag name; `tags.add` creates it when missing.
     pub tag: String,
-    /// Indexed paths.
+    /// Indexed paths (`tags.add`: none only creates the tag).
     pub paths: Vec<String>,
     /// `tags.add`: the color of a tag it creates (`#3b82f6`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

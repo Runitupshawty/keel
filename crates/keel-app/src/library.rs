@@ -197,8 +197,41 @@ pub enum LibCmd {
 pub enum Via {
     /// A running daemon, else (`spawn`) a daemon started now, else this process.
     Auto { spawn: bool },
-    /// This process only.
-    Here,
+    /// After the attached daemon went away (Reconnect, Open in this window): once the
+    /// stopping daemon has let go of the library (`library.lock`, up to `wait`), this
+    /// process (`here`) or a daemon (a running one, else one started now). The lost
+    /// connection is kept until this succeeds.
+    Replace { here: bool, wait: Duration },
+}
+
+/// How long Reconnect and Open in this window wait for a stopping daemon to close the
+/// library (it says `daemon.stopping` first, then closes, waiting up to `CLOSE_WAIT` for
+/// jobs).
+pub const RELEASE_WAIT: Duration = Duration::from_secs(keel_api::host::CLOSE_WAIT.as_secs() + 5);
+
+/// What a `library.changed` of `kind` (the operation, any client's) makes the window read
+/// again.
+#[derive(Debug, PartialEq)]
+pub enum Refresh {
+    Nothing,
+    /// The protection card, volume table and copies badges.
+    Protection,
+    /// Listings (Recents moved).
+    Recents,
+    /// Sources, tags, badges and listings.
+    All,
+}
+
+pub fn refresh_for(kind: &str) -> Refresh {
+    match kind {
+        // They start a job or set a policy: the job's end refreshes what it changed.
+        "hashing.set" | "integrity.check" | "media.index" | "sources.index" | "jobs.cancel" => {
+            Refresh::Nothing
+        }
+        "volumes.set" => Refresh::Protection,
+        "recents.note" => Refresh::Recents,
+        _ => Refresh::All,
+    }
 }
 
 /// Answers from library workers (`Msg::Library`).
@@ -631,6 +664,8 @@ pub struct LibraryUi {
     pub lost: bool,
     /// Attached to a daemon this window started.
     pub spawned: bool,
+    /// How long Reconnect / Open in this window wait for a stopping daemon (`RELEASE_WAIT`).
+    pub release_wait: Duration,
     /// Why the daemon the settings asked for is not used.
     pub note: Option<String>,
     next_sources: Instant,
@@ -697,6 +732,7 @@ impl LibraryUi {
             lib: None,
             lost: false,
             spawned: false,
+            release_wait: RELEASE_WAIT,
             note: None,
             next_sources: now,
             slot,
@@ -774,6 +810,9 @@ impl LibraryUi {
     /// Takes the open library out (watchers stop); for closing or switching. A daemon's
     /// library stays open there.
     fn take(&mut self) -> Option<(Option<Arc<Library>>, Vec<WatchHandle>)> {
+        if let Some(r) = self.remote() {
+            r.close_events();
+        }
         self.backend.take()?;
         let lib = self.lib.take();
         self.lost = false;
@@ -984,10 +1023,11 @@ impl LibraryUi {
         {
             return;
         }
-        self.spawn("keel-library-hash", |b| {
+        let idle_only = self.policy == Hashing::IdleOnly;
+        self.spawn("keel-library-hash", move |b| {
             Some(LibMsg::Spawned {
                 kind: "hash",
-                id: b.hash().ok(),
+                id: b.hash(idle_only).ok(),
             })
         });
     }
@@ -1103,12 +1143,29 @@ fn open_library(
     let cfg = crate::backend::host_config(profile)?;
     let socket = cfg.socket_name();
     let mut connect = || Remote::connect(&socket).ok();
-    let mut spawn = || crate::backend::spawn_daemon(&cfg);
+    let lock_dir = cfg.data_dir.join("library").join(name);
+    let release = match via {
+        Via::Replace { wait, .. } => wait,
+        _ => Duration::ZERO,
+    };
+    // A stopping daemon closes the library after it said so: a new one waits for that.
+    let mut spawn = || {
+        released(&lock_dir, release)?;
+        crate::backend::spawn_daemon(&cfg)
+    };
     let attach = match via {
-        Via::Here => crate::backend::attach(None, None, crate::backend::SPAWN_WAIT),
+        Via::Replace { here: true, wait } => {
+            released(&lock_dir, wait)?;
+            crate::backend::attach(None, None, crate::backend::SPAWN_WAIT)
+        }
         Via::Auto { spawn: wanted } => crate::backend::attach(
             Some(&mut connect),
             wanted.then_some(&mut spawn as &mut dyn FnMut() -> anyhow::Result<()>),
+            crate::backend::SPAWN_WAIT,
+        ),
+        Via::Replace { here: false, .. } => crate::backend::attach(
+            Some(&mut connect),
+            Some(&mut spawn as &mut dyn FnMut() -> anyhow::Result<()>),
             crate::backend::SPAWN_WAIT,
         ),
     };
@@ -1154,6 +1211,27 @@ fn open_library(
         note,
     };
     Ok((opened, first_run))
+}
+
+/// Waits up to `wait` until nobody holds `library.lock` in `dir` (a stopping daemon still
+/// closes the library after it said `daemon.stopping`).
+pub(crate) fn released(dir: &std::path::Path, wait: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("library.lock"));
+        // No lock file: no library to hold. Dropping the file lets go of the lock again.
+        if file.is_err() || file.is_ok_and(|f| f.try_lock().is_ok()) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "the stopping keel-daemon still holds the library: try again in a moment"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 pub(crate) fn entry_of(h: LibraryHit) -> Entry {
@@ -1230,6 +1308,8 @@ impl AppState {
                 l.opening = false;
                 match result {
                     Ok(opened) => {
+                        // Reconnect / Open in this window: the lost connection goes now.
+                        drop(l.take());
                         if let LibraryBackend::Daemon(r) = &opened.backend {
                             tracing::info!(
                                 "library: attached to keel-daemon (pid {})",
@@ -1290,12 +1370,17 @@ impl AppState {
                             );
                         }
                     }
-                    Event::Changed => {
-                        l.refresh_sources();
-                        l.refresh_meta_soon();
-                        l.forget_badges();
-                        self.relist_library_tabs();
-                    }
+                    Event::Changed(kind) => match refresh_for(&kind) {
+                        Refresh::Nothing => {}
+                        Refresh::Protection => l.protection_changed(),
+                        Refresh::Recents => self.relist_library_tabs(),
+                        Refresh::All => {
+                            l.refresh_sources();
+                            l.refresh_meta_soon();
+                            l.forget_badges();
+                            self.relist_library_tabs();
+                        }
+                    },
                     Event::Net(v) => self.devices_event(v),
                     Event::Jobs => {}
                 }
@@ -1502,12 +1587,13 @@ impl AppState {
             if let Some(lib) = &lib {
                 drop(lib.refresh_status());
             }
-            // --- Task 33 ---
+            // --- Task 33 --- (keel-daemon keeps its own schedule, from the same settings)
             let (pct, days) = (
                 self.settings.library.integrity_pct,
                 self.settings.library.integrity_days,
             );
-            if days > 0 && !l.jobs.values().any(|j| j.kind == "integrity" && j.active()) {
+            let due = days > 0 && lib.is_some();
+            if due && !l.jobs.values().any(|j| j.kind == "integrity" && j.active()) {
                 l.spawn("keel-library-integrity", move |b| {
                     let id = b.schedule_integrity(pct, days).ok().flatten()?;
                     Some(LibMsg::Spawned {
@@ -2042,12 +2128,14 @@ impl AppState {
                 }
             }
             LibCmd::Reconnect | LibCmd::OpenHere => {
-                // The lost connection goes; the library opens again.
-                drop(self.library.take());
+                // The lost connection stays (read-only, its banner) until the library opens
+                // again (`LibMsg::Opened`).
                 let name = self.settings.library.name.clone();
-                let via = match cmd {
-                    LibCmd::Reconnect => Via::Auto { spawn: true },
-                    _ => Via::Here,
+                let here = cmd == LibCmd::OpenHere;
+                let wait = self.library.release_wait;
+                let via = match self.library.lost || !self.library.is_open() {
+                    true => Via::Replace { here, wait },
+                    false => return,
                 };
                 self.library.open(&name, self.router.clone(), via);
             }

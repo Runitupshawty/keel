@@ -84,7 +84,7 @@ pub static OPS: &[Operation] = &[
         NoParams => Vec<TaggedPath>, tags_tagged, json!({})),
     now!("views.list", "Saved views (a name and a search query each).",
         NoParams => Vec<ViewInfo>, views_list, json!({})),
-    previewed!("tags.add", "Tags indexed paths (creating the tag when missing).",
+    previewed!("tags.add", "Tags indexed paths (creating the tag when missing; no paths: only creates it).",
         TagParams => Tagged, tags_add_preview, tags_add, json!({"tag": "receipts", "paths": [example_file()]})),
     previewed!("tags.remove", "Removes a tag from indexed paths.",
         TagParams => Tagged, tags_remove_preview, tags_remove, json!({"tag": "receipts", "paths": [example_file()]})),
@@ -697,8 +697,16 @@ fn tag_changes(action: &str, hits: &[LibraryHit], detail: &str) -> Vec<Change> {
         .collect()
 }
 
+/// `tags.add`'s paths: none only creates the tag.
+fn tag_targets(ctx: &Ctx, p: &TagParams) -> Result<Vec<LibraryHit>> {
+    match p.paths.is_empty() {
+        true => Ok(Vec::new()),
+        false => records(ctx, &p.paths),
+    }
+}
+
 fn tags_add_preview(ctx: &Ctx, p: &TagParams) -> Result<Preview> {
-    let hits = records(ctx, &p.paths)?;
+    let hits = tag_targets(ctx, p)?;
     let mut warnings = Vec::new();
     if tag_named(ctx, &p.tag)?.is_none() {
         warnings.push(warning(
@@ -710,16 +718,20 @@ fn tags_add_preview(ctx: &Ctx, p: &TagParams) -> Result<Preview> {
             ),
         ));
     }
+    let summary = match hits.is_empty() {
+        true => format!("Create tag {}", p.tag.trim()),
+        false => format!("Tag {} item(s) with {}", hits.len(), p.tag.trim()),
+    };
     Ok(Preview {
         pin: None,
-        summary: format!("Tag {} item(s) with {}", hits.len(), p.tag.trim()),
+        summary,
         changes: tag_changes("tag.add", &hits, p.tag.trim()),
         warnings,
     })
 }
 
 fn tags_add(ctx: &Ctx, p: TagParams) -> Result<Tagged> {
-    let hits = records(ctx, &p.paths)?;
+    let hits = tag_targets(ctx, &p)?;
     let tag = tag_or_create(ctx, &p.tag, p.color.as_deref())?;
     ctx.lib.set_tag(tag, &refs(&hits), true)?;
     Ok(Tagged {

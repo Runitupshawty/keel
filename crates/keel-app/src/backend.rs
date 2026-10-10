@@ -43,10 +43,13 @@ pub enum LibraryBackend {
 }
 
 /// A connection to the profile's keel-daemon: a few idle clients (workers call in
-/// parallel; a connection that broke is not reused) and the last source list.
+/// parallel; a connection that broke is not reused, at most `MAX_IDLE` are kept) and the
+/// last source list.
 pub struct Remote {
     name: String,
     idle: Mutex<Vec<Client>>,
+    /// The `subscribe` connection (closed by `close_events`, or when this goes).
+    events: Mutex<Option<Arc<keel_api::socket::Closable>>>,
     /// Told apart from an earlier connection (a stale "lost" message is ignored).
     pub id: u64,
     pub version: api::VersionInfo,
@@ -54,6 +57,9 @@ pub struct Remote {
 }
 
 static NEXT_REMOTE: AtomicU64 = AtomicU64::new(1);
+
+/// Idle connections kept for the next calls (more workers than this connect anew).
+const MAX_IDLE: usize = 4;
 
 /// The profile's daemon settings (socket name), from the window's folders.
 pub fn host_config(profile: &str) -> Result<HostConfig> {
@@ -72,6 +78,7 @@ impl Remote {
         Ok(Arc::new(Remote {
             name: name.to_owned(),
             idle: Mutex::new(vec![client]),
+            events: Mutex::new(None),
             id: NEXT_REMOTE.fetch_add(1, Ordering::Relaxed),
             version: serde_json::from_value(version)?,
             sources: RwLock::default(),
@@ -90,9 +97,17 @@ impl Remote {
         // Transport errors are the client's own ("keel-daemon: …"): that one is dropped.
         let broken = matches!(&result, Err(e) if e.message.starts_with("keel-daemon: "));
         if !broken {
-            self.idle.lock().push(client);
+            self.put_back(client);
         }
         result
+    }
+
+    /// Keeps `client` for the next call unless `MAX_IDLE` already wait.
+    fn put_back(&self, client: Client) {
+        let mut idle = self.idle.lock();
+        if idle.len() < MAX_IDLE {
+            idle.push(client);
+        }
     }
 
     pub fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
@@ -126,23 +141,30 @@ impl Remote {
     }
 
     /// Job progress, library changes and device events from a connection of their own
-    /// (`subscribe`): job events come back on the returned channel, the rest through `on`
-    /// (each with a repaint). When the daemon goes away, `on(Event::Lost)`.
+    /// (`subscribe`, one per `Remote`: a new one closes the last): job events come back on
+    /// the returned channel, the rest through `on` (each with a repaint). When the daemon
+    /// goes away, `on(Event::Lost)`; never after `close_events`.
     pub fn subscribe(
         &self,
         on: impl Fn(Event) + Send + 'static,
     ) -> Result<crossbeam_channel::Receiver<JobEvent>> {
-        let (mut conn, _) = keel_api::socket::connect(&self.name, keel_api::client::CONNECT_WAIT)?;
-        conn.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscribe\"}\n")?;
-        conn.flush()?;
+        let conn = keel_api::socket::connect_closable(&self.name, keel_api::client::CONNECT_WAIT)?;
+        (&*conn).write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscribe\"}\n")?;
+        (&*conn).flush()?;
+        if let Some(old) = self.events.lock().replace(conn.clone()) {
+            old.close();
+        }
         let (tx, rx) = crossbeam_channel::unbounded();
         std::thread::Builder::new()
             .name("keel-daemon-events".into())
             .spawn(move || {
-                let mut lines = BufReader::new(conn).lines();
+                let mut lines = BufReader::new(&*conn).lines();
                 loop {
                     let Some(Ok(line)) = lines.next() else {
-                        return on(Event::Lost);
+                        if !conn.is_closed() {
+                            on(Event::Lost);
+                        }
+                        return;
                     };
                     let Ok(v) = serde_json::from_str::<Value>(&line) else {
                         continue;
@@ -160,14 +182,30 @@ impl Remote {
                             }
                             on(Event::Jobs);
                         }
-                        Some("library.changed") => on(Event::Changed),
-                        Some("daemon.stopping") => return on(Event::Lost),
+                        Some("library.changed") => {
+                            let kind = params["kind"].as_str().unwrap_or_default();
+                            on(Event::Changed(kind.to_owned()))
+                        }
+                        Some("daemon.stopping") if !conn.is_closed() => return on(Event::Lost),
                         Some("net.event") => on(Event::Net(params.clone())),
                         _ => {}
                     }
                 }
             })?;
         Ok(rx)
+    }
+
+    /// Ends the subscription (the window lets go of this daemon).
+    pub fn close_events(&self) {
+        if let Some(conn) = self.events.lock().take() {
+            conn.close();
+        }
+    }
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        self.close_events();
     }
 }
 
@@ -176,8 +214,9 @@ impl Remote {
 pub enum Event {
     /// A job moved (its event is on the job channel).
     Jobs,
-    /// A plan was executed (by any client): sources, tags and listings may have changed.
-    Changed,
+    /// A change by any client (`library.changed`): its kind is the operation (`tags.add`,
+    /// `recents.note`, ...; empty from an older daemon), see `library::refresh_for`.
+    Changed(String),
     /// A device event (`net.event` params).
     Net(Value),
     /// The connection closed: the daemon stopped.
@@ -526,11 +565,12 @@ impl LibraryBackend {
         }
     }
 
-    pub fn hash(&self) -> Result<JobId> {
+    /// Starts hashing now; a daemon keeps its `idle_only` policy (the window's).
+    pub fn hash(&self, idle_only: bool) -> Result<JobId> {
         match self {
             LibraryBackend::InProcess(lib) => lib.hash(),
             LibraryBackend::Daemon(r) => r
-                .apply("hashing.set", json!({"on": true, "idle_only": false}))?
+                .apply("hashing.set", json!({"on": true, "idle_only": idle_only}))?
                 .job
                 .context("no hash job"),
         }
@@ -684,7 +724,7 @@ impl LibraryBackend {
         }
     }
 
-    /// Creates a tag (and puts it on `targets`).
+    /// Creates a tag (and puts it on `targets`, when given).
     pub fn create_tag(
         &self,
         sources: &[SourceSummary],
@@ -701,8 +741,8 @@ impl LibraryBackend {
                 Ok(())
             }
             LibraryBackend::Daemon(r) => {
+                // No paths: `tags.add` only creates the tag.
                 let paths = real_paths(sources, targets.unwrap_or_default())?;
-                anyhow::ensure!(!paths.is_empty(), "select files to tag first");
                 r.apply(
                     "tags.add",
                     json!({"tag": name, "paths": paths, "color": color}),

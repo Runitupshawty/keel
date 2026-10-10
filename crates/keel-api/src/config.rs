@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_LIBRARY: &str = "james";
+/// Days between scheduled integrity checks (keel-app's default).
+pub const DEFAULT_INTEGRITY_DAYS: u32 = 7;
 
 /// What [`valid_profile`] accepts (keel-app's profile rule).
 pub const PROFILE_RULE: &str = "use letters, digits, '.', '_' or '-' (at most 64)";
@@ -53,6 +55,10 @@ pub struct HostConfig {
     /// Libraries live under `<data_dir>/library/<name>/`.
     pub data_dir: PathBuf,
     pub library: String,
+    /// `[library] integrity_days` (0: off) and `integrity_pct`: the scheduled integrity
+    /// check (keel-app's Settings → Library).
+    pub integrity_days: u32,
+    pub integrity_pct: f64,
     pub net: bool,
     /// `[devices] inbox`: where Spacedrops land on this machine (None: `<data dir>/inbox`).
     pub inbox: Option<PathBuf>,
@@ -122,6 +128,14 @@ impl HostConfig {
             config_dir,
             data_dir,
             library,
+            integrity_days: get("library", "integrity_days")
+                .and_then(|v| v.as_integer())
+                .and_then(|d| u32::try_from(d).ok())
+                .unwrap_or(DEFAULT_INTEGRITY_DAYS),
+            integrity_pct: get("library", "integrity_pct")
+                .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+                .filter(|p| *p > 0.0 && *p <= 100.0)
+                .unwrap_or(keel_core::DEFAULT_SAMPLE_PCT),
             net,
             inbox: get("devices", "inbox")
                 .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
@@ -199,15 +213,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
         assert_eq!((cfg.library.as_str(), cfg.net), (DEFAULT_LIBRARY, false));
+        assert_eq!((cfg.integrity_days, cfg.integrity_pct), (7, 1.0));
         let p = dir.path().join("profiles/work");
         std::fs::create_dir_all(&p).unwrap();
         std::fs::write(
             p.join("config.toml"),
-            "theme = \"dark\"\n[library]\nname = \"lab\"\n[net]\nenabled = true\n",
+            "theme = \"dark\"\n[library]\nname = \"lab\"\nintegrity_days = 0\nintegrity_pct = 2.5\n[net]\nenabled = true\n",
         )
         .unwrap();
         let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
         assert_eq!((cfg.library.as_str(), cfg.net), ("lab", true));
+        assert_eq!((cfg.integrity_days, cfg.integrity_pct), (0, 2.5));
         // `[devices] enabled` (the app's switch) wins once it is explicit.
         std::fs::write(
             p.join("config.toml"),

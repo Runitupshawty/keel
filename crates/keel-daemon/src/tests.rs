@@ -982,3 +982,54 @@ fn the_node_serves_sources_and_browses_devices() {
         }
     }
 }
+
+/// The next `library.changed` notification's kind.
+fn next_change(c: &mut Client) -> String {
+    loop {
+        let n = c.next_notification(Duration::from_secs(10)).unwrap();
+        if n["method"] == "library.changed" {
+            return n["params"]["kind"].as_str().unwrap().to_owned();
+        }
+    }
+}
+
+/// `library.changed` names the change; a call that changed nothing (an integrity check
+/// that is not due) sends none, an opened file (`recents.note`) does.
+#[test]
+fn library_changed_names_the_change_and_skips_no_ops() {
+    let env = env();
+    let daemon = start(&env, None);
+    let mut sub = Client::connect(daemon.name()).unwrap();
+    sub.call("subscribe", Value::Null).unwrap();
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let due = apply(
+        &mut c,
+        "integrity.check",
+        json!({"sample_pct": 1.0, "due_days": 7}),
+    );
+    assert_eq!(
+        due,
+        json!({}),
+        "the first scheduled check only starts the clock"
+    );
+    // A tag made on nothing (create-only): announced, and the first announcement.
+    assert_eq!(
+        apply(&mut c, "tags.add", json!({"tag": "later", "paths": []}))["records"],
+        0
+    );
+    assert_eq!(next_change(&mut sub), "tags.add");
+    let tags = c.call("tags.list", Value::Null).unwrap();
+    assert!(tags
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["name"] == "later"));
+    let id = add_source(&mut c, &env);
+    let job = apply(&mut c, "sources.index", json!({ "id": id }))["job"]
+        .as_i64()
+        .unwrap();
+    wait_job(&mut c, job);
+    let file = env.files.path().join("notes.txt").display().to_string();
+    c.call("recents.note", json!({ "path": file })).unwrap();
+    while next_change(&mut sub) != "recents.note" {}
+}

@@ -562,15 +562,23 @@ fn lost_banner(ctx: &egui::Context, l: &LibraryUi, out: &mut Vec<Action>) {
                         ui.visuals().warn_fg_color,
                         "keel-daemon stopped: the library is read-only.",
                     );
+                    // While one runs (it waits for the stopping daemon to let go).
+                    let idle = !l.opening;
                     if ui
-                        .button("Reconnect")
+                        .add_enabled(idle, egui::Button::new("Reconnect"))
                         .on_hover_text("Connect again, starting keel-daemon when it is not running")
                         .clicked()
                     {
                         out.push(lib(LibCmd::Reconnect));
                     }
-                    if ui.button("Open in this window").clicked() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Open in this window"))
+                        .clicked()
+                    {
                         out.push(lib(LibCmd::OpenHere));
+                    }
+                    if l.opening {
+                        ui.spinner();
                     }
                 });
             });

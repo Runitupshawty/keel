@@ -197,6 +197,9 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     let one = std::slice::from_ref(&invoice);
     b.set_tag(&sources, &tags, one, receipts.id, false).unwrap();
     b.set_tag(&sources, &tags, one, FAVORITES, true).unwrap();
+    // A tag made outside the picker: created, on nothing.
+    b.create_tag(&sources, "later", "#3b82f6", None).unwrap();
+    assert!(b.meta().unwrap().0.iter().any(|t| t.name == "later"));
     let (_, _, tagged) = b.meta().unwrap();
     assert_eq!(tagged.get(&invoice), Some(&vec![FAVORITES]));
     use crate::library::{FAVORITES_QUERY, RECENTS_QUERY};
@@ -250,7 +253,10 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     assert_eq!(badge, Some("1× · 1"), "{badges:?}");
     assert!(b.dups(1).unwrap().is_empty());
     wait_job(&b, b.index(&id, false).unwrap());
-    wait_job(&b, b.hash().unwrap());
+    // "Hash now" keeps the daemon's idle-only policy.
+    b.set_hashing(true, true).unwrap();
+    wait_job(&b, b.hash(true).unwrap());
+    assert!(s.daemon.ctx().lib.hash_idle_only());
     assert_eq!(b.set_hashing(false, true).unwrap(), None);
     wait_job(&b, b.integrity(1.0).unwrap());
     wait_job(&b, b.media_job(&id).unwrap());
@@ -330,21 +336,37 @@ fn the_window_works_through_the_daemon_and_stops_writing_when_it_goes() {
     assert!(!st.library.is_open());
 }
 
+/// The test profile's daemon (`TEST_ENV` held). An earlier test's daemon lets go of the
+/// socket and library a moment after it was dropped (once its clients are gone).
+fn profile_daemon(cfg: &HostConfig) -> keel_daemon::server::Daemon {
+    let end = Instant::now() + Duration::from_secs(20);
+    loop {
+        let started = keel_daemon::server::Daemon::start(keel_daemon::server::Options {
+            cfg: cfg.clone(),
+            ws: None,
+            web: None,
+            ws_allow_remote: false,
+            web_hosts: Vec::new(),
+            net: None,
+        });
+        match started {
+            Ok(d) => return d,
+            Err(e) if Instant::now() < end => {
+                tracing::debug!("profile daemon: {e:#}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => panic!("{e:#}"),
+        }
+    }
+}
+
 /// `LibraryUi::open` finds the profile's daemon by its socket name and attaches; the
 /// window then never opens the library itself.
 #[test]
 fn open_attaches_to_the_profiles_running_daemon() {
     let _env = crate::settings::TEST_ENV.lock();
     let cfg = host_config(&crate::cli::profile()).unwrap();
-    let daemon = keel_daemon::server::Daemon::start(keel_daemon::server::Options {
-        cfg: cfg.clone(),
-        ws: None,
-        web: None,
-        ws_allow_remote: false,
-        web_hosts: Vec::new(),
-        net: None,
-    })
-    .unwrap();
+    let daemon = profile_daemon(&cfg);
     let mut st = crate::state::AppState::new(
         egui::Context::default(),
         Arc::new(keel_vfs::Router::new()),
@@ -359,8 +381,14 @@ fn open_attaches_to_the_profiles_running_daemon() {
     assert!(st.library.lib.is_none() && !st.library.spawned);
     // The daemon holds the library: opening it here as well is refused.
     st.library.close_now();
-    st.library
-        .open(&cfg.library, router, crate::library::Via::Here);
+    st.library.open(
+        &cfg.library,
+        router,
+        crate::library::Via::Replace {
+            here: true,
+            wait: Duration::ZERO,
+        },
+    );
     pump_until(&mut st, "refused", |s| !s.library.opening);
     assert!(!st.library.is_open());
     assert!(st.library.error.is_some());
@@ -482,4 +510,145 @@ fn devices_go_through_the_daemons_node() {
     let root = crate::devices::root_of(&peer);
     let listed = st.router.provider_for(&root).unwrap().list(&root);
     assert!(listed.unwrap().is_empty());
+}
+
+#[test]
+fn the_window_ignores_changes_that_need_no_refresh() {
+    use crate::library::{refresh_for, Refresh};
+    let jobs = [
+        "integrity.check",
+        "hashing.set",
+        "jobs.cancel",
+        "media.index",
+        "sources.index",
+    ];
+    for kind in jobs {
+        assert_eq!(refresh_for(kind), Refresh::Nothing, "{kind}");
+    }
+    assert_eq!(refresh_for("volumes.set"), Refresh::Protection);
+    assert_eq!(refresh_for("recents.note"), Refresh::Recents);
+    assert_eq!(refresh_for("tags.add"), Refresh::All);
+    assert_eq!(refresh_for(""), Refresh::All, "an older daemon names none");
+}
+
+#[test]
+fn at_most_four_idle_connections_are_kept() {
+    let s = served();
+    let remote = Remote::connect(s.daemon.name()).unwrap();
+    for _ in 0..6 {
+        remote.put_back(Client::connect(s.daemon.name()).unwrap());
+    }
+    assert_eq!(remote.idle.lock().len(), MAX_IDLE);
+}
+
+/// Letting go of a daemon (library off, switching, Reconnect) ends its subscription: the
+/// reader thread goes (its callback is dropped) without reporting the daemon lost.
+#[test]
+fn closing_the_events_ends_the_subscription() {
+    let s = served();
+    let remote = Remote::connect(s.daemon.name()).unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let _jobs = remote
+        .subscribe(move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200)); // the reader waits in its read
+    remote.close_events();
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {}
+        other => panic!("the subscription is still there: {other:?}"),
+    }
+}
+
+/// "Open in this window" and "Reconnect" right after `daemon.stopping`, while the daemon
+/// still closes the library (here: the test holds `library.lock`): the lost connection and
+/// its banner stay until the library opens; it opens once the lock is free.
+#[test]
+fn reconnect_and_open_here_wait_for_a_stopping_daemon() {
+    use crate::keys::Action;
+    use crate::library::LibCmd;
+    let _env = crate::settings::TEST_ENV.lock();
+    let cfg = host_config(&crate::cli::profile()).unwrap();
+    let start = || profile_daemon(&cfg);
+    let lock_path = cfg
+        .data_dir
+        .join("library")
+        .join(&cfg.library)
+        .join("library.lock");
+    // The stopped daemon lets go of the library once its clients are gone (a real one
+    // when its process exits); the test takes the lock over, as a slow close would hold it.
+    let stop = |st: &mut crate::state::AppState, daemon: keel_daemon::server::Daemon| {
+        daemon.shutdown();
+        pump_until(st, "lost", |s| s.library.lost);
+        let r = st.library.remote().unwrap();
+        r.close_events();
+        r.idle.lock().clear();
+        drop(daemon);
+    };
+    let hold = || {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(30);
+        while f.try_lock().is_err() {
+            assert!(Instant::now() < end, "the daemon kept the library");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        f
+    };
+    let daemon = start();
+    let mut st = crate::state::AppState::new(
+        egui::Context::default(),
+        Arc::new(keel_vfs::Router::new()),
+        VPath::local(std::env::temp_dir()),
+    );
+    st.settings.library.name = cfg.library.clone();
+    let router = st.router.clone();
+    st.library.open(
+        &cfg.library,
+        router,
+        crate::library::Via::Auto { spawn: false },
+    );
+    pump_until(&mut st, "attached", |s| s.library.is_open());
+    stop(&mut st, daemon);
+    let held = hold();
+
+    // Still held: both give up, and the window stays as it was (read-only, its banner).
+    st.library.release_wait = Duration::from_millis(300);
+    for cmd in [LibCmd::OpenHere, LibCmd::Reconnect] {
+        st.run(0, Action::Library(cmd.clone()));
+        assert!(st.library.opening, "{cmd:?}");
+        pump_until(&mut st, "gave up", |s| !s.library.opening);
+        assert!(st.library.lost && st.library.remote().is_some(), "{cmd:?}");
+        assert!(st.library.error.is_some(), "{cmd:?}");
+    }
+
+    // The daemon is back: Reconnect attaches to it.
+    drop(held);
+    let daemon = start();
+    st.run(0, Action::Library(LibCmd::Reconnect));
+    pump_until(&mut st, "reconnected", |s| !s.library.opening);
+    assert!(!st.library.lost && st.library.remote().is_some());
+
+    // It stops again; Open in this window waits until the library is let go.
+    stop(&mut st, daemon);
+    let held = hold();
+    st.library.release_wait = Duration::from_secs(20);
+    st.run(0, Action::Library(LibCmd::OpenHere));
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        if let Ok(m) = st.rx.recv_timeout(Duration::from_millis(30)) {
+            st.apply(m);
+        }
+    }
+    assert!(
+        st.library.opening && st.library.lost,
+        "waits, read-only meanwhile"
+    );
+    drop(held);
+    pump_until(&mut st, "opened here", |s| !s.library.opening);
+    assert!(!st.library.lost && st.library.remote().is_none() && st.library.lib.is_some());
+    st.library.close_now();
 }

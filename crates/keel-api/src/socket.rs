@@ -215,6 +215,94 @@ pub fn connect(name: &str, timeout: Duration) -> io::Result<(Box<dyn Conn>, Opti
     }
 }
 
+/// A client connection another thread can end (`close`): a read blocked on it returns
+/// end of file. For a subscription that waits for notifications indefinitely.
+pub struct Closable {
+    #[cfg(windows)]
+    conn: std::fs::File,
+    #[cfg(unix)]
+    conn: Stream,
+    closed: std::sync::atomic::AtomicBool,
+    reading: std::sync::atomic::AtomicBool,
+}
+
+/// As [`connect`], closable from another thread.
+pub fn connect_closable(name: &str, timeout: Duration) -> io::Result<std::sync::Arc<Closable>> {
+    #[cfg(windows)]
+    let conn = keel_vfs::pipe::connect(name, timeout)?.0;
+    #[cfg(unix)]
+    let conn = {
+        let _ = timeout;
+        let conn = Stream::connect(sock_name(name)?)?;
+        check_peer(&conn)?;
+        conn
+    };
+    Ok(std::sync::Arc::new(Closable {
+        conn,
+        closed: Default::default(),
+        reading: Default::default(),
+    }))
+}
+
+impl Closable {
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Ends the connection: reads return end of file from now on, a blocked one too.
+    pub fn close(self: &std::sync::Arc<Self>) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.closed.store(true, SeqCst);
+        #[cfg(unix)]
+        {
+            let Stream::UdSocket(s) = &self.conn;
+            let _ = s.inner().shutdown(std::net::Shutdown::Both);
+        }
+        // A synchronous pipe read can only be cancelled while it is pending: retried until
+        // the reader is out (it checks `closed` before each read).
+        #[cfg(windows)]
+        if self.reading.load(SeqCst) {
+            let me = self.clone();
+            std::thread::spawn(move || {
+                use std::os::windows::io::AsHandle;
+                for _ in 0..200 {
+                    if !me.reading.load(SeqCst) {
+                        break;
+                    }
+                    keel_vfs::pipe::cancel_io(me.conn.as_handle());
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+        }
+    }
+}
+
+impl Read for &Closable {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.reading.store(true, SeqCst);
+        let got = match self.is_closed() {
+            true => Ok(0),
+            false => (&self.conn).read(buf),
+        };
+        self.reading.store(false, SeqCst);
+        if self.is_closed() {
+            return Ok(0);
+        }
+        got
+    }
+}
+
+impl Write for &Closable {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&self.conn).write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&self.conn).flush()
+    }
+}
+
 /// Server side: refuses a client of another user (Unix; on Windows the DACL does).
 pub fn check_client(conn: &Stream) -> io::Result<()> {
     #[cfg(unix)]

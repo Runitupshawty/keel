@@ -678,6 +678,11 @@ impl Library {
         self.shared.hash_on_activity.store(on, Ordering::SeqCst);
     }
 
+    /// `set_hash_idle_only`'s setting.
+    pub fn hash_idle_only(&self) -> bool {
+        self.shared.hash_on_activity.load(Ordering::SeqCst)
+    }
+
     /// Whether `note_activity` was called within the last 5 s (background jobs pause).
     pub fn user_active(&self) -> bool {
         self.shared.busy()

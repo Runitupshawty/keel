@@ -101,6 +101,8 @@ pub(crate) struct Shared {
     pub(crate) stop: AtomicBool,
     shutdown: Sender<()>,
     pub(crate) profile: String,
+    /// Where the profile's settings are read again (the integrity schedule).
+    cfg: HostConfig,
     /// `--web` share-target uploads waiting for `share.claim`.
     pub(crate) uploads: crate::share::Uploads,
 }
@@ -153,13 +155,30 @@ impl Shared {
                         format!("{method} did not finish within {REQUEST_WAIT:?}"),
                     ))
                 });
-                if result.is_ok() && ["execute", "shares.revoke"].contains(&method) {
+                if let Some(kind) = changed(method, &result) {
                     self.hub
-                        .broadcast("library.changed", json!({ "method": method }));
+                        .broadcast("library.changed", json!({ "method": method, "kind": kind }));
                 }
                 result
             }
         }
+    }
+}
+
+/// What a call changed, for `library.changed`: the operation (`execute`: the executed
+/// plan's), or None when nothing changed (an `execute` that started no job and has no
+/// result, such as an integrity check that was not due yet).
+pub(crate) fn changed(method: &str, result: &keel_api::Result<Value>) -> Option<String> {
+    let v = result.as_ref().ok()?;
+    match method {
+        "execute" => {
+            let empty = |r: &Value| r.is_null() || r.as_object().is_some_and(|o| o.is_empty());
+            let job = v.get("job").is_some_and(|j| !j.is_null());
+            let result = v.get("result").is_some_and(|r| !empty(r));
+            (job || result).then(|| v["operation"].as_str().unwrap_or_default().to_owned())
+        }
+        "shares.revoke" | "recents.note" => Some(method.to_owned()),
+        _ => None,
     }
 }
 
@@ -208,6 +227,7 @@ impl Daemon {
             stop: AtomicBool::new(false),
             shutdown,
             profile: cfg.profile.clone(),
+            cfg: cfg.clone(),
             uploads: crate::share::Uploads::open(cfg.data_dir.join("shares")),
         });
         pump(&shared);
@@ -269,6 +289,12 @@ impl Daemon {
     /// The web client's bound address (`--web`).
     pub fn web_addr(&self) -> Option<SocketAddr> {
         self.web_addr
+    }
+
+    /// The library and keel-net the daemon serves (tests).
+    #[doc(hidden)]
+    pub fn ctx(&self) -> &Arc<Ctx> {
+        self.shared.ctx()
     }
 
     /// Fires when a client called `daemon.shutdown`.
@@ -367,22 +393,38 @@ fn pump(shared: &Arc<Shared>) {
 
 /// How often new sources are picked up for watching.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
+/// How often the integrity schedule is looked at.
+const INTEGRITY_EVERY: Duration = Duration::from_secs(60);
 
 /// Keeps every source current, as the window does: each one is watched (`Library::watch`:
 /// live changes for local folders, a periodic re-walk for the others; a completed walk
 /// schedules hashing) once no index job walks it, until it is removed or the daemon stops.
+/// Runs the scheduled integrity checks too (Settings → Library, read again each time: an
+/// attached window leaves them to the daemon).
 fn keep_watched(shared: &Arc<Shared>) {
     let s = Arc::downgrade(shared);
     let _ = std::thread::Builder::new()
         .name("keel-daemon-watch".into())
         .spawn(move || {
             let mut watched = std::collections::HashSet::new();
+            let mut next_integrity = Instant::now();
             loop {
                 let Some(s) = s.upgrade() else { return };
                 if s.stop.load(Ordering::Acquire) {
                     return;
                 }
                 let lib = &s.ctx().lib;
+                if Instant::now() >= next_integrity {
+                    next_integrity = Instant::now() + INTEGRITY_EVERY;
+                    let c = &s.cfg;
+                    let c = HostConfig::read(&c.profile, c.config_dir.clone(), c.data_dir.clone());
+                    if c.integrity_days > 0 {
+                        let every = Duration::from_secs(u64::from(c.integrity_days) * 24 * 60 * 60);
+                        if let Err(e) = lib.schedule_integrity(c.integrity_pct, every) {
+                            tracing::warn!("integrity check: {e:#}");
+                        }
+                    }
+                }
                 let sources = lib.sources();
                 watched.retain(|id| sources.iter().any(|x| &x.id == id));
                 for src in sources {
