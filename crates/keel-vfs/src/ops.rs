@@ -488,6 +488,8 @@ impl ProviderJob<'_> {
         );
         let mut target = proposed.clone();
         let existing = maybe_stat(&*dst, &target)?;
+        // What occupies the final target (None once `RenameNew` picked a free name).
+        let mut occupied = existing.clone();
         if let Some(e) = &existing {
             let key = src.canonicalize(source)?;
             let target_key = dst.canonicalize(&target)?;
@@ -523,6 +525,7 @@ impl ProviderJob<'_> {
                     let candidate = parent.join(&name);
                     if maybe_stat(&*dst, &candidate)?.is_none() {
                         target = candidate;
+                        occupied = None;
                         break;
                     }
                 }
@@ -532,6 +535,14 @@ impl ProviderJob<'_> {
                     "unsafe destination: {}",
                     target.display()
                 );
+            }
+        }
+        if self.moving && same_remote(source, &target) {
+            // Merging into an existing folder still walks its children; everything else
+            // is one rename on the server.
+            let merge = before.kind == Kind::Dir && occupied.is_some();
+            if !merge && self.rename_on_server(src, &dst, source, &target, occupied.is_some())? {
+                return Ok(true);
             }
         }
         if before.kind == Kind::Dir {
@@ -628,6 +639,51 @@ impl ProviderJob<'_> {
         }
         self.state.done_bytes += copied;
         self.state.done_items += 1;
+        self.state.current = source.display();
+        (self.progress)(self.state.clone());
+        Ok(true)
+    }
+}
+/// Both paths on the same `sftp://<id>` host (one server, so a rename can move the data).
+fn same_remote(a: &crate::VPath, b: &crate::VPath) -> bool {
+    a.scheme == "sftp"
+        && b.scheme == "sftp"
+        && a.authority == b.authority
+        && a.split_archive().is_none()
+        && b.split_archive().is_none()
+}
+impl ProviderJob<'_> {
+    /// Moves `source` to `target` with a server-side rename. `Ok(false)`: the rename was
+    /// refused (e.g. across devices) and nothing changed, so the caller streams instead.
+    fn rename_on_server(
+        &mut self,
+        src: &std::sync::Arc<dyn crate::Provider>,
+        dst: &std::sync::Arc<dyn crate::Provider>,
+        source: &crate::VPath,
+        target: &crate::VPath,
+        replace: bool,
+    ) -> Result<bool> {
+        let mut counted = Progress {
+            total_items: 0,
+            total_bytes: 0,
+            ..self.state.clone()
+        };
+        scan_remote(&**src, source, &mut counted, self.cancel, 0)?;
+        check_cancel(self.cancel)?;
+        let renamed = if replace {
+            dst.rename_replace(source, target)
+        } else {
+            dst.rename_noreplace(source, target)
+        };
+        if let Err(e) = renamed {
+            // Unchanged source and no new target: a cross-device style refusal.
+            if src.stat(source).is_ok() && maybe_stat(&**dst, target)?.is_none() {
+                return Ok(false);
+            }
+            return Err(e);
+        }
+        self.state.done_bytes += counted.total_bytes;
+        self.state.done_items += counted.total_items;
         self.state.current = source.display();
         (self.progress)(self.state.clone());
         Ok(true)
