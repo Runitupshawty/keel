@@ -39,6 +39,14 @@ pub enum Action {
         from: VPath,
         to: String,
     },
+    /// Bulk rename dialog for the selection (Ctrl+F2).
+    BulkRename,
+    /// The dialog answered: `(item, new name)` pairs, already checked.
+    BulkRenameApply {
+        renames: Vec<(VPath, String)>,
+    },
+    /// Reverse the last bulk rename.
+    UndoBulkRename,
     /// Asks before trashing the targets.
     Delete,
     /// Confirmed: send these to the OS trash.
@@ -242,6 +250,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
     (Modifiers::ALT, Key::ArrowRight, Action::Forward),
     (Modifiers::NONE, Key::Backspace, Action::Backspace),
+    (CMD, Key::F2, Action::BulkRename),
     (Modifiers::NONE, Key::F2, Action::Rename),
     (Modifiers::NONE, Key::F3, Action::TogglePreview),
     (Modifiers::NONE, Key::F5, Action::Refresh),

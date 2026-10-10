@@ -42,6 +42,8 @@ pub enum Dialog {
         paths: Vec<VPath>,
         info: Option<Result<properties::Props, String>>,
     },
+    /// Bulk rename (Ctrl+F2).
+    BulkRename(Box<crate::bulk_rename::BulkRename>),
     /// Open with…: `recent` apps for the extension, then the system's `(name, app)` list.
     OpenWith {
         paths: Vec<PathBuf>,
@@ -188,6 +190,11 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.add_space(8.0);
                 cancel |= ui.button("Close").clicked();
             }
+            Dialog::BulkRename(m) => {
+                if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
+                    out = Some(Action::BulkRenameApply { renames });
+                }
+            }
             Dialog::OpenWith {
                 paths,
                 recent,
@@ -273,7 +280,7 @@ pub fn invalid_name(name: &str) -> Option<String> {
     invalid_name_for(name, cfg!(windows))
 }
 
-fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
+pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return Some(format!("\"{name}\" is not a valid name"));
     }

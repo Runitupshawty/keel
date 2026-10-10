@@ -77,6 +77,12 @@ pub enum Msg {
         preview: keel_preview::Preview,
     },
     Toast(String),
+    /// A bulk rename (or its undo) finished.
+    BulkDone {
+        outcome: crate::bulk_rename::Outcome,
+        total: usize,
+        undo: bool,
+    },
     Preview {
         key: PreviewKey,
         preview: keel_preview::Preview,
@@ -199,6 +205,8 @@ pub struct AppState {
     /// here or, on Windows, in another app).
     pub archive_clip: Option<ArchiveSrc>,
     pub dialog: Option<Dialog>,
+    /// Steps of the last bulk rename, undone by `UndoBulkRename` until the next operation.
+    pub bulk_undo: Vec<(VPath, VPath)>,
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
@@ -331,6 +339,7 @@ impl AppState {
             cut_job: None,
             archive_clip: None,
             dialog: None,
+            bulk_undo: Vec::new(),
             settings,
             settings_open: false,
             remotes,
@@ -595,6 +604,34 @@ impl AppState {
             }
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
+            Msg::BulkDone {
+                outcome,
+                total,
+                undo,
+            } => {
+                let verb = if undo { "Restored" } else { "Renamed" };
+                let (text, ok) = crate::bulk_rename::summary(&outcome, total, verb);
+                if !undo && outcome.renamed > 0 {
+                    self.bulk_undo = crate::bulk_rename::undo_steps(&outcome.done);
+                }
+                match (ok, undo || outcome.renamed == 0) {
+                    (true, false) => self.toasts.offer(text, "Undo", Action::UndoBulkRename),
+                    (true, true) => self.toasts.info(text),
+                    (false, false) => self
+                        .toasts
+                        .with_action(text, "Undo", Action::UndoBulkRename),
+                    (false, true) => self.toasts.error(text),
+                }
+                let dirs: std::collections::HashSet<VPath> = outcome
+                    .done
+                    .iter()
+                    .flat_map(|(a, b)| [a.parent(), b.parent()])
+                    .flatten()
+                    .collect();
+                for dir in dirs {
+                    self.apply(Msg::Changed { dir });
+                }
+            }
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
             Msg::JobDone { id, result } => {
                 if let Some((job, src)) = self.cut_job.take() {
@@ -1298,6 +1335,24 @@ impl AppState {
         let Some(action) = self.library_intercept(p, action) else {
             return;
         };
+        // The undo is only good until the next operation.
+        if matches!(
+            action,
+            Action::Copy
+                | Action::Cut
+                | Action::Paste
+                | Action::Delete
+                | Action::Trash(_)
+                | Action::DeleteRemote(_)
+                | Action::StartTransfer { .. }
+                | Action::Drop { .. }
+                | Action::Create { .. }
+                | Action::RenameTo { .. }
+                | Action::ZipTo { .. }
+                | Action::AddToZip
+        ) {
+            self.bulk_undo.clear();
+        }
         match action {
             Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
@@ -1555,6 +1610,86 @@ impl AppState {
                 }
                 let Some(dir) = from.parent() else { return };
                 self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
+            }
+            Action::BulkRename => {
+                let tab = self.tab(p);
+                let targets = tab.targets();
+                if targets.is_empty() {
+                    return self.toasts.info("Select the items to rename");
+                }
+                let picked: std::collections::HashSet<&VPath> =
+                    targets.iter().map(|e| &e.path).collect();
+                let items: Vec<crate::bulk_rename::Item> = targets
+                    .iter()
+                    .map(|e| crate::bulk_rename::Item {
+                        path: e.path.clone(),
+                        name: e.name.clone(),
+                        is_dir: e.kind == Kind::Dir,
+                        modified: e.modified,
+                    })
+                    .collect();
+                // Untouched siblings a new name could collide with (a search tab lists
+                // many folders; a clash there is caught by the rename itself).
+                let others: Vec<(VPath, String)> = tab
+                    .entries()
+                    .iter()
+                    .filter(|e| !picked.contains(&e.path))
+                    .filter_map(|e| Some((e.path.parent()?, e.name.clone())))
+                    .collect();
+                self.dialog = Some(Dialog::BulkRename(Box::new(
+                    crate::bulk_rename::BulkRename::new(items, others),
+                )));
+            }
+            Action::BulkRenameApply { renames } => {
+                if let Some(why) = renames.iter().find_map(|(_, n)| dialogs::invalid_name(n)) {
+                    return self.toasts.error(why);
+                }
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                let total = renames.len();
+                worker::spawn("keel-bulk-rename", move || {
+                    let rename = |a: &VPath, b: &VPath| {
+                        router
+                            .provider_for(a)
+                            .ok_or_else(|| anyhow::anyhow!("no provider for {}", a.display()))
+                            .and_then(|p| p.rename(a, b))
+                    };
+                    let fold = cfg!(any(windows, target_os = "macos"));
+                    let outcome = crate::bulk_rename::execute(&renames, fold, rename);
+                    worker::send(
+                        &tx,
+                        &ctx,
+                        Msg::BulkDone {
+                            outcome,
+                            total,
+                            undo: false,
+                        },
+                    );
+                });
+            }
+            Action::UndoBulkRename => {
+                let steps = std::mem::take(&mut self.bulk_undo);
+                if steps.is_empty() {
+                    return self.toasts.info("Nothing to undo");
+                }
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-bulk-undo", move || {
+                    let total = steps.len();
+                    let outcome = crate::bulk_rename::run_steps(&steps, |a, b| {
+                        router
+                            .provider_for(a)
+                            .ok_or_else(|| anyhow::anyhow!("no provider for {}", a.display()))
+                            .and_then(|p| p.rename(a, b))
+                    });
+                    worker::send(
+                        &tx,
+                        &ctx,
+                        Msg::BulkDone {
+                            outcome,
+                            total,
+                            undo: true,
+                        },
+                    );
+                });
             }
             Action::Delete => {
                 let paths = self.target_paths(p);
@@ -1878,6 +2013,7 @@ impl AppState {
     fn writes_into_archive(&self, p: usize, action: &Action) -> bool {
         let inside = |dir: &VPath| dir.split_archive().is_some();
         match action {
+            Action::BulkRenameApply { renames } => renames.iter().any(|(f, _)| inside(f)),
             Action::Rename
             | Action::Delete
             | Action::Cut
