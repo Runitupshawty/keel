@@ -1325,3 +1325,30 @@ fn a_source_rooted_at_a_junction_indexes_its_target() {
         src.status.read()
     );
 }
+
+/// A change applied while a walk starts (a watcher's event for a folder the walk has not
+/// reached yet) must not leave that folder twice in the index, the first copy empty.
+#[test]
+fn a_change_applied_as_a_walk_starts_keeps_one_record_per_path() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("docs").join("a.txt"), "a");
+    write(&files.path().join("docs").join("b.txt"), "b");
+    let (_data, lib, src) = library_with(folder("F", files.path()));
+    let router = Router::new();
+    walk(&src, &router).unwrap();
+    let docs = VPath::local(files.path().join("docs"));
+    let applied = AtomicBool::new(false);
+    let apply = |_: IndexProgress| {
+        if !applied.swap(true, Ordering::SeqCst) {
+            Indexer::apply_paths(&src, std::slice::from_ref(&docs), false).unwrap();
+        }
+    };
+    Indexer::full_walk(&src, &router, &apply, &AtomicBool::new(false)).unwrap();
+    assert!(applied.load(Ordering::SeqCst));
+    let names: Vec<String> = (lib.list_children(&src.id, "docs").unwrap())
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+    assert_eq!(paths(&src), ["", "docs", "docs/a.txt", "docs/b.txt"]);
+}
