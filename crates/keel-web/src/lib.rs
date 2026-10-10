@@ -21,5 +21,8 @@ pub mod util;
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+/// `window.__keel` for tests/web-e2e: only with the `e2e` feature and `?e2e=1`.
+#[cfg(all(target_arch = "wasm32", feature = "e2e"))]
+mod e2e;
 #[cfg(target_arch = "wasm32")]
 mod web;

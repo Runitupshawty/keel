@@ -3,11 +3,15 @@
 # target and wasm-bindgen-cli of the wasm-bindgen version in Cargo.lock:
 #   rustup target add wasm32-unknown-unknown
 #   cargo install wasm-bindgen-cli --version <cargo pkgid wasm-bindgen, after the @>
+# -Features e2e builds the browser-test bundle (tests/web-e2e) with its `window.__keel` hook;
+# the release bundle (no -Features) must not carry it.
+param([string]$Features = '')
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
 $dist = Join-Path $root 'crates\keel-web\dist'
-cargo build --release --locked -p keel-web --target wasm32-unknown-unknown --manifest-path (Join-Path $root 'Cargo.toml')
+$extra = if ($Features) { @('--features', $Features) } else { @() }
+cargo build --release --locked -p keel-web --target wasm32-unknown-unknown --manifest-path (Join-Path $root 'Cargo.toml') @extra
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 New-Item -ItemType Directory -Force $dist | Out-Null
@@ -26,4 +30,11 @@ $ver = (Get-FileHash -InputStream $all -Algorithm SHA256).Hash.Substring(0, 16).
 $sw = Join-Path $dist 'sw.js'
 [IO.File]::WriteAllText($sw, [IO.File]::ReadAllText($sw).Replace('__KEEL_BUILD__', $ver), (New-Object Text.UTF8Encoding $false))
 if (-not ([IO.File]::ReadAllText($sw).Contains("const VERSION = `"$ver`";"))) { throw "sw.js was not stamped" }
+if ($Features -notmatch 'e2e') {
+    foreach ($f in Get-ChildItem $dist -File) {
+        if ([Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($f.FullName)).Contains('__keel')) {
+            throw "the release bundle carries the e2e hook ($($f.Name))"
+        }
+    }
+}
 Write-Output "web client in $dist; now build keel-daemon"

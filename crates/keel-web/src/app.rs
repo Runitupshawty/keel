@@ -83,13 +83,21 @@ enum Tab {
     Search,
 }
 
-/// What a row's tap or long-press menu asked for (applied after the list is drawn).
+/// What a row's tap or long-press menu, the search field, the preview's buttons or the
+/// plan dialog asked for (applied after the UI is drawn; the `e2e` hook uses them too).
 enum Act {
     Open(EntryInfo),
     Select(EntryInfo),
     Download(String),
     Delete(String),
     Send(EntryInfo),
+    Search(String),
+    Rename {
+        path: String,
+        to: String,
+    },
+    /// Close the plan dialog without executing.
+    Cancel,
 }
 
 pub struct WebApp {
@@ -140,6 +148,8 @@ pub struct WebApp {
     error: Option<String>,
     // Spacedrop from the share sheet (or a file's "Send to device…")
     share: share::Flow,
+    #[cfg(feature = "e2e")]
+    hook: Option<crate::e2e::Hook>,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -240,6 +250,9 @@ impl WebApp {
             plan: None,
             error: None,
             share: share::Flow::from_query(""),
+            // Before `take_query` clears the address.
+            #[cfg(feature = "e2e")]
+            hook: crate::e2e::Hook::install(&cc.egui_ctx),
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -840,7 +853,96 @@ impl WebApp {
                     self.notice = Some("Finish or cancel the shared files first.".into());
                 }
             }
+            Act::Search(q) => {
+                self.tab = Tab::Search;
+                self.screen.show(PhoneTab::Search);
+                self.query = q.clone();
+                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+            }
+            Act::Rename { path, to } => self.plan(
+                "plan",
+                json!({"op": "rename", "paths": [path], "new_name": to}),
+            ),
+            Act::Cancel => self.plan = None,
         }
+    }
+
+    /// The `e2e` hook's calls, as the app's own actions; then the state it reads.
+    #[cfg(feature = "e2e")]
+    fn e2e(&mut self) {
+        let Some(calls) = self.hook.as_ref().map(crate::e2e::Hook::take) else {
+            return;
+        };
+        for (name, arg) in calls {
+            let named = |app: &Self, n: &str| {
+                let pane = app.panes[app.active].entries.iter().find(|e| e.name == n);
+                let hit = app.hits.iter().find(|h| h.name == n).map(hit_entry);
+                pane.cloned().or(hit)
+            };
+            let selected = self.selected.clone();
+            let act = match (name.as_str(), arg) {
+                ("select", Some(n)) => named(self, &n).map(Act::Select),
+                ("open-source", label) => (self.sources.iter())
+                    .find(|s| label.as_deref().is_none_or(|l| s.label == l))
+                    .map(|s| {
+                        Act::Open(EntryInfo {
+                            name: s.label.clone(),
+                            path: format!("library://{}/", s.id),
+                            is_dir: true,
+                            size: 0,
+                            modified: None,
+                            hidden: false,
+                        })
+                    }),
+                ("search", Some(q)) => Some(Act::Search(q)),
+                ("open-preview", n) => n
+                    .and_then(|n| named(self, &n))
+                    .or(selected)
+                    .map(Act::Select),
+                ("delete-preview", _) => selected.map(|e| Act::Delete(e.path)),
+                ("rename-preview", Some(to)) => selected.map(|e| Act::Rename { path: e.path, to }),
+                ("cancel", _) => Some(Act::Cancel),
+                _ => None,
+            };
+            match act {
+                Some(act) => self.act(self.active, act),
+                None => self.error = Some(format!("e2e: cannot {name} now")),
+            }
+        }
+    }
+
+    /// What the `e2e` hook's `state()` answers.
+    #[cfg(feature = "e2e")]
+    fn e2e_state(&self) -> String {
+        let names = |v: &[EntryInfo]| v.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        let pane = &self.panes[self.active];
+        let plan = self.plan.as_ref().map(|d| {
+            let state = match d.state {
+                PlanState::Review => "review",
+                PlanState::Executing | PlanState::Running { .. } => "running",
+                PlanState::Done(_) => "done",
+                PlanState::Failed(_) => "failed",
+            };
+            json!({"operation": d.preview.operation, "summary": d.preview.summary, "state": state})
+        });
+        json!({
+            "signed_in": self.conn.state == State::Online,
+            "sources": self.sources.iter().map(|s| &s.label).collect::<Vec<_>>(),
+            "path": pane.path,
+            "entries": names(&pane.entries),
+            "hits": self.hits.iter().map(|h| &h.name).collect::<Vec<_>>(),
+            "selected": self.selected.as_ref().map(|e| &e.name),
+            "preview": match self.shown {
+                Shown::Nothing => "nothing",
+                Shown::Loading => "loading",
+                Shown::Text { .. } => "text",
+                Shown::Image(_) => "image",
+                Shown::Message(_) => "message",
+            },
+            "plan": plan,
+            "error": self.error,
+        })
+        .to_string()
     }
 
     /// The long-press (or right-click) menu of an entry.
@@ -1086,6 +1188,7 @@ impl WebApp {
     }
 
     fn search(&mut self, ui: &mut egui::Ui) {
+        let mut act = None;
         ui.horizontal(|ui| {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
@@ -1093,12 +1196,10 @@ impl WebApp {
                     .hint_text("words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:"),
             );
             if field.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter)) {
-                let q = self.query.clone();
-                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+                act = Some(Act::Search(self.query.clone()));
             }
         });
         let phone = self.screen.phone();
-        let mut act = None;
         let out = egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
@@ -1194,20 +1295,20 @@ impl WebApp {
                 act = Some(Act::Delete(e.path.clone()));
             }
         });
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.rename_to).desired_width(160.0));
+            if ui.button("Rename…").clicked() && !self.rename_to.trim().is_empty() {
+                let to = self.rename_to.trim().to_owned();
+                act = Some(Act::Rename {
+                    path: e.path.clone(),
+                    to,
+                });
+            }
+        });
         if let Some(a) = act {
             let pane = self.active;
             self.act(pane, a);
         }
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.rename_to).desired_width(160.0));
-            if ui.button("Rename…").clicked() && !self.rename_to.trim().is_empty() {
-                let name = self.rename_to.trim().to_owned();
-                self.plan(
-                    "plan",
-                    json!({"op": "rename", "paths": [e.path], "new_name": name}),
-                );
-            }
-        });
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.tag)
@@ -1500,7 +1601,7 @@ impl WebApp {
             self.call("execute", params, Want::Execute);
         }
         if close {
-            self.plan = None;
+            self.act(self.active, Act::Cancel);
         }
     }
 
@@ -1617,6 +1718,13 @@ impl WebApp {
 impl eframe::App for WebApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump();
+        #[cfg(feature = "e2e")]
+        self.e2e();
+        #[cfg(feature = "e2e")]
+        if let Some(hook) = &self.hook {
+            // Taken here, before drawing: it shows the replies `pump` just applied.
+            hook.publish(self.e2e_state());
+        }
         if self.screen.resize(ctx.screen_rect().width()) {
             self.apply_style();
         }

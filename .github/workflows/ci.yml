@@ -41,6 +41,7 @@ jobs:
           key: wasm
       - run: cargo build --locked -p keel-web --target wasm32-unknown-unknown
       - run: cargo clippy --locked -p keel-web --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - run: cargo clippy --locked -p keel-web --target wasm32-unknown-unknown --all-targets --features e2e -- -D warnings
       # The release bundle the daemon embeds: wasm-bindgen-cli of the version in Cargo.lock,
       # then the service worker must carry the build's version.
       - name: wasm-bindgen-cli
@@ -48,6 +49,9 @@ jobs:
       - run: bash scripts/build-web.sh
       - name: Service worker stamped
         run: grep -Eq 'const VERSION = "[0-9a-f]{16}";' crates/keel-web/dist/sw.js
+      # The browser-test hook (`e2e` feature) is never in the release bundle.
+      - name: No e2e hook in the release bundle
+        run: "! grep -qa __keel crates/keel-web/dist/*"
 
   # The web client in a real browser: keel-daemon --web with a fixture library, driven by
   # Playwright (Chromium only; tests/web-e2e). Not part of `check`: it is the slowest job.
@@ -65,15 +69,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Same bundle steps as the wasm job; keel-daemon embeds the bundle, so it builds after.
+      # The wasm job's bundle steps with the test hook (`e2e` feature: window.__keel with
+      # ?e2e=1); keel-daemon embeds the bundle, so it builds after.
       - name: wasm-bindgen-cli
         run: cargo install --locked wasm-bindgen-cli --version "$(cargo pkgid wasm-bindgen | sed 's/.*@//')"
-      - run: bash scripts/build-web.sh
+      - run: bash scripts/build-web.sh --features e2e
       - run: cargo build --locked -p keel-daemon
       - name: Playwright
         working-directory: tests/web-e2e
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
       - run: bash tests/web-e2e/run.sh
       - name: Screenshots and daemon log

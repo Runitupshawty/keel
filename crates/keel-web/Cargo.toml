@@ -10,6 +10,11 @@ description = "Keel's browser client: an egui web app served by keel-daemon --we
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# `window.__keel` when the page is opened with `?e2e=1` (tests/web-e2e only; the release
+# bundle never has it).
+e2e = []
+
 # The connection logic, the address guard and the API types build everywhere (tested
 # natively); the UI and the browser glue only for wasm32.
 [dependencies]
