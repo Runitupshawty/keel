@@ -172,6 +172,7 @@ pub enum Msg {
     Library(crate::library::LibMsg),
     // --- Task 36 ---
     Devices(crate::devices::DevMsg),
+    Mount(crate::mount_ui::MountMsg),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -249,6 +250,8 @@ pub struct AppState {
     pub library: crate::library::LibraryUi,
     /// Task 36: paired devices, shares and Spacedrop (`devices.rs`).
     pub devices: crate::devices::Devices,
+    /// Mounts on keel-daemon (`mount_ui.rs`).
+    pub mount: crate::mount_ui::MountUi,
     // --- Task 32 ---
     /// Media view sidecar textures and their workers (`media.rs`).
     pub media: crate::media::Media,
@@ -369,6 +372,7 @@ impl AppState {
             dropzone: Default::default(),
             library,
             devices,
+            mount: Default::default(),
             media,
             viewer: None,
         };
@@ -388,6 +392,7 @@ impl AppState {
     /// what the user changed.
     pub fn settings_ui(&mut self, ctx: &egui::Context) {
         self.profiles_tick();
+        self.mount_tick();
         self.icon_themes.tick(&mut self.settings, &mut self.toasts);
         self.icon_themes.license_modal(ctx);
         let s = &mut self.settings;
@@ -807,6 +812,7 @@ impl AppState {
             Msg::External(req) => self.external(req),
             Msg::Library(msg) => self.library_msg(msg),
             Msg::Devices(msg) => self.devices_msg(msg),
+            Msg::Mount(msg) => self.mount_msg(msg),
         }
     }
 
@@ -2031,6 +2037,7 @@ impl AppState {
             // Handled by `library_intercept`.
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
+            Action::Mount(cmd) => self.mount_cmd(cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

@@ -112,6 +112,9 @@ pub fn sidebar(
                         .frame(false)
                         .selected(here),
                 );
+                if let Some(b) = crate::mount_ui::badge_for(ui.ctx(), &s.id.0) {
+                    ui.add(egui::Label::new(RichText::new(b).small().weak()));
+                }
                 if s.dot == Dot::Indexing {
                     ui.add(egui::Label::new(RichText::new(&s.detail).small().weak()).truncate());
                 }
@@ -141,6 +144,7 @@ pub fn sidebar(
                     ui.close_menu();
                 }
             }
+            crate::mount_ui::source_menu(ui, &s.id.0, out);
         });
     }
     if ui.small_button("Add source…").clicked() {
