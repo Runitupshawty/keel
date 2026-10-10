@@ -15,13 +15,12 @@ ignore = [
     # Vulnerabilities in the current tree. Each needs a dependency bump upstream; revisit when the parent crate updates.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 quadratic attribute check, now only via zbus_xml 4 <- zbus-lockstep 0.4 <- atspi-common 0.6 <- accesskit_unix (eframe 0.31, Linux). zbus-lockstep parses atspi's bundled D-Bus XML in a proc macro at build time and in atspi's own tests; Keel never runs it. Drops with the eframe/accesskit upgrade (zbus_xml 5)." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 namespace allocation DoS; same build-time-only zbus_xml path as RUSTSEC-2026-0194." },
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, no fix released; reachable only through russh key handling over a network timing channel." },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc (Marvin timing attack, no fixed release) via russh 0.64 feature `rsa` and its ssh-key 0.7: RSA host-key checks and RSA user-key (id_rsa, agent) signatures. Marvin targets RSA decryption; russh has no RSA key exchange and never decrypts with RSA, and James's keys are ed25519. Turning off russh's `rsa` feature drops the crate but also every ssh-rsa / rsa-sha2 host and user key, so it stays." },
     # Unmaintained crates (transitive, no drop-in replacement through our direct dependencies).
-    { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained, pulled by syntect." },
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, pulled by accesskit, metal, pulp." },
-    { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained, pulled by the SVG/text stack." },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by the font/SVG stack." },
-    { id = "RUSTSEC-2024-0320", reason = "yaml-rust unmaintained, pulled by syntect." },
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained, pulled by syntect 5.3 (`dump-load`: its bundled syntax and theme dumps, also via two-face); no syntect feature avoids it." },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (proc macro, build time only), pulled by metal 0.31 (wgpu-hal 24, eframe 0.31), pulp 0.22 (exr, image) and rav1e 0.8 (ravif, image)." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz 0.18 unmaintained, pulled by usvg 0.44 <- resvg 0.44 (keel-preview SVG text)." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained: 0.24 via fontdb 0.22 and rustybuzz 0.18 (usvg/resvg 0.44, keel-preview), 0.25 via owned_ttf_parser <- ab_glyph <- epaint 0.31 (egui)." },
 ]
 
 [licenses]

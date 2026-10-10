@@ -17,6 +17,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - 7z: the unmaintained `sevenz-rust` 0.6 is replaced by its maintained fork `sevenz-rust2` 0.23 (RUSTSEC-2026-0246; RUSTSEC-2026-0245 is a path traversal in its own extractor, which Keel never used). A test now proves that 7z, tar and zip entries named `../../evil.txt`, `/evil.txt` or `C:/evil.txt` refuse the whole extraction and nothing is written.
 - Battery detection: `battery` 0.7 is replaced by its maintained fork `starship-battery` 0.12, which drops `nix` 0.19 (out-of-bounds write in `getgrouplist`, RUSTSEC-2021-0119; never called by Keel) and the unmaintained `mach` (RUSTSEC-2020-0168). The `power` feature is unchanged.
 
+### Changed
+
+- `syntect` is built with only what the previews use (bundled syntax and theme dumps, fancy-regex), which drops the unmaintained `yaml-rust` (RUSTSEC-2024-0320). The remaining `cargo deny` advisory ignores now name the crate that pulls each one and why it stays.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
