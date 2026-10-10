@@ -544,6 +544,9 @@ pub fn context_menu(
         item(ui, "Mount this folder…", "", a);
     }
     item(ui, "Copy path", "", Action::CopyPath);
+    if entry.is_some_and(|e| crate::clouds::can_link(ui.ctx(), e)) {
+        item(ui, "Copy link", "", Action::CopyLink);
+    }
     if on_item {
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);

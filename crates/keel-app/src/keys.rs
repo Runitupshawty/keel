@@ -88,6 +88,8 @@ pub enum Action {
     NewFolder,
     NewFile,
     CopyPath,
+    /// A share link for the selected cloud item, on the clipboard (`clouds::can_link`).
+    CopyLink,
     /// Open with… (Ctrl+Shift+O): Keel's picker for the targets.
     OpenWith,
     /// Open `paths` with `app`; `remember` puts it in the recent list for their extension.

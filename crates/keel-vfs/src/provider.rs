@@ -17,6 +17,24 @@ pub enum RemoveKind {
     Permanent,
 }
 
+/// An account's storage use (`Provider::quota`), in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quota {
+    pub used: u64,
+    /// None: no limit.
+    pub total: Option<u64>,
+}
+
+/// `Provider::share_link`'s answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShareLink {
+    /// Put `url` on the clipboard; `note` tells the user who can open it.
+    Ready { url: String, note: String },
+    /// There is no link yet and making one widens access: ask `question`, and on a yes
+    /// call `share_link` again with `create`.
+    Confirm { question: String },
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
     pub write: bool,
@@ -112,6 +130,18 @@ pub trait Provider: Send + Sync {
     /// wrapper must forward it, or a trash-backed provider reads as permanent.
     fn remove_kind(&self) -> RemoveKind;
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
+    /// The account's storage use, where the service reports it (cloud accounts). Blocks
+    /// on the network: workers only. None: unknown (no such thing here, or the request
+    /// failed).
+    fn quota(&self) -> Option<Quota> {
+        None
+    }
+    /// A link to `p` for other people (cloud accounts). `create`: the user agreed to make
+    /// one after a `ShareLink::Confirm`. Blocks on the network: workers only.
+    fn share_link(&self, p: &VPath, create: bool) -> Result<ShareLink> {
+        let _ = create;
+        anyhow::bail!("{} has no share links", p.display())
+    }
     /// `local_copy` for long downloads: reports progress and stops when `cancel` is set.
     fn local_copy_cancellable(
         &self,

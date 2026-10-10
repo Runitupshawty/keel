@@ -4,9 +4,16 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Cloud storage quota: Google Drive and Dropbox accounts show how much of their storage is used ("12.3 GB of 15 GB used", or "used (no limit)") when you hover over the account in the sidebar and in Settings → Cloud. The quota is asked on a worker when it is shown and kept for 10 minutes per account; **Refresh** in Settings → Cloud asks again. Drive reads `about.storageQuota`, Dropbox `users/get_space_usage` (the individual or team allocation, or a team member's own limit). S3 and WebDAV accounts report none; a failed request shows "Quota unknown".
+- **Copy link** in the context menu of cloud files and folders. Google Drive copies the file's own link without changing its sharing, and the toast says it opens only for people who already have access. Dropbox reuses an existing shared link, and only when there is none asks "Create a link anyone can open?" before making one. S3 asks first, then copies a presigned download link that works for 1 hour (files only). Local files, WebDAV accounts and S3 folders do not show it. The link goes to the clipboard like Copy path.
+- keel-vfs: `Provider::quota` (`Quota { used, total }`) and `Provider::share_link` (a link, or a question to ask before making one); both default to none.
+
 ### Fixed
 
 - Tabs on `node://` sources are titled with the device's name at its root and "<device name> / <source label>" in a shared source, and the breadcrumb and the tab's hover show the names instead of the raw ids; only a device that is no longer paired (forgotten) still shows its id. The web client's source list and path box show the same names on hover. This lifts the 0.8.0 known limitation about raw ids in tab titles.
+- Cloud accounts now show their storage quota (Google Drive, Dropbox) and cloud files have Copy link, lifting the 0.3.0 known limitations about the missing quota and share links.
 
 ## [0.11.0] - 2026-10-10
 

@@ -20,7 +20,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](#remotes-over-ssh).
-- **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets, WebDAV) as folders; Drive and Dropbox sign in with your own OAuth client id, S3 and WebDAV with keys or a password; all secrets stay in the OS keychain. See [Cloud accounts](#cloud-accounts-bring-your-own-client-id).
+- **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets, WebDAV) as folders; Drive and Dropbox sign in with your own OAuth client id, S3 and WebDAV with keys or a password; all secrets stay in the OS keychain; storage quota (Drive, Dropbox) and Copy link. See [Cloud accounts](#cloud-accounts-bring-your-own-client-id).
 - **Columns view**: Miller columns per pane, plus a **drop zone** strip that carries files across navigation. See [Columns view and drop zone](#columns-view-and-drop-zone).
 - **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](#profiles).
 - **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](#icon-themes).
@@ -434,6 +434,14 @@ cargo build --release
 ## Cloud accounts: bring your own client id
 
 Google Drive and Dropbox sign-in uses OAuth with PKCE and a loopback redirect (`http://127.0.0.1:<port>/`). Keel ships no OAuth client ids: `assets/cloud-clients.toml` holds placeholders. Register your own free app (a Google Cloud "Desktop app" OAuth client with the Drive API enabled, or a Dropbox scoped app with redirect URI `http://127.0.0.1`) and enter its client id per account, or replace the placeholders in that file before building; the file explains each step. WebDAV (Nextcloud, ownCloud, Synology, Apache `mod_dav`, any `https://host/path/` collection URL) needs no client id: Settings → Cloud → Add account → WebDAV takes the address (for Nextcloud `https://host/remote.php/dav/files/<user>/`), user name, password (use an app password where the server offers one) and an optional root folder, and **Test connection** lists the root before you save. `https://` is required unless you tick the explicit plain-`http://` box; `webdav://` addresses are refused. Deletes on WebDAV are permanent unless the server has its own trash, and uploads are held in memory (limit 1 GiB per file). Tokens, S3 keys and WebDAV passwords are kept in the OS keychain, never in `config.toml`.
+
+**Storage and links.** Hover over a Google Drive or Dropbox account in the sidebar, or open Settings → Cloud, to see its storage ("12.3 GB of 15 GB used"); Keel asks the service in the background and keeps the answer for 10 minutes (**Refresh** in Settings → Cloud asks again). S3 and WebDAV report no quota. Right-click a cloud file and choose **Copy link** to put a link on the clipboard:
+
+- **Google Drive**: the file's own link. Sharing is not changed, so it opens only for people who already have access (share the file on drive.google.com to widen that).
+- **Dropbox**: an existing shared link of the file or folder; when there is none Keel asks "Create a link anyone can open?" and makes one with Dropbox's default settings.
+- **S3**: after you confirm, a presigned download link that anyone holding it can use for 1 hour; it cannot be withdrawn earlier (short of replacing the keys). Files only.
+
+WebDAV accounts and local files have no Copy link.
 
 Limits and requirements:
 
