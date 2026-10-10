@@ -15,6 +15,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Cut on the Linux clipboard**: Ctrl+X in Keel puts the files on the clipboard with the cut flag other file managers read: `x-special/gnome-copied-files` (`cut` then `file://` URIs; GNOME Files, Nemo, Caja, Thunar, PCManFM), `application/x-kde-cutselection` (Dolphin) and `text/uri-list` together, so pasting there moves the files. Ctrl+V in Keel reads the same flag from those apps and moves what they cut. Keel serves the clipboard itself over X11, which a Wayland session reaches through XWayland (as before); without an X display it falls back to arboard's copy-only list. Windows and macOS are unchanged.
 - Devices find each other on the local network (mDNS, iroh's local discovery, service `keelnet1`) next to iroh's internet discovery and relays, which stay as they were, as does the **Relay** setting in Settings → Devices. A short code entered on a device on the same Wi-Fi or LAN reaches the device that shows it with no internet, relay or DNS (about a second on one test machine), and paired devices find each other there after an address change. The codes and tickets are unchanged; the pairing dialog says the code also works on the same network without internet. Local discovery runs only while Devices are on.
 
+### Fixed
+
+- A cut on Linux is a cut in other apps too, which lifts the 0.5.0 known limitation that the Linux "cut" flag was not set (other apps saw a copy).
+- The Trash is browsable on macOS, which lifts the 0.8.0 limitation that the Recycle Bin / Trash folder was not available there.
+- Short-code pairing works on a network without internet, which lifts the 0.8.0 known limitation that the short code needed internet discovery and only the full ticket worked offline. **Show code** no longer fails with "pairing relay unavailable" when no relay answers: after 5 seconds it shows a code that works on the same network.
+
 ### Known limitations
 
 - Hashing gives a file over 192 KiB a content id only when another file shares its sample, so a tag on a large file that has no copy on its own device stays keyed by its place: it reaches the other device only in that device's `node://` folder, not the copies there.
@@ -29,13 +35,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The Linux clipboard needs an X display (XWayland in a Wayland session); a Wayland session without XWayland gets no system file clipboard, as before. A file list bigger than one X request (usually 16 MiB of URIs) is not offered, and one another app sends in pieces (INCR) is read as a copy. Files cut or copied in Keel stay on the clipboard only while Keel runs, unless a clipboard manager keeps them.
 - Where multicast is blocked (a firewall, some guest or corporate networks), local discovery cannot start or hear other devices; Keel logs it once and the short code needs internet discovery there, as before. Devices on different subnets do not see each other.
 - A code shown while no relay answered works on the same network only until the relay connects; its QR code and full ticket carry this device's network addresses but no relay.
-
-### Fixed
-
-- A cut on Linux is a cut in other apps too, which lifts the 0.5.0 known limitation that the Linux "cut" flag was not set (other apps saw a copy).
-- The Trash is browsable on macOS, which lifts the 0.8.0 limitation that the Recycle Bin / Trash folder was not available there.
-- Short-code pairing works on a network without internet, which lifts the 0.8.0 known limitation that the short code needed internet discovery and only the full ticket worked offline. **Show code** no longer fails with "pairing relay unavailable" when no relay answers: after 5 seconds it shows a code that works on the same network.
-
 
 ## [0.13.0] - 2026-10-10
 
