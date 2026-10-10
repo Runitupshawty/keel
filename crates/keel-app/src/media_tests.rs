@@ -497,3 +497,62 @@ fn retry_strip_drops_failed_strips_and_makes_it_again() {
     }
     assert_eq!(m.get(&viewer), Tex::Failed);
 }
+
+/// Found making the screenshots: a photo without a capture time fell back to its
+/// modified time in nanoseconds, so every photo got its own "Unknown date" header. Now
+/// it lands under the day it was modified, and photos of one day share one header.
+#[test]
+fn photos_without_exif_group_under_their_modified_day() {
+    let tmp = temp("mdays");
+    let ctx = egui::Context::default();
+    let mut m = Media::new(ctx.clone(), Arc::new(Router::new()));
+    m.set_store(Arc::new(
+        Sidecars::open(&tmp.join("store"), 1 << 30).unwrap(),
+    ));
+    let dir = VPath::local(&tmp);
+    // Wednesday, May 1, 2024 (unix day 19,844), 08:00 and 20:00 UTC.
+    let reqs: Vec<(String, Req)> = [8, 20]
+        .into_iter()
+        .map(|hour| {
+            let name = format!("{hour}.png");
+            let path = tmp.join(&name);
+            image::RgbImage::from_pixel(4, 4, image::Rgb([90, 90, 90]))
+                .save(&path)
+                .unwrap();
+            let t = std::time::UNIX_EPOCH + Duration::from_secs(19_844 * 86_400 + hour * 3600);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+            let mut e = crate::tab::test_entry(&dir, &name, Kind::File, 1);
+            e.modified = Some(std::fs::metadata(&path).unwrap().modified().unwrap());
+            let req = Req {
+                entry: e.clone(),
+                real: e.path.clone(),
+            };
+            (name, req)
+        })
+        .collect();
+    let until = Instant::now() + Duration::from_secs(20);
+    let days = loop {
+        m.upload(&ctx);
+        let days = m.days(&dir, 1, || reqs.clone());
+        if days.len() == 2 {
+            break days.clone();
+        }
+        assert!(Instant::now() < until, "no days");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(days["8.png"], 19_844);
+    assert_eq!(days["20.png"], 19_844);
+    assert_eq!(day_label(days["8.png"]), "Wednesday, May 1, 2024");
+    let names = ["8.png", "20.png"];
+    let f = |i: usize| Some(days[names[i]]);
+    assert_eq!(
+        layout(2, 4, Some(&f)),
+        [Row::Header(Some(19_844)), Row::Tiles(0, 2)]
+    );
+    assert_eq!(modified_day(None), 0);
+}

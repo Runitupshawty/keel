@@ -1164,7 +1164,7 @@ fn day_of(sh: &Shared, req: &Req) -> i64 {
             .and_then(|(s, (k, _))| s.meta(&k))
             .and_then(|m| m.taken_at)
     };
-    day(taken.unwrap_or_else(|| unix(req.entry.modified)))
+    taken.map_or_else(|| modified_day(req.entry.modified), day)
 }
 
 /// The 256 px thumbnail of a video tile (shown until its strip is there).
@@ -1175,6 +1175,12 @@ pub fn thumb_key(e: &Entry, tile_px: u32) -> TexKey {
 /// Unix seconds to unix days (UTC; EXIF times without an offset read as wall clock).
 pub fn day(secs: i64) -> i64 {
     secs.div_euclid(86_400)
+}
+
+/// The day of a modified time, the date headers' fallback when there is no capture time
+/// (`unix` is nanoseconds, `day` wants seconds).
+pub fn modified_day(t: Option<std::time::SystemTime>) -> i64 {
+    day(unix(t).div_euclid(1_000_000_000))
 }
 
 pub fn day_label(day: i64) -> String {

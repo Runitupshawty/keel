@@ -8,6 +8,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Getting-started guide and screenshots; README reorganised.
 
+### Fixed
+
+- Media view: with **Dates** on, a photo or video without a capture date was put under its own "Unknown date" heading instead of the day it was last modified, so a folder of such files showed one heading per row. They now share one heading per day. Found while making the screenshots.
+
 ## [0.14.0] - 2026-10-10
 
 ### Added

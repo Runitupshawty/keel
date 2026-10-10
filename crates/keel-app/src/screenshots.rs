@@ -574,14 +574,15 @@ fn run(root: &Path) -> Vec<&'static str> {
     }
     h.state_mut().state.preview.open = false;
 
-    // The media view of Pictures, one pane. (No date headers: files without a capture
-    // time fall back to their modified time in nanoseconds there, read as seconds.)
+    // The media view of Pictures, one pane, grouped by day (the fixture photos have no
+    // capture time: their modified days).
     {
         let s = &mut h.state_mut().state;
         s.run(0, Action::Navigate(VPath::local(&pics)));
         s.dual = false;
         s.panes[0].view = crate::pane::ViewMode::Media;
         s.media.tile = crate::media::TileSize::L;
+        s.media.dates = true;
     }
     assert!(wait(&mut h, 30, &listed), "pictures listed");
     let tiles = wait(&mut h, 90, &|s| s.media.len() >= 18);

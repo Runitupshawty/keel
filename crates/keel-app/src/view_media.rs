@@ -36,7 +36,7 @@ fn day_of(tab: &Tab, days: &std::collections::HashMap<String, i64>, i: usize) ->
     Some(
         days.get(&e.name)
             .copied()
-            .unwrap_or_else(|| media::day(media::unix(e.modified))),
+            .unwrap_or_else(|| media::modified_day(e.modified)),
     )
 }
 
