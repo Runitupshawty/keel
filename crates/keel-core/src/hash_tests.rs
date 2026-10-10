@@ -681,7 +681,127 @@ fn an_offline_remote_or_a_failed_read_leaves_files_unhashed_until_the_next_run()
 
     mem.fail_reads.lock().clear();
     hash_all(&lib);
+    assert_eq!(hashed(&r), 2, "backed off");
+    lib.shared.hash_backoff.lock().clear();
+    hash_all(&lib);
     assert_eq!(hashed(&r), 3);
+}
+
+/// Review 45 M2: turning cloud hashing off stops the running job's download at once (and
+/// it is not counted as unreadable).
+#[test]
+fn turning_cloud_hashing_off_stops_the_running_download() {
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    for name in ["a", "b", "c"] {
+        mem.put(&format!("/srv/{name}.bin"), big(1));
+    }
+    lib.router()
+        .register_cloud_provider("acct".into(), mem.clone());
+    lib.set_remote_hash_settings(RemoteHashSettings {
+        hash_cloud: true,
+        ..RemoteHashSettings::default()
+    })
+    .unwrap();
+    let id = lib
+        .add_source(crate::library::tests::remote("drive", "cloud://acct/srv"))
+        .unwrap();
+    let cloud = lib.source(&id).unwrap();
+    walk(&cloud, &lib.router()).unwrap();
+    let shared = Arc::downgrade(&lib.shared);
+    let reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = reads.clone();
+    *mem.on_read.lock() = Some(Box::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        if let Some(shared) = shared.upgrade() {
+            shared.remote_hash_settings.write().hash_cloud = false;
+        }
+    }));
+    let info = hash_all(&lib);
+    assert!(
+        info.log.contains("drive: cloud hashing is off, skipped"),
+        "{}",
+        info.log
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(hashed(&cloud), 0);
+    assert_eq!(result(&info).unreadable, 0);
+}
+
+/// Review 45 minor 1: removing a remote source while one of its files is read skips the
+/// rest of that source only; the job goes on.
+#[test]
+fn removing_a_remote_source_mid_read_leaves_the_job_running() {
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/one/a.txt", "a");
+    mem.put("/one/b.txt", "b");
+    mem.put("/two/c.txt", "c");
+    let one = remote_source(&lib, &mem, "one", "sftp://box/one");
+    let two = remote_source(&lib, &mem, "two", "sftp://box/two");
+    let gone = Arc::downgrade(&one);
+    *mem.on_read.lock() = Some(Box::new(move |path| {
+        if let Some(src) = gone.upgrade().filter(|_| path.starts_with("/one/")) {
+            src.removed.store(true, Ordering::SeqCst);
+        }
+    }));
+    hash_all(&lib);
+    assert_eq!((hashed(&one), hashed(&two)), (0, 1));
+}
+
+/// Review 45 M3: a remote file over the size cap does not schedule hashing after every
+/// walk, and a failed read is retried only once its backoff runs out.
+#[test]
+fn over_cap_and_failing_remote_files_do_not_reschedule_every_walk() {
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/srv/a.txt", "a");
+    mem.put("/srv/big.bin", big(3));
+    let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
+    lib.set_remote_hash_settings(RemoteHashSettings {
+        remote_hash_max_bytes: 1000,
+        ..RemoteHashSettings::default()
+    })
+    .unwrap();
+    hash_all(&lib);
+    let hash_jobs = || {
+        let jobs = lib.jobs().list().unwrap();
+        let ids: Vec<JobId> = jobs
+            .iter()
+            .filter(|j| j.kind == "hash")
+            .map(|j| j.id)
+            .collect();
+        ids
+    };
+    let walk_again = || {
+        let id = lib.index(&r.id).unwrap();
+        assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Done);
+    };
+    walk_again();
+    walk_again();
+    assert_eq!(hash_jobs().len(), 1, "big.bin alone schedules nothing");
+
+    mem.put("/srv/b.txt", "b");
+    mem.fail_reads.lock().insert("/srv/b.txt".into());
+    walk_again();
+    let jobs = hash_jobs();
+    assert_eq!(jobs.len(), 2, "b.txt is new");
+    let info = lib.jobs().wait(*jobs.iter().max().unwrap()).unwrap();
+    assert_eq!(result(&info).unreadable, 1, "{}", info.log);
+    assert!(info.log.contains("tried again in 1 h"), "{}", info.log);
+    walk_again();
+    assert_eq!(hash_jobs().len(), 2, "b.txt is backed off");
+
+    mem.fail_reads.lock().clear();
+    lib.shared.hash_backoff.lock().clear();
+    walk_again();
+    let jobs = hash_jobs();
+    assert_eq!(jobs.len(), 3);
+    lib.jobs().wait(*jobs.iter().max().unwrap()).unwrap();
+    assert_eq!(hashed(&r), 2);
 }
 
 #[test]

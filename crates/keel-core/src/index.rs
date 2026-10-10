@@ -282,8 +282,9 @@ fn upsert(
         && f.fs_id == fs_id
         && f.error == item.error;
     if unchanged {
-        // Only seen again: no indexed column is rewritten.
-        c.prepare_cached("UPDATE record SET gen = ?2 WHERE id = ?1")?
+        // Only seen again: no indexed column is rewritten (nor a row, when its generation is
+        // current: `apply_paths` reads "no rows changed" as "nothing to recount").
+        c.prepare_cached("UPDATE record SET gen = ?2 WHERE id = ?1 AND gen IS NOT ?2")?
             .execute(params![f.id, gen])?;
         return Ok((f.id, outcome));
     }
@@ -826,6 +827,7 @@ impl Indexer {
             pending => pending,
         } as i64;
         let conn = src.store.get()?;
+        let changes = conn.total_changes();
         begin_immediate(&conn)?;
         let result = at
             .iter()
@@ -859,8 +861,12 @@ impl Indexer {
             walked?;
         }
         drop(_w);
-        if let Some(lib) = src.owner.read().upgrade() {
-            crate::protect::schedule_recount(&lib, src);
+        // Only a change to the index is worth a recount (an ignored path, or a file whose
+        // record is unchanged, is not: a recount must never set off the next one).
+        if conn.total_changes() != changes {
+            if let Some(lib) = src.owner.read().upgrade() {
+                crate::protect::schedule_recount(&lib, src);
+            }
         }
         Ok(())
     }
@@ -993,6 +999,18 @@ fn watch_loop(
     rescan: &dyn Fn(&Source),
 ) {
     rescan(src);
+    // The library's own folder (inside this source when Keel's data folder is): its writes,
+    // a recount saving its counters among them, are not changes to index.
+    let own: Vec<std::path::PathBuf> = src
+        .store_dir()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|dir| {
+            let canon = std::fs::canonicalize(dir)
+                .map(|c| std::path::PathBuf::from(c.to_string_lossy().trim_start_matches(r"\\?\")));
+            [Ok(dir.to_owned()), canon].into_iter().flatten().collect()
+        })
+        .unwrap_or_default();
     let mut next_walk = Instant::now() + reconcile;
     let mut pending: Vec<std::path::PathBuf> = Vec::new();
     let mut lost = false;
@@ -1057,6 +1075,7 @@ fn watch_loop(
                 }
             }
         }
+        paths.retain(|p| !own.iter().any(|dir| p.starts_with(dir)));
         paths.sort();
         paths.dedup();
         // Present paths first: a rename then reads as a move.

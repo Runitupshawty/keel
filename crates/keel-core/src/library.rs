@@ -468,6 +468,8 @@ pub(crate) struct Shared {
     pub(crate) hash_on_activity: AtomicBool,
     pub(crate) remote_hash_settings: RwLock<crate::hash::RemoteHashSettings>,
     pub(crate) remote_hash_io: Mutex<()>,
+    /// Remote files whose read failed, by (source, record id): not read before their time.
+    pub(crate) hash_backoff: Mutex<HashMap<(SourceId, i64), crate::hash::Backoff>>,
     pub(crate) pause_on_battery: AtomicBool,
     /// Whether a completed walk schedules hashing.
     pub(crate) hash_after_walk: AtomicBool,
@@ -700,6 +702,7 @@ impl Library {
             hash_on_activity: AtomicBool::new(true),
             remote_hash_settings: RwLock::new(remote_hash_settings),
             remote_hash_io: Mutex::new(()),
+            hash_backoff: Mutex::default(),
             pause_on_battery: AtomicBool::new(true),
             hash_after_walk: AtomicBool::new(true),
             hash_job: Mutex::new(None),
@@ -924,13 +927,26 @@ impl Library {
     /// checkpoint (they resume on the next open), waiting up to `timeout`. Callable while
     /// other `Arc<Library>` handles exist; dropping the last one afterwards is then cheap.
     /// False when a job was still in an uninterruptible step (a slow listing or
-    /// transfer): it finishes that step on its own and the library stays locked until it
-    /// has. Dropping an open library does the same with a 30 s timeout.
+    /// transfer), or a protection recount still counting: it finishes on its own and the
+    /// library stays locked until it has. Dropping an open library does the same with a 30 s timeout.
     pub fn close(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
         self.shared.jobs.closing.store(true, Ordering::SeqCst);
         let watchers: Vec<_> = self.shared.watchers.lock().drain().collect();
         drop(watchers); // joins their threads
-        crate::jobs::shutdown(&self.shared, timeout)
+        let jobs = crate::jobs::shutdown(&self.shared, timeout);
+        // A protection recount holds the library (and its lock file) while it counts.
+        let recount = self.shared.recount_pending.lock().thread.take();
+        let recount = recount.is_none_or(|thread| {
+            while !thread.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            true
+        });
+        jobs && recount
     }
 
     /// Indexes a source as a durable job (resumed after a restart).

@@ -729,6 +729,7 @@ fn pending_recount_defers_to_walk_and_stops_on_close() {
     let quiet = || lib.shared.recount_pending.lock().last = Some(Instant::now() - RECOUNT_DEBOUNCE);
     let idle = || lib.shared.recount_pending.lock().idle();
     let revision = lib.protection_revision();
+    let handles = Arc::strong_count(&lib.shared);
     // A walk is running: the recount waits for it.
     src.pending_gen.store(2, Ordering::SeqCst);
     schedule_recount(&lib.shared, src);
@@ -753,7 +754,13 @@ fn pending_recount_defers_to_walk_and_stops_on_close() {
     schedule_recount(&lib.shared, src);
     quiet();
     assert!(lib.close(Duration::from_secs(5)));
-    eventually("recount thread ended", idle);
+    // Review 46 minor 1: close waited for the recount thread, which held the library.
+    assert!(idle());
+    assert_eq!(
+        Arc::strong_count(&lib.shared),
+        handles,
+        "the lock is free once lib drops"
+    );
     assert!(recount(&lib.shared).is_err());
     assert_eq!(lib.protection_revision(), revision + 1);
 }

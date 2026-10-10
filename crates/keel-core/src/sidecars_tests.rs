@@ -279,11 +279,43 @@ fn a_strip_timeout_is_remembered_until_retried() {
     assert_eq!(kept.timed_out["strip.webp"].size, key.size);
     let err = s.ensure(&key, SidecarKind::Strip, &clip).unwrap_err();
     assert!(err.is::<StripWaits>(), "{err:#}");
-    // The same content at another mtime (a copy, an edit restoring the bytes): tried.
-    let touched = SidecarKey {
+    // Review 46 minor 2: another copy of the same content (another mtime, one content id,
+    // one meta.json) waits too, and keeps the first copy's record.
+    let copy = SidecarKey {
         mtime: key.mtime + 1,
+        path_hash: [9; 32],
         ..key.clone()
     };
+    let err = s.ensure(&copy, SidecarKind::Strip, &clip).unwrap_err();
+    assert!(err.is::<StripWaits>(), "{err:#}");
+    assert_eq!(
+        s.meta(&key).unwrap().timed_out["strip.webp"].mtime,
+        key.mtime
+    );
+    // Without a content id the key is the path and mtime: a touched file is tried.
+    let path_key = SidecarKey {
+        cas_id: None,
+        ..key.clone()
+    };
+    s.write(
+        &path_key,
+        SidecarKind::Meta,
+        &serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    s.record_timeout(&path_key, crate::now()).unwrap();
+    let touched = SidecarKey {
+        mtime: key.mtime + 1,
+        ..path_key.clone()
+    };
+    s.write(
+        &touched,
+        SidecarKind::Meta,
+        &s.meta(&path_key)
+            .map(|m| serde_json::to_vec(&m).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     let tried = s.ensure(&touched, SidecarKind::Strip, &clip);
     assert!(!tried.is_err_and(|e| e.is::<StripWaits>()));
     // Retry strip forgets it (and a recorded failure).

@@ -40,7 +40,7 @@ impl std::fmt::Display for StripWaits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the strip timed out at {} (unix): tried again a week later, when the file              changes, or with Retry strip",
+            "the strip timed out at {} (unix): tried again a week later, when the file changes, or with Retry strip",
             self.0.at
         )
     }
@@ -248,7 +248,16 @@ impl Sidecars {
             let waits = self
                 .meta(key)
                 .and_then(|m| m.timed_out.get(kind.file_name()).copied())
-                .filter(|t| !strip_retry_due(t, crate::now(), key.mtime, key.size));
+                // A content id names the bytes: copies of them at other mtimes share this
+                // record, so only the size is compared (else each copy would undo the other).
+                .filter(|t| {
+                    let mtime = if key.cas_id.is_some() {
+                        t.mtime
+                    } else {
+                        key.mtime
+                    };
+                    !strip_retry_due(t, crate::now(), mtime, key.size)
+                });
             if let Some(t) = waits {
                 return Err(StripWaits(t).into());
             }

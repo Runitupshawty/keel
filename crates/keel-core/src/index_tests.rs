@@ -1412,3 +1412,81 @@ fn watcher_delete_recounts_and_a_thousand_event_burst_counts_once() {
         quit.store(true, Ordering::SeqCst);
     });
 }
+
+/// Review 46 M1: with the library inside the source it watches (Keel's data folder under a
+/// watched home folder), a recount, which writes `library.db`, does not set off the next
+/// one; nor does a change to an ignored path.
+#[test]
+fn a_library_inside_its_watched_source_does_not_recount_itself() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "a");
+    let lib = Library::open(&files.path().join("data"), "self").unwrap();
+    lib.set_hash_after_walk(false);
+    let def = SourceDef {
+        ignore: vec!["ignored/".into()],
+        ..folder("home", files.path())
+    };
+    let id = lib.add_source(def).unwrap();
+    let src = lib.source(&id).unwrap();
+    lib.watch(&id).unwrap();
+    eventually("first walk", || id_of(&src, "a.txt").is_some());
+    let revision = lib.protection_revision();
+    write(&files.path().join("b.txt"), "b");
+    eventually("recount after a change", || {
+        lib.protection_revision() > revision
+    });
+    let after = lib.protection_revision();
+    write(&files.path().join("ignored").join("x.txt"), "x");
+    std::thread::sleep(crate::protect::RECOUNT_DEBOUNCE * 2);
+    assert_eq!(
+        lib.protection_revision(),
+        after,
+        "no recount set off by itself"
+    );
+    assert!(lib.shared.recount_pending.lock().idle());
+    lib.unwatch(&id);
+}
+
+/// Review 46 M2: changes every 4 s (never 5 s quiet) still recount, within the maximum
+/// delay.
+#[test]
+fn steady_changes_recount_within_the_maximum_delay() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "a");
+    let (_data, lib, src) = library_with(folder("busy", files.path()));
+    lib.set_hash_after_walk(false);
+    let router = Router::new();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let quit = AtomicBool::new(false);
+    let ready = AtomicBool::new(false);
+    let rescan = |s: &Source| {
+        walk(s, &router).unwrap();
+        crate::protect::after_walk(&lib.shared, s);
+        ready.store(true, Ordering::SeqCst);
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| watch_loop(&src, &rx, Duration::from_secs(3600), &quit, &rescan));
+        eventually("watcher ready", || ready.load(Ordering::SeqCst));
+        let revision = lib.protection_revision();
+        let log = files.path().join("busy.log");
+        let started = Instant::now();
+        let mut recounted = false;
+        while started.elapsed() < crate::protect::RECOUNT_MAX_DELAY * 3 {
+            write(
+                &log,
+                &"x".repeat(started.elapsed().as_millis() as usize + 1),
+            );
+            tx.send(Ok(
+                notify::Event::new(notify::EventKind::Any).add_path(log.clone())
+            ))
+            .unwrap();
+            std::thread::sleep(Duration::from_secs(4));
+            if lib.protection_revision() > revision {
+                recounted = true;
+                break;
+            }
+        }
+        assert!(recounted, "no recount while changes kept coming");
+        quit.store(true, Ordering::SeqCst);
+    });
+}

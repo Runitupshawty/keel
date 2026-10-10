@@ -125,6 +125,65 @@ fn changed() -> io::Error {
     io::Error::other(Changed)
 }
 
+/// A remote download stopped part way: its source was removed, or its hashing turned off.
+#[derive(Debug, PartialEq)]
+enum Interrupted {
+    Removed,
+    PolicyOff,
+}
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Interrupted::Removed => "source removed",
+            Interrupted::PolicyOff => "hashing turned off",
+        })
+    }
+}
+impl std::error::Error for Interrupted {}
+
+/// A remote file whose read failed, as of the record it was read for: not read again
+/// before `until` (an hour after the first failure, doubling, at most a day) unless the
+/// record changes. In memory only: a restart tries once more.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Backoff {
+    size: u64,
+    mtime: Option<i64>,
+    failures: u32,
+    until: Instant,
+}
+const BACKOFF_FIRST: Duration = Duration::from_secs(3600);
+const BACKOFF_MAX: Duration = Duration::from_secs(24 * 3600);
+
+fn backed_off(lib: &Shared, src: &Source, id: i64, size: u64, mtime: Option<i64>) -> bool {
+    let backoff = lib.hash_backoff.lock();
+    backoff
+        .get(&(src.id.clone(), id))
+        .is_some_and(|b| b.size == size && b.mtime == mtime && Instant::now() < b.until)
+}
+
+/// Records a failed read of `rec`; returns the delay before the next try.
+fn back_off(lib: &Shared, src: &Source, rec: &Pending) -> Duration {
+    let mut backoff = lib.hash_backoff.lock();
+    let key = (src.id.clone(), rec.id);
+    let failures = match backoff.get(&key) {
+        Some(b) if (b.size, b.mtime) == (rec.size, rec.mtime) => b.failures + 1,
+        _ => 1,
+    };
+    let delay = BACKOFF_FIRST
+        .saturating_mul(1 << (failures - 1).min(16))
+        .min(BACKOFF_MAX);
+    backoff.insert(
+        key,
+        Backoff {
+            size: rec.size,
+            mtime: rec.mtime,
+            failures,
+            until: Instant::now() + delay,
+        },
+    );
+    delay
+}
+
 fn open(path: &Path, size: u64) -> io::Result<File> {
     let f = File::open(path)?;
     if f.metadata()?.len() != size {
@@ -274,18 +333,35 @@ fn is_cloud(src: &Source) -> bool {
     src.def.root.scheme == "cloud" || src.def.kind == crate::SourceKind::Cloud
 }
 
+/// Whether the remote policy lets the files of `src`, a source that is not local, be
+/// downloaded now. Cheap (no network): checked again before every file and read.
+fn remote_allowed(lib: &Shared, src: &Source) -> bool {
+    let settings = *lib.remote_hash_settings.read();
+    let allowed = match is_cloud(src) {
+        true => settings.hash_cloud,
+        false => settings.hash_remote,
+    };
+    allowed && !src.is_device()
+}
+
+/// The largest record size hashing reads from `src` (remote sources: the size cap).
+fn size_cap(lib: &Shared, src: &Source) -> i64 {
+    match src.def.root.to_local_path() {
+        Some(_) => i64::MAX,
+        None => {
+            let max = lib.remote_hash_settings.read().remote_hash_max_bytes;
+            max.min(i64::MAX as u64) as i64
+        }
+    }
+}
+
 /// `skip_reason` for hashing, which also reads remote sources under the remote policy
 /// (integrity checks stay local-only). A remote root that cannot be stat'ed is offline.
 fn hash_skip_reason(lib: &Shared, src: &Source) -> Option<SkipReason> {
     if src.def.root.to_local_path().is_some() {
         return skip_reason(src);
     }
-    let settings = *lib.remote_hash_settings.read();
-    let allowed = match is_cloud(src) {
-        true => settings.hash_cloud,
-        false => settings.hash_remote,
-    };
-    if src.is_device() || !allowed {
+    if !remote_allowed(lib, src) {
         return Some(SkipReason::Remote);
     }
     let provider = lib.router.read().provider_for(&src.def.root);
@@ -297,13 +373,18 @@ fn hash_skip_reason(lib: &Shared, src: &Source) -> Option<SkipReason> {
 
 /// (sampled hash, content id) of a remote record, read once through its provider in
 /// [`CHUNK`] reads: the samples are the same bytes `sampled_hash` reads locally. Drift
-/// (size or mtime differ from the record, before or after) is `Changed`.
-fn remote_hash(ctx: &JobCtx, src: &Source, rec: &Pending) -> Result<([u8; 32], [u8; 32])> {
+/// (size or mtime differ from the record, before or after) is `Changed`; a removed source
+/// or hashing turned off stops the read (`Interrupted`).
+fn remote_hash(
+    ctx: &JobCtx,
+    src: &Source,
+    rec: &Pending,
+    battery: &mut Option<(Instant, bool)>,
+) -> Result<([u8; 32], [u8; 32])> {
     // ponytail: one remote file at a time across all hosts (so at most one per host);
     // per-host locks if several hosts should stream at once.
-    let mut battery = None;
     let _serial = loop {
-        hash_wait(ctx, &mut battery)?;
+        hash_wait(ctx, battery)?;
         if let Some(guard) = ctx.lib.remote_hash_io.try_lock() {
             break guard;
         }
@@ -346,9 +427,12 @@ fn remote_hash(ctx: &JobCtx, src: &Source, rec: &Pending) -> Result<([u8; 32], [
     let mut buf = vec![0; CHUNK];
     let mut offset = 0;
     loop {
-        hash_wait(ctx, &mut battery)?;
+        hash_wait(ctx, battery)?;
         if src.removed.load(Ordering::SeqCst) {
-            return Err(Cancelled.into());
+            return Err(Interrupted::Removed.into());
+        }
+        if !remote_allowed(&ctx.lib, src) {
+            return Err(Interrupted::PolicyOff.into());
         }
         // One extra byte detects growth without downloading an unbounded changing file.
         let limit = (rec.size.saturating_sub(offset).saturating_add(1)).min(CHUNK as u64) as usize;
@@ -517,6 +601,14 @@ impl HashJob {
                     return Ok(());
                 }
                 self.wait_until_idle(ctx)?;
+                // The policy may have changed meanwhile: it applies from the next file.
+                if root.is_none() && !remote_allowed(&ctx.lib, src) {
+                    return self.skip(ctx, src, SkipReason::Remote);
+                }
+                if root.is_none() && backed_off(&ctx.lib, src, rec.id, rec.size, rec.mtime) {
+                    self.after = rec.id;
+                    continue;
+                }
                 if root.is_none()
                     && rec.size > ctx.lib.remote_hash_settings.read().remote_hash_max_bytes
                 {
@@ -530,23 +622,41 @@ impl HashJob {
                 }
                 let result = match &root {
                     Some(root) => hash_one(ctx, src, &rec, &root.join(&rec.path)),
-                    None => remote_hash(ctx, src, &rec).and_then(|(sampled, cas)| {
-                        save_hash(src, &rec, &sampled, Some(cas))?;
-                        Ok(false)
-                    }),
+                    None => {
+                        remote_hash(ctx, src, &rec, &mut self.battery).and_then(|(sampled, cas)| {
+                            save_hash(src, &rec, &sampled, Some(cas))?;
+                            ctx.lib
+                                .hash_backoff
+                                .lock()
+                                .remove(&(src.id.clone(), rec.id));
+                            Ok(false)
+                        })
+                    }
                 };
                 match result {
                     Ok(full) => self.full += u64::from(full),
                     Err(e) if e.is::<Cancelled>() => return Err(e),
+                    // As for a local source: the job goes on with the other sources.
+                    Err(e) if e.downcast_ref::<Interrupted>() == Some(&Interrupted::Removed) => {
+                        return Ok(())
+                    }
+                    Err(e) if e.is::<Interrupted>() => {
+                        return self.skip(ctx, src, SkipReason::Remote);
+                    }
                     Err(e) if root.is_none() => {
                         if e.downcast_ref::<io::Error>().is_some_and(is_changed) {
                             // The indexer will refresh this record.
-                        } else if hash_skip_reason(&ctx.lib, src) == Some(SkipReason::Offline) {
-                            return self.skip(ctx, src, SkipReason::Offline);
+                        } else if let Some(reason) = hash_skip_reason(&ctx.lib, src) {
+                            return self.skip(ctx, src, reason);
                         } else {
-                            // Not marked unreadable: the next run tries it again.
+                            // Not marked unreadable (a walk would clear that): tried again
+                            // after a growing delay, or once the record changes.
                             self.errors += 1;
-                            ctx.log(&format!("{}: {}: {e:#}", src.def.label, rec.path))?;
+                            let hours = back_off(&ctx.lib, src, &rec).as_secs() / 3600;
+                            ctx.log(&format!(
+                                "{}: {}: {e:#} (tried again in {hours} h)",
+                                src.def.label, rec.path
+                            ))?;
                         }
                     }
                     Err(e) => match e.downcast_ref::<io::Error>() {
@@ -737,8 +847,9 @@ impl Job for HashJob {
                     if let Some(s) = source(id) {
                         self.total += s.store.get()?.query_row(
                             "SELECT count(*) FROM record
-                             WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL",
-                            [UNREADABLE | LINK],
+                             WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL
+                                 AND size <= ?2",
+                            params![UNREADABLE | LINK, size_cap(&lib, &s)],
                             |r| r.get::<_, i64>(0),
                         )? as u64;
                     }
@@ -832,7 +943,7 @@ pub(crate) fn schedule(lib: &Arc<Shared>) -> Result<JobId> {
 }
 
 /// Starts hashing after a completed walk of `src` when that is on and `src` has files to
-/// hash.
+/// hash: not over the remote size cap, and not waiting out a failed read.
 pub(crate) fn after_walk(lib: &Arc<Shared>, src: &Source) {
     if !lib.hash_after_walk.load(Ordering::SeqCst)
         || lib.closing()
@@ -840,13 +951,27 @@ pub(crate) fn after_walk(lib: &Arc<Shared>, src: &Source) {
     {
         return;
     }
+    // One more row than there are backed-off records: at least one of them is not.
+    let backed = lib
+        .hash_backoff
+        .lock()
+        .keys()
+        .filter(|k| k.0 == src.id)
+        .count();
     let unhashed = src.store.get().and_then(|c| {
-        Ok(c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM record
-                 WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL)",
-            [UNREADABLE | LINK],
-            |r| r.get::<_, bool>(0),
-        )?)
+        let mut stmt = c.prepare_cached(
+            "SELECT id, size, mtime FROM record
+             WHERE kind = 0 AND flags & ?1 = 0 AND sampled_hash IS NULL AND size <= ?2
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![UNREADABLE | LINK, size_cap(lib, src), backed as i64 + 1],
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?)),
+        )?;
+        let rows: Vec<(i64, u64, Option<i64>)> = rows.collect::<rusqlite::Result<_>>()?;
+        Ok(rows
+            .into_iter()
+            .any(|(id, size, mtime)| !backed_off(lib, src, id, size, mtime)))
     });
     match unhashed {
         Ok(true) => {
@@ -872,7 +997,9 @@ impl Library {
         *self.shared.remote_hash_settings.read()
     }
 
-    /// Saves the remote hashing policy. A running file finishes; subsequent files use it.
+    /// Saves the remote hashing policy. It applies at once: a running job stops reading
+    /// from sources whose hashing was turned off (the file in progress included), a new cap
+    /// applies from the next file.
     pub fn set_remote_hash_settings(&self, settings: RemoteHashSettings) -> Result<()> {
         let mut current = self.shared.remote_hash_settings.write();
         self.shared

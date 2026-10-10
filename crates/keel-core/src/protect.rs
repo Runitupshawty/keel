@@ -176,18 +176,25 @@ const COUNTERS: &str = "protection";
 
 /// Quiet time after the last applied change before the protection counters are recounted.
 pub const RECOUNT_DEBOUNCE: Duration = Duration::from_secs(5);
+/// Longest a change waits for its recount while changes keep coming (anywhere in the
+/// library; short under test so the test need not wait a minute).
+pub const RECOUNT_MAX_DELAY: Duration = Duration::from_secs(if cfg!(test) { 10 } else { 60 });
 /// How often the recount thread looks at the clock, a running walk and `closing`.
 const RECOUNT_TICK: Duration = Duration::from_millis(100);
 
 /// Changes applied since the last recount (`schedule_recount`).
 #[derive(Default)]
 pub(crate) struct PendingRecount {
+    /// The first change since the last recount.
+    first: Option<Instant>,
     /// The last change.
     last: Option<Instant>,
     /// Changed sources, with the generation they were applied to.
     sources: HashMap<crate::SourceId, u64>,
     /// A `recount_when_quiet` thread is waiting.
     worker: bool,
+    /// That thread (`Library::close` waits for it: it holds the library while it counts).
+    pub(crate) thread: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(test)]
@@ -199,14 +206,17 @@ impl PendingRecount {
 }
 
 /// After a change applied outside a full walk (a watcher event, an executed operation):
-/// the counters are recounted once nothing changed for `RECOUNT_DEBOUNCE`, on a thread of
-/// their own (one at a time per library, started here when none waits).
+/// the counters are recounted once nothing changed for `RECOUNT_DEBOUNCE` (or at the latest
+/// `RECOUNT_MAX_DELAY` after the first change), on a thread of their own (one at a time per
+/// library, started here when none waits).
 pub(crate) fn schedule_recount(lib: &Arc<Shared>, src: &Source) {
     if lib.closing() || src.removed.load(Ordering::SeqCst) {
         return;
     }
     let mut pending = lib.recount_pending.lock();
-    pending.last = Some(Instant::now());
+    let now = Instant::now();
+    pending.last = Some(now);
+    pending.first.get_or_insert(now);
     pending
         .sources
         .insert(src.id.clone(), src.generation.load(Ordering::SeqCst));
@@ -214,11 +224,12 @@ pub(crate) fn schedule_recount(lib: &Arc<Shared>, src: &Source) {
         return;
     }
     let weak = Arc::downgrade(lib);
-    pending.worker = std::thread::Builder::new()
+    pending.thread = std::thread::Builder::new()
         .name("keel-protection".into())
         .spawn(move || recount_when_quiet(&weak))
         .map_err(|e| tracing::warn!("protection recount thread: {e}"))
-        .is_ok();
+        .ok();
+    pending.worker = pending.thread.is_some();
 }
 
 /// The `schedule_recount` thread. It holds the library only while it looks (an unused
@@ -232,13 +243,18 @@ fn recount_when_quiet(lib: &std::sync::Weak<Shared>) {
         {
             let mut pending = lib.recount_pending.lock();
             if lib.closing() {
-                *pending = PendingRecount::default();
+                // The handle stays for `close`, which waits for this thread to end.
+                pending.sources.clear();
+                (pending.first, pending.last, pending.worker) = (None, None, false);
                 return;
             }
-            if pending
+            let quiet = pending
                 .last
-                .is_some_and(|last| last.elapsed() < RECOUNT_DEBOUNCE)
-            {
+                .is_none_or(|last| last.elapsed() >= RECOUNT_DEBOUNCE);
+            let overdue = pending
+                .first
+                .is_some_and(|first| first.elapsed() >= RECOUNT_MAX_DELAY);
+            if !quiet && !overdue {
                 continue;
             }
             let sources = lib.sources.read();
@@ -255,7 +271,7 @@ fn recount_when_quiet(lib: &std::sync::Weak<Shared>) {
             if walking {
                 continue;
             }
-            pending.last = None;
+            (pending.first, pending.last) = (None, None);
             if pending.sources.is_empty() {
                 pending.worker = false;
                 return;

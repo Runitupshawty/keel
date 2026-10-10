@@ -25,6 +25,9 @@ pub struct MemoryProvider {
     pub read_delay_ms: AtomicU64,
     /// Bytes handed out by reads.
     pub served: AtomicU64,
+    /// Called with the path at the start of every `read`.
+    #[allow(clippy::type_complexity)]
+    pub on_read: Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>>,
 }
 
 impl MemoryProvider {
@@ -109,6 +112,9 @@ impl Provider for MemoryProvider {
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
         self.up()?;
+        if let Some(on_read) = &*self.on_read.lock() {
+            on_read(&p.path);
+        }
         std::thread::sleep(Duration::from_millis(
             self.read_delay_ms.load(Ordering::SeqCst),
         ));
