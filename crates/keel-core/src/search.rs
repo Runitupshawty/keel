@@ -780,6 +780,14 @@ fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Library
     Ok(hits)
 }
 
+/// SQLITE_SCHEMA: the store's schema changed since this connection read it.
+fn schema_changed(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(c.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::SchemaChanged)
+    })
+}
+
 /// Matches of `m`, at most `RANK_CAP + 1`.
 fn count(src: &Source, m: &str) -> Result<i64> {
     Ok(src.store.get()?.query_row(
@@ -879,7 +887,14 @@ impl Library {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         let mut hits = Vec::new();
         for src in sources.iter().filter(|s| q.wants(s)) {
-            match search_source(src, q, now) {
+            // A walk rebuilds the filter indexes (a schema change); FTS5 reports that from
+            // its constructor on a connection that read the old schema instead of preparing
+            // again, so the search would come back empty: once more on the fresh schema.
+            let found = search_source(src, q, now).or_else(|e| match schema_changed(&e) {
+                true => search_source(src, q, now),
+                false => Err(e),
+            });
+            match found {
                 Ok(h) => hits.extend(h),
                 Err(e) => tracing::warn!("search in {}: {e:#}", src.def.label),
             }

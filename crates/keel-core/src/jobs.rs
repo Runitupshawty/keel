@@ -906,5 +906,10 @@ mod tests {
         let info = lib.jobs().wait(job).unwrap();
         assert_eq!(info.status, JobStatus::Done, "{}", info.log);
         assert_eq!(lib.stats().records, 2);
+        let names: Vec<String> = (lib.list_children(&id, "").unwrap())
+            .into_iter()
+            .map(|h| h.name)
+            .collect();
+        assert_eq!(names, ["a.txt"], "listed as soon as the job is done");
     }
 }

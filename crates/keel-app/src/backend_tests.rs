@@ -238,7 +238,8 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     assert!(matches!(sources[0].status, SourceStatus::Online { .. }));
     assert_eq!(sources[0].root, VPath::local(s.files.path()));
 
-    // library:// listings come from the daemon's index; reads go to the real file.
+    // library:// listings come from the daemon's index (complete once the index job is
+    // done, whatever the daemon's watcher does meanwhile); reads go to the real file.
     let names: Vec<String> = (b.children(&id.0, "docs").unwrap())
         .into_iter()
         .map(|e| e.name)

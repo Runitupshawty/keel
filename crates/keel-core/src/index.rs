@@ -201,6 +201,10 @@ fn still_at(src: &Source) -> impl Fn(&str, &str, &str) -> bool + '_ {
 
 /// Writes `item` at `rel` (under `parent`), reusing the record with the same identity that
 /// this walk has not seen yet (`gen < unseen_below`), else the one at the same parent+name.
+/// The record already at parent+name is reused whatever its generation: a walk lists each
+/// folder once, so one with the walk's own generation was written by a change applied
+/// meanwhile (`apply_paths`), and a second record there would leave the first one, the one
+/// paths resolve to, without children.
 /// A native-id match elsewhere is taken over only when `still` says the file is no longer
 /// at that record's path (a move, not a new hard link). For an item with a native id, a
 /// parent+name match with a different native id is reused only when `gone(that id)`: the
@@ -227,7 +231,8 @@ fn upsert(
         let candidates: Vec<Found> = c
             .prepare_cached(&format!(
                 "SELECT {FOUND} FROM record
-                 WHERE fs_id = ?1 AND substr(fs_id, 1, 2) <> 'h:' AND gen < ?2
+                 WHERE fs_id = ?1 AND substr(fs_id, 1, 2) <> 'h:'
+                   AND (gen < ?2 OR (parent IS ?3 AND name = ?4))
                  ORDER BY (parent IS ?3 AND name = ?4) DESC"
             ))?
             .query_map(params![fs_id, unseen_below, parent, item.name], found_row)?
@@ -242,12 +247,9 @@ fn upsert(
         found = c
             .prepare_cached(&format!(
                 "SELECT {FOUND} FROM record
-                 WHERE parent IS ?1 AND name = ?2 AND kind = ?3 AND gen < ?4 LIMIT 1"
+                 WHERE parent IS ?1 AND name = ?2 AND kind = ?3 LIMIT 1"
             ))?
-            .query_row(
-                params![parent, item.name, item.kind, unseen_below],
-                found_row,
-            )
+            .query_row(params![parent, item.name, item.kind], found_row)
             .optional()?
             .filter(|f| !(native(fs_id) && native(&f.fs_id) && f.fs_id != fs_id) || gone(&f.fs_id));
     }
