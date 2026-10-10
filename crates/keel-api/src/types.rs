@@ -929,6 +929,15 @@ pub struct HashingParams {
     /// Pause hashing while the user works (as the other background jobs do).
     #[serde(default)]
     pub idle_only: bool,
+    /// Hash SFTP and other non-cloud remotes (default on); omitted keeps the setting.
+    #[serde(default)]
+    pub remote: Option<bool>,
+    /// Hash cloud files (default off: downloads may incur egress charges).
+    #[serde(default)]
+    pub cloud: Option<bool>,
+    /// Maximum bytes per remote file (default 1 GiB); omitted keeps the setting.
+    #[serde(default)]
+    pub max_remote_bytes: Option<u64>,
 }
 
 /// A job, when one was started.

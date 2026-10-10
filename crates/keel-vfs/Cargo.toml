@@ -16,6 +16,8 @@ sevenz = ["dep:sevenz-rust2", "sevenz-rust2/compress", "sevenz-rust2/util"]
 tar = ["dep:tar", "dep:flate2", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
 # libunrar is C++ built with `cc`; cross-target checks from Windows build without it.
 rar = ["dep:unrar_sys"]
+# `memory::MemoryProvider`, an in-memory provider for other crates' tests.
+test-util = []
 # Google Drive, Dropbox and S3 (`cloud::`): opendal, reqwest, rustls + graviola, the OAuth
 # loopback listener and the browser hand-off.
 cloud = [

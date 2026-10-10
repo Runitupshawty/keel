@@ -30,7 +30,8 @@ mod tags;
 
 pub use fsid::unix_ns;
 pub use hash::{
-    on_battery, DupGroup, HashJob, HashResult, SkipReason, SkippedSource, SAMPLE, WHOLE,
+    on_battery, DupGroup, HashJob, HashResult, RemoteHashSettings, SkipReason, SkippedSource,
+    SAMPLE, WHOLE,
 };
 pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,

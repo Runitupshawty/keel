@@ -7,6 +7,11 @@
 //! whole when another record shares its sampled hash (both are then). So equal `cas_id`s
 //! mean equal bytes; a large file whose sampled hash is unique keeps `cas_id` NULL (no other
 //! file can hold its content). Duplicates, last-copy and redundancy only trust `cas_id`.
+//!
+//! Remote sources (SFTP; cloud only when `hash_cloud` is on) are read through their
+//! provider in one pass that yields both hashes, so a remote file always gets its `cas_id`
+//! and matches a local copy of the same bytes. Provider checksums (ETag, MD5, Dropbox's
+//! content hash) are never used: they are other algorithms and would never match.
 
 use crate::index::{LINK, UNREADABLE};
 use crate::jobs::{Job, JobCtx, JobId};
@@ -49,11 +54,37 @@ pub struct DupGroup {
     pub records: Vec<RecordRef>,
 }
 
+/// Which remote files hashing downloads (`Library::set_remote_hash_settings`), saved in
+/// `library.db`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteHashSettings {
+    /// SFTP and other remotes that are not cloud accounts (default on).
+    pub hash_remote: bool,
+    /// Google Drive, Dropbox, S3, WebDAV (default off: downloads can cost egress fees).
+    pub hash_cloud: bool,
+    /// Remote files bigger than this are left unhashed (`SkipReason::TooBig`; 1 GiB).
+    pub remote_hash_max_bytes: u64,
+}
+
+impl Default for RemoteHashSettings {
+    fn default() -> Self {
+        Self {
+            hash_remote: true,
+            hash_cloud: false,
+            remote_hash_max_bytes: 1 << 30,
+        }
+    }
+}
+
 /// Why a hash job left a source out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipReason {
-    /// Remote or cloud: hashing would download every file.
+    /// A remote or cloud source whose hashing is off, or a paired device (its content ids
+    /// are its own word).
     Remote,
+    /// Remote files over `remote_hash_max_bytes` (the others are hashed).
+    TooBig,
     /// A network share without `SourceDef::hash_shares`.
     Share,
     /// The root could not be reached.
@@ -239,10 +270,133 @@ pub(crate) fn skip_reason(src: &Source) -> Option<SkipReason> {
     (!root.is_dir()).then_some(SkipReason::Offline)
 }
 
+fn is_cloud(src: &Source) -> bool {
+    src.def.root.scheme == "cloud" || src.def.kind == crate::SourceKind::Cloud
+}
+
+/// `skip_reason` for hashing, which also reads remote sources under the remote policy
+/// (integrity checks stay local-only). A remote root that cannot be stat'ed is offline.
+fn hash_skip_reason(lib: &Shared, src: &Source) -> Option<SkipReason> {
+    if src.def.root.to_local_path().is_some() {
+        return skip_reason(src);
+    }
+    let settings = *lib.remote_hash_settings.read();
+    let allowed = match is_cloud(src) {
+        true => settings.hash_cloud,
+        false => settings.hash_remote,
+    };
+    if src.is_device() || !allowed {
+        return Some(SkipReason::Remote);
+    }
+    let provider = lib.router.read().provider_for(&src.def.root);
+    if provider.is_none_or(|p| p.stat(&src.def.root).is_err()) {
+        return Some(SkipReason::Offline);
+    }
+    None
+}
+
+/// (sampled hash, content id) of a remote record, read once through its provider in
+/// [`CHUNK`] reads: the samples are the same bytes `sampled_hash` reads locally. Drift
+/// (size or mtime differ from the record, before or after) is `Changed`.
+fn remote_hash(ctx: &JobCtx, src: &Source, rec: &Pending) -> Result<([u8; 32], [u8; 32])> {
+    // ponytail: one remote file at a time across all hosts (so at most one per host);
+    // per-host locks if several hosts should stream at once.
+    let mut battery = None;
+    let _serial = loop {
+        hash_wait(ctx, &mut battery)?;
+        if let Some(guard) = ctx.lib.remote_hash_io.try_lock() {
+            break guard;
+        }
+        std::thread::sleep(PAUSE_POLL);
+    };
+    let path = src.absolute(&rec.path);
+    let provider = ctx
+        .lib
+        .router
+        .read()
+        .provider_for(&path)
+        .context("remote unavailable")?;
+    let check = || -> Result<()> {
+        let e = provider.stat(&path)?;
+        if e.kind != keel_vfs::Kind::File
+            || e.is_link
+            || e.size != rec.size
+            || e.modified.map(crate::unix_ns) != rec.mtime
+        {
+            return Err(changed().into());
+        }
+        Ok(())
+    };
+    check()?;
+    let mut reader = provider.read(&path)?;
+    let mut full = blake3::Hasher::new();
+    let ranges = if rec.size <= WHOLE {
+        vec![(0, rec.size)]
+    } else {
+        vec![
+            (0, SAMPLE),
+            (rec.size / 2 - SAMPLE / 2, SAMPLE),
+            (rec.size - SAMPLE, SAMPLE),
+        ]
+    };
+    let mut samples: Vec<Vec<u8>> = ranges
+        .iter()
+        .map(|(_, len)| Vec::with_capacity(*len as usize))
+        .collect();
+    let mut buf = vec![0; CHUNK];
+    let mut offset = 0;
+    loop {
+        hash_wait(ctx, &mut battery)?;
+        if src.removed.load(Ordering::SeqCst) {
+            return Err(Cancelled.into());
+        }
+        // One extra byte detects growth without downloading an unbounded changing file.
+        let limit = (rec.size.saturating_sub(offset).saturating_add(1)).min(CHUNK as u64) as usize;
+        let n = match reader.read(&mut buf[..limit]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if n == 0 {
+            break;
+        }
+        if offset + n as u64 > rec.size {
+            return Err(changed().into());
+        }
+        full.update(&buf[..n]);
+        for ((start, len), sample) in ranges.iter().zip(&mut samples) {
+            let lo = offset.max(*start);
+            let hi = (offset + n as u64).min(start + len);
+            if lo < hi {
+                sample.extend_from_slice(&buf[(lo - offset) as usize..(hi - offset) as usize]);
+            }
+        }
+        offset += n as u64;
+    }
+    if offset != rec.size {
+        return Err(changed().into());
+    }
+    check()?;
+    let mut sampled = blake3::Hasher::new();
+    sampled.update(&rec.size.to_le_bytes());
+    for sample in samples {
+        sampled.update(&sample);
+    }
+    Ok((*sampled.finalize().as_bytes(), *full.finalize().as_bytes()))
+}
+
+fn hash_wait(ctx: &JobCtx, battery: &mut Option<(Instant, bool)>) -> Result<()> {
+    let pause = if ctx.lib.hash_on_activity.load(Ordering::SeqCst) {
+        crate::library::ACTIVITY_PAUSE
+    } else {
+        Duration::ZERO
+    };
+    wait_until_idle(ctx, battery, pause)
+}
+
 /// Hashes every file record without a sampled hash, source by source in id order, at idle
 /// priority on its own thread; pauses while the app reports activity or on battery.
-/// Remote and cloud sources are skipped (hashing would download every file), as are network
-/// shares (unless `hash_shares`) and sources whose root cannot be reached; the skips are in
+/// Remote files stream through their provider under the download policy. Network shares
+/// need explicit permission; unreachable sources are skipped. The skips are in
 /// the job's [`HashResult`]. Ends with a pass that confirms sampled hashes shared by
 /// records that are still unconfirmed (a stop between the two halves of a collision, a
 /// source that was offline).
@@ -301,26 +455,38 @@ impl HashJob {
 
     fn skip(&mut self, ctx: &JobCtx, src: &Source, reason: SkipReason) -> Result<()> {
         let why = match reason {
-            SkipReason::Remote => "not local",
+            SkipReason::Remote if src.is_device() => "paired device",
+            SkipReason::Remote if is_cloud(src) => "cloud hashing is off",
+            SkipReason::Remote => "remote hashing is off",
+            SkipReason::TooBig => "over the remote size cap",
             SkipReason::Share => "network share (hash_shares is off)",
             SkipReason::Offline => "offline",
         };
-        if !self.skipped.iter().any(|s| s.source == src.id) {
+        self.note_skip(src, reason);
+        ctx.log(&format!("{}: {why}, skipped", src.def.label))
+    }
+
+    /// Lists `src` under `reason` in the result (once).
+    fn note_skip(&mut self, src: &Source, reason: SkipReason) {
+        if !self
+            .skipped
+            .iter()
+            .any(|s| s.source == src.id && s.reason == reason)
+        {
             self.skipped.push(SkippedSource {
                 source: src.id.clone(),
                 label: src.def.label.clone(),
                 reason,
             });
         }
-        ctx.log(&format!("{}: {why}, skipped", src.def.label))
     }
 
     /// Hashes the pending records of `src` (stops early when the source goes away).
     fn hash_source(&mut self, ctx: &JobCtx, src: &Source) -> Result<()> {
-        if let Some(reason) = skip_reason(src) {
+        if let Some(reason) = hash_skip_reason(&ctx.lib, src) {
             return self.skip(ctx, src, reason);
         }
-        let root = src.def.root.to_local_path().context("local root")?;
+        let root = src.def.root.to_local_path();
         loop {
             let batch: Vec<Pending> = {
                 let c = src.store.get()?;
@@ -351,13 +517,42 @@ impl HashJob {
                     return Ok(());
                 }
                 self.wait_until_idle(ctx)?;
-                let path = root.join(&rec.path);
-                match hash_one(ctx, src, &rec, &path) {
+                if root.is_none()
+                    && rec.size > ctx.lib.remote_hash_settings.read().remote_hash_max_bytes
+                {
+                    self.note_skip(src, SkipReason::TooBig);
+                    let (label, path) = (&src.def.label, &rec.path);
+                    ctx.log(&format!(
+                        "{label}: {path} is over the remote size cap, skipped"
+                    ))?;
+                    self.after = rec.id;
+                    continue;
+                }
+                let result = match &root {
+                    Some(root) => hash_one(ctx, src, &rec, &root.join(&rec.path)),
+                    None => remote_hash(ctx, src, &rec).and_then(|(sampled, cas)| {
+                        save_hash(src, &rec, &sampled, Some(cas))?;
+                        Ok(false)
+                    }),
+                };
+                match result {
                     Ok(full) => self.full += u64::from(full),
+                    Err(e) if e.is::<Cancelled>() => return Err(e),
+                    Err(e) if root.is_none() => {
+                        if e.downcast_ref::<io::Error>().is_some_and(is_changed) {
+                            // The indexer will refresh this record.
+                        } else if hash_skip_reason(&ctx.lib, src) == Some(SkipReason::Offline) {
+                            return self.skip(ctx, src, SkipReason::Offline);
+                        } else {
+                            // Not marked unreadable: the next run tries it again.
+                            self.errors += 1;
+                            ctx.log(&format!("{}: {}: {e:#}", src.def.label, rec.path))?;
+                        }
+                    }
                     Err(e) => match e.downcast_ref::<io::Error>() {
                         None => return Err(e),
                         Some(io) if is_changed(io) => {}
-                        Some(_) if !root.is_dir() => {
+                        Some(_) if root.as_ref().is_some_and(|r| !r.is_dir()) => {
                             return self.skip(ctx, src, SkipReason::Offline);
                         }
                         Some(io) => {
@@ -414,7 +609,7 @@ impl HashJob {
         };
         for (i, id, rel, size, sampled) in todo {
             let s = &sources[i];
-            if skip_reason(s).is_some() || s.removed.load(Ordering::SeqCst) {
+            if hash_skip_reason(&ctx.lib, s).is_some() || s.removed.load(Ordering::SeqCst) {
                 continue;
             }
             let Some(path) = s.absolute(&rel).to_local_path() else {
@@ -462,6 +657,11 @@ fn hash_one(ctx: &JobCtx, src: &Source, rec: &Pending, path: &Path) -> Result<bo
         }
         None => (None, false),
     };
+    save_hash(src, rec, &sampled, cas)?;
+    Ok(collided)
+}
+
+fn save_hash(src: &Source, rec: &Pending, sampled: &[u8; 32], cas: Option<[u8; 32]>) -> Result<()> {
     // Guarded: a record the indexer changed meanwhile keeps its reset hashes.
     src.store.get()?.execute(
         "UPDATE record SET sampled_hash = ?2, cas_id = ?3
@@ -476,7 +676,7 @@ fn hash_one(ctx: &JobCtx, src: &Source, rec: &Pending, path: &Path) -> Result<bo
             rec.ctime
         ],
     )?;
-    Ok(collided)
+    Ok(())
 }
 
 /// Whether any other record has `sampled` as its sampled hash; those not yet hashed whole are
@@ -500,7 +700,7 @@ fn confirm_others(ctx: &JobCtx, me: &Source, my_id: i64, sampled: &[u8]) -> Resu
                 continue;
             }
             any = true;
-            if confirmed || skip_reason(s).is_some() {
+            if confirmed || hash_skip_reason(&ctx.lib, s).is_some() {
                 continue;
             }
             let Some(path) = s.absolute(&rel).to_local_path() else {
@@ -634,7 +834,10 @@ pub(crate) fn schedule(lib: &Arc<Shared>) -> Result<JobId> {
 /// Starts hashing after a completed walk of `src` when that is on and `src` has files to
 /// hash.
 pub(crate) fn after_walk(lib: &Arc<Shared>, src: &Source) {
-    if !lib.hash_after_walk.load(Ordering::SeqCst) || lib.closing() || skip_reason(src).is_some() {
+    if !lib.hash_after_walk.load(Ordering::SeqCst)
+        || lib.closing()
+        || hash_skip_reason(lib, src).is_some()
+    {
         return;
     }
     let unhashed = src.store.get().and_then(|c| {
@@ -662,6 +865,21 @@ impl Library {
     /// new one.
     pub fn hash(&self) -> Result<JobId> {
         schedule(&self.shared)
+    }
+
+    /// Current remote hashing policy (defaults: remotes on, cloud off, 1 GiB cap).
+    pub fn remote_hash_settings(&self) -> RemoteHashSettings {
+        *self.shared.remote_hash_settings.read()
+    }
+
+    /// Saves the remote hashing policy. A running file finishes; subsequent files use it.
+    pub fn set_remote_hash_settings(&self, settings: RemoteHashSettings) -> Result<()> {
+        let mut current = self.shared.remote_hash_settings.write();
+        self.shared
+            .db
+            .set_meta("remote_hash_settings", &serde_json::to_string(&settings)?)?;
+        *current = settings;
+        Ok(())
     }
 
     /// Tells the background jobs the user is busy (call it on every input): integrity jobs

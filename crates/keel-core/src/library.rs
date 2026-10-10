@@ -445,6 +445,8 @@ pub(crate) struct Shared {
     /// Whether hashing pauses on activity too (`Library::set_hash_idle_only`); sidecar and
     /// integrity jobs always do.
     pub(crate) hash_on_activity: AtomicBool,
+    pub(crate) remote_hash_settings: RwLock<crate::hash::RemoteHashSettings>,
+    pub(crate) remote_hash_io: Mutex<()>,
     pub(crate) pause_on_battery: AtomicBool,
     /// Whether a completed walk schedules hashing.
     pub(crate) hash_after_walk: AtomicBool,
@@ -661,12 +663,18 @@ impl Library {
             )?;
             sources.write().push(Arc::new(source));
         }
+        let remote_hash_settings = db
+            .meta("remote_hash_settings")?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         let shared = Arc::new(Shared {
             db,
             sources,
             router: RwLock::new(Arc::new(Router::new())),
             busy_until: AtomicU64::new(0),
             hash_on_activity: AtomicBool::new(true),
+            remote_hash_settings: RwLock::new(remote_hash_settings),
+            remote_hash_io: Mutex::new(()),
             pause_on_battery: AtomicBool::new(true),
             hash_after_walk: AtomicBool::new(true),
             hash_job: Mutex::new(None),
@@ -1152,6 +1160,19 @@ pub(crate) mod tests {
             ignore: Vec::new(),
             poll_secs: None,
             hash_shares: false,
+        }
+    }
+
+    /// A source at `root` (`sftp://host/dir`, `cloud://account/`).
+    pub(crate) fn remote(label: &str, root: &str) -> SourceDef {
+        SourceDef {
+            root: VPath::parse(root).unwrap(),
+            kind: if root.starts_with("cloud:") {
+                SourceKind::Cloud
+            } else {
+                SourceKind::Folder
+            },
+            ..folder(label, Path::new(""))
         }
     }
 

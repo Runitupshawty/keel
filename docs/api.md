@@ -83,7 +83,7 @@ also act directly: they change no file.
 | `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
 | `volumes.set` | preview | Set a volume's `state` (`archived` / `lost` / `retired`; `online` makes it automatic again), `backup` mark or `failure_domain` (`""`: the detected one) |
 | `integrity.check` | preview | Re-hash `sample_pct` % (default 1) of the hashed files of one `source` or all, as a job; with `due_days`, only when the last check of every source is that old (the first call starts the clock; `job` absent when nothing is due) |
-| `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one |
+| `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one. Optional `remote` (hash SFTP sources, default true), `cloud` (hash cloud sources, default false: downloads can cost egress fees) and `max_remote_bytes` (remote files bigger than this are not hashed, default 1073741824) are kept with the library; omitted ones stay as they are. The preview states all three |
 | `media.index` | preview | Thumbnails and metadata for a source's photos and videos, as an idle-priority job |
 | `activity.note` | direct | The user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s (an attached window sends it on input, at most every 4 s) |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`) |

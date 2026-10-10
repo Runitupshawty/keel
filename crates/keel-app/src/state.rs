@@ -435,7 +435,7 @@ impl AppState {
         for cmd in std::mem::take(&mut self.library.pending) {
             self.library_cmd(self.active, cmd);
         }
-        self.library.apply_hashing(self.settings.library.hashing);
+        self.library.apply_hashing(&self.settings.library);
     }
 
     /// Loads the platform searcher off the UI thread (the Everything DLL load may block).

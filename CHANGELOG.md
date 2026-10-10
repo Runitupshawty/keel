@@ -2,6 +2,22 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Content hashing reads SFTP sources: each file is streamed once through the source's connection (1 MiB reads, one remote file at a time, idle priority, checkpoints and resume as for local files) and gets the same BLAKE3 content id as a local copy of the same bytes. Duplicates, the copies badges, the Protection card and the last-copy warning now see copies between this PC and a file server; a copy on an SSH host counts in that host's failure domain (two sources on one host are one domain), so a file here and on the server is 2 copies in 2 domains. Settings → Library → Hashing gains **Remote hashing** (on by default), **Cloud hashing** (Google Drive, Dropbox, S3 and WebDAV; off by default, because every file is downloaded and downloads can cost egress fees) and **Remote size cap** (1024 MiB by default; bigger remote files stay unhashed and the hash job's log names them). "Hash now" follows them. Service checksums (ETag, MD5, Dropbox's content hash) are never used as content ids: they would never match a BLAKE3 id.
+- `hashing.set` takes optional `remote`, `cloud` and `max_remote_bytes` (omitted: unchanged, kept with the library), and its preview states all three.
+
+### Fixed
+
+- Hashing no longer skips SFTP sources, which lifts the 0.6.0 known limitation that only sources on a local path were hashed; cloud sources are hashed when Cloud hashing is turned on. A remote host that is offline leaves its files unhashed without failing the job, and the next run hashes them; a remote file that cannot be read is skipped, counted as unreadable in the job's result and tried again on the next run.
+
+### Known limitations
+
+- Two remotes in Settings → Remotes that name the same server count as two failure domains; give their volumes one failure domain by hand in the drive inventory.
+- Remote files are hashed whole and one at a time across all hosts, so a large server share takes as long as downloading it once.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added

@@ -120,8 +120,8 @@ pub static OPS: &[Operation] = &[
         VolumeSetParams => VolumeInfo, volumes_set_preview, volumes_set, json!({"volume": "source:0123456789abcdef0123456789abcdef", "backup": true})),
     previewed!("integrity.check", "Re-hashes a sample of hashed files as a job and marks files whose bytes changed (due_days: only when the last check is that old).",
         IntegrityParams => MaybeJob, integrity_preview, integrity_check, json!({"sample_pct": 1.0})),
-    previewed!("hashing.set", "Turns content hashing after walks on or off (off cancels a running hash job; on starts one).",
-        HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true})),
+    previewed!("hashing.set", "Turns content hashing after walks on or off (off cancels a running hash job; on starts one); remote, cloud and max_remote_bytes choose which remote files it downloads (omitted: unchanged).",
+        HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true, "remote": true, "cloud": false, "max_remote_bytes": 1073741824})),
     previewed!("media.index", "Makes thumbnails and reads metadata of a source's photos and videos as an idle-priority job.",
         SourceIdParams => JobStarted, media_index_preview, media_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
     now!("activity.note", "Notes that the user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s; acts directly.",
@@ -1174,21 +1174,45 @@ fn integrity_check(ctx: &Ctx, p: IntegrityParams) -> Result<MaybeJob> {
     Ok(MaybeJob { job })
 }
 
-fn hashing_preview(_: &Ctx, p: &HashingParams) -> Result<Preview> {
+fn hashing_preview(ctx: &Ctx, p: &HashingParams) -> Result<Preview> {
     let summary = match (p.on, p.idle_only) {
         (false, _) => "Turn content hashing off (a running hash job is cancelled)",
         (true, true) => "Hash contents while the user is idle",
         (true, false) => "Hash contents, also while the user works",
     };
+    let r = hashing_settings(ctx, p);
+    let yes = |on: bool| if on { "hashed" } else { "not hashed" };
+    let summary = format!(
+        "{summary}; SFTP sources {}, cloud sources {} (downloads can cost egress fees), remote files over {} bytes skipped",
+        yes(r.hash_remote),
+        yes(r.hash_cloud),
+        r.remote_hash_max_bytes
+    );
     Ok(Preview {
         pin: None,
-        summary: summary.into(),
-        changes: vec![change("hashing", None, Some(summary.into()))],
+        summary: summary.clone(),
+        changes: vec![change("hashing", None, Some(summary))],
         warnings: Vec::new(),
     })
 }
 
+fn hashing_settings(ctx: &Ctx, p: &HashingParams) -> keel_core::RemoteHashSettings {
+    let mut settings = ctx.lib.remote_hash_settings();
+    if let Some(remote) = p.remote {
+        settings.hash_remote = remote;
+    }
+    if let Some(cloud) = p.cloud {
+        settings.hash_cloud = cloud;
+    }
+    if let Some(max) = p.max_remote_bytes {
+        settings.remote_hash_max_bytes = max;
+    }
+    settings
+}
+
 fn hashing_set(ctx: &Ctx, p: HashingParams) -> Result<MaybeJob> {
+    ctx.lib
+        .set_remote_hash_settings(hashing_settings(ctx, &p))?;
     ctx.lib.set_hash_after_walk(p.on);
     ctx.lib.set_hash_idle_only(p.idle_only);
     if p.on {
