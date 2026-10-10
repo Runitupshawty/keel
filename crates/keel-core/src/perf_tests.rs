@@ -319,7 +319,8 @@ fn perf_search_200k() {
             .collect();
         let (p50, p95) = percentiles(runs);
         lines.push(format!("{q:?} p50 {:.2} ms p95 {:.2} ms", ms(p50), ms(p95)));
-        assert!(p95 < Duration::from_millis(50), "{q}: p95 {p95:?}");
+        // `tag:work invoice` took 39 ms (p95) in 0.15.
+        assert!(p95 < Duration::from_millis(25), "{q}: p95 {p95:?}");
     }
     eprintln!(
         "PERF search_200k: tagging {} records {tagging:?}; {}",
