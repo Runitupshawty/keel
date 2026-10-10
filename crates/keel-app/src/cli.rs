@@ -75,8 +75,14 @@ pub enum Command {
     /// Start, stop or check keel-daemon for the profile.
     #[command(subcommand)]
     Daemon(DaemonCmd),
-    /// MCP server over stdio (for Claude Code, Codex and other MCP clients).
-    Mcp,
+    /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
+    /// asks the user to confirm each plan through the client (MCP elicitation).
+    Mcp {
+        /// Let clients that cannot ask the user (no elicitation) execute plans: each call
+        /// must then repeat the preview's summary, which the client's approval shows.
+        #[arg(long)]
+        allow_execute: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq)]
@@ -525,7 +531,18 @@ mod tests {
             cmd(&["daemon", "status"]),
             Command::Daemon(DaemonCmd::Status)
         );
-        assert_eq!(cmd(&["mcp"]), Command::Mcp);
+        assert_eq!(
+            cmd(&["mcp"]),
+            Command::Mcp {
+                allow_execute: false
+            }
+        );
+        assert_eq!(
+            cmd(&["mcp", "--allow-execute"]),
+            Command::Mcp {
+                allow_execute: true
+            }
+        );
         // Usage errors (exit code 2).
         for bad in [
             &["plan", "copy", "a"][..],

@@ -172,14 +172,42 @@ impl Mcp {
         assert_eq!(v["result"]["isError"], false, "{v}");
         v["result"]["structuredContent"].clone()
     }
+
+    fn line(&mut self) -> Value {
+        let mut line = String::new();
+        self.out.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// `execute` through the user's confirmation: answers the server's elicitation with
+    /// `action` and returns the tool result.
+    fn execute_confirmed(&mut self, preview: &Value, action: &str) -> Value {
+        self.next += 1;
+        let id = self.next;
+        let args = json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]});
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "execute", "arguments": args}}));
+        let ask = self.line();
+        assert_eq!(ask["method"], "elicitation/create", "{ask}");
+        let message = ask["params"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(preview["summary"].as_str().unwrap()),
+            "{message}"
+        );
+        let content = match action {
+            "accept" => json!({"confirm": true}),
+            _ => json!({}),
+        };
+        self.send(json!({"jsonrpc": "2.0", "id": ask["id"], "result": {"action": action, "content": content}}));
+        let v = self.line();
+        assert_eq!(v["id"], id, "{v}");
+        v["result"].clone()
+    }
 }
 
-#[test]
-fn mcp_over_stdio() {
-    let env = env();
-    let dst = tempfile::tempdir().unwrap();
+fn mcp_session(env: &Env, args: &[&str], elicitation: bool) -> Mcp {
     let mut child = env
-        .keel(&["mcp"])
+        .keel(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -190,13 +218,26 @@ fn mcp_over_stdio() {
         out,
         next: 0,
     };
+    let caps = if elicitation {
+        json!({"elicitation": {}})
+    } else {
+        json!({})
+    };
     let init = mcp.call(
         "initialize",
-        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}),
+        json!({"protocolVersion": "2025-06-18", "capabilities": caps, "clientInfo": {"name": "test", "version": "1"}}),
     );
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(init["result"]["serverInfo"]["name"], "keel");
     mcp.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    mcp
+}
+
+#[test]
+fn mcp_over_stdio() {
+    let env = env();
+    let dst = tempfile::tempdir().unwrap();
+    let mut mcp = mcp_session(&env, &["mcp"], true);
     let tools = mcp.call("tools/list", json!({}))["result"]["tools"].clone();
     let names: Vec<&str> = tools
         .as_array()
@@ -239,12 +280,14 @@ fn mcp_over_stdio() {
         mcp.tool("sources_list", json!({})).is_null(),
         "arrays are text only"
     );
-    // Execute applies the exact preview; its job finishes.
-    let done = mcp.tool(
-        "execute",
-        json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]}),
-    );
-    let job = done["job"].as_i64().unwrap();
+    // Execute asks the user; declined, nothing happens.
+    let declined = mcp.execute_confirmed(&preview, "decline");
+    assert_eq!(declined["isError"], true, "{declined}");
+    assert!(!dst.path().join("notes.txt").exists());
+    // Accepted, it applies the exact preview; its job finishes.
+    let done = mcp.execute_confirmed(&preview, "accept");
+    assert_eq!(done["isError"], false, "{done}");
+    let job = done["structuredContent"]["job"].as_i64().unwrap();
     for _ in 0..200 {
         let info = mcp.tool("jobs_info", json!({"id": job}));
         if info["status"] == "done" {
@@ -259,6 +302,34 @@ fn mcp_over_stdio() {
         json!({"name": "execute", "arguments": {"plan_id": "x", "input_hash": "y"}}),
     );
     assert_eq!(bad["result"]["isError"], true);
+    drop(mcp.child.stdin.take());
+    assert!(mcp.child.wait().unwrap().success());
+}
+
+#[test]
+fn mcp_without_elicitation() {
+    let env = env();
+    let dst = tempfile::tempdir().unwrap();
+    let src = env.file("notes.txt");
+    let plan = json!({"op": "copy", "paths": [src], "to": s(dst.path())});
+    // Refused outright.
+    let mut mcp = mcp_session(&env, &["mcp"], false);
+    let preview = mcp.tool("plan", plan.clone());
+    let args = json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"], "summary": preview["summary"]});
+    let refused = mcp.call("tools/call", json!({"name": "execute", "arguments": args}));
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    drop(mcp.child.stdin.take());
+    assert!(mcp.child.wait().unwrap().success());
+    assert!(!dst.path().join("notes.txt").exists());
+    // --allow-execute: with the preview's summary.
+    let mut mcp = mcp_session(&env, &["mcp", "--allow-execute"], false);
+    let preview = mcp.tool("plan", plan);
+    let mut args = json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]});
+    let no_summary = mcp.call("tools/call", json!({"name": "execute", "arguments": args}));
+    assert_eq!(no_summary["result"]["isError"], true, "{no_summary}");
+    args["summary"] = preview["summary"].clone();
+    let done = mcp.tool("execute", args);
+    assert!(done["job"].is_i64(), "{done}");
     drop(mcp.child.stdin.take());
     assert!(mcp.child.wait().unwrap().success());
 }

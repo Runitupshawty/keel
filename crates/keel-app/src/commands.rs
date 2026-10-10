@@ -88,7 +88,7 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     let mut out: Out = Box::new(std::io::stdout());
     match cmd {
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
-        Command::Mcp => return mcp(&cfg),
+        Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),
         _ => {}
     }
     // Read a piped plan before opening the library: `keel plan` (which holds it while it
@@ -358,7 +358,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
             }
         }
         Command::Sources { action } => sources(action, b, json, out)?,
-        Command::Daemon(_) | Command::Mcp => unreachable!("handled by run"),
+        Command::Daemon(_) | Command::Mcp { .. } => unreachable!("handled by run"),
     }
     Ok(())
 }
@@ -437,26 +437,7 @@ fn sources(
 }
 
 fn print_preview(p: &PlanPreview, out: &mut Out) {
-    let _ = writeln!(out, "{}", p.summary);
-    for c in &p.changes {
-        let mut line = format!("  {:<8} {}", c.action, c.path.as_deref().unwrap_or(""));
-        if let Some(to) = &c.to {
-            line.push_str(&format!(" -> {to}"));
-        }
-        if let (Some(files), Some(bytes)) = (c.files, c.bytes) {
-            line.push_str(&format!("  ({files} file(s), {bytes} bytes)"));
-        }
-        if let Some(d) = &c.detail {
-            line.push_str(&format!("  [{d}]"));
-        }
-        let _ = writeln!(out, "{line}");
-    }
-    if !p.warnings.is_empty() {
-        let _ = writeln!(out, "Warnings:");
-        for w in &p.warnings {
-            let _ = writeln!(out, "  ! {}", w.message);
-        }
-    }
+    let _ = write!(out, "{}", p.describe(usize::MAX));
     let _ = writeln!(out, "plan: {}", p.plan_id);
     let _ = writeln!(out, "hash: {}", p.input_hash);
     let _ = writeln!(
@@ -522,7 +503,7 @@ fn plan_given_differs(text: &str, plan: &str) -> bool {
     piped.is_some_and(|p| p != plan)
 }
 
-fn mcp(cfg: &HostConfig) -> i32 {
+fn mcp(cfg: &HostConfig, allow_execute: bool) -> i32 {
     let mut backend = match connect(cfg) {
         Ok(b) => b,
         Err(e) => {
@@ -531,7 +512,8 @@ fn mcp(cfg: &HostConfig) -> i32 {
         }
     };
     let stdin = std::io::stdin();
-    match keel_api::mcp::serve(&mut *backend, stdin.lock(), std::io::stdout().lock()) {
+    let opts = keel_api::mcp::Options { allow_execute };
+    match keel_api::mcp::serve(&mut *backend, stdin.lock(), std::io::stdout().lock(), opts) {
         Ok(()) => OK,
         Err(e) => {
             eprintln!("keel mcp: {e}");

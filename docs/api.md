@@ -150,7 +150,7 @@ keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel 
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel devices | keel shares
 keel daemon start|stop|status
-keel mcp
+keel mcp [--allow-execute]
 ```
 
 All take `--profile NAME` and `--json`. Exit codes: 0 ok, 1 the operation failed, 2
@@ -173,7 +173,25 @@ operation's JSON schema as `inputSchema`) and `tools/call`. Mutating tools say "
 preview; call execute with the plan id to apply" and do exactly that; read-only tools
 carry `readOnlyHint`. Results come back as JSON text (and `structuredContent` for
 objects); failures as `isError: true`. It uses the running daemon when there is one,
-otherwise it opens the library itself for as long as the session lasts.
+otherwise it opens the library itself for as long as the session lasts. Nothing but
+`initialize` and `ping` is answered before `initialize`; a line that is not JSON (or not
+UTF-8) gets a parse error and one over 16 MiB an invalid-request error, and the session
+goes on.
+
+**`execute` needs a person.** A model can chain a preview and `execute` in one turn, so
+the preview alone is not a confirmation. `execute` applies only plans previewed in the
+same session, and only after the user confirmed:
+
+- When the client declared the `elicitation` capability (MCP 2025-06-18), Keel asks the
+  user itself (`elicitation/create`) with the plan's summary, its changes (the first 50)
+  and its warnings, and applies the plan only when the user accepts. Declining or
+  cancelling leaves the plan unapplied (it can be confirmed later until it expires).
+- When the client cannot ask, `execute` is refused: show the user the preview and apply
+  it with `keel execute <plan_id> --hash <input_hash>`. Starting the server with
+  `keel mcp --allow-execute` lets such a client execute, but every call must pass the
+  preview's `summary` string exactly (`"summary": "Delete 1 item(s), …"`), so the
+  client's own tool-approval prompt shows what runs. Use it only with a client that
+  prompts before each tool call.
 
 ```
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"me","version":"1"}}}
@@ -209,5 +227,8 @@ args = ["mcp"]
 Give the full path to `keel.exe` when it is not on `PATH`. Start `keel daemon start` first
 when the Keel window is closed and several agents share the library, or keep the window
 closed while an agent works without one (one process opens a library at a time). Agents
-see every mutating tool return a preview; tell them to show it and to call `execute` only
-after you confirm.
+see every mutating tool return a preview. With a client that supports elicitation, each
+`execute` then opens a confirmation showing what the plan does. A client without
+elicitation (check its MCP docs) cannot execute unless you add `--allow-execute`
+(`claude mcp add keel --scope user -- keel mcp --allow-execute`, or `"args": ["mcp",
+"--allow-execute"]`), and then only by repeating the preview's summary.

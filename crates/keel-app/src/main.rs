@@ -65,7 +65,7 @@ fn main() -> eframe::Result<()> {
     // `keel <subcommand>`: no window, output on the shell's console.
     if let Some(cmd) = cli.command.clone() {
         #[cfg(windows)]
-        if cmd != cli::Command::Mcp {
+        if !matches!(cmd, cli::Command::Mcp { .. }) {
             keel_vfs::desktop::attach_parent_console();
         }
         tracing_subscriber::fmt()

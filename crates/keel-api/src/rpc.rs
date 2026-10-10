@@ -3,6 +3,7 @@
 
 use crate::error::{ApiError, Result};
 use serde_json::{json, Value};
+use std::io::{self, BufRead};
 
 /// Longest request accepted (bytes, without the newline).
 pub const MAX_REQUEST: usize = 16 * 1024 * 1024;
@@ -92,6 +93,54 @@ pub fn handle(msg: &[u8], dispatch: &mut dyn FnMut(&Request) -> Result<Value>) -
     }
 }
 
+/// What [`read_line`] read.
+#[derive(Debug, PartialEq)]
+pub enum Line {
+    /// One message, without its newline.
+    Line(Vec<u8>),
+    /// A line over [`MAX_REQUEST`], read on to its end and dropped.
+    TooLarge,
+    /// The input ended (mid-line too).
+    Eof,
+}
+
+/// Reads one `\n`-terminated message of at most [`MAX_REQUEST`] bytes; never holds more
+/// than that in memory. `before_read` runs before every read from `reader` (a deadline
+/// check can fail it).
+pub fn read_line(
+    reader: &mut impl BufRead,
+    mut before_read: impl FnMut() -> io::Result<()>,
+) -> io::Result<Line> {
+    let mut line = Vec::new();
+    let mut over = false;
+    loop {
+        before_read()?;
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(Line::Eof);
+        }
+        let (end, used) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i, i + 1),
+            None => (buf.len(), buf.len()),
+        };
+        if !over && line.len() + end > MAX_REQUEST {
+            over = true;
+            line = Vec::new();
+        }
+        if !over {
+            line.extend_from_slice(&buf[..end]);
+        }
+        reader.consume(used);
+        if used > end {
+            return Ok(if over {
+                Line::TooLarge
+            } else {
+                Line::Line(line)
+            });
+        }
+    }
+}
+
 /// The error answer to a request over [`MAX_REQUEST`].
 pub fn too_large() -> Value {
     response(
@@ -112,6 +161,24 @@ mod tests {
             "echo" => Ok(r.params.clone()),
             _ => Err(ApiError::new(ApiError::METHOD_NOT_FOUND, "no")),
         })
+    }
+
+    #[test]
+    fn reads_lines_within_the_limit() {
+        let big = vec![b'x'; MAX_REQUEST + 1];
+        let mut input: Vec<u8> = b"one\n\xff\xfe\n".to_vec();
+        input.extend_from_slice(&big);
+        input.extend_from_slice(b"\ntwo\npartial");
+        let mut r = io::BufReader::with_capacity(1024, &input[..]);
+        let mut next = || read_line(&mut r, || Ok(())).unwrap();
+        assert_eq!(next(), Line::Line(b"one".to_vec()));
+        assert_eq!(next(), Line::Line(b"\xff\xfe".to_vec()));
+        assert_eq!(next(), Line::TooLarge);
+        assert_eq!(next(), Line::Line(b"two".to_vec()));
+        assert_eq!(next(), Line::Eof);
+        let exact = [vec![b'y'; MAX_REQUEST], b"\n".to_vec()].concat();
+        let got = read_line(&mut &exact[..], || Ok(())).unwrap();
+        assert_eq!(got, Line::Line(vec![b'y'; MAX_REQUEST]));
     }
 
     #[test]
