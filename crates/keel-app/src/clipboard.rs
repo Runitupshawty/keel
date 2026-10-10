@@ -58,7 +58,12 @@ mod sys {
         let paths = arboard::Clipboard::new().ok()?.get().file_list().ok()?;
         (!paths.is_empty()).then_some((paths, false))
     }
+    /// Linux with an X display: how often another app took the clipboard from Keel.
     pub fn sequence() -> Option<u32> {
+        #[cfg(target_os = "linux")]
+        if crate::x11_clipboard::available() {
+            return crate::x11_clipboard::sequence();
+        }
         None
     }
 }
@@ -74,7 +79,7 @@ pub(crate) static SYSTEM_CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new
 enum Stamp {
     /// Queued on the writer thread.
     Writing,
-    /// Written (or failed); the system clipboard sequence right after (Windows).
+    /// Written (or failed); the system clipboard sequence right after (Windows, Linux).
     #[default]
     Unknown,
     Done(u32),
@@ -215,7 +220,7 @@ fn same_files(a: &[PathBuf], b: &[PathBuf]) -> bool {
 }
 
 /// The system clipboard wins when it changed after our copy (Windows: sequence number;
-/// elsewhere: it holds other files). Otherwise the in-app copy, which remembers a cut.
+/// Linux: another app took the clipboard; elsewhere: it holds other files). Otherwise the in-app copy, which remembers a cut.
 fn choose(
     app: &Clipboard,
     stamp: Option<u32>,

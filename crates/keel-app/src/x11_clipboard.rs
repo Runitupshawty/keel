@@ -92,10 +92,21 @@ fn bytes_path(b: Vec<u8>) -> PathBuf {
     String::from_utf8_lossy(&b).into_owned().into()
 }
 
+/// The Linux clipboard's change count after an X event: one more each time another app
+/// takes the CLIPBOARD selection from Keel (`cleared`: the selection of a SelectionClear).
+#[cfg(any(target_os = "linux", test))]
+fn next_sequence(seq: u32, cleared: u32, clipboard: u32) -> u32 {
+    if cleared == clipboard {
+        seq.wrapping_add(1)
+    } else {
+        seq
+    }
+}
+
 #[cfg(all(target_os = "linux", test))]
 use x11::targets;
 #[cfg(target_os = "linux")]
-pub use x11::{available, read, write};
+pub use x11::{available, read, sequence, write};
 
 #[cfg(target_os = "linux")]
 mod x11 {
@@ -103,7 +114,10 @@ mod x11 {
     use anyhow::{ensure, Context, Result};
     use parking_lot::Mutex;
     use std::{
-        sync::{Arc, OnceLock},
+        sync::{
+            atomic::{AtomicBool, AtomicU32, Ordering},
+            Arc,
+        },
         time::{Duration, Instant},
     };
     use x11rb::{
@@ -192,38 +206,58 @@ mod x11 {
     }
 
     /// Keel's side of the selection: serves what it offers from its own thread for as long
-    /// as the process runs (another app's copy only empties the offer).
+    /// as the connection lasts (another app's copy only empties the offer).
     struct Owner {
         conn: RustConnection,
         win: Window,
         atoms: Atoms,
         offer: Mutex<Vec<(Atom, Vec<u8>)>>,
+        /// Times another app took the clipboard (`sequence`).
+        clears: AtomicU32,
+        /// The connection still works (a lost one is made again on the next write).
+        alive: AtomicBool,
     }
 
+    static OWNER: Mutex<Option<Arc<Owner>>> = Mutex::new(None);
+
+    /// The owner, connected on first use; a failed connection is tried again next time.
     fn owner() -> Result<Arc<Owner>> {
-        static OWNER: OnceLock<Result<Arc<Owner>, String>> = OnceLock::new();
-        OWNER
-            .get_or_init(|| {
-                let (conn, win, atoms) = connect().map_err(|e| format!("{e:#}"))?;
-                let owner = Arc::new(Owner {
-                    conn,
-                    win,
-                    atoms,
-                    offer: Mutex::default(),
-                });
-                let serving = owner.clone();
-                std::thread::Builder::new()
-                    .name("keel-x11-clipboard".into())
-                    .spawn(move || serving.serve())
-                    .map_err(|e| e.to_string())?;
-                Ok(owner)
-            })
-            .clone()
-            .map_err(anyhow::Error::msg)
+        let mut slot = OWNER.lock();
+        if let Some(o) = slot.as_ref().filter(|o| o.alive.load(Ordering::SeqCst)) {
+            return Ok(o.clone());
+        }
+        let (conn, win, atoms) = connect()?;
+        let owner = Arc::new(Owner {
+            conn,
+            win,
+            atoms,
+            offer: Mutex::default(),
+            clears: AtomicU32::new(0),
+            alive: AtomicBool::new(true),
+        });
+        let serving = owner.clone();
+        std::thread::Builder::new()
+            .name("keel-x11-clipboard".into())
+            .spawn(move || serving.serve())?;
+        *slot = Some(owner.clone());
+        Ok(owner)
+    }
+
+    /// The clipboard's change count as Keel sees it: another app took it from Keel that
+    /// many times. None before Keel first owned it (or once the connection is lost).
+    pub fn sequence() -> Option<u32> {
+        let slot = OWNER.lock();
+        let o = slot.as_ref().filter(|o| o.alive.load(Ordering::SeqCst))?;
+        Some(o.clears.load(Ordering::SeqCst))
     }
 
     impl Owner {
         fn serve(&self) {
+            self.serve_events();
+            self.alive.store(false, Ordering::SeqCst);
+        }
+
+        fn serve_events(&self) {
             while let Ok(event) = self.conn.wait_for_event() {
                 match event {
                     Event::SelectionRequest(e) => {
@@ -248,6 +282,11 @@ mod x11 {
                     }
                     Event::SelectionClear(e) if e.selection == self.atoms.clipboard => {
                         self.offer.lock().clear();
+                        let seq = self.clears.load(Ordering::SeqCst);
+                        self.clears.store(
+                            next_sequence(seq, e.selection, self.atoms.clipboard),
+                            Ordering::SeqCst,
+                        );
                     }
                     _ => {}
                 }
@@ -296,7 +335,8 @@ mod x11 {
         }
     }
 
-    /// Owns the clipboard with `paths` (cut or copy); empty `paths` clears it.
+    /// Owns the clipboard with `paths` (cut or copy); with empty `paths` it offers nothing
+    /// (Keel keeps owning it, so its own clear does not count as another app's write).
     pub fn write(paths: &[PathBuf], cut: bool) -> Result<()> {
         let o = owner()?;
         let offer = if paths.is_empty() {
@@ -307,16 +347,15 @@ mod x11 {
                 .map(|(t, b)| (o.atoms.of(t), b))
                 .collect()
         };
-        let win = if offer.is_empty() { NONE } else { o.win };
         *o.offer.lock() = offer;
         o.conn
-            .set_selection_owner(win, o.atoms.clipboard, CURRENT_TIME)?;
+            .set_selection_owner(o.win, o.atoms.clipboard, CURRENT_TIME)?;
         let now = o
             .conn
             .get_selection_owner(o.atoms.clipboard)?
             .reply()?
             .owner;
-        ensure!(now == win, "another app holds the clipboard");
+        ensure!(now == o.win, "another app holds the clipboard");
         Ok(())
     }
 
@@ -416,6 +455,14 @@ mod tests {
         assert_eq!(parse_gnome(&copy[0].1), Some((paths.to_vec(), false)));
         let list = String::from_utf8(get(URI_LIST)).unwrap();
         assert_eq!(uri_paths(list.lines()), paths);
+    }
+
+    #[test]
+    fn only_a_clipboard_clear_counts_as_a_change() {
+        let (clipboard, primary) = (7, 1);
+        assert_eq!(next_sequence(0, clipboard, clipboard), 1);
+        assert_eq!(next_sequence(1, primary, clipboard), 1);
+        assert_eq!(next_sequence(u32::MAX, clipboard, clipboard), 0);
     }
 
     #[test]
