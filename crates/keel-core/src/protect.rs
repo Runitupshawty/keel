@@ -7,7 +7,8 @@
 //! else the volume itself. Redundancy counts files (hard links of one file once) and
 //! distinct failure domains, so two copies on one disk never read as two independent
 //! copies. Copies on lost or retired volumes do not count; copies on offline or archived
-//! volumes count, flagged.
+//! volumes count, flagged. A paired device's word that it holds a content (the content id
+//! its listing claims) is never a copy: it shows in the hover list, flagged `claimed`.
 
 use crate::library::{RecordRef, Shared, Source, SourceKind, SourceStatus};
 use crate::Library;
@@ -113,6 +114,10 @@ pub struct CopyAt {
     pub path: VPath,
     pub source_label: String,
     pub volume: Volume,
+    /// A device source's file that its device says holds the content; unverified, so it
+    /// never counts as a copy.
+    #[serde(default)]
+    pub claimed: bool,
 }
 
 /// How safe a record's content is.
@@ -127,7 +132,8 @@ pub struct Redundancy {
     pub backed_up: bool,
     /// Copies (counted above) on offline or archived volumes.
     pub offline_copies: u64,
-    /// Every record holding it (lost and retired volumes included, for the hover list).
+    /// Every record holding it (lost and retired volumes included, for the hover list),
+    /// then the device files claimed to hold it (`claimed`, not counted).
     pub locations: Vec<CopyAt>,
 }
 
@@ -348,32 +354,46 @@ struct Held {
     path: String,
     /// The file (native id: hard links share it), else the record.
     file: String,
+    /// Only claimed by a device (`remote_cas`).
+    claimed: bool,
 }
 
-/// The records holding confirmed content `cas` (drifted ones no longer do).
+/// The records holding confirmed content `cas` (drifted ones no longer do), then the device
+/// files claimed to hold it.
 fn holders(lib: &Shared, cas: &[u8]) -> Result<Vec<Held>> {
     let sources: Vec<Arc<Source>> = lib.sources.read().clone();
-    let mut out = Vec::new();
+    let (mut out, mut claims) = (Vec::new(), Vec::new());
     for s in sources {
+        let claimed = s.is_device();
         let c = s.store.get()?;
-        let mut stmt = c.prepare_cached(
+        let mut stmt = c.prepare_cached(if claimed {
+            "SELECT id, path, ?2 || ':' || id FROM record
+             WHERE remote_cas = ?1 AND kind = 0 ORDER BY id"
+        } else {
             "SELECT id, path, CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id
                  ELSE ?2 || ':' || id END
-             FROM record WHERE cas_id = ?1 AND kind = 0 AND drift IS NULL ORDER BY id",
-        )?;
+             FROM record WHERE cas_id = ?1 AND kind = 0 AND drift IS NULL ORDER BY id"
+        })?;
         let rows = stmt.query_map(params![cas, s.id.0], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?;
         for row in rows {
             let (id, path, file) = row?;
-            out.push(Held {
+            let held = Held {
                 src: s.clone(),
                 id,
                 path,
                 file,
-            });
+                claimed,
+            };
+            if claimed {
+                claims.push(held);
+            } else {
+                out.push(held);
+            }
         }
     }
+    out.append(&mut claims);
     Ok(out)
 }
 
@@ -416,6 +436,7 @@ fn copies_of(lib: &Shared, vols: &Volumes, cas: &[u8]) -> Result<Vec<(String, Co
                     path: h.src.absolute(&h.path),
                     source_label: h.src.def.label.clone(),
                     volume: vols.of(&h.src),
+                    claimed: h.claimed,
                 },
             )
         })
@@ -431,7 +452,8 @@ pub(crate) fn after_delete(
     cas: &[u8],
     deleted: &HashSet<(String, i64)>,
 ) -> Result<(bool, bool)> {
-    let all = copies_of(lib, vols, cas)?;
+    let mut all = copies_of(lib, vols, cas)?;
+    all.retain(|(_, c)| !c.claimed);
     let kept =
         |c: &&(String, CopyAt)| !deleted.contains(&(c.1.record.source.0.clone(), c.1.record.id));
     let (_, before, ..) = tally(all.iter().map(|(f, c)| (f.as_str(), &c.volume)));
@@ -455,7 +477,8 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
     let mut drifted = 0u64;
     for s in &sources {
         let v = vols.of(s);
-        if !v.state.counts() {
+        // A device's claims are not copies.
+        if !v.state.counts() || s.is_device() {
             continue;
         }
         let path = s.store_dir().join("source.db");
@@ -534,12 +557,13 @@ impl Library {
         recount(&self.shared)
     }
 
-    /// Every record holding confirmed content `cas_id` (drifted ones excluded), with its
-    /// volume.
+    /// Every record holding confirmed content `cas_id` (drifted ones and device claims
+    /// excluded), with its volume.
     pub fn record_copies(&self, cas_id: &[u8]) -> Result<Vec<(RecordRef, Volume)>> {
         let vols = Volumes::load(&self.shared)?;
         Ok(copies_of(&self.shared, &vols, cas_id)?
             .into_iter()
+            .filter(|(_, c)| !c.claimed)
             .map(|(_, c)| (c.record, c.volume))
             .collect())
     }
@@ -591,24 +615,31 @@ impl Library {
             Some(cas) => copies_of(&self.shared, &vols, cas)?,
             None => Vec::new(),
         };
-        if copies.is_empty() {
-            // No content id yet (or only drifted copies): the record itself.
+        if copies.iter().all(|(_, c)| c.claimed) {
+            // No content id yet (or only drifted copies or claims): the record itself.
             let volume = vols.of(&src);
+            let mut locations = vec![CopyAt {
+                record: record.clone(),
+                path: src.absolute(&path),
+                source_label: src.def.label.clone(),
+                volume: volume.clone(),
+                claimed: false,
+            }];
+            locations.extend(copies.into_iter().map(|(_, c)| c));
             return Ok(Redundancy {
                 copies: 1,
                 failure_domains: 1,
                 backed_up: false,
                 offline_copies: u64::from(volume.state.offline()),
-                locations: vec![CopyAt {
-                    record: record.clone(),
-                    path: src.absolute(&path),
-                    source_label: src.def.label.clone(),
-                    volume,
-                }],
+                locations,
             });
         }
-        let (copies_n, failure_domains, backed_up, offline_copies) =
-            tally(copies.iter().map(|(f, c)| (f.as_str(), &c.volume)));
+        let (copies_n, failure_domains, backed_up, offline_copies) = tally(
+            copies
+                .iter()
+                .filter(|(_, c)| !c.claimed)
+                .map(|(f, c)| (f.as_str(), &c.volume)),
+        );
         Ok(Redundancy {
             copies: copies_n,
             failure_domains,

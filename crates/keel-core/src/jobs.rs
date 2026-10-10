@@ -180,6 +180,18 @@ impl JobCtx {
     pub fn router(&self) -> Arc<Router> {
         self.lib.router.read().clone()
     }
+
+    /// Appends a finished operation to the library's op log (redacted like every entry).
+    pub fn log_op(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        result: &str,
+        ok: bool,
+    ) -> Result<()> {
+        let entry = (kind.to_owned(), payload.clone(), result.to_owned(), ok);
+        crate::oplog::record_done(&self.lib, &[entry])
+    }
 }
 
 fn append_log(db: &Pool, id: JobId, line: &str) -> Result<()> {

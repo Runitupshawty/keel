@@ -31,5 +31,9 @@ data-encoding = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 fs4 = "0.13"
 
+# Spacedrop staging folders are hidden in Explorer too.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 [dev-dependencies]
 rustls-graviola.workspace = true

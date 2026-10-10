@@ -371,15 +371,18 @@ fn device_source_rewalk_picks_up_a_changed_listing_with_content_ids() {
         n.sort();
         n
     };
-    let cas = |name: &str| {
-        let p = pair.provider();
-        let entries: Vec<Entry> = p
-            .list(&pair.path(""))
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.name == name)
-            .collect();
-        guest.content_ids(&id, "", &entries).unwrap()[0]
+    // What the host claims is kept apart (`remote_cas`): never a confirmed content id.
+    let cas = |name: &str| -> Option<[u8; 32]> {
+        let db = rusqlite::Connection::open(src.store_dir().join("source.db")).unwrap();
+        let (claim, confirmed): (Option<Vec<u8>>, Option<Vec<u8>>) = db
+            .query_row(
+                "SELECT remote_cas, cas_id FROM record WHERE path = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(confirmed, None);
+        claim.map(|c| c.try_into().unwrap())
     };
 
     walk();
@@ -399,5 +402,627 @@ fn device_source_rewalk_picks_up_a_changed_listing_with_content_ids() {
     // The host's index is stale for a.txt: no id is sent and the old one is gone.
     assert_eq!(cas("a.txt"), None);
     drop(guest);
+    pair.close();
+}
+
+/// Serves a real library but claims `claim` as the content id of every file it lists.
+struct Liar {
+    inner: LibraryHandler,
+    claim: [u8; 32],
+}
+#[async_trait::async_trait]
+impl Handler for Liar {
+    async fn sources(&self, c: &RequestCtx) -> Vec<SourceInfo> {
+        self.inner.sources(c).await
+    }
+    async fn list(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<Vec<EntryInfo>> {
+        let mut v = self.inner.list(c, s, p).await?;
+        for e in v.iter_mut().filter(|e| !e.is_dir) {
+            e.content_id = Some(self.claim);
+        }
+        Ok(v)
+    }
+    async fn stat(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<EntryInfo> {
+        self.inner.stat(c, s, p).await
+    }
+    async fn read(
+        &self,
+        c: &RequestCtx,
+        s: &str,
+        p: &str,
+        r: Option<(u64, u64)>,
+    ) -> anyhow::Result<Box<dyn tokio::io::AsyncRead + Send + Unpin>> {
+        self.inner.read(c, s, p, r).await
+    }
+    async fn write(
+        &self,
+        c: &RequestCtx,
+        s: &str,
+        p: &str,
+        b: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+        at: WriteAt,
+    ) -> anyhow::Result<()> {
+        self.inner.write(c, s, p, b, at).await
+    }
+    async fn stat_partial(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<u64> {
+        self.inner.stat_partial(c, s, p).await
+    }
+    async fn mkdir(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<()> {
+        self.inner.mkdir(c, s, p).await
+    }
+    async fn rename(&self, c: &RequestCtx, s: &str, a: &str, b: &str) -> anyhow::Result<()> {
+        self.inner.rename(c, s, a, b).await
+    }
+    async fn remove(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<()> {
+        self.inner.remove(c, s, p).await
+    }
+    async fn storage(&self, c: &RequestCtx) -> Option<Storage> {
+        self.inner.storage(c).await
+    }
+}
+
+/// A paired device listing a decoy under a stolen content id: the only real copy still
+/// warns LastCopy, the decoy is no duplicate, and it shows only as a claim.
+#[test]
+fn a_device_claiming_a_content_id_never_counts_as_a_copy() {
+    use keel_core::{validate_preview_execute, Op, Warning};
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dirs: Vec<_> = (0..6).map(|_| tempfile::tempdir().unwrap()).collect();
+    let precious = b"the only copy of this document".to_vec();
+    let only = dirs[0].path().join("precious.txt");
+    std::fs::write(&only, &precious).unwrap();
+    let victim = Arc::new(Library::open(dirs[1].path(), "victim").unwrap());
+    victim.set_pause_on_battery(false);
+    let router = Arc::new(Router::new());
+    victim.set_router(router.clone());
+    let local = victim
+        .add_source(crate::library_tests::folder(dirs[0].path()))
+        .unwrap();
+    let done = |job| {
+        let info = victim.jobs().wait(job).unwrap();
+        assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    };
+    done(victim.index(&local).unwrap());
+    done(victim.hash().unwrap());
+    let warnings = || {
+        validate_preview_execute(
+            &victim,
+            Op::Delete {
+                paths: vec![VPath::local(&only)],
+            },
+        )
+        .unwrap()
+        .warnings
+    };
+    assert!(matches!(warnings()[..], [Warning::LastCopy { .. }]));
+
+    std::fs::write(dirs[2].path().join("decoy.txt"), b"junk").unwrap();
+    let attacker = Arc::new(Library::open(dirs[3].path(), "attacker").unwrap());
+    let shared = attacker
+        .add_source(crate::library_tests::folder(dirs[2].path()))
+        .unwrap();
+    let claim = *blake3::hash(&precious).as_bytes();
+    let (host, guest) = rt.block_on(async {
+        let host = Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dirs[4].path(),
+            Arc::new(Liar {
+                inner: LibraryHandler::new(attacker.clone()),
+                claim,
+            }),
+            NodeOptions::offline(),
+        )
+        .await
+        .unwrap();
+        let guest = Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dirs[5].path(),
+            Arc::new(LibraryHandler::new(victim.clone())),
+            NodeOptions::offline(),
+        )
+        .await
+        .unwrap();
+        let code = host.pair_code().await.unwrap();
+        guest
+            .pair_with(&code.ticket().parse().unwrap())
+            .await
+            .unwrap();
+        (host, guest)
+    });
+    host.grant(Grant {
+        peer: PeerId(guest.id()),
+        source: shared.0.clone(),
+        subtree: String::new(),
+        access: Access::Read,
+        created: 0,
+    })
+    .unwrap();
+    router.register(Arc::new(NodeProvider::new(
+        guest.clone(),
+        rt.handle().clone(),
+    )));
+    let device = victim
+        .add_source(SourceDef {
+            label: "Other device".into(),
+            root: VPath::parse(&format!("node://{}/{}", host.id(), shared.0)).unwrap(),
+            kind: SourceKind::Device,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })
+        .unwrap();
+    let src = victim.source(&device).unwrap();
+    Indexer::full_walk(&src, &router, &|_| {}, &AtomicBool::new(false)).unwrap();
+    victim.recount_protection().unwrap();
+
+    assert!(matches!(warnings()[..], [Warning::LastCopy { .. }]));
+    assert!(victim.duplicates(0).unwrap().is_empty());
+    assert_eq!(victim.protection_summary().unwrap().single_copy, 1);
+    let mine = victim.list_children(&local, "").unwrap();
+    let r = victim.redundancy(&mine[0].record).unwrap();
+    assert_eq!((r.copies, r.failure_domains), (1, 1));
+    let claimed: Vec<_> = r.locations.iter().filter(|l| l.claimed).collect();
+    assert_eq!(claimed.len(), 1, "the decoy shows as a claim only");
+    assert_eq!(claimed[0].path.name(), "decoy.txt");
+    assert!(victim.last_copy(&mine[0].record).unwrap());
+    assert_eq!(victim.record_copies(&claim).unwrap().len(), 1);
+    rt.block_on(async {
+        host.close().await;
+        guest.close().await;
+    });
+}
+
+// ---- offers, decisions and receiving (Task 36 review) ----
+
+fn offer(pair: &crate::library_tests::Pair, id: &str, files: &[(&str, u64)]) -> Response {
+    let files = files.iter().map(|(p, n)| (p.to_string(), *n)).collect();
+    let host = PeerId(pair.host.id());
+    let req = Request::DropOffer {
+        id: id.into(),
+        files,
+    };
+    pair.rt.block_on(pair.guest.request(&host, req)).unwrap()
+}
+
+fn raw(pair: &crate::library_tests::Pair, req: Request) -> Response {
+    let host = PeerId(pair.host.id());
+    pair.rt.block_on(pair.guest.request(&host, req)).unwrap()
+}
+
+/// One whole file as the final piece of drop `id`.
+fn put(pair: &crate::library_tests::Pair, id: &str, name: &str, bytes: &[u8]) -> Response {
+    let host = PeerId(pair.host.id());
+    pair.rt
+        .block_on(pair.guest.write_stream(
+            &host,
+            &format!("drop:{id}"),
+            name,
+            Box::new(std::io::Cursor::new(bytes.to_vec())),
+            WriteAt {
+                offset: 0,
+                size: bytes.len() as u64,
+                final_: true,
+                expect: Some(*blake3::hash(bytes).as_bytes()),
+            },
+        ))
+        .unwrap()
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut n: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    n.sort();
+    n
+}
+
+/// Every offer is held for the test to answer.
+fn hold(pair: &crate::library_tests::Pair, inbox: &Path) -> Arc<Mutex<Vec<IncomingDrop>>> {
+    let held: Arc<Mutex<Vec<IncomingDrop>>> = Arc::default();
+    let h = held.clone();
+    pair.handler
+        .on_drop(inbox.to_owned(), move |d: IncomingDrop| h.lock().push(d));
+    held
+}
+
+#[test]
+fn an_answer_holds_for_one_device_id_and_file_list_only() {
+    let pair = pair();
+    let inbox = tempfile::tempdir().unwrap();
+    let held = hold(&pair, inbox.path());
+    let id = "0123456789abcdef0123456789abcdef";
+    assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Pending);
+    held.lock().pop().unwrap().reply.answer(true);
+    assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Ok, "resumes");
+    assert!(held.lock().is_empty(), "no second prompt for the same list");
+    // Another list under the accepted id is a new offer: asked again, nothing goes in.
+    assert_eq!(
+        offer(&pair, id, &[("a.txt", 1), ("payload.exe", 7)]),
+        Response::Pending
+    );
+    assert_eq!(held.lock().len(), 1);
+    assert!(matches!(
+        put(&pair, id, "payload.exe", b"payload"),
+        Response::Denied(_)
+    ));
+    held.lock().pop().unwrap().reply.answer(false);
+    assert!(matches!(
+        raw(&pair, Request::DropStatus { id: id.into() }),
+        Response::Denied(_)
+    ));
+    // A completed drop forgets its answer: the same id again asks again.
+    assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Pending);
+    held.lock().pop().unwrap().reply.answer(true);
+    assert_eq!(
+        raw(&pair, Request::DropStatus { id: id.into() }),
+        Response::Ok
+    );
+    assert_eq!(put(&pair, id, "a.txt", b"a"), Response::Ok);
+    assert_eq!(offer(&pair, id, &[("payload.exe", 7)]), Response::Pending);
+    assert!(matches!(
+        put(&pair, id, "payload.exe", b"payload"),
+        Response::Denied(_)
+    ));
+    assert_eq!(names(inbox.path()), ["a.txt"]);
+    pair.close();
+}
+
+#[test]
+fn unanswered_offers_answer_at_once_and_a_cancel_withdraws_the_prompt() {
+    let pair = pair();
+    pair.grant("", Access::Read);
+    let host = PeerId(pair.host.id());
+    let inbox = tempfile::tempdir().unwrap();
+    let held = hold(&pair, inbox.path());
+    let id = "fedcba9876543210fedcba9876543210";
+    let answers: Vec<Response> = pair.rt.block_on(async {
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let g = pair.guest.clone();
+            let req = Request::DropOffer {
+                id: id.into(),
+                files: vec![("a.txt".into(), 1)],
+            };
+            tasks.push(tokio::spawn(async move { g.request(&host, req).await }));
+        }
+        let mut out = Vec::new();
+        for t in tasks {
+            out.push(t.await.unwrap().unwrap());
+        }
+        out
+    });
+    assert!(
+        answers.iter().all(|r| *r == Response::Pending),
+        "{answers:?}"
+    );
+    assert_eq!(held.lock().len(), 1, "one prompt");
+    assert!(matches!(raw(&pair, Request::Ping), Response::Pong { .. }));
+    let list = Request::List {
+        source: pair.source.clone(),
+        path: String::new(),
+        after: None,
+        limit: 10,
+    };
+    assert!(matches!(raw(&pair, list), Response::Entries { .. }));
+    let status = || raw(&pair, Request::DropStatus { id: id.into() });
+    assert_eq!(status(), Response::Pending);
+    // The sender gives up: the prompt is withdrawn; a late Accept stages nothing.
+    let prompt = held.lock().pop().unwrap();
+    assert!(!prompt.reply.withdrawn());
+    assert_eq!(
+        raw(&pair, Request::DropCancel { id: id.into() }),
+        Response::Ok
+    );
+    assert!(prompt.reply.withdrawn());
+    prompt.reply.answer(true);
+    assert!(matches!(status(), Response::Error(_)));
+    assert!(names(inbox.path()).is_empty());
+    // Staging an earlier session left behind is swept; nothing else is.
+    std::fs::create_dir_all(inbox.path().join(".keel-partial-old")).unwrap();
+    std::fs::write(inbox.path().join(".keel-partial-old/0"), b"x").unwrap();
+    std::fs::create_dir_all(inbox.path().join("kept")).unwrap();
+    spacedrop::sweep(inbox.path(), spacedrop::STALE);
+    assert_eq!(names(inbox.path()), [".keel-partial-old", "kept"], "fresh");
+    spacedrop::sweep(inbox.path(), Duration::ZERO);
+    assert_eq!(names(inbox.path()), ["kept"]);
+    pair.close();
+}
+
+#[test]
+fn drops_are_logged_per_file_on_both_sides() {
+    let pair = pair();
+    spacedrop::register(&pair.lib);
+    let host = PeerId(pair.host.id());
+    let dir = pair.files.path().join("pack");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("one.txt"), b"one").unwrap();
+    std::fs::write(dir.join("two.txt"), b"second").unwrap();
+    let inbox = tempfile::tempdir().unwrap();
+    pair.handler
+        .on_drop(inbox.path().to_owned(), |d: IncomingDrop| {
+            d.reply.answer(true)
+        });
+    let job = spacedrop::send(&pair.guest, &pair.lib, host, vec![VPath::local(&dir)]).unwrap();
+    let info = pair.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    // Both nodes serve one library here, so both sides' entries are in its op log (the
+    // receiver's are written in batches, a moment later).
+    let count = |kind: &str| {
+        let log = pair.lib.op_log(100).unwrap();
+        log.iter().filter(|e| e.kind == kind).count()
+    };
+    wait_for("the receiver's entries", || count("net.drop-received") == 2);
+    let log = pair.lib.op_log(100).unwrap();
+    let of = |kind: &str| -> Vec<&keel_core::OpLogEntry> {
+        log.iter().filter(|e| e.kind == kind).collect()
+    };
+    for kind in ["net.drop-sent", "net.drop-received"] {
+        let entries = of(kind);
+        assert_eq!(entries.len(), 2, "{kind}: {log:?}");
+        let two = entries
+            .iter()
+            .find(|e| e.payload["path"] == "pack/two.txt")
+            .unwrap();
+        assert_eq!(two.payload["size"], 6);
+        assert_eq!(
+            two.payload["blake3"],
+            blake3::hash(b"second").to_hex().as_str()
+        );
+        assert_eq!(two.ok, Some(true));
+    }
+    assert_eq!(of("net.drop-offer").len(), 1);
+    assert_eq!(
+        of("net.drop-received")[0].payload["peer"],
+        pair.guest.id().to_string()
+    );
+    pair.close();
+}
+
+#[test]
+fn two_thousand_files_arrive_in_linear_time() {
+    let mut pair = pair();
+    let inbox = tempfile::tempdir().unwrap();
+    pair.handler
+        .on_drop(inbox.path().to_owned(), |d: IncomingDrop| {
+            d.reply.answer(true)
+        });
+    let id = "00000000000000000000000000002000";
+    let files: Vec<String> = (0..2000).map(|i| format!("d/f{i:06}.bin")).collect();
+    let listed: Vec<(&str, u64)> = files.iter().map(|f| (f.as_str(), 0)).collect();
+    assert_eq!(offer(&pair, id, &listed), Response::Ok);
+    let meta = staged(inbox.path()).unwrap().join("meta.json");
+    let written = std::fs::read(&meta).unwrap();
+    // Timed alone: other tests' nodes would share the machine.
+    let _alone = crate::library_tests::alone(&mut pair);
+    let send = |part: &[String]| {
+        for f in part {
+            assert_eq!(put(&pair, id, f, b""), Response::Ok);
+        }
+    };
+    // What the same number of bare requests costs on this machine now (a loaded machine
+    // stretches the 3 s budget accordingly).
+    let floor = Instant::now();
+    for f in &files {
+        let status = Request::StatPartial {
+            source: format!("drop:{id}"),
+            path: f.clone(),
+        };
+        assert!(matches!(raw(&pair, status), Response::Partial { .. }));
+    }
+    let budget = Duration::from_secs(3).max(floor.elapsed() * 3);
+    let started = Instant::now();
+    send(&files[..1000]);
+    let first = started.elapsed();
+    assert_eq!(std::fs::read(&meta).unwrap(), written, "meta written once");
+    send(&files[1000..]);
+    let took = started.elapsed();
+    assert_eq!(
+        std::fs::read_dir(inbox.path().join("d")).unwrap().count(),
+        2000
+    );
+    assert!(staged(inbox.path()).is_none(), "staging removed when done");
+    assert!(
+        took < budget,
+        "2,000 files took {took:?} (budget {budget:?})"
+    );
+    // Linear: the second thousand costs about what the first did.
+    assert!(
+        took - first < first * 3,
+        "{first:?}, then {:?}",
+        took - first
+    );
+    pair.close();
+}
+
+#[test]
+fn publishing_never_replaces_a_file() {
+    let inbox = tempfile::tempdir().unwrap();
+    let stage = tempfile::tempdir().unwrap();
+    std::fs::write(inbox.path().join("a.txt"), b"mine").unwrap();
+    let staged = |n: usize| {
+        let p = stage.path().join(n.to_string());
+        std::fs::write(&p, n.to_string()).unwrap();
+        p
+    };
+    let first = spacedrop::publish(&staged(0), inbox.path(), "a.txt").unwrap();
+    assert_eq!(first, inbox.path().join("a (1).txt"));
+    assert_eq!(std::fs::read(inbox.path().join("a.txt")).unwrap(), b"mine");
+    // Many at once under one name: every one arrives.
+    let paths: Vec<PathBuf> = (1..=40).map(staged).collect();
+    std::thread::scope(|s| {
+        for p in &paths {
+            let inbox = inbox.path();
+            s.spawn(move || spacedrop::publish(p, inbox, "a.txt").unwrap());
+        }
+    });
+    assert_eq!(names(inbox.path()).len(), 42);
+}
+
+/// `many://x/pack`: a folder of `n` files with long names (an offer too big to send).
+struct Many(usize);
+impl Provider for Many {
+    fn scheme(&self) -> &'static str {
+        "many"
+    }
+    fn caps(&self) -> Caps {
+        Caps::default()
+    }
+    fn list(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
+        Ok((0..self.0)
+            .map(|i| {
+                let name = format!("{i:06}-{}.bin", "x".repeat(150));
+                Entry {
+                    path: dir.join(&name),
+                    name,
+                    kind: Kind::File,
+                    size: 1,
+                    modified: None,
+                    hidden: false,
+                    is_link: false,
+                    encrypted: false,
+                    ext: "bin".into(),
+                }
+            })
+            .collect())
+    }
+    fn list_complete(&self, d: &VPath) -> anyhow::Result<Vec<Entry>> {
+        self.list(d)
+    }
+    fn stat(&self, p: &VPath) -> anyhow::Result<Entry> {
+        Ok(Entry {
+            path: p.clone(),
+            name: "pack".into(),
+            kind: Kind::Dir,
+            size: 0,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        })
+    }
+    fn read(&self, _: &VPath) -> anyhow::Result<Box<dyn Read + Send>> {
+        anyhow::bail!("not here")
+    }
+    fn write(&self, _: &VPath) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
+        anyhow::bail!("read-only")
+    }
+    fn mkdir(&self, _: &VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn rename(&self, _: &VPath, _: &VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn remove(&self, _: &VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn remove_kind(&self) -> RemoveKind {
+        RemoveKind::Permanent
+    }
+    fn local_copy(&self, _: &VPath) -> anyhow::Result<PathBuf> {
+        anyhow::bail!("no")
+    }
+    fn local_copy_cancellable(
+        &self,
+        p: &VPath,
+        _: &dyn Fn(Progress),
+        _: &AtomicBool,
+    ) -> anyhow::Result<PathBuf> {
+        self.local_copy(p)
+    }
+}
+
+#[test]
+fn an_offer_too_big_to_send_fails_at_once() {
+    let pair = pair();
+    spacedrop::register(&pair.lib);
+    let router = Arc::new(Router::new());
+    router.register(Arc::new(Many(8_000)));
+    pair.lib.set_router(router);
+    let started = Instant::now();
+    let host = PeerId(pair.host.id());
+    let pack = VPath::parse("many://x/pack").unwrap();
+    let job = spacedrop::send(&pair.guest, &pair.lib, host, vec![pack]).unwrap();
+    let info = pair.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, JobStatus::Failed);
+    assert!(info.log.contains("too many files"), "{}", info.log);
+    assert!(started.elapsed() < Duration::from_secs(30));
+    pair.close();
+}
+
+#[test]
+fn forgetting_a_device_drops_its_offers_and_staging() {
+    let pair = pair();
+    let inbox = tempfile::tempdir().unwrap();
+    let held = hold(&pair, inbox.path());
+    let (a, b) = (
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    assert_eq!(offer(&pair, a, &[("big.bin", 10)]), Response::Pending);
+    held.lock().pop().unwrap().reply.answer(true);
+    assert_eq!(offer(&pair, a, &[("big.bin", 10)]), Response::Ok);
+    let host = PeerId(pair.host.id());
+    let piece = pair.rt.block_on(pair.guest.write_stream(
+        &host,
+        &format!("drop:{a}"),
+        "big.bin",
+        Box::new(std::io::Cursor::new(b"half!".to_vec())),
+        WriteAt {
+            offset: 0,
+            size: 5,
+            final_: false,
+            expect: None,
+        },
+    ));
+    assert_eq!(piece.unwrap(), Response::Ok);
+    let staging = staged(inbox.path()).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const HIDDEN: u32 = 0x2;
+        let attributes = std::fs::metadata(&staging).unwrap().file_attributes();
+        assert_ne!(attributes & HIDDEN, 0, "staging is hidden in Explorer");
+    }
+    assert_eq!(offer(&pair, b, &[("c.txt", 1)]), Response::Pending);
+    let prompt = held.lock().pop().unwrap();
+    pair.host.forget_peer(&PeerId(pair.guest.id())).unwrap();
+    assert!(prompt.reply.withdrawn());
+    assert!(staged(inbox.path()).is_none());
+    pair.close();
+}
+
+#[test]
+fn received_files_and_pairings_are_never_dropped_from_events() {
+    let pair = pair();
+    let events = pair.host.events();
+    for _ in 0..300 {
+        pair.host.emit(NetEvent::GrantChanged);
+    }
+    let guest = PeerId(pair.guest.id());
+    pair.host.emit(NetEvent::DropReceived {
+        peer: guest,
+        id: "x".into(),
+        path: PathBuf::from("a.txt"),
+    });
+    // Requests are coalesced: one event a second per device.
+    pair.host.emit_request(guest, "list");
+    pair.host.emit_request(guest, "list");
+    let got: Vec<NetEvent> = events.try_iter().collect();
+    assert_eq!(
+        got.len(),
+        257,
+        "256 refreshable events, then only what matters"
+    );
+    assert!(matches!(got.last(), Some(NetEvent::DropReceived { .. })));
+    let rest = pair.host.events();
+    pair.host.emit_request(guest, "stat");
+    assert_eq!(rest.try_iter().count(), 0, "within the same second");
     pair.close();
 }

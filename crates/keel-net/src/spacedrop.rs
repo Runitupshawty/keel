@@ -8,10 +8,17 @@
 //! reopened node) is retried with backoff until nothing moved for `GIVE_UP`; the job
 //! survives restarts like any durable job.
 //!
-//! Receiver: the node asks its `Handler::drop_offer`, which names an inbox folder to
-//! accept. Pieces are staged in `<inbox>/.keel-partial-<id>/<n>` (with `meta.json`, so
-//! a restarted receiver resumes when the sender re-offers); a file is moved into the
-//! inbox only when complete and verified, never overwriting (`name (1).ext`).
+//! The offer is answered at once: accepted, declined, or pending while the receiving
+//! user decides; the sender then polls (`Request::DropStatus`) until an answer, a cancel
+//! or `GIVE_UP`. Every sent file is in the sender's op log (`net.drop-sent`).
+//!
+//! Receiver: the node hands the offer to its `Handler::drop_offer`, which names the inbox
+//! and passes the reply on. An answer holds for that device, drop id and file list only.
+//! Pieces are staged in `<inbox>/.keel-partial-<key>/<n>` (`meta.json` written once, and a
+//! line per published file in `published`, so a restarted receiver resumes when the sender
+//! re-offers); a file is moved into the inbox only when complete and verified, never
+//! replacing anything (`name (1).ext`), and logged (`net.drop-received`, through
+//! `Handler::log`).
 use crate::{stage, *};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use keel_core::{Cancelled, Job, JobCtx, JobId, Library};
@@ -26,7 +33,7 @@ use std::{
     sync::{Arc, LazyLock, Weak},
     time::{Duration, Instant},
 };
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, sync::watch};
 
 /// The job kind (`Jobs::register`).
 pub const KIND: &str = "drop";
@@ -93,52 +100,178 @@ fn valid_rel(rel: &str) -> bool {
 
 // ---- receiver ----
 
-pub(crate) struct Incoming {
-    peer: PeerId,
-    files: Vec<(String, u64)>,
-    inbox: PathBuf,
-    published: Vec<bool>,
+/// Offers by device, then drop id: a decision is the device's and that file list's only.
+pub(crate) type Drops = HashMap<PeerId, HashMap<String, Offer>>;
+
+pub(crate) enum Offer {
+    /// Waiting for the user (`IncomingDrop::reply`); lands in `inbox` when accepted (None
+    /// while the handler is being asked).
+    Asking {
+        files: Vec<(String, u64)>,
+        inbox: Option<PathBuf>,
+        answer: watch::Receiver<Option<bool>>,
+        /// A `DropStatus` waits for the answer (one at a time).
+        waiting: bool,
+    },
+    /// Accepted; its staging folder is being set up.
+    Preparing {
+        files: Vec<(String, u64)>,
+    },
+    Accepted(Incoming),
 }
 
+impl Offer {
+    fn files(&self) -> &[(String, u64)] {
+        match self {
+            Offer::Asking { files, .. } | Offer::Preparing { files } => files,
+            Offer::Accepted(d) => &d.files,
+        }
+    }
+}
+
+pub(crate) struct Incoming {
+    files: Vec<(String, u64)>,
+    /// Offered path to its index in `files`.
+    index: HashMap<String, usize>,
+    inbox: PathBuf,
+    dir: PathBuf,
+    published: Vec<bool>,
+    /// Files not published yet.
+    left: usize,
+}
+
+/// Written once, when the drop is accepted; published files are appended to `published`.
 #[derive(Serialize, Deserialize)]
 struct Meta {
     peer: PeerId,
     files: Vec<(String, u64)>,
-    published: Vec<bool>,
 }
 
-fn staging(inbox: &Path, id: &str) -> PathBuf {
-    inbox.join(format!(".keel-partial-{id}"))
+/// Staging older than this, left by an earlier session, is swept (`sweep`).
+pub const STALE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// `<inbox>/.keel-partial-<hash of device and drop id>`: two devices never share one.
+fn staging(inbox: &Path, peer: &PeerId, id: &str) -> PathBuf {
+    let mut h = blake3::Hasher::new();
+    h.update(&peer.0 .0);
+    h.update(id.as_bytes());
+    let key = data_encoding::HEXLOWER.encode(&h.finalize().as_bytes()[..16]);
+    inbox.join(format!(".keel-partial-{key}"))
 }
 
-fn save_meta(dir: &Path, d: &Incoming) -> Result<()> {
-    let meta = Meta {
-        peer: d.peer,
-        files: d.files.clone(),
-        published: d.published.clone(),
+/// Hidden in Explorer too (the dot hides it elsewhere).
+#[cfg(windows)]
+fn hide(p: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN},
     };
-    let tmp = dir.join("meta.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&meta)?)?;
-    std::fs::rename(tmp, dir.join("meta.json"))?;
-    Ok(())
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated path that outlives the call.
+    let _ = unsafe { SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_HIDDEN) };
+}
+#[cfg(not(windows))]
+fn hide(_: &Path) {}
+
+/// Blocking: the staging folder of an accepted drop, resumed when an earlier session left
+/// one for the same device and files, else new (meta written once).
+fn prepare(peer: PeerId, id: &str, files: Vec<(String, u64)>, inbox: PathBuf) -> Result<Incoming> {
+    let dir = staging(&inbox, &peer, id);
+    let same = std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Meta>(&b).ok())
+        .is_some_and(|m| m.peer == peer && m.files == files);
+    let mut published = vec![false; files.len()];
+    if same {
+        let log = std::fs::read_to_string(dir.join("published")).unwrap_or_default();
+        for i in log.lines().filter_map(|l| l.parse::<usize>().ok()) {
+            if let Some(p) = published.get_mut(i) {
+                *p = true;
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        hide(&dir);
+        let meta = Meta {
+            peer,
+            files: files.clone(),
+        };
+        std::fs::write(dir.join("meta.json"), serde_json::to_vec(&meta)?)?;
+    }
+    let index = files
+        .iter()
+        .enumerate()
+        .map(|(i, (p, _))| (p.clone(), i))
+        .collect();
+    let left = published.iter().filter(|p| !**p).count();
+    Ok(Incoming {
+        files,
+        index,
+        inbox,
+        dir,
+        published,
+        left,
+    })
 }
 
-/// `inbox/rel`, or `name (n).ext` beside it when taken. ponytail: exists-then-rename;
-/// two drops landing the same name in the same instant could collide (one fails).
-fn free_name(inbox: &Path, rel: &str) -> PathBuf {
+/// Deletes staging folders in `inbox` that nothing touched for `older_than` (left by a
+/// session that ended before its drops did). Best effort.
+pub fn sweep(inbox: &Path, older_than: Duration) {
+    let touched = |dir: &Path| {
+        std::iter::once(std::fs::metadata(dir))
+            .chain(
+                std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.metadata()),
+            )
+            .filter_map(|m| m.ok()?.modified().ok())
+            .max()
+    };
+    for e in std::fs::read_dir(inbox).into_iter().flatten().flatten() {
+        let stale = e
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".keel-partial-")
+            && e.file_type().is_ok_and(|t| t.is_dir())
+            && touched(&e.path())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age >= older_than);
+        if stale {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Moves the verified staging file to `inbox/rel`, or `name (n).ext` beside it when that
+/// is taken; never replaces anything (no-replace rename, so two drops landing one name at
+/// once both arrive).
+pub(crate) fn publish(staged: &Path, inbox: &Path, rel: &str) -> Result<PathBuf> {
     let target = rel.split('/').fold(inbox.to_owned(), |p, c| p.join(c));
-    if !target.exists() {
-        return target;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
     }
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_owned(), format!(".{ext}")),
         _ => (name.into_owned(), String::new()),
     };
-    (1..)
-        .map(|n| target.with_file_name(format!("{stem} ({n}){ext}")))
-        .find(|p| !p.exists())
-        .expect("unbounded")
+    let from = VPath::local(staged);
+    for n in 0..10_000 {
+        let to = match n {
+            0 => target.clone(),
+            n => target.with_file_name(format!("{stem} ({n}){ext}")),
+        };
+        match keel_vfs::LocalProvider.rename_noreplace(&from, &VPath::local(&to)) {
+            Ok(()) => return Ok(to),
+            Err(_) if to.symlink_metadata().is_ok() => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    bail!("no free name for {rel}")
 }
 
 impl Node {
@@ -150,9 +283,22 @@ impl Node {
             }
             _ => None,
         };
-        id.is_some_and(|id| self.drops.lock().get(id).is_some_and(|d| d.peer == peer))
+        id.is_some_and(|id| {
+            let drops = self.drops.lock();
+            matches!(
+                drops.get(&peer).and_then(|m| m.get(id)),
+                Some(Offer::Accepted(_))
+            )
+        })
     }
 
+    fn log_drop(&self, ctx: &RequestCtx, op: &str, payload: serde_json::Value, ok: bool) {
+        self.handler.log(ctx, op, payload, ok);
+    }
+
+    /// Answers at once: `Ok` (accepted), `Pending` (the user is deciding: poll with
+    /// `DropStatus`) or `Denied`. The same device offering the same id with another file
+    /// list is asked again.
     pub(crate) async fn drop_offer(
         &self,
         ctx: &RequestCtx,
@@ -168,66 +314,198 @@ impl Node {
                 && files.iter().all(|(p, _)| valid_rel(p)),
             "invalid drop offer"
         );
-        if let Some(d) = self.drops.lock().get(id) {
-            return Ok(if d.peer == ctx.peer && d.files == files {
-                Response::Ok
+        // Registered before the handler is asked, so concurrent re-offers ask once.
+        let (ask, replaced) = {
+            let mut drops = self.drops.lock();
+            let mine = drops.entry(ctx.peer).or_default();
+            if mine.get(id).is_some_and(|o| o.files() == files.as_slice()) {
+                (None, None)
             } else {
-                Response::Denied("drop id in use".into())
-            });
-        }
-        let Some(inbox) = self.handler.drop_offer(ctx, id, &files).await else {
-            return Ok(Response::Denied("declined".into()));
-        };
-        let dir = staging(&inbox, id);
-        // Staging left by an earlier session resumes when it is the same offer.
-        let published = match std::fs::read(dir.join("meta.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Meta>(&b).ok())
-        {
-            Some(m) if m.peer == ctx.peer && m.files == files => m.published,
-            _ => {
-                let _ = std::fs::remove_dir_all(&dir);
-                vec![false; files.len()]
+                let replaced = mine.remove(id);
+                let (tx, rx) = watch::channel(None);
+                let asking = Offer::Asking {
+                    files: files.clone(),
+                    inbox: None,
+                    answer: rx,
+                    waiting: false,
+                };
+                mine.insert(id.to_owned(), asking);
+                (Some(tx), replaced)
             }
         };
-        std::fs::create_dir_all(&dir)?;
-        let incoming = Incoming {
-            peer: ctx.peer,
-            files,
-            inbox,
-            published,
-        };
-        save_meta(&dir, &incoming)?;
-        self.drops.lock().insert(id.to_owned(), incoming);
-        Ok(Response::Ok)
+        if let Some(Offer::Accepted(old)) = replaced {
+            let _ = tokio::fs::remove_dir_all(&old.dir).await;
+        }
+        if let Some(tx) = ask {
+            let offer = IncomingDrop {
+                peer: ctx.peer,
+                label: ctx.label.clone(),
+                id: id.to_owned(),
+                files: files.clone(),
+                reply: DropReply(tx),
+            };
+            let inbox = self.handler.drop_offer(offer);
+            let mut drops = self.drops.lock();
+            let mine = drops.entry(ctx.peer).or_default();
+            match (inbox, mine.get_mut(id)) {
+                (Some(dir), Some(Offer::Asking { inbox, .. })) => *inbox = Some(dir),
+                (Some(_), _) => {}
+                (None, _) => {
+                    mine.remove(id);
+                    drop(drops);
+                    let payload = json!({"drop": id, "files": files.len()});
+                    self.log_drop(ctx, "drop-offer", payload, false);
+                    return Ok(Response::Denied("declined".into()));
+                }
+            }
+        }
+        self.drop_status(ctx, id, Duration::ZERO).await
     }
 
-    /// (inbox, index, size, published) of `path` in drop `id` from `peer`.
-    fn drop_file(&self, peer: PeerId, id: &str, path: &str) -> Result<(PathBuf, usize, u64, bool)> {
+    /// `DropStatus`: waits up to `wait` for the user (one waiter per offer; others get
+    /// `Pending` at once), then answers like `drop_offer`. Unknown: `Error`.
+    pub(crate) async fn drop_status(
+        &self,
+        ctx: &RequestCtx,
+        id: &str,
+        mut wait: Duration,
+    ) -> Result<Response> {
+        let peer = ctx.peer;
+        loop {
+            let decided = {
+                let mut drops = self.drops.lock();
+                let Some(offer) = drops.get_mut(&peer).and_then(|m| m.get_mut(id)) else {
+                    return Ok(Response::Error("no such drop".into()));
+                };
+                match offer {
+                    Offer::Accepted(_) => return Ok(Response::Ok),
+                    Offer::Preparing { .. } => return Ok(Response::Pending),
+                    // The handler is still being asked.
+                    Offer::Asking { inbox: None, .. } => return Ok(Response::Pending),
+                    Offer::Asking {
+                        answer, waiting, ..
+                    } => {
+                        let seen = *answer.borrow();
+                        match seen {
+                            Some(accept) => Ok(accept),
+                            // Dropped unanswered: declined.
+                            None if answer.has_changed().is_err() => Ok(false),
+                            None if wait.is_zero() || *waiting => return Ok(Response::Pending),
+                            None => {
+                                *waiting = true;
+                                Err(answer.clone())
+                            }
+                        }
+                    }
+                }
+            };
+            match decided {
+                Err(mut answer) => {
+                    let _ = tokio::time::timeout(wait, answer.wait_for(Option::is_some)).await;
+                    wait = Duration::ZERO;
+                    let mut drops = self.drops.lock();
+                    if let Some(Offer::Asking { waiting, .. }) =
+                        drops.get_mut(&peer).and_then(|m| m.get_mut(id))
+                    {
+                        *waiting = false;
+                    }
+                }
+                Ok(false) => {
+                    let gone = self.drops.lock().get_mut(&peer).and_then(|m| m.remove(id));
+                    let n = gone.map_or(0, |o| o.files().len());
+                    self.log_drop(ctx, "drop-offer", json!({"drop": id, "files": n}), false);
+                    return Ok(Response::Denied("declined".into()));
+                }
+                Ok(true) => return self.accept(ctx, id).await,
+            }
+        }
+    }
+
+    /// The user said yes: sets up the staging folder (no lock held), then takes pieces.
+    async fn accept(&self, ctx: &RequestCtx, id: &str) -> Result<Response> {
+        let peer = ctx.peer;
+        let (files, inbox) = {
+            let mut drops = self.drops.lock();
+            let Some(offer) = drops.get_mut(&peer).and_then(|m| m.get_mut(id)) else {
+                return Ok(Response::Error("no such drop".into()));
+            };
+            let Offer::Asking {
+                files,
+                inbox: Some(inbox),
+                ..
+            } = offer
+            else {
+                return Ok(Response::Pending);
+            };
+            let (files, inbox) = (files.clone(), inbox.clone());
+            *offer = Offer::Preparing {
+                files: files.clone(),
+            };
+            (files, inbox)
+        };
+        let n = files.len();
+        let owned = id.to_owned();
+        let prepared = tokio::task::spawn_blocking(move || prepare(peer, &owned, files, inbox))
+            .await
+            .map_err(|e| anyhow!("staging failed: {e}"))
+            .and_then(|r| r);
+        let mut drops = self.drops.lock();
+        let slot = drops.get_mut(&peer).and_then(|m| m.get_mut(id));
+        let result = match (prepared, slot) {
+            // Still wanted (not cancelled or forgotten meanwhile).
+            (Ok(incoming), Some(slot @ Offer::Preparing { .. })) => {
+                *slot = Offer::Accepted(incoming);
+                Ok(Response::Ok)
+            }
+            (Ok(incoming), _) => {
+                drop(drops);
+                let _ = std::fs::remove_dir_all(&incoming.dir);
+                return Ok(Response::Error("no such drop".into()));
+            }
+            (Err(e), _) => {
+                if let Some(m) = drops.get_mut(&peer) {
+                    m.remove(id);
+                }
+                Err(e)
+            }
+        };
+        drop(drops);
+        let ok = result.is_ok();
+        self.log_drop(ctx, "drop-offer", json!({"drop": id, "files": n}), ok);
+        result
+    }
+
+    /// (inbox, staging folder, index, size, published) of `path` in drop `id` from `peer`.
+    fn drop_file(
+        &self,
+        peer: PeerId,
+        id: &str,
+        path: &str,
+    ) -> Result<(PathBuf, PathBuf, usize, u64, bool)> {
         let drops = self.drops.lock();
-        let d = drops
-            .get(id)
-            .filter(|d| d.peer == peer)
-            .context("no such drop")?;
-        let i = d
-            .files
-            .iter()
-            .position(|(p, _)| p == path)
-            .context("not in this drop")?;
-        Ok((d.inbox.clone(), i, d.files[i].1, d.published[i]))
+        let Some(Offer::Accepted(d)) = drops.get(&peer).and_then(|m| m.get(id)) else {
+            bail!("no such drop");
+        };
+        let i = *d.index.get(path).context("not in this drop")?;
+        Ok((
+            d.inbox.clone(),
+            d.dir.clone(),
+            i,
+            d.files[i].1,
+            d.published[i],
+        ))
     }
 
     pub(crate) fn drop_partial(&self, peer: PeerId, id: &str, path: &str) -> Result<Response> {
-        let (inbox, i, size, published) = self.drop_file(peer, id, path)?;
+        let (_, dir, i, size, published) = self.drop_file(peer, id, path)?;
         Ok(if published {
             Response::Partial {
                 len: size,
                 complete: true,
             }
         } else {
-            let staged = staging(&inbox, id).join(i.to_string());
             Response::Partial {
-                len: std::fs::metadata(staged).map_or(0, |m| m.len()),
+                len: std::fs::metadata(dir.join(i.to_string())).map_or(0, |m| m.len()),
                 complete: false,
             }
         })
@@ -235,13 +513,14 @@ impl Node {
 
     pub(crate) async fn drop_piece(
         &self,
-        peer: PeerId,
+        ctx: &RequestCtx,
         id: &str,
         path: &str,
         body: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
         at: WriteAt,
     ) -> Result<()> {
-        let (inbox, i, size, published) = self.drop_file(peer, id, path)?;
+        let peer = ctx.peer;
+        let (inbox, dir, i, size, published) = self.drop_file(peer, id, path)?;
         let end = at.offset + at.size;
         ensure!(!published, "already received");
         ensure!(end <= size, "piece beyond the offered size");
@@ -249,38 +528,51 @@ impl Node {
             !at.final_ || (end == size && at.expect.is_some()),
             "bad final piece"
         );
-        let dir = staging(&inbox, id);
         let piece = stage::write_piece(dir.join(i.to_string()), body, at).await?;
         if piece.done {
             return Ok(());
         }
-        let rel = path.to_owned();
+        let (rel, marks, into) = (path.to_owned(), dir.join("published"), inbox.clone());
         let target = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
             let mut piece = piece;
             piece.verify(at.expect)?;
-            let target = free_name(&inbox, &rel);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(&piece.path, &target)?;
+            let target = publish(&piece.path, &into, &rel)?;
             piece.done = true;
+            // A restarted receiver knows which files it already published.
+            use std::io::Write;
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(marks)?;
+            writeln!(log, "{i}")?;
             Ok(target)
         })
         .await??;
         let finished = {
             let mut drops = self.drops.lock();
-            let d = drops.get_mut(id).context("drop cancelled")?;
-            d.published[i] = true;
-            let done = d.published.iter().all(|p| *p);
-            if !done {
-                save_meta(&dir, d)?;
+            match drops.get_mut(&peer).and_then(|m| m.get_mut(id)) {
+                Some(Offer::Accepted(d)) if !d.published[i] => {
+                    d.published[i] = true;
+                    d.left -= 1;
+                    d.left == 0
+                }
+                _ => false,
             }
-            done
         };
         if finished {
-            self.drops.lock().remove(id);
-            let _ = std::fs::remove_dir_all(&dir);
+            if let Some(m) = self.drops.lock().get_mut(&peer) {
+                m.remove(id);
+            }
+            let _ = tokio::fs::remove_dir_all(&dir).await;
         }
+        let saved = target
+            .strip_prefix(&inbox)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let hash = at.expect.map(|h| data_encoding::HEXLOWER.encode(&h));
+        let payload = json!({"drop": id, "path": path, "saved_as": saved, "size": size,
+            "blake3": hash});
+        self.log_drop(ctx, "drop-received", payload, true);
         self.emit(NetEvent::DropReceived {
             peer,
             id: id.to_owned(),
@@ -289,11 +581,28 @@ impl Node {
         Ok(())
     }
 
-    pub(crate) fn drop_cancel(&self, peer: PeerId, id: &str) {
-        let mut drops = self.drops.lock();
-        if drops.get(id).is_some_and(|d| d.peer == peer) {
-            let d = drops.remove(id).expect("present");
-            let _ = std::fs::remove_dir_all(staging(&d.inbox, id));
+    /// The sender gave up: a prompt still waiting is withdrawn, staging is dropped.
+    pub(crate) async fn drop_cancel(&self, ctx: &RequestCtx, id: &str) {
+        let gone = self
+            .drops
+            .lock()
+            .get_mut(&ctx.peer)
+            .and_then(|m| m.remove(id));
+        if let Some(offer) = gone {
+            if let Offer::Accepted(d) = &offer {
+                let _ = tokio::fs::remove_dir_all(&d.dir).await;
+            }
+            self.log_drop(ctx, "drop-cancel", json!({"drop": id}), true);
+        }
+    }
+
+    /// `forget_peer`: every offer of `peer` goes (prompts withdrawn, staging deleted).
+    pub(crate) fn forget_drops(&self, peer: &PeerId) {
+        let gone = self.drops.lock().remove(peer).unwrap_or_default();
+        for offer in gone.into_values() {
+            if let Offer::Accepted(d) = offer {
+                let _ = std::fs::remove_dir_all(&d.dir);
+            }
         }
     }
 }
@@ -415,19 +724,61 @@ impl DropJob {
         }
     }
 
-    fn attempt(&mut self, ctx: &JobCtx, router: &Router) -> Result<()> {
-        let (node, rt) =
-            node_for(&self.from).ok_or_else(|| anyhow!("the device link is closed"))?;
-        let files = self.files.clone().expect("expanded");
+    /// The offer; one too big for a request header fails for good (it never fits).
+    fn offer(&self, files: &[DropFile]) -> Result<Request> {
         let offer = Request::DropOffer {
             id: self.id.clone(),
             files: files.iter().map(|f| (f.rel.clone(), f.size)).collect(),
         };
-        match rt.block_on(node.request(&self.peer, offer))? {
-            Response::Ok => {}
-            Response::Denied(_) => return Err(permanent("the device declined the drop")),
-            _ => return Err(permanent("the device could not take the drop")),
+        ensure!(
+            crate::wire::encode(&offer).is_ok(),
+            permanent("too many files (or too long names) for one drop: send fewer at a time")
+        );
+        Ok(offer)
+    }
+
+    /// Offers the drop, then polls (`DropStatus`) while the device's user decides.
+    fn offered(&self, ctx: &JobCtx, node: &Node, rt: &Handle, offer: Request) -> Result<()> {
+        let asked = Instant::now();
+        let mut answer = rt.block_on(node.request(&self.peer, offer))?;
+        let mut told = false;
+        loop {
+            match answer {
+                Response::Ok => return Ok(()),
+                Response::Pending => {}
+                Response::Denied(_) => return Err(permanent("the device declined the drop")),
+                // The device forgot the offer (it restarted): offer again.
+                Response::Error(e) => bail!("the device lost the offer: {e}"),
+                _ => return Err(permanent("the device could not take the drop")),
+            }
+            if !told {
+                ctx.log("waiting for the device to accept")?;
+                told = true;
+            }
+            ensure!(
+                asked.elapsed() < GIVE_UP,
+                permanent("the device did not answer the drop")
+            );
+            let until = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < until {
+                if ctx.stopping() {
+                    return Err(Cancelled.into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let status = Request::DropStatus {
+                id: self.id.clone(),
+            };
+            answer = rt.block_on(node.request(&self.peer, status))?;
         }
+    }
+
+    fn attempt(&mut self, ctx: &JobCtx, router: &Router) -> Result<()> {
+        let (node, rt) =
+            node_for(&self.from).ok_or_else(|| anyhow!("the device link is closed"))?;
+        let files = self.files.clone().expect("expanded");
+        let offer = self.offer(&files)?;
+        self.offered(ctx, &node, &rt, offer)?;
         while self.next < files.len() {
             self.send_file(ctx, router, &node, &rt, &files[self.next])?;
             self.next += 1;
@@ -511,6 +862,10 @@ impl DropJob {
             let done = self.done_before() + pos;
             ctx.progress(done as f32 / self.total() as f32)?;
             if final_ {
+                let payload = json!({"peer": self.peer.0.to_string(), "drop": self.id,
+                    "path": f.rel, "from": f.src.display(), "size": f.size,
+                    "blake3": at.expect.map(|h| data_encoding::HEXLOWER.encode(&h))});
+                ctx.log_op("net.drop-sent", &payload, "ok", true)?;
                 return Ok(());
             }
         }

@@ -12,7 +12,7 @@ mod stage;
 mod store;
 mod types;
 mod wire;
-pub use host::{DropReply, IncomingDrop, LibraryHandler};
+pub use host::LibraryHandler;
 pub use node::{Node, NodeOptions, ALPN};
 pub use pairing::PairCode;
 pub use provider::NodeProvider;

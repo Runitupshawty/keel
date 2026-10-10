@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncRead;
+use tokio::{io::AsyncRead, sync::watch};
 
 /// Ed25519 public identity. Display is lowercase, unpadded RFC 4648 base32.
 /// iroh 1.3 displays hex instead; parsing accepts both formats.
@@ -75,6 +75,7 @@ pub enum NetEvent {
     PeerOffline(PeerId),
     Paired(Peer),
     GrantChanged,
+    /// A device asked something (the first request of each second per device).
     Request {
         peer: PeerId,
         what: String,
@@ -85,6 +86,30 @@ pub enum NetEvent {
         id: String,
         path: std::path::PathBuf,
     },
+}
+
+/// A Spacedrop offer waiting for an answer (`Handler::drop_offer`).
+pub struct IncomingDrop {
+    pub peer: PeerId,
+    /// The sending device's label.
+    pub label: String,
+    pub id: String,
+    /// Relative paths and sizes.
+    pub files: Vec<(String, u64)>,
+    pub reply: DropReply,
+}
+
+/// Answers an offer once; dropped unanswered, the offer is declined.
+pub struct DropReply(pub(crate) watch::Sender<Option<bool>>);
+impl DropReply {
+    pub fn answer(self, accept: bool) {
+        let _ = self.0.send(Some(accept));
+    }
+    /// The offer is gone: the sender cancelled it, or the device was forgotten. Take the
+    /// prompt down.
+    pub fn withdrawn(&self) -> bool {
+        self.0.is_closed()
+    }
 }
 
 /// Who a `Handler` call serves: the paired device and its label (as it last told us).
@@ -140,16 +165,17 @@ pub trait Handler: Send + Sync {
     async fn rename(&self, ctx: &RequestCtx, source: &str, from: &str, to: &str) -> Result<()>;
     async fn remove(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<()>;
     async fn storage(&self, ctx: &RequestCtx) -> Option<Storage>;
-    /// Spacedrop: `ctx.peer` offers `files` (relative paths and sizes) as drop `id`.
-    /// `Some(inbox folder)` accepts; the default declines.
-    async fn drop_offer(
-        &self,
-        ctx: &RequestCtx,
-        id: &str,
-        files: &[(String, u64)],
-    ) -> Option<std::path::PathBuf> {
-        let _ = (ctx, id, files);
+    /// Spacedrop: a device offers files. Hand `offer.reply` to whoever decides (answer now
+    /// or later, from any thread) and return the inbox the drop would land in; never wait
+    /// here. `None` declines at once (the default).
+    fn drop_offer(&self, offer: IncomingDrop) -> Option<std::path::PathBuf> {
+        drop(offer);
         None
+    }
+    /// The op log hook: what the node handled itself for `ctx`'s device (`drop-offer`,
+    /// `drop-received`, `drop-cancel`), with whether it went through.
+    fn log(&self, ctx: &RequestCtx, op: &str, payload: serde_json::Value, ok: bool) {
+        let _ = (ctx, op, payload, ok);
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,14 +250,22 @@ pub enum Request {
     },
     Grants,
     /// Spacedrop: offer `files` (relative paths, sizes) as drop `id` (32 hex digits).
-    /// `Response::Ok` accepts (again for the same device and files: idempotent, so a
-    /// sender re-offers to resume), `Response::Denied` declines. Once accepted, the
-    /// pieces go as `Write` / `StatPartial` with source `drop:<id>`.
+    /// Answered at once: `Response::Ok` accepted (again for the same device and files:
+    /// idempotent, so a sender re-offers to resume), `Response::Pending` while the user
+    /// decides (poll `DropStatus`), `Response::Denied` declined. The same id with another
+    /// file list is asked again. Once accepted, the pieces go as `Write` / `StatPartial`
+    /// with source `drop:<id>`.
     DropOffer {
         id: String,
         files: Vec<(String, u64)>,
     },
-    /// Spacedrop: the sender gave up; the receiver drops what it staged.
+    /// Spacedrop: how an offer stands (waits briefly for the user): `Ok`, `Pending`,
+    /// `Denied`, or `Error` when the receiver no longer knows it (offer again).
+    DropStatus {
+        id: String,
+    },
+    /// Spacedrop: the sender gave up; the receiver withdraws the prompt or drops what it
+    /// staged.
     DropCancel {
         id: String,
     },
@@ -251,6 +285,7 @@ impl Request {
             Self::Remove { .. } => "remove",
             Self::Grants => "grants",
             Self::DropOffer { .. } => "drop-offer",
+            Self::DropStatus { .. } => "drop-status",
             Self::DropCancel { .. } => "drop-cancel",
         }
     }
@@ -276,6 +311,8 @@ pub enum Response {
         complete: bool,
     },
     Ok,
+    /// A Spacedrop offer is waiting for the user.
+    Pending,
     Grants(Vec<Grant>),
     Denied(String),
     Error(String),

@@ -55,7 +55,7 @@ pub struct Settings {
     /// `[library]`: the library layer (on by default).
     pub library: crate::library::LibrarySettings,
     // --- Task 36 ---
-    /// `[devices]`: pairing, shares and Spacedrop (on by default; needs the library).
+    /// `[devices]`: pairing, shares and Spacedrop (off by default; needs the library).
     pub devices: crate::devices::DeviceSettings,
     // --- Task 32 ---
     /// Media view tile size.

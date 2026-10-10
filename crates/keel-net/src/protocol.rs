@@ -1,6 +1,7 @@
 use crate::{wire, *};
 use anyhow::{bail, ensure, Result};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
+use std::time::Duration;
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +23,7 @@ fn idempotent(req: &Request) -> bool {
             | Request::Stat { .. }
             | Request::Read { .. }
             | Request::Grants
+            | Request::DropStatus { .. }
     )
 }
 
@@ -69,6 +71,7 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         | Request::ListSources
         | Request::Grants
         | Request::DropOffer { .. }
+        | Request::DropStatus { .. }
         | Request::DropCancel { .. } => true,
         Request::List { source, path, .. }
         | Request::Stat { source, path }
@@ -112,7 +115,7 @@ impl Node {
                                 && (permitted(&state.data.grants,peer,&req) || node.drop_permits(peer, &req))
                         };
                         tracing::debug!(peer = %peer.0, what = req.name(), allowed, "net request");
-                        node.emit(NetEvent::Request { peer, what: req.name().into() });
+                        node.emit_request(peer, req.name());
                         if !allowed { wire::send(&mut send, &Response::Denied("grant required".into())).await?; return Ok(()); }
                         node.answer(peer,req,&mut send,recv).await
                     } => result,
@@ -210,8 +213,13 @@ impl Node {
                     return Ok(Response::Read { size });
                 }
                 Request::DropOffer { id, files } => self.drop_offer(&ctx, &id, files).await?,
+                Request::DropStatus { id } => {
+                    // A short wait, well inside the sender's request timeout.
+                    let wait = (self.options.request_timeout / 4).min(Duration::from_secs(5));
+                    self.drop_status(&ctx, &id, wait).await?
+                }
                 Request::DropCancel { id } => {
-                    self.drop_cancel(peer, &id);
+                    self.drop_cancel(&ctx, &id).await;
                     Response::Ok
                 }
                 Request::Write {
@@ -234,7 +242,7 @@ impl Node {
                         self.options.request_timeout,
                     ));
                     match source.strip_prefix(crate::spacedrop::SOURCE) {
-                        Some(id) => self.drop_piece(peer, id, &path, body, at).await?,
+                        Some(id) => self.drop_piece(&ctx, id, &path, body, at).await?,
                         None => h.write(&ctx, &source, &path, body, at).await?,
                     }
                     Response::Ok

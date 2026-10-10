@@ -669,7 +669,7 @@ impl Library {
     }
 
     /// Groups of two or more files of at least `min_size` bytes with the same content id,
-    /// across every source; biggest first. Hard links of one file count as one file.
+    /// across every source but device sources; biggest first. Hard links of one file count as one file.
     pub fn duplicates(&self, min_size: u64) -> Result<Vec<DupGroup>> {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         // A private on-disk scratch database (SQLite spills it to a temp file).
@@ -678,6 +678,10 @@ impl Library {
             "CREATE TABLE c(cas BLOB, src INTEGER, id INTEGER, size INTEGER, file TEXT)",
         )?;
         for (i, s) in sources.iter().enumerate() {
+            // A device's claims are not copies (nor files "Keep one" may weigh).
+            if s.is_device() {
+                continue;
+            }
             let path = s.store_dir().join("source.db");
             scratch.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
             let copied = scratch.execute(

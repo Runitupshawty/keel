@@ -80,7 +80,7 @@ Limits: hashing skips remote and cloud sources; two sources on one disk count as
 
 ## Devices and Spacedrop
 
-Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Turn it on or off in Settings → Devices, where you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`) and which devices may send without asking. Keel's identity key lives in the OS keychain.
+Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Devices are off until you turn them on in Settings → Devices; that creates this device's identity, kept in the OS keychain. There you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`, or `<data dir>/inbox` without a Downloads folder) and which devices may send without asking.
 
 **Pair two devices.**
 
@@ -90,11 +90,11 @@ Keel can talk directly to your other computers. There is no account and no serve
 
 A code works for 10 minutes and for one pairing; showing a new code replaces the old one. Treat it like a password until it is used. Pairing grants nothing: a freshly paired device can see only its name until you share something. Each pair of devices keeps one connection, whichever side opened it.
 
-**Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared.
+**Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared. Forgetting a device ends its shares and removes its folders from the library.
 
-**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...` (the tab title shows the raw id for now). It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
+**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...` (the tab title shows the raw id for now). It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
 
-**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). Cancel from the jobs panel.
+**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). Cancel from the jobs panel.
 
 **Security model, in plain words.**
 
@@ -107,6 +107,8 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 - Anyone holding a still-valid code can pair, so show it only to the person in front of you.
 
 Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
+
+Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain (tests and live checks; the device is new on every run and must pair again).
 
 ## Daemon, CLI and MCP
 
@@ -177,7 +179,7 @@ On Windows, when Everything is not running, Keel uses its own index: it reads th
 
 Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
 
-On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files�" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
+On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files…" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
 
 ## Command line
 

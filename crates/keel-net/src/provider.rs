@@ -104,9 +104,29 @@ fn folder(path: VPath, name: String) -> Entry {
     )
 }
 
+/// Downloads (`local_copy`) older than this are swept from the temp folder.
+const STALE_DOWNLOAD: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Deletes day-old `keel-node-*` download folders from the temp folder. Best effort.
+fn sweep_downloads(temp: &std::path::Path) {
+    for e in std::fs::read_dir(temp).into_iter().flatten().flatten() {
+        let stale = e.file_name().to_string_lossy().starts_with("keel-node-")
+            && e.file_type().is_ok_and(|t| t.is_dir())
+            && e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > STALE_DOWNLOAD);
+        if stale {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 impl NodeProvider {
-    /// `rt`: the runtime `node` runs on.
+    /// `rt`: the runtime `node` runs on. Sweeps day-old downloads (in the background).
     pub fn new(node: Arc<Node>, rt: Handle) -> Self {
+        std::thread::spawn(|| sweep_downloads(&std::env::temp_dir()));
         Self {
             node,
             rt,
@@ -271,7 +291,9 @@ impl Provider for NodeProvider {
         }))
     }
     /// Buffered in an anonymous temp file, sent on `flush()` (the size goes first on the
-    /// wire); the host stages it and publishes it atomically.
+    /// wire); the host stages it and publishes it atomically. ponytail: the whole file sits
+    /// in the temp folder until then (the OS deletes it with the handle); stream it as
+    /// resumable `WriteAt` pieces if big uploads to devices matter.
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         self.upload(p, false)
     }
@@ -319,8 +341,9 @@ impl Provider for NodeProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
     }
-    /// Streams into a fresh folder under the temp dir (ponytail: no cache, so opening a
-    /// file again downloads it again; a keyed cache like SFTP's if that gets slow).
+    /// Streams into a fresh `keel-node-*` folder under the temp dir, swept a day later
+    /// (ponytail: no cache, so opening a file again downloads it again; a keyed cache like
+    /// SFTP's if that gets slow).
     fn local_copy_cancellable(
         &self,
         p: &VPath,

@@ -188,6 +188,11 @@ impl Source {
     }
 
     /// Local Windows names compare case-insensitively.
+    /// A paired device's folder: its content ids are that device's claims, never copies.
+    pub(crate) fn is_device(&self) -> bool {
+        self.def.kind == SourceKind::Device || self.def.root.scheme == "node"
+    }
+
     pub(crate) fn nocase(&self) -> bool {
         cfg!(windows) && self.def.root.scheme == "file"
     }
@@ -696,6 +701,10 @@ impl Library {
     /// Sources never overlap: a root inside (or around) another source's root is refused.
     pub fn add_source(&self, def: SourceDef) -> Result<SourceId> {
         anyhow::ensure!(
+            (def.kind == SourceKind::Device) == (def.root.scheme == "node"),
+            "a device source is a node:// folder, and a node:// folder is a device source"
+        );
+        anyhow::ensure!(
             def.root.split_archive().is_none(),
             "a source cannot be inside an archive: {}",
             def.root.display()
@@ -832,7 +841,8 @@ impl Library {
 
     /// Content ids the index holds for `entries` (listed children of folder `dir`, relative
     /// to the root of source `id`): for files whose size and modification time still match
-    /// their record, else None.
+    /// their record and whose bytes did not drift, else None. A device source holds no
+    /// confirmed content ids (its host's claims are not passed on).
     pub fn content_ids(
         &self,
         id: &SourceId,
@@ -847,7 +857,8 @@ impl Library {
         };
         let mut stmt = c.prepare_cached(
             "SELECT size, mtime, cas_id FROM record
-             WHERE parent = ?1 AND name = ?2 AND kind = 0 AND cas_id IS NOT NULL",
+             WHERE parent = ?1 AND name = ?2 AND kind = 0 AND cas_id IS NOT NULL
+                 AND drift IS NULL",
         )?;
         entries
             .iter()
@@ -864,6 +875,12 @@ impl Library {
                     .and_then(|(_, _, cas)| cas.try_into().ok()))
             })
             .collect()
+    }
+
+    /// Appends finished operations (redacted like every entry) in one transaction: what a
+    /// busy logger batches (the library database syncs every commit).
+    pub fn log_ops(&self, entries: &[crate::OpDone]) -> Result<()> {
+        crate::oplog::record_done(&self.shared, entries)
     }
 
     /// Appends a finished operation (redacted like every entry); returns its id.
@@ -1027,6 +1044,21 @@ pub(crate) mod tests {
             poll_secs: None,
             hash_shares: false,
         }
+    }
+
+    #[test]
+    fn device_sources_are_node_folders_and_only_those() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "t").unwrap();
+        let mut local_device = folder("d", root.path());
+        local_device.kind = SourceKind::Device;
+        assert!(lib.add_source(local_device).is_err());
+        let mut node_folder = folder("n", root.path());
+        node_folder.root = VPath::parse("node://peer/source").unwrap();
+        assert!(lib.add_source(node_folder.clone()).is_err());
+        node_folder.kind = SourceKind::Device;
+        assert!(lib.add_source(node_folder).is_ok());
     }
 
     #[test]
