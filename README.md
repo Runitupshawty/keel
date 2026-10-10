@@ -6,7 +6,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.10.0)
+## What works (v0.11.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
