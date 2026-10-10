@@ -85,7 +85,7 @@ revoked.
 | `mounts.list` | read | Sources keel-daemon serves as drives or mount folders |
 | `mounts.add` | preview | Mount a source or a subtree (`source`, `subtree`, `target`: `K:` or a folder) |
 | `mounts.remove` | preview | Unmount (`target`); writes still in progress there are discarded |
-| `spacedrop.send` | preview | Send files or folders on the host's machine to a paired device (`peer`, `paths`) as a job; the preview lists every file with its size (first 500) and warns when the device is offline. Paths in, or holding, Keel's configuration folder are refused |
+| `spacedrop.send` | preview | Send files or folders on the host's machine to a paired device (`peer`, `paths`) as a job; the preview lists every file with its size (first 500) and warns when the device is offline. Only paths in a library source, the Spacedrop inbox or a claimed share upload are sent; Keel's configuration and data folders (and folders holding them) are refused, for the paths given and every file reached; links inside folders are skipped. `execute` sends exactly the previewed files: a folder that changed since the preview gives -32004 with the new preview |
 | `spacedrop.inbox` | read | The host's Spacedrop inbox: offers waiting for an answer (`pending`: device, id, file count, bytes, first names) and what arrived (`entries`, newest first; download with `file.get`) |
 | `spacedrop.answer` | preview | Accept or decline a waiting offer (`peer`, `id`, `accept`) |
 
@@ -122,7 +122,11 @@ target is free and the source or subtree can be listed, and warns when the sourc
 offline (`source_offline`: the mount then lists it from the index and cannot read or change files)
 or deletes are permanent there (`deletes_permanent`: SFTP, S3). The `mounts.remove`
 preview warns when files are still being written through the mount (`discards_writes`).
-Mounts are unmounted when the daemon stops.
+A target inside the folder the mount shows is refused. While a file is written through a
+mount, only its writer sees the new content (other opens are busy, listings show the saved
+file); it is published when the writer closes it, and a failed publish keeps the data as
+`<name> (unsaved <date>).<ext>`. Mounts are unmounted when the daemon stops (writes still
+open are dropped).
 
 The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 `.result()` in Rust.
@@ -138,7 +142,7 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32001 | not found (path, source, tag, job, peer) |
 | -32002 | no such plan, already executed, or expired |
 | -32003 | `input_hash` is not the previewed input's |
-| -32004 | the sources changed since the preview; `data` is the new preview |
+| -32004 | the sources (or the files a drop sends) changed since the preview; `data` is the new preview |
 | -32005 | devices are off (keel-net disabled) |
 | -32006 | the request timed out (the daemon answers within 120 s) |
 | -32007 | `--web`: a message before `auth`, a wrong token or no `auth` within 10 s; `--ws`/`--web`: the token was rotated (the connection closes) |
@@ -208,7 +212,7 @@ listener:
 | `/`, `/<file>` | the client bundle (a page saying how to build it when keel-daemon was built without one) |
 | `/rpc` | JSON-RPC over a WebSocket, one message per text frame |
 | `/file/<token>` | the download a `file.get` link names, once, within 60 s (`Content-Disposition: attachment`) |
-| `/manifest.webmanifest`, `/sw.js`, `/icon-192.png`, `/icon-512.png` | the installable app (PWA): manifest with the share target, and a service worker that caches the app shell only (never `/rpc`, `/file/`, `/share` or other answers); served even by a daemon built without the client |
+| `/manifest.webmanifest`, `/sw.js`, `/icon-192.png`, `/icon-512.png` | the installable app (PWA): manifest with the share target, and a service worker that caches the app shell only (never `/rpc`, `/file/`, `/share` or other answers), fetches it from the daemon first and uses the cache only offline; its cache is named after a hash of every shell file of the build; served even by a daemon built without the client |
 | `POST /share` | the Web Share Target ("Share → Keel" on a phone), `multipart/form-data` |
 
 Browsers cannot send an `Authorization` header on a WebSocket, so on `/rpc` the **first
@@ -243,13 +247,17 @@ the files: it refuses a request whose `Origin` is another site's or whose
 `Sec-Fetch-Site` is `cross-site` / `same-site` (403), one without `Content-Length` (411),
 over 512 MiB (413, before reading the body), not `multipart/form-data` (415), or while 4
 shares already wait (429). Otherwise it writes the files (at most 100; names reduced to a
-plain file name) to `<data dir>/shares/<id>/` and answers `303 See Other` to
-`/?share=<id>` (24 hex digits). Nothing else happens until a client signed in over `/rpc`
-calls `share.claim` `{id}`, which works once and only within 5 minutes; it returns
-`{id, dir, files: [{name, path, size}]}`, and the client sends those paths with
+plain, portable file name: bidi controls dropped, Windows device names prefixed with `_`,
+at most 240 bytes) to `<data dir>/shares/<id>/` and answers `303 See Other` to
+`/?share=<id>&files=<n>&bytes=<total>` (the id is 24 hex digits; the counts are only for
+the client's question). The body must keep coming: under 64 KiB/s over any 30 s it is cut
+off (400), and an upload that makes no progress for 5 minutes is dropped. Nothing else
+happens until the client asks the user "Open N shared files?" and, on yes, a client signed
+in over `/rpc` calls `share.claim` `{id}`, which works once and only within 5 minutes; it
+returns `{id, dir, files: [{name, path, size}]}`, and the client sends those paths with
 `spacedrop.send` (previewed) to the device the user picks. An upload not claimed in time
-is deleted; a claimed one after 24 hours (its drop reads the files); unclaimed uploads
-left by an earlier run are deleted at start.
+is deleted; a claimed one after 24 hours (its drop reads the files), also when it was
+claimed before a restart; unclaimed uploads left by an earlier run are deleted at start.
 
 ## CLI
 

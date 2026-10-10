@@ -36,7 +36,9 @@ struct Args {
     /// Allow --ws or --web on a non-loopback address (use TLS or a private network).
     #[arg(long)]
     ws_allow_remote: bool,
-    /// A host name a remote --web bind answers to (repeatable; its IP always works).
+    /// A host name --web also answers to (repeatable): a tailnet name for a remote bind,
+    /// or the name a TLS reverse proxy in front of a loopback bind passes on. Loopback
+    /// names (loopback bind) or the bound IP (remote bind) always work.
     #[arg(long = "web-host", value_name = "NAME")]
     web_host: Vec<String>,
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
