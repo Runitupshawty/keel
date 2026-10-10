@@ -1,8 +1,8 @@
 //! What a host (daemon or in-process CLI) reads from Keel's settings: the library name,
 //! whether keel-net is on and the SFTP hosts and cloud accounts, from
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `[devices] enabled`,
-//! `[devices] inbox` and `auto_accept`, `[[remotes]]`, `[[clouds]]`); the daemon's socket
-//! name and WebSocket token.
+//! `[devices] inbox`, `auto_accept` and `relay`, `[[remotes]]`, `[[clouds]]`); the daemon's
+//! socket name and WebSocket token.
 
 use std::path::PathBuf;
 
@@ -65,6 +65,8 @@ pub struct HostConfig {
     pub inbox: Option<PathBuf>,
     /// `[devices] auto_accept`: device ids whose Spacedrops are accepted without asking.
     pub auto_accept: Vec<String>,
+    /// `[devices] relay`: public relays when no direct path works (default on).
+    pub relay: bool,
     /// `[[remotes]]`: SFTP hosts (secrets stay in the OS keychain).
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts (non-secret fields only).
@@ -148,6 +150,9 @@ impl HostConfig {
                 .flatten()
                 .filter_map(|v| v.as_str().map(str::to_owned))
                 .collect(),
+            relay: get("devices", "relay")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
             remotes: entries(&table, "remotes"),
             clouds: entries(&table, "clouds"),
         }
@@ -287,12 +292,13 @@ mod tests {
         assert!(!HostConfig::read("work", dir.path().into(), dir.path().join("data")).net);
         std::fs::write(
             p.join("config.toml"),
-            "[devices]\ninbox = \" \"\nauto_accept = [\"abc\", 3]\n",
+            "[devices]\ninbox = \" \"\nauto_accept = [\"abc\", 3]\nrelay = false\n",
         )
         .unwrap();
         let drops = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
         assert_eq!(drops.inbox_dir(), dir.path().join("data").join("inbox"));
         assert_eq!(drops.auto_accept, vec!["abc".to_owned()]);
+        assert!(!drops.relay && cfg.relay, "relays on unless turned off");
         let other = HostConfig::read("work", dir.path().into(), dir.path().join("other"));
         assert_ne!(cfg.socket_name(), other.socket_name());
         assert!(cfg.socket_name().starts_with("keel-daemon-"));

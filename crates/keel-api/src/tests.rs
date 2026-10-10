@@ -63,7 +63,8 @@ fn registry_is_preview_first() {
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "duplicate operation names");
     for op in OPS {
-        let direct = ["shares.revoke", "execute", "recents.note"].contains(&op.name);
+        let direct = ["shares.revoke", "execute", "recents.note", "activity.note"];
+        let direct = direct.contains(&op.name);
         if op.mutating && !direct {
             assert!(op.previewed(), "{} mutates without a preview", op.name);
         }
@@ -130,6 +131,9 @@ fn registry_is_preview_first() {
         "integrity.check",
         "hashing.set",
         "media.index",
+        "activity.note",
+        "devices.settings",
+        "devices.settings_set",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -1134,6 +1138,47 @@ fn spacedrop_send_inbox_and_answer() {
     assert!(listing["pending"].as_array().unwrap().is_empty());
     // a's host takes no drops.
     assert!(call(&a.ctx, "spacedrop.inbox", Value::Null).is_err());
+
+    // Device settings change live on b: its label, a new inbox, and a's drops accepted
+    // without asking; relays only when it starts again.
+    let a_id = a_node.id().to_string();
+    let later = inbox.path().join("later");
+    let set = json!({"label": "Den", "inbox": s(&later), "auto_accept": [a_id], "relay": false});
+    let before = b_node.label();
+    let preview = call(&b.ctx, "devices.settings_set", set.clone()).unwrap();
+    assert_eq!(preview["warnings"][0]["kind"], "restart", "{preview}");
+    assert_eq!(b_node.label(), before, "a preview changes nothing");
+    let done = apply(&b.ctx, "devices.settings_set", set);
+    assert_eq!(done["restart"], true);
+    let got = call(&b.ctx, "devices.settings", Value::Null).unwrap();
+    assert_eq!(
+        got,
+        json!({"label": "Den", "inbox": s(&later), "auto_accept": [a_id], "relay": true})
+    );
+    assert_eq!(b_node.label(), "Den");
+    // Never Keel's own folders; device ids must parse; nothing changes then.
+    let cfg_inbox = json!({"inbox": s(b.cfg.path())});
+    let e = call(&b.ctx, "devices.settings_set", cfg_inbox).unwrap_err();
+    assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e}");
+    let bad = json!({"label": "x", "auto_accept": ["nope"]});
+    assert!(call(&b.ctx, "devices.settings_set", bad).is_err());
+    assert_eq!(b_node.label(), "Den");
+    let sent = send(&a.files.path().join("docs").join("notes.txt")).unwrap();
+    let done = call(
+        &a.ctx,
+        "execute",
+        json!({"plan_id": sent["plan_id"], "input_hash": sent["input_hash"]}),
+    )
+    .unwrap();
+    let job = done["job"].as_i64().unwrap();
+    let info = a.ctx.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert_eq!(
+        std::fs::read(later.join("notes.txt")).unwrap(),
+        b"some notes"
+    );
+    let listing = call(&b.ctx, "spacedrop.inbox", Value::Null).unwrap();
+    assert_eq!(listing["dir"], s(&later));
     rt.block_on(async {
         a_node.close().await;
         b_node.close().await;
@@ -1278,4 +1323,14 @@ fn the_apps_library_operations() {
         call(&f.ctx, "media.index", missing).unwrap_err().code,
         ApiError::NOT_FOUND
     );
+}
+
+/// `activity.note` acts at once: the library's background jobs see the user as busy.
+#[test]
+fn activity_note_marks_the_user_busy() {
+    let f = fixture(None);
+    assert!(!f.ctx.lib.user_active());
+    let done = call(&f.ctx, "activity.note", Value::Null).unwrap();
+    assert_eq!(done["ok"], true);
+    assert!(f.ctx.lib.user_active());
 }

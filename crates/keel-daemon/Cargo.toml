@@ -49,3 +49,5 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Test photos for the sidecar job.
+image.workspace = true

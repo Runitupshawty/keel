@@ -393,6 +393,9 @@ pub enum DevMsg {
     },
     /// Attached: the daemon's devices, grants and waiting offers (or why there are none).
     Remote(Result<RemoteDevices, String>),
+    /// Attached: Settings → Devices written to the daemon; true when relays wait for a
+    /// restart.
+    Applied(Result<bool, String>),
 }
 
 /// Paired devices as keel-daemon reports them.
@@ -447,6 +450,10 @@ pub struct Devices {
     pub remote_self: Option<(String, String)>,
     pub remote_offers: Vec<RemoteOffer>,
     next_poll: Instant,
+    /// Settings → Devices as last written to the daemon (`devices.settings_set`), and a
+    /// change waiting to settle.
+    remote_sent: Option<serde_json::Value>,
+    remote_pending: Option<(serde_json::Value, Instant)>,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -479,6 +486,8 @@ impl Devices {
             remote_self: None,
             remote_offers: Vec::new(),
             next_poll: Instant::now(),
+            remote_sent: None,
+            remote_pending: None,
             tx,
             ctx,
         }
@@ -706,6 +715,8 @@ impl AppState {
             d.remote_self = None;
             d.error = None;
             d.next_poll = Instant::now();
+            d.remote_sent = None;
+            d.remote_pending = None;
             self.router.register(Arc::new(keel_api::DaemonProvider::new(
                 "node",
                 Rpc(remote.clone()),
@@ -713,7 +724,7 @@ impl AppState {
         }
         if Instant::now() >= d.next_poll && !self.library.lost {
             d.next_poll = Instant::now() + REMOTE_POLL;
-            let (tx, ctx) = (d.tx.clone(), d.ctx.clone());
+            let (tx, ctx, remote) = (d.tx.clone(), d.ctx.clone(), remote.clone());
             worker::spawn("keel-daemon-devices", move || {
                 let read = || -> anyhow::Result<RemoteDevices> {
                     let devices: api::Devices = remote.call("devices.list", json!({}))?;
@@ -734,6 +745,7 @@ impl AppState {
         if !self.devices.remote_offers.is_empty() {
             self.ctx.request_repaint_after(REMOTE_POLL);
         }
+        self.write_device_settings(&remote);
         let d = &self.devices;
         self.sidebar.devices = d.remote_self.as_ref().map(|_| device_rows(&d.peers));
         self.sidebar.devices_note = match (&d.remote_self, &d.error) {
@@ -741,6 +753,42 @@ impl AppState {
             (None, Some(e)) => Some(format!("keel-daemon: {e}")),
             (None, None) => Some("Asking keel-daemon…".into()),
         };
+    }
+
+    /// Attached: Settings → Devices goes to the daemon (`devices.settings_set`) once it has
+    /// not changed for `SETTLE` (typing a label), and once on attaching; the daemon applies
+    /// it at once (relays when it restarts).
+    fn write_device_settings(&mut self, remote: &Arc<Remote>) {
+        let want = settings_params(&self.settings.devices);
+        let d = &mut self.devices;
+        if d.remote_sent.as_ref() == Some(&want) || self.library.lost {
+            d.remote_pending = None;
+            return;
+        }
+        if d.remote_pending.as_ref().is_none_or(|(p, _)| *p != want) {
+            d.remote_pending = Some((want, Instant::now()));
+        }
+        // Devices are on there (else NET_DISABLED) and the change settled.
+        let settled = (d.remote_pending.as_ref()).is_some_and(|(_, at)| at.elapsed() >= SETTLE);
+        if !settled || d.remote_self.is_none() {
+            self.ctx.request_repaint_after(SETTLE);
+            return;
+        }
+        let Some((params, _)) = d.remote_pending.take() else {
+            return;
+        };
+        d.remote_sent = Some(params.clone());
+        let (tx, ctx, remote) = (d.tx.clone(), d.ctx.clone(), remote.clone());
+        worker::spawn("keel-daemon-device-settings", move || {
+            let done = (|| -> anyhow::Result<bool> {
+                let done = remote.apply("devices.settings_set", params)?;
+                let set: api::DeviceSettingsSet =
+                    serde_json::from_value(done.result.unwrap_or_default())?;
+                Ok(set.restart)
+            })()
+            .map_err(|e| format!("{e:#}"));
+            worker::send(&tx, &ctx, Msg::Devices(DevMsg::Applied(done)));
+        });
     }
 
     /// A `net.event` from the attached daemon.
@@ -804,7 +852,16 @@ impl AppState {
                 let paths = paths.into_iter().map(VPath::local).collect();
                 self.devices_cmd(0, DevCmd::Send { peer, paths });
             }
-            DevMsg::Remote(_) if self.library.remote().is_none() => {}
+            DevMsg::Remote(_) | DevMsg::Applied(_) if self.library.remote().is_none() => {}
+            DevMsg::Applied(Ok(restart)) => {
+                // The next poll shows the new label.
+                d.next_poll = Instant::now();
+                if restart {
+                    self.toasts
+                        .info("Relays change when keel-daemon starts again");
+                }
+            }
+            DevMsg::Applied(Err(e)) => self.toasts.error(format!("Settings → Devices: {e}")),
             DevMsg::Remote(Ok(r)) => {
                 d.remote_self = Some((r.id, r.label));
                 d.error = None;
@@ -1044,6 +1101,22 @@ impl AppState {
 
 /// How often the attached daemon's devices, grants and offers are read.
 const REMOTE_POLL: Duration = Duration::from_secs(3);
+/// Attached: Settings → Devices is written to the daemon once unchanged this long.
+const SETTLE: Duration = Duration::from_secs(1);
+
+/// Settings → Devices as `devices.settings_set` takes it: the label when set, the inbox
+/// resolved (the window's default is the Downloads folder's), the always-accept list and
+/// relays.
+pub fn settings_params(ds: &DeviceSettings) -> serde_json::Value {
+    let mut p = json!({"auto_accept": ds.auto_accept, "relay": ds.relay});
+    if !ds.label.trim().is_empty() {
+        p["label"] = ds.label.trim().into();
+    }
+    if let Some(dir) = ds.inbox_dir() {
+        p["inbox"] = dir.display().to_string().into();
+    }
+    p
+}
 
 /// A daemon's device as the sidebar shows it.
 fn peer_of(p: &api::PeerInfo) -> Option<Peer> {
@@ -1190,7 +1263,7 @@ impl AppState {
                     return;
                 };
                 let offer = self.devices.remote_offers.remove(i).offer;
-                // keel-daemon reads the list when it starts.
+                // Written to keel-daemon with the other device settings.
                 if accept && always && !self.settings.devices.auto_accept.contains(&offer.peer) {
                     self.settings.devices.auto_accept.push(offer.peer.clone());
                 }
@@ -1674,8 +1747,8 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
     } else if let Some((id, _)) = &d.remote_self {
         ui.add_space(6.0);
         ui.weak(format!(
-            "Device id: {id} (keel-daemon's; label, inbox, relays and the always-accept \
-             list apply when it starts)"
+            "Device id: {id} (keel-daemon's: label, inbox and the always-accept list apply \
+             at once, relays when it starts again)"
         ));
     }
 }

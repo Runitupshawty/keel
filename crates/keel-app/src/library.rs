@@ -204,6 +204,10 @@ pub enum Via {
     Replace { here: bool, wait: Duration },
 }
 
+/// Attached: input is reported to the daemon at most this often (each report pauses its
+/// idle jobs for 5 s, so a busy user keeps them paused).
+pub const ACTIVITY_EVERY: Duration = Duration::from_secs(4);
+
 /// How long Reconnect and Open in this window wait for a stopping daemon to close the
 /// library (it says `daemon.stopping` first, then closes, waiting up to `CLOSE_WAIT` for
 /// jobs).
@@ -228,6 +232,8 @@ pub fn refresh_for(kind: &str) -> Refresh {
         "hashing.set" | "integrity.check" | "media.index" | "sources.index" | "jobs.cancel" => {
             Refresh::Nothing
         }
+        // Devices follow `net.event` and their own poll.
+        "devices.settings_set" => Refresh::Nothing,
         "volumes.set" => Refresh::Protection,
         "recents.note" => Refresh::Recents,
         _ => Refresh::All,
@@ -662,6 +668,8 @@ pub struct LibraryUi {
     /// Attached: the daemon went away; nothing is written until Reconnect or Open in this
     /// window.
     pub lost: bool,
+    /// Attached: when the daemon was last told the user is working (`activity.note`).
+    activity_sent: Option<Instant>,
     /// Attached to a daemon this window started.
     pub spawned: bool,
     /// How long Reconnect / Open in this window wait for a stopping daemon (`RELEASE_WAIT`).
@@ -731,6 +739,7 @@ impl LibraryUi {
             backend: None,
             lib: None,
             lost: false,
+            activity_sent: None,
             spawned: false,
             release_wait: RELEASE_WAIT,
             note: None,
@@ -1498,9 +1507,25 @@ impl AppState {
         let lib = l.lib.clone();
         let now = Instant::now();
         // Media and integrity jobs pause for 5 s after each input; hashing too when idle
-        // only (`sync_hashing`). keel-daemon has no window to watch: always idle.
-        if let Some(lib) = lib.as_ref().filter(|_| busy_input) {
-            lib.note_activity();
+        // only (`sync_hashing`). Attached, the daemon is told (`activity.note`) at most
+        // every `ACTIVITY_EVERY`.
+        match (lib.as_ref(), l.remote().cloned()) {
+            (Some(lib), _) if busy_input => lib.note_activity(),
+            (None, Some(remote))
+                if busy_input
+                    && l.activity_sent
+                        .is_none_or(|t| t.elapsed() >= ACTIVITY_EVERY) =>
+            {
+                l.activity_sent = Some(now);
+                worker::spawn("keel-daemon-activity", move || {
+                    if let Err(e) =
+                        remote.call::<keel_api::types::Done>("activity.note", serde_json::json!({}))
+                    {
+                        tracing::debug!("activity.note: {e:#}");
+                    }
+                });
+            }
+            _ => {}
         }
         let mut ended: Vec<String> = Vec::new();
         let mut unknown = false;

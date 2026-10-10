@@ -115,21 +115,36 @@ impl Host {
             .enable_all()
             .thread_name("keel-net")
             .build()?;
-        let drops = Arc::new(crate::net::Drops::new(
-            cfg.inbox_dir(),
-            cfg.auto_accept.clone(),
-        ));
+        let drops = Arc::new(
+            crate::net::Drops::new(cfg.inbox_dir(), cfg.auto_accept.clone()).with_relay(cfg.relay),
+        );
         let handler = Arc::new(keel_net::LibraryHandler::new(ctx.lib.clone()));
-        let offers = drops.clone();
-        handler.on_drop(cfg.inbox_dir(), move |offer| {
-            offers.offer(offer);
-        });
+        // `devices.settings_set` moves the inbox while the node runs.
+        let bind = {
+            let (handler, offers) = (handler.clone(), Arc::downgrade(&drops));
+            move |inbox: std::path::PathBuf| {
+                let offers = offers.clone();
+                handler.on_drop(inbox, move |offer| {
+                    if let Some(drops) = offers.upgrade() {
+                        drops.offer(offer);
+                    }
+                });
+            }
+        };
+        bind(cfg.inbox_dir());
+        drops.on_rebind(bind);
+        // `[devices] relay = false` turns the public relays off (never on: the caller's
+        // options may have none).
+        let options = match cfg.relay {
+            true => net.options,
+            false => net.options.with_relay(false),
+        };
         let node = runtime
             .block_on(keel_net::Node::open_with_options(
                 net.secrets,
                 &cfg.data_dir,
                 handler,
-                net.options,
+                options,
             ))
             .context("opening keel-net")?;
         ctx.router.register(Arc::new(keel_net::NodeProvider::new(

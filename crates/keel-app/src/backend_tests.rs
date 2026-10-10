@@ -525,6 +525,9 @@ fn devices_go_through_the_daemons_node() {
         Arc::new(keel_vfs::Router::new()),
         VPath::local(a.files.path()),
     );
+    // Never the user's Downloads folder: Settings → Devices is written to the daemon.
+    let drops = tempfile::tempdir().unwrap();
+    st.settings.devices.inbox = drops.path().display().to_string();
     st.library.set_attached(remote.clone());
     pump_devices(&mut st, "the daemon's device", |s| {
         s.devices.remote_self.is_some()
@@ -577,6 +580,21 @@ fn devices_go_through_the_daemons_node() {
     let root = crate::devices::root_of(&peer);
     let listed = st.router.provider_for(&root).unwrap().list(&root);
     assert!(listed.unwrap().is_empty());
+
+    // Settings → Devices goes to the daemon's node at once: label, inbox, always-accept.
+    let node = a.daemon.ctx().node.clone().unwrap();
+    let held = a.daemon.ctx().drops.clone().unwrap();
+    pump_devices(&mut st, "the inbox", |_| held.inbox() == drops.path());
+    st.settings.devices.label = "Den".into();
+    st.settings.devices.auto_accept = vec![peer.0.to_string()];
+    pump_devices(&mut st, "the label", |_| node.label() == "Den");
+    assert_eq!(held.auto_accept(), [peer.0.to_string()]);
+    pump_devices(&mut st, "the sidebar", |s| {
+        s.devices
+            .remote_self
+            .as_ref()
+            .is_some_and(|(_, l)| l == "Den")
+    });
 }
 
 #[test]

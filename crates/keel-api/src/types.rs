@@ -569,6 +569,44 @@ pub struct Done {
     pub ok: bool,
 }
 
+/// This device's keel-net settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceSettingsInfo {
+    /// This device's name on the others.
+    pub label: String,
+    /// Where Spacedrops land ("" when this host takes none).
+    pub inbox: String,
+    /// Device ids whose Spacedrops are accepted without asking.
+    pub auto_accept: Vec<String>,
+    /// Whether the node uses public relays when no direct path works (as it started).
+    pub relay: bool,
+}
+
+/// What `devices.settings_set` changes (left out: kept).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSettingsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// An absolute folder (not in Keel's configuration or data folder, but its inbox).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<String>,
+    /// Device ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_accept: Option<Vec<String>>,
+    /// Public relays on or off: the node cannot re-bind, so this applies when the host
+    /// starts again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceSettingsSet {
+    pub settings: DeviceSettingsInfo,
+    /// `relay` differs from the running node's: it applies when the host starts again.
+    pub restart: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadParams {

@@ -1033,3 +1033,73 @@ fn library_changed_names_the_change_and_skips_no_ops() {
     c.call("recents.note", json!({ "path": file })).unwrap();
     while next_change(&mut sub) != "recents.note" {}
 }
+
+/// `activity.note` from a client (an attached window) pauses the daemon's idle jobs: a
+/// sidecar job makes nothing while the user works, and finishes once they stop.
+#[test]
+fn activity_pauses_the_idle_jobs() {
+    let env = env();
+    for i in 0..3 {
+        image::RgbImage::from_pixel(32, 24, image::Rgb([i * 80, 0, 0]))
+            .save(env.files.path().join(format!("{i}.png")))
+            .unwrap();
+    }
+    let d = start(&env, None);
+    let mut c = Client::connect(d.name()).unwrap();
+    let source = add_source(&mut c, &env);
+    let index = apply(&mut c, "sources.index", json!({ "id": source }));
+    wait_job(&mut c, index["job"].as_i64().unwrap());
+    let sidecars = || d.ctx().lib.sidecars().unwrap().stats().keys;
+    let done = c.call("activity.note", json!({})).unwrap();
+    assert_eq!(done["ok"], true);
+    let job = apply(&mut c, "media.index", json!({ "id": source }))["job"]
+        .as_i64()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(sidecars(), 0, "paused while the user works");
+    assert_eq!(wait_job(&mut c, job)["status"], "done");
+    assert!(sidecars() >= 3, "{}", sidecars());
+}
+
+/// `devices.settings_set` changes the running node: its label at once, the inbox and the
+/// always-accept list for the next drop; relays (`[devices] relay` when it started) need a
+/// restart.
+#[test]
+fn device_settings_apply_live() {
+    let env = env();
+    let mut cfg = env.cfg.clone();
+    cfg.net = true;
+    cfg.relay = false;
+    let d = Daemon::start(Options {
+        cfg,
+        ws: None,
+        web: None,
+        ws_allow_remote: false,
+        web_hosts: Vec::new(),
+        net: Some(keel_api::host::NetSetup {
+            secrets: std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            options: keel_net::NodeOptions::offline(),
+        }),
+    })
+    .unwrap();
+    let mut c = Client::connect(d.name()).unwrap();
+    let got = c.call("devices.settings", Value::Null).unwrap();
+    assert_eq!(got["relay"], false, "{got}");
+    let default_inbox = env.data.path().join("inbox").display().to_string();
+    assert_eq!(got["inbox"], default_inbox);
+    let me = c.call("devices.list", Value::Null).unwrap()["id"].clone();
+    let inbox = env.files.path().join("drops").display().to_string();
+    let set = json!({"label": "Den", "inbox": inbox, "auto_accept": [me], "relay": false});
+    let done = apply(&mut c, "devices.settings_set", set);
+    assert_eq!(done["restart"], false);
+    assert_eq!(done["settings"]["label"], "Den");
+    assert_eq!(c.call("devices.list", Value::Null).unwrap()["label"], "Den");
+    let drops = d.ctx().drops.clone().unwrap();
+    assert_eq!(drops.inbox().display().to_string(), inbox);
+    assert_eq!(drops.auto_accept(), [me.as_str().unwrap()]);
+    let got = c.call("spacedrop.inbox", Value::Null).unwrap();
+    assert_eq!(got["dir"], inbox);
+    let done = apply(&mut c, "devices.settings_set", json!({ "relay": true }));
+    assert_eq!(done["restart"], true);
+    assert_eq!(done["settings"]["relay"], false, "as it started");
+}

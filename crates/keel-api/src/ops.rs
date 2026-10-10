@@ -124,6 +124,8 @@ pub static OPS: &[Operation] = &[
         HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true})),
     previewed!("media.index", "Makes thumbnails and reads metadata of a source's photos and videos as an idle-priority job.",
         SourceIdParams => JobStarted, media_index_preview, media_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
+    now!("activity.note", "Notes that the user is working: idle-only hashing, sidecar and integrity jobs pause for the next 5 s; acts directly.",
+        true, NoParams => Done, activity_note, json!({})),
     now!("plan", "Previews a file operation (copy, move, delete, rename) from the index without touching anything. Returns a preview; call execute with the plan id and input hash to apply.",
         PlanParams => PlanPreview, plan, json!({"op": "copy", "paths": [example_file()], "to": example_dir(), "on_conflict": "skip"})),
     now!("execute", "Applies a previewed plan: pass the plan_id and input_hash of the preview being confirmed. Refuses expired, tampered or changed plans.",
@@ -136,6 +138,10 @@ pub static OPS: &[Operation] = &[
         true, PairWithParams => PeerInfo, pair_with_preview, pair_with, json!({"code": "abcdefghijklmnopqrstuvwxyz"})),
     previewed!("devices.forget", "Forgets a paired device (its sessions close and its grants are removed).",
         PeerParams => Done, forget_preview, forget, json!({"peer": "a".repeat(52)})),
+    now!("devices.settings", "This device's label, Spacedrop inbox, always-accept list and relay setting.",
+        NoParams => DeviceSettingsInfo, devices_settings, json!({})),
+    previewed!("devices.settings_set", "Changes this device's label, Spacedrop inbox or always-accept list at once; relays when the host starts again.",
+        DeviceSettingsParams => DeviceSettingsSet, settings_set_preview, settings_set, json!({"label": "Laptop", "auto_accept": ["a".repeat(52)]})),
     now!("shares.list", "Grants this device gives its paired devices.",
         NoParams => Vec<GrantInfo>, shares_list, json!({})),
     previewed!("shares.grant", "Grants a paired device read or read-write access to a source or a subtree of it.",
@@ -1202,6 +1208,11 @@ fn hashing_set(ctx: &Ctx, p: HashingParams) -> Result<MaybeJob> {
     Ok(MaybeJob { job: None })
 }
 
+fn activity_note(ctx: &Ctx, _: NoParams) -> Result<Done> {
+    ctx.lib.note_activity();
+    Ok(Done { ok: true })
+}
+
 fn media_index_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
     let s = find_source(ctx, &p.id)?;
     Ok(Preview {
@@ -1489,6 +1500,112 @@ fn devices_list(ctx: &Ctx, _: NoParams) -> Result<Devices> {
         id: node.id().to_string(),
         label: node.label(),
         peers: node.peers().iter().map(peer_info).collect(),
+    })
+}
+
+fn devices_settings(ctx: &Ctx, _: NoParams) -> Result<DeviceSettingsInfo> {
+    let (node, _) = node(ctx)?;
+    let drops = ctx.drops.as_ref();
+    Ok(DeviceSettingsInfo {
+        label: node.label(),
+        inbox: drops.map_or_else(String::new, |d| d.inbox().display().to_string()),
+        auto_accept: drops.map(|d| d.auto_accept()).unwrap_or_default(),
+        relay: drops.is_none_or(|d| d.relay),
+    })
+}
+
+/// `p` checked: its inbox folder (never inside Keel's configuration folder, nor its data
+/// folder but for its inbox there), its device ids parsed.
+fn settings_check(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Option<std::path::PathBuf>> {
+    node(ctx)?;
+    if p.inbox.is_some() || p.auto_accept.is_some() {
+        drops(ctx)?;
+    }
+    for id in p.auto_accept.iter().flatten() {
+        peer_id(id)?;
+    }
+    let Some(inbox) = p.inbox.as_deref().map(str::trim) else {
+        return Ok(None);
+    };
+    let dir = std::path::PathBuf::from(inbox);
+    if !dir.is_absolute() {
+        return Err(ApiError::invalid_params(format!(
+            "not an absolute folder: {inbox}"
+        )));
+    }
+    use crate::files::inside;
+    let kept = |d: &Option<std::path::PathBuf>| d.as_ref().is_some_and(|d| inside(&dir, d));
+    let data_inbox = ctx.data_dir.as_ref().map(|d| d.join("inbox"));
+    if kept(&ctx.config_dir) || (kept(&ctx.data_dir) && !kept(&data_inbox)) {
+        return Err(ApiError::invalid_params(format!(
+            "{inbox}: Keel's configuration and data folders cannot be the inbox"
+        )));
+    }
+    Ok(Some(dir))
+}
+
+fn settings_set_preview(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Preview> {
+    let inbox = settings_check(ctx, p)?;
+    let now = devices_settings(ctx, NoParams {})?;
+    let mut changes = Vec::new();
+    let mut warnings = Vec::new();
+    if let Some(label) = &p.label {
+        changes.push(change("device.label", None, Some(label.trim().to_owned())));
+    }
+    if let Some(dir) = inbox {
+        changes.push(change(
+            "device.inbox",
+            Some(dir.display().to_string()),
+            None,
+        ));
+    }
+    if let Some(ids) = &p.auto_accept {
+        let detail = format!("{} device(s)", ids.len());
+        changes.push(change("device.auto_accept", None, Some(detail)));
+    }
+    if let Some(relay) = p.relay {
+        let on = if relay { "on" } else { "off" };
+        changes.push(change("device.relay", None, Some(on.into())));
+        if relay != now.relay {
+            warnings.push(warning(
+                "restart",
+                None,
+                format!("relays turn {on} when the host starts again (the node cannot re-bind)"),
+            ));
+        }
+    }
+    let what: Vec<&str> = changes
+        .iter()
+        .map(|c| &c.action["device.".len()..])
+        .collect();
+    Ok(Preview {
+        pin: None,
+        summary: match what.is_empty() {
+            true => "Change no device setting".into(),
+            false => format!("Change this device's {}", what.join(", ")),
+        },
+        changes,
+        warnings,
+    })
+}
+
+fn settings_set(ctx: &Ctx, p: DeviceSettingsParams) -> Result<DeviceSettingsSet> {
+    let inbox = settings_check(ctx, &p)?;
+    let (node, _) = node(ctx)?;
+    if let Some(label) = &p.label {
+        node.try_set_label(label.trim())
+            .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    }
+    if let Some(dir) = inbox {
+        drops(ctx)?.set_inbox(dir);
+    }
+    if let Some(ids) = p.auto_accept {
+        drops(ctx)?.set_auto_accept(ids.iter().map(|i| i.trim().to_owned()).collect());
+    }
+    let settings = devices_settings(ctx, NoParams {})?;
+    Ok(DeviceSettingsSet {
+        restart: p.relay.is_some_and(|r| r != settings.relay),
+        settings,
     })
 }
 
@@ -1818,7 +1935,7 @@ impl DropScope {
         let mut open: Vec<_> = ctx
             .drops
             .iter()
-            .filter_map(|d| resolved(&d.inbox))
+            .filter_map(|d| resolved(&d.inbox()))
             .collect();
         if let Some(data) = &ctx.data_dir {
             let shares = std::fs::read_dir(data.join("shares")).into_iter().flatten();
@@ -1994,7 +2111,8 @@ fn drop_inbox(ctx: &Ctx, _: NoParams) -> Result<Inbox> {
             names: w.files.into_iter().take(10).map(|f| f.0).collect(),
         })
         .collect();
-    let mut entries: Vec<EntryInfo> = match std::fs::read_dir(&drops.inbox) {
+    let inbox = drops.inbox();
+    let mut entries: Vec<EntryInfo> = match std::fs::read_dir(&inbox) {
         Ok(dir) => dir
             .flatten()
             .filter_map(|e| {
@@ -2015,12 +2133,12 @@ fn drop_inbox(ctx: &Ctx, _: NoParams) -> Result<Inbox> {
             })
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(ApiError::failed(format!("{}: {e}", drops.inbox.display()))),
+        Err(e) => return Err(ApiError::failed(format!("{}: {e}", inbox.display()))),
     };
     entries.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
     entries.truncate(INBOX_MAX);
     Ok(Inbox {
-        dir: drops.inbox.display().to_string(),
+        dir: inbox.display().to_string(),
         pending,
         entries,
     })
@@ -2039,7 +2157,7 @@ fn waiting_offer(ctx: &Ctx, p: &SpacedropAnswerParams) -> Result<(String, Vec<(S
 
 fn drop_answer_preview(ctx: &Ctx, p: &SpacedropAnswerParams) -> Result<Preview> {
     let (label, files) = waiting_offer(ctx, p)?;
-    let inbox = drops(ctx)?.inbox.display().to_string();
+    let inbox = drops(ctx)?.inbox().display().to_string();
     let (verb, into, action) = match p.accept {
         true => ("Accept", format!(" into {inbox}"), "drop.accept"),
         false => ("Decline", String::new(), "drop.decline"),
