@@ -2,6 +2,23 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+Found by a QA walkthrough of the window ([docs/qa/2026-10-10-walkthrough.md](docs/qa/2026-10-10-walkthrough.md)).
+
+- F2 selects the name before its extension, so typing a new name replaces it; it used to put the caret after the name and append what you typed ("todo.txtchores"). A folder's whole name is selected.
+- The path bar shows whole parts, as many as fit, with the rest in a **…** menu at its start. In a narrow pane it used to run under the view buttons, cut its first visible part (or the current folder itself) in half, and draw a scroll bar over the path on hover.
+- With a modal open (Settings → Remotes → Add host…, the cloud account wizard, an icon theme's license), keys no longer reach the file list behind it: a typed letter opened the list's filter, which took the focus from the field being typed in, and Del asked to trash the selected file.
+- The Recycle Bin (Trash) opened in a folder tab, as the sidebar does, has its wide Original location column; it used to keep the folder's narrow Ext width. Its path bar says "Recycle Bin" (or "Trash") instead of `trash:///`.
+- A video's preview says its picture size and codec under the duration ("320×240 · mpeg4"); it used to repeat the raw duration.
+- Right-clicking a zip no longer offers to add it to itself (a job that could only fail); the suggested name gets a second `.zip`.
+- The pairing code (Pair… → Show code) stays on one line instead of wrapping at a hyphen.
+- Counts in the singular: "1 item" in the status bar, "1 file, 1 folder" in Properties, "1 source" and "1 group" in the library Overview and the duplicate finder.
+- The command palette's search entry is "Search files" on Windows too; it said "Search with Everything" also when Keel's own index answered.
+- Without a search backend, the Ctrl+P folder index walks the app's home folder as set at startup (unchanged for users); tests, which give a fixture as the home, no longer walk the real home folder.
+
 ## [0.15.0] - 2026-10-10
 
 ### Changed
