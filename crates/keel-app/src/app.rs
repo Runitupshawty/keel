@@ -767,6 +767,59 @@ mod tests {
         }
     }
 
+    /// QA walkthrough 2026-10-10: in a narrow window the path bar ran under the view
+    /// buttons ("umentsDetails"), cut its first visible part in half and covered the path
+    /// with its scroll bar on hover. Whole parts fit left of the buttons now, the rest is
+    /// behind "…".
+    #[test]
+    fn narrow_path_bar_stays_left_of_the_view_buttons() {
+        use egui_kittest::kittest::Queryable;
+        let root = std::env::temp_dir().join(format!("keel-crumbs-{}", std::process::id()));
+        let deep = root
+            .join("a-rather-long-folder-name")
+            .join("another-long-folder-name")
+            .join("deepest");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&deep).unwrap();
+        let start = VPath::local(&deep);
+        for width in [800.0, 1280.0] {
+            let start = start.clone();
+            let mut harness = Harness::builder()
+                .with_size(egui::vec2(width, 600.0))
+                .build_eframe(|cc| App::new(cc, Boot::at(start)));
+            wait_listed(&mut harness);
+            let right = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x1;
+            let left = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x0;
+            let mut details: Vec<f64> = harness
+                .query_all_by_label("Details")
+                .map(|n| left(&n))
+                .collect();
+            details.sort_by(f64::total_cmp);
+            // The path bar's part (the tab strip, above, has the name too).
+            let mut deepest: Vec<f64> = (harness.query_all_by_label("deepest"))
+                .filter(|n| n.raw_bounds().unwrap().y0 > 24.0)
+                .map(|n| right(&n))
+                .collect();
+            deepest.sort_by(f64::total_cmp);
+            assert_eq!(details.len(), 2);
+            assert_eq!(
+                harness.query_all_by_label("…").count(),
+                2,
+                "{width}: the rest"
+            );
+            if width < 1000.0 {
+                // No room for the current folder either: all of it is behind "…".
+                assert!(deepest.is_empty(), "{width}: {deepest:?}");
+            } else {
+                assert_eq!(deepest.len(), 2, "{width}");
+                for p in 0..2 {
+                    assert!(deepest[p] <= details[p], "{width}: {deepest:?} {details:?}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn panicking_frame_is_logged_and_survived() {
         let start = fixture("keel-crash-fixture");
