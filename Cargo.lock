@@ -3879,11 +3879,13 @@ dependencies = [
  "keel-vfs",
  "pdfium-render",
  "pulldown-cmark",
+ "quick-xml 0.42.0",
  "resvg 0.44.0",
  "syntect",
  "tempfile",
  "two-face",
  "wait-timeout",
+ "zip 2.4.2",
 ]
 
 [[package]]
