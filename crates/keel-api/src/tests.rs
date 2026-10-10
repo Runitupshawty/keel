@@ -1313,6 +1313,24 @@ fn the_apps_library_operations() {
         apply(&f.ctx, "hashing.set", json!({"on": false}))["job"],
         Value::Null
     );
+    // The remote policy: stated in the preview, kept with the library, omitted = unchanged.
+    let remote = json!({"on": false, "remote": false, "cloud": true, "max_remote_bytes": 4096});
+    let preview = call(&f.ctx, "hashing.set", remote.clone()).unwrap();
+    assert!(
+        preview["summary"].as_str().unwrap().contains(
+            "SFTP sources not hashed, cloud sources hashed (downloads can cost egress fees), remote files over 4096 bytes skipped"
+        ),
+        "{preview}"
+    );
+    apply(&f.ctx, "hashing.set", remote);
+    let kept = keel_core::RemoteHashSettings {
+        hash_remote: false,
+        hash_cloud: true,
+        remote_hash_max_bytes: 4096,
+    };
+    assert_eq!(f.ctx.lib.remote_hash_settings(), kept);
+    apply(&f.ctx, "hashing.set", json!({"on": false}));
+    assert_eq!(f.ctx.lib.remote_hash_settings(), kept);
     wait(&apply(&f.ctx, "integrity.check", json!({"sample_pct": 100.0}))["job"]);
     // The first scheduled call only starts the clock.
     let due = json!({"sample_pct": 1.0, "due_days": 7});

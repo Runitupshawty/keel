@@ -934,6 +934,32 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                 }
             });
             ui.end_row();
+            ui.label("Remote hashing");
+            ui.checkbox(
+                &mut lib_settings.hash_remote,
+                "Hash SFTP sources (each file is downloaded once)",
+            );
+            ui.end_row();
+            ui.label("Cloud hashing");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut lib_settings.hash_cloud, "Hash cloud sources");
+                ui.weak("Off by default: downloads can cost egress fees.");
+            });
+            ui.end_row();
+            ui.label("Remote size cap");
+            let mut mib = lib_settings.remote_hash_max_bytes >> 20;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut mib)
+                        .range(1..=1 << 20)
+                        .suffix(" MiB"),
+                )
+                .on_hover_text("Bigger remote and cloud files are not hashed (default 1024 MiB)")
+                .changed()
+            {
+                lib_settings.remote_hash_max_bytes = mib << 20;
+            }
+            ui.end_row();
             ui.label("Rescan remote sources");
             ui.add(
                 egui::Slider::new(&mut lib_settings.rescan_minutes, 5..=1440)

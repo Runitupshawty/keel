@@ -565,15 +565,26 @@ impl LibraryBackend {
     }
 
     /// Settings → Library → Hashing; `on` also starts hashing (or keeps the running job).
-    pub fn set_hashing(&self, on: bool, idle_only: bool) -> Result<Option<JobId>> {
+    pub fn set_hashing(
+        &self,
+        on: bool,
+        idle_only: bool,
+        remote: keel_core::RemoteHashSettings,
+    ) -> Result<Option<JobId>> {
         match self {
             LibraryBackend::InProcess(lib) => {
+                lib.set_remote_hash_settings(remote)?;
                 lib.set_hash_after_walk(on);
                 lib.set_hash_idle_only(idle_only);
                 Ok(None)
             }
             LibraryBackend::Daemon(r) => {
-                let done = r.apply("hashing.set", json!({"on": on, "idle_only": idle_only}))?;
+                let done = r.apply(
+                    "hashing.set",
+                    json!({"on": on, "idle_only": idle_only,
+                    "remote": remote.hash_remote, "cloud": remote.hash_cloud,
+                    "max_remote_bytes": remote.remote_hash_max_bytes}),
+                )?;
                 Ok(done.job)
             }
         }

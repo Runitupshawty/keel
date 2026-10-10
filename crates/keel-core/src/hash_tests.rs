@@ -508,3 +508,216 @@ fn hashing_is_one_job_paused_briefly_and_scheduled_after_walks() {
         "off"
     );
 }
+
+/// A memory provider served as SFTP host `box`, and a source `name` at `sftp://box/<dir>`,
+/// walked.
+fn remote_source(
+    lib: &Library,
+    mem: &Arc<keel_vfs::memory::MemoryProvider>,
+    name: &str,
+    root: &str,
+) -> Arc<Source> {
+    lib.router()
+        .register_remote_provider("box".into(), mem.clone());
+    let id = lib
+        .add_source(crate::library::tests::remote(name, root))
+        .unwrap();
+    let src = lib.source(&id).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    src
+}
+
+fn result(info: &crate::JobInfo) -> HashResult {
+    serde_json::from_value(info.result.clone().unwrap()).unwrap()
+}
+
+#[test]
+fn remote_files_get_the_content_ids_of_their_local_copies() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("small.txt"), "hello");
+    std::fs::write(files.path().join("big.bin"), big(1)).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[files.path()]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/srv/small.txt", "hello");
+    mem.put("/srv/d/big.bin", big(1));
+    mem.put("/srv/other.bin", big(2));
+    let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
+    let info = hash_all(&lib);
+    assert_eq!(result(&info).hashed, 5, "{}", info.log);
+    // One pass, whole: every remote file has its content id.
+    assert_eq!(hashes(&r, "small.txt"), hashes(&s[0], "small.txt"));
+    assert_eq!(hashes(&r, "d/big.bin"), hashes(&s[0], "big.bin"));
+    assert!(hashes(&r, "d/big.bin").1.is_some());
+    assert!(hashes(&r, "other.bin").1.is_some());
+    assert_eq!(
+        hashes(&r, "d/big.bin").1.unwrap(),
+        blake3::hash(&big(1)).as_bytes()
+    );
+    let dups = lib.duplicates(0).unwrap();
+    assert_eq!(dups.len(), 2, "{dups:?}");
+    for g in &dups {
+        let sources: Vec<_> = g.records.iter().map(|r| r.source.clone()).collect();
+        assert_eq!(sources, [s[0].id.clone(), r.id.clone()]);
+    }
+}
+
+#[test]
+fn remote_hashing_follows_its_policy_and_size_cap() {
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/srv/a.txt", "a");
+    mem.put("/srv/big.bin", big(3));
+    let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
+    lib.router()
+        .register_cloud_provider("acct".into(), mem.clone());
+    let id = lib
+        .add_source(crate::library::tests::remote("drive", "cloud://acct/srv"))
+        .unwrap();
+    let cloud = lib.source(&id).unwrap();
+    walk(&cloud, &lib.router()).unwrap();
+    assert_eq!(lib.remote_hash_settings(), RemoteHashSettings::default());
+
+    // Off: nothing is downloaded.
+    lib.set_remote_hash_settings(RemoteHashSettings {
+        hash_remote: false,
+        ..RemoteHashSettings::default()
+    })
+    .unwrap();
+    let info = hash_all(&lib);
+    assert!(
+        info.log.contains("server: remote hashing is off, skipped"),
+        "{}",
+        info.log
+    );
+    assert!(
+        info.log.contains("drive: cloud hashing is off, skipped"),
+        "{}",
+        info.log
+    );
+    assert_eq!((hashed(&r), hashed(&cloud)), (0, 0));
+    assert_eq!(mem.served.load(Ordering::SeqCst), 0);
+
+    // On, with a cap below big.bin: the rest is hashed, big.bin stays unhashed.
+    let capped = RemoteHashSettings {
+        remote_hash_max_bytes: 1000,
+        ..RemoteHashSettings::default()
+    };
+    lib.set_remote_hash_settings(capped).unwrap();
+    let info = hash_all(&lib);
+    assert!(
+        info.log
+            .contains("server: big.bin is over the remote size cap, skipped"),
+        "{}",
+        info.log
+    );
+    assert_eq!(
+        result(&info)
+            .skipped
+            .iter()
+            .map(|s| s.reason)
+            .collect::<Vec<_>>(),
+        [SkipReason::TooBig, SkipReason::Remote]
+    );
+    assert_eq!(hashed(&r), 1);
+    assert_eq!(hashes(&r, "big.bin"), (None, None));
+    assert_eq!(hashed(&cloud), 0, "cloud is off by default");
+
+    // Cloud on (and the cap kept by the library): the cloud source is hashed too.
+    lib.set_remote_hash_settings(RemoteHashSettings {
+        hash_cloud: true,
+        ..capped
+    })
+    .unwrap();
+    hash_all(&lib);
+    assert_eq!(hashed(&cloud), 1);
+    let src_dir = data.path().to_owned();
+    drop((r, cloud));
+    drop(lib);
+    let lib = Library::open(&src_dir, "h").unwrap();
+    assert_eq!(
+        lib.remote_hash_settings(),
+        RemoteHashSettings {
+            hash_cloud: true,
+            ..capped
+        },
+        "saved with the library"
+    );
+}
+
+#[test]
+fn an_offline_remote_or_a_failed_read_leaves_files_unhashed_until_the_next_run() {
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    for name in ["a", "b", "c"] {
+        mem.put(&format!("/srv/{name}.txt"), name);
+    }
+    let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
+
+    mem.offline.store(true, Ordering::SeqCst);
+    let info = hash_all(&lib);
+    assert!(
+        info.log.contains("server: offline, skipped"),
+        "{}",
+        info.log
+    );
+    assert_eq!(hashed(&r), 0);
+
+    mem.offline.store(false, Ordering::SeqCst);
+    mem.fail_reads.lock().insert("/srv/b.txt".into());
+    let info = hash_all(&lib);
+    assert!(info.log.contains("server: b.txt: read of"), "{}", info.log);
+    assert_eq!(result(&info).unreadable, 1);
+    assert_eq!(hashed(&r), 2);
+    let flags: i64 = r
+        .store
+        .get()
+        .unwrap()
+        .query_row("SELECT max(flags) FROM record", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(flags & UNREADABLE, 0, "nothing marked unreadable");
+
+    mem.fail_reads.lock().clear();
+    hash_all(&lib);
+    assert_eq!(hashed(&r), 3);
+}
+
+#[test]
+fn remote_hashing_resumes_from_its_checkpoint() {
+    const FILES: usize = super::CHECKPOINT_EVERY * 5;
+    let data = tempfile::tempdir().unwrap();
+    let (lib, _) = library(data.path(), &[]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    for i in 0..FILES {
+        mem.put(&format!("/srv/{i}.txt"), i.to_string());
+    }
+    let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
+    // Slow reads: the job is still running when the test reads the first checkpoint.
+    mem.read_delay_ms.store(10, Ordering::SeqCst);
+    let id = lib.hash().unwrap();
+    eventually("a checkpoint", || {
+        state_of(&data, id)["done"].as_u64() >= Some(super::CHECKPOINT_EVERY as u64)
+    });
+    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    drop(r);
+    drop(lib);
+    let at_kill = state_of(&data, id)["done"].as_u64().unwrap();
+    assert!(at_kill < FILES as u64, "{at_kill}");
+
+    mem.read_delay_ms.store(0, Ordering::SeqCst);
+    let lib = Library::open(data.path(), "h").unwrap();
+    lib.set_pause_on_battery(false);
+    lib.router()
+        .register_remote_provider("box".into(), mem.clone());
+    assert_eq!(lib.jobs().resume_all().unwrap(), [id]);
+    let info = lib.jobs().wait(id).unwrap();
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let r = lib.source(&lib.sources()[0].id).unwrap();
+    assert_eq!(hashed(&r), FILES as i64);
+    // Files done before the stop were not read again.
+    let served = mem.served.load(Ordering::SeqCst);
+    let all: u64 = (0..FILES).map(|i| i.to_string().len() as u64).sum();
+    assert!(served < all + 3 * 4, "served {served} of {all}");
+}

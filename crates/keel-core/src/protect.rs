@@ -151,8 +151,9 @@ pub struct ProtectionSummary {
     pub unbacked: u64,
     /// Files whose bytes changed while size, mtime and change time did not.
     pub drifted: u64,
-    /// Files not hashed yet (hashing off, paused or still running; shares and cloud sources
-    /// not hashed): in none of the counts above, their copies are unknown.
+    /// Files not hashed yet (hashing off, paused or still running; shares, remote sources
+    /// whose hashing is off, remote files over the size cap): in none of the counts above,
+    /// their copies are unknown.
     pub unchecked: u64,
     pub offline_volumes: u64,
     /// (volume, used, total) for volumes whose capacity is known.

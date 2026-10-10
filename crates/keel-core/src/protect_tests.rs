@@ -654,3 +654,66 @@ fn failure_domain_set_by_hand_survives_detection_and_resets() {
     );
     assert!(lib.set_failure_domain("nope", None).is_err());
 }
+
+#[test]
+fn a_copy_on_an_sftp_host_is_its_own_failure_domain() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("x.txt"), "on both");
+    write(&files.path().join("solo.txt"), "here only");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[files.path()]);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/srv/x.txt", "on both");
+    mem.put("/srv/y.txt", "server only");
+    mem.put("/backup/y.txt", "server only");
+    lib.router()
+        .register_remote_provider("box".into(), mem.clone());
+    let remote = |name: &str, root: &str| {
+        let id = lib
+            .add_source(crate::library::tests::remote(name, root))
+            .unwrap();
+        let src = lib.source(&id).unwrap();
+        walk(&src, &lib.router()).unwrap();
+        src
+    };
+    let (srv, backup) = (
+        remote("srv", "sftp://box/srv"),
+        remote("backup", "sftp://box/backup"),
+    );
+    let id = lib.hash().unwrap();
+    assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Done);
+
+    // This PC and the server: two copies in two failure domains.
+    let r = lib.redundancy(&rec(&s[0], "x.txt")).unwrap();
+    assert_eq!((r.copies, r.failure_domains), (2, 2), "{r:?}");
+    let server = &r.locations[1].volume;
+    assert_eq!(
+        (
+            server.id.as_str(),
+            server.kind,
+            server.failure_domain.as_str()
+        ),
+        ("sftp:box", VolumeKind::Network, "sftp:box")
+    );
+    assert_ne!(r.locations[0].volume.failure_domain, "sftp:box");
+    // Deleting the PC's copy leaves the server's: not the last copy, one domain left.
+    assert!(matches!(
+        delete_warnings(&lib, &files.path().join("x.txt"))[..],
+        [Warning::SingleDomain { files: 1, .. }]
+    ));
+    assert!(matches!(
+        delete_warnings(&lib, &files.path().join("solo.txt"))[..],
+        [Warning::LastCopy { files: 1, .. }]
+    ));
+    // Two sources on one host: one failure domain.
+    let r = lib.redundancy(&rec(&srv, "y.txt")).unwrap();
+    assert_eq!((r.copies, r.failure_domains), (2, 1), "{r:?}");
+    assert_eq!(lib.redundancy(&rec(&backup, "y.txt")).unwrap().copies, 2);
+    // Counters: solo.txt has one copy, y.txt one domain; nothing is left unchecked.
+    let p = lib.protection_summary().unwrap();
+    assert_eq!(
+        (p.single_copy, p.single_domain, p.unchecked),
+        (1, 1, 0),
+        "{p:?}"
+    );
+}

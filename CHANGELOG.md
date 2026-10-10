@@ -8,14 +8,19 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - SFTP remotes read the OpenSSH client configuration (`~/.ssh/config`). The Host field in Settings → Remotes can be an alias; `HostName`, `User`, `Port`, `IdentityFile`, `IdentitiesOnly` and `ServerAliveInterval` apply, with `Host` patterns (wildcards, several patterns, `!` exclusions), quoting, `keyword=value` and `Include`. A user name, port or key file set in Keel wins over the config. Each remote has a "Use ~/.ssh/config" switch (on by default, also for remotes saved earlier), and the editor shows what the host resolves to under the Host field, or the alias and config line of an error.
 - SFTP jump hosts: `ProxyJump` routes of one or several hops are followed, each hop reached through a forwarding channel of the one before. Every hop has its own host-key check and first-connection prompt (the prompt now names the host and port whose key it is); jump hosts sign in with the agent or keys, never with a remote's password.
+- Content hashing reads SFTP sources: each file is streamed once through the source's connection (1 MiB reads, one remote file at a time, idle priority, checkpoints and resume as for local files) and gets the same BLAKE3 content id as a local copy of the same bytes. Duplicates, the copies badges, the Protection card and the last-copy warning now see copies between this PC and a file server; a copy on an SSH host counts in that host's failure domain (two sources on one host are one domain), so a file here and on the server is 2 copies in 2 domains. Settings → Library → Hashing gains **Remote hashing** (on by default), **Cloud hashing** (Google Drive, Dropbox, S3 and WebDAV; off by default, because every file is downloaded and downloads can cost egress fees) and **Remote size cap** (1024 MiB by default; bigger remote files stay unhashed and the hash job's log names them). "Hash now" follows them. Service checksums (ETag, MD5, Dropbox's content hash) are never used as content ids: they would never match a BLAKE3 id.
+- `hashing.set` takes optional `remote`, `cloud` and `max_remote_bytes` (omitted: unchanged, kept with the library), and its preview states all three.
 
 ### Fixed
 
 - The 0.2.0 known limitation "`~/.ssh/config` is not read, so there is no jump-host or ProxyCommand support" is lifted for the config and jump hosts. `ProxyCommand` stays unsupported on purpose: it is refused with an error naming the alias and config line, because Keel never runs programs from the SSH configuration.
+- Hashing no longer skips SFTP sources, which lifts the 0.6.0 known limitation that only sources on a local path were hashed; cloud sources are hashed when Cloud hashing is turned on. A remote host that is offline leaves its files unhashed without failing the job, and the next run hashes them; a remote file that cannot be read is skipped, counted as unreadable in the job's result and tried again on the next run.
 
 ### Known limitations
 
 - `Match` blocks in `~/.ssh/config` are skipped (the editor notes it), `UserKnownHostsFile` is ignored (host keys stay in `~/.ssh/known_hosts`), the system-wide SSH configuration is not read, and `Include` wildcards work in file names only. A jump host that needs a password is not supported.
+- Two remotes in Settings → Remotes that name the same server count as two failure domains; give their volumes one failure domain by hand in the drive inventory.
+- Remote files are hashed whole and one at a time across all hosts, so a large server share takes as long as downloading it once.
 
 ## [0.11.1] - 2026-10-10
 

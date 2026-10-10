@@ -85,6 +85,9 @@ pub struct LibrarySettings {
     /// The library under `<data dir>/library/<name>/`.
     pub name: String,
     pub hashing: Hashing,
+    pub hash_remote: bool,
+    pub hash_cloud: bool,
+    pub remote_hash_max_bytes: u64,
     /// Remote and cloud sources are re-walked this often (local sources are watched live
     /// and reconciled every 6 hours).
     pub rescan_minutes: u64,
@@ -102,15 +105,29 @@ pub struct LibrarySettings {
 
 impl Default for LibrarySettings {
     fn default() -> Self {
+        let remote = keel_core::RemoteHashSettings::default();
         Self {
             enabled: true,
             name: keel_api::config::DEFAULT_LIBRARY.into(),
             hashing: Hashing::default(),
+            hash_remote: remote.hash_remote,
+            hash_cloud: remote.hash_cloud,
+            remote_hash_max_bytes: remote.remote_hash_max_bytes,
             rescan_minutes: 15,
             tags_column: true,
             integrity_pct: keel_core::DEFAULT_SAMPLE_PCT,
             integrity_days: 7,
             daemon: false,
+        }
+    }
+}
+
+impl LibrarySettings {
+    fn remote_hash_settings(&self) -> keel_core::RemoteHashSettings {
+        keel_core::RemoteHashSettings {
+            hash_remote: self.hash_remote,
+            hash_cloud: self.hash_cloud,
+            remote_hash_max_bytes: self.remote_hash_max_bytes,
         }
     }
 }
@@ -711,6 +728,7 @@ pub struct LibraryUi {
     pub pending: Vec<LibCmd>,
     /// The hashing policy last applied.
     policy: Hashing,
+    remote_hash_settings: keel_core::RemoteHashSettings,
     /// Media work was asked for while a sidecar job ran: started again when it ends (a
     /// running job does not see records changed behind its cursor, nor other sources).
     media_again: bool,
@@ -770,6 +788,7 @@ impl LibraryUi {
             new_name: String::new(),
             pending: Vec::new(),
             policy: Hashing::default(),
+            remote_hash_settings: Default::default(),
             media_again: false,
             protection: None,
             volumes: Vec::new(),
@@ -978,11 +997,15 @@ impl LibraryUi {
     }
 
     /// Settings → Library → Hashing.
-    pub fn apply_hashing(&mut self, policy: Hashing) {
-        if self.backend.is_none() || self.policy == policy {
+    pub fn apply_hashing(&mut self, settings: &LibrarySettings) {
+        let policy = settings.hashing;
+        let remote = settings.remote_hash_settings();
+        if self.backend.is_none() || (self.policy == policy && self.remote_hash_settings == remote)
+        {
             return;
         }
         self.policy = policy;
+        self.remote_hash_settings = remote;
         self.sync_hashing();
     }
 
@@ -991,9 +1014,10 @@ impl LibraryUi {
     fn sync_hashing(&mut self) {
         let on = self.policy != Hashing::Off && !self.hash_paused;
         let idle_only = self.policy == Hashing::IdleOnly;
+        let remote = self.remote_hash_settings;
         if self.remote().is_some() {
             self.spawn("keel-library-hashing", move |b| {
-                let id = (b.set_hashing(on, idle_only))
+                let id = (b.set_hashing(on, idle_only, remote))
                     .map_err(|e| tracing::warn!("hashing: {e:#}"))
                     .ok()
                     .flatten();
@@ -1005,6 +1029,10 @@ impl LibraryUi {
             return;
         }
         if let Some(lib) = &self.lib {
+            if let Err(e) = lib.set_remote_hash_settings(remote) {
+                tracing::warn!("remote hashing settings: {e:#}");
+                return;
+            }
             lib.set_hash_after_walk(on);
             lib.set_hash_idle_only(idle_only);
         }
@@ -1348,6 +1376,8 @@ impl AppState {
                         l.refresh_dups();
                         l.refresh_libraries();
                         self.library.policy = self.settings.library.hashing;
+                        self.library.remote_hash_settings =
+                            self.settings.library.remote_hash_settings();
                         self.library.sync_hashing();
                         self.library.start_media(); // Task 32
                         if first_run {
