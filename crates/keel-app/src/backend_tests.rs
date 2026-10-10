@@ -238,12 +238,26 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     assert!(matches!(sources[0].status, SourceStatus::Online { .. }));
     assert_eq!(sources[0].root, VPath::local(s.files.path()));
 
-    // library:// listings come from the daemon's index; reads go to the real file.
-    let names: Vec<String> = (b.children(&id.0, "docs").unwrap())
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-    assert_eq!(names, ["invoice-2026.pdf", "notes.txt"]);
+    // library:// listings come from the daemon's index; reads go to the real file. The
+    // daemon's own watcher walk may still be settling right after the job: poll briefly.
+    let listing = |b: &LibraryBackend| -> Vec<String> {
+        (b.children(&id.0, "docs").unwrap_or_default())
+            .into_iter()
+            .map(|e| e.name)
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut names = listing(&b);
+    while names.len() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        names = listing(&b);
+    }
+    assert_eq!(
+        names,
+        ["invoice-2026.pdf", "notes.txt"],
+        "listing after the index job; jobs: {:?}",
+        b.jobs().map(|j| j.len())
+    );
     let invoice = VPath::local(s.files.path().join("docs").join("invoice-2026.pdf"));
     assert_eq!(b.resolve(&id.0, "docs/invoice-2026.pdf").unwrap(), invoice);
 
