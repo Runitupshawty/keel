@@ -382,37 +382,93 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         crumbs.push(dir);
     }
     crumbs.reverse();
-    egui::ScrollArea::horizontal()
-        .id_salt("crumbs")
-        .stick_to_right(true)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for (i, dir) in crumbs.iter().enumerate() {
-                    if i > 0 {
-                        ui.weak("›");
+    let parts: Vec<(VPath, String)> = (crumbs.into_iter().enumerate())
+        .map(|(i, dir)| {
+            let label = crumb_label(&dir, i);
+            (dir, label)
+        })
+        .collect();
+    // Whole parts from the right, as many as fit; the rest behind "…". Nothing is drawn
+    // outside the space left of the view buttons, however narrow the pane.
+    let avail = ui.available_width().max(0.0);
+    let gap = 2.0;
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let pad = 2.0 * ui.spacing().button_padding.x;
+    let text_w = |t: &str| {
+        ui.fonts(|f| {
+            (f.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE))
+                .size()
+                .x
+        })
+    };
+    let sep = text_w("›") + 2.0 * gap;
+    let more = text_w("…") + pad + sep;
+    let widths: Vec<f32> = parts.iter().map(|(_, l)| text_w(l) + pad).collect();
+    let mut first = parts.len() - 1;
+    let mut used = widths[first];
+    while first > 0 {
+        let wider = used + sep + widths[first - 1];
+        let reserve = if first > 1 { more } else { 0.0 };
+        if wider + reserve > avail {
+            break;
+        }
+        used = wider;
+        first -= 1;
+    }
+    // No room for even a shortened current folder: every part is behind "…".
+    if used > avail && avail < more + pad + text_w("abc…") {
+        first = parts.len();
+    }
+    let h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(avail, h),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+            ui.spacing_mut().item_spacing.x = gap;
+            if first > 0 {
+                ui.menu_button("…", |ui| {
+                    for (dir, label) in &parts[..first] {
+                        if ui.button(label.as_str()).clicked() {
+                            out.push(Action::Navigate(dir.clone()));
+                            ui.close_menu();
+                        }
                     }
-                    let label = crumb_label(dir, i);
-                    let mut r = ui.add(egui::Button::new(label).frame(false));
-                    if let Some(full) = crate::devices::node_location(dir) {
-                        r = r.on_hover_text(full);
-                    }
-                    if r.clicked() {
-                        out.push(Action::Navigate(dir.clone()));
-                    } else if r.middle_clicked() {
-                        out.push(Action::NewTabAt(dir.clone()));
-                    }
+                })
+                .response
+                .on_hover_text("The rest of the path");
+                if first < parts.len() {
+                    ui.weak("›");
                 }
-                let size = egui::vec2(ui.available_width().max(24.0), ui.spacing().interact_size.y);
-                let empty = ui.allocate_response(size, Sense::click());
-                if empty
-                    .on_hover_text("Click to type a path (Ctrl+L)")
-                    .clicked()
-                {
-                    pane.edit_path();
+            }
+            let last = parts.len() - 1;
+            for (i, (dir, label)) in parts.iter().enumerate().skip(first) {
+                if i > first {
+                    ui.weak("›");
                 }
-            });
-        });
+                // The current folder alone may still be too long: it ends in "…".
+                let button = egui::Button::new(label.as_str()).frame(false);
+                let button = if i == last { button.truncate() } else { button };
+                let mut r = ui.add(button);
+                if let Some(full) = crate::devices::node_location(dir) {
+                    r = r.on_hover_text(full);
+                }
+                if r.clicked() {
+                    out.push(Action::Navigate(dir.clone()));
+                } else if r.middle_clicked() {
+                    out.push(Action::NewTabAt(dir.clone()));
+                }
+            }
+            let size = egui::vec2(ui.available_width().max(0.0), h);
+            let empty = ui.allocate_response(size, Sense::click());
+            if empty
+                .on_hover_text("Click to type a path (Ctrl+L)")
+                .clicked()
+            {
+                pane.edit_path();
+            }
+        },
+    );
 }
 
 /// The text of path bar part `i` (0: the root) for `dir`.
