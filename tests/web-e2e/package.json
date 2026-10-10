@@ -1,0 +1,15 @@
+{
+  "name": "keel-web-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser run of the Keel web client against a fixture keel-daemon (see README, Contributing)",
+  "scripts": {
+    "test": "node e2e.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "playwright": "1.49.1"
+  }
+}

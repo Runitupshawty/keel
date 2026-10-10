@@ -49,6 +49,41 @@ jobs:
       - name: Service worker stamped
         run: grep -Eq 'const VERSION = "[0-9a-f]{16}";' crates/keel-web/dist/sw.js
 
+  # The web client in a real browser: keel-daemon --web with a fixture library, driven by
+  # Playwright (Chromium only; tests/web-e2e). Not part of `check`: it is the slowest job.
+  web-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-e2e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Same bundle steps as the wasm job; keel-daemon embeds the bundle, so it builds after.
+      - name: wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli --version "$(cargo pkgid wasm-bindgen | sed 's/.*@//')"
+      - run: bash scripts/build-web.sh
+      - run: cargo build --locked -p keel-daemon
+      - name: Playwright
+        working-directory: tests/web-e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - run: bash tests/web-e2e/run.sh
+      - name: Screenshots and daemon log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e
+          path: tests/web-e2e/out
+          if-no-files-found: ignore
+
   # Licenses, advisories, banned crates and sources; policy in deny.toml.
   deny:
     runs-on: ubuntu-latest
