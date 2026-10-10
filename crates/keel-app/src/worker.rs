@@ -401,7 +401,16 @@ mod tests {
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
         worker.search(slow.clone(), "a".into(), 1, 0);
-        std::thread::sleep(Duration::from_millis(50));
+        // Wait until "a" is really running (a slow machine may not have scheduled the
+        // worker yet; a later query for the same tab would then supersede it).
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while slow.0.lock().is_empty() {
+            assert!(
+                std::time::Instant::now() < until,
+                "the first query never started"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
         worker.search(slow.clone(), "ab".into(), 2, 1);
         worker.search(slow.clone(), "x".into(), 3, 0);
