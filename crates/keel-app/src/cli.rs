@@ -33,6 +33,9 @@ pub struct Cli {
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
+    /// Check once whether a newer Keel release is out (one request to GitHub) and exit.
+    #[arg(long)]
+    pub check_update: bool,
     /// Subcommands: print machine-readable JSON.
     #[arg(long, global = true)]
     pub json: bool,
@@ -359,6 +362,7 @@ mod tests {
                 profile: None,
                 search: None,
                 index_service: None,
+                check_update: false,
                 json: false,
                 command: None,
             }

@@ -282,6 +282,8 @@ A profile's settings are in `profiles/<name>/config.toml` inside the settings fo
 
 **PDFs show no preview.** pdfium must sit next to the `keel` program; it is in every release archive. When you build from source run `scripts/fetch-deps` first.
 
+**Is there a newer Keel?** Run `keel --check-update`, or turn on Settings → General → **Check for updates** for a daily check (one request to GitHub that sends only the Keel version; see [Updates](../README.md#updates)). To update, run the install command again; on Windows the banner's **Install** does that for you. Nothing shows up while you are offline or GitHub limits requests; Keel tries again the next day.
+
 **Something else.** A bug inside the window is written to `crash.log` in the cache folder and Keel keeps running; attach that file to a bug report. Known limitations of each release are listed in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Getting help and contributing

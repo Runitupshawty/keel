@@ -66,6 +66,8 @@ pub struct Settings {
     pub archive: ArchiveSettings,
     /// `[open_with.recent]`: apps used with "Open with…", per extension.
     pub open_with: OpenWith,
+    /// `[updates]`: the opt-in update check (`update`).
+    pub updates: crate::update::UpdateSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -195,6 +197,7 @@ impl Default for Settings {
             devices: Default::default(),
             archive: Default::default(),
             open_with: Default::default(),
+            updates: Default::default(),
         }
     }
 }
@@ -645,6 +648,12 @@ pub fn window(
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
+                    ui.end_row();
+                    ui.label("Updates");
+                    ui.checkbox(&mut s.updates.check, "Check for updates")
+                        .on_hover_text(
+                            "Once a day, ask GitHub for the latest release (sends only the Keel version)",
+                        );
                     ui.end_row();
                     if cfg!(windows) {
                         ui.label("Search index");

@@ -76,6 +76,8 @@ pub struct App {
     drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
     hotkey: Option<crate::hotkey::Hotkey>,
+    /// The opt-in update check and its banner (off in tests: no persist).
+    updates: Option<crate::update::Updates>,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -130,6 +132,18 @@ impl App {
             state.library.open(&name, state.router.clone(), via);
         }
         // --- end Task 24 ---
+        // Not in tests either: the question changes a setting, the check goes online.
+        let updates = persist.is_some().then(|| {
+            if crate::update::ask_once(&mut state.settings.updates) {
+                state.toasts.ask(
+                    "Check for Keel updates once a day? Only the Keel version is sent, to GitHub.",
+                    "Turn on",
+                    Action::EnableUpdateCheck,
+                    "Not now",
+                );
+            }
+            crate::update::Updates::default()
+        });
         Self {
             state,
             split: 0.5,
@@ -141,6 +155,7 @@ impl App {
             seen_widths: (None, None),
             drag_out: Default::default(),
             hotkey,
+            updates,
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -223,6 +238,10 @@ impl App {
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
+        if let Some(updates) = &mut self.updates {
+            updates.tick(&mut s.settings.updates, ctx);
+            updates.banner(ctx, &mut s.settings.updates);
+        }
         // --- Task 23 ---
         if let Some(action) = crate::dropzone::panel(ctx, s) {
             out.push((s.active, action));

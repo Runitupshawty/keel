@@ -39,6 +39,10 @@ curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/ins
 
 The zip and tarballs, uninstalling, SmartScreen and Gatekeeper on unsigned builds, the Linux runtime libraries and `fuse3`: see [Install](docs/getting-started.md#install) in the guide. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`.
 
+## Updates
+
+Keel can tell you when a new release is out, but only if you turn it on: **Settings → General → Check for updates** (off by default; the first start asks once, and "Not now" means it never asks again). When it is on, Keel makes one request at most once a day, on a background thread: `GET https://api.github.com/repos/Runitupshawty/keel/releases/latest` with the headers `User-Agent: keel/<version>` and `Accept: */*` (plus `Host`). Nothing else is sent: no identifier, no settings, no usage data. GitHub sees your IP address, as with any download. If a newer release is out (pre-releases only when you run one), a banner offers **What's new** (the release page), **Install** and **Skip this version**. On Windows, when Keel was installed by `install.ps1`, Install runs the copy of that script next to `keel.exe` again, which downloads the release zip and checks it against `SHA256SUMS` before replacing anything; otherwise Install opens the release page and shows the install one-liner above. Offline, rate limited or an unexpected answer: nothing is shown and Keel tries again the next day. `keel --check-update` checks once from a terminal. To stop checking, untick the box.
+
 ## Start here
 
 New to Keel? Read **[docs/getting-started.md](docs/getting-started.md)**: installing, the window and its keys, copying, renaming, searching, archives, remotes, the library, devices, where your settings live, and troubleshooting.

@@ -17,6 +17,8 @@ pub struct Toast {
     born: Instant,
     /// A button on the toast (label, what it runs).
     pub action: Option<(String, Action)>,
+    /// A second button that only closes the toast ("Not now").
+    pub dismiss: Option<String>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,14 @@ impl Toasts {
         }
     }
 
+    /// A question: `button` runs `action`, `dismiss` closes it (kept 30 s).
+    pub fn ask(&mut self, text: impl Into<String>, button: &str, action: Action, dismiss: &str) {
+        self.offer(text, button, action);
+        if let Some(t) = self.list.last_mut() {
+            t.dismiss = Some(dismiss.into());
+        }
+    }
+
     fn push(&mut self, text: String, level: Level, ttl: Duration) {
         // Repeats (e.g. a watcher refresh failing twice) extend the old toast.
         self.list.retain(|t| t.text != text);
@@ -64,6 +74,7 @@ impl Toasts {
             until: Instant::now() + ttl,
             born: Instant::now(),
             action: None,
+            dismiss: None,
         });
         if self.list.len() > 5 {
             self.list.remove(0);
@@ -101,17 +112,24 @@ impl Toasts {
                         } else {
                             text
                         });
-                        if let Some((button, action)) = &t.action {
-                            if ui.button(button.as_str()).clicked() {
-                                clicked = Some((i, action.clone()));
+                        ui.horizontal(|ui| {
+                            if let Some((button, action)) = &t.action {
+                                if ui.button(button.as_str()).clicked() {
+                                    clicked = Some((i, Some(action.clone())));
+                                }
                             }
-                        }
+                            if let Some(dismiss) = &t.dismiss {
+                                if ui.button(dismiss.as_str()).clicked() {
+                                    clicked = Some((i, None));
+                                }
+                            }
+                        });
                     });
                 });
             y -= shown.response.rect.height() + 4.0;
         }
         let (i, action) = clicked?;
         self.list.remove(i);
-        Some(action)
+        action
     }
 }

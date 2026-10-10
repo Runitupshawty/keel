@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Opt-in update check: Settings → General → **Check for updates** (off by default; the first start asks once with a toast, "Not now" never asks again). When on, Keel asks GitHub for the latest release at most once a day, on a background thread, with one request that carries only `User-Agent: keel/<version>`, and shows a banner when a newer release is out: **What's new** opens the release page, **Install** runs the installer the README describes (on Windows the `install.ps1` copy next to `keel.exe`, which verifies the download against `SHA256SUMS`; elsewhere it opens the release page and shows the one-liner), **Skip this version** hides that version for good. Pre-releases are offered only to a running pre-release; offline, rate limited or unexpected answers are silent and retried the next day. `keel --check-update` checks once from a terminal.
+
 ## [0.16.0] - 2026-10-10
 
 ### Changed

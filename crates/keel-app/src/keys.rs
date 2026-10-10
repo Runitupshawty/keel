@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub enum Action {
     /// Parent folder (Alt+Up, toolbar).
     Up,
+    /// Turn the daily update check on (the first-start question).
+    EnableUpdateCheck,
     /// Parent folder, or in a search tab: delete the last query character.
     Backspace,
     Back,
