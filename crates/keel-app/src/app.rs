@@ -205,7 +205,11 @@ impl App {
         // Every frame, so key state stays right while a modal is open.
         // A context menu acts on what it was opened on: no key may move the focus or
         // selection under it (Task 23: the columns view's keyboard column).
+        // Any modal (a host editor, the cloud wizard, a license) has the keys too: none may
+        // reach the list behind it (Del would ask to trash the selected file).
+        let modal = ctx.memory(|m| !m.is_above_modal_layer(egui::LayerId::background()));
         let keys_on = s.dialog.is_none()
+            && !modal
             && !s.jump.open
             && !s.palette.open
             && !self.crashed
@@ -885,6 +889,38 @@ mod tests {
         };
         let width = x(&harness, "Size") - x(&harness, "Original location");
         assert!(width > 150.0, "{width}");
+    }
+
+    /// QA walkthrough 2026-10-10: with Settings → Remotes → Add host… open, typed letters
+    /// went to the file list's filter behind it and Del asked to trash the selected file.
+    #[test]
+    fn a_modal_keeps_the_keys_from_the_list_behind_it() {
+        use egui_kittest::kittest::Queryable;
+        let start = fixture("keel-modal-keys-fixture");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        wait_listed(&mut harness);
+        harness
+            .state_mut()
+            .state
+            .tab_mut(0)
+            .click("notes.txt", false, false);
+        harness.state_mut().state.settings_open = true;
+        harness.state_mut().state.remotes.page = crate::settings::Page::Remotes;
+        harness.run_steps(2);
+        harness.get_by_label("Add host…").click();
+        harness.run_steps(2);
+        harness.get_by_label("Add remote host");
+        harness.press_key(Key::Delete);
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("x".into()));
+        harness.run_steps(3);
+        let s = &harness.state().state;
+        assert!(s.dialog.is_none(), "no trash question behind the editor");
+        assert!(!s.tab(0).filter_open, "no filter behind the editor");
     }
 
     #[test]
