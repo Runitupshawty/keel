@@ -10,6 +10,7 @@ mod scope;
 pub mod spacedrop;
 mod stage;
 mod store;
+mod sync;
 mod types;
 mod wire;
 pub use host::LibraryHandler;
@@ -22,5 +23,7 @@ pub use types::*;
 mod library_tests;
 #[cfg(test)]
 mod spacedrop_tests;
+#[cfg(test)]
+mod sync_tests;
 #[cfg(test)]
 mod tests;

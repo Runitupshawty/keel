@@ -35,6 +35,11 @@ pub struct NodeOptions {
     /// Spacedrop: an offer whose sender stopped asking (`DropStatus`) for this long is
     /// withdrawn (its prompt taken down).
     pub drop_answer_wait: Duration,
+    /// Library sync: how often each device sync is on with is pulled (also on connect
+    /// and when it is turned on). Zero: only `Node::sync_now` pulls.
+    pub sync_every: Duration,
+    /// Library sync: most entries applied from one device per minute; the rest wait.
+    pub sync_rate: usize,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -45,6 +50,8 @@ impl Default for NodeOptions {
             relay_only: false,
             request_timeout: Duration::from_secs(20),
             drop_answer_wait: crate::spacedrop::GIVE_UP,
+            sync_every: crate::sync::SYNC_EVERY,
+            sync_rate: crate::sync::SYNC_RATE,
         }
     }
 }
@@ -67,6 +74,8 @@ impl NodeOptions {
             relay_only: false,
             request_timeout: Duration::from_secs(3),
             drop_answer_wait: crate::spacedrop::GIVE_UP,
+            sync_every: crate::sync::SYNC_EVERY,
+            sync_rate: crate::sync::SYNC_RATE,
         }
     }
     pub(crate) fn builder(&self, key: SecretKey) -> Result<Builder> {
@@ -113,6 +122,10 @@ pub struct Node {
     request_events: Mutex<std::collections::HashMap<PeerId, std::time::Instant>>,
     /// Spacedrop: incoming offers by device and drop id.
     pub(crate) drops: Mutex<crate::spacedrop::Drops>,
+    /// Library sync: who it is on with, pulls under way, each device's budget.
+    pub(crate) sync: Mutex<crate::sync::SyncState>,
+    /// Wakes the sync loop (a device connected, or sync was turned on).
+    pub(crate) sync_wake: Arc<tokio::sync::Notify>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -178,8 +191,13 @@ impl Node {
             subscribers: Mutex::new(Vec::new()),
             request_events: Mutex::default(),
             drops: Mutex::default(),
+            sync: Mutex::default(),
+            sync_wake: Arc::default(),
         });
         crate::spacedrop::register_node(&node);
+        let (handler, id) = (node.handler.clone(), node.id());
+        tokio::task::spawn_blocking(move || handler.opened(id)).await?;
+        crate::sync::spawn_loop(&node);
         let ep = node.endpoint.clone();
         let weak = node.weak.clone();
         let stop = node.stop.clone();
@@ -315,6 +333,7 @@ impl Node {
         state.disconnect(peer);
         state.dialing.remove(peer);
         drop(state);
+        self.sync.lock().forget(peer);
         self.forget_drops(peer);
         self.emit(NetEvent::PeerOffline(*peer));
         self.emit(NetEvent::GrantChanged);
@@ -369,6 +388,9 @@ impl Node {
         );
         drop(state);
         self.observe(peer, conn);
+        if self.syncs_with(&peer) {
+            self.sync_wake.notify_one();
+        }
         let weak = self.weak.clone();
         let conn = conn.clone();
         let token = cancel.clone();

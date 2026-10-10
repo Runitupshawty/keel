@@ -24,6 +24,7 @@ fn idempotent(req: &Request) -> bool {
             | Request::Read { .. }
             | Request::Grants
             | Request::DropStatus { .. }
+            | Request::SyncPull { .. }
     )
 }
 
@@ -72,7 +73,9 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         | Request::Grants
         | Request::DropOffer { .. }
         | Request::DropStatus { .. }
-        | Request::DropCancel { .. } => true,
+        | Request::DropCancel { .. }
+        // Answered only for devices this one syncs with (`Node::answer`).
+        | Request::SyncPull { .. } => true,
         Request::List { source, path, .. }
         | Request::Stat { source, path }
         | Request::Read { source, path, .. } => check(source, path, false),
@@ -222,6 +225,7 @@ impl Node {
                     self.drop_cancel(&ctx, &id).await;
                     Response::Ok
                 }
+                Request::SyncPull { since } => self.serve_sync(peer, since).await?,
                 Request::Write {
                     source,
                     path,

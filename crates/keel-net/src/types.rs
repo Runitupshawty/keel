@@ -86,6 +86,11 @@ pub enum NetEvent {
         id: String,
         path: std::path::PathBuf,
     },
+    /// Library sync: a pull from `peer` changed the library (`applied` entries won).
+    LibrarySynced {
+        peer: PeerId,
+        applied: usize,
+    },
 }
 
 /// A Spacedrop offer waiting for an answer (`Handler::drop_offer`).
@@ -174,6 +179,31 @@ pub trait Handler: Send + Sync {
     }
     /// The node is closing: write out anything buffered (the op log). Blocking.
     fn close(&self) {}
+    /// The node opened with this identity (library sync breaks ties with it). Blocking.
+    fn opened(&self, id: NodeId) {
+        let _ = id;
+    }
+    /// Library sync: this device's own changes after `since`, one page of at most
+    /// `limit` (`keel_core::Library::sync_page`). Blocking. The default serves none.
+    fn sync_page(&self, since: u64, limit: usize) -> Result<keel_core::SyncPage> {
+        let _ = (since, limit);
+        anyhow::bail!("this device does not sync a library")
+    }
+    /// Library sync: where the next pull from `peer` starts. Blocking.
+    fn sync_since(&self, peer: &PeerId) -> Result<u64> {
+        let _ = peer;
+        Ok(0)
+    }
+    /// Library sync: applies a page pulled from `peer` (`keel_core::Library::sync_apply`).
+    /// Blocking.
+    fn sync_apply(
+        &self,
+        peer: &PeerId,
+        page: &keel_core::SyncPage,
+    ) -> Result<keel_core::SyncApplied> {
+        let _ = (peer, page);
+        anyhow::bail!("this device does not sync a library")
+    }
     /// The op log hook: what the node handled itself for `ctx`'s device (`drop-offer`,
     /// `drop-received`, `drop-cancel`), with whether it went through.
     fn log(&self, ctx: &RequestCtx, op: &str, payload: serde_json::Value, ok: bool) {
@@ -271,6 +301,12 @@ pub enum Request {
     DropCancel {
         id: String,
     },
+    /// Library sync: the host's own changes after the sequence number given for the
+    /// host's id in `since` (0 when absent), as `Response::SyncEntries`. Answered only
+    /// when the host turned sync with the asking device on; `Response::Denied` otherwise.
+    SyncPull {
+        since: Vec<(NodeId, u64)>,
+    },
 }
 impl Request {
     pub(crate) fn name(&self) -> &'static str {
@@ -289,6 +325,7 @@ impl Request {
             Self::DropOffer { .. } => "drop-offer",
             Self::DropStatus { .. } => "drop-status",
             Self::DropCancel { .. } => "drop-cancel",
+            Self::SyncPull { .. } => "sync-pull",
         }
     }
 }
@@ -316,6 +353,12 @@ pub enum Response {
     /// A Spacedrop offer is waiting for the user.
     Pending,
     Grants(Vec<Grant>),
+    /// Library sync: at most `keel_core::SYNC_PAGE` entries; `more` asks again from `upto`.
+    SyncEntries {
+        entries: Vec<keel_core::SyncEntry>,
+        more: bool,
+        upto: u64,
+    },
     Denied(String),
     Error(String),
 }

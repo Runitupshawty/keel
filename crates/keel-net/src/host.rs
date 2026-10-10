@@ -596,6 +596,24 @@ impl Handler for LibraryHandler {
     fn close(&self) {
         self.flush();
     }
+    fn opened(&self, id: NodeId) {
+        if let Err(e) = self.lib.set_sync_device(&id.to_string()) {
+            tracing::warn!("library sync: could not record this device's id: {e:#}");
+        }
+    }
+    fn sync_page(&self, since: u64, limit: usize) -> Result<keel_core::SyncPage> {
+        self.lib.sync_page(since, limit)
+    }
+    fn sync_since(&self, peer: &PeerId) -> Result<u64> {
+        self.lib.sync_since(&peer.0.to_string())
+    }
+    fn sync_apply(
+        &self,
+        peer: &PeerId,
+        page: &keel_core::SyncPage,
+    ) -> Result<keel_core::SyncApplied> {
+        self.lib.sync_apply(&peer.0.to_string(), page)
+    }
     fn log(&self, ctx: &RequestCtx, op: &str, mut payload: serde_json::Value, ok: bool) {
         payload["peer"] = json!(ctx.peer.0.to_string());
         payload["device"] = json!(ctx.label);

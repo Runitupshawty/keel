@@ -424,6 +424,14 @@ fn pump(shared: &Arc<Shared>) {
                 Ok(E::DropReceived { peer, id, path }) => {
                     json!({"event": "drop_received", "peer": peer.0.to_string(), "drop": id, "path": path.display().to_string()})
                 }
+                Ok(E::LibrarySynced { peer, applied }) => {
+                    // Tags and favorites another device changed: windows read them again.
+                    s.hub.broadcast(
+                        "library.changed",
+                        json!({"method": "library.sync", "kind": "library.sync"}),
+                    );
+                    json!({"event": "library_synced", "peer": peer.0.to_string(), "applied": applied})
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return,
             };

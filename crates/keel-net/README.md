@@ -192,6 +192,25 @@ unreachable source refuses the write. Every served request is appended to the li
 flushed when the node closes (`Handler::close`, called by `Node::close`) and when the
 handler is dropped.
 
+## Library sync
+
+Tags, tag assignments, favorites and content ids of tagged files follow a user across
+their own devices (keel-core's sync log; see `keel_core::Library::sync_page` and
+`sync_apply`). `Node::set_sync_peers` names the devices sync is on with (Settings →
+Devices, `[devices] sync`; empty by default). A device pulls from those devices on
+connect, when sync is turned on and every `NodeOptions::sync_every` (60 s; zero:
+only `Node::sync_now`), with `Request::SyncPull { since }` answered by
+`Response::SyncEntries { entries, more, upto }`: at most `keel_core::SYNC_PAGE`
+(1,000) entries and well under the header limit per page, asked again from `upto`
+while `more`. A host answers only devices it syncs with (`Response::Denied` for the
+others), and serves only its own changes (sync is pairwise: no relaying). The puller
+checks the page (ordered sequence numbers inside `(since, upto]`), names every entry's
+device from the connection, applies at most `NodeOptions::sync_rate` (10,000) entries
+per device and minute (the rest waits for the next minute) through
+`Handler::sync_apply`, and stops when the switch goes off or the device is forgotten
+(`forget_peer` turns sync with it off; what arrived stays). A pull that changed the
+library emits `NetEvent::LibrarySynced`. Sync pulls are not written to the op log.
+
 ## Spacedrop
 
 `spacedrop::send(node, lib, peer, paths)` starts a durable keel-core job (kind
