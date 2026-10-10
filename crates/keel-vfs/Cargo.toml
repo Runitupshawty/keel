@@ -11,7 +11,7 @@ path = "src/lib.rs"
 [features]
 default = ["zip", "sevenz", "tar", "rar", "cloud"]
 zip = ["dep:zip", "dep:chrono"]
-sevenz = ["dep:sevenz-rust"]
+sevenz = ["dep:sevenz-rust2"]
 tar = ["dep:tar", "dep:flate2", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
 # libunrar is C++ built with `cc`; cross-target checks from Windows build without it.
 rar = ["dep:unrar_sys"]
@@ -37,7 +37,7 @@ cloud = [
 zip = { workspace = true, optional = true }
 # Zip timestamps are local wall-clock time.
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
-sevenz-rust = { workspace = true, optional = true }
+sevenz-rust2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 bzip2 = { workspace = true, optional = true }

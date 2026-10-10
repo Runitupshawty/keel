@@ -120,7 +120,7 @@ The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd
 
 Press Enter or double-click a `.zip`, `.jar`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst` or `.rar` file to open it as a folder (an archive inside an archive opens too). Up leaves the archive; preview works on the files inside. Right-click for **Extract here**, **Extract to folder**, **Extract to…**, **Add to "name.zip"** and **Compress to zip…**. Extraction asks before overwriting and refuses entries that would land outside the target folder.
 
-Archives are read-only: you can extract from any of them and add to a zip, but not delete, rename or create anything inside one. RAR is read through libunrar and never written. Password-protected entries are marked with a lock and cannot be previewed.
+Archives are read-only: you can extract from any of them and add files and folders to a zip, 7z, tar or tar.gz (entries of the same name are replaced; a 7z is re-encoded, a tar is streamed, and the old archive stays untouched until the new one is complete), but not delete, rename or create anything inside one. RAR is read through libunrar and never written. Password-protected entries are marked with a lock and cannot be previewed.
 
 ## Terminal
 
