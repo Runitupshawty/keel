@@ -42,7 +42,16 @@ pub(super) struct Client {
 }
 impl client::Handler for Client {
     type Error = anyhow::Error;
-    async fn check_server_key(&mut self, key: &russh::keys::ssh_key::PublicKey) -> Result<bool> {
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool> {
+        // Host certificates are never offered (not in `Preferred::key`); refuse one anyway
+        // rather than TOFU-trusting the key inside it without checking the CA.
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
+            *self.problem.lock() = Some("host certificates are not supported".into());
+            return Ok(false);
+        };
         let key = ssh_key::PublicKey::from_openssh(&key.to_openssh()?)?;
         let host = self.host.host.clone();
         let port = self.host.port;
@@ -430,8 +439,7 @@ mod tests {
     }
     /// An in-process SSH server with a fresh `algorithm` host key that rejects all logins.
     fn fake_server(algorithm: russh::keys::Algorithm) -> (u16, russh::keys::PublicKey) {
-        use russh::keys::ssh_key::rand_core::OsRng;
-        let key = russh::keys::PrivateKey::random(&mut OsRng, algorithm).unwrap();
+        let key = russh::keys::PrivateKey::random(&mut rand::rng(), algorithm).unwrap();
         let public = key.public_key().clone();
         let config = Arc::new(russh::server::Config {
             keys: vec![key],

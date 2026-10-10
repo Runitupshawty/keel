@@ -119,6 +119,7 @@ pub(super) async fn authenticate(session: &mut Handle<Client>, host: &RemoteHost
             anyhow::ensure!(!keys.is_empty(), "SSH agent has no keys loaded");
             let mut success = false;
             for key in keys {
+                let key = key.public_key().into_owned();
                 if session
                     .authenticate_publickey_with(&host.user, key, hash, &mut agent)
                     .await?

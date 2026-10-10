@@ -15,8 +15,9 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`ruzstd`](https://crates.io/crates/ruzstd) 0.8 | `.tar.zst` decompression | MIT | Rust crate, compiled in |
 | [`portable-pty`](https://crates.io/crates/portable-pty) 0.9 | Pseudo-terminal for the terminal pane | MIT | Rust crate, compiled in |
 | [`vt100`](https://crates.io/crates/vt100) 0.16 | Terminal escape-sequence parser and screen grid | MIT | Rust crate, compiled in |
-| [`russh`](https://crates.io/crates/russh) 0.50 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
-| [`russh-sftp`](https://crates.io/crates/russh-sftp) 2.4 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
+| [`russh`](https://crates.io/crates/russh) 0.64 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
+| [`ring`](https://crates.io/crates/ring) 0.17 | SSH ciphers and key exchange (russh's crypto backend) | Apache-2.0 AND ISC | Rust crate with C and assembly, compiled in |
+| [`russh-sftp`](https://crates.io/crates/russh-sftp) 3.0 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
 | [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |

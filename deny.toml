@@ -16,8 +16,6 @@ ignore = [
     { id = "RUSTSEC-2026-0245", reason = "sevenz-rust path traversal in decompress_impl; Keel extracts through its own path-checked writer, not decompress_impl. Move to sevenz-rust2 when feasible." },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30/0.31 (calamine, zbus_xml) quadratic attribute check; only parses local or trusted-size documents, fixed in quick-xml >=0.41 once parents update." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30/0.31 (calamine, zbus_xml) namespace allocation DoS; same parents as RUSTSEC-2026-0194." },
-    { id = "RUSTSEC-2026-0154", reason = "russh 0.50 unbounded allocation from a hostile SFTP server; upgrade to russh >=0.60.3 pending (API change)." },
-    { id = "RUSTSEC-2026-0153", reason = "russh-cryptovec 0.50 allocation growth; same upgrade as RUSTSEC-2026-0154." },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, no fix released; reachable only through russh key handling over a network timing channel." },
     { id = "RUSTSEC-2021-0119", reason = "nix 0.19 getgrouplist out-of-bounds write via battery; Keel never calls getgrouplist, battery only reads power status." },
     # Unmaintained crates (transitive, no drop-in replacement through our direct dependencies).
