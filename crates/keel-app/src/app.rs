@@ -525,7 +525,7 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .map(|&i| tab.entries()[i].size)
                 .sum()
         };
-        let mut left = vec![format!("{n} items")];
+        let mut left = vec![crate::jobs::items(n)];
         if picked {
             left.push(format!("{} selected", tab.selected.len()));
         }
@@ -720,6 +720,22 @@ mod tests {
             egui_kittest::kittest::Queryable::get_by_label_contains(&harness, "filter: a-very");
         let width = node.raw_bounds().map(|b| b.x1 - b.x0).unwrap_or_default();
         assert!(width > 0.0 && width <= 640.0 * 0.4 + 1.0, "{width}");
+    }
+
+    /// QA walkthrough 2026-10-10: a folder with one entry said "1 items".
+    #[test]
+    fn status_bar_counts_one_item_in_the_singular() {
+        let dir = std::env::temp_dir().join(format!("keel-one-item-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("only.txt"), "x").unwrap();
+        let start = VPath::local(&dir);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        wait_listed(&mut harness);
+        egui_kittest::kittest::Queryable::get_by_label(&harness, "1 item");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
