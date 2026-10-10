@@ -1,16 +1,19 @@
 //! Mount… (Phase 9 follow-up): a library source, or a folder inside one, as a drive letter
 //! or mount folder through `mounts.add` on keel-daemon. The app is not the mounting
-//! process: it talks to the daemon over its socket (preview, its own confirmation, execute)
-//! and shows what is mounted as a badge in the sidebar.
+//! process: it talks to the daemon (preview, its own confirmation, execute) and shows what
+//! is mounted as a badge in the sidebar. Attached to the daemon, the calls go through the
+//! window's connection (`LibraryBackend::Daemon`); with the library open in-process they
+//! use a connection of their own, for a daemon that may still run separately.
 
+use crate::backend::Remote;
 use crate::keys::Action;
 use crate::state::{AppState, Msg};
 use crate::worker;
 use keel_api::client::Client;
-use keel_api::config::HostConfig;
 use keel_api::types::{MountInfo, PlanPreview};
 use keel_api::ApiError;
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Shown whenever no daemon answers.
@@ -266,15 +269,28 @@ fn published(ctx: &egui::Context) -> Vec<MountInfo> {
         .unwrap_or_default()
 }
 
-/// One call to keel-daemon on a worker thread (never the UI thread).
-fn call(method: &str, params: Value) -> Result<Value, String> {
-    let cfg = HostConfig::load(&crate::cli::profile()).map_err(|e| format!("{e:#}"))?;
+/// One call to keel-daemon on a worker thread (never the UI thread): through the window's
+/// daemon connection when attached, else a connection of its own.
+fn call(remote: Option<&Remote>, method: &str, params: Value) -> Result<Value, String> {
+    if let Some(r) = remote {
+        return r.call_raw(method, params).map_err(|e| error_text(&e));
+    }
+    let cfg = crate::backend::host_config(&crate::cli::profile()).map_err(|e| format!("{e:#}"))?;
     let mut client = Client::connect(&cfg.socket_name()).map_err(|_| NOT_RUNNING.to_string())?;
     client.call(method, params).map_err(|e| error_text(&e))
 }
 
 impl AppState {
+    /// The window's daemon connection, when attached.
+    fn mount_remote(&self) -> Option<Arc<Remote>> {
+        self.library.remote().cloned()
+    }
+
     pub fn mount_cmd(&mut self, cmd: MountCmd) {
+        // The daemon is gone: nothing changes until the user reconnects or opens it here.
+        if self.library.lost && !matches!(cmd, MountCmd::Open { .. }) {
+            return self.toasts.error(crate::library::LOST);
+        }
         match cmd {
             MountCmd::Open { source, subtree } => {
                 let label = crate::library::label_of(&source).unwrap_or_else(|| source.clone());
@@ -296,7 +312,7 @@ impl AppState {
                 ))));
             }
             MountCmd::Plan { method, params } => {
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
                 worker::spawn("keel-mount-plan", move || {
                     let msg = (|| {
                         // Linux and macOS mount on an existing empty folder.
@@ -305,7 +321,7 @@ impl AppState {
                                 std::fs::create_dir_all(t).map_err(|e| format!("{t}: {e}"))?;
                             }
                         }
-                        let v = call(&method, params)?;
+                        let v = call(remote.as_deref(), &method, params)?;
                         let plan: PlanPreview =
                             serde_json::from_value(v).map_err(|e| e.to_string())?;
                         Ok::<_, String>(MountMsg::Preview { method, plan })
@@ -318,10 +334,10 @@ impl AppState {
                 plan_id,
                 input_hash,
             } => {
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
                 worker::spawn("keel-mount-run", move || {
                     let params = json!({"plan_id": plan_id, "input_hash": input_hash});
-                    let msg = match call("execute", params) {
+                    let msg = match call(remote.as_deref(), "execute", params) {
                         Ok(v) => {
                             MountMsg::Done(v["result"]["target"].as_str().unwrap_or("").to_owned())
                         }
@@ -397,9 +413,9 @@ impl AppState {
         }
         self.mount.asked = Some(Instant::now());
         self.mount.busy = true;
-        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
         worker::spawn("keel-mount-list", move || {
-            let list = call("mounts.list", Value::Null)
+            let list = call(remote.as_deref(), "mounts.list", Value::Null)
                 .ok()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
@@ -411,6 +427,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keel_api::config::HostConfig;
 
     fn mount(target: &str, source: &str) -> MountInfo {
         MountInfo {
@@ -475,6 +492,38 @@ mod tests {
         assert_eq!(badge(&m, "a").unwrap(), "mounted K:, L:");
         assert_eq!(badge(&m, "b").unwrap(), "mounted b");
         assert_eq!(badge(&m, "c"), None);
+    }
+
+    #[test]
+    fn attached_calls_go_through_the_windows_daemon_connection() {
+        let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let profile = format!("mount-test-{}", std::process::id());
+        let cfg = HostConfig::read(&profile, config.path().into(), data.path().into());
+        let name = cfg.socket_name();
+        let _daemon = keel_daemon::server::Daemon::start(keel_daemon::server::Options {
+            cfg,
+            ws: None,
+            web: None,
+            ws_allow_remote: false,
+            web_hosts: Vec::new(),
+            net: None,
+        })
+        .unwrap();
+        let remote = Remote::connect(&name).unwrap();
+        assert_eq!(
+            call(Some(&remote), "mounts.list", Value::Null).unwrap(),
+            json!([])
+        );
+        let e = call(
+            Some(&remote),
+            "mounts.add",
+            json!({"source": "none", "target": "/nonexistent"}),
+        )
+        .unwrap_err();
+        // Without a mount backend built in, the error carries the start hint.
+        if e.contains("--features") {
+            assert!(e.contains("keel daemon start"), "{e}");
+        }
     }
 
     #[test]
