@@ -16,10 +16,8 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 quadratic attribute check, now only via zbus_xml 4 <- zbus-lockstep 0.4 <- atspi-common 0.6 <- accesskit_unix (eframe 0.31, Linux). zbus-lockstep parses atspi's bundled D-Bus XML in a proc macro at build time and in atspi's own tests; Keel never runs it. Drops with the eframe/accesskit upgrade (zbus_xml 5)." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 namespace allocation DoS; same build-time-only zbus_xml path as RUSTSEC-2026-0194." },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, no fix released; reachable only through russh key handling over a network timing channel." },
-    { id = "RUSTSEC-2021-0119", reason = "nix 0.19 getgrouplist out-of-bounds write via battery; Keel never calls getgrouplist, battery only reads power status." },
     # Unmaintained crates (transitive, no drop-in replacement through our direct dependencies).
     { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained, pulled by syntect." },
-    { id = "RUSTSEC-2020-0168", reason = "mach unmaintained, pulled by battery on macOS." },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, pulled by accesskit, metal, pulp." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained, pulled by the SVG/text stack." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by the font/SVG stack." },

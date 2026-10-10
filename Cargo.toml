@@ -77,7 +77,8 @@ notify = "6"
 directories = "5"
 # Library content ids (Phase 6): pure Rust so cross-target checks need no C toolchain.
 blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
-battery = "0.7"
+# Maintained fork of `battery` (nix 0.19 and mach are gone); same API, imported as `battery`.
+battery = { package = "starship-battery", version = "0.12" }
 # Media sidecars (Phase 7): EXIF and XMP readers are pure Rust; HEIC (libheif, C) is opt-in.
 kamadak-exif = "0.6"
 quick-xml = "0.42"
