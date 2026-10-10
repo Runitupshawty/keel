@@ -5,14 +5,16 @@
 //! (`--web` serves them, with the token as the first message: [`run`]). No TLS: a remote
 //! bind should sit behind a TLS proxy or a private network. At most `MAX_CONNECTIONS`
 //! connections are served at once (more are closed at once), and the handshake must be
-//! over within `HANDSHAKE_WAIT`.
+//! over within `HANDSHAKE_WAIT`. The token file is read for each connection: after
+//! `keel daemon rotate-token` new connections need the new token and sessions signed in
+//! with the old one are closed (error -32007).
 
 use crate::server::{Session, Shared};
 use keel_api::{rpc, ApiError};
 use serde_json::{json, Value};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,7 +29,16 @@ pub(crate) const HANDSHAKE_WAIT: Duration = Duration::from_secs(5);
 /// Connections served at once by one listener (`--ws` or `--web`), handshakes included.
 pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// A browser connection must authenticate within this.
-const AUTH_WAIT: Duration = Duration::from_secs(10);
+const AUTH_WAIT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(10)
+};
+/// Largest message (and frame) before `auth`: a stranger cannot make the daemon hold
+/// 16 MiB per connection.
+pub(crate) const AUTH_MAX: usize = 4 << 10;
+/// How often a signed-in connection checks that the token was not rotated.
+const TOKEN_CHECK: Duration = Duration::from_secs(2);
 /// Each write must go through within this.
 pub(crate) const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// How often an idle connection checks for notifications.
@@ -51,23 +62,27 @@ pub fn token(path: &Path) -> io::Result<String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
-    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    keel_api::private::write(path, token.as_bytes())?;
-    Ok(token)
+    keel_api::config::new_token(path)
 }
 
-/// One of a listener's `MAX_CONNECTIONS`; given back on drop.
+/// The daemon token file, read for each connection (so a rotation takes effect at once).
+#[derive(Clone)]
+pub(crate) struct Token(pub(crate) Arc<PathBuf>);
+
+impl Token {
+    pub(crate) fn current(&self) -> io::Result<String> {
+        token(&self.0)
+    }
+}
+
+/// One of `cap` places (connections of a listener, unauthenticated ones, ...); given back
+/// on drop.
 pub(crate) struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
-    pub(crate) fn take(count: &Arc<AtomicUsize>) -> Option<Slot> {
+    pub(crate) fn take(count: &Arc<AtomicUsize>, cap: usize) -> Option<Slot> {
         let slot = Slot(count.clone());
-        (count.fetch_add(1, Ordering::AcqRel) < MAX_CONNECTIONS).then_some(slot)
+        (count.fetch_add(1, Ordering::AcqRel) < cap).then_some(slot)
     }
 }
 
@@ -88,7 +103,8 @@ pub(crate) fn serve(
     addr: SocketAddr,
     token_path: &Path,
 ) -> anyhow::Result<SocketAddr> {
-    let token = token(token_path)?;
+    let tokens = Token(Arc::new(token_path.to_owned()));
+    tokens.current()?;
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
     let s = shared.clone();
@@ -101,16 +117,16 @@ pub(crate) fn serve(
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let Some(slot) = Slot::take(&count) else {
+                let Some(slot) = Slot::take(&count, MAX_CONNECTIONS) else {
                     tracing::debug!("websocket: over {MAX_CONNECTIONS} connections, dropped");
                     continue; // dropping `stream` closes it
                 };
-                let (s, token) = (s.clone(), token.clone());
+                let (s, tokens) = (s.clone(), tokens.clone());
                 let _ = std::thread::Builder::new()
                     .name("keel-daemon-ws-client".into())
                     .spawn(move || {
                         let _slot = slot;
-                        if let Err(e) = client(&s, stream, &token) {
+                        if let Err(e) = client(&s, stream, &tokens) {
                             tracing::debug!("websocket client: {e}");
                         }
                     });
@@ -122,11 +138,12 @@ pub(crate) fn serve(
 
 // tungstenite's handshake callback returns its (large) http response as the error.
 #[allow(clippy::result_large_err)]
-fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Result<()> {
+fn client(shared: &Arc<Shared>, stream: TcpStream, tokens: &Token) -> anyhow::Result<()> {
     // Non-blocking until the handshake is over, so its deadline holds however slowly the
     // client sends (a per-read timeout restarts with every byte).
     stream.set_nonblocking(true)?;
     let deadline = Instant::now() + HANDSHAKE_WAIT;
+    let token = tokens.current()?;
     let expected = format!("Bearer {token}");
     let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         let given = req
@@ -156,7 +173,7 @@ fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Resul
             Err(HandshakeError::Failure(e)) => return Err(e.into()),
         }
     };
-    run(shared, &mut ws, None)
+    run(shared, &mut ws, &token, false, tokens, None)
 }
 
 /// The settings both WebSocket endpoints use.
@@ -166,26 +183,62 @@ pub(crate) fn config() -> WebSocketConfig {
         .max_frame_size(Some(rpc::MAX_REQUEST))
 }
 
+/// Sends error -32007 (`message`) and closes.
+fn refuse(ws: &mut WebSocket<TcpStream>, id: Value, message: &str) {
+    let e = ApiError::new(ApiError::UNAUTHORIZED, message);
+    let _ = ws.send(Message::text(rpc::response(id, Err(e)).to_string()));
+    let _ = ws.close(None);
+    let _ = ws.flush();
+}
+
 /// Answers JSON-RPC on `ws` (handshake done) until it closes: blocking again, reads poll
-/// every `POLL`, writes time out after `WRITE_WAIT`. `need_auth`: the first message must
-/// be `auth` with this token (else the answer is an error and the connection closes), and
-/// it must come within `AUTH_WAIT`.
+/// every `POLL`, writes time out after `WRITE_WAIT`. `token` is the token the connection
+/// signs in with; when it is no longer the file's (`keel daemon rotate-token`), the
+/// connection is closed with error -32007. `need_auth`: the first message must be `auth`
+/// with `token` (else the answer is an error and the connection closes), within
+/// `AUTH_WAIT` (else error -32007 and close), and until then a message may be at most
+/// `AUTH_MAX` bytes; `pending` (its unauthenticated place) is given back once it signs in.
 pub(crate) fn run(
     shared: &Arc<Shared>,
     ws: &mut WebSocket<TcpStream>,
-    mut need_auth: Option<&str>,
+    token: &str,
+    mut need_auth: bool,
+    tokens: &Token,
+    mut pending: Option<Slot>,
 ) -> anyhow::Result<()> {
     ws.get_ref().set_nonblocking(false)?;
     ws.get_ref().set_read_timeout(Some(POLL))?;
     ws.get_ref().set_write_timeout(Some(WRITE_WAIT))?;
+    if need_auth {
+        ws.set_config(|c| {
+            c.max_message_size = Some(AUTH_MAX);
+            c.max_frame_size = Some(AUTH_MAX);
+        });
+    } else {
+        pending = None;
+    }
     let auth_by = Instant::now() + AUTH_WAIT;
+    let mut checked = Instant::now();
     let mut session = Session::default();
     let result = loop {
-        if shared.stop.load(Ordering::Acquire) || (need_auth.is_some() && Instant::now() > auth_by)
-        {
+        if shared.stop.load(Ordering::Acquire) {
             let _ = ws.close(None);
             let _ = ws.flush();
             break Ok(());
+        }
+        if need_auth && Instant::now() > auth_by {
+            refuse(ws, Value::Null, &format!("no auth within {AUTH_WAIT:?}"));
+            break Ok(());
+        }
+        if !need_auth && checked.elapsed() >= TOKEN_CHECK {
+            checked = Instant::now();
+            if tokens
+                .current()
+                .map_or(true, |t| !same(t.as_bytes(), token.as_bytes()))
+            {
+                refuse(ws, Value::Null, "the daemon token changed: sign in again");
+                break Ok(());
+            }
         }
         let msg = match ws.read() {
             Ok(Message::Text(t)) => t.as_bytes().to_vec(),
@@ -211,7 +264,7 @@ pub(crate) fn run(
             }
             Err(e) => break Err(e.into()),
         };
-        if let Some(token) = need_auth {
+        if need_auth {
             let (answer, ok) = auth(&msg, token);
             ws.send(Message::text(answer.to_string()))?;
             if !ok {
@@ -219,13 +272,16 @@ pub(crate) fn run(
                 let _ = ws.flush();
                 break Ok(());
             }
-            need_auth = None;
+            need_auth = false;
+            pending = None;
+            ws.set_config(|c| *c = config());
             continue;
         }
         if let Some(answer) = rpc::handle(&msg, &mut |req| shared.dispatch(req, &mut session)) {
             ws.send(Message::text(answer.to_string()))?;
         }
     };
+    drop(pending);
     if let Some((id, _)) = session.sub.take() {
         shared.hub.unsubscribe(id);
     }

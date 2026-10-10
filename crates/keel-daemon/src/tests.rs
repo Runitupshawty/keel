@@ -44,6 +44,7 @@ fn start(env: &Env, ws: Option<&str>) -> Daemon {
         ws: ws.map(|a| a.parse().unwrap()),
         web: None,
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .unwrap()
@@ -128,6 +129,7 @@ fn second_daemon_for_the_profile_exits() {
         ws: None,
         web: None,
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .err()
@@ -234,6 +236,7 @@ fn websocket_refuses_remote_binds() {
         ws: Some("0.0.0.0:0".parse().unwrap()),
         web: None,
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .err()
@@ -269,6 +272,7 @@ fn web_serves_the_client_and_rpc_with_in_band_auth() {
         ws: None,
         web: Some("127.0.0.1:0".parse().unwrap()),
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .unwrap();
@@ -360,6 +364,7 @@ fn web_refuses_remote_binds() {
         ws: None,
         web: Some("0.0.0.0:0".parse().unwrap()),
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .err()
@@ -450,6 +455,7 @@ fn web_handshakes_have_a_deadline_and_a_cap() {
         ws: None,
         web: Some("127.0.0.1:0".parse().unwrap()),
         ws_allow_remote: false,
+        web_hosts: Vec::new(),
         net: None,
     })
     .unwrap();
@@ -522,4 +528,122 @@ fn deadline_and_cap(env: &Env, addr: std::net::SocketAddr, path: &str) {
         assert!(Instant::now() < deadline, "no slot came back");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn web_daemon(env: &Env) -> Daemon {
+    Daemon::start(Options {
+        cfg: env.cfg.clone(),
+        ws: None,
+        web: Some("127.0.0.1:0".parse().unwrap()),
+        ws_allow_remote: false,
+        web_hosts: Vec::new(),
+        net: None,
+    })
+    .unwrap()
+}
+
+#[allow(clippy::result_large_err)]
+fn web_socket(
+    addr: std::net::SocketAddr,
+) -> tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>> {
+    use tungstenite::client::IntoClientRequest;
+    let req = format!("ws://{addr}/rpc").into_client_request().unwrap();
+    let stream = std::net::TcpStream::connect(addr).unwrap();
+    let (ws, _) =
+        tungstenite::client(req, tungstenite::stream::MaybeTlsStream::Plain(stream)).unwrap();
+    ws
+}
+
+fn answer<S: std::io::Read + std::io::Write>(ws: &mut tungstenite::WebSocket<S>) -> Value {
+    loop {
+        match ws.read().unwrap() {
+            tungstenite::Message::Text(t) => return serde_json::from_str(&t).unwrap(),
+            tungstenite::Message::Close(_) => panic!("closed without an answer"),
+            _ => {}
+        }
+    }
+}
+
+/// Before `auth`: messages over 4 KiB close the connection; no `auth` in time gets
+/// -32007 before the close; at most 16 unauthenticated connections at once.
+#[test]
+fn web_limits_connections_that_have_not_signed_in() {
+    use tungstenite::Message;
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+
+    // A big message before auth: refused (the connection goes), never buffered.
+    let mut ws = web_socket(addr);
+    let big = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"auth","params":{{"token":"{}"}}}}"#,
+        "x".repeat(crate::ws::AUTH_MAX)
+    );
+    let _ = ws.send(Message::text(big));
+    let closed = (0..20).any(|_| !matches!(ws.read(), Ok(Message::Text(_)) | Ok(Message::Ping(_))));
+    assert!(closed);
+
+    // No auth in time: -32007, then the close.
+    let mut ws = web_socket(addr);
+    let late = answer(&mut ws);
+    assert_eq!(late["error"]["code"], ApiError::UNAUTHORIZED, "{late}");
+
+    // 16 waiting to sign in: the 17th is closed at once; signing in frees a place.
+    let mut waiting: Vec<_> = (0..crate::web::MAX_UNAUTHENTICATED)
+        .map(|_| web_socket(addr))
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let mut extra = std::net::TcpStream::connect(addr).unwrap();
+    extra
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    assert!(closed_tcp(&mut extra), "over the unauthenticated cap");
+    let auth = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": token.trim()}});
+    waiting[0].send(Message::text(auth.to_string())).unwrap();
+    assert_eq!(answer(&mut waiting[0])["result"]["ok"], true);
+    // A big message is fine once signed in.
+    let big =
+        json!({"jsonrpc":"2.0","id":2,"method":"search","params":{"query": "x".repeat(8 << 10)}});
+    waiting[0].send(Message::text(big.to_string())).unwrap();
+    assert_eq!(answer(&mut waiting[0])["id"], 2);
+    let mut one_more = web_socket(addr);
+    let auth = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": token.trim()}});
+    one_more.send(Message::text(auth.to_string())).unwrap();
+    assert_eq!(answer(&mut one_more)["result"]["ok"], true);
+}
+
+fn closed_tcp(s: &mut std::net::TcpStream) -> bool {
+    use std::io::Read;
+    let started = Instant::now();
+    let mut buf = [0u8; 16];
+    closed(s.read(&mut buf)) && started.elapsed() < Duration::from_secs(2)
+}
+
+/// `keel daemon rotate-token`: the old token no longer signs in, and a session signed in
+/// with it is closed with -32007.
+#[test]
+fn a_rotated_token_closes_old_sessions() {
+    use tungstenite::Message;
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let path = env.config.path().join("daemon.token");
+    let old = std::fs::read_to_string(&path).unwrap();
+    let auth =
+        |t: &str| json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": t.trim()}});
+    let mut ws = web_socket(addr);
+    ws.send(Message::text(auth(&old).to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["result"]["ok"], true);
+
+    let new = keel_api::config::new_token(&path).unwrap();
+    assert_ne!(new, old.trim());
+    let gone = answer(&mut ws);
+    assert_eq!(gone["error"]["code"], ApiError::UNAUTHORIZED, "{gone}");
+    let mut ws = web_socket(addr);
+    ws.send(Message::text(auth(&old).to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["error"]["code"], ApiError::UNAUTHORIZED);
+    let mut ws = web_socket(addr);
+    ws.send(Message::text(auth(&new).to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["result"]["ok"], true);
 }

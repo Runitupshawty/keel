@@ -596,6 +596,18 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
         }
     };
     match cmd {
+        DaemonCmd::RotateToken => match keel_api::config::new_token(&cfg.token_path()) {
+            Ok(_) => {
+                let path = cfg.token_path().display().to_string();
+                let text = format!("new token in {path}: clients must sign in again");
+                say(out, json!({"rotated": true, "path": path}), text);
+                OK
+            }
+            Err(e) => {
+                eprintln!("keel: {}: {e}", cfg.token_path().display());
+                FAILED
+            }
+        },
         DaemonCmd::Status => match running(cfg) {
             Some(v) => {
                 let text = format!(

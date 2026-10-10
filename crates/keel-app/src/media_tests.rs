@@ -443,3 +443,18 @@ fn made_sidecars_stay_pinned_until_decoded() {
         assert!(matches!(m.get(k), Tex::Ready(..)), "{}", k.path.display());
     }
 }
+
+/// The media cache (and every other cache root) resolves away from the user's real
+/// `%LOCALAPPDATA%\Keel` in tests (KEEL_DATA_DIR, KEEL_CONFIG_DIR or a temp folder).
+#[test]
+fn the_media_cache_never_lands_in_the_real_cache_folder() {
+    let dir = keel_vfs::cache_dir();
+    let real = directories::BaseDirs::new()
+        .map(|b| (b.cache_dir().to_owned(), b.data_local_dir().to_owned()));
+    if let Some((cache, local)) = real {
+        for app in ["Keel", "keel"] {
+            assert!(!dir.starts_with(cache.join(app)), "{}", dir.display());
+            assert!(!dir.starts_with(local.join(app)), "{}", dir.display());
+        }
+    }
+}

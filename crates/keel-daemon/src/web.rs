@@ -9,19 +9,23 @@
 //! - `/file/<token>`: a download made by `file.get`, valid once for 60 seconds.
 //!
 //! Every answer is `no-store` with `Referrer-Policy: no-referrer` and a CSP that allows
-//! only this origin (no CDN, no external fonts). On a loopback bind the `Host` header must
-//! name a loopback host (DNS rebinding); a cross-origin WebSocket is refused. As on `--ws`
-//! (`crate::ws`), the request head must be in within `HANDSHAKE_WAIT` in all, at most
-//! `MAX_CONNECTIONS` are served at once and writes time out after `WRITE_WAIT`. No TLS:
+//! only this origin (no CDN, no external fonts). The `Host` header must name a loopback
+//! host on a loopback bind, and the bound IP or a `--web-host` name on a remote one (DNS
+//! rebinding); a cross-origin WebSocket is refused. As on `--ws` (`crate::ws`), the
+//! request head must be in within `HANDSHAKE_WAIT` in all, at most `MAX_CONNECTIONS` are
+//! served at once and writes time out after `WRITE_WAIT`; of those, at most
+//! `MAX_UNAUTHENTICATED` have not signed in yet (a message before `auth` is at most
+//! `ws::AUTH_MAX` bytes) and at most `MAX_PER_IP` come from one remote address. No TLS:
 //! put a remote bind behind a TLS proxy or a private network (a tailnet).
 
 use crate::server::Shared;
 use crate::ws;
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tungstenite::protocol::Role;
 use tungstenite::WebSocket;
@@ -30,6 +34,60 @@ include!(concat!(env!("OUT_DIR"), "/web_bundle.rs"));
 
 /// Longest request head read.
 const MAX_HEAD: usize = 16 * 1024;
+/// Connections that have not signed in (or are fetching a page) at once: the rest of the
+/// `MAX_CONNECTIONS` stay for signed-in sessions.
+pub(crate) const MAX_UNAUTHENTICATED: usize = 16;
+/// Connections at once from one remote address (loopback is not limited this way).
+pub(crate) const MAX_PER_IP: usize = 8;
+
+/// One of `MAX_PER_IP` places of a remote address; given back on drop.
+struct IpSlot(Arc<Mutex<HashMap<IpAddr, usize>>>, IpAddr);
+
+impl IpSlot {
+    fn take(map: &Arc<Mutex<HashMap<IpAddr, usize>>>, ip: IpAddr) -> Option<IpSlot> {
+        let mut m = map.lock().unwrap_or_else(|e| e.into_inner());
+        let n = m.entry(ip).or_default();
+        (*n < MAX_PER_IP).then(|| {
+            *n += 1;
+            IpSlot(map.clone(), ip)
+        })
+    }
+}
+
+impl Drop for IpSlot {
+    fn drop(&mut self) {
+        let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = m.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
+}
+
+/// Which `Host` headers a listener answers.
+#[derive(Clone)]
+pub(crate) struct Hosts {
+    bound: SocketAddr,
+    /// `--web-host` names (lowercase).
+    names: Vec<String>,
+}
+
+impl Hosts {
+    /// Loopback bind: loopback names; remote bind: the bound IP or a `--web-host` name.
+    fn allow(&self, authority: &str) -> bool {
+        if self.bound.ip().is_loopback() {
+            return loopback_host(authority);
+        }
+        let name = host_name(authority).to_ascii_lowercase();
+        let ip = match self.bound.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        };
+        name == ip || self.names.contains(&name)
+    }
+}
 
 /// Shown when keel-daemon was built without the web client (`scripts/build-web.*`).
 const PLACEHOLDER: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Keel</title></head>\
@@ -37,17 +95,28 @@ const PLACEHOLDER: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><t
 <code>scripts/build-web.sh</code> (or <code>scripts\\build-web.ps1</code>), then rebuild keel-daemon.</p></body></html>";
 
 /// Binds `addr` and serves browsers on their own threads; returns the bound address.
+/// `names`: the `--web-host` names a remote bind also answers to.
 pub(crate) fn serve(
     shared: &Arc<Shared>,
     addr: SocketAddr,
     token_path: &Path,
+    names: &[String],
 ) -> anyhow::Result<SocketAddr> {
-    let token = ws::token(token_path)?;
+    let tokens = ws::Token(Arc::new(token_path.to_owned()));
+    tokens.current()?;
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
-    let loopback = addr.ip().is_loopback();
+    let hosts = Hosts {
+        bound,
+        names: names
+            .iter()
+            .map(|n| n.trim().to_ascii_lowercase())
+            .collect(),
+    };
     let s = shared.clone();
     let count = Arc::new(AtomicUsize::new(0));
+    let unauthenticated = Arc::new(AtomicUsize::new(0));
+    let per_ip = Arc::new(Mutex::new(HashMap::new()));
     std::thread::Builder::new()
         .name("keel-daemon-web".into())
         .spawn(move || {
@@ -56,16 +125,33 @@ pub(crate) fn serve(
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let Some(slot) = ws::Slot::take(&count) else {
+                // Dropping `stream` (any `continue`) closes it.
+                let Some(slot) = ws::Slot::take(&count, ws::MAX_CONNECTIONS) else {
                     tracing::debug!("web: over {} connections, dropped", ws::MAX_CONNECTIONS);
-                    continue; // dropping `stream` closes it
+                    continue;
                 };
-                let (s, token) = (s.clone(), token.clone());
+                let Some(pending) = ws::Slot::take(&unauthenticated, MAX_UNAUTHENTICATED) else {
+                    tracing::debug!("web: over {MAX_UNAUTHENTICATED} unauthenticated, dropped");
+                    continue;
+                };
+                let ip_slot = match stream.peer_addr() {
+                    Ok(peer) if !peer.ip().is_loopback() => {
+                        match IpSlot::take(&per_ip, peer.ip()) {
+                            Some(s) => Some(s),
+                            None => {
+                                tracing::debug!("web: over {MAX_PER_IP} from {}", peer.ip());
+                                continue;
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                let (s, tokens, hosts) = (s.clone(), tokens.clone(), hosts.clone());
                 let _ = std::thread::Builder::new()
                     .name("keel-daemon-web-client".into())
                     .spawn(move || {
-                        let _slot = slot;
-                        if let Err(e) = client(&s, stream, &token, loopback) {
+                        let _slots = (slot, ip_slot);
+                        if let Err(e) = client(&s, stream, &tokens, &hosts, pending) {
                             tracing::debug!("web client: {e}");
                         }
                     });
@@ -231,8 +317,9 @@ fn attachment(name: &str) -> String {
 fn client(
     shared: &Arc<Shared>,
     mut stream: TcpStream,
-    token: &str,
-    loopback: bool,
+    tokens: &ws::Token,
+    hosts: &Hosts,
+    pending: ws::Slot,
 ) -> anyhow::Result<()> {
     let head = read_head(&mut stream, Instant::now() + ws::HANDSHAKE_WAIT)?;
     stream.set_nonblocking(false)?;
@@ -249,19 +336,19 @@ fn client(
             "bad Host header",
         );
     }
-    if loopback && !loopback_host(&host) {
-        return refuse(
-            &mut stream,
-            "403 Forbidden",
-            &host,
-            "use a loopback host name",
-        );
+    if !hosts.allow(&host) {
+        let why = if hosts.bound.ip().is_loopback() {
+            "use a loopback host name"
+        } else {
+            "unknown host name (keel-daemon --web-host <name>)"
+        };
+        return refuse(&mut stream, "403 Forbidden", &host, why);
     }
     if head.method != "GET" {
         return refuse(&mut stream, "405 Method Not Allowed", &host, "GET only");
     }
     if head.path == "/rpc" {
-        return rpc(shared, stream, &head, &host, token);
+        return rpc(shared, stream, &head, &host, tokens, pending);
     }
     if let Some(link) = head.path.strip_prefix("/file/") {
         return download(shared, &mut stream, &host, link);
@@ -295,7 +382,8 @@ fn rpc(
     mut stream: TcpStream,
     head: &Head,
     host: &str,
-    token: &str,
+    tokens: &ws::Token,
+    pending: ws::Slot,
 ) -> anyhow::Result<()> {
     // The token goes in the first message, never in the address.
     if head.query.is_some() {
@@ -337,9 +425,17 @@ fn rpc(
     stream.flush()?;
     let mut socket = WebSocket::from_raw_socket(stream, Role::Server, Some(ws::config()));
     // A native client may still send the header; a browser authenticates in-band.
+    let token = tokens.current()?;
     let bearer = head.header("authorization").unwrap_or_default();
     let header_ok = ws::same(bearer.as_bytes(), format!("Bearer {token}").as_bytes());
-    ws::run(shared, &mut socket, (!header_ok).then_some(token))
+    ws::run(
+        shared,
+        &mut socket,
+        &token,
+        !header_ok,
+        tokens,
+        Some(pending),
+    )
 }
 
 fn download(
@@ -370,12 +466,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn one_remote_address_gets_at_most_max_per_ip() {
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        let ip: IpAddr = "192.0.2.9".parse().unwrap();
+        let held: Vec<IpSlot> = (0..MAX_PER_IP)
+            .map(|_| IpSlot::take(&map, ip).unwrap())
+            .collect();
+        assert!(IpSlot::take(&map, ip).is_none());
+        assert!(IpSlot::take(&map, "192.0.2.10".parse().unwrap()).is_some());
+        drop(held);
+        assert!(IpSlot::take(&map, ip).is_some());
+        assert!(map.lock().unwrap().get(&ip).is_none(), "given back");
+    }
+
+    #[test]
     fn hosts_and_filenames() {
         assert!(loopback_host("localhost:7421"));
         assert!(loopback_host("127.0.0.1"));
         assert!(loopback_host("[::1]:7421"));
         assert!(!loopback_host("evil.example:7421"));
         assert!(!loopback_host("127.0.0.1.evil.example"));
+        let remote = Hosts {
+            bound: "192.0.2.7:7421".parse().unwrap(),
+            names: vec!["keel.example".into()],
+        };
+        assert!(remote.allow("192.0.2.7:7421"));
+        assert!(remote.allow("KEEL.example:7421"));
+        assert!(!remote.allow("evil.example:7421"));
+        assert!(
+            !remote.allow("localhost:7421"),
+            "a remote bind lists its names"
+        );
+        let v6 = Hosts {
+            bound: "[2001:db8::1]:7421".parse().unwrap(),
+            names: Vec::new(),
+        };
+        assert!(v6.allow("[2001:db8::1]:7421"));
+        let local = Hosts {
+            bound: "127.0.0.1:7421".parse().unwrap(),
+            names: vec!["keel.example".into()],
+        };
+        assert!(local.allow("localhost:7421") && !local.allow("keel.example"));
         assert!(plain_host("host.example:7421"));
         assert!(!plain_host("a; script-src *"));
         assert!(!plain_host(""));

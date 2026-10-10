@@ -140,7 +140,7 @@ impl ArchiveReader for Reader {
 
 /// A private folder for extracted bodies, on the archive cache's volume rather than %TEMP%.
 /// Day-old leftovers of a crashed run are swept first.
-fn temp_root() -> Result<tempfile::TempDir> {
+pub(crate) fn temp_root() -> Result<tempfile::TempDir> {
     let parent = super::cache::default_root().join("rar-temp");
     std::fs::create_dir_all(&parent)?;
     for item in std::fs::read_dir(&parent)?.flatten() {

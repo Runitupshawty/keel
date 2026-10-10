@@ -378,7 +378,7 @@ impl Shared {
         self.cache
             .lock()
             .get_or_insert_with(|| {
-                let dir = crate::settings::cache_dir()?.join("media-cache");
+                let dir = keel_vfs::cache_dir().join("media-cache");
                 Sidecars::open(&dir, CACHE_BUDGET)
                     .map_err(|e| tracing::warn!("media cache {}: {e:#}", dir.display()))
                     .ok()

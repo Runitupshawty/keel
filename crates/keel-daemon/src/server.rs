@@ -40,6 +40,8 @@ pub struct Options {
     pub web: Option<SocketAddr>,
     /// `--ws-allow-remote`: allow a non-loopback `ws` or `web` address.
     pub ws_allow_remote: bool,
+    /// `--web-host`: host names a remote `web` bind answers to (besides its IP).
+    pub web_hosts: Vec<String>,
     /// keel-net identity store and options (when `cfg.net` is on); the OS keychain and
     /// public discovery by default.
     pub net: Option<NetSetup>,
@@ -200,7 +202,12 @@ impl Daemon {
             None => None,
         };
         let web_addr = match opts.web {
-            Some(addr) => Some(crate::web::serve(&shared, addr, &cfg.token_path())?),
+            Some(addr) => Some(crate::web::serve(
+                &shared,
+                addr,
+                &cfg.token_path(),
+                &opts.web_hosts,
+            )?),
             None => None,
         };
         let s = shared.clone();

@@ -35,6 +35,9 @@ struct Args {
     /// Allow --ws or --web on a non-loopback address (use TLS or a private network).
     #[arg(long)]
     ws_allow_remote: bool,
+    /// A host name a remote --web bind answers to (repeatable; its IP always works).
+    #[arg(long = "web-host", value_name = "NAME")]
+    web_host: Vec<String>,
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
     #[arg(long)]
     status: bool,
@@ -71,11 +74,16 @@ fn main() -> ExitCode {
         eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
         return ExitCode::FAILURE;
     }
+    if !args.web_host.is_empty() && args.web.is_none() {
+        eprintln!("keel-daemon: --web-host needs --web");
+        return ExitCode::FAILURE;
+    }
     let daemon = match server::Daemon::start(server::Options {
         cfg: cfg.clone(),
         ws: args.ws,
         web: args.web,
         ws_allow_remote: args.ws_allow_remote,
+        web_hosts: args.web_host,
         net: None,
     }) {
         Ok(d) => d,

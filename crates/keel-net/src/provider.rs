@@ -107,7 +107,12 @@ fn folder(path: VPath, name: String) -> Entry {
 /// Downloads (`local_copy`) older than this are swept from the temp folder.
 const STALE_DOWNLOAD: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Deletes day-old `keel-node-*` download folders from the temp folder. Best effort.
+/// Where `local_copy` downloads go: `<cache dir>/node` (`keel_vfs::cache_dir`).
+fn downloads_dir() -> std::path::PathBuf {
+    keel_vfs::cache_dir().join("node")
+}
+
+/// Deletes day-old `keel-node-*` download folders from `temp`. Best effort.
 fn sweep_downloads(temp: &std::path::Path) {
     for e in std::fs::read_dir(temp).into_iter().flatten().flatten() {
         let stale = e.file_name().to_string_lossy().starts_with("keel-node-")
@@ -126,7 +131,7 @@ fn sweep_downloads(temp: &std::path::Path) {
 impl NodeProvider {
     /// `rt`: the runtime `node` runs on. Sweeps day-old downloads (in the background).
     pub fn new(node: Arc<Node>, rt: Handle) -> Self {
-        std::thread::spawn(|| sweep_downloads(&std::env::temp_dir()));
+        std::thread::spawn(|| sweep_downloads(&downloads_dir()));
         Self {
             node,
             rt,
@@ -351,7 +356,7 @@ impl Provider for NodeProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
     }
-    /// Streams into a fresh `keel-node-*` folder under the temp dir, swept a day later
+    /// Streams into a fresh `keel-node-*` folder under `<cache dir>/node`, swept a day later
     /// (ponytail: no cache, so opening a file again downloads it again; a keyed cache like
     /// SFTP's if that gets slow).
     fn local_copy_cancellable(
@@ -362,7 +367,11 @@ impl Provider for NodeProvider {
     ) -> Result<PathBuf> {
         let info = self.stat(p)?;
         ensure!(info.kind == Kind::File, "not a file: {}", p.display());
-        let dir = tempfile::Builder::new().prefix("keel-node-").tempdir()?;
+        let root = downloads_dir();
+        std::fs::create_dir_all(&root)?;
+        let dir = tempfile::Builder::new()
+            .prefix("keel-node-")
+            .tempdir_in(&root)?;
         let target = dir.path().join(p.name());
         let mut out = std::fs::File::create(&target)?;
         let mut reader = self.read(p)?;

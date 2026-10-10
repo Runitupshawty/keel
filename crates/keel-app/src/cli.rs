@@ -171,6 +171,9 @@ pub enum DaemonCmd {
     Stop,
     /// Whether keel-daemon runs (exit 0) or not (exit 1).
     Status,
+    /// Replace the token of keel-daemon's --ws and --web: clients must sign in again
+    /// (sessions signed in with the old token are closed).
+    RotateToken,
 }
 
 /// What to open: from this process's command line, or handed over by a later `keel`.

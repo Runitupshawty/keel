@@ -139,6 +139,21 @@ impl HostConfig {
     }
 }
 
+/// Writes a new daemon token (32 random bytes, hex) to `path`, owner-only, replacing any
+/// old one: `keel daemon rotate-token`, and keel-daemon when it finds none (or one others
+/// may read). A running daemon reads the file for each connection and closes sessions
+/// signed in with the old token.
+pub fn new_token(path: &std::path::Path) -> std::io::Result<String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    crate::private::write(path, token.as_bytes())?;
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

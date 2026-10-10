@@ -54,17 +54,9 @@ impl Default for MaterialiseCache {
         Self::new(default_root(), 2 << 30)
     }
 }
-/// `%LOCALAPPDATA%\Keel\archives`, `~/Library/Caches/Keel/archives`, `~/.cache/keel/archives`.
+/// `<cache dir>/archives` (`crate::cache_dir`).
 pub(crate) fn default_root() -> PathBuf {
-    let app = if cfg!(target_os = "linux") {
-        "keel"
-    } else {
-        "Keel"
-    };
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.cache_dir().join(app))
-        .unwrap_or_else(|| std::env::temp_dir().join(app))
-        .join("archives")
+    crate::cache_dir().join("archives")
 }
 impl MaterialiseCache {
     pub fn new(root: PathBuf, budget: u64) -> Self {

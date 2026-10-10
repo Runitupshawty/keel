@@ -387,15 +387,7 @@ pub(crate) fn cached_download(
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part.as_bytes());
     }
-    let root = dirs::cache_dir()
-        .context("cache directory unavailable")?
-        // Spec 2.9 cache folder: `Keel` on Windows/macOS, `keel` on Linux.
-        .join(if cfg!(target_os = "linux") {
-            "keel"
-        } else {
-            "Keel"
-        })
-        .join("remote");
+    let root = crate::cache_dir().join("remote");
     let cache = root.join(namespace).join(format!("{:x}", hash.finalize()));
     fs::create_dir_all(&cache)?;
     let target = cache.join(local_name(p.name()));
