@@ -56,6 +56,8 @@ serde_json = "1"
 # record content ids for sidecar keys (both already built for keel-core).
 image.workspace = true
 rusqlite.workspace = true
+# Video playback in the viewer: sound output (ffmpeg decodes; it is not shipped).
+cpal.workspace = true
 # VS Code icon themes: .vsix packages (zip, sometimes gzip-wrapped by the Marketplace).
 zip.workspace = true
 flate2.workspace = true

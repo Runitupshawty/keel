@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Video playback in the media viewer, with sound: Space or Play plays and pauses, a click on the progress bar or a strip frame seeks, Up/Down set the volume, M mutes, L loops, and the elapsed and total time are shown. Frames are decoded by `ffmpeg` at the viewer's size (at most 1920 px) into a 3-frame queue (64 MiB at most) and the sound plays through the default output device (`cpal`), which is the clock the frames follow (late frames are dropped). Seeking, moving to another file or closing the viewer kills both `ffmpeg` processes and waits for them. Without `ffmpeg`, or for a file it cannot read, the viewer keeps its still frames and the system player (Enter or Open), with a note saying why.
+
 ## [0.10.0] - 2026-10-10
 
 ### Added

@@ -90,6 +90,49 @@ fn viewer_opens_navigates_and_closes() {
     assert!(s.viewer.is_none());
 }
 
+/// Space on a video plays it in the viewer instead of closing it; a file ffmpeg cannot
+/// read falls back to still frames with a note. Up/Down and M reach the player.
+#[test]
+fn viewer_space_plays_videos() {
+    if !keel_core::ffmpeg_available() {
+        // Play would open the system player.
+        eprintln!("skipped: ffmpeg is not installed");
+        return;
+    }
+    let tmp = temp("viewer-video");
+    std::fs::write(tmp.join("clip.mp4"), b"not a video").unwrap();
+    let ctx = egui::Context::default();
+    let mut s = AppState::new(ctx.clone(), Arc::new(Router::new()), VPath::local(&tmp));
+    s.dual = false;
+    s.panes[0].view = crate::pane::ViewMode::Media;
+    listed(&mut s);
+    s.tab_mut(0).visible(false);
+    s.tab_mut(0).cursor = Some("clip.mp4".into());
+    s.run(0, Action::ToggleSelect);
+    assert!(s.viewer.is_some());
+    key(&mut s, Key::Space);
+    let v = s.viewer.as_ref().expect("Space does not close on a video");
+    let p = v.player.as_ref().expect("playing in the viewer");
+    assert!(p.transport.playing);
+    key(&mut s, Key::ArrowDown);
+    key(&mut s, Key::M);
+    if let Some(p) = &s.viewer.as_ref().unwrap().player {
+        assert!(p.transport.muted && p.transport.volume == 0.9);
+    }
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while s.viewer.as_ref().unwrap().note.is_none() {
+        assert!(std::time::Instant::now() < until, "no fallback note");
+        let _ = ctx.run(egui::RawInput::default(), |ctx| s.viewer_ui(ctx));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let v = s.viewer.as_ref().unwrap();
+    assert!(v.player.is_none(), "back to still frames");
+    assert!(v.note.as_ref().unwrap().contains("system player"));
+    key(&mut s, Key::Escape);
+    assert!(s.viewer.is_none());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 #[test]
 fn viewer_math() {
     use crate::media_viewer::{step, zoom_about};
@@ -418,7 +461,7 @@ fn media_grid_perf() {
 /// `KEEL_MEDIA_LIVE=<folder of photos + videos> KEEL_SHOT_DIR=<dir> KEEL_CONFIG_DIR=<empty dir>
 /// cargo test --release -p keel-app media_live -- --ignored --nocapture`.
 /// Media view, scroll, hover-scrub a video, viewer (full decode), zoom, Right/Left, info
-/// panel, a video in the viewer; one PNG per step.
+/// panel, a video in the viewer, then playing; one PNG per step.
 #[test]
 #[ignore]
 fn media_live() {
@@ -526,6 +569,16 @@ fn media_live() {
     h.press_key(Key::Space);
     run(&mut h, 6.0);
     shot(&mut h, "viewer-video");
+    // Space plays it in the viewer (with ffmpeg).
+    h.press_key(Key::Space);
+    run(&mut h, 2.0);
+    let v = h.state().state.viewer.as_ref().unwrap();
+    println!(
+        "video playing: {:?}, note: {:?}",
+        v.player.as_ref().map(|p| p.transport.playing),
+        v.note
+    );
+    shot(&mut h, "viewer-video-playing");
     h.press_key(Key::Escape);
     h.state_mut().state.media.dates = true;
     run(&mut h, 6.0);

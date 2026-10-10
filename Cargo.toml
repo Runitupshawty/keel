@@ -85,6 +85,9 @@ kamadak-exif = "0.6"
 quick-xml = "0.42"
 libheif-rs = "2"
 libc = "0.2"
+# Video playback sound (keel-app media viewer): pure Rust over WASAPI / CoreAudio; ALSA
+# (libasound) on Linux.
+cpal = { version = "0.18", default-features = false }
 
 [profile.release]
 opt-level = 3

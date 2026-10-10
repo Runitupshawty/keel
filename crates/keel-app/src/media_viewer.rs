@@ -2,14 +2,17 @@
 //! Shows the 1024 px sidecar at once and the full-resolution decode (on a worker, EXIF
 //! orientation applied, at most `MAX_PIXELS`) when it arrives. Left/Right step through the
 //! listing's media files, `+`/`-`/wheel zoom, drag pans, `0` fits, `1` is 100 %, `I` shows
-//! the metadata, `F` toggles Favorite (library), Esc or Space closes. Videos: egui-video is
-//! not integrated, so like the preview panel the viewer shows still frames; the strip is a
-//! scrubber (click a frame to show it) and Enter / Play opens the system player.
+//! the metadata, `F` toggles Favorite (library), Esc (or Space on a photo) closes. Videos
+//! play in the viewer with sound (`video_player`, ffmpeg): Space plays and pauses, a click
+//! on the strip or the progress bar seeks, Up/Down set the volume, `M` mutes, `L` loops.
+//! Without ffmpeg the strip is a still-frame scrubber and Play opens the system player;
+//! Enter always does.
 
 use crate::keys::Action;
 use crate::media::{self, MediaType, Req, Tex, TexKey, VIEWER_SLOT};
 use crate::pane::ViewMode;
 use crate::state::AppState;
+use crate::video_player::{clock_text, Cmd, Transport, VideoPlayer};
 use crossbeam_channel::{Receiver, Sender};
 use egui::{pos2, vec2, Color32, Key, Rect, Sense, TextureHandle, Vec2};
 use keel_core::{MediaMeta, SidecarKind};
@@ -17,6 +20,7 @@ use keel_core::{MediaMeta, SidecarKind};
 const STRIP_H: f32 = 72.0;
 const INFO_W: f32 = 320.0;
 const BAR_H: f32 = 36.0;
+const CTRL_H: f32 = 30.0;
 const MIN_ZOOM: f32 = 0.02;
 const MAX_ZOOM: f32 = 32.0;
 
@@ -55,6 +59,16 @@ pub struct Viewer {
     wanted: Option<usize>,
     jobs: Sender<FullReq>,
     rx: Receiver<FullMsg>,
+    /// In-viewer playback of the shown video (after Play or a seek).
+    pub player: Option<VideoPlayer>,
+    /// Volume, mute and loop, kept from video to video.
+    prefs: Transport,
+    /// Why the video plays elsewhere or not at all.
+    pub note: Option<String>,
+    /// ffmpeg was found when the viewer opened.
+    ffmpeg: bool,
+    /// The image area in physical pixels (last frame): the decode size.
+    area_px: [f32; 2],
 }
 
 /// `index` moved by `delta`, kept inside `0..len` (no wrap).
@@ -162,6 +176,11 @@ impl Viewer {
             wanted: None,
             jobs,
             rx,
+            player: None,
+            prefs: Transport::default(),
+            note: None,
+            ffmpeg: keel_core::ffmpeg_available(),
+            area_px: [1280.0, 720.0],
         })
     }
 
@@ -182,8 +201,29 @@ impl Viewer {
             self.full = None;
             self.full_err = None;
             self.meta = None;
+            self.stop_video();
         }
     }
+
+    /// Kills playback (its processes end and are waited for), keeping volume and loop.
+    fn stop_video(&mut self) {
+        if let Some(p) = self.player.take() {
+            self.prefs = p.transport.clone();
+        }
+        self.note = None;
+    }
+
+    /// The video's length in seconds (the player's probe, else the metadata).
+    fn duration(&self) -> f64 {
+        (self.player.as_ref().and_then(VideoPlayer::duration))
+            .or_else(|| Some(self.meta.as_ref()?.duration_ms? as f64 / 1000.0))
+            .unwrap_or(0.0)
+    }
+}
+
+/// The time strip frame `f` shows in a video of `duration` seconds (its slot's middle).
+pub fn strip_time(f: u32, duration: f64) -> f64 {
+    (f64::from(f) + 0.5) / f64::from(media::STRIP_FRAMES) * duration
 }
 
 /// The visible media files of `tab`, as indices into its entries.
@@ -336,9 +376,25 @@ impl AppState {
         // Keys (the file list's key map is off while the viewer is open).
         let (mut close, mut fav, mut play) = (false, false, false);
         let mut zoom_by = None;
+        let mut cmd: Option<Cmd> = None;
         ctx.input_mut(|i| {
             let mut k = |key| i.consume_key(egui::Modifiers::NONE, key);
-            close = k(Key::Escape) || k(Key::Space);
+            close = k(Key::Escape);
+            if video {
+                for (key, c) in [
+                    (Key::Space, Cmd::Toggle),
+                    (Key::ArrowUp, Cmd::Volume(0.1)),
+                    (Key::ArrowDown, Cmd::Volume(-0.1)),
+                    (Key::M, Cmd::Mute),
+                    (Key::L, Cmd::Loop),
+                ] {
+                    if k(key) {
+                        cmd = Some(c);
+                    }
+                }
+            } else {
+                close |= k(Key::Space);
+            }
             if k(Key::ArrowRight) {
                 v.go(tab, 1);
             }
@@ -394,6 +450,17 @@ impl AppState {
         };
         let (n, index) = (v.items.len(), v.index);
         let mut actions: Vec<Action> = Vec::new();
+        // Playback: worker news and the due frame; a failure falls back to still frames.
+        let area_px = v.area_px;
+        let video_tex = v.player.as_mut().and_then(|p| p.frame(area_px));
+        if let Some(e) = v.player.as_ref().and_then(|p| p.error.clone()) {
+            v.stop_video();
+            v.note = Some(format!(
+                "Cannot play this video here ({e}). Enter opens the system player."
+            ));
+        }
+        let dur = v.duration();
+        let pos = v.player.as_mut().map(VideoPlayer::position);
 
         egui::Area::new(egui::Id::new("keel-media-viewer"))
             .order(egui::Order::Foreground)
@@ -436,7 +503,7 @@ impl AppState {
                     }
                     if video
                         && ui
-                            .button("▶ Play")
+                            .button("Open")
                             .on_hover_text("Play in the system player (Enter)")
                             .clicked()
                     {
@@ -469,7 +536,19 @@ impl AppState {
                 if video {
                     let strip_rect =
                         Rect::from_min_max(pos2(body.left(), body.bottom() - STRIP_H), body.max);
-                    body.max.y = strip_rect.top();
+                    let ctrl = Rect::from_min_max(
+                        pos2(body.left(), strip_rect.top() - CTRL_H),
+                        pos2(body.right(), strip_rect.top()),
+                    );
+                    body.max.y = ctrl.top();
+                    if let Some(c) = controls(ui, ctrl, v, pos, dur) {
+                        cmd = Some(c);
+                    }
+                    // The strip marks the frame nearest the playing position.
+                    let marked = match pos {
+                        Some(t) if dur > 0.0 => Some(media::strip_frame((t / dur) as f32)),
+                        _ => v.seek,
+                    };
                     if let Tex::Ready(tex, size) = strip_tex {
                         let r = ui.interact(strip_rect, ui.id().with("strip"), Sense::click());
                         let w = strip_rect.width() / media::STRIP_FRAMES as f32;
@@ -486,7 +565,7 @@ impl AppState {
                             );
                             ui.painter()
                                 .image(tex, cell, media::strip_uv(f), Color32::WHITE);
-                            if v.seek == Some(f) {
+                            if marked == Some(f) {
                                 ui.painter().rect_stroke(
                                     cell,
                                     0.0,
@@ -496,17 +575,30 @@ impl AppState {
                             }
                         }
                         if let Some(p) = r.interact_pointer_pos().filter(|_| r.clicked()) {
-                            v.seek = Some(media::strip_frame(
-                                (p.x - strip_rect.left()) / strip_rect.width(),
-                            ));
+                            let f =
+                                media::strip_frame((p.x - strip_rect.left()) / strip_rect.width());
+                            if v.ffmpeg && dur > 0.0 {
+                                cmd = Some(Cmd::Seek(strip_time(f, dur)));
+                            } else {
+                                v.seek = Some(f);
+                            }
                         }
-                        r.on_hover_text("Click a frame to show it");
+                        r.on_hover_text(if v.ffmpeg {
+                            "Click a frame to go there"
+                        } else {
+                            "Click a frame to show it"
+                        });
                     }
                 }
 
                 // The image: full resolution when decoded, else the 1024 px sidecar; a
                 // video shows the chosen strip frame.
+                v.area_px = [body.width() * ppp, body.height() * ppp];
                 let (tex, size, uv) = match (v.seek, strip_tex, &v.full, thumb_tex) {
+                    _ if video_tex.is_some() => {
+                        let (t, s) = video_tex.unwrap_or_default();
+                        (Some(t), s, media::FULL_UV)
+                    }
                     (Some(f), Tex::Ready(t, s), _, _) => {
                         let uv = media::strip_uv(f);
                         (Some(t), vec2(s.x * uv.width(), s.y), uv)
@@ -573,6 +665,15 @@ impl AppState {
                         dim,
                     );
                 }
+                if let Some(note) = &v.note {
+                    ui.painter().text(
+                        body.left_bottom() + vec2(10.0, -8.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        note,
+                        egui::FontId::proportional(13.0),
+                        fg,
+                    );
+                }
                 if let (Some(e), None) = (&v.full_err, &v.full) {
                     if !video && tex.is_some() {
                         ui.painter().text(
@@ -603,13 +704,132 @@ impl AppState {
             }
         }
         if play && video {
+            if let Some(p) = v.player.as_mut().filter(|p| p.transport.playing) {
+                p.command(Cmd::Toggle);
+            }
             self.launch(entry.path.clone(), crate::platform::open);
+        }
+        if let Some(c) = cmd.filter(|_| video) {
+            self.video_cmd(ctx, v, c, &entry.path, &req);
         }
         for a in actions {
             self.run(v.pane, a);
         }
         !close
     }
+}
+
+impl AppState {
+    /// A transport command for the shown video: to its player, else Play or a seek starts
+    /// one (Play without ffmpeg opens the system player instead).
+    fn video_cmd(
+        &mut self,
+        ctx: &egui::Context,
+        v: &mut Viewer,
+        c: Cmd,
+        path: &keel_vfs::VPath,
+        req: &Req,
+    ) {
+        if let Some(p) = &mut v.player {
+            p.command(c);
+            return;
+        }
+        let at = match c {
+            Cmd::Toggle => v.seek.map_or(0.0, |f| strip_time(f, v.duration())),
+            Cmd::Seek(t) => t,
+            _ => {
+                v.prefs.apply(c, 0.0);
+                return;
+            }
+        };
+        if !v.ffmpeg {
+            if c == Cmd::Toggle {
+                v.note = Some("ffmpeg is not installed: playing in the system player.".into());
+                self.launch(path.clone(), crate::platform::open);
+            }
+            return;
+        }
+        let (real, router) = (req.real.clone(), self.media.sh.router.clone());
+        let resolve: crate::video_player::Resolve = std::sync::Arc::new(move || {
+            real.to_local_path().map(Ok).unwrap_or_else(|| {
+                router
+                    .provider_for(&real)
+                    .ok_or_else(|| anyhow::anyhow!("no provider"))
+                    .and_then(|p| p.local_copy(&real))
+            })
+        });
+        let mut p = VideoPlayer::new(ctx.clone(), resolve, &v.prefs, at, v.area_px);
+        if c == Cmd::Toggle {
+            p.command(Cmd::Toggle);
+        }
+        v.seek = None;
+        v.note = None;
+        v.player = Some(p);
+    }
+}
+
+/// The playback row: play/pause, loop, volume, time and a progress bar to click.
+fn controls(ui: &mut egui::Ui, rect: Rect, v: &Viewer, pos: Option<f64>, dur: f64) -> Option<Cmd> {
+    let t = v.player.as_ref().map_or(&v.prefs, |p| &p.transport);
+    let mut cmd = None;
+    let mut row = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(10.0, 3.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    row.visuals_mut().override_text_color = Some(Color32::from_gray(230));
+    let (label, tip) = match (t.playing, v.ffmpeg) {
+        (true, _) => ("Pause", "Pause (Space)"),
+        (false, true) => ("▶ Play", "Play (Space)"),
+        (false, false) => (
+            "▶ Play",
+            "Play in the system player (Space): ffmpeg is not installed",
+        ),
+    };
+    if row.button(label).on_hover_text(tip).clicked() {
+        cmd = Some(Cmd::Toggle);
+    }
+    if row
+        .selectable_label(t.looping, "Loop")
+        .on_hover_text("Loop (L)")
+        .clicked()
+    {
+        cmd = Some(Cmd::Loop);
+    }
+    let vol = if t.muted {
+        "Muted".to_owned()
+    } else {
+        format!("Volume {:.0} %", t.volume * 100.0)
+    };
+    if row
+        .button(vol)
+        .on_hover_text("Up / Down change the volume; click or M mutes")
+        .clicked()
+    {
+        cmd = Some(Cmd::Mute);
+    }
+    let at = pos.unwrap_or(0.0);
+    row.label(format!("{} / {}", clock_text(at), clock_text(dur)));
+    let w = row.available_width().max(40.0);
+    let (bar, resp) = row.allocate_exact_size(vec2(w, 16.0), Sense::click());
+    let line = Rect::from_center_size(bar.center(), vec2(bar.width(), 4.0));
+    row.painter().rect_filled(line, 2.0, Color32::from_gray(70));
+    if dur > 0.0 {
+        let frac = (at / dur).clamp(0.0, 1.0) as f32;
+        let done = Rect::from_min_max(
+            line.min,
+            pos2(line.left() + frac * line.width(), line.bottom()),
+        );
+        row.painter()
+            .rect_filled(done, 2.0, Color32::from_gray(220));
+        if v.ffmpeg {
+            if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+                let f = ((p.x - line.left()) / line.width()).clamp(0.0, 1.0);
+                cmd = Some(Cmd::Seek(f64::from(f) * dur));
+            }
+        }
+    }
+    cmd
 }
 
 fn info_panel(
