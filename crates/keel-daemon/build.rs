@@ -1,6 +1,7 @@
 //! Embeds the web client bundle (`crates/keel-web/dist`, made by `scripts/build-web.*`)
 //! into keel-daemon for `--web`. Without a bundle the daemon serves a page that says how
-//! to build one. With the `winfsp` mount backend it also delay-loads WinFsp's DLL.
+//! to build one (and the PWA manifest, service worker and icons from `keel-web/static`).
+//! With the `winfsp` mount backend it also delay-loads WinFsp's DLL.
 
 use std::path::Path;
 
@@ -26,6 +27,24 @@ fn main() {
                 let path = path.canonicalize().expect("canonical bundle path");
                 files.push(format!("    ({name:?}, include_bytes!({path:?})),\n"));
             }
+        }
+    }
+    // The PWA files the daemon answers for even without a built client (the manifest names
+    // the share target the daemon serves; tests check them).
+    for name in [
+        "manifest.webmanifest",
+        "sw.js",
+        "icon-192.png",
+        "icon-512.png",
+    ] {
+        let path = web.join("static").join(name);
+        let built = files
+            .iter()
+            .any(|f| f.starts_with(&format!("    ({name:?},")));
+        if !built && path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let path = path.canonicalize().expect("canonical static path");
+            files.push(format!("    ({name:?}, include_bytes!({path:?})),\n"));
         }
     }
     files.sort();

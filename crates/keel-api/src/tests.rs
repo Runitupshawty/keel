@@ -116,6 +116,9 @@ fn registry_is_preview_first() {
         "mounts.list",
         "mounts.add",
         "mounts.remove",
+        "spacedrop.send",
+        "spacedrop.inbox",
+        "spacedrop.answer",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -350,7 +353,7 @@ fn devices_and_shares() {
         rt.block_on(keel_net::Node::open_with_options(
             Arc::new(keel_vfs::cloud::MemoryStore::default()),
             dir.path(),
-            Arc::new(net::NoSources),
+            Arc::new(net::NoSources::default()),
             keel_net::NodeOptions::offline(),
         ))
         .unwrap()
@@ -904,4 +907,134 @@ fn mounts_need_the_daemon_and_a_backend() {
         "{e}"
     );
     assert_eq!(call(&ctx, "mounts.list", Value::Null).unwrap(), json!([]));
+}
+
+/// Spacedrop between two offline loopback nodes: the preview lists the files and sizes and
+/// sends nothing, execute starts a job, the offer waits in the receiver's inbox until
+/// `spacedrop.answer` (previewed too) accepts it, and the files land in the inbox.
+#[test]
+fn spacedrop_send_inbox_and_answer() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let inbox = tempfile::tempdir().unwrap();
+    let drops = Arc::new(net::Drops::new(inbox.path().join("in"), Vec::new()));
+    let open = |dir: &tempfile::TempDir, handler: net::NoSources| {
+        rt.block_on(keel_net::Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dir.path(),
+            Arc::new(handler),
+            keel_net::NodeOptions::offline(),
+        ))
+        .unwrap()
+    };
+    let (na, nb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = fixture(None);
+    let a_node = open(&na, net::NoSources::default());
+    let a = Fixture {
+        ctx: a.ctx.with_net(a_node.clone(), rt.handle().clone()),
+        ..a
+    };
+    let b = fixture(None);
+    let b_node = open(
+        &nb,
+        net::NoSources {
+            drops: Some(drops.clone()),
+        },
+    );
+    let mut b_ctx = b.ctx.with_net(b_node.clone(), rt.handle().clone());
+    b_ctx.drops = Some(drops);
+    let b = Fixture { ctx: b_ctx, ..b };
+    let code = apply(&a.ctx, "devices.pair_code", json!({}));
+    apply(&b.ctx, "devices.pair_with", json!({"code": code["ticket"]}));
+    let to_b = b_node.id().to_string();
+
+    let docs = s(&a.files.path().join("docs"));
+    let params = json!({"peer": to_b, "paths": [docs]});
+    let preview: PlanPreview =
+        serde_json::from_value(call(&a.ctx, "spacedrop.send", params.clone()).unwrap()).unwrap();
+    assert!(
+        preview.summary.contains("2 file(s), 19 bytes"),
+        "{preview:?}"
+    );
+    let mut listed: Vec<_> = preview
+        .changes
+        .iter()
+        .map(|c| (c.path.clone().unwrap(), c.bytes.unwrap()))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed,
+        vec![
+            ("docs/invoice-2026.pdf".to_owned(), 9),
+            ("docs/notes.txt".to_owned(), 10)
+        ]
+    );
+    assert!(
+        a.ctx.lib.jobs().list().unwrap().is_empty(),
+        "a preview sends nothing"
+    );
+    // Never the configuration folder (the daemon token), nor a folder holding it.
+    let cfg = json!({"peer": to_b, "paths": [s(a.cfg.path())]});
+    assert!(call(&a.ctx, "spacedrop.send", cfg).is_err());
+    let holder = a.cfg.path().parent().unwrap();
+    let held = json!({"peer": to_b, "paths": [s(holder)]});
+    assert!(call(&a.ctx, "spacedrop.send", held).is_err());
+    let stranger = json!({"peer": "a".repeat(52), "paths": [docs]});
+    assert!(call(&a.ctx, "spacedrop.send", stranger).is_err());
+
+    let done = call(
+        &a.ctx,
+        "execute",
+        json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
+    )
+    .unwrap();
+    let job = done["job"].as_i64().expect("execute names the job");
+    assert_eq!(done["result"]["job"], job);
+
+    // The offer waits for an answer on b.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let offer = loop {
+        let inbox = call(&b.ctx, "spacedrop.inbox", Value::Null).unwrap();
+        if let Some(o) = inbox["pending"].as_array().and_then(|p| p.first()) {
+            break o.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "no offer arrived");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(offer["peer"], a_node.id().to_string());
+    assert_eq!(
+        (offer["files"].as_u64(), offer["bytes"].as_u64()),
+        (Some(2), Some(19))
+    );
+    let answer = json!({"peer": offer["peer"], "id": offer["id"], "accept": true});
+    let p = call(&b.ctx, "spacedrop.answer", answer.clone()).unwrap();
+    assert!(
+        p["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("Accept 2 file(s)"),
+        "{p}"
+    );
+    assert_eq!(
+        apply(&b.ctx, "spacedrop.answer", answer.clone())["ok"],
+        true
+    );
+    assert!(
+        call(&b.ctx, "spacedrop.answer", answer).is_err(),
+        "answered once"
+    );
+
+    let info = a.ctx.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    let got = inbox.path().join("in").join("docs");
+    assert_eq!(std::fs::read(got.join("notes.txt")).unwrap(), b"some notes");
+    let listing = call(&b.ctx, "spacedrop.inbox", Value::Null).unwrap();
+    assert_eq!(listing["entries"][0]["name"], "docs", "{listing}");
+    assert_eq!(listing["entries"][0]["is_dir"], true);
+    assert!(listing["pending"].as_array().unwrap().is_empty());
+    // a's host takes no drops.
+    assert!(call(&a.ctx, "spacedrop.inbox", Value::Null).is_err());
+    rt.block_on(async {
+        a_node.close().await;
+        b_node.close().await;
+    });
 }

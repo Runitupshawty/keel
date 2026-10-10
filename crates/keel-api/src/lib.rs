@@ -55,6 +55,8 @@ pub struct Ctx {
     /// Keel's configuration folder (the daemon token, keys): never readable through the
     /// read operations.
     pub config_dir: Option<std::path::PathBuf>,
+    /// The Spacedrop inbox and waiting offers (set with `node` by a host).
+    pub drops: Option<Arc<net::Drops>>,
 }
 
 impl Ctx {
@@ -71,6 +73,7 @@ impl Ctx {
             utc_offset: 0,
             downloads: Default::default(),
             config_dir: config::config_dir(),
+            drops: None,
         }
     }
 

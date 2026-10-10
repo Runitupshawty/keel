@@ -101,6 +101,8 @@ pub(crate) struct Shared {
     pub(crate) stop: AtomicBool,
     shutdown: Sender<()>,
     pub(crate) profile: String,
+    /// `--web` share-target uploads waiting for `share.claim`.
+    pub(crate) uploads: crate::share::Uploads,
 }
 
 impl Shared {
@@ -121,6 +123,14 @@ impl Shared {
                     self.hub.unsubscribe(id);
                 }
                 Ok(json!({"subscribed": []}))
+            }
+            "share.claim" => {
+                let id = req
+                    .params
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.uploads.claim(id).map_err(ApiError::not_found)
             }
             "daemon.shutdown" => {
                 let _ = self.shutdown.try_send(());
@@ -196,6 +206,7 @@ impl Daemon {
             stop: AtomicBool::new(false),
             shutdown,
             profile: cfg.profile.clone(),
+            uploads: crate::share::Uploads::open(cfg.data_dir.join("shares")),
         });
         pump(&shared);
         let ws_addr = match opts.ws {

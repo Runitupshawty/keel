@@ -1,5 +1,6 @@
 //! Renders `assets/keel.svg` into `assets/keel.png` (256 px, window icon and Linux
-//! tarball) and `assets/keel.ico` (16/32/48/256, embedded in keel.exe).
+//! tarball), `assets/keel.ico` (16/32/48/256, embedded in keel.exe) and the web client's
+//! PWA icons `crates/keel-web/static/icon-192.png` / `icon-512.png`.
 //!
 //! Run after editing the SVG: `cargo run -p keel-app --example gen_icon`
 
@@ -36,6 +37,13 @@ fn main() {
     render(&tree, 256)
         .save(assets.join("keel.png"))
         .expect("write keel.png");
+
+    let web = Path::new(env!("CARGO_MANIFEST_DIR")).join("../keel-web/static");
+    for px in [192, 512] {
+        render(&tree, px)
+            .save(web.join(format!("icon-{px}.png")))
+            .expect("write web icon");
+    }
 
     let images: Vec<RgbaImage> = [16, 32, 48, 256].map(|px| render(&tree, px)).into();
     let frames: Vec<IcoFrame> = images

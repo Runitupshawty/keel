@@ -126,6 +126,12 @@ pub static OPS: &[Operation] = &[
         MountParams => MountInfo, mounts_add_preview, mounts_add, json!({"source": "0123456789abcdef0123456789abcdef", "subtree": "Photos/2026", "target": example_mount()})),
     previewed!("mounts.remove", "Unmounts a mount; writes still in progress there are discarded (those files stay as they were).",
         UnmountParams => MountInfo, mounts_remove_preview, mounts_remove, json!({"target": example_mount()})),
+    previewed!("spacedrop.send", "Sends files or folders on this machine to a paired device (Spacedrop) as a job; the preview lists every file and its size.",
+        SpacedropSendParams => JobStarted, drop_send_preview, drop_send, json!({"peer": "a".repeat(52), "paths": [example_file()]})),
+    now!("spacedrop.inbox", "The Spacedrop inbox on this machine: offers waiting for an answer and what arrived, newest first (download with file.get).",
+        NoParams => Inbox, drop_inbox, json!({})),
+    previewed!("spacedrop.answer", "Accepts or declines a Spacedrop offer waiting in the inbox.",
+        SpacedropAnswerParams => Done, drop_answer_preview, drop_answer, json!({"peer": "a".repeat(52), "id": "0123456789abcdef0123456789abcdef", "accept": true})),
 ];
 
 fn example_dir() -> &'static str {
@@ -1068,11 +1074,13 @@ fn execute(ctx: &Ctx, p: ExecuteParams) -> Result<Executed> {
                     format!("plan for unknown operation {method}"),
                 ));
             };
+            let result = apply(ctx, params)?;
             Ok(Executed {
                 plan_id: p.plan_id,
                 operation,
-                job: None,
-                result: Some(apply(ctx, params)?),
+                // An operation that starts a job (`JobStarted`) is followed like a file plan.
+                job: result.get("job").and_then(serde_json::Value::as_i64),
+                result: Some(result),
             })
         }
     }
@@ -1420,4 +1428,196 @@ fn mounts_remove_preview(ctx: &Ctx, p: &UnmountParams) -> Result<Preview> {
 fn mounts_remove(ctx: &Ctx, p: UnmountParams) -> Result<MountInfo> {
     let (m, info) = mounted(ctx, &p.target)?;
     Ok(mount_info(m.remove(&info.target)?))
+}
+
+// --- Spacedrop ---
+
+/// Files a `spacedrop.send` preview lists one by one (its summary counts them all).
+const DROP_LISTED: usize = 500;
+/// Entries `spacedrop.inbox` returns.
+const INBOX_MAX: usize = 500;
+
+/// The paths to send, refused when one is, holds or sits in Keel's configuration folder
+/// (a drop must never carry the daemon token or keys to another device).
+fn drop_paths(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Vec<VPath>> {
+    if p.paths.is_empty() {
+        return Err(ApiError::invalid_params("nothing to send"));
+    }
+    p.paths
+        .iter()
+        .map(|s| {
+            let path = crate::files::real(ctx, &vpath(s)?)?;
+            crate::files::readable(ctx, &path)?;
+            if let (Some(cfg), Some(local)) = (&ctx.config_dir, path.to_local_path()) {
+                if crate::files::inside(cfg, &local) {
+                    return Err(ApiError::failed(format!(
+                        "{}: holds Keel's configuration folder, which is never sent",
+                        path.display()
+                    )));
+                }
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+fn sum(files: &[(String, u64)]) -> u64 {
+    files.iter().fold(0u64, |n, f| n.saturating_add(f.1))
+}
+
+fn drop_send_preview(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Preview> {
+    let peer = paired(ctx, &p.peer)?;
+    let files = keel_net::spacedrop::files(&ctx.router, &drop_paths(ctx, p)?)?;
+    let mut changes: Vec<Change> = files
+        .iter()
+        .take(DROP_LISTED)
+        .map(|(rel, size)| Change {
+            action: "drop.send".into(),
+            path: Some(rel.clone()),
+            to: Some(peer.label.clone()),
+            detail: None,
+            files: Some(1),
+            bytes: Some(*size),
+        })
+        .collect();
+    if files.len() > DROP_LISTED {
+        changes.push(change(
+            "drop.send",
+            None,
+            Some(format!("and {} more file(s)", files.len() - DROP_LISTED)),
+        ));
+    }
+    let mut warnings = Vec::new();
+    if peer.link == keel_net::Link::Offline {
+        warnings.push(warning(
+            "offline",
+            None,
+            format!(
+                "{} is offline: the drop waits for it and fails after 10 minutes without progress",
+                peer.label
+            ),
+        ));
+    }
+    Ok(Preview {
+        summary: format!(
+            "Send {} file(s), {} bytes, to {}",
+            files.len(),
+            sum(&files),
+            peer.label
+        ),
+        changes,
+        warnings,
+    })
+}
+
+fn drop_send(ctx: &Ctx, p: SpacedropSendParams) -> Result<JobStarted> {
+    let peer = paired(ctx, &p.peer)?;
+    let paths = drop_paths(ctx, &p)?;
+    let (node, _) = node(ctx)?;
+    let job = keel_net::spacedrop::send(node, &ctx.lib, peer.id, paths)?;
+    Ok(JobStarted { job })
+}
+
+fn drops(ctx: &Ctx) -> Result<&Arc<crate::net::Drops>> {
+    node(ctx)?;
+    ctx.drops
+        .as_ref()
+        .ok_or_else(|| ApiError::failed("this host takes no Spacedrops"))
+}
+
+fn drop_inbox(ctx: &Ctx, _: NoParams) -> Result<Inbox> {
+    let drops = drops(ctx)?;
+    let pending = drops
+        .pending()
+        .into_iter()
+        .map(|w| DropOffer {
+            peer: w.peer.0.to_string(),
+            label: w.label,
+            id: w.id,
+            files: w.files.len() as u64,
+            bytes: sum(&w.files),
+            names: w.files.into_iter().take(10).map(|f| f.0).collect(),
+        })
+        .collect();
+    let mut entries: Vec<EntryInfo> = match std::fs::read_dir(&drops.inbox) {
+        Ok(dir) => dir
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                // Staging folders of drops still arriving.
+                if name.starts_with(".keel-partial-") {
+                    return None;
+                }
+                let meta = e.metadata().ok()?;
+                Some(EntryInfo {
+                    name,
+                    path: e.path().display().to_string(),
+                    is_dir: meta.is_dir(),
+                    size: if meta.is_dir() { 0 } else { meta.len() },
+                    modified: unix(meta.modified().ok()),
+                    hidden: false,
+                })
+            })
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(ApiError::failed(format!("{}: {e}", drops.inbox.display()))),
+    };
+    entries.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
+    entries.truncate(INBOX_MAX);
+    Ok(Inbox {
+        dir: drops.inbox.display().to_string(),
+        pending,
+        entries,
+    })
+}
+
+/// The waiting offer `p` names: its sender's label and files.
+fn waiting_offer(ctx: &Ctx, p: &SpacedropAnswerParams) -> Result<(String, Vec<(String, u64)>)> {
+    let peer = peer_id(&p.peer)?;
+    drops(ctx)?
+        .pending()
+        .into_iter()
+        .find(|w| w.peer == peer && w.id == p.id)
+        .map(|w| (w.label, w.files))
+        .ok_or_else(|| ApiError::not_found(format!("no waiting offer {}", p.id)))
+}
+
+fn drop_answer_preview(ctx: &Ctx, p: &SpacedropAnswerParams) -> Result<Preview> {
+    let (label, files) = waiting_offer(ctx, p)?;
+    let inbox = drops(ctx)?.inbox.display().to_string();
+    let (verb, into, action) = match p.accept {
+        true => ("Accept", format!(" into {inbox}"), "drop.accept"),
+        false => ("Decline", String::new(), "drop.decline"),
+    };
+    Ok(Preview {
+        summary: format!(
+            "{verb} {} file(s), {} bytes, from {label}{into}",
+            files.len(),
+            sum(&files)
+        ),
+        changes: files
+            .iter()
+            .take(DROP_LISTED)
+            .map(|(rel, size)| Change {
+                action: action.into(),
+                path: Some(rel.clone()),
+                to: p.accept.then(|| inbox.clone()),
+                detail: None,
+                files: Some(1),
+                bytes: Some(*size),
+            })
+            .collect(),
+        warnings: Vec::new(),
+    })
+}
+
+fn drop_answer(ctx: &Ctx, p: SpacedropAnswerParams) -> Result<Done> {
+    let peer = peer_id(&p.peer)?;
+    if !drops(ctx)?.answer(&peer, &p.id, p.accept) {
+        return Err(ApiError::not_found(format!(
+            "no waiting offer {} (answered, or the sender stopped waiting)",
+            p.id
+        )));
+    }
+    Ok(Done { ok: true })
 }

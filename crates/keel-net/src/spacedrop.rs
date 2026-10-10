@@ -96,6 +96,16 @@ pub fn send(node: &Node, lib: &Library, peer: PeerId, paths: Vec<VPath>) -> Resu
     }))
 }
 
+/// What `send` would offer for `paths`: each file's relative name and size, with the same
+/// checks the job makes (portable names, no two items sharing a name, at least one file).
+/// For previews; the job expands again when it starts.
+pub fn files(router: &Router, paths: &[VPath]) -> Result<Vec<(String, u64)>> {
+    Ok(expand(router, paths)?
+        .into_iter()
+        .map(|f| (f.rel, f.size))
+        .collect())
+}
+
 fn valid_id(id: &str) -> bool {
     id.len() == 32
         && id

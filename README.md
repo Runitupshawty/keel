@@ -219,7 +219,7 @@ By default there is one Keel per user and profile: a second `keel` hands its fol
 
 ## Web client
 
-`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete (preview first, then execute, exactly as in the window), follow jobs, see your devices, and download files.
+`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete (preview first, then execute, exactly as in the window), follow jobs, see your devices and the Spacedrop inbox, send files to a device, and download files. Narrower than 700 px (a phone) it switches to a phone layout; it installs as an app (see Phones).
 
 ```sh
 scripts/build-web.sh                # once, or scripts\build-web.ps1: builds crates/keel-web/dist
@@ -231,9 +231,23 @@ keel-daemon --web                   # http://127.0.0.1:7421/ (or --web 127.0.0.1
 
 **The token.** The first visit asks for the token in `daemon.token` in Keel's configuration folder on the daemon's machine (`%APPDATA%\Keel`, `~/Library/Application Support/Keel`, `~/.config/keel`, or `KEEL_CONFIG_DIR`). Tick **Remember on this device** to keep it in that browser's local storage; leave it off on a shared computer (it then lives only in the open tab). **Sign out** forgets it. The page sends the token as its first WebSocket message; it never goes in an address, and an address that carries one is refused and scrubbed from the address bar. Download links (`/file/...`) are one-time and expire after 60 seconds. Every page is served `no-store`, without referrers, under a same-origin content security policy; nothing is loaded from a CDN.
 
-**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). The page answers only to the bound IP; add `--web-host <name>` for each host name you use to reach it (a tailnet name, for example). Anyone who can reach the port still needs the token, and until they sign in a connection is held to small messages and few connections at once. Keep loopback when you do not need it.
+**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). The page answers only to the bound IP (loopback names on a loopback bind); add `--web-host <name>` for each host name you use to reach it (a tailnet name, or a reverse proxy's name). Anyone who can reach the port still needs the token, and until they sign in a connection is held to small messages and few connections at once. Keep loopback when you do not need it.
 
 **Revoking access.** `keel daemon rotate-token` writes a new token: every browser and client signs in again, and sessions signed in with the old token are closed.
+
+## Phones
+
+The web client is an installable app (a PWA) with a phone layout: one pane (a list, or a media grid you pinch to resize), a bottom bar with **Browse**, **Search**, **Library** and **Devices**, the preview as a full-screen sheet (pinch to zoom, double-tap, swipe left or right for the next or previous file), long-press menus (Preview, Download, Send to device…, Delete…) and pull to refresh. Above 700 px it is the desktop layout. Install it from the browser's menu (**Install app** / **Add to Home Screen**); the service worker keeps only the app shell, never your files or the daemon's answers. Browsers install apps and run service workers only over **https** (or on localhost), so use the tailnet's certificate or a reverse proxy for the installed app; plain http still works as a page.
+
+**Reaching the daemon from the phone.** Pick one:
+
+- **Same network (LAN).** `keel-daemon --web <LAN IP of the PC>:7421 --ws-allow-remote`, then open `http://<that IP>:7421/` on the phone. Plain http: anyone on that network can read the traffic (the client warns you), so use it only at home, and prefer one of the next two.
+- **Tailnet (Tailscale or similar).** `keel-daemon --web <tailnet IP>:7421 --ws-allow-remote --web-host <machine name>`, then open `http://<machine name>:7421/` from the phone on the same tailnet. The tailnet encrypts the link. For an installable app with https, put `tailscale serve` (or another TLS front) before it and add that name with `--web-host`.
+- **Reverse proxy with TLS.** Keep the daemon on loopback (`keel-daemon --web`), and let a proxy (Caddy, nginx) with a certificate forward `https://<name>/` to `127.0.0.1:7421`, passing the `Host` header through and upgrading WebSockets on `/rpc`; start the daemon with `--web-host <name>` so it answers to that name.
+
+Whenever the page comes over plain http from another machine, the client shows a warning that the token and files cross the network unencrypted.
+
+**Share → Keel (Spacedrop from the phone).** With the app installed, the phone's share sheet lists Keel. Sharing photos or files posts them to the daemon, which parks them (at most 512 MiB, 100 files) and opens the app; the share request cannot carry the token, so nothing more happens until the signed-in app claims them, once, within 5 minutes (unclaimed shares are deleted). Then pick one paired device and **Send…**: the preview lists every file and its size, and **Execute** sends them with Spacedrop through the daemon to that device only. Drops sent to the daemon's machine show in **Devices → Inbox** with Accept / Decline for waiting offers and **Download** for what arrived; they land in `[devices] inbox` of the profile's `config.toml` (default `<data dir>/inbox`), and devices listed in `[devices] auto_accept` skip the question. Devices must be on for the daemon (Settings → Devices).
 
 ## Keyboard shortcuts
 

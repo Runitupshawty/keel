@@ -29,7 +29,7 @@ layout instead of sharing its code:
 | preview panel | `media.thumb` for photos and videos, `preview.render` for the rest (text, PDF pages, documents), rendered by the daemon with the desktop previewers |
 | library sidebar | `sources.list`; a source opens `library://<id>/` |
 | jobs panel | `jobs.list`, refreshed on `job.progress` notifications |
-| devices | `devices.list` (keel-net off: says so) |
+| devices | `devices.list` (keel-net off: says so), the Spacedrop inbox (`spacedrop.inbox`, `spacedrop.answer`), Send to device (`spacedrop.send`) |
 | file operations | rename / delete through `plan`, tags through `tags.add`: the preview is shown, `execute` confirms exactly that plan, and a job shows as done only when `jobs.info` says it finished |
 
 What is shared: keel-api's parameter and result types (`crates/keel-api/src/types.rs`,
@@ -43,7 +43,15 @@ same JSON-RPC, for native clients) lives in keel-api.
   refused stops retrying), transport-agnostic and tested natively.
 - `guard.rs`: refuses an address that carries a token (tested natively).
 - `util.rs`: display helpers (tested natively).
+- `layout.rs`: the phone / desktop breakpoint with hysteresis, the phone tab and the
+  preview sheet (tested natively).
+- `gesture.rs`: pull to refresh, swipes, pinch zoom and grid tile sizes (tested natively).
+- `share.rs`: the share-sheet flow: the `?share=<id>` address, `share.claim` once signed
+  in, the picked device, the `spacedrop.send` parameters (tested natively).
 - `app.rs`, `web.rs`: the UI and the browser glue (WebSocket, `localStorage`, downloads);
   wasm32 only. CI builds and lints them for wasm32.
-- `static/`: the page shell (`index.html`, `boot.js`, `keel.css`) copied next to the
-  wasm-bindgen output by `scripts/build-web.*`.
+- `static/`: the page shell (`index.html`, `boot.js`, `keel.css`), the PWA manifest, the
+  service worker (`sw.js`; the build script stamps its cache key with the wasm's hash) and
+  the icons (`icon-192.png`, `icon-512.png`, rendered from `assets/keel.svg` by
+  `cargo run -p keel-app --example gen_icon`), copied next to the wasm-bindgen output by
+  `scripts/build-web.*`.

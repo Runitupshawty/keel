@@ -4,6 +4,7 @@
 //! See docs/api.md.
 
 mod server;
+mod share;
 mod web;
 mod ws;
 
