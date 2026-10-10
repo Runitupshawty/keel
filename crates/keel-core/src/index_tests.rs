@@ -1413,6 +1413,20 @@ fn watcher_delete_recounts_and_a_thousand_event_burst_counts_once() {
     });
 }
 
+/// The protection revision once no recount has run for a debounce window and a little
+/// more (a recount scheduled by a walk or a change that is still in flight would otherwise
+/// be mistaken for a later, unexpected one).
+fn settled_revision(lib: &Library) -> u64 {
+    for _ in 0..20 {
+        let before = lib.protection_revision();
+        std::thread::sleep(crate::protect::RECOUNT_DEBOUNCE + Duration::from_secs(1));
+        if lib.protection_revision() == before {
+            return before;
+        }
+    }
+    panic!("the protection revision never settled");
+}
+
 /// Review 46 M1: with the library inside the source it watches (Keel's data folder under a
 /// watched home folder), a recount, which writes `library.db`, does not set off the next
 /// one; nor does a change to an ignored path.
@@ -1430,12 +1444,13 @@ fn a_library_inside_its_watched_source_does_not_recount_itself() {
     let src = lib.source(&id).unwrap();
     lib.watch(&id).unwrap();
     eventually("first walk", || id_of(&src, "a.txt").is_some());
-    let revision = lib.protection_revision();
+    // The walk's own recount may still be running: wait until the revision holds still.
+    let revision = settled_revision(&lib);
     write(&files.path().join("b.txt"), "b");
     eventually("recount after a change", || {
         lib.protection_revision() > revision
     });
-    let after = lib.protection_revision();
+    let after = settled_revision(&lib);
     write(&files.path().join("ignored").join("x.txt"), "x");
     std::thread::sleep(crate::protect::RECOUNT_DEBOUNCE * 2);
     assert_eq!(
