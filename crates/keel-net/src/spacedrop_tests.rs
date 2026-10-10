@@ -859,8 +859,9 @@ fn two_thousand_files_arrive_in_linear_time() {
         2000
     );
     assert!(staged(inbox.path()).is_none(), "staging removed when done");
+    // Shared CI runners have no stable I/O budget; the linearity checks below still run there.
     assert!(
-        took < budget,
+        std::env::var_os("CI").is_some() || took < budget,
         "2,000 files took {took:?} (budget {budget:?})"
     );
     // Linear: the second thousand costs about what the first did.
@@ -1015,6 +1016,10 @@ fn forgetting_a_device_drops_its_offers_and_staging() {
     ));
     assert_eq!(piece.unwrap(), Response::Ok);
     let staging = staged(inbox.path()).unwrap();
+    assert!(
+        staging.is_dir(),
+        "staging folder exists while a piece is held"
+    );
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

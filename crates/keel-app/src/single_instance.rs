@@ -83,9 +83,9 @@ pub fn claim(name: &str, req: &Request, hand_off: bool) -> Claim {
     Claim::Alone
 }
 
-use keel_api::socket::{bind, listen, remove_stale};
 #[cfg(unix)]
-use keel_api::socket::{check_peer, sock_path};
+use keel_api::socket::check_peer;
+use keel_api::socket::{bind, listen, remove_stale};
 
 /// Connects to the instance on `name`, which must run as this user. On Windows it may take
 /// the foreground (this process was just started by the user).
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn socket_folder_is_private() {
         use std::os::unix::fs::PermissionsExt;
-        let path = sock_path("keel-test").unwrap();
+        let path = keel_api::socket::sock_path("keel-test").unwrap();
         let dir = path.parent().unwrap();
         let mode = std::fs::metadata(dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
