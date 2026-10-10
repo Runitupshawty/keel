@@ -1639,10 +1639,13 @@ fn a_feed_page_schedules_one_recount() {
     mem.put("/srv/one.txt", "1");
     mem.put("/srv/two.txt", "2");
     mem.remove(&mem_path("/srv/gone.txt")).unwrap();
-    let page = mem.changes(None).unwrap();
+    let page = mem.changes(None, &AtomicBool::new(false)).unwrap();
     assert!(page.changes.is_empty());
     let page = mem
-        .changes(Some(keel_vfs::ChangeCursor("4".into())))
+        .changes(
+            Some(keel_vfs::ChangeCursor("4".into())),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert_eq!(page.changes.len(), 3);
     assert!(Indexer::apply_feed(&src, &provider, &page.changes, &never).unwrap());

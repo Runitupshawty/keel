@@ -327,8 +327,9 @@ impl Provider for LazyCloud {
     fn changes(
         &self,
         cursor: Option<keel_vfs::ChangeCursor>,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> anyhow::Result<keel_vfs::ChangeFeed> {
-        self.get()?.changes(cursor)
+        self.get()?.changes(cursor, cancel)
     }
 }
 

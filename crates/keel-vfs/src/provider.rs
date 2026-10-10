@@ -184,11 +184,12 @@ pub trait Provider: Send + Sync {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
     /// What changed in the account since `cursor` (paths anywhere in it; the caller keeps
     /// what is under its folder). `None`: no changes, only a cursor for "now", to pass
-    /// back later. Blocks on the network: workers only. Fails with `FeedError` when there
-    /// is no feed or the cursor was refused; other errors are worth a retry with the same
-    /// cursor.
-    fn changes(&self, cursor: Option<ChangeCursor>) -> Result<ChangeFeed> {
-        let _ = cursor;
+    /// back later. Blocks on the network: workers only; stops, with an error, once
+    /// `cancel` is set. Fails with `FeedError` when there is no feed or the cursor was
+    /// refused; other errors are worth a retry with the same cursor, which answers the
+    /// same page again where the provider keeps state between pages.
+    fn changes(&self, cursor: Option<ChangeCursor>, cancel: &AtomicBool) -> Result<ChangeFeed> {
+        let _ = (cursor, cancel);
         Err(FeedError::Unsupported.into())
     }
     /// A folder's modified time changes whenever an entry is added to it, removed from it

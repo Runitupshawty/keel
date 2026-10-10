@@ -1591,8 +1591,12 @@ impl Provider for CloudProvider {
     }
     /// Drive: `changes.list`; Dropbox: `list_folder/continue`; S3: whether a bucket of at
     /// most 1,000 objects changed at all; WebDAV: none.
-    fn changes(&self, cursor: Option<crate::ChangeCursor>) -> Result<crate::ChangeFeed> {
-        self.core.changes(cursor)
+    fn changes(
+        &self,
+        cursor: Option<crate::ChangeCursor>,
+        cancel: &AtomicBool,
+    ) -> Result<crate::ChangeFeed> {
+        self.core.changes(cursor, cancel)
     }
     /// Through the same download cache as SFTP (`<cache>/remote/cloud-<id>/`), with fresh
     /// stats (not the listing cache) for its "source changed" check.

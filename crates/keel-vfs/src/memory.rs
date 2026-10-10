@@ -468,8 +468,11 @@ impl Provider for MemoryProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         bail!("no local copy of {}", p.display())
     }
-    fn changes(&self, cursor: Option<ChangeCursor>) -> Result<ChangeFeed> {
+    fn changes(&self, cursor: Option<ChangeCursor>, cancel: &AtomicBool) -> Result<ChangeFeed> {
         self.up()?;
+        if cancel.load(Ordering::SeqCst) {
+            bail!("cancelled");
+        }
         self.feed_calls.fetch_add(1, Ordering::SeqCst);
         if self.no_feed.load(Ordering::SeqCst) {
             return Err(FeedError::Unsupported.into());

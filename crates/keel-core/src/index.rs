@@ -1171,7 +1171,7 @@ fn poll_loop(
             // The cursor is taken before the walk: what changes while it runs comes again.
             let mut cursor = None;
             if let Some(p) = &provider {
-                between = match p.changes(None) {
+                between = match p.changes(None, quit) {
                     Ok(feed) => {
                         cursor = Some(feed.cursor);
                         Between::Feed
@@ -1247,7 +1247,7 @@ fn follow_feed(src: &Source, provider: &Arc<dyn Provider>, cancel: &AtomicBool) 
     };
     let mut cursor = ChangeCursor(saved);
     loop {
-        let feed = match provider.changes(Some(cursor.clone())) {
+        let feed = match provider.changes(Some(cursor.clone()), cancel) {
             Err(e) if e.downcast_ref::<FeedError>().is_some() => return Ok(false),
             feed => feed?,
         };

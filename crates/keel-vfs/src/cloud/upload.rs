@@ -226,8 +226,9 @@ impl Core {
     }
 
     /// One request with the account's credentials, made by `make` (again for each try):
-    /// refreshes an expiring token first and once on HTTP 401, and retries 429 / 5xx /
-    /// unanswered requests with `backoff`, `tries` times in all. Returns any other answer;
+    /// refreshes an expiring token first and once on HTTP 401, and retries 429 / 5xx
+    /// (but 501, which no retry changes) / unanswered requests with `backoff`, `tries`
+    /// times in all. Returns any other answer;
     /// ends, with `cancelled()`, once `cancel` or the account's `stop` is set.
     pub(super) fn exchange(
         &self,
@@ -274,7 +275,11 @@ impl Core {
                     self.refresh(Some(generation))?;
                     continue;
                 }
-                Ok(a) if a.status != 429 && !(500..600).contains(&a.status) => return Ok(a),
+                Ok(a)
+                    if a.status == 501 || (a.status != 429 && !(500..600).contains(&a.status)) =>
+                {
+                    return Ok(a)
+                }
                 Ok(a) => Some(a.status),
                 Err(_) => None,
             };
@@ -575,6 +580,30 @@ impl Core {
         })?;
         if a.status == 412 {
             return Err(exists(p));
+        }
+        // A store without conditional writes refuses the header (S3 itself took it from
+        // August 2024); a 400 about the parts themselves is not that.
+        let parts_refused = matches!(
+            xml_text(&a.body, "Code").as_deref(),
+            Some(
+                "InvalidPart"
+                    | "InvalidPartOrder"
+                    | "EntityTooSmall"
+                    | "NoSuchUpload"
+                    | "MalformedXML"
+            )
+        );
+        if exclusive && (a.status == 501 || (a.status == 400 && !parts_refused)) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "{}: conditional writes unsupported by this store (cloud HTTP {}), so a \
+                     new file over 8 MiB cannot be placed without replacing one that exists",
+                    p.display(),
+                    a.status
+                ),
+            )
+            .into());
         }
         s3_ok(p, &a)
     }
