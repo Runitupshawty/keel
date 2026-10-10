@@ -234,7 +234,7 @@ mod tests {
             "sftp://box/home/me/x.txt"
         );
         for outside in [
-            r"C:\Users\james\secret.txt",
+            r"C:\Users\me\secret.txt",
             r"D:\Lib secret\x",
             r"D:\Library\x",
             r"\\server\share\x",
@@ -255,7 +255,7 @@ mod tests {
             format!("{inside} -> {OUTSIDE}")
         );
         assert_eq!(
-            redact_text(r"open C:\Users\james\x y.txt: access denied", &roots),
+            redact_text(r"open C:\Users\me\x y.txt: access denied", &roots),
             format!("open {OUTSIDE}: access denied")
         );
         assert_eq!(

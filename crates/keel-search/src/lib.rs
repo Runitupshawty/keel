@@ -412,11 +412,11 @@ mod tests {
     fn fuzzy_path_matching_ranks_expected_folders() {
         let mut fuzzy = Fuzzy::new(vec![
             r"D:\Work\home\filemgr".into(),
-            r"C:\Users\james\Obsidian".into(),
+            r"C:\Users\me\Obsidian".into(),
         ]);
 
         assert_eq!(fuzzy.search("wkhm", 10)[0].1, r"D:\Work\home\filemgr");
-        assert_eq!(fuzzy.search("obs", 10)[0].1, r"C:\Users\james\Obsidian");
+        assert_eq!(fuzzy.search("obs", 10)[0].1, r"C:\Users\me\Obsidian");
         assert_eq!(fuzzy.search("", 10).len(), 2);
     }
 

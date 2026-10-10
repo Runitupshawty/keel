@@ -4,9 +4,9 @@ Date: 2026-10-08. Owner: James King. Status: draft for review.
 
 ## 1. Purpose
 
-Replace day-to-day use of Windows Explorer on JAMES-DESKTOP with a faster, previews-everything
+Replace day-to-day use of Windows Explorer on the desktop PC with a faster, previews-everything
 file manager that also reaches every other machine James owns, and that runs the same on Windows,
-macOS and Linux (James's Macs and laptopserver, friends on anything). Reference for feature parity and
+macOS and Linux (James's Macs and the file server, friends on anything). Reference for feature parity and
 feel: Atlas (https://atlasfm.modhyt.org). Keel is open source: public GitHub repo so James's friends
 can use it, fork it, open issues and PRs. No telemetry.
 
@@ -22,7 +22,7 @@ Success = James opens Keel instead of Explorer for a normal week and does not go
 - Profiles; color themes and icon themes.
 - Cloud and FTP mounts shown as folders.
 - CLI and WSL support.
-- Open any file on: Mac mini, Mac Studio, XPS laptop, laptopserver, iPhone.
+- Open any file on: Mac mini, Mac Studio, XPS laptop, the file server, iPhone.
 - Added 2026-10-09: everything Spacedrive (https://spacedrive.com, github.com/spacedriveapp/spacedrive) does: one
   library across devices, drives, NAS and clouds; content identity + dedupe; tags, favorites, recents, overview
   dashboard; paired devices over an encrypted P2P link; durable jobs; media views; CLI/API/MCP. See 2.10 and Phases 6-9.
@@ -80,7 +80,7 @@ pub trait Provider: Send + Sync {
 ```
 
 `VPath` = `scheme://authority/path` with an optional nested chain so `zip` inside `sftp` works:
-`sftp://laptopserver/backups/x.zip!/inner/file.txt`. A `Router` resolves a `VPath` to the right
+`sftp://the file server/backups/x.zip!/inner/file.txt`. A `Router` resolves a `VPath` to the right
 provider and handles the `!/` archive nesting by materialising the archive via `local_copy` once
 and caching it under `%LOCALAPPDATA%\Keel\cache`.
 
@@ -279,7 +279,7 @@ before it happens (recipient, what leaves).
 
 - Unit tests per crate: VPath parsing, archive listing fixtures (zip/7z/rar/tar in `tests/fixtures`),
   preview `accepts` tables, vt100 grid.
-- Integration: a `local` provider test against a temp tree; sftp test against laptopserver
+- Integration: a `local` provider test against a temp tree; sftp test against the file server
   (`#[ignore]` unless `KEEL_SFTP_TEST=1`).
 - UI: `egui_kittest` snapshot of the main window at 1280x800.
 - Perf check: open a 50k-file folder under 150 ms (generated fixture), tracked in CI output.
@@ -295,7 +295,7 @@ one icon theme, crash recovery, installer-less exe.
 terminal with PowerShell/cmd/WSL, cwd follow.
 
 **Phase 3 — Remotes**: sftp provider, hosts for mac-mini (iCloud Drive bookmark), mac-studio, xps,
-laptopserver; remote preview + open-with via materialise; job queue for transfers.
+the file server; remote preview + open-with via materialise; job queue for transfers.
 
 **Phase 4 — Cloud**: Google Drive, Dropbox, S3/B2 providers with OAuth.
 
@@ -330,7 +330,7 @@ web UI on the daemon, iOS/Android clients.
 - Issue templates: bug, feature request. Discussions on for suggestions.
 - Branch protection on `main`: PRs required, CI green. James and friends review each other.
 
-## 5. Prerequisites on JAMES-DESKTOP
+## 5. Prerequisites on the desktop PC
 
 Not installed today: `rustup`/cargo, MSVC Build Tools, `gh`, WSL. Phase 1 plan starts with
 installing these via winget (rustup, Microsoft.VisualStudio.2022.BuildTools with C++ workload,

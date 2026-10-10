@@ -359,7 +359,7 @@ mod tests {
             "{default}"
         );
         assert_ne!(name("work"), default);
-        assert_eq!(name_for("james", "default"), name_for("james", "default"));
+        assert_eq!(name_for("me", "default"), name_for("me", "default"));
         // Non-ASCII users do not collapse to one name.
         let names = [
             name_for("jürgen", "default"),

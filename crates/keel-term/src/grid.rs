@@ -175,9 +175,9 @@ mod tests {
         assert!(!is_prompt(ShellKind::PowerShell, ">>> ", ""));
         assert!(is_prompt(ShellKind::Cmd, r"D:\Work>", ""));
         assert!(!is_prompt(ShellKind::Cmd, "More? ", ""));
-        assert!(is_prompt(ShellKind::Posix, "james@box:~$ ", ""));
-        assert!(is_prompt(ShellKind::Posix, "[james@box tmp]$ ", ""));
-        assert!(is_prompt(ShellKind::Posix, "james@Mac ~ % ", ""));
+        assert!(is_prompt(ShellKind::Posix, "me@box:~$ ", ""));
+        assert!(is_prompt(ShellKind::Posix, "[me@box tmp]$ ", ""));
+        assert!(is_prompt(ShellKind::Posix, "me@Mac ~ % ", ""));
         assert!(is_prompt(ShellKind::Posix, "~/src $ ", ""));
         assert!(is_prompt(ShellKind::Posix, "/tmp # ", ""));
         // m18: only local-looking prompts count.
@@ -188,17 +188,17 @@ mod tests {
         // WSL knows this machine's name: an ssh session's prompt names another host.
         assert!(is_prompt(
             ShellKind::Wsl,
-            "james@DESKTOP:/mnt/d$ ",
+            "me@DESKTOP:/mnt/d$ ",
             "desktop"
         ));
         assert!(is_prompt(
             ShellKind::Wsl,
-            "james@desktop.lan:~$ ",
+            "me@desktop.lan:~$ ",
             "DESKTOP"
         ));
         assert!(!is_prompt(
             ShellKind::Wsl,
-            "james@fileserver:~$ ",
+            "me@fileserver:~$ ",
             "DESKTOP"
         ));
     }

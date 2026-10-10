@@ -18,7 +18,7 @@ Items the reviews confirmed but that were not folded into a task. None loses dat
 - [x] done (59e3f9c): worker writes + toast + OpenClipboard retries, macOS canonical compare, round-trip test restores the user's file clipboard (it was already `#[ignore]`, fa96742); [ ] deferred: Linux cut flag (`x-special/gnome-copied-files`) needs a custom MIME type arboard lacks and a Linux desktop to verify — Clipboard: write on a worker thread with a toast on failure and OpenClipboard retries; macOS compare canonicalized paths; Linux cut flag (`x-special/gnome-copied-files`) is an open deviation; round-trip test must save/restore the real clipboard or be `#[ignore]`.
 - [x] done (59e3f9c) — In-pane drag tooltip says exactly "Move" or "Copy", computed with the drop rule.
 - [x] done (59e3f9c) — Listing: queue a relist when a listing for the same folder is already in flight (mark dirty).
-- [x] done (59e3f9c): `perf_100k` (release, JAMES-DESKTOP): refresh 0.96 ms, typing 0.71 ms, Backspace 0.96 ms per keystroke (target < 16 ms); worker-side lowercase + name sort 60 ms. Before the fix: refresh 48 ms, Backspace 35 ms — 100k-entry folders: measure the per-keystroke and per-refresh cost after the Task 6 fixes (target < 16 ms).
+- [x] done (59e3f9c): `perf_100k` (release, the desktop PC): refresh 0.96 ms, typing 0.71 ms, Backspace 0.96 ms per keystroke (target < 16 ms); worker-side lowercase + name sort 60 ms. Before the fix: refresh 48 ms, Backspace 35 ms — 100k-entry folders: measure the per-keystroke and per-refresh cost after the Task 6 fixes (target < 16 ms).
 
 ## keel-app (from the Task 7 review, 2026-10-09)
 - [x] done (59e3f9c) — Preview worker: abandon a render stuck for ~15 s, show `Error("timed out")`, start a fresh thread (cap abandoned threads).
