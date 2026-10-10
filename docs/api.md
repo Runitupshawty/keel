@@ -136,6 +136,15 @@ keel-daemon also keeps every source current: each one is watched (local folders 
 the others re-walked periodically; a completed walk schedules hashing) once no index job
 walks it.
 
+SFTP remotes in `[[remotes]]` take `use_ssh_config` (default `true`, so remotes saved
+before it existed read the config too): `host` may then be an alias from
+`~/.ssh/config`, and an empty `user`, an empty key-file path and `port = 22` take the
+config's values, including `ProxyJump` routes
+([what is read](../README.md#openssh-configuration-and-jump-hosts)). The daemon resolves
+the config on every connection like the window; with no window to confirm a prompt, an
+unknown host key on any hop fails the connection. `ProxyCommand` is refused, never run.
+Paths stay `sftp://<host id>/...`; no operation changed.
+
 Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
 command exits) and need a daemon built with a mount backend (`--features winfsp` on
 Windows, `--features fuse` on Linux and macOS; see the README's Mounts section);

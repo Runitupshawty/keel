@@ -91,7 +91,12 @@ Providers:
 - `archive`: `zip` crate (read/write), `sevenz-rust` (read), `tar`+`flate2` (read), `unrar` (read).
   Listed as folders; "extract here" and "add to zip" as explicit actions.
 - `sftp`: `russh` + `russh-sftp`, key auth from `~/.ssh`, one connection per host, reconnect on
-  drop. Hosts configured in profile (see 2.6). Also used for iCloud Drive on the Mac mini
+  drop. Hosts configured in profile (see 2.6); with `use_ssh_config` (default on) the host
+  may be a `~/.ssh/config` alias (HostName, User, Port, IdentityFile, IdentitiesOnly,
+  ProxyJump, ServerAliveInterval; values set in the profile win). ProxyJump hops chain
+  over `direct-tcpip` channels, each with its own host-key check; Match is skipped,
+  ProxyCommand refused (never executed), UserKnownHostsFile ignored.
+  Also used for iCloud Drive on the Mac mini
   (`~/Library/Mobile Documents/com~apple~CloudDocs`) which is where the iPhone's files appear.
 - `gdrive`, `dropbox`, `s3`: `reqwest` + OAuth (loopback redirect) / static keys. Listing cached,
   downloads streamed, uploads on write. Credentials in the OS keychain (Credential Manager / Keychain / Secret Service) via `keyring`

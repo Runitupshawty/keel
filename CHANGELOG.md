@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- SFTP remotes read the OpenSSH client configuration (`~/.ssh/config`). The Host field in Settings → Remotes can be an alias; `HostName`, `User`, `Port`, `IdentityFile`, `IdentitiesOnly` and `ServerAliveInterval` apply, with `Host` patterns (wildcards, several patterns, `!` exclusions), quoting, `keyword=value` and `Include`. A user name, port or key file set in Keel wins over the config. Each remote has a "Use ~/.ssh/config" switch (on by default, also for remotes saved earlier), and the editor shows what the host resolves to under the Host field, or the alias and config line of an error.
+- SFTP jump hosts: `ProxyJump` routes of one or several hops are followed, each hop reached through a forwarding channel of the one before. Every hop has its own host-key check and first-connection prompt (the prompt now names the host and port whose key it is); jump hosts sign in with the agent or keys, never with a remote's password.
+
+### Fixed
+
+- The 0.2.0 known limitation "`~/.ssh/config` is not read, so there is no jump-host or ProxyCommand support" is lifted for the config and jump hosts. `ProxyCommand` stays unsupported on purpose: it is refused with an error naming the alias and config line, because Keel never runs programs from the SSH configuration.
+
+### Known limitations
+
+- `Match` blocks in `~/.ssh/config` are skipped (the editor notes it), `UserKnownHostsFile` is ignored (host keys stay in `~/.ssh/known_hosts`), the system-wide SSH configuration is not read, and `Include` wildcards work in file names only. A jump host that needs a password is not supported.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added
