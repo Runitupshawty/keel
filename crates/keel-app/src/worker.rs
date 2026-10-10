@@ -204,10 +204,11 @@ fn render_helper(render: Arc<RenderFn>) -> Option<(Sender<Work>, Receiver<Previe
     .then_some((work_tx, done_rx))
 }
 
-/// Loads the platform searcher (the Everything DLL load and IPC probe may block).
-pub fn spawn_searcher(tx: Sender<Msg>, ctx: egui::Context) {
+/// Loads `searcher`, else the platform searcher (the Everything DLL load and IPC probe
+/// may block), and probes it.
+pub fn spawn_searcher(searcher: Option<Arc<dyn Searcher>>, tx: Sender<Msg>, ctx: egui::Context) {
     spawn("keel-searcher", move || {
-        let searcher: Arc<dyn Searcher> = Arc::from(keel_search::default_searcher());
+        let searcher = searcher.unwrap_or_else(|| Arc::from(keel_search::default_searcher()));
         let reason = crate::search_tab::probe(searcher.as_ref());
         send(&tx, &ctx, Msg::Searcher { searcher, reason });
     });

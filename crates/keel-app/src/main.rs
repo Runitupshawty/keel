@@ -168,6 +168,7 @@ fn main() -> eframe::Result<()> {
         // --- Task 24 ---
         request,
         server,
+        searcher: None,
     };
     eframe::run_native(
         "Keel",

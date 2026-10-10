@@ -336,6 +336,10 @@ fn harness(
     settings: crate::settings::Settings,
 ) -> Harness<'static, App> {
     let root = root.to_owned();
+    // Search: the Keel index of the fixture only, from the start (the default backend
+    // would walk the real home folder).
+    let index = root.join(".keel").join("index");
+    let walk = keel_search::WalkIndexSearcher::open(index, vec![root.clone()]).unwrap();
     let mut h = Harness::builder()
         .with_size(SIZE)
         .wgpu()
@@ -346,6 +350,7 @@ fn harness(
                     panes: vec![vec![left.clone()], vec![right]],
                     ..Session::single(left.clone())
                 },
+                searcher: Some(Arc::new(walk)),
                 ..Boot::at(VPath::local(&root))
             };
             App::new(cc, boot)
@@ -455,11 +460,8 @@ fn run(root: &Path) -> Vec<&'static str> {
     };
     let mut h = harness(root, VPath::local(&docs), VPath::local(&pics), settings);
 
-    // Search: the Keel index of the fixture only (not the user's folders).
+    // Search: the fixture's index (see `harness`), not the user's folders.
     assert!(wait(&mut h, 60, &|s| s.searcher.is_some()), "searcher");
-    let index = root.join(".keel").join("index");
-    let walk = keel_search::WalkIndexSearcher::open(index, vec![root.to_owned()]).unwrap();
-    h.state_mut().state.searcher = Some(Arc::new(walk));
     h.state_mut().state.search_reason = None;
 
     // The library: Documents, Pictures and Backup, indexed and hashed.

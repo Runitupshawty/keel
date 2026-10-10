@@ -463,9 +463,10 @@ impl AppState {
         self.library.apply_hashing(&self.settings.library);
     }
 
-    /// Loads the platform searcher off the UI thread (the Everything DLL load may block).
-    pub fn load_searcher(&self) {
-        worker::spawn_searcher(self.tx.clone(), self.ctx.clone());
+    /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
+    /// load may block).
+    pub fn load_searcher(&self, searcher: Option<Arc<dyn Searcher>>) {
+        worker::spawn_searcher(searcher, self.tx.clone(), self.ctx.clone());
     }
 
     pub fn tab(&self, pane: usize) -> &Tab {

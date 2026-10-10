@@ -26,4 +26,4 @@ scripts/fetch-deps.sh        # once (scripts/fetch-deps.ps1 on Windows): pdfium 
 scripts/screenshots.sh       # or: cargo test -p keel-app --bin keel docs_screenshots -- --ignored --nocapture
 ```
 
-The test writes its fixture to `C:\Keel demo` (Windows) or `/tmp/Keel demo`, or `KEEL_SHOTS_ROOT`, keeps its settings, library and device identity there, and deletes it afterwards; it never uses your own Keel configuration or library. It prints each picture it wrote and any it had to skip. Open every changed PNG before committing it: it must show only the fixture.
+The test writes its fixture to `C:\Keel demo` (Windows) or `/tmp/Keel demo`, or `KEEL_SHOTS_ROOT`, keeps its settings, library, search index and device identity there, and deletes it afterwards; it never uses your own Keel configuration or library, and its search covers only the fixture (it never indexes your home folder). It prints each picture it wrote and any it had to skip. Open every changed PNG before committing it: it must show only the fixture.

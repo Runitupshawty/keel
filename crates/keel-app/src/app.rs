@@ -32,6 +32,9 @@ pub struct Boot {
     pub request: crate::cli::Request,
     /// This process is the single instance: requests from later `keel` runs arrive here.
     pub server: Option<crate::single_instance::Listener>,
+    /// The search backend; None picks the OS default (`keel_search::default_searcher`),
+    /// which may walk the home folder. Tests pass their own.
+    pub searcher: Option<Arc<dyn keel_search::Searcher>>,
 }
 
 impl Boot {
@@ -46,6 +49,9 @@ impl Boot {
             saved: None,
             request: Default::default(),
             server: None,
+            searcher: Some(Arc::new(keel_search::Unavailable::new(
+                "no search in tests",
+            ))),
         }
     }
 }
@@ -93,7 +99,7 @@ impl App {
         for notice in boot.notices {
             state.toasts.error(notice);
         }
-        state.load_searcher();
+        state.load_searcher(boot.searcher);
         // --- Task 24 ---
         state.external(boot.request);
         if let Some(listener) = boot.server {
