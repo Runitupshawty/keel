@@ -392,19 +392,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     if i > 0 {
                         ui.weak("›");
                     }
-                    // A device's name and a shared source's label, not their ids.
-                    let node = crate::devices::node_crumb(dir);
-                    let label = match dir.name() {
-                        _ if node.is_some() => node.unwrap_or_default(),
-                        name if i > 0 && !name.is_empty() => name.to_owned(),
-                        // Task 29: a library source root reads as its label.
-                        _ if dir.scheme == keel_vfs::library::SCHEME => {
-                            crate::library::label_of(&dir.authority)
-                                .map(|l| format!("Library › {l}"))
-                                .unwrap_or_else(|| dir.display())
-                        }
-                        _ => dir.display(),
-                    };
+                    let label = crumb_label(dir, i);
                     let mut r = ui.add(egui::Button::new(label).frame(false));
                     if let Some(full) = crate::devices::node_location(dir) {
                         r = r.on_hover_text(full);
@@ -425,6 +413,24 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 }
             });
         });
+}
+
+/// The text of path bar part `i` (0: the root) for `dir`.
+fn crumb_label(dir: &VPath, i: usize) -> String {
+    // A device's name and a shared source's label, not their ids.
+    if let Some(node) = crate::devices::node_crumb(dir) {
+        return node;
+    }
+    match dir.name() {
+        name if i > 0 && !name.is_empty() => name.to_owned(),
+        // Task 29: a library source root reads as its label.
+        _ if dir.scheme == keel_vfs::library::SCHEME => crate::library::label_of(&dir.authority)
+            .map(|l| format!("Library › {l}"))
+            .unwrap_or_else(|| dir.display()),
+        // The Recycle Bin / Trash by its name, as in its tab, not `trash:///`.
+        _ if dir.scheme == keel_vfs::trashbin::SCHEME => keel_vfs::trashbin::label().to_owned(),
+        _ => dir.display(),
+    }
 }
 
 fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
@@ -716,6 +722,15 @@ pub fn drag_and_drop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA walkthrough 2026-10-10: the Recycle Bin's path bar said "trash:///".
+    #[test]
+    fn the_trash_root_crumb_is_its_name() {
+        let label = crumb_label(&keel_vfs::trashbin::root(), 0);
+        assert_eq!(label, keel_vfs::trashbin::label());
+        let local = VPath::local(std::env::temp_dir().join("x"));
+        assert_eq!(crumb_label(&local, 2), "x");
+    }
 
     #[test]
     fn tabs_close_and_reorder_keep_the_active_tab() {
