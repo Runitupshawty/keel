@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
