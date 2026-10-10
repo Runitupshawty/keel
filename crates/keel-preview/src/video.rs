@@ -62,24 +62,37 @@ pub(crate) fn render(req: &Request) -> Preview {
     }
 }
 
+/// The duration and a line about the picture ("320×240 · h264") from ffprobe.
 fn probe(path: &Path) -> Option<(f64, String)> {
     let mut command = Command::new(find_tool("ffprobe")?);
     command
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-        ])
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+        .arg("stream=codec_name,width,height:format=duration")
+        .args(["-of", "default=noprint_wrappers=1"])
         .arg(path);
     let (status, stdout, _) = run(command).ok()?;
     if !status.success() {
         return None;
     }
-    let meta = String::from_utf8_lossy(&stdout).trim().to_owned();
-    Some((meta.parse().unwrap_or(0.0), meta))
+    Some(parse_probe(&String::from_utf8_lossy(&stdout)))
+}
+
+/// `key=value` lines of ffprobe: (duration, "width×height · codec").
+fn parse_probe(text: &str) -> (f64, String) {
+    let value = |key: &str| {
+        text.lines()
+            .filter_map(|l| l.trim().split_once('='))
+            .find(|(k, v)| *k == key && !v.is_empty() && *v != "N/A")
+            .map(|(_, v)| v.to_owned())
+    };
+    let duration = value("duration")
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(0.0);
+    let size = value("width")
+        .zip(value("height"))
+        .map(|(w, h)| format!("{w}×{h}"));
+    let meta: Vec<String> = size.into_iter().chain(value("codec_name")).collect();
+    (duration, meta.join(" · "))
 }
 
 /// First `name` on PATH, then in FALLBACK_DIRS. On Windows `.cmd`/`.bat` count too
@@ -155,5 +168,20 @@ fn run(mut command: Command) -> Result<Output, String> {
             let _ = child.kill();
             Err(error.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_probe;
+
+    /// QA walkthrough 2026-10-10: the line under the duration was the raw duration again
+    /// ("0:01" over "1.520000"); it describes the picture now.
+    #[test]
+    fn probe_output_becomes_size_and_codec() {
+        let out = "codec_name=mpeg4\r\nwidth=320\r\nheight=240\r\nduration=1.520000\r\n";
+        assert_eq!(parse_probe(out), (1.52, "320×240 · mpeg4".to_owned()));
+        assert_eq!(parse_probe("duration=N/A\n"), (0.0, String::new()));
+        assert_eq!(parse_probe("codec_name=vp9\n"), (0.0, "vp9".to_owned()));
     }
 }
