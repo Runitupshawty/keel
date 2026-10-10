@@ -9,8 +9,8 @@
 //! time is deleted; a claimed one after `CLAIMED_KEEP` (the drop job reads the files until
 //! it is done). At start every unclaimed upload left by an earlier run is deleted and the
 //! claimed ones are kept on the same clock. The body must keep arriving: under
-//! `MIN_RATE` bytes a second over any `RATE_WINDOW` the upload is cut off (so it takes at
-//! most about `len / MIN_RATE`), and an upload that makes no progress for `CLAIM_WAIT` is
+//! `MIN_RATE` bytes a second over any `RATE_WINDOW` (or under what is still outstanding, if
+//! less) the upload is cut off (so it takes at most about `len / MIN_RATE`), and an upload that makes no progress for `CLAIM_WAIT` is
 //! dropped by the sweep, so slow posts cannot hold the waiting places.
 
 use parking_lot::Mutex;
@@ -43,6 +43,9 @@ const RATE_WINDOW: Duration = Duration::from_secs(30);
 /// `Upload::seen` of an upload the sweep dropped: its reader stops.
 const DROPPED: u64 = u64::MAX;
 
+/// The time (tests drive a fake one).
+type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 struct Upload {
     /// Received (or claimed) at.
     at: Instant,
@@ -65,10 +68,11 @@ impl Upload {
     }
 }
 
-/// The share body: cut off when it arrives slower than `min_rate` over a `window`, when it
-/// runs past `deadline`, or when the sweep dropped the upload.
+/// The share body: cut off when it arrives slower than `min_rate` over a `window` (a body
+/// whose rest is smaller only has to finish), when it runs past `deadline`, or when the
+/// sweep dropped the upload.
 struct Paced<R> {
-    inner: R,
+    inner: io::Take<R>,
     window: Duration,
     min_rate: u64,
     started: Instant,
@@ -76,6 +80,7 @@ struct Paced<R> {
     got: u64,
     epoch: Instant,
     seen: Arc<AtomicU64>,
+    now: Clock,
 }
 
 impl<R: Read> Read for Paced<R> {
@@ -85,11 +90,13 @@ impl<R: Read> Read for Paced<R> {
             return Err(slow("the share stalled and was dropped"));
         }
         let n = self.inner.read(buf)?;
-        let now = Instant::now();
+        let now = (self.now)();
         self.got += n as u64;
         let since = now.duration_since(self.started);
         if since >= self.window {
-            let need = self.min_rate.saturating_mul(since.as_millis() as u64) / 1000;
+            // Never more than was outstanding when the window began (`got` + what is left).
+            let need = (self.min_rate.saturating_mul(since.as_millis() as u64) / 1000)
+                .min(self.got + self.inner.limit());
             if self.got < need {
                 return Err(slow("the share arrived too slowly"));
             }
@@ -119,9 +126,11 @@ pub(crate) struct Uploads {
     dir: PathBuf,
     max: u64,
     claim_wait: Duration,
-    /// The throughput floor's window (tests shorten it).
+    /// The throughput floor: `min_rate` bytes a second over each `window`.
     window: Duration,
+    min_rate: u64,
     epoch: Instant,
+    now: Clock,
     uploads: Mutex<HashMap<String, Upload>>,
 }
 
@@ -158,7 +167,9 @@ impl Uploads {
             max,
             claim_wait,
             window: RATE_WINDOW,
+            min_rate: MIN_RATE,
             epoch: Instant::now(),
+            now: Arc::new(Instant::now),
             uploads: Mutex::new(kept),
         }
     }
@@ -166,7 +177,8 @@ impl Uploads {
     /// Deletes uploads not claimed within the wait, claimed ones past `CLAIMED_KEEP`, and
     /// uploads still arriving that made no progress for the wait (their reader stops).
     pub(crate) fn sweep(&self) {
-        let now = self.epoch.elapsed().as_millis() as u64;
+        let at = (self.now)();
+        let now = at.duration_since(self.epoch).as_millis() as u64;
         let wait = self.claim_wait.as_millis() as u64;
         let mut uploads = self.uploads.lock();
         uploads.retain(|id, u| {
@@ -176,7 +188,7 @@ impl Uploads {
                 } else {
                     self.claim_wait
                 };
-                u.at.elapsed() < limit
+                at.duration_since(u.at) < limit
             } else {
                 let seen = u.seen.load(Ordering::Acquire);
                 let started = u.at.duration_since(self.epoch).as_millis() as u64;
@@ -225,23 +237,24 @@ impl Uploads {
             // 24 hex digits: under the client's "looks like a secret" address rule, and the
             // id grants nothing without the token anyway.
             let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            let u = Upload::new(Instant::now(), false, false, Vec::new());
+            let u = Upload::new((self.now)(), false, false, Vec::new());
             let seen = u.seen.clone();
             uploads.insert(id.clone(), u);
             (id, seen)
         };
         let folder = self.dir.join(&id);
-        let started = Instant::now();
+        let started = (self.now)();
         let body = Paced {
             inner: body.take(len),
             window: self.window,
-            min_rate: MIN_RATE,
+            min_rate: self.min_rate,
             started,
             // The floor bounds it already; this caps a body that meets it unevenly.
-            deadline: started + 2 * self.window + Duration::from_secs(len / MIN_RATE),
+            deadline: started + 2 * self.window + Duration::from_secs(len / self.min_rate),
             got: 0,
             epoch: self.epoch,
             seen,
+            now: self.now.clone(),
         };
         let got = keel_api::private::create_dir_all(&folder)
             .map_err(|e| e.to_string())
@@ -250,7 +263,7 @@ impl Uploads {
         match got {
             // Not dropped by the sweep meanwhile.
             Ok(files) if !files.is_empty() && uploads.contains_key(&id) => {
-                uploads.insert(id.clone(), Upload::new(Instant::now(), true, false, files));
+                uploads.insert(id.clone(), Upload::new((self.now)(), true, false, files));
                 Ok(id)
             }
             failed => {
@@ -288,7 +301,7 @@ impl Uploads {
         let folder = self.dir.join(id);
         std::fs::write(folder.join(CLAIMED_MARK), b"").map_err(|e| e.to_string())?;
         u.claimed = true;
-        u.at = Instant::now();
+        u.at = (self.now)();
         let files: Vec<Value> = u
             .files
             .iter()
@@ -541,12 +554,30 @@ mod tests {
         );
     }
 
-    /// Sends `data` a byte per `gap`.
-    struct Slow<'a>(&'a [u8], Duration);
+    /// Drives `up`'s clock by hand from its epoch: the returned milliseconds are its time.
+    fn fake_clock(up: &mut Uploads) -> Arc<AtomicU64> {
+        let ms = Arc::new(AtomicU64::new(0));
+        let (epoch, m) = (up.epoch, ms.clone());
+        up.now = Arc::new(move || epoch + Duration::from_millis(m.load(Ordering::Acquire)));
+        ms
+    }
+
+    /// Sends `data` a byte per `gap` milliseconds of the fake clock `ms`.
+    struct Slow<'a>(&'a [u8], u64, Arc<AtomicU64>);
     impl Read for Slow<'_> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            std::thread::sleep(self.1);
+            self.2.fetch_add(self.1, Ordering::AcqRel);
             Drip(self.0).read(buf).inspect(|&n| self.0 = &self.0[n..])
+        }
+    }
+
+    /// Hands over all of `data` at once, after `gap` milliseconds of the fake clock `ms`
+    /// (a slow disk between two reads of a quick body).
+    struct Late<'a>(&'a [u8], u64, Arc<AtomicU64>);
+    impl Read for Late<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.2.fetch_add(self.1, Ordering::AcqRel);
+            self.0.read(buf)
         }
     }
 
@@ -580,9 +611,10 @@ mod tests {
     fn a_dripping_upload_is_cut_off_and_frees_its_place() {
         let dir = tempfile::tempdir().unwrap();
         let mut up = Uploads::with_limits(dir.path().into(), 1 << 30, Duration::from_secs(300));
-        up.window = Duration::from_millis(100);
+        let ms = fake_clock(&mut up);
+        // A byte per 20 ms: 1500 bytes in the first window, far under the floor.
         let b = body("B", &[("files", Some("big.bin"), &[7u8; 4096])]);
-        let r = up.receive(Slow(&b, Duration::from_millis(20)), 400 << 20, CT);
+        let r = up.receive(Slow(&b, 20, ms), 400 << 20, CT);
         let e = r.unwrap_err();
         assert_eq!(e.0, "400 Bad Request");
         assert!(e.1.contains("too slowly"), "{e:?}");
@@ -592,13 +624,29 @@ mod tests {
     }
 
     #[test]
+    fn a_quick_small_upload_passes_the_floor_however_slow_its_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut up = Uploads::with_limits(dir.path().into(), 1 << 30, Duration::from_secs(300));
+        let ms = fake_clock(&mut up);
+        let one = body("B", &[("files", Some("n.txt"), b"note")]);
+        // Each read comes a whole window late: the floor only asks for what is outstanding.
+        let late = (up.window.as_millis() + 1) as u64;
+        let id = up.receive(Late(&one, late, ms.clone()), one.len() as u64, CT);
+        assert_eq!(up.summary(&id.unwrap()), Some((1, 4)));
+        // A big body read a window late is still held to the floor.
+        let big = body("B", &[("files", Some("b.bin"), &[1u8; 4096])]);
+        let r = up.receive(Late(&big, late, ms), 1 << 20, CT);
+        assert!(r.unwrap_err().1.contains("too slowly"));
+    }
+
+    #[test]
     fn a_stalled_upload_is_swept_after_the_claim_wait() {
         let dir = tempfile::tempdir().unwrap();
-        let up = std::sync::Arc::new(Uploads::with_limits(
-            dir.path().into(),
-            1 << 30,
-            Duration::from_millis(300),
-        ));
+        let mut up = Uploads::with_limits(dir.path().into(), 1 << 30, Duration::from_millis(300));
+        // A fake clock: the waiting uploads below cannot expire while a slow disk creates
+        // them, and the stalled one is swept exactly when the wait is over.
+        let ms = fake_clock(&mut up);
+        let up = Arc::new(up);
         let (tx, rx) = std::sync::mpsc::channel();
         let receiving = {
             let up = up.clone();
@@ -609,10 +657,13 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        while up.uploads.lock().is_empty() {
+            std::thread::yield_now();
+        }
+        ms.store(100, Ordering::Release);
         up.sweep();
         assert_eq!(up.uploads.lock().len(), 1, "still within the wait");
-        std::thread::sleep(Duration::from_millis(450));
+        ms.store(550, Ordering::Release);
         up.sweep();
         assert!(up.uploads.lock().is_empty(), "no progress for the wait");
         fill_waiting(&up);
