@@ -125,6 +125,8 @@ pub struct Source {
     pub id: SourceId,
     pub def: SourceDef,
     pub(crate) store: Pool,
+    /// The library holding it (set when it is opened or added).
+    pub(crate) owner: RwLock<Weak<Shared>>,
     /// The last completed full walk (records of older generations were removed by it).
     pub generation: AtomicU64,
     pub status: RwLock<SourceStatus>,
@@ -173,6 +175,7 @@ impl Source {
             id,
             def,
             store,
+            owner: RwLock::new(Weak::new()),
             generation: AtomicU64::new(generation),
             status: RwLock::new(status),
             pending_gen: AtomicU64::new(0),
@@ -456,6 +459,10 @@ pub(crate) struct Shared {
     pub(crate) hash_finishing: AtomicI64,
     /// Protection recounts read and write as one (the last to start writes last).
     pub(crate) recounting: Mutex<()>,
+    /// Changes waiting for a debounced recount (`protect::schedule_recount`).
+    pub(crate) recount_pending: Mutex<crate::protect::PendingRecount>,
+    /// Completed recounts (`Library::protection_revision`).
+    pub(crate) protection_revision: AtomicU64,
     /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
     pub(crate) utc_offset: AtomicI64,
     /// `Jobs::subscribe` receivers.
@@ -673,12 +680,17 @@ impl Library {
             hash_again: AtomicBool::new(false),
             hash_finishing: AtomicI64::new(0),
             recounting: Mutex::new(()),
+            recount_pending: Mutex::default(),
+            protection_revision: AtomicU64::new(0),
             utc_offset: AtomicI64::new(0),
             job_events: Mutex::new(Vec::new()),
             jobs: JobState::default(),
             watchers: Mutex::new(HashMap::new()),
             _lock: lock,
         });
+        for source in shared.sources.read().iter() {
+            *source.owner.write() = Arc::downgrade(&shared);
+        }
         let lib = Library {
             id: LibraryId(id),
             name: name.to_owned(),
@@ -816,6 +828,7 @@ impl Library {
             "INSERT INTO source(id, def, created) VALUES (?1, ?2, ?3)",
             rusqlite::params![id.0, serde_json::to_string(&source.def)?, crate::now()],
         )?;
+        *source.owner.write() = Arc::downgrade(&self.shared);
         sources.push(Arc::new(source));
         Ok(id)
     }

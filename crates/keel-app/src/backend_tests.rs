@@ -624,6 +624,7 @@ fn the_window_ignores_changes_that_need_no_refresh() {
         assert_eq!(refresh_for(kind), Refresh::Nothing, "{kind}");
     }
     assert_eq!(refresh_for("volumes.set"), Refresh::Protection);
+    assert_eq!(refresh_for("protection.recount"), Refresh::Protection);
     assert_eq!(refresh_for("recents.note"), Refresh::Recents);
     assert_eq!(refresh_for("tags.add"), Refresh::All);
     assert_eq!(refresh_for(""), Refresh::All, "an older daemon names none");

@@ -802,6 +802,40 @@ fn overview_reads_protection_and_volumes_and_badges_load_off_the_ui_thread() {
     }
 }
 
+#[test]
+fn a_recount_after_watcher_changes_reads_protection_and_badges_again() {
+    let (tmp, lib, id) = fixture("recount", true);
+    let mut s = state_with(&lib, &tmp);
+    s.library.follow_recounts();
+    s.library.refresh_stats();
+    pump_until(&mut s, "protection", |s| s.library.protection.is_some());
+    let a = VPath::local(tmp.join("docs").join("a.txt"));
+    assert!(s.library.badge(&a).is_none(), "its folder is asked for");
+    s.library.ask_badges();
+    pump_until(&mut s, "badges", |s| s.library.badges.contains_key(&a));
+    assert_eq!(s.library.protection.as_ref().unwrap().single_copy, 1);
+    // What a watcher does when sub/b.txt is deleted outside Keel.
+    let b = tmp.join("docs").join("sub").join("b.txt");
+    std::fs::remove_file(&b).unwrap();
+    let revision = lib.protection_revision();
+    let src = lib.source(&id).unwrap();
+    Indexer::apply_change(&src, keel_core::ChangeEvent::Removed(VPath::local(&b))).unwrap();
+    let end = Instant::now() + Duration::from_secs(60);
+    while lib.protection_revision() == revision {
+        assert!(Instant::now() < end, "timed out: recount");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    s.library.follow_recounts();
+    assert!(s.library.badges.is_empty(), "badges are read again");
+    s.library.refresh_stats();
+    pump_until(&mut s, "recounted card", |s| {
+        s.library
+            .protection
+            .as_ref()
+            .is_some_and(|p| p.single_copy == 2)
+    });
+}
+
 /// Manual end-to-end check (GPU), like `library_live`: `KEEL_LIVE_ROOT=C:\KeelDemo
 /// KEEL_LIVE_DATA=<data dir> KEEL_SHOT_DIR=<dir> KEEL_CONFIG_DIR=<config dir> cargo test -p
 /// keel-app -- --ignored protection_live --nocapture`. Adds the folder as a source, waits for

@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Protection counters follow changes made outside Keel: 5 s after the last change a watcher applied (a file created, modified, deleted, renamed or moved), and after operations Keel executes, the counters are recounted in the background, once for a whole burst and not while that source is being walked (the walk recounts when it ends). The Overview's Protection card and the Copies badges are read again afterwards, in the window and in windows attached to keel-daemon, which sends `library.changed` `{method: "protection", kind: "protection.recount"}` after every recount (the web client, which shows no protection, ignores it). A window's own source watchers now recount after each full walk too. A recount reads every store (about 0.12 s for 100,000 hashed files in a release build). This lifts the 0.7.0 known limitation that the counters caught up only at the next index, hash or integrity run.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added

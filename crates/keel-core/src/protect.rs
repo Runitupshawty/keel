@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     sync::{atomic::Ordering, Arc},
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -171,6 +172,102 @@ struct Counters {
 }
 
 const COUNTERS: &str = "protection";
+
+/// Quiet time after the last applied change before the protection counters are recounted.
+pub const RECOUNT_DEBOUNCE: Duration = Duration::from_secs(5);
+/// How often the recount thread looks at the clock, a running walk and `closing`.
+const RECOUNT_TICK: Duration = Duration::from_millis(100);
+
+/// Changes applied since the last recount (`schedule_recount`).
+#[derive(Default)]
+pub(crate) struct PendingRecount {
+    /// The last change.
+    last: Option<Instant>,
+    /// Changed sources, with the generation they were applied to.
+    sources: HashMap<crate::SourceId, u64>,
+    /// A `recount_when_quiet` thread is waiting.
+    worker: bool,
+}
+
+#[cfg(test)]
+impl PendingRecount {
+    /// Nothing pending and no thread waiting.
+    pub(crate) fn idle(&self) -> bool {
+        self.last.is_none() && self.sources.is_empty() && !self.worker
+    }
+}
+
+/// After a change applied outside a full walk (a watcher event, an executed operation):
+/// the counters are recounted once nothing changed for `RECOUNT_DEBOUNCE`, on a thread of
+/// their own (one at a time per library, started here when none waits).
+pub(crate) fn schedule_recount(lib: &Arc<Shared>, src: &Source) {
+    if lib.closing() || src.removed.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut pending = lib.recount_pending.lock();
+    pending.last = Some(Instant::now());
+    pending
+        .sources
+        .insert(src.id.clone(), src.generation.load(Ordering::SeqCst));
+    if pending.worker {
+        return;
+    }
+    let weak = Arc::downgrade(lib);
+    pending.worker = std::thread::Builder::new()
+        .name("keel-protection".into())
+        .spawn(move || recount_when_quiet(&weak))
+        .map_err(|e| tracing::warn!("protection recount thread: {e}"))
+        .is_ok();
+}
+
+/// The `schedule_recount` thread. It holds the library only while it looks (an unused
+/// library closes at once) and ends with nothing pending or when the library closes. A
+/// source being walked defers the recount; a completed walk recounts at its end, so its
+/// requests for the generation before it are dropped. A failed walk leaves them pending.
+fn recount_when_quiet(lib: &std::sync::Weak<Shared>) {
+    loop {
+        std::thread::sleep(RECOUNT_TICK);
+        let Some(lib) = lib.upgrade() else { return };
+        {
+            let mut pending = lib.recount_pending.lock();
+            if lib.closing() {
+                *pending = PendingRecount::default();
+                return;
+            }
+            if pending
+                .last
+                .is_some_and(|last| last.elapsed() < RECOUNT_DEBOUNCE)
+            {
+                continue;
+            }
+            let sources = lib.sources.read();
+            pending.sources.retain(|id, gen| {
+                sources.iter().any(|s| {
+                    &s.id == id
+                        && !s.removed.load(Ordering::SeqCst)
+                        && s.generation.load(Ordering::SeqCst) == *gen
+                })
+            });
+            let walking = sources.iter().any(|s| {
+                pending.sources.contains_key(&s.id) && s.pending_gen.load(Ordering::SeqCst) != 0
+            });
+            if walking {
+                continue;
+            }
+            pending.last = None;
+            if pending.sources.is_empty() {
+                pending.worker = false;
+                return;
+            }
+            pending.sources.clear();
+        }
+        if let Err(e) = recount(&lib) {
+            if !e.is::<crate::Cancelled>() {
+                tracing::warn!("protection after changes: {e:#}");
+            }
+        }
+    }
+}
 
 /// What a root's volume is, seen now.
 struct Observed {
@@ -518,6 +615,7 @@ pub(crate) fn after_delete(
 /// integrity ends and when volume states change).
 pub(crate) fn recount(lib: &Shared) -> Result<()> {
     let _one_at_a_time = lib.recounting.lock();
+    anyhow::ensure!(!lib.closing(), crate::Cancelled);
     let vols = Volumes::load(lib)?;
     let sources: Vec<Arc<Source>> = lib.sources.read().clone();
     // A private scratch database (SQLite spills it to a temp file).
@@ -525,6 +623,7 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
     scratch.execute_batch("CREATE TABLE c(content, file TEXT, domain TEXT, backup INTEGER)")?;
     let (mut drifted, mut unchecked) = (0u64, 0u64);
     for s in &sources {
+        anyhow::ensure!(!lib.closing(), crate::Cancelled);
         let v = vols.of(s);
         // A device's claims are not copies.
         if !v.state.counts() || s.is_device() {
@@ -579,11 +678,20 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
         drifted,
         unchecked,
     };
+    anyhow::ensure!(!lib.closing(), crate::Cancelled);
     lib.db
-        .set_meta(COUNTERS, &serde_json::to_string(&counters)?)
+        .set_meta(COUNTERS, &serde_json::to_string(&counters)?)?;
+    lib.protection_revision.fetch_add(1, Ordering::Release);
+    Ok(())
 }
 
 impl Library {
+    /// Changes after a completed protection recount (no I/O). Clients re-read the card
+    /// and copies badges when this changes; the daemon publishes `protection.recount`.
+    pub fn protection_revision(&self) -> u64 {
+        self.shared.protection_revision.load(Ordering::Acquire)
+    }
+
     /// The drive inventory: every volume a source was ever seen on, by label.
     pub fn volumes(&self) -> Result<Vec<Volume>> {
         let mut out: Vec<Volume> = Volumes::load(&self.shared)?.by_id.into_values().collect();

@@ -1352,3 +1352,63 @@ fn a_change_applied_as_a_walk_starts_keeps_one_record_per_path() {
     assert_eq!(names, ["a.txt", "b.txt"]);
     assert_eq!(paths(&src), ["", "docs", "docs/a.txt", "docs/b.txt"]);
 }
+
+#[test]
+fn watcher_delete_recounts_and_a_thousand_event_burst_counts_once() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "same");
+    write(&files.path().join("b.txt"), "same");
+    let (_data, lib, src) = library_with(folder("copies", files.path()));
+    let router = Router::new();
+    walk(&src, &router).unwrap();
+    let hash = lib.hash().unwrap();
+    assert_eq!(
+        lib.jobs().wait(hash).unwrap().status,
+        crate::JobStatus::Done
+    );
+    assert_eq!(lib.protection_summary().unwrap().single_copy, 0);
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let quit = AtomicBool::new(false);
+    let ready = AtomicBool::new(false);
+    let rescan = |s: &Source| {
+        walk(s, &router).unwrap();
+        crate::protect::after_walk(&lib.shared, s);
+        ready.store(true, Ordering::SeqCst);
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| watch_loop(&src, &rx, Duration::from_secs(3600), &quit, &rescan));
+        eventually("watcher ready", || ready.load(Ordering::SeqCst));
+        let revision = lib.protection_revision();
+        std::fs::remove_file(files.path().join("b.txt")).unwrap();
+        // 1,000 applied changes: the delete and 999 paths that are not there.
+        for i in 0..1000 {
+            let name = if i == 0 {
+                "b.txt".into()
+            } else {
+                format!("gone-{i}")
+            };
+            tx.send(Ok(
+                notify::Event::new(notify::EventKind::Any).add_path(files.path().join(name))
+            ))
+            .unwrap();
+        }
+        eventually("delete applied", || id_of(&src, "b.txt").is_none());
+        let applied = Instant::now();
+        eventually("last copy recounted", || {
+            lib.protection_summary().unwrap().single_copy == 1
+        });
+        if std::env::var_os("CI").is_none() {
+            assert!(applied.elapsed() < crate::protect::RECOUNT_DEBOUNCE + Duration::from_secs(3));
+        }
+        assert_eq!(
+            lib.protection_revision(),
+            revision + 1,
+            "one scan for the entire burst"
+        );
+        eventually("recount thread ended", || {
+            lib.shared.recount_pending.lock().idle()
+        });
+        assert_eq!(lib.protection_revision(), revision + 1);
+        quit.store(true, Ordering::SeqCst);
+    });
+}

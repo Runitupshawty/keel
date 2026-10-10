@@ -225,7 +225,11 @@ refreshes what that kind can change; for job starters (`sources.index`, `hashing
 `integrity.check`, `media.index`) the job's `job.progress` to `done` is the moment to.
 A sidecar job also sends `library.changed` `{method: "job", kind: "media.index", job,
 done}` every 2 s while it runs and when it ends (`done: true`). An attached window does not
-wait for it: it asks `media.thumb` with `make: true`.
+wait for it: it asks `media.thumb` with `make: true`. After every protection recount
+(at the end of a walk, hashing or integrity job, after a volume change, and 5 s after the
+last change a watcher or an executed operation applied) the daemon sends `library.changed`
+`{method: "protection", kind: "protection.recount"}`: `protection.summary`, `volumes.list`
+and `redundancy.folder` may read differently.
 
 The daemon also runs the scheduled integrity check of every source (`[library]
 integrity_days`, default 7, 0 turns it off, and `integrity_pct`, default 1, in the

@@ -338,6 +338,7 @@ pub const SIDECARS_EVERY: Duration = Duration::from_secs(2);
 /// Job and device events to subscribers, until the daemon stops.
 fn pump(shared: &Arc<Shared>) {
     let jobs = shared.ctx().lib.jobs().subscribe();
+    let mut protection_revision = shared.ctx().lib.protection_revision();
     let s = Arc::downgrade(shared);
     let _ = std::thread::Builder::new()
         .name("keel-daemon-jobs".into())
@@ -350,6 +351,15 @@ fn pump(shared: &Arc<Shared>) {
                 let Some(s) = s.upgrade() else { return };
                 if s.stop.load(Ordering::Acquire) {
                     return;
+                }
+                // Every completed recount (after watcher changes too, on keel-core's thread).
+                let revision = s.ctx().lib.protection_revision();
+                if revision != protection_revision {
+                    protection_revision = revision;
+                    s.hub.broadcast(
+                        "library.changed",
+                        json!({"method": "protection", "kind": "protection.recount"}),
+                    );
                 }
                 let ev = match ev {
                     Ok(ev) => ev,

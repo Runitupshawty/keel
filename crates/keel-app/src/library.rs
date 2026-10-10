@@ -234,7 +234,7 @@ pub fn refresh_for(kind: &str) -> Refresh {
         }
         // Devices follow `net.event` and their own poll.
         "devices.settings_set" => Refresh::Nothing,
-        "volumes.set" => Refresh::Protection,
+        "volumes.set" | "protection.recount" => Refresh::Protection,
         "recents.note" => Refresh::Recents,
         _ => Refresh::All,
     }
@@ -717,6 +717,8 @@ pub struct LibraryUi {
     // --- Task 33 ---
     /// The Overview's protection card and volume table (None until first read).
     pub protection: Option<ProtectionSummary>,
+    /// `Library::protection_revision` last seen (in process).
+    protection_revision: u64,
     pub volumes: Vec<Volume>,
     /// Details view copies badges by real path; folders wanted (`badge`), and asked for.
     pub badges: HashMap<VPath, Badge>,
@@ -772,6 +774,7 @@ impl LibraryUi {
             policy: Hashing::default(),
             media_again: false,
             protection: None,
+            protection_revision: 0,
             volumes: Vec::new(),
             badges: HashMap::new(),
             badge_wanted: parking_lot::Mutex::new(HashSet::new()),
@@ -1504,6 +1507,7 @@ impl AppState {
             return;
         }
         let lib = l.lib.clone();
+        l.follow_recounts();
         let now = Instant::now();
         // Media and integrity jobs pause for 5 s after each input; hashing too when idle
         // only (`sync_hashing`). Attached, the daemon is told (`activity.note`) at most
@@ -2318,6 +2322,19 @@ impl LibraryUi {
         self.badges.clear();
         self.badge_asked.clear();
         self.badge_wanted.lock().clear();
+    }
+
+    /// A recount keel-core ran on its own thread (after watcher changes): counts and badges
+    /// are read again. Seen at the next tick, at most `STATS_EVERY` later; attached, the
+    /// daemon says `protection.recount` instead.
+    pub(crate) fn follow_recounts(&mut self) {
+        let Some(revision) = self.lib.as_ref().map(|l| l.protection_revision()) else {
+            return;
+        };
+        if revision != self.protection_revision {
+            self.protection_revision = revision;
+            self.protection_changed();
+        }
     }
 
     /// A volume changed: counts and badges are read again.
