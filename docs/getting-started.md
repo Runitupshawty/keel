@@ -104,7 +104,7 @@ Keel opens on your home folder in both panes.
 - **Sidebar** (left): the **Library** section (Overview, ★ Favorites, Recents, your sources, tags and saved views), then **Quick access** (Home, Desktop, Documents, Downloads, Pictures and the Recycle Bin or Trash), **Drives** with a bar showing how full each one is, **Open archives** while you browse inside one, **Remotes**, **Cloud** and **Devices**. A click opens the folder in the active pane, a middle-click opens it in a new tab.
 - **Two panes**: click a pane, or press F6, to make it the active one. Ctrl+Shift+D switches between one and two panes.
 - **Tabs**: Ctrl+T opens a tab, Ctrl+W closes it, drag tabs to reorder them. Your tabs are restored the next time Keel starts.
-- **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there, or press Ctrl+L to type a path. Backspace goes to the parent folder.
+- **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start), or press Ctrl+L to type a path. Backspace goes to the parent folder.
 - **Views**: the buttons at the right of each pane's header switch between **Details**, **Grid** (thumbnails), **Columns** and **Media** (photo and video tiles).
 - **Filter**: start typing in a list to show only the names that match; Esc clears the filter.
 - **Preview panel**: F3 shows or hides it. It previews code with syntax highlighting, text, Markdown, images, PDF pages, CSV and spreadsheets, Word, PowerPoint and OpenDocument files, video frames, and anything else as hex.
@@ -159,7 +159,7 @@ When the files are in a library source (see [The library](#the-library)), Keel f
 
 ### Rename and bulk rename
 
-F2 renames the selected item in place; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; **Undo bulk rename** in the command palette reverses it.
+F2 renames the selected item in place, with the name before its extension selected so that typing replaces it; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; **Undo bulk rename** in the command palette reverses it.
 
 ### Search
 
