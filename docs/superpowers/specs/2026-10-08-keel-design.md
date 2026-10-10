@@ -254,6 +254,22 @@ browser keeps working with the library off.
 - **Spacedrop**: send files/folders to a paired device with progress, resumable.
 - **Shares**: grant a source or subtree to a person, device or agent; scoped, visible, revocable by the
   host; never merges libraries.
+- **Library sync**: tags (name, color, nesting), tag assignments, favorites and the content ids of
+  tagged files follow a user between their own paired devices; sources, recents, views, settings,
+  drives and jobs do not. Each library keeps an append-only `sync_log` of its own changes
+  (`seq`, Lamport time, the change) and, per key, the winning change (`sync_key`: last writer wins
+  by Lamport time, then device id; a tag by its stable `uid`, an assignment by tag and target, a
+  favorite as the reserved `favorites` tag); deletes are tombstones kept 30 days. An assignment's
+  target is the file's content id when it is hashed, else a path in one of the logging device's own
+  sources, which on another device reaches only that device's `node://` sources; a `Content` entry
+  (path to content id) lets it reach copies once the file is hashed. Devices pull each other's log
+  with `SyncPull { since }` / `SyncEntries { entries, more, upto }` (pages of 1,000) on connect and
+  every `[devices] sync_secs` (60 s), only when both turned the per-device switch on (Settings →
+  Devices; each side pulls only from, and answers only, the devices it enabled). Sync is pairwise
+  (a device never relays what it received). Received entries go through the same tag code as local
+  edits without being logged again; the puller takes the device id from the connection, checks
+  sizes and names, and applies at most 10,000 entries per device and minute. Turning the switch off
+  or forgetting the device stops sync and keeps what arrived.
 - **Mounts** (stretch): expose any source or subtree as a drive letter / mount point via WinFsp,
   macFUSE, FUSE with on-demand range reads.
 

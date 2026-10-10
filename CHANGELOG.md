@@ -2,6 +2,27 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Library sync between your own devices: tags (name, color, nesting), which files carry them, and favorites follow you between paired devices. Settings → Devices has a **Sync library with this device** switch for each paired device (off by default); with it on on both devices they exchange changes when they connect and every minute (`[devices] sync_secs` in the profile's `config.toml`, 10 seconds to an hour; `[devices] sync` lists the devices it is on with), and the line under the switch says when this device last synced with that one ("Last synced 3 min ago"). The library Overview says how many devices the tags are synced with. Sources, recents, saved views, settings, drives, jobs and the files themselves stay on each device.
+- A tag on a hashed file belongs to its content: on the other device it lands on every copy of the same bytes that is hashed there too. A tag on a file that is not hashed yet is kept by its place on its device and lands on the other device only in that device's folder added there as a library source (`node://`), and on its copies once the first device has hashed the file. Tags made on both devices with the same name under the same parent become one tag. When both devices change the same thing before they sync, the later change wins on both; a deleted tag is remembered for 30 days so that an older copy of it never comes back.
+- Each device answers only the devices it syncs with, takes at most 10,000 changes a minute from any device (the rest follows in the next minutes), checks every change it receives (tag names of at most 256 bytes without control or direction characters, paths without `..`), and only ever applies a device's paths to that device's own folders. Turning the switch off, or forgetting the device (`devices.forget`), stops sync at once and keeps what already arrived. Sync is pairwise: a device never passes on what it received from a third one.
+- `library.sync` (acts directly) pulls tag and favorite changes now from one paired device (`peer`) or from every device sync is on with, and answers how many changes each pull applied, or why it failed. `devices.list` gives each device's `sync` switch and `last_sync` time, `devices.settings` the devices sync is on with (`sync`), and `devices.settings_set` takes `sync` (an attached window writes its switches through it). keel-daemon sends `library.changed` `{method: "library.sync", kind: "library.sync"}` and `net.event` `library_synced` when a pull changed the library, so attached windows and web clients read tags and favorites again. `keel devices` shows when each device with sync on last synced. The API has 54 operations.
+- keel-core: library schema 8 gives every tag a stable id (`uid`; Favorites is `favorites` on every device) and keeps the sync log (`sync_log`), the winning change per tag, assignment and content id (`sync_key`), how far each device's log was read (`sync_peer`) and merged tags (`tag_alias`); `Library::sync_page`, `sync_apply`, `sync_since`, `sync_peers`, `sync_reapply` and `set_sync_device`. Tags and favorites made before this version are logged once when the library opens, so a device that syncs later gets them too. keel-net: `Request::SyncPull` / `Response::SyncEntries` (pages of at most 1,000 changes), `Node::set_sync_peers`, `sync_peers`, `syncs_with` and `sync_now`, `NodeOptions::sync_every` and `sync_rate`, `NetEvent::LibrarySynced`, and the `Handler` hooks `opened`, `sync_page`, `sync_since` and `sync_apply` (implemented by `LibraryHandler`).
+
+### Known limitations
+
+- Hashing gives a file over 192 KiB a content id only when another file shares its sample, so a tag on a large file that has no copy on its own device stays keyed by its place: it reaches the other device only in that device's `node://` folder, not the copies there.
+- A tag put on or taken off a file in another device's `node://` folder that has no content id stays on this device; it is not sent back to the device the folder is on.
+- A tag set before its file was hashed reaches the other device's copies after the first device's next walk or hashing run, and a copy indexed or hashed on the other device after the change arrived gets it after that device's next walk or hashing run.
+- A tag's name, color and parent are one change: when two devices change different parts of the same tag before they sync, only the later change is kept on both.
+- A device that has not synced for more than 30 days can bring back a tag or a tag assignment deleted on the other device meanwhile.
+- Tags and favorites that come with a source store moved in from another library are synced only once they are changed again.
+- The other device learns the names and paths of the files you tag, also in folders you do not share with it.
+- With three or more devices, each pair that should sync needs its switches on (a device does not pass on what it received). A new `[devices] sync_secs` applies from the next start.
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

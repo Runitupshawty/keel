@@ -134,6 +134,7 @@ fn registry_is_preview_first() {
         "activity.note",
         "devices.settings",
         "devices.settings_set",
+        "library.sync",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -454,6 +455,87 @@ fn devices_and_shares() {
         json!({"peer": b_node.id().to_string()}),
     );
     assert!(a_node.peers().is_empty());
+    rt.block_on(async {
+        a_node.close().await;
+        b_node.close().await;
+    });
+}
+
+/// Library sync between two hosts: the switch through `devices.settings_set`, the state
+/// in `devices.list`, a pull with `library.sync`.
+#[test]
+fn library_sync_between_two_hosts() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let open = |dir: &tempfile::TempDir, lib: &Arc<keel_core::Library>| {
+        rt.block_on(keel_net::Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dir.path(),
+            Arc::new(keel_net::LibraryHandler::new(lib.clone())),
+            keel_net::NodeOptions {
+                sync_every: std::time::Duration::ZERO,
+                ..keel_net::NodeOptions::offline()
+            },
+        ))
+        .unwrap()
+    };
+    let (na, nb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = fixture(None);
+    let a_node = open(&na, &a.ctx.lib);
+    let a = Fixture {
+        ctx: a.ctx.with_net(a_node.clone(), rt.handle().clone()),
+        ..a
+    };
+    let b = fixture(None);
+    let b_node = open(&nb, &b.ctx.lib);
+    let b = Fixture {
+        ctx: b.ctx.with_net(b_node.clone(), rt.handle().clone()),
+        ..b
+    };
+    let code = apply(&a.ctx, "devices.pair_code", json!({}));
+    apply(&b.ctx, "devices.pair_with", json!({"code": code["ticket"]}));
+    let (a_id, b_id) = (a_node.id().to_string(), b_node.id().to_string());
+    let peers = call(&b.ctx, "devices.list", Value::Null).unwrap()["peers"].clone();
+    assert_eq!(peers[0]["sync"], false, "off by default");
+    assert!(peers[0].get("last_sync").is_none());
+    let off = call(&b.ctx, "library.sync", json!({"peer": a_id})).unwrap_err();
+    assert_eq!(off.code, ApiError::INVALID_PARAMS, "{off:?}");
+    assert!(call(&b.ctx, "library.sync", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // On, on both sides (a preview first, which changes nothing).
+    let preview = call(&b.ctx, "devices.settings_set", json!({"sync": [a_id]})).unwrap();
+    assert!(preview.to_string().contains("device.sync"), "{preview}");
+    assert!(!b_node.syncs_with(&keel_net::PeerId(a_node.id())));
+    apply(&b.ctx, "devices.settings_set", json!({"sync": [a_id]}));
+    apply(&a.ctx, "devices.settings_set", json!({"sync": [b_id]}));
+    let settings = call(&b.ctx, "devices.settings", Value::Null).unwrap();
+    assert_eq!(settings["sync"], json!([a_id]));
+    assert!(call(&b.ctx, "devices.settings_set", json!({"sync": ["nope"]})).is_err());
+
+    a.ctx
+        .lib
+        .create_tag("Receipts", Some("#30a46c"), None)
+        .unwrap();
+    let pulled = call(&b.ctx, "library.sync", json!({"peer": a_id})).unwrap();
+    assert_eq!(pulled[0]["peer"], a_id);
+    assert_eq!(pulled[0]["applied"], 1, "{pulled}");
+    assert!(pulled[0].get("error").is_none());
+    let tags = call(&b.ctx, "tags.list", json!({})).unwrap();
+    assert!(tags.to_string().contains("Receipts"), "{tags}");
+    let peers = call(&b.ctx, "devices.list", Value::Null).unwrap()["peers"].clone();
+    assert_eq!(peers[0]["sync"], true);
+    assert!(peers[0]["last_sync"].as_i64().is_some(), "{peers}");
+
+    // Off on a: b's pull is refused and says why.
+    apply(&a.ctx, "devices.settings_set", json!({"sync": []}));
+    let refused = call(&b.ctx, "library.sync", json!({})).unwrap();
+    assert!(
+        refused[0]["error"].as_str().unwrap().contains("refused"),
+        "{refused}"
+    );
     rt.block_on(async {
         a_node.close().await;
         b_node.close().await;
@@ -1182,7 +1264,7 @@ fn spacedrop_send_inbox_and_answer() {
     let got = call(&b.ctx, "devices.settings", Value::Null).unwrap();
     assert_eq!(
         got,
-        json!({"label": "Den", "inbox": s(&later), "auto_accept": [a_id], "relay": true})
+        json!({"label": "Den", "inbox": s(&later), "auto_accept": [a_id], "relay": true, "sync": []})
     );
     assert_eq!(b_node.label(), "Den");
     // Never Keel's own folders; device ids must parse; nothing changes then.

@@ -130,7 +130,9 @@ pub static OPS: &[Operation] = &[
         PlanParams => PlanPreview, plan, json!({"op": "copy", "paths": [example_file()], "to": example_dir(), "on_conflict": "skip"})),
     now!("execute", "Applies a previewed plan: pass the plan_id and input_hash of the preview being confirmed. Refuses expired, tampered or changed plans.",
         true, ExecuteParams => Executed, execute, json!({"plan_id": "0123456789abcdef0123456789abcdef", "input_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"})),
-    now!("devices.list", "This device and its paired devices with their link state.",
+    now!("library.sync", "Pulls tag, favorite and content-id changes now from one paired device, or every device library sync is on with (both sides must turn it on); applies them to the library.",
+        LibrarySyncParams => Vec<SyncedDevice>, library_sync, json!({})),
+    now!("devices.list", "This device and its paired devices with their link state, library sync switch and last sync.",
         NoParams => Devices, devices_list, json!({})),
     previewed!("devices.pair_code", "Creates a one-time pairing code (valid 10 minutes) for another device to enter.",
         NoParams => PairCodeInfo, pair_code_preview, pair_code, json!({})),
@@ -138,10 +140,10 @@ pub static OPS: &[Operation] = &[
         true, PairWithParams => PeerInfo, pair_with_preview, pair_with, json!({"code": "abcdefghijklmnopqrstuvwxyz"})),
     previewed!("devices.forget", "Forgets a paired device (its sessions close and its grants are removed).",
         PeerParams => Done, forget_preview, forget, json!({"peer": "a".repeat(52)})),
-    now!("devices.settings", "This device's label, Spacedrop inbox, always-accept list and relay setting.",
+    now!("devices.settings", "This device's label, Spacedrop inbox, always-accept list, relay setting and the devices library sync is on with.",
         NoParams => DeviceSettingsInfo, devices_settings, json!({})),
-    previewed!("devices.settings_set", "Changes this device's label, Spacedrop inbox or always-accept list at once; relays when the host starts again.",
-        DeviceSettingsParams => DeviceSettingsSet, settings_set_preview, settings_set, json!({"label": "Laptop", "auto_accept": ["a".repeat(52)]})),
+    previewed!("devices.settings_set", "Changes this device's label, Spacedrop inbox, always-accept list or library sync devices at once; relays when the host starts again.",
+        DeviceSettingsParams => DeviceSettingsSet, settings_set_preview, settings_set, json!({"label": "Laptop", "auto_accept": ["a".repeat(52)], "sync": ["a".repeat(52)]})),
     now!("shares.list", "Grants this device gives its paired devices.",
         NoParams => Vec<GrantInfo>, shares_list, json!({})),
     previewed!("shares.grant", "Grants a paired device read or read-write access to a source or a subtree of it.",
@@ -1545,6 +1547,8 @@ fn peer_info(p: &keel_net::Peer) -> PeerInfo {
         last_seen: p.last_seen,
         storage_used: p.storage.as_ref().map(|s| s.used),
         storage_total: p.storage.as_ref().map(|s| s.total),
+        sync: false,
+        last_sync: None,
     }
 }
 
@@ -1566,11 +1570,62 @@ fn paired(ctx: &Ctx, s: &str) -> Result<keel_net::Peer> {
 
 fn devices_list(ctx: &Ctx, _: NoParams) -> Result<Devices> {
     let (node, _) = node(ctx)?;
+    let synced = ctx.lib.sync_peers()?;
+    let peers = node
+        .peers()
+        .iter()
+        .map(|p| {
+            let id = p.id.0.to_string();
+            PeerInfo {
+                sync: node.syncs_with(&p.id),
+                last_sync: synced
+                    .iter()
+                    .find(|s| s.device == id)
+                    .and_then(|s| s.last_sync),
+                ..peer_info(p)
+            }
+        })
+        .collect();
     Ok(Devices {
         id: node.id().to_string(),
         label: node.label(),
-        peers: node.peers().iter().map(peer_info).collect(),
+        peers,
     })
+}
+
+fn library_sync(ctx: &Ctx, p: LibrarySyncParams) -> Result<Vec<SyncedDevice>> {
+    let (node, rt) = node(ctx)?;
+    let peers: Vec<keel_net::Peer> = match p.peer.as_deref() {
+        Some(id) => {
+            let peer = paired(ctx, id)?;
+            if !node.syncs_with(&peer.id) {
+                return Err(ApiError::invalid_params(format!(
+                    "library sync with {} is off: turn it on in Settings → Devices (devices.settings_set sync)",
+                    peer.label
+                )));
+            }
+            vec![peer]
+        }
+        None => {
+            let on = node.sync_peers();
+            node.peers()
+                .into_iter()
+                .filter(|p| on.contains(&p.id))
+                .collect()
+        }
+    };
+    Ok(peers
+        .into_iter()
+        .map(|peer| {
+            let pulled = rt.block_on(node.sync_now(&peer.id));
+            SyncedDevice {
+                peer: peer.id.0.to_string(),
+                label: peer.label,
+                applied: *pulled.as_ref().unwrap_or(&0),
+                error: pulled.err().map(|e| format!("{e:#}")),
+            }
+        })
+        .collect())
 }
 
 fn devices_settings(ctx: &Ctx, _: NoParams) -> Result<DeviceSettingsInfo> {
@@ -1581,6 +1636,7 @@ fn devices_settings(ctx: &Ctx, _: NoParams) -> Result<DeviceSettingsInfo> {
         inbox: drops.map_or_else(String::new, |d| d.inbox().display().to_string()),
         auto_accept: drops.map(|d| d.auto_accept()).unwrap_or_default(),
         relay: drops.is_none_or(|d| d.relay),
+        sync: node.sync_peers().iter().map(|p| p.0.to_string()).collect(),
     })
 }
 
@@ -1599,7 +1655,7 @@ fn settings_check(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Option<std::pat
     if p.inbox.is_some() || p.auto_accept.is_some() {
         drops(ctx)?;
     }
-    for id in p.auto_accept.iter().flatten() {
+    for id in p.auto_accept.iter().chain(&p.sync).flatten() {
         peer_id(id)?;
     }
     let Some(inbox) = p.inbox.as_deref().map(str::trim) else {
@@ -1646,6 +1702,10 @@ fn settings_set_preview(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Preview> 
         let detail = format!("{} device(s)", ids.len());
         changes.push(change("device.auto_accept", None, Some(detail)));
     }
+    if let Some(ids) = &p.sync {
+        let detail = format!("{} device(s)", ids.len());
+        changes.push(change("device.sync", None, Some(detail)));
+    }
     if let Some(relay) = p.relay {
         let on = if relay { "on" } else { "off" };
         changes.push(change("device.relay", None, Some(on.into())));
@@ -1684,6 +1744,9 @@ fn settings_set(ctx: &Ctx, p: DeviceSettingsParams) -> Result<DeviceSettingsSet>
     }
     if let Some(ids) = p.auto_accept {
         drops(ctx)?.set_auto_accept(ids.iter().map(|i| i.trim().to_owned()).collect());
+    }
+    if let Some(ids) = &p.sync {
+        node.set_sync_peers(ids.iter().filter_map(|i| peer_id(i).ok()));
     }
     let settings = devices_settings(ctx, NoParams {})?;
     Ok(DeviceSettingsSet {

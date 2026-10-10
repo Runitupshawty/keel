@@ -93,12 +93,13 @@ also act directly: they change no file.
 | `activity.note` | direct | The user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s (an attached window sends it on input, at most every 4 s) |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`). Paths inside a zip or jar on the host (`D:\x.zip!/dir/a.txt`) can be deleted, renamed and copied or moved into: the preview warns `rewrites_archive` with the archive's size (each execution rewrites it once, entries that stay copied byte for byte) and refuses 7z, tar and RAR archives, archives inside archives or on other providers, and moves out of an archive |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
-| `devices.list` | read | This device and paired devices (LAN / relay / offline) |
+| `library.sync` | direct | Pull tag, favorite and content-id changes now from `peer` (a paired device id), or from every device library sync is on with; answers `[{peer, label, applied, error?}]` (`applied`: changes newer than this library's, applied; `error`: the device is offline, or its switch for this device is off). Refused for a `peer` sync is off with here. Reads from the other device and writes only the library's tags and favorites |
+| `devices.list` | read | This device and paired devices (LAN / relay / offline); each device's `sync` (library sync is on with it here) and `last_sync` (unix seconds of the last completed pull from it, absent before the first) |
 | `devices.pair_code` | preview | One-time pairing code (10 minutes) |
 | `devices.pair_with` | preview | Pair with a device's code (grants nothing) |
 | `devices.forget` | preview | Forget a device and its grants |
-| `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids and `relay` (as the node started) |
-| `devices.settings_set` | preview | Change any of `label` (at most 256 bytes, no control or direction characters, checked in the preview), `inbox` (an absolute folder, never in Keel's configuration or data folder but its inbox, nor a folder holding either), `auto_accept` and `relay` on the running host: the label, inbox and always-accept list apply at once; relays only when the host starts again (`restart: true` in the answer, and a `restart` warning in the preview). Nothing is written to `config.toml` |
+| `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids, `relay` (as the node started) and `sync` (the device ids library sync is on with) |
+| `devices.settings_set` | preview | Change any of `label` (at most 256 bytes, no control or direction characters, checked in the preview), `inbox` (an absolute folder, never in Keel's configuration or data folder but its inbox, nor a folder holding either), `auto_accept`, `sync` (every paired device listed syncs the library, every other one does not) and `relay` on the running host: the label, inbox, always-accept list and sync devices apply at once; relays only when the host starts again (`restart: true` in the answer, and a `restart` warning in the preview). Nothing is written to `config.toml` |
 | `shares.list` | read | Grants to paired devices |
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree (a local folder, an SFTP host or a cloud account: the device's writes go through that source's provider); a read-write preview warns `read_write`, and `deletes_permanent` where deletes there are for good (SFTP, S3) |
 | `shares.revoke` | direct | Revoke a grant at once |
@@ -135,10 +136,17 @@ sent to a host (the daemon, or a CLI session holding the node) land in `[devices
 (default `<data dir>/inbox`); offers from the device ids in `[devices] auto_accept` are
 accepted at once, the others wait in `spacedrop.inbox` for `spacedrop.answer` and are
 declined when the sender stops waiting. `[devices] relay = false` starts the node without
-public relays. These are read when the host starts; `devices.settings_set` changes the
-label, inbox and always-accept list of a running host (an attached window writes its
+public relays. `[devices] sync` lists the device ids library sync is on with (none by
+default) and `[devices] sync_secs` how often each of them is pulled (60 by default, 10 to
+3600). These are read when the host starts; `devices.settings_set` changes the
+label, inbox, always-accept list and sync devices of a running host (an attached window writes its
 Settings → Devices through it, the inbox only when one is set there, so drops land in the
-same folder with or without a window), relays need a restart. A
+same folder with or without a window), relays and `sync_secs` need a restart. Library
+sync answers a device's pulls only while sync with it is on here, and a host that does not
+serve a library (no `LibraryHandler`) neither pulls nor answers. When a pull changes the
+library, the daemon sends `library.changed` `{method: "library.sync", kind:
+"library.sync"}` (and `net.event` `library_synced` with the `peer` and how many changes it
+`applied`), so attached windows and web clients read tags and favorites again. A
 configuration saved while Devices defaulted on (`enabled = true` without `explicit`) is
 treated as off, and the window switches it off once. `KEEL_NET_SECRET=memory` keeps the
 device identity in memory instead of the OS keychain (tests). keel-daemon owns the profile's one node while it runs; without it, a CLI
@@ -263,7 +271,10 @@ wait for it: it asks `media.thumb` with `make: true`. After every protection rec
 (at the end of a walk, hashing or integrity job, after a volume change, and 5 s after the
 last change a watcher or an executed operation applied) the daemon sends `library.changed`
 `{method: "protection", kind: "protection.recount"}`: `protection.summary`, `volumes.list`
-and `redundancy.folder` may read differently.
+and `redundancy.folder` may read differently. A library sync pull that changed the library (another
+device's tags or favorites arrived, on the daemon's own schedule or through
+`library.sync`) sends `library.changed` `{method: "library.sync", kind: "library.sync"}`:
+tags, favorites and the tags on listed files may read differently.
 
 The daemon also runs the scheduled integrity check of every source (`[library]
 integrity_days`, default 7, 0 turns it off, and `integrity_pct`, default 1, in the

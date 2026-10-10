@@ -712,6 +712,8 @@ pub struct LibraryUi {
     pub views: Vec<View>,
     /// Tags (Favorites included) by real path.
     pub tagged: HashMap<VPath, Vec<TagId>>,
+    /// Paired devices library sync is on with (the Overview says so).
+    pub synced_with: usize,
     pub jobs: BTreeMap<JobId, JobRow>,
     events: Option<Receiver<JobEvent>>,
     watchers: HashMap<SourceId, Watch>,
@@ -793,6 +795,7 @@ impl LibraryUi {
             picker: None,
             dups: None,
             dup_summary: None,
+            synced_with: 0,
             plan: None,
             clip: None,
             new_name: String::new(),
@@ -1726,6 +1729,12 @@ impl AppState {
         });
     }
 
+    /// Another device's tags or favorites arrived (this window's node): read them again.
+    pub fn library_synced(&mut self) {
+        self.library.refresh_meta_soon();
+        self.relist_library_tabs();
+    }
+
     /// Relists every tab on a `library://` folder (its index changed).
     pub fn relist_library_tabs(&mut self) {
         for p in 0..2 {
@@ -2264,7 +2273,7 @@ pub const LOST: &str =
 
 impl LibraryUi {
     /// Tags change on a worker; read them back right after.
-    fn refresh_meta_soon(&mut self) {
+    pub(crate) fn refresh_meta_soon(&mut self) {
         self.next_meta = Instant::now() + Duration::from_millis(300);
         self.ctx.request_repaint_after(Duration::from_millis(300));
     }

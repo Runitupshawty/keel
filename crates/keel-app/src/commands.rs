@@ -367,9 +367,17 @@ fn command(
                     d["id"].as_str().unwrap_or("")
                 );
                 for p in d["peers"].as_array().into_iter().flatten() {
+                    // Library sync on: when it last pulled from that device.
+                    let sync = match p["sync"].as_bool() {
+                        Some(true) => format!(
+                            "  sync, last {}",
+                            crate::library::when(p["last_sync"].as_i64())
+                        ),
+                        _ => String::new(),
+                    };
                     let _ = writeln!(
                         out,
-                        "{:<8} {}  {}",
+                        "{:<8} {}  {}{sync}",
                         p["link"].as_str().unwrap_or(""),
                         p["label"].as_str().unwrap_or(""),
                         p["id"].as_str().unwrap_or("")

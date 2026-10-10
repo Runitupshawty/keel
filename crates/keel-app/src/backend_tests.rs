@@ -602,6 +602,9 @@ fn devices_go_through_the_daemons_node() {
     st.settings.devices.auto_accept = vec![peer.0.to_string()];
     pump_devices(&mut st, "the label", |_| node.label() == "Den");
     assert_eq!(held.auto_accept(), [peer.0.to_string()]);
+    // The library sync switch too (`devices.settings_set` `sync`).
+    st.settings.devices.sync = vec![peer.0.to_string()];
+    pump_devices(&mut st, "the sync switch", |_| node.syncs_with(&peer));
     pump_devices(&mut st, "the sidebar", |s| {
         s.devices
             .remote_self

@@ -2,7 +2,8 @@
 //! whether keel-net is on and the SFTP hosts and cloud accounts, from
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `remote_poll_secs`,
 //! `[devices] enabled`,
-//! `[devices] inbox`, `auto_accept` and `relay`, `[[remotes]]`, `[[clouds]]`); the daemon's
+//! `[devices] inbox`, `auto_accept`, `relay`, `sync` and `sync_secs`, `[[remotes]]`,
+//! `[[clouds]]`); the daemon's
 //! socket name and WebSocket token.
 
 use std::path::PathBuf;
@@ -11,6 +12,10 @@ pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_LIBRARY: &str = "main";
 /// Seconds `[library] remote_poll_secs` is kept within (a value outside is clamped).
 pub const REMOTE_POLL_SECS: std::ops::RangeInclusive<u64> = 30..=3600;
+/// Seconds `[devices] sync_secs` is kept within (a value outside is clamped).
+pub const SYNC_SECS: std::ops::RangeInclusive<u64> = 10..=3600;
+/// `[devices] sync_secs` by default: how often library sync pulls from each device.
+pub const DEFAULT_SYNC_SECS: u64 = 60;
 /// Days between scheduled integrity checks (keel-app's default).
 pub const DEFAULT_INTEGRITY_DAYS: u32 = 7;
 
@@ -74,6 +79,12 @@ pub struct HostConfig {
     pub auto_accept: Vec<String>,
     /// `[devices] relay`: public relays when no direct path works (default on).
     pub relay: bool,
+    /// `[devices] sync`: device ids library sync (tags, favorites) is on with (none by
+    /// default).
+    pub sync: Vec<String>,
+    /// `[devices] sync_secs`: seconds between library sync pulls from each device
+    /// (default 60, within `SYNC_SECS`).
+    pub sync_secs: u64,
     /// `[[remotes]]`: SFTP hosts (secrets stay in the OS keychain).
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts (non-secret fields only).
@@ -166,6 +177,17 @@ impl HostConfig {
             relay: get("devices", "relay")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
+            sync: get("devices", "sync")
+                .and_then(|v| v.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+            sync_secs: get("devices", "sync_secs")
+                .and_then(|v| v.as_integer())
+                .and_then(|s| u64::try_from(s).ok())
+                .map(|s| s.clamp(*SYNC_SECS.start(), *SYNC_SECS.end()))
+                .unwrap_or(DEFAULT_SYNC_SECS),
             remotes: entries(&table, "remotes"),
             clouds: entries(&table, "clouds"),
         }
@@ -324,6 +346,22 @@ mod tests {
         assert_eq!(drops.inbox_dir(), dir.path().join("data").join("inbox"));
         assert_eq!(drops.auto_accept, vec!["abc".to_owned()]);
         assert!(!drops.relay && cfg.relay, "relays on unless turned off");
+        assert!(
+            drops.sync.is_empty() && cfg.sync.is_empty(),
+            "sync off by default"
+        );
+        assert_eq!(cfg.sync_secs, DEFAULT_SYNC_SECS);
+        std::fs::write(
+            p.join("config.toml"),
+            "[devices]
+sync = [\"abc\", 3]
+sync_secs = 1
+",
+        )
+        .unwrap();
+        let sync = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        assert_eq!(sync.sync, vec!["abc".to_owned()]);
+        assert_eq!(sync.sync_secs, 10, "clamped");
         let other = HostConfig::read("work", dir.path().into(), dir.path().join("other"));
         assert_ne!(cfg.socket_name(), other.socket_name());
         assert!(cfg.socket_name().starts_with("keel-daemon-"));

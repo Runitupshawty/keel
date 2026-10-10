@@ -484,6 +484,12 @@ pub struct PeerInfo {
     pub storage_used: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_total: Option<u64>,
+    /// Library sync (tags, favorites) is on with this device here.
+    #[serde(default)]
+    pub sync: bool,
+    /// The last completed library sync pull from this device (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -580,6 +586,9 @@ pub struct DeviceSettingsInfo {
     pub auto_accept: Vec<String>,
     /// Whether the node uses public relays when no direct path works (as it started).
     pub relay: bool,
+    /// Device ids library sync (tags, favorites) is on with.
+    #[serde(default)]
+    pub sync: Vec<String>,
 }
 
 /// What `devices.settings_set` changes (left out: kept).
@@ -598,6 +607,30 @@ pub struct DeviceSettingsParams {
     /// starts again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<bool>,
+    /// Device ids to sync the library (tags, favorites) with: every paired device listed
+    /// is on, every other one off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<Vec<String>>,
+}
+
+/// `library.sync`: pull from one device (its id), or from every device sync is on with.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LibrarySyncParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+}
+
+/// One device's pull (`library.sync`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SyncedDevice {
+    pub peer: String,
+    pub label: String,
+    /// Changes that were newer than this library's and were applied.
+    pub applied: usize,
+    /// Why the pull failed (the device is offline, its switch for this device is off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

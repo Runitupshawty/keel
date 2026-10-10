@@ -204,6 +204,15 @@ fn cards(ui: &mut egui::Ui, list: Vec<Card<'_>>) {
 }
 
 /// The Overview tab: counts, storage, sources, jobs and duplicates.
+/// The Overview's library sync line.
+pub fn synced_text(devices: usize) -> String {
+    match devices {
+        0 => "Tags and favorites stay on this device (Settings → Devices syncs them)".into(),
+        1 => "Tags synced with 1 device".into(),
+        n => format!("Tags synced with {n} devices"),
+    }
+}
+
 pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
     let l = cx.library;
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -237,6 +246,7 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                 }
             }
         }
+        ui.weak(synced_text(l.synced_with));
         let st = &l.stats;
         // The cards' closures share one action list.
         let acts = std::cell::RefCell::new(Vec::new());

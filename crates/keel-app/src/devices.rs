@@ -25,6 +25,7 @@ use keel_vfs::{Router, VPath};
 use parking_lot::RwLock;
 use serde_json::json;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,6 +52,12 @@ pub struct DeviceSettings {
     pub auto_accept: Vec<String>,
     /// Public relays when no direct path works (applies when the node opens).
     pub relay: bool,
+    /// Devices (ids) the library's tags and favorites sync with (both sides must list
+    /// each other).
+    pub sync: Vec<String>,
+    /// Seconds between library sync pulls from each device (applies when the node
+    /// opens; 10 s to an hour).
+    pub sync_secs: u64,
     /// `enabled` is the user's choice (the Settings switch sets this). Configs saved while
     /// Devices defaulted on carry `enabled = true` without it: `migrate` turns those off.
     pub explicit: bool,
@@ -64,6 +71,8 @@ impl Default for DeviceSettings {
             inbox: String::new(),
             auto_accept: Vec::new(),
             relay: true,
+            sync: Vec::new(),
+            sync_secs: keel_api::config::DEFAULT_SYNC_SECS,
             explicit: false,
         }
     }
@@ -96,6 +105,31 @@ pub fn inbox_in(set: &str, downloads: Option<PathBuf>, data: Option<PathBuf>) ->
             .map(|d| d.join("Keel Drops"))
             .or_else(|| data.map(|d| d.join("inbox"))),
         dir => Some(dir.into()),
+    }
+}
+
+/// Library sync times by device from (device id, last pull) pairs; unknown ids and
+/// devices never pulled are left out.
+fn sync_times<'a>(pairs: impl Iterator<Item = (&'a str, Option<i64>)>) -> HashMap<PeerId, i64> {
+    pairs
+        .filter_map(|(id, t)| Some((PeerId(id.parse().ok()?), t?)))
+        .collect()
+}
+
+/// Settings → Devices' line under a device's sync switch, at unix time `now`.
+pub fn sync_note(on: bool, last: Option<i64>, now: i64) -> String {
+    let Some(t) = last.filter(|_| on) else {
+        return match on {
+            true => "Not synced yet: turn it on on that device too".into(),
+            false => "Off".into(),
+        };
+    };
+    let ago = now.saturating_sub(t).max(0);
+    match ago {
+        0..60 => "Last synced just now".into(),
+        60..3600 => format!("Last synced {} min ago", ago / 60),
+        3600..86_400 => format!("Last synced {} h ago", ago / 3600),
+        _ => format!("Last synced {}", crate::library::when(Some(t))),
     }
 }
 
@@ -513,6 +547,8 @@ pub enum DevMsg {
     /// Attached: Settings → Devices written to the daemon; true when relays wait for a
     /// restart.
     Applied(Result<bool, String>),
+    /// The last library sync pull from each device (this window's node).
+    SyncTimes(HashMap<PeerId, i64>),
 }
 
 /// Paired devices as keel-daemon reports them.
@@ -522,6 +558,8 @@ pub struct RemoteDevices {
     pub peers: Vec<Peer>,
     pub grants: Vec<Grant>,
     pub offers: Vec<keel_api::types::DropOffer>,
+    /// The last library sync pull from each device.
+    pub last_sync: HashMap<PeerId, i64>,
 }
 
 /// A Spacedrop offer waiting in keel-daemon.
@@ -558,6 +596,12 @@ pub struct Devices {
     offer_rx: Receiver<IncomingDrop>,
     auto_accept: Arc<RwLock<Vec<String>>>,
     inbox: Option<PathBuf>,
+    /// The library sync list the node has (None: not given yet).
+    sync_set: Option<Vec<String>>,
+    /// The last library sync pull from each device.
+    pub last_sync: HashMap<PeerId, i64>,
+    /// A pull changed the library since the last frame (tags and listings read again).
+    pub synced: bool,
     next_ping: Instant,
     // --- attached to keel-daemon: its node, through the API ---
     /// The daemon connection whose devices are shown (and whose `node://` is registered).
@@ -598,6 +642,9 @@ impl Devices {
             offer_rx,
             auto_accept: Arc::default(),
             inbox: None,
+            sync_set: None,
+            last_sync: HashMap::new(),
+            synced: false,
             next_ping: Instant::now(),
             remote: None,
             remote_self: None,
@@ -653,6 +700,10 @@ impl Devices {
             if !label.is_empty() && node.label() != label {
                 node.set_label(label);
             }
+            if self.sync_set.as_ref() != Some(&s.sync) {
+                node.set_sync_peers(s.sync.iter().filter_map(|id| id.parse().ok().map(PeerId)));
+                self.sync_set = Some(s.sync.clone());
+            }
         }
     }
 
@@ -679,6 +730,8 @@ impl Devices {
         self.peers.clear();
         self.grants.clear();
         self.offers.clear();
+        self.sync_set = None;
+        self.last_sync.clear();
         // Devices off, another profile or a failed open: no device names stay behind.
         note_peers(&[]);
         self.inbox = None;
@@ -694,6 +747,10 @@ impl Devices {
         self.error = None;
         let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), router.clone());
         let relay = s.relay;
+        let sync_every = Duration::from_secs(s.sync_secs.clamp(
+            *keel_api::config::SYNC_SECS.start(),
+            *keel_api::config::SYNC_SECS.end(),
+        ));
         worker::spawn("keel-net-open", move || {
             if let Some(old) = old {
                 rt.block_on(old.close());
@@ -707,7 +764,10 @@ impl Devices {
                         Arc::new(keel_vfs::cloud::KeyringStore)
                     };
                 let handler = Arc::new(LibraryHandler::new(lib.clone()));
-                let options = NodeOptions::default().with_relay(relay);
+                let options = NodeOptions {
+                    sync_every,
+                    ..NodeOptions::default().with_relay(relay)
+                };
                 let node = rt.block_on(Node::open_with_options(
                     secrets,
                     &data,
@@ -742,6 +802,17 @@ impl Devices {
         }
     }
 
+    /// The last library sync pull from each device, read on a worker.
+    fn read_sync_times(&self) {
+        let Some(lib) = self.lib.clone() else { return };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-net-sync-times", move || {
+            let peers = lib.sync_peers().unwrap_or_default();
+            let times = sync_times(peers.iter().map(|p| (p.device.as_str(), p.last_sync)));
+            worker::send(&tx, &ctx, Msg::Devices(DevMsg::SyncTimes(times)));
+        });
+    }
+
     /// Node events, incoming offers and pings; returns toasts to show.
     fn tick(&mut self) -> Vec<String> {
         let mut toasts = Vec::new();
@@ -761,6 +832,10 @@ impl Devices {
                         label_of(&self.peers, &peer)
                     ));
                 }
+                NetEvent::LibrarySynced { .. } => {
+                    self.synced = true;
+                    self.read_sync_times();
+                }
                 _ => {}
             }
         }
@@ -779,6 +854,7 @@ impl Devices {
         if let (Some(node), Some(rt)) = (&self.node, &self.rt) {
             if Instant::now() >= self.next_ping {
                 self.next_ping = Instant::now() + PING_EVERY;
+                self.read_sync_times();
                 for peer in self.peers.iter().map(|p| p.id) {
                     let node = node.clone();
                     rt.spawn(async move {
@@ -802,6 +878,13 @@ impl AppState {
         for t in self.devices.tick() {
             self.toasts.info(t);
         }
+        if std::mem::take(&mut self.devices.synced) {
+            self.library_synced();
+        }
+        let synced_with = (self.devices.peers.iter())
+            .filter(|p| self.settings.devices.sync.contains(&p.id.0.to_string()))
+            .count();
+        self.library.synced_with = synced_with;
         if let Some(remote) = self.library.remote().cloned() {
             return self.remote_devices_tick(remote);
         }
@@ -850,9 +933,12 @@ impl AppState {
                     let devices: api::Devices = remote.call("devices.list", json!({}))?;
                     let grants: Vec<api::GrantInfo> = remote.call("shares.list", json!({}))?;
                     let inbox: api::Inbox = remote.call("spacedrop.inbox", json!({}))?;
+                    let last_sync =
+                        sync_times((devices.peers.iter()).map(|p| (p.id.as_str(), p.last_sync)));
                     Ok(RemoteDevices {
                         id: devices.id,
                         label: devices.label,
+                        last_sync,
                         peers: devices.peers.iter().filter_map(peer_of).collect(),
                         grants: grants.iter().filter_map(grant_of).collect(),
                         offers: inbox.pending,
@@ -982,10 +1068,12 @@ impl AppState {
                 }
             }
             DevMsg::Applied(Err(e)) => self.toasts.error(format!("Settings → Devices: {e}")),
+            DevMsg::SyncTimes(times) => d.last_sync = times,
             DevMsg::Remote(Ok(r)) => {
                 d.remote_self = Some((r.id, r.label));
                 d.error = None;
                 d.peers = r.peers;
+                d.last_sync = r.last_sync;
                 d.grants = r.grants;
                 note_peers(&d.peers);
                 // Offers still waiting keep their "always" box.
@@ -1147,6 +1235,7 @@ impl AppState {
             DevCmd::ForgetConfirmed(peer) => {
                 let id = peer.0.to_string();
                 self.settings.devices.auto_accept.retain(|a| *a != id);
+                self.settings.devices.sync.retain(|a| *a != id);
                 if let Err(e) = node.forget_peer(&peer) {
                     self.toasts
                         .error(format!("Could not forget the device: {e:#}"));
@@ -1229,7 +1318,7 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// (else the daemon keeps its own: drops land in the same folder whether or not a window
 /// is attached), the always-accept list and relays.
 pub fn settings_params(ds: &DeviceSettings) -> serde_json::Value {
-    let mut p = json!({"auto_accept": ds.auto_accept, "relay": ds.relay});
+    let mut p = json!({"auto_accept": ds.auto_accept, "relay": ds.relay, "sync": ds.sync});
     if !ds.label.trim().is_empty() {
         p["label"] = ds.label.trim().into();
     }
@@ -1365,6 +1454,7 @@ impl AppState {
             DevCmd::ForgetConfirmed(peer) => {
                 let id = peer.0.to_string();
                 self.settings.devices.auto_accept.retain(|a| *a != id);
+                self.settings.devices.sync.retain(|a| *a != id);
                 run(
                     self,
                     "Could not forget the device",
@@ -1865,6 +1955,33 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
     if let Some(i) = remove {
         ds.auto_accept.remove(i);
     }
+    ui.add_space(6.0);
+    ui.strong("Sync tags and favorites");
+    if d.peers.is_empty() {
+        ui.weak("No paired devices.");
+    }
+    let now = chrono::Utc::now().timestamp();
+    for p in &d.peers {
+        let id = p.id.0.to_string();
+        let mut on = ds.sync.contains(&id);
+        ui.horizontal(|ui| {
+            ui.label(&p.label);
+            let switch = ui
+                .checkbox(&mut on, "Sync library with this device")
+                .on_hover_text(
+                    "Tags, tag assignments, favorites and the content ids of tagged files \
+                     follow you between the two devices. Turn it on on both; turning it off \
+                     (or forgetting the device) keeps what already arrived.",
+                );
+            if switch.changed() {
+                ds.sync.retain(|a| *a != id);
+                if on {
+                    ds.sync.push(id.clone());
+                }
+            }
+            ui.weak(sync_note(on, d.last_sync.get(&p.id).copied(), now));
+        });
+    }
     if let Some(node) = &d.node {
         ui.add_space(6.0);
         ui.weak(format!("Device id: {}", node.id()));
@@ -2153,6 +2270,41 @@ mod tests {
         assert!(settings_params(&ds).get("inbox").is_none());
         ds.inbox = " /drops ".into();
         assert_eq!(settings_params(&ds)["inbox"], "/drops");
+    }
+
+    #[test]
+    fn the_sync_switch_goes_to_the_daemon_and_says_when_it_last_synced() {
+        let mut ds = DeviceSettings::default();
+        assert_eq!(settings_params(&ds)["sync"], json!([]), "off by default");
+        ds.sync = vec![peer(3).0.to_string()];
+        assert_eq!(settings_params(&ds)["sync"], json!([peer(3).0.to_string()]));
+        let now = 1_800_000_000;
+        assert_eq!(sync_note(false, Some(now), now), "Off");
+        assert_eq!(
+            sync_note(true, None, now),
+            "Not synced yet: turn it on on that device too"
+        );
+        assert_eq!(sync_note(true, Some(now - 5), now), "Last synced just now");
+        assert_eq!(
+            sync_note(true, Some(now - 600), now),
+            "Last synced 10 min ago"
+        );
+        assert_eq!(
+            sync_note(true, Some(now - 7200), now),
+            "Last synced 2 h ago"
+        );
+        let old = now - 3 * 86_400;
+        assert_eq!(
+            sync_note(true, Some(old), now),
+            format!("Last synced {}", crate::library::when(Some(old)))
+        );
+        // Ids that do not parse, and devices never pulled, are left out.
+        let times = sync_times([("bad id", Some(8)), ("x", None)].into_iter());
+        assert!(times.is_empty());
+        assert_eq!(
+            crate::library_ui::synced_text(2),
+            "Tags synced with 2 devices"
+        );
     }
 
     #[test]

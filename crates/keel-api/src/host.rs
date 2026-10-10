@@ -136,10 +136,11 @@ impl Host {
         drops.on_rebind(bind);
         // `[devices] relay = false` turns the public relays off (never on: the caller's
         // options may have none).
-        let options = match cfg.relay {
+        let mut options = match cfg.relay {
             true => net.options,
             false => net.options.with_relay(false),
         };
+        options.sync_every = Duration::from_secs(cfg.sync_secs);
         let node = runtime
             .block_on(keel_net::Node::open_with_options(
                 net.secrets,
@@ -148,6 +149,13 @@ impl Host {
                 options,
             ))
             .context("opening keel-net")?;
+        // `[devices] sync`: the devices library sync is on with.
+        node.set_sync_peers(cfg.sync.iter().filter_map(|id| {
+            id.trim()
+                .parse::<keel_net::NodeId>()
+                .map(keel_net::PeerId)
+                .ok()
+        }));
         ctx.router.register(Arc::new(keel_net::NodeProvider::new(
             node.clone(),
             runtime.handle().clone(),

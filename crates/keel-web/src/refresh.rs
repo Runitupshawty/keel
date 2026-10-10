@@ -56,7 +56,10 @@ pub fn of(params: &Value) -> Refresh {
     }
     let none = Refresh::default();
     match kind {
-        "tags.add" | "tags.remove" | "tags.set" | "favorites.set" => Refresh { stat: true, ..none },
+        // `library.sync`: another device's tags and favorites arrived.
+        "tags.add" | "tags.remove" | "tags.set" | "favorites.set" | "library.sync" => {
+            Refresh { stat: true, ..none }
+        }
         // Job starters: `job.progress` follows the job.
         "hashing.set" | "integrity.check" | "media.index" | "jobs.cancel" | "spacedrop.send" => {
             Refresh { jobs: true, ..none }
@@ -153,6 +156,8 @@ mod tests {
         assert!(change("plan").listing && change("plan").jobs);
         assert!(change("shares.revoke").devices && !change("shares.revoke").sources);
         assert!(change("spacedrop.answer").inbox);
+        let synced = of(&json!({"method": "library.sync", "kind": "library.sync"}));
+        assert_eq!(synced, tagged, "another device's tags");
         for no_op in [
             "protection.recount",
             "recents.note",
