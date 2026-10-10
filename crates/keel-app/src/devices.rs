@@ -43,6 +43,9 @@ pub struct DeviceSettings {
     pub auto_accept: Vec<String>,
     /// Public relays when no direct path works (applies when the node opens).
     pub relay: bool,
+    /// `enabled` is the user's choice (the Settings switch sets this). Configs saved while
+    /// Devices defaulted on carry `enabled = true` without it: `migrate` turns those off.
+    pub explicit: bool,
 }
 
 impl Default for DeviceSettings {
@@ -53,11 +56,21 @@ impl Default for DeviceSettings {
             inbox: String::new(),
             auto_accept: Vec::new(),
             relay: true,
+            explicit: false,
         }
     }
 }
 
 impl DeviceSettings {
+    /// Once, for a config saved while Devices defaulted on: an `enabled = true` the user
+    /// never chose becomes off (and the next save records `explicit = true`).
+    pub fn migrate(&mut self) {
+        if self.enabled && !self.explicit {
+            self.enabled = false;
+            self.explicit = true;
+        }
+    }
+
     pub fn inbox_dir(&self) -> Option<PathBuf> {
         inbox_in(&self.inbox, downloads(), keel_core::data_dir())
     }
@@ -1180,7 +1193,12 @@ fn offers(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
 /// Settings → Devices.
 pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &Devices) {
     let ds = &mut s.devices;
-    ui.checkbox(&mut ds.enabled, "Devices (pairing, shares, Spacedrop)");
+    if ui
+        .checkbox(&mut ds.enabled, "Devices (pairing, shares, Spacedrop)")
+        .changed()
+    {
+        ds.explicit = true;
+    }
     ui.add_space(6.0);
     egui::Grid::new("settings-devices")
         .num_columns(2)
@@ -1419,6 +1437,27 @@ mod tests {
         assert!(!saved.enabled, "a config without the switch stays off");
         let on: DeviceSettings = toml::from_str("enabled = true").unwrap();
         assert!(on.enabled && on.relay);
+    }
+
+    #[test]
+    fn a_config_saved_while_devices_defaulted_on_is_turned_off_once() {
+        let parse = |text: &str| crate::settings::parse_lenient(text).unwrap().0.devices;
+        let old = parse("[devices]\nenabled = true\n");
+        assert!(!old.enabled && old.explicit, "{old:?}");
+        let chosen = parse("[devices]\nenabled = true\nexplicit = true\n");
+        assert!(chosen.enabled);
+        assert!(!parse("theme = 'dark'").explicit, "nothing to migrate");
+        // The migrated value is saved: the next start keeps it off, and turning it on
+        // in Settings (explicit) sticks.
+        let mut s = crate::settings::Settings {
+            devices: old,
+            ..Default::default()
+        };
+        let text = toml::to_string(&s).unwrap();
+        assert!(!parse(&text).enabled);
+        s.devices.enabled = true;
+        let text = toml::to_string(&s).unwrap();
+        assert!(parse(&text).enabled);
     }
 
     #[test]

@@ -464,9 +464,12 @@ fn sources(
             Some(doc)
         }
         Some(SourcesCmd::Remove { id, delete_store }) => {
-            let removed = b.call(
+            let removed = confirm(
+                b,
                 "sources.remove",
                 json!({"id": id, "delete_store": delete_store}),
+                json,
+                out,
             )?;
             if json {
                 return Ok(Some(removed));

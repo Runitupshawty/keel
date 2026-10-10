@@ -46,6 +46,8 @@ pub struct TrashInfo {
     /// The full path it was deleted from.
     pub original: PathBuf,
     pub deleted: Option<SystemTime>,
+    // macOS: no listing API, so `payload` never reads it.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     id: std::ffi::OsString,
 }
 
@@ -320,6 +322,7 @@ mod sys {
     use super::*;
 
     pub fn list() -> Result<Vec<TrashItem>> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut items = ::trash::os_limited::list()?;
         #[cfg(windows)]
         items.iter_mut().for_each(restore_extension);

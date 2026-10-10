@@ -60,8 +60,8 @@ pub static OPS: &[Operation] = &[
         NoParams => Vec<SourceInfo>, sources_list, json!({})),
     previewed!("sources.add", "Adds a folder, drive or share as a library source (index it with sources.index).",
         AddSourceParams => AddedSource, sources_add_preview, sources_add, json!({"root": example_dir(), "label": "Photos"})),
-    now!("sources.remove", "Forgets a source (its files are never touched; delete_store also deletes its index). Acts at once and returns what it removed.",
-        true, RemoveSourceParams => RemovedSource, sources_remove, json!({"id": "0123456789abcdef0123456789abcdef"})),
+    previewed!("sources.remove", "Forgets a source (its files are never touched; delete_store also deletes its index store, with its tags and favorites).",
+        RemoveSourceParams => RemovedSource, sources_remove_preview, sources_remove, json!({"id": "0123456789abcdef0123456789abcdef"})),
     previewed!("sources.index", "Indexes a source as a background job.",
         SourceIdParams => JobStarted, sources_index_preview, sources_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
     now!("list", "Lists a folder: a library path (library://<source>/<rel>, from the index, works offline) or any path Keel can reach.",
@@ -376,6 +376,46 @@ fn sources_add(ctx: &Ctx, p: AddSourceParams) -> Result<AddedSource> {
     Ok(AddedSource { id: id.0 })
 }
 
+fn sources_remove_preview(ctx: &Ctx, p: &RemoveSourceParams) -> Result<Preview> {
+    let s = find_source(ctx, &p.id)?;
+    let usage = ctx.lib.store_usage(&s.id)?;
+    let held = format!(
+        "{} bytes, {} tag(s), {} favorite(s)",
+        usage.bytes, usage.tags, usage.favorites
+    );
+    let mut warnings = Vec::new();
+    let summary = if p.delete_store {
+        warnings.push(warning(
+            "deletes_store",
+            Some(s.root.display()),
+            format!("the index store of {} is deleted for good: {held}", s.label),
+        ));
+        format!(
+            "Remove source {} ({}) and delete its index store ({held})",
+            s.label,
+            s.root.display()
+        )
+    } else {
+        format!(
+            "Remove source {} ({}); its index store is kept ({held})",
+            s.label,
+            s.root.display()
+        )
+    };
+    Ok(Preview {
+        summary,
+        changes: vec![Change {
+            action: "source.remove".into(),
+            path: Some(s.root.display()),
+            to: None,
+            detail: Some(s.label.clone()),
+            files: None,
+            bytes: p.delete_store.then_some(usage.bytes),
+        }],
+        warnings,
+    })
+}
+
 fn sources_remove(ctx: &Ctx, p: RemoveSourceParams) -> Result<RemovedSource> {
     let removed = source_info(&find_source(ctx, &p.id)?);
     ctx.lib
@@ -409,6 +449,7 @@ fn sources_index(ctx: &Ctx, p: SourceIdParams) -> Result<JobStarted> {
 fn list(ctx: &Ctx, p: ListParams) -> Result<Listing> {
     let max = p.max.unwrap_or(1000).max(1);
     let dir = vpath(&p.path)?;
+    crate::files::readable(ctx, &crate::files::real(ctx, &dir)?)?;
     let mut entries: Vec<EntryInfo> = if let Some((id, rel)) = keel_vfs::library::split(&dir) {
         let children = ctx
             .lib
@@ -472,6 +513,7 @@ fn indexed(ctx: &Ctx, h: &LibraryHit) -> Result<IndexedInfo> {
 
 fn stat(ctx: &Ctx, p: PathParams) -> Result<StatInfo> {
     let path = vpath(&p.path)?;
+    crate::files::readable(ctx, &crate::files::real(ctx, &path)?)?;
     if keel_vfs::library::split(&path).is_some() {
         let h = record_at(ctx, &p.path)?;
         return Ok(StatInfo {
@@ -874,9 +916,20 @@ fn store_file_plan(ctx: &Ctx, plan: keel_core::Plan) -> Result<PlanPreview> {
 fn file_summary(plan: &keel_core::Plan) -> String {
     let files: u64 = plan.changes.iter().map(|c| c.files).sum();
     let bytes: u64 = plan.changes.iter().map(|c| c.bytes).sum();
+    // The first three paths, so a summary echoed for approval says what it touches.
+    let mut named: Vec<String> = plan
+        .changes
+        .iter()
+        .take(3)
+        .map(|c| c.from.display())
+        .collect();
+    if plan.changes.len() > 3 {
+        named.push(format!("{} more", plan.changes.len() - 3));
+    }
     let what = format!(
-        "{} item(s), {files} file(s), {bytes} bytes",
-        plan.changes.len()
+        "{} item(s) ({}), {files} file(s), {bytes} bytes",
+        plan.changes.len(),
+        named.join(", ")
     );
     match &plan.op {
         keel_core::Op::Copy { dst_dir, .. } => format!("Copy {what} to {}", dst_dir.display()),
@@ -1018,7 +1071,7 @@ fn node(ctx: &Ctx) -> Result<(&Arc<keel_net::Node>, &tokio::runtime::Handle)> {
         (Some(n), Some(rt)) => Ok((n, rt)),
         _ => Err(ApiError::new(
             ApiError::NET_DISABLED,
-            "devices are off: set [net] enabled = true in the profile's config.toml and restart keel-daemon",
+            "devices are off: turn on Settings → Devices in Keel (or set [devices] enabled = true and explicit = true in the profile's config.toml) and restart keel-daemon",
         )),
     }
 }

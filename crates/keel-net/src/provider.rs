@@ -220,6 +220,21 @@ impl NodeProvider {
     }
 }
 
+impl NodeProvider {
+    fn read_part(&self, p: &VPath, range: Option<(u64, u64)>) -> Result<Box<dyn Read + Send>> {
+        let (peer, source, path) = file_target(p)?;
+        let stream = self
+            .rt
+            .block_on(self.node.read_stream(&peer, &source, &path, range))
+            .with_context(|| p.display())?;
+        Ok(Box::new(NodeReader {
+            rt: self.rt.clone(),
+            inner: Box::pin(stream),
+            timeout: self.node.options.request_timeout,
+        }))
+    }
+}
+
 impl Provider for NodeProvider {
     fn scheme(&self) -> &'static str {
         "node"
@@ -279,16 +294,11 @@ impl Provider for NodeProvider {
         .with_context(|| dir.display())
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
-        let (peer, source, path) = file_target(p)?;
-        let stream = self
-            .rt
-            .block_on(self.node.read_stream(&peer, &source, &path, None))
-            .with_context(|| p.display())?;
-        Ok(Box::new(NodeReader {
-            rt: self.rt.clone(),
-            inner: Box::pin(stream),
-            timeout: self.node.options.request_timeout,
-        }))
+        self.read_part(p, None)
+    }
+    /// The protocol's ranged `Read`.
+    fn read_range(&self, p: &VPath, offset: u64, len: u64) -> Result<Option<Box<dyn Read + Send>>> {
+        self.read_part(p, Some((offset, len))).map(Some)
     }
     /// Buffered in an anonymous temp file, sent on `flush()` (the size goes first on the
     /// wire); the host stages it and publishes it atomically. ponytail: the whole file sits

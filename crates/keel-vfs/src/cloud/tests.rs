@@ -1050,6 +1050,20 @@ fn read_write_create_new_and_dropped_uploads() {
 }
 
 #[test]
+fn ranged_reads_start_at_the_offset() {
+    let cloud = memory_cloud("mem");
+    put(&cloud, "cloud://mem/r.txt", b"hello world");
+    let mut got = String::new();
+    cloud
+        .read_range(&vp("cloud://mem/r.txt"), 6, 3)
+        .unwrap()
+        .expect("cloud reads ranges")
+        .read_to_string(&mut got)
+        .unwrap();
+    assert_eq!(got, "wor");
+}
+
+#[test]
 fn local_copy_checks_the_service_not_the_listing_cache() {
     let cloud = memory_cloud("mem");
     put(&cloud, "cloud://mem/doc.txt", b"old");

@@ -1170,10 +1170,21 @@ impl Core {
         }
     }
     fn read(&self, p: &VPath, cancel: &AtomicBool) -> Result<Box<dyn Read + Send>> {
+        self.read_from(p, 0, cancel)
+    }
+    /// The file from byte `offset` (a ranged request; the size is the service's, not the
+    /// listing cache's). Read it lazily: bytes are fetched as they are read.
+    fn read_from(
+        &self,
+        p: &VPath,
+        offset: u64,
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn Read + Send>> {
         let entry = self.stat(p)?;
         anyhow::ensure!(entry.kind == Kind::File, "not a file: {}", p.display());
         let k = key(p, false);
-        let reader = self.call_cancellable(p, cancel, |op| op.reader(&k)?.into_std_read(..))?;
+        let reader =
+            self.call_cancellable(p, cancel, |op| op.reader(&k)?.into_std_read(offset..))?;
         Ok(Box::new(CloudReader {
             inner: reader,
             path: p.clone(),
@@ -1636,6 +1647,11 @@ impl Provider for CloudProvider {
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
         self.core.read(p, &NEVER)
+    }
+    fn read_range(&self, p: &VPath, offset: u64, len: u64) -> Result<Option<Box<dyn Read + Send>>> {
+        Ok(Some(Box::new(
+            self.core.read_from(p, offset, &NEVER)?.take(len),
+        )))
     }
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         Ok(Box::new(CloudUpload::start(

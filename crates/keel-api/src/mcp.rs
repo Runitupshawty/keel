@@ -88,7 +88,7 @@ pub fn tool(op: &Operation) -> Value {
         "annotations": {
             "title": op.name,
             "readOnlyHint": !op.mutating && op.name != "plan",
-            "destructiveHint": op.name == "execute" || op.name == "sources.remove" || op.name == "shares.revoke",
+            "destructiveHint": op.name == "execute" || op.name == "shares.revoke",
             "idempotentHint": !op.mutating,
             "openWorldHint": op.name.starts_with("devices.") || op.name.starts_with("shares."),
         },

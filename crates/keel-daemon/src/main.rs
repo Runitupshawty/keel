@@ -1,5 +1,5 @@
 //! `keel-daemon`: headless Keel. Hosts the profile's library (and keel-net when
-//! `[net] enabled = true` in the profile's config.toml) and serves the `keel-api`
+//! Settings → Devices, `[devices] enabled`, in the profile's config.toml) and serves the `keel-api`
 //! operations as JSON-RPC 2.0 on a per-user local socket, optionally on a WebSocket.
 //! See docs/api.md.
 

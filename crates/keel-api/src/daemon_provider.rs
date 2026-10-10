@@ -3,7 +3,9 @@
 //! Paths are passed through unchanged (`VPath` URIs), so the provider serves the daemon's
 //! view of one scheme (`library://` lists from its index, offline sources included).
 //! Reads stream in `read` ranges; rename and remove go through `plan` + `execute` (the same
-//! previews and checks as every client) and wait for the job.
+//! previews and checks as every client) and wait for the job. A plan runs only when the
+//! confirmation callback (`with_confirm`) accepts its preview; without one, a plan with
+//! warnings (the last copy of a file, a permanent delete, ...) is refused.
 
 use crate::types::*;
 use crate::Backend;
@@ -26,26 +28,55 @@ const POLL: Duration = Duration::from_millis(200);
 
 type Shared<B> = Arc<Mutex<B>>;
 
+/// Asked with each plan's preview before it runs; true applies it.
+pub type Confirm = Arc<dyn Fn(&PlanPreview) -> bool + Send + Sync>;
+
 pub struct DaemonProvider<B> {
     scheme: &'static str,
     backend: Shared<B>,
+    confirm: Option<Confirm>,
 }
 
 impl<B: Backend + Send + 'static> DaemonProvider<B> {
+    /// Without a confirmation callback: plans with warnings are refused.
     pub fn new(scheme: &'static str, backend: B) -> Self {
         Self {
             scheme,
             backend: Arc::new(Mutex::new(backend)),
+            confirm: None,
         }
+    }
+
+    /// Every plan's preview goes to `confirm` (show it to the user); only an accepted one
+    /// runs.
+    pub fn with_confirm(mut self, confirm: Confirm) -> Self {
+        self.confirm = Some(confirm);
+        self
     }
 
     fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
         call(&self.backend, method, params)
     }
 
-    /// Previews `params` with `plan`, confirms exactly that preview and waits for its job.
+    /// Previews `params` with `plan`; once confirmed (see the type docs), executes exactly
+    /// that preview and waits for its job.
     fn plan_and_run(&self, params: Value) -> Result<()> {
         let preview: PlanPreview = self.call("plan", params)?;
+        let confirmed = match &self.confirm {
+            Some(confirm) => confirm(&preview),
+            None => preview.warnings.is_empty(),
+        };
+        if !confirmed {
+            bail!(
+                "not confirmed: {}{}",
+                preview.summary,
+                preview
+                    .warnings
+                    .iter()
+                    .map(|w| format!("; {}", w.message))
+                    .collect::<String>()
+            );
+        }
         let done: Executed = self.call(
             "execute",
             json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
@@ -255,8 +286,14 @@ mod tests {
                     json!({"offset": off, "data": b64(&self.file[start..end]), "eof": end == self.file.len()})
                 }
                 "plan" => {
+                    let warnings = match params["paths"][0].as_str() {
+                        Some(p) if p.ends_with("last.txt") => {
+                            json!([{"kind": "last_copy", "message": "the last copy"}])
+                        }
+                        _ => json!([]),
+                    };
                     json!({"plan_id": "p1", "input_hash": "h1", "operation": "plan", "summary": "Delete 1 item(s)",
-                    "changes": [], "warnings": [], "expires_at": 0})
+                    "changes": [], "warnings": warnings, "expires_at": 0})
                 }
                 "execute" => json!({"plan_id": "p1", "operation": "plan", "job": 7}),
                 "jobs.info" => {
@@ -329,6 +366,30 @@ mod tests {
         assert_eq!(calls[0].1["op"], "delete");
         // Exactly the previewed plan is confirmed.
         assert_eq!(calls[1].1, json!({"plan_id": "p1", "input_hash": "h1"}));
+    }
+
+    #[test]
+    fn a_plan_with_warnings_needs_the_confirmation_callback() {
+        let last = VPath::parse("library://s1/last.txt").unwrap();
+        let (p, calls) = mock(b"");
+        let err = p.remove(&last).unwrap_err();
+        assert!(format!("{err:#}").contains("the last copy"), "{err:#}");
+        assert!(!calls.lock().iter().any(|(m, _)| m == "execute"));
+
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let (p, calls) = mock(b"");
+        let seen = asked.clone();
+        let p = p.with_confirm(Arc::new(move |pv: &PlanPreview| {
+            seen.lock().push(pv.warnings.len());
+            false
+        }));
+        assert!(p.remove(&last).is_err(), "declined");
+        assert!(!calls.lock().iter().any(|(m, _)| m == "execute"));
+        let (p, calls) = mock(b"");
+        let p = p.with_confirm(Arc::new(|_: &PlanPreview| true));
+        p.remove(&last).unwrap();
+        assert!(calls.lock().iter().any(|(m, _)| m == "execute"));
+        assert_eq!(*asked.lock(), [1]);
     }
 
     #[test]

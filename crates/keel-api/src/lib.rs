@@ -7,7 +7,7 @@
 //! and return a [`types::PlanPreview`] (a plan id plus the hash of the exact input);
 //! `execute` with that id and hash applies it, refusing tampered or expired plans. File
 //! operations go through `plan` (keel-core's `validate -> preview -> execute`). Only
-//! `sources.remove` and `shares.revoke` (taking access away) act directly.
+//! `shares.revoke` (taking access away) acts directly.
 
 pub mod client;
 pub mod config;
@@ -49,6 +49,9 @@ pub struct Ctx {
     pub utc_offset: i64,
     /// One-time links made by `file.get`.
     pub downloads: files::Downloads,
+    /// Keel's configuration folder (the daemon token, keys): never readable through the
+    /// read operations.
+    pub config_dir: Option<std::path::PathBuf>,
 }
 
 impl Ctx {
@@ -63,6 +66,7 @@ impl Ctx {
             plans,
             utc_offset: 0,
             downloads: Default::default(),
+            config_dir: config::config_dir(),
         }
     }
 
@@ -82,7 +86,7 @@ pub type Handler = fn(&Ctx, Value) -> Result<Value>;
 
 /// How an operation runs.
 pub enum Run {
-    /// At once: reads, `plan`, `execute`, and the removals allowed without a preview.
+    /// At once: reads, `plan`, `execute`, and `shares.revoke`.
     Now(Handler),
     /// Called directly it only previews (stored as a plan); `execute` runs `apply`.
     Previewed {

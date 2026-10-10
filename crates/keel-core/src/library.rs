@@ -387,6 +387,29 @@ pub struct LibrarySummary {
     pub sources: usize,
 }
 
+/// A source store's footprint (`Library::store_usage`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreUsage {
+    pub bytes: u64,
+    /// Tags applied to its records (one per record and tag), Favorites not counted.
+    pub tags: u64,
+    pub favorites: u64,
+}
+
+/// Bytes of the files under `dir` (unreadable entries count 0).
+fn walkdir_size(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => walkdir_size(&e.path()),
+            Ok(_) => e.metadata().map_or(0, |m| m.len()),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryStats {
     pub sources: usize,
@@ -826,6 +849,23 @@ impl Library {
             }
         }
         Ok(())
+    }
+
+    /// What `remove_source(id, true)` would delete: the store's size on disk, the tags on
+    /// its records (Favorites not counted) and its favorites.
+    pub fn store_usage(&self, id: &SourceId) -> Result<StoreUsage> {
+        let source = self.source(id).with_context(|| format!("no source {id}"))?;
+        let bytes = walkdir_size(&source.dir);
+        let (tags, favorites) = source.store.get()?.query_row(
+            "SELECT coalesce(sum(tag <> ?1), 0), coalesce(sum(tag = ?1), 0) FROM record_tag",
+            [crate::FAVORITES],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?;
+        Ok(StoreUsage {
+            bytes,
+            tags,
+            favorites,
+        })
     }
 
     pub fn jobs(&self) -> &Jobs {

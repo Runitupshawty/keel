@@ -24,6 +24,9 @@ pub const RENDER_MAX_PX: u32 = 2048;
 const TEXT_MAX: usize = 1 << 20;
 /// How long a `file.get` link works (once).
 pub const LINK_TTL: Duration = Duration::from_secs(60);
+/// Furthest a `read` skips into a file whose provider cannot read a range (each call
+/// re-reads from the start up to its offset).
+pub const SKIP_MAX: u64 = 64 << 20;
 
 pub(crate) fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -52,6 +55,66 @@ pub(crate) fn real(ctx: &Ctx, p: &VPath) -> Result<VPath> {
     Ok(src.absolute(rel))
 }
 
+/// What the read operations must not reach: anything in Keel's configuration folder (the
+/// daemon token, keys) and, on Windows, UNC and device paths (`\\server\share`,
+/// `\\?\UNC\...`, `\\.\...`) outside the library's sources (opening one sends the
+/// user's credentials to that server).
+pub(crate) fn readable(ctx: &Ctx, p: &VPath) -> Result<()> {
+    // An archive path is read through the archive file that holds it.
+    let mut outer = p.clone();
+    while let Some((o, _)) = outer.split_archive() {
+        outer = o;
+    }
+    let Some(local) = outer.to_local_path() else {
+        return Ok(());
+    };
+    let raw = local.to_string_lossy();
+    if cfg!(windows)
+        && (raw.starts_with(r"\\") || raw.starts_with("//"))
+        && ctx.lib.source_for(&outer).is_none()
+    {
+        return Err(ApiError::failed(format!(
+            "{}: network and device paths are read only inside library sources",
+            p.display()
+        )));
+    }
+    if let Some(cfg) = &ctx.config_dir {
+        if inside(&local, cfg) {
+            return Err(ApiError::failed(format!(
+                "{}: Keel's configuration folder is not readable through the API",
+                p.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `p` is `dir` or inside it, after resolving links, `..` and (Windows, macOS) case.
+fn inside(p: &std::path::Path, dir: &std::path::Path) -> bool {
+    let resolve = |p: &std::path::Path| -> Option<std::path::PathBuf> {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            return Some(c);
+        }
+        // Not there (yet): its folder resolved, plus its name.
+        match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) => std::fs::canonicalize(parent).ok().map(|c| c.join(name)),
+            _ => None,
+        }
+        .or_else(|| std::path::absolute(p).ok())
+    };
+    let (Some(p), Some(dir)) = (resolve(p), resolve(dir)) else {
+        return false;
+    };
+    let fold = |p: std::path::PathBuf| -> std::path::PathBuf {
+        if cfg!(any(windows, target_os = "macos")) {
+            p.to_string_lossy().to_lowercase().into()
+        } else {
+            p
+        }
+    };
+    fold(p).starts_with(fold(dir))
+}
+
 fn provider(ctx: &Ctx, p: &VPath) -> Result<Arc<dyn Provider>> {
     ctx.router
         .provider_for(p)
@@ -61,6 +124,7 @@ fn provider(ctx: &Ctx, p: &VPath) -> Result<Arc<dyn Provider>> {
 /// The real path, its provider and its entry (a file, not a folder).
 fn file(ctx: &Ctx, path: &str) -> Result<(VPath, Arc<dyn Provider>, Entry)> {
     let p = real(ctx, &vpath(path)?)?;
+    readable(ctx, &p)?;
     let prov = provider(ctx, &p)?;
     let entry = prov
         .stat(&p)
@@ -91,11 +155,25 @@ pub(crate) fn read(ctx: &Ctx, p: ReadParams) -> Result<Chunk> {
             f.seek(SeekFrom::Start(p.offset)).map_err(io)?;
             f.take(len + 1).read_to_end(&mut buf).map_err(io)?;
         }
-        None => {
-            let mut r = prov.read(&path)?;
-            std::io::copy(&mut (&mut r).take(p.offset), &mut std::io::sink()).map_err(io)?;
-            r.take(len + 1).read_to_end(&mut buf).map_err(io)?;
-        }
+        // A range from the provider (SFTP, cloud, devices); else read up to the offset,
+        // which is capped.
+        None => match prov.read_range(&path, p.offset, len + 1)? {
+            Some(r) => {
+                r.take(len + 1).read_to_end(&mut buf).map_err(io)?;
+            }
+            None if p.offset > SKIP_MAX => {
+                return Err(ApiError::invalid_params(format!(
+                    "{} cannot be read from an offset past {} MiB",
+                    path.display(),
+                    SKIP_MAX >> 20
+                )))
+            }
+            None => {
+                let mut r = prov.read(&path)?;
+                std::io::copy(&mut (&mut r).take(p.offset), &mut std::io::sink()).map_err(io)?;
+                r.take(len + 1).read_to_end(&mut buf).map_err(io)?;
+            }
+        },
     }
     let eof = buf.len() as u64 <= len;
     buf.truncate(len as usize);
@@ -257,6 +335,7 @@ pub(crate) fn thumb(ctx: &Ctx, p: ThumbParams) -> Result<Thumb> {
         ThumbSize::Thumb1024 => SidecarKind::Thumb1024,
     };
     let path = real(ctx, &vpath(&p.path)?)?;
+    readable(ctx, &path)?;
     let local = path.to_local_path().ok_or_else(|| {
         ApiError::invalid_params("thumbnails are made for local files and library records")
     })?;

@@ -40,7 +40,7 @@ pub use integrity::{IntegrityJob, IntegrityResult, DEFAULT_SAMPLE_PCT, INTEGRITY
 pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, OfflineReason, RecordRef, Source, SourceDef,
-    SourceId, SourceKind, SourceStatus, SourceSummary,
+    SourceId, SourceKind, SourceStatus, SourceSummary, StoreUsage,
 };
 pub use media::{ffmpeg_available, read_meta, MediaMeta, MAX_PIXELS};
 pub use oplog::{OpDone, OpLogEntry};

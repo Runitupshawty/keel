@@ -63,7 +63,7 @@ fn registry_is_preview_first() {
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "duplicate operation names");
     for op in OPS {
-        let direct = ["sources.remove", "shares.revoke", "execute"].contains(&op.name);
+        let direct = ["shares.revoke", "execute"].contains(&op.name);
         if op.mutating && !direct {
             assert!(op.previewed(), "{} mutates without a preview", op.name);
         }
@@ -121,6 +121,8 @@ fn registry_is_preview_first() {
 struct Fixture {
     _data: tempfile::TempDir,
     files: tempfile::TempDir,
+    /// The configuration folder the ctx guards.
+    cfg: tempfile::TempDir,
     ctx: Ctx,
 }
 
@@ -135,12 +137,15 @@ fn fixture(plans: Option<PlanStore>) -> Fixture {
     let router = Arc::new(keel_vfs::Router::new());
     lib.set_router(router.clone());
     let mut ctx = Ctx::new(Arc::new(lib), router);
+    let cfg = tempfile::tempdir().unwrap();
+    ctx.config_dir = Some(cfg.path().to_owned());
     if let Some(plans) = plans {
         ctx = ctx.with_plans(plans);
     }
     Fixture {
         _data: data,
         files,
+        cfg,
         ctx,
     }
 }
@@ -240,8 +245,8 @@ fn mutating_calls_only_preview_until_executed() {
     let listing = call(&f.ctx, "list", json!({"path": lib_root})).unwrap();
     assert_eq!(listing["entries"].as_array().unwrap().len(), 2, "{listing}");
 
-    // Removal acts at once and reports what it did.
-    let removed = call(&f.ctx, "sources.remove", json!({"id": id})).unwrap();
+    // Removal previews too, then reports what it did.
+    let removed = apply(&f.ctx, "sources.remove", json!({"id": id}));
     assert_eq!(removed["removed"]["id"], id);
     assert!(f.ctx.lib.sources().is_empty());
 }
@@ -512,4 +517,338 @@ fn file_plans_take_library_paths() {
     assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
     assert!(f.files.path().join("docs/notes-2026.txt").is_file());
     assert!(!f.files.path().join("docs/notes.txt").exists());
+}
+
+/// `sources.remove` over MCP: the call previews (store size, tags, favorites) and deletes
+/// nothing; only an `execute` the user confirmed removes the source and its store.
+#[test]
+fn sources_remove_over_mcp_previews_and_deletes_only_on_execute() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let pdf = s(&f.files.path().join("docs/invoice-2026.pdf"));
+    apply(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "receipts", "paths": [pdf]}),
+    );
+    apply(&f.ctx, "favorites.set", json!({"paths": [pdf]}));
+    let store = f
+        .ctx
+        .lib
+        .source(&keel_core::SourceId(id.clone()))
+        .unwrap()
+        .store_dir()
+        .to_owned();
+    assert!(store.is_dir());
+
+    let init = |elicit: bool| {
+        let caps = if elicit {
+            json!({"elicitation": {}})
+        } else {
+            json!({})
+        };
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":caps,"clientInfo":{"name":"t","version":"1"}}})
+    };
+    let remove = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sources_remove","arguments":{"id": id, "delete_store": true}}});
+    let run = |ctx: &mut Ctx, msgs: &[Value]| -> Vec<Value> {
+        let input: String = msgs.iter().map(|m| m.to_string() + "\n").collect();
+        let mut out = Vec::new();
+        crate::mcp::serve(ctx, input.as_bytes(), &mut out, Default::default()).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let Fixture {
+        _data,
+        files,
+        cfg,
+        mut ctx,
+    } = f;
+    let _keep = (files, cfg);
+
+    // An agent calls the tool: a preview, nothing removed.
+    let out = run(&mut ctx, &[init(false), remove.clone()]);
+    let preview = &out[1]["result"]["structuredContent"];
+    let summary = preview["summary"].as_str().unwrap().to_owned();
+    assert!(summary.contains("1 tag(s), 1 favorite(s)"), "{summary}");
+    assert!(summary.contains("bytes"), "{summary}");
+    assert_eq!(preview["warnings"][0]["kind"], "deletes_store");
+    assert_eq!(ctx.lib.sources().len(), 1, "a preview removes nothing");
+    assert!(store.is_dir());
+
+    // Executing without a person (no elicitation) is refused: still nothing removed.
+    let plan = preview["plan_id"].clone();
+    let hash = preview["input_hash"].clone();
+    let exec = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute","arguments":{"plan_id": plan, "input_hash": hash, "summary": summary}}});
+    let out = run(&mut ctx, &[init(false), remove.clone(), exec]);
+    assert_eq!(out[2]["result"]["isError"], true, "{}", out[2]);
+    assert_eq!(ctx.lib.sources().len(), 1);
+    assert!(store.is_dir());
+
+    // The user confirms (one live session: execute needs that session's preview):
+    // removed, store deleted.
+    struct Lines(crossbeam_channel::Sender<Value>, Vec<u8>);
+    impl std::io::Write for Lines {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.1.extend_from_slice(b);
+            while let Some(i) = self.1.iter().position(|&c| c == b'\n') {
+                let line: Vec<u8> = self.1.drain(..=i).collect();
+                let _ = self.0.send(serde_json::from_slice(&line).unwrap());
+            }
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let server = std::thread::spawn(move || {
+        let input = std::io::BufReader::new(reader);
+        crate::mcp::serve(&mut ctx, input, Lines(tx, Vec::new()), Default::default()).unwrap();
+        ctx
+    });
+    let mut send = move |v: Value| {
+        use std::io::Write;
+        writeln!(writer, "{v}").unwrap();
+    };
+    let recv = |want: Value| loop {
+        let v: Value = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        if v["id"] == want {
+            return v;
+        }
+    };
+    send(init(true));
+    recv(json!(0));
+    send(remove);
+    let preview = recv(json!(1))["result"]["structuredContent"].clone();
+    send(
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute","arguments":{"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]}}}),
+    );
+    let ask = recv(json!("keel-confirm-1"));
+    assert!(ask["params"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("1 favorite(s)"));
+    send(
+        json!({"jsonrpc":"2.0","id":"keel-confirm-1","result":{"action":"accept","content":{"confirm":true}}}),
+    );
+    let done = recv(json!(2));
+    assert_eq!(done["result"]["isError"], false, "{done}");
+    drop(send);
+    let ctx = server.join().unwrap();
+    assert!(ctx.lib.sources().is_empty());
+    assert!(!store.exists(), "store deleted");
+}
+
+/// The read operations refuse Keel's configuration folder (however the path is written)
+/// and, on Windows, UNC and device paths outside the library's sources.
+#[test]
+fn reads_refuse_the_config_folder_and_network_paths() {
+    let f = fixture(None);
+    let token = f.cfg.path().join("daemon.token");
+    std::fs::write(&token, b"secret").unwrap();
+    let sub = f.cfg.path().join("profiles");
+    std::fs::create_dir(&sub).unwrap();
+    let dotted = s(&sub.join("..").join("daemon.token"));
+    for (method, params) in [
+        ("read", json!({"path": s(&token)})),
+        ("read", json!({"path": dotted})),
+        ("stat", json!({"path": s(&token)})),
+        ("list", json!({"path": s(f.cfg.path())})),
+        ("list", json!({"path": s(&sub)})),
+        ("preview.render", json!({"path": s(&token)})),
+        ("media.thumb", json!({"path": s(&token)})),
+        ("file.get", json!({"path": s(&token)})),
+    ] {
+        let e = call(&f.ctx, method, params.clone()).unwrap_err();
+        assert!(
+            e.message.contains("configuration folder"),
+            "{method} {params}: {e:?}"
+        );
+    }
+    // A source over the config folder does not open it either.
+    let added = apply(&f.ctx, "sources.add", json!({"root": s(f.cfg.path())}));
+    let lib = format!("library://{}/daemon.token", added["id"].as_str().unwrap());
+    assert!(call(&f.ctx, "read", json!({"path": lib})).is_err());
+    // Other files read as before.
+    let notes = s(&f.files.path().join("docs/notes.txt"));
+    assert!(call(&f.ctx, "read", json!({"path": notes})).is_ok());
+    if cfg!(windows) {
+        for unc in [
+            r"\\example.invalid\share\a.txt",
+            r"\\?\UNC\example.invalid\share\a.txt",
+            r"\\.\pipe\x",
+        ] {
+            for method in ["read", "stat", "list", "file.get"] {
+                let e = call(&f.ctx, method, json!({"path": unc})).unwrap_err();
+                assert!(e.message.contains("network"), "{method} {unc}: {e:?}");
+            }
+        }
+    }
+}
+
+/// A provider for `mem://` paths that counts the bytes it hands out.
+struct Mem {
+    data: Vec<u8>,
+    ranged: bool,
+    served: Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct Counted<R>(R, Arc<std::sync::atomic::AtomicU64>);
+
+impl<R: std::io::Read> std::io::Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read(buf)?;
+        self.1
+            .fetch_add(n as u64, std::sync::atomic::Ordering::SeqCst);
+        Ok(n)
+    }
+}
+
+impl keel_vfs::Provider for Mem {
+    fn scheme(&self) -> &'static str {
+        "mem"
+    }
+    fn caps(&self) -> keel_vfs::Caps {
+        keel_vfs::Caps::default()
+    }
+    fn list(&self, _: &keel_vfs::VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        Ok(Vec::new())
+    }
+    fn list_complete(&self, d: &keel_vfs::VPath) -> anyhow::Result<Vec<keel_vfs::Entry>> {
+        self.list(d)
+    }
+    fn stat(&self, p: &keel_vfs::VPath) -> anyhow::Result<keel_vfs::Entry> {
+        Ok(keel_vfs::Entry {
+            path: p.clone(),
+            name: p.name().to_owned(),
+            kind: keel_vfs::Kind::File,
+            size: self.data.len() as u64,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        })
+    }
+    fn read(&self, _: &keel_vfs::VPath) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(Counted(
+            std::io::Cursor::new(self.data.clone()),
+            self.served.clone(),
+        )))
+    }
+    fn read_range(
+        &self,
+        _: &keel_vfs::VPath,
+        offset: u64,
+        len: u64,
+    ) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>> {
+        if !self.ranged {
+            return Ok(None);
+        }
+        let start = (offset as usize).min(self.data.len());
+        let end = start.saturating_add(len as usize).min(self.data.len());
+        Ok(Some(Box::new(Counted(
+            std::io::Cursor::new(self.data[start..end].to_vec()),
+            self.served.clone(),
+        ))))
+    }
+    fn write(&self, _: &keel_vfs::VPath) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
+        anyhow::bail!("read-only")
+    }
+    fn mkdir(&self, _: &keel_vfs::VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn rename(&self, _: &keel_vfs::VPath, _: &keel_vfs::VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn remove(&self, _: &keel_vfs::VPath) -> anyhow::Result<()> {
+        anyhow::bail!("read-only")
+    }
+    fn remove_kind(&self) -> keel_vfs::RemoveKind {
+        keel_vfs::RemoveKind::Permanent
+    }
+    fn local_copy(&self, _: &keel_vfs::VPath) -> anyhow::Result<std::path::PathBuf> {
+        anyhow::bail!("no local copy")
+    }
+}
+
+/// Remote reads ask the provider for the range (no re-reading from byte 0); a provider
+/// without ranges is read up to the offset, which is capped.
+#[test]
+fn remote_reads_use_ranges_and_cap_skipping() {
+    let f = fixture(None);
+    let data: Vec<u8> = (0..200u8).collect();
+    let served = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    f.ctx.router.register(Arc::new(Mem {
+        data: data.clone(),
+        ranged: true,
+        served: served.clone(),
+    }));
+    let chunk = call(
+        &f.ctx,
+        "read",
+        json!({"path": "mem://x/file.bin", "offset": 150, "len": 10}),
+    )
+    .unwrap();
+    assert_eq!(unb64(&chunk["data"]), &data[150..160]);
+    assert_eq!(chunk["eof"], false);
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        11,
+        "only the range"
+    );
+
+    served.store(0, std::sync::atomic::Ordering::SeqCst);
+    f.ctx.router.register(Arc::new(Mem {
+        data: data.clone(),
+        ranged: false,
+        served: served.clone(),
+    }));
+    let tail = call(
+        &f.ctx,
+        "read",
+        json!({"path": "mem://x/file.bin", "offset": 195}),
+    )
+    .unwrap();
+    assert_eq!(unb64(&tail["data"]), &data[195..]);
+    assert_eq!(tail["eof"], true);
+    let far = call(
+        &f.ctx,
+        "read",
+        json!({"path": "mem://x/file.bin", "offset": crate::files::SKIP_MAX + 1, "len": 1}),
+    )
+    .unwrap_err();
+    assert_eq!(far.code, ApiError::INVALID_PARAMS, "{far:?}");
+}
+
+/// File-plan summaries (what `--allow-execute` clients echo) name the first three paths.
+#[test]
+fn file_plan_summaries_name_the_files() {
+    let f = fixture(None);
+    let docs = f.files.path().join("docs");
+    for n in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(docs.join(n), n).unwrap();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&docs)
+        .unwrap()
+        .map(|e| s(&e.unwrap().path()))
+        .collect();
+    names.sort();
+    let preview: PlanPreview = serde_json::from_value(
+        call(&f.ctx, "plan", json!({"op": "delete", "paths": names})).unwrap(),
+    )
+    .unwrap();
+    for shown in &names[..3] {
+        assert!(
+            preview.summary.contains(shown.as_str()),
+            "{}",
+            preview.summary
+        );
+    }
+    assert!(!preview.summary.contains(names[4].as_str()));
+    assert!(preview.summary.contains("2 more"), "{}", preview.summary);
 }

@@ -28,9 +28,16 @@ pub struct NetSetup {
 
 impl NetSetup {
     /// The OS keychain and public discovery/relays.
+    /// `KEEL_NET_SECRET=memory` keeps the identity in memory instead (tests, trials).
     pub fn system() -> Self {
+        let secrets: Arc<dyn keel_vfs::cloud::SecretStore> =
+            if std::env::var("KEEL_NET_SECRET").as_deref() == Ok("memory") {
+                Arc::new(keel_vfs::cloud::MemoryStore::default())
+            } else {
+                Arc::new(keel_vfs::cloud::KeyringStore)
+            };
         Self {
-            secrets: Arc::new(keel_vfs::cloud::KeyringStore),
+            secrets,
             options: keel_net::NodeOptions::default(),
         }
     }
@@ -66,6 +73,10 @@ impl Host {
     /// `resume`: restart the jobs an earlier session left (a long-lived host does; a
     /// one-shot CLI call does not).
     pub fn open(cfg: &HostConfig, net: Option<NetSetup>, resume: bool) -> anyhow::Result<Host> {
+        // The library holds the index, plans and keel-net's state: owner-only when created
+        // here (else it inherits the drive's permissions).
+        crate::private::create_dir_all(&cfg.data_dir)
+            .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
         let lib = keel_core::Library::open(&cfg.data_dir, &cfg.library).with_context(|| {
             format!(
                 "opening library {} (a running Keel window holds it; close it or use keel-daemon)",
@@ -75,8 +86,10 @@ impl Host {
         let router = Arc::new(router(cfg));
         lib.set_router(router.clone());
         let lib = Arc::new(lib);
+        let mut ctx = Ctx::new(lib.clone(), router);
+        ctx.config_dir = Some(cfg.config_dir.clone());
         let mut host = Host {
-            ctx: Arc::new(Ctx::new(lib.clone(), router)),
+            ctx: Arc::new(ctx),
             rt: None,
         };
         if let Some(net) = net {
@@ -153,5 +166,19 @@ mod tests {
         assert!(router.provider_for(&nas).is_some());
         let other = keel_vfs::VPath::parse("sftp://other/home").unwrap();
         assert!(router.provider_for(&other).is_none());
+    }
+
+    #[test]
+    fn the_data_folder_is_created_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("new").join("data");
+        let cfg = HostConfig::read("work", dir.path().join("config"), data.clone());
+        let host = Host::open(&cfg, None, false).unwrap();
+        assert!(crate::private::is_private_dir(&data).unwrap());
+        assert_eq!(
+            host.ctx.config_dir.as_deref(),
+            Some(cfg.config_dir.as_path())
+        );
+        assert!(host.close());
     }
 }

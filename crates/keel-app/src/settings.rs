@@ -314,6 +314,7 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
         .map_err(|e: toml::de::Error| e.to_string())?;
     s.clouds = clouds;
     s.remotes = remotes;
+    s.devices.migrate();
     Ok((s, dropped))
 }
 

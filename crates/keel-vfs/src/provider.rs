@@ -45,6 +45,13 @@ pub trait Provider: Send + Sync {
             .collect())
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>>;
+    /// At most `len` bytes of `p` from byte `offset`, when the provider can start a read
+    /// there without reading what comes before (SFTP, cloud services, devices); None when
+    /// it cannot.
+    fn read_range(&self, p: &VPath, offset: u64, len: u64) -> Result<Option<Box<dyn Read + Send>>> {
+        let _ = (p, offset, len);
+        Ok(None)
+    }
     /// Call `flush()` and check its result when done: providers that stage writes (SFTP)
     /// commit there, and a writer dropped without a successful `flush()` is discarded
     /// (logged, staging file removed) rather than placed.

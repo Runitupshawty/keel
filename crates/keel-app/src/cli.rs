@@ -1,9 +1,11 @@
 //! Command line (Task 24): `keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]`,
 //! and the request a later `keel` hands to the running instance (`single_instance`).
 //! Task 37: subcommands (`keel search`, `keel plan`, `keel mcp`, ...; see `commands`) run
-//! without a window. A lone argument that names an existing folder opens it even when it
-//! is also a subcommand name (`keel search` in a folder that has `search`); `keel ./search`
-//! always means the folder.
+//! without a window. Typed at a terminal, a lone argument that names an existing folder
+//! opens it even when it is also a subcommand name (`keel devices` in a folder that has
+//! `devices`), except `mcp`, `execute`, `daemon` and `search`, which are always the
+//! subcommand; without a terminal (an agent starting `keel mcp`, a script) no name is
+//! taken as a folder. `keel ./name` always means the folder.
 
 use crate::keys::Action;
 use crate::state::AppState;
@@ -209,23 +211,28 @@ impl Cli {
     /// Parses `std::env::args`; `--help`, `--version` and bad arguments print and exit (a
     /// release build on Windows has no console of its own, so it borrows the shell's).
     pub fn from_env() -> Self {
-        Self::parse_args(std::env::args_os(), |p| p.is_dir()).unwrap_or_else(|e| {
+        use std::io::IsTerminal;
+        let interactive = std::io::stdin().is_terminal();
+        Self::parse_args(std::env::args_os(), interactive, |p| p.is_dir()).unwrap_or_else(|e| {
             #[cfg(windows)]
             keel_vfs::desktop::attach_parent_console();
             e.exit()
         })
     }
 
-    /// Parses `args` (the program name first). When the only positional argument is the
-    /// last one, names a subcommand and `is_dir` says it is a folder, it is the folder
-    /// (`./<name>`), not the subcommand.
+    /// Parses `args` (the program name first). When `interactive` (stdin is a terminal),
+    /// the only positional argument is the last one, names a subcommand other than
+    /// `ALWAYS_COMMANDS` and `is_dir` says it is a folder, it is the folder (`./<name>`),
+    /// not the subcommand.
     pub fn parse_args(
         args: impl IntoIterator<Item = OsString>,
+        interactive: bool,
         is_dir: impl Fn(&Path) -> bool,
     ) -> Result<Self, clap::Error> {
         let mut args: Vec<OsString> = args.into_iter().collect();
-        if let Some(i) = lone_subcommand(&args) {
-            if is_dir(Path::new(&args[i])) {
+        if let Some(i) = lone_subcommand(&args).filter(|_| interactive) {
+            let always = ALWAYS_COMMANDS.iter().any(|c| args[i] == **c);
+            if !always && is_dir(Path::new(&args[i])) {
                 args[i] = Path::new(".").join(&args[i]).into_os_string();
             }
         }
@@ -245,6 +252,10 @@ impl Cli {
         }
     }
 }
+
+/// Subcommands a lone name always means (never a folder of that name): what agents and
+/// scripts run, and what would surprise as a window.
+const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
 
 /// The index of the only positional argument in `args` when it is the last argument and a
 /// subcommand's name.
@@ -616,17 +627,39 @@ mod tests {
                 .iter()
                 .any(|f| p == Path::new(f))
         };
-        let parse = |args: &[&str]| {
+        let parse_in = |interactive: bool, args: &[&str]| {
             let args = std::iter::once("keel").chain(args.iter().copied());
-            Cli::parse_args(args.map(OsString::from), folders).unwrap()
+            Cli::parse_args(args.map(OsString::from), interactive, folders).unwrap()
         };
-        let cli = parse(&["search"]);
+        let parse = |args: &[&str]| parse_in(true, args);
+        let cli = parse(&["devices"]);
         assert_eq!(cli.command, None);
-        assert_eq!(cli.folder, Some(Path::new(".").join("search")));
-        assert!(cli.request().folder.unwrap().ends_with("search"));
+        assert_eq!(cli.folder, Some(Path::new(".").join("devices")));
+        assert!(cli.request().folder.unwrap().ends_with("devices"));
         let cli = parse(&["--profile", "work", "--new-window", "devices"]);
         assert_eq!((cli.command, cli.profile.as_deref()), (None, Some("work")));
-        assert_eq!(parse(&["mcp"]).folder, Some(Path::new(".").join("mcp")));
+        // `mcp` (and execute, daemon, search) is always the subcommand, folder or not.
+        assert_eq!(
+            parse(&["mcp"]).command,
+            Some(Command::Mcp {
+                allow_execute: false
+            })
+        );
+        // Without a terminal (an agent, a script) no name opens a folder.
+        let piped = parse_in(false, &["mcp"]);
+        assert_eq!(
+            (piped.command, piped.folder),
+            (
+                Some(Command::Mcp {
+                    allow_execute: false
+                }),
+                None
+            )
+        );
+        assert_eq!(
+            parse_in(false, &["devices"]).command,
+            Some(Command::Devices)
+        );
         // Not a folder here, or followed by anything: the subcommand.
         assert_eq!(parse(&["shares"]).command, Some(Command::Shares));
         assert_eq!(

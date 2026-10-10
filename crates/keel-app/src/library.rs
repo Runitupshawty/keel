@@ -700,6 +700,8 @@ impl LibraryUi {
             let opened = (|| -> anyhow::Result<(Library, bool, Vec<JobInfo>)> {
                 let root = crate::settings::data_dir().context("no data folder")?;
                 let first_run = !root.join("library").join(&name).exists();
+                // Owner-only when created here (else it inherits the drive's permissions).
+                keel_api::private::create_dir_all(&root)?;
                 let lib = Library::open(&root, &name)?;
                 lib.set_router(router);
                 keel_net::spacedrop::register(&lib); // Task 36

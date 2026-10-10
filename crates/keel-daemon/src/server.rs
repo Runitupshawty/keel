@@ -139,9 +139,7 @@ impl Shared {
                         format!("{method} did not finish within {REQUEST_WAIT:?}"),
                     ))
                 });
-                if result.is_ok()
-                    && ["execute", "sources.remove", "shares.revoke"].contains(&method)
-                {
+                if result.is_ok() && ["execute", "shares.revoke"].contains(&method) {
                     self.hub
                         .broadcast("library.changed", json!({ "method": method }));
                 }
