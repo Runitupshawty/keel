@@ -456,11 +456,19 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 9 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients: the web client and phone app, mounts, Share → Keel). In progress, as follow-ups to Phase 9:
+Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients (the web client and phone app, mounts, Share → Keel). 0.10.0 and 0.11.0 shipped the Phase 9 follow-ups (the desktop app attaching to a running keel-daemon, Mount… in the sidebar, a Playwright run of the web client in CI) and video playback with sound in the media viewer.
 
-- The desktop app attaching to a running keel-daemon instead of opening the library itself.
-- A Mount… action in the sidebar.
-- A Playwright run of the web client in CI.
+What is next, from the known limitations still open:
+
+- Signed and notarized builds, and release builds that include a mount backend.
+- Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
+- Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, the Recycle Bin / Trash folder on macOS, and the native Windows shell context menu.
+- Archives: deleting, renaming and creating entries inside one, and extracting into a remote folder.
+- SFTP: `~/.ssh/config` (jump hosts, ProxyCommand), and copies between two hosts without passing through this PC.
+- Cloud: resumable uploads instead of the 256 MB (Drive) and 150 MB (Dropbox) single-request limits, and cancelling an upload whose request is already on the wire.
+- Library and protection: hashing remote and cloud sources, live changes for them instead of polling, per-source counts in the Overview, counters that follow live changes, a resumed folder copy that is not re-run as a merge, and disks without a serial or cloned with one (their failure domain is set by hand today).
+- Devices: short-code pairing without internet discovery (the full ticket already works offline), and device writes into sources that are not local.
+- Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 
