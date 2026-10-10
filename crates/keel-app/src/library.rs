@@ -167,6 +167,11 @@ pub enum LibCmd {
         volume: String,
         on: bool,
     },
+    /// The failure-domain field: set by hand, or blank for the detected one.
+    SetDomain {
+        volume: String,
+        domain: String,
+    },
     /// Overview → Protection: re-hash a sample now.
     CheckIntegrity,
 }
@@ -510,6 +515,11 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             files(*n, "is", "are"),
             path.name()
         ),
+        Warning::CopiesOffline { path, files: n } => format!(
+            "{} other copies only on offline or archived drives ({})",
+            files(*n, "has its", "have their"),
+            path.name()
+        ),
     }
 }
 
@@ -609,6 +619,9 @@ pub struct LibraryUi {
     pub pending: Vec<LibCmd>,
     /// The hashing policy last applied.
     policy: Hashing,
+    /// Media work was asked for while a sidecar job ran: started again when it ends (a
+    /// running job does not see records changed behind its cursor, nor other sources).
+    media_again: bool,
     // --- Task 33 ---
     /// The Overview's protection card and volume table (None until first read).
     pub protection: Option<ProtectionSummary>,
@@ -658,6 +671,7 @@ impl LibraryUi {
             new_name: String::new(),
             pending: Vec::new(),
             policy: Hashing::default(),
+            media_again: false,
             protection: None,
             volumes: Vec::new(),
             badges: HashMap::new(),
@@ -683,7 +697,7 @@ impl LibraryUi {
         let (tx, ctx, name) = (self.tx.clone(), self.ctx.clone(), name.to_owned());
         worker::spawn("keel-library-open", move || {
             let opened = (|| -> anyhow::Result<(Library, bool, Vec<JobInfo>)> {
-                let root = keel_core::data_dir().context("no data folder")?;
+                let root = crate::settings::data_dir().context("no data folder")?;
                 let first_run = !root.join("library").join(&name).exists();
                 let lib = Library::open(&root, &name)?;
                 lib.set_router(router);
@@ -854,6 +868,7 @@ impl LibraryUi {
         let on = self.policy != Hashing::Off && !self.hash_paused;
         if let Some(lib) = &self.lib {
             lib.set_hash_after_walk(on);
+            lib.set_hash_idle_only(self.policy == Hashing::IdleOnly);
         }
         if on {
             self.start_hashing();
@@ -888,15 +903,17 @@ impl LibraryUi {
     }
 
     /// Task 32: thumbnails and metadata for every source's photos and videos (the sidecar
-    /// job, idle priority), unless one is already running.
+    /// job, idle priority); while one runs, again once it has ended.
     fn start_media(&mut self) {
         if self
             .jobs
             .values()
             .any(|j| j.kind == "sidecar" && j.active())
         {
+            self.media_again = true;
             return;
         }
+        self.media_again = false;
         let ids: Vec<SourceId> = (self.sources.iter())
             .filter(|s| s.root.scheme == "file")
             .map(|s| s.id.clone())
@@ -1208,8 +1225,9 @@ impl AppState {
         let l = &mut self.library;
         let Some(lib) = l.lib.clone() else { return };
         let now = Instant::now();
-        // Idle only: hashing pauses for 5 s after each input.
-        if busy_input && l.policy == Hashing::IdleOnly {
+        // Media and integrity jobs pause for 5 s after each input; hashing too when idle
+        // only (`sync_hashing`).
+        if busy_input {
             lib.note_activity();
         }
         let mut ended: Vec<String> = Vec::new();
@@ -1261,6 +1279,8 @@ impl AppState {
             if ended.iter().any(|k| k == "index") {
                 l.start_hashing();
                 l.start_media(); // Task 32
+            } else if l.media_again && ended.iter().any(|k| k == "sidecar") {
+                l.start_media();
             }
             // The Overview's duplicate summary (and an open finder) follow new content ids.
             if ended.iter().any(|k| k == "hash") {
@@ -1784,6 +1804,14 @@ impl AppState {
                     });
                 self.library.protection_changed();
             }
+            LibCmd::SetDomain { volume, domain } => {
+                self.library
+                    .spawn_try("keel-library-volume", "Volume", move |lib| {
+                        lib.set_failure_domain(&volume, Some(&domain))?;
+                        Ok(None)
+                    });
+                self.library.protection_changed();
+            }
             LibCmd::CheckIntegrity => {
                 let pct = self.settings.library.integrity_pct;
                 self.library.spawn("keel-library-integrity", move |lib| {
@@ -1916,8 +1944,18 @@ impl LibraryUi {
                 let Ok(children) = lib.list_children(&source, &rel) else {
                     continue;
                 };
-                for h in children.into_iter().filter(|h| !h.is_dir).take(MAX_BADGES) {
-                    if let Ok(r) = lib.redundancy(&h.record) {
+                let files: Vec<_> = children
+                    .into_iter()
+                    .filter(|h| !h.is_dir)
+                    .take(MAX_BADGES)
+                    .collect();
+                let records: Vec<_> = files.iter().map(|h| h.record.clone()).collect();
+                // The volumes are read once per folder, not once per file.
+                let Ok(all) = lib.redundancies(&records) else {
+                    continue;
+                };
+                for (h, r) in files.into_iter().zip(all) {
+                    if let Some(r) = r {
                         out.insert(h.path, badge_of(&r));
                     }
                 }
@@ -2028,6 +2066,8 @@ pub struct VolumeRow {
     pub kind: &'static str,
     pub state: VolumeState,
     pub domain: String,
+    /// The domain was set by hand.
+    pub domain_set: bool,
     pub backup: bool,
     /// "120 GB / 250 GB", or "" when unknown.
     pub usage: String,
@@ -2043,6 +2083,7 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
             kind: kind_text(v.kind),
             state: v.state,
             domain: v.failure_domain.clone(),
+            domain_set: v.domain_set,
             backup: v.backup,
             usage: v
                 .capacity
@@ -2059,8 +2100,19 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
         .collect()
 }
 
-/// The protection card's lines: (text, how it is computed), so every number is explained.
-pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
+/// One line of the protection card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProtectionLine {
+    pub text: String,
+    /// How the number is computed (hover).
+    pub how: &'static str,
+    /// Shown as a warning.
+    pub warn: bool,
+}
+
+/// The protection card's lines, every number explained. While files are not hashed yet the
+/// copy counts cover the checked files only, and say so: an unknown is never a plain 0.
+pub fn protection_lines(p: &ProtectionSummary) -> Vec<ProtectionLine> {
     let files = |n: u64| {
         if n == 1 {
             "1 file".to_owned()
@@ -2068,28 +2120,51 @@ pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
             format!("{} files", count(n))
         }
     };
-    vec![
-        (
-            format!("{} with one copy only", files(p.single_copy)),
+    let partial = if p.unchecked > 0 {
+        " (of those checked)"
+    } else {
+        ""
+    };
+    let line = |text: String, how: &'static str, warn: bool| ProtectionLine { text, how, warn };
+    let mut lines = Vec::new();
+    if p.unchecked > 0 {
+        lines.push(line(
+            format!("{} not checked yet", files(p.unchecked)),
+            "Files without a content hash yet (hashing off, paused or still running; shares \
+             and cloud sources are hashed only when asked): whether they have other copies is \
+             unknown, so they are in none of the counts below.",
+            true,
+        ));
+    }
+    lines.extend([
+        line(
+            format!("{} with one copy only{partial}", files(p.single_copy)),
             "Hashed contents held by a single file (hard links count once; copies on lost or \
              retired volumes do not count). Files not hashed yet are not counted.",
+            p.single_copy > 0,
         ),
-        (
-            format!("{} with every copy on one disk", files(p.single_domain)),
+        line(
+            format!(
+                "{} with every copy on one disk{partial}",
+                files(p.single_domain)
+            ),
             "Contents with two or more copies, all in one failure domain: one physical disk, \
              cloud account or host. One failure loses them all.",
+            p.single_domain > 0,
         ),
-        (
-            format!("{} not backed up", files(p.unbacked)),
+        line(
+            format!("{} not backed up{partial}", files(p.unbacked)),
             "Contents without a copy on a volume marked as backup in a second failure domain. \
              Mark backup drives in the volume table below.",
+            false,
         ),
-        (
+        line(
             format!("{} changed since last check", files(p.drifted)),
             "Integrity checks re-hash a sample of files; drift is a file whose bytes changed \
              although its size and times did not (bit rot, or a tool restoring timestamps).",
+            p.drifted > 0,
         ),
-        (
+        line(
             if p.offline_volumes == 1 {
                 "1 volume offline".to_owned()
             } else {
@@ -2097,6 +2172,8 @@ pub fn protection_lines(p: &ProtectionSummary) -> Vec<(String, &'static str)> {
             },
             "Volumes none of whose sources can be reached now. Their copies still count; mark \
              a drive Archived, Lost or Retired in the volume table.",
+            p.offline_volumes > 0,
         ),
-    ]
+    ]);
+    lines
 }

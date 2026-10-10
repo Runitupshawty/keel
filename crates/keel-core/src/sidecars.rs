@@ -86,6 +86,17 @@ impl SidecarKind {
     }
 }
 
+impl MediaMeta {
+    /// Why `kind` cannot be made for this file, when recorded: the metadata's own error
+    /// for `Meta`, else that image kind's.
+    pub fn failure(&self, kind: SidecarKind) -> Option<&str> {
+        match kind {
+            SidecarKind::Meta => self.error.as_deref(),
+            k => self.failed.get(k.file_name()).map(String::as_str),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SidecarStats {
     /// Key folders tracked.
@@ -190,9 +201,11 @@ impl Sidecars {
 
     /// The sidecar, generated from `source` (the local file) when missing. Blocking (decodes
     /// the file, may run ffmpeg for up to 10 s): call it from a job or worker thread.
-    /// A file that cannot be decoded gets its error recorded in `meta.json` once and is not
-    /// decoded again for this key; `Meta` then still succeeds (with `error` set), the images
-    /// fail at once.
+    /// A kind that cannot be made (a corrupt or oversized file, a video ffmpeg cannot read)
+    /// gets its error recorded in `meta.json` once, per kind, and is not tried again for
+    /// this key: `Meta` then still succeeds (with `error` set), an image kind fails at once
+    /// (`MediaMeta::failure`). Other kinds are unaffected; timeouts and IO errors are not
+    /// recorded.
     pub fn ensure(&self, key: &SidecarKey, kind: SidecarKind, source: &Path) -> Result<PathBuf> {
         if let Some(path) = self.get(key, kind) {
             return Ok(path);
@@ -200,7 +213,10 @@ impl Sidecars {
         let _pin = self.pin(key);
         let video = media::media_type(source) == Some(MediaType::Video);
         if kind != SidecarKind::Meta {
-            if let Some(error) = self.meta(key).and_then(|m| m.error) {
+            if let Some(error) = self
+                .meta(key)
+                .and_then(|m| m.failure(kind).map(str::to_owned))
+            {
                 return Err(media::corrupt(error));
             }
         }
@@ -222,7 +238,7 @@ impl Sidecars {
         let bytes = match made {
             Ok(bytes) => bytes,
             Err(e) if media::is_corrupt(&e) => {
-                self.record_error(key, &e.to_string())?;
+                self.record_error(key, kind, source, &e.to_string())?;
                 if kind == SidecarKind::Meta {
                     return Ok(self.path(key, kind));
                 }
@@ -251,9 +267,26 @@ impl Sidecars {
         Ok(path)
     }
 
-    fn record_error(&self, key: &SidecarKey, error: &str) -> Result<()> {
-        let mut meta = self.meta(key).unwrap_or_default();
-        meta.error = Some(error.to_owned());
+    /// Records why `kind` cannot be made, in `meta.json`. An image kind's failure goes on
+    /// the file's real metadata (made first when missing), never on an empty stand-in.
+    fn record_error(
+        &self,
+        key: &SidecarKey,
+        kind: SidecarKind,
+        source: &Path,
+        error: &str,
+    ) -> Result<()> {
+        let mut meta = match kind {
+            SidecarKind::Meta => MediaMeta::default(),
+            _ => load_meta(&self.ensure(key, SidecarKind::Meta, source)?).unwrap_or_default(),
+        };
+        match kind {
+            SidecarKind::Meta => meta.error = Some(error.to_owned()),
+            k => {
+                meta.failed
+                    .insert(k.file_name().to_owned(), error.to_owned());
+            }
+        }
         self.write(key, SidecarKind::Meta, &serde_json::to_vec_pretty(&meta)?)?;
         Ok(())
     }

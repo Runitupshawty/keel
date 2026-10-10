@@ -117,8 +117,30 @@ pub(crate) fn stat(path: &Path) -> io::Result<Item> {
     Ok(from_metadata(name, path, Ok(md)))
 }
 
+/// `stat` through a link: a source root that is a junction or symlink stands for its
+/// target (identity, times; not flagged as a link).
+#[cfg(unix)]
+pub(crate) fn stat_root(path: &Path) -> io::Result<Item> {
+    let md = std::fs::metadata(path)?;
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    Ok(from_metadata(name, path, Ok(md)))
+}
+
+/// The identities a source root may have been stored under: its target's, and (for a root
+/// that is itself a link, as indexed before 0.7.0) the link's own.
+pub(crate) fn root_ids(path: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = [stat_root(path), stat(path)]
+        .into_iter()
+        .filter_map(|i| i.ok()?.fs_id)
+        .collect();
+    ids.dedup();
+    ids
+}
+
 #[cfg(windows)]
-pub(crate) use win::{list, stat};
+pub(crate) use win::{list, stat, stat_root};
 
 #[cfg(windows)]
 mod win {
@@ -149,9 +171,15 @@ mod win {
         }
     }
 
-    fn open(path: &Path, access: u32) -> io::Result<Handle> {
+    /// Opens `path` itself, or (`follow`) what a link at `path` leads to.
+    fn open(path: &Path, access: u32, follow: bool) -> io::Result<Handle> {
         let long = keel_vfs::long(path).map_err(io::Error::other)?;
         let wide: Vec<u16> = long.as_os_str().encode_wide().chain([0]).collect();
+        let flags = if follow {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+        };
         // SAFETY: `wide` is NUL-terminated and outlives the call.
         let handle = unsafe {
             CreateFileW(
@@ -160,7 +188,7 @@ mod win {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                flags,
                 HANDLE::default(),
             )
         }?;
@@ -205,8 +233,10 @@ mod win {
         (t != 0).then(|| (t - 116_444_736_000_000_000).saturating_mul(100))
     }
 
+    /// Lists `dir`; a junction or symlink is followed (the walk never lists link entries,
+    /// only a source root that is one).
     pub(crate) fn list(dir: &Path) -> io::Result<Vec<Item>> {
-        let handle = open(dir, FILE_LIST_DIRECTORY.0)?;
+        let handle = open(dir, FILE_LIST_DIRECTORY.0, true)?;
         let Ok(volume) = file_id(&handle) else {
             return super::std_list(dir);
         };
@@ -281,12 +311,26 @@ mod win {
     }
 
     pub(crate) fn stat(path: &Path) -> io::Result<Item> {
-        let md = std::fs::symlink_metadata(keel_vfs::long(path).map_err(io::Error::other)?)?;
+        stat_as(path, false)
+    }
+
+    /// `stat` through a link (a source root that is a junction or symlink).
+    pub(crate) fn stat_root(path: &Path) -> io::Result<Item> {
+        stat_as(path, true)
+    }
+
+    fn stat_as(path: &Path, follow: bool) -> io::Result<Item> {
+        let long = keel_vfs::long(path).map_err(io::Error::other)?;
+        let md = if follow {
+            std::fs::metadata(long)?
+        } else {
+            std::fs::symlink_metadata(long)?
+        };
         let name = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let mut item = super::from_metadata(name, path, Ok(md));
-        if let Ok(h) = open(path, FILE_READ_ATTRIBUTES.0) {
+        if let Ok(h) = open(path, FILE_READ_ATTRIBUTES.0, follow) {
             item.fs_id = file_id(&h)
                 .ok()
                 .map(|id| fs_id(id.VolumeSerialNumber, id.FileId.Identifier));

@@ -82,7 +82,8 @@ pub fn zoom_about(
 }
 
 /// Decodes a photo at full resolution (EXIF orientation applied), scaled to fit
-/// `max_side` (the GPU texture limit). Blocking: viewer worker only.
+/// `max_side` (twice the screen, within the GPU texture limit). Blocking: viewer worker
+/// only.
 pub fn decode_full(path: &std::path::Path, max_side: u32) -> anyhow::Result<egui::ColorImage> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
     let mut decoder = ImageReader::open(path)?
@@ -308,7 +309,11 @@ impl AppState {
                 }
             }
             self.media.want(VIEWER_SLOT, list);
-            let max_side = ctx.input(|i| i.max_texture_side) as u32;
+            // Twice the screen keeps a 2x zoom sharp; a 100 MP photo at full size would stall
+            // the UI thread's upload for nothing.
+            let screen = ctx.screen_rect().size() * ctx.pixels_per_point();
+            let twice = (2.0 * screen.x.max(screen.y)).max(1024.0) as u32;
+            let max_side = (ctx.input(|i| i.max_texture_side) as u32).min(twice);
             let _ = v.jobs.send(FullReq {
                 index: v.index,
                 req: req.clone(),

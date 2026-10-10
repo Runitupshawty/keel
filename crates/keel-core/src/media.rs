@@ -55,9 +55,14 @@ pub struct MediaMeta {
     /// XMP rating 0..=5.
     pub rating: Option<u8>,
     pub keywords: Vec<String>,
-    /// Why this file has no metadata or thumbnail (a corrupt or oversized file). Recorded
-    /// once per sidecar key: the file is not decoded again until it changes.
+    /// Why this file's metadata could not be read (a corrupt file). Recorded once per
+    /// sidecar key: it is not read again until the file changes.
     pub error: Option<String>,
+    /// Image sidecars that cannot be made, by file name (`thumb-256.webp`, `strip.webp`):
+    /// why. Each kind fails on its own (a strip that fails leaves the thumbnail usable);
+    /// recorded once per key like `error`. Timeouts are not recorded (retried).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub failed: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +102,17 @@ pub(crate) fn corrupt(e: impl std::fmt::Display) -> anyhow::Error {
 pub(crate) fn is_corrupt(e: &anyhow::Error) -> bool {
     e.is::<Corrupt>()
 }
+
+/// A tool ran past [`TOOL_TIMEOUT`]: maybe a slow disk or a busy machine, not the file's
+/// fault, so not recorded (tried again next time).
+#[derive(Debug)]
+pub(crate) struct TimedOut;
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "timed out after {} s", TOOL_TIMEOUT.as_secs())
+    }
+}
+impl std::error::Error for TimedOut {}
 
 /// Truncated or malformed data is the file's fault; other IO errors (gone, locked) are not.
 fn image_error(e: image::ImageError) -> anyhow::Error {
@@ -179,9 +195,21 @@ fn heif_dimensions(path: &Path, _exif: Option<&exif::Exif>) -> Result<Option<(u3
     Ok(Some((handle.width(), handle.height())))
 }
 
-/// None when the file has no (readable) EXIF.
+/// TIFFs bigger than this are not searched for EXIF: kamadak-exif reads a whole TIFF
+/// into memory first (other containers are scanned).
+const TIFF_EXIF_MAX: u64 = 64 << 20;
+
+/// None when the file has no (readable) EXIF, or is a TIFF over [`TIFF_EXIF_MAX`].
 fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
-    let mut r = BufReader::new(File::open(path)?);
+    let file = File::open(path)?;
+    let tiff = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("tif") || e.eq_ignore_ascii_case("tiff"));
+    if tiff && file.metadata()?.len() > TIFF_EXIF_MAX {
+        return Ok(None);
+    }
+    let mut r = BufReader::new(file);
     match exif::Reader::new().read_from_container(&mut r) {
         Ok(e) => Ok(Some(e)),
         Err(exif::Error::Io(e)) if e.kind() != std::io::ErrorKind::UnexpectedEof => Err(e.into()),
@@ -604,7 +632,7 @@ pub(crate) fn strip(path: &Path, duration_ms: Option<u64>) -> Result<Vec<u8>> {
     let mut command = Command::new(ffmpeg);
     command.args(["-v", "error", "-nostdin", "-y"]);
     // ponytail: past a minute only keyframes are decoded so long videos fit in the 10 s
-    // limit; a feature film can still time out (recorded as an error). Per-frame seeks
+    // limit; a feature film can still time out (retried next time). Per-frame seeks
     // (20 runs of `-ss t -frames:v 1`) if that bites.
     if secs > 60.0 {
         command.args(["-skip_frame", "nokey"]);
@@ -658,7 +686,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
 }
 
 /// Runs with piped output and a hard [`TOOL_TIMEOUT`] (no console window on Windows); a
-/// timeout is a [`Corrupt`] error (the file is not tried again until it changes).
+/// timeout is [`TimedOut`] (tried again next time, not recorded).
 fn run(mut command: Command) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     command
         .stdin(Stdio::null())
@@ -693,10 +721,7 @@ fn run(mut command: Command) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
             let _ = child.kill();
             let _ = child.wait();
             // The drain threads finish on their own once every holder of the pipes exits.
-            Err(corrupt(format!(
-                "timed out after {} s",
-                TOOL_TIMEOUT.as_secs()
-            )))
+            Err(TimedOut.into())
         }
         Err(e) => {
             let _ = child.kill();
