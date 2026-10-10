@@ -94,6 +94,7 @@ fn main() -> eframe::Result<()> {
     }
     tracing_subscriber::fmt()
         .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
+        .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();
     // --- Task 24 ---

@@ -13,6 +13,7 @@
 
 pub mod client;
 pub mod config;
+pub mod crash;
 pub mod daemon_provider;
 pub mod error;
 pub mod files;
