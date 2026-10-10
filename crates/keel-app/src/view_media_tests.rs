@@ -480,6 +480,9 @@ fn media_live() {
         .with_size(egui::vec2(1400.0, 900.0))
         .wgpu()
         .build_eframe(|cc| App::new(cc, Boot::at(VPath::local(PathBuf::from(&folder)))));
+    // The harness reports egui's 2048 px default, which debug builds enforce on the
+    // 3200 px video strips; the wgpu device takes 8192.
+    h.input_mut().max_texture_side = Some(8192);
     {
         let s = &mut h.state_mut().state;
         s.dual = false;
