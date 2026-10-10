@@ -2002,7 +2002,7 @@ mod tests {
             "https://s3.example.com",
             "http://localhost:9000",
             "http://127.0.0.1:9000",
-            "http://192.168.1.81:9000",
+            "http://192.168.0.10:9000",
             "http://10.0.0.5",
             "http://minio:9000",
             "http://nas.local:9000",

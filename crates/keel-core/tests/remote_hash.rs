@@ -36,6 +36,7 @@ fn live_sftp_source_is_hashed_and_its_local_copy_found() {
         },
         home: None,
         bookmarks: vec![],
+        use_ssh_config: false,
     };
     let sftp = Arc::new(SftpProvider::new(host, crossbeam_channel::unbounded().0));
     let base = VPath {
