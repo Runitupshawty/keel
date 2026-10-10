@@ -184,13 +184,9 @@ impl Remote {
                         }
                         Some("library.changed") => {
                             let kind = params["kind"].as_str().unwrap_or_default();
-                            // From a sidecar job itself, not the call that started it.
-                            if kind == "media.index" && params["method"] == "job" {
-                                on(Event::Sidecars {
-                                    job: params["job"].as_i64().unwrap_or_default(),
-                                    done: params["done"].as_bool().unwrap_or(true),
-                                })
-                            } else {
+                            // A sidecar job's own news: nothing to refresh (the window
+                            // asks for the thumbnails it shows, made on demand).
+                            if kind != "media.index" || params["method"] != "job" {
                                 on(Event::Changed(kind.to_owned()))
                             }
                         }
@@ -225,9 +221,7 @@ pub enum Event {
     /// A change by any client (`library.changed`): its kind is the operation (`tags.add`,
     /// `recents.note`, ...; empty from an older daemon), see `library::refresh_for`.
     Changed(String),
-    /// A sidecar job made thumbnails (`library.changed` `{method: "job", kind:
-    /// "media.index", job, done}`; `done`: it ended).
-    Sidecars { job: JobId, done: bool },
+
     /// A device event (`net.event` params).
     Net(Value),
     /// The connection closed: the daemon stopped.

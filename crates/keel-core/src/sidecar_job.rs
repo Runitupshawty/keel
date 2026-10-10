@@ -1,7 +1,7 @@
 //! The sidecar job: makes `Thumb256` + `Meta` sidecars for every image and video record of a
 //! source (thumbnails at 1024 px and video strips are made on demand), fills the source
-//! store's `media` table, at idle priority on its own thread, pausing on user activity and
-//! battery like hashing.
+//! store's `media` table, at idle priority on its own thread, pausing on battery like hashing
+//! and for 1 s after user activity (a window asked for it, and its notes come every 4 s).
 
 use crate::hash::background_thread;
 use crate::index::{LINK, UNREADABLE};
@@ -70,9 +70,9 @@ impl SidecarJob {
         }
     }
 
-    /// Pauses on user activity (always) and on battery like hashing.
+    /// Pauses for 1 s after user activity (always) and on battery like hashing.
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        crate::hash::wait_until_idle(ctx, &mut self.battery, true)
+        crate::hash::wait_until_idle(ctx, &mut self.battery, crate::library::SIDECAR_PAUSE)
     }
 
     fn progress(&self) -> f32 {

@@ -9,11 +9,11 @@
 //! With the library open the sidecars are the library's (the sidecar job fills them, so
 //! most tiles are instant); without it they live in a cache under the cache folder.
 //! Attached to keel-daemon, thumbnails are the daemon's sidecars (`media.thumb`, kept in a
-//! small cache under the cache folder by content id and size): a missing one is asked of
-//! the source's sidecar job (`media.index`) and asked for again when the daemon says it
-//! made some ([`Media::news`]); a file the daemon has none for twice is decoded here
-//! ([`Fetches`]). 1024 px thumbnails (no job makes them) the daemon makes on request;
-//! video strips and metadata are always made here.
+//! small cache under the cache folder by content id and size): the makers ask for them
+//! with `make: true`, so the daemon decodes a missing one on demand, visible tiles first
+//! and at most [`MAKERS`] at a time per window (the sources' sidecar jobs only fill the
+//! store ahead); a file the daemon cannot answer for is decoded here. Video strips and
+//! metadata are always made here.
 
 use egui::{pos2, ColorImage, Rect, TextureHandle, Vec2};
 use keel_core::{Library, MediaMeta, SidecarKey, SidecarKind, Sidecars};
@@ -47,8 +47,7 @@ const CACHE_BUDGET: u64 = 2 << 30;
 const RECORDS_TTL: Duration = Duration::from_secs(60);
 /// Attached: the daemon's thumbnails kept here (bytes; oldest dropped first).
 const THUMBS_BUDGET: u64 = 256 << 20;
-/// Attached: `media.index` for one source at most this often.
-pub const INDEX_EVERY: Duration = Duration::from_secs(10);
+
 const DAYS_CHUNK: usize = 2000;
 
 pub const IMAGE_EXTS: &[&str] = &[
@@ -325,18 +324,6 @@ impl<K: Clone + Eq + Hash, V: Clone> Queue<K, V> {
         }
     }
 
-    /// Answered keys a view still wants: queued for loading again.
-    pub fn requeue(&self, keys: &[K]) {
-        let mut s = self.s.lock();
-        for k in keys {
-            if let Some(i) = s.items.get_mut(k).filter(|i| i.state == State::Done) {
-                i.state = State::Queued(Stage::Load);
-            }
-        }
-        drop(s);
-        self.cv.notify_all();
-    }
-
     pub fn close(&self) {
         self.s.lock().closed = true;
         self.cv.notify_all();
@@ -356,96 +343,9 @@ impl<K: Clone + Eq + Hash, V: Clone> Queue<K, V> {
 /// A file as the daemon's answers are counted: real path, mtime, size.
 pub type FileKey = (VPath, i64, u64);
 
-/// What to do after the daemon had no sidecar for a file.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Missed {
-    /// Ask `media.index` for this source (then [`Fetches::started`]) and wait.
-    Index(String),
-    /// Its source's sidecar job runs: wait for its news ([`Media::news`]).
-    Wait,
-    /// Make it here.
-    Local,
-}
-
-/// A source's sidecar job as this window asked for it.
-struct SourceJob {
-    asked: Instant,
-    /// Known once `media.index` answered.
-    job: Option<keel_core::JobId>,
-    ended: bool,
-}
-
-/// Attached: the daemon's "no sidecar" answers. The first one for a file asks its source's
-/// sidecar job (`media.index`); answers while that job runs only wait for its news; the
-/// second one counted (after the job ended) means the job cannot make it, so it is made
-/// here, as are files in no source (no job would make them).
-// ponytail: grows with the files that missed in this connection; a new connection starts over.
-#[derive(Default)]
-pub struct Fetches {
-    misses: HashMap<FileKey, u8>,
-    jobs: HashMap<String, SourceJob>,
-    /// Jobs whose end was announced, for a `media.index` answer that comes after it.
-    ended: std::collections::HashSet<keel_core::JobId>,
-}
-
-impl Fetches {
-    /// Made here from now on.
-    pub fn local(&self, f: &FileKey) -> bool {
-        self.misses.get(f).is_some_and(|n| *n >= 2)
-    }
-
-    /// The daemon had no sidecar for `f` (in `source`, if any) at `now`.
-    pub fn missed(&mut self, f: FileKey, source: Option<&str>, now: Instant) -> Missed {
-        let Some(source) = source else {
-            self.give_up(f);
-            return Missed::Local;
-        };
-        let recent = match self.jobs.get(source) {
-            Some(j) if !j.ended => return Missed::Wait,
-            Some(j) => now.saturating_duration_since(j.asked) < INDEX_EVERY,
-            None => false,
-        };
-        let n = self.misses.entry(f.clone()).or_default();
-        *n += 1;
-        // Its job just went over the source and did not make it.
-        if *n >= 2 || recent {
-            self.give_up(f);
-            return Missed::Local;
-        }
-        let job = SourceJob {
-            asked: now,
-            job: None,
-            ended: false,
-        };
-        self.jobs.insert(source.to_owned(), job);
-        Missed::Index(source.to_owned())
-    }
-
-    /// `media.index` for `source` answered: its job, or None when it failed. True when that
-    /// job already ended (ask the parked thumbnails again).
-    pub fn started(&mut self, source: &str, job: Option<keel_core::JobId>) -> bool {
-        let Some(j) = self.jobs.get_mut(source) else {
-            return false;
-        };
-        j.job = job;
-        j.ended = job.is_none_or(|id| self.ended.contains(&id));
-        j.ended
-    }
-
-    /// A sidecar job made thumbnails; `done`: it ended.
-    pub fn news(&mut self, job: keel_core::JobId, done: bool) {
-        if done {
-            self.ended.insert(job);
-            for j in self.jobs.values_mut().filter(|j| j.job == Some(job)) {
-                j.ended = true;
-            }
-        }
-    }
-
-    /// The daemon cannot be asked about `f` (an error other than "no sidecar").
-    pub fn give_up(&mut self, f: FileKey) {
-        self.misses.insert(f, 2);
-    }
+/// A daemon content id: 64 hex digits (it names files in the thumbnail cache).
+fn is_content_id(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The daemon's thumbnails on disk: `<content id>-<px>.webp`, and per file (named after
@@ -483,7 +383,7 @@ impl Thumbs {
     /// The content id `f` had when its thumbnail was last fetched.
     fn content_id(&self, f: &FileKey) -> Option<String> {
         let cas = std::fs::read_to_string(self.alias(f)?).ok()?;
-        (cas.len() == 64 && cas.bytes().all(|b| b.is_ascii_hexdigit())).then_some(cas)
+        is_content_id(&cas).then_some(cas)
     }
 
     fn read(&self, f: &FileKey, kind: SidecarKind) -> Option<Vec<u8>> {
@@ -491,6 +391,10 @@ impl Thumbs {
     }
 
     fn write(&self, f: &FileKey, cas: &str, kind: SidecarKind, bytes: &[u8]) {
+        // The daemon's answer names a file here: never a path.
+        if !is_content_id(cas) {
+            return tracing::debug!("not a content id from the daemon: {cas:?}");
+        }
         let Some(alias) = self.alias(f) else { return };
         let wrote = std::fs::create_dir_all(&self.dir)
             .and_then(|()| std::fs::write(self.data(cas, kind), bytes))
@@ -527,15 +431,6 @@ fn trim(dir: &Path, budget: u64) {
             total -= len;
         }
     }
-}
-
-/// What the daemon answered for one thumbnail.
-enum Fetched {
-    Image(Option<ColorImage>),
-    /// Asked again on the job's news.
-    Parked,
-    /// Make it here.
-    Local,
 }
 
 // ---------------------------------------------------------------- workers
@@ -575,11 +470,9 @@ pub(crate) struct Shared {
     records: Mutex<Records>,
     /// Attached: the daemon whose sidecars are shown.
     daemon: RwLock<Option<Arc<crate::backend::Remote>>>,
-    fetches: Mutex<Fetches>,
-    /// Thumbnails the daemon has no sidecar for yet: asked again on [`Media::news`].
-    parked: Mutex<Vec<TexKey>>,
-    /// Retries (news, a new daemon) so far.
-    retries: std::sync::atomic::AtomicU64,
+    /// Attached: files the daemon could not answer for, made here (until it changes).
+    // ponytail: grows with the files that failed in this connection; a new one starts over.
+    local: Mutex<std::collections::HashSet<FileKey>>,
     thumbs: Thumbs,
 }
 
@@ -692,25 +585,30 @@ impl Shared {
         }
         req.real.to_local_path()?;
         let daemon = self.daemon.read().clone()?;
-        (!self.fetches.lock().local(&file_key(key, req))).then_some(daemon)
+        (!self.local.lock().contains(&file_key(key, req))).then_some(daemon)
     }
 
-    /// Asks the daemon for `key`'s thumbnail (`media.thumb`): a 256 px one only when its
-    /// sidecar exists (the source's sidecar job makes those), a 1024 px one made on request
-    /// (no job makes them).
-    fn fetch(&self, remote: &crate::backend::Remote, key: &TexKey, req: &Req) -> Fetched {
+    /// Asks the daemon for `key`'s thumbnail (`media.thumb`, made there on demand when
+    /// missing: a maker waits for it, so the queue's order and the makers bound what the
+    /// daemon decodes for this window). None: the daemon cannot answer (offline, an error),
+    /// so the file is made here from now on.
+    fn fetch(
+        &self,
+        remote: &crate::backend::Remote,
+        key: &TexKey,
+        req: &Req,
+    ) -> Option<Option<ColorImage>> {
         let f = file_key(key, req);
-        let (size, make) = match key.kind {
-            SidecarKind::Thumb1024 => ("thumb1024", true),
-            _ => ("thumb256", false),
+        let size = match key.kind {
+            SidecarKind::Thumb1024 => "thumb1024",
+            _ => "thumb256",
         };
-        let since = self.retries.load(Ordering::SeqCst);
         let mut params =
-            serde_json::json!({"path": req.real.display(), "size": size, "make": make});
+            serde_json::json!({"path": req.real.display(), "size": size, "make": true});
         if let Some(cas) = self.thumbs.content_id(&f) {
             params["content_id"] = cas.into();
         }
-        let missed = match remote.call_raw("media.thumb", params) {
+        match remote.call_raw("media.thumb", params) {
             Ok(v) => {
                 use base64::Engine;
                 let thumb = serde_json::from_value::<keel_api::types::Thumb>(v).ok();
@@ -719,69 +617,19 @@ impl Shared {
                     b64.decode(&t.data).ok()
                 });
                 let (Some(thumb), Some(bytes)) = (thumb, bytes) else {
-                    return Fetched::Image(None);
+                    return Some(None);
                 };
                 if let Some(cas) = &thumb.content_id {
                     self.thumbs.write(&f, cas, key.kind, &bytes);
                 }
-                return Fetched::Image(decode_webp(&bytes, key.px));
-            }
-            Err(e) if e.code == keel_api::ApiError::NOT_FOUND && !make => {
-                let sources = remote.cached_sources();
-                let source = crate::library::locate(&sources, &req.real).map(|(id, _)| id.0);
-                let now = Instant::now();
-                self.fetches.lock().missed(f, source.as_deref(), now)
+                Some(decode_webp(&bytes, key.px))
             }
             Err(e) => {
                 tracing::debug!("media.thumb {}: {}", req.real.display(), e.message);
-                self.fetches.lock().give_up(f);
-                Missed::Local
-            }
-        };
-        match missed {
-            Missed::Local => Fetched::Local,
-            Missed::Wait => {
-                self.park(key, since);
-                Fetched::Parked
-            }
-            Missed::Index(id) => {
-                // Parked first: the job's first news may come before this call returns.
-                self.park(key, since);
-                let asked = remote.apply("media.index", serde_json::json!({ "id": id }));
-                let job = asked
-                    .map_err(|e| tracing::debug!("media.index {id}: {e:#}"))
-                    .ok()
-                    .and_then(|done| done.job);
-                if self.fetches.lock().started(&id, job) {
-                    self.retry();
-                }
-                Fetched::Parked
+                self.local.lock().insert(f);
+                None
             }
         }
-    }
-
-    /// `key` waits for the daemon's sidecar job (its worker is done with it); asked
-    /// again at once when news came since the daemon was asked (retry `since`).
-    fn park(&self, key: &TexKey, since: u64) {
-        self.queue.done(key);
-        let mut parked = self.parked.lock();
-        if self.retries.load(Ordering::SeqCst) != since {
-            drop(parked);
-            return self.queue.requeue(std::slice::from_ref(key));
-        }
-        if !parked.contains(key) {
-            parked.push(key.clone());
-        }
-    }
-
-    /// The parked thumbnails are asked for again.
-    fn retry(&self) {
-        let parked = {
-            let mut parked = self.parked.lock();
-            self.retries.fetch_add(1, Ordering::SeqCst);
-            std::mem::take(&mut *parked)
-        };
-        self.queue.requeue(&parked);
     }
 
     fn local(&self, src: Src) -> Option<PathBuf> {
@@ -904,13 +752,9 @@ fn load_loop(sh: Arc<Shared>) {
 fn make_loop(sh: Arc<Shared>) {
     while let Some((key, req)) = sh.queue.pop(Stage::Make) {
         if let Some(remote) = sh.daemon_for(&key, &req) {
-            match sh.fetch(&remote, &key, &req) {
-                Fetched::Image(image) => {
-                    sh.finish(key, image);
-                    continue;
-                }
-                Fetched::Parked => continue,
-                Fetched::Local => {}
+            if let Some(image) = sh.fetch(&remote, &key, &req) {
+                sh.finish(key, image);
+                continue;
             }
         }
         let image = (|| {
@@ -1025,9 +869,7 @@ impl Media {
             ctx,
             records: Mutex::default(),
             daemon: RwLock::new(None),
-            fetches: Mutex::default(),
-            parked: Mutex::default(),
-            retries: Default::default(),
+            local: Mutex::default(),
             thumbs: Thumbs::new(keel_vfs::cache_dir().join("daemon-thumbs")),
         });
         for _ in 0..loaders {
@@ -1071,16 +913,8 @@ impl Media {
         let id = remote.map(|r| r.id);
         if self.sh.daemon.read().as_ref().map(|r| r.id) != id {
             *self.sh.daemon.write() = remote.cloned();
-            *self.sh.fetches.lock() = Fetches::default();
-            self.sh.retry();
+            self.sh.local.lock().clear();
         }
-    }
-
-    /// A sidecar job of the daemon made thumbnails (`library.changed` `media.index` from
-    /// the job; `done`: it ended): the thumbnails it had none for are asked for again.
-    pub fn news(&self, job: keel_core::JobId, done: bool) {
-        self.sh.fetches.lock().news(job, done);
-        self.sh.retry();
     }
 
     #[cfg(test)]

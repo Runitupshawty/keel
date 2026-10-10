@@ -124,7 +124,7 @@ pub static OPS: &[Operation] = &[
         HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true})),
     previewed!("media.index", "Makes thumbnails and reads metadata of a source's photos and videos as an idle-priority job.",
         SourceIdParams => JobStarted, media_index_preview, media_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
-    now!("activity.note", "Notes that the user is working: idle-only hashing, sidecar and integrity jobs pause for the next 5 s; acts directly.",
+    now!("activity.note", "Notes that the user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s; acts directly.",
         true, NoParams => Done, activity_note, json!({})),
     now!("plan", "Previews a file operation (copy, move, delete, rename) from the index without touching anything. Returns a preview; call execute with the plan id and input hash to apply.",
         PlanParams => PlanPreview, plan, json!({"op": "copy", "paths": [example_file()], "to": example_dir(), "on_conflict": "skip"})),

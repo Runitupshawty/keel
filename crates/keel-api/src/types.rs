@@ -700,8 +700,7 @@ pub struct ThumbParams {
     /// (wherever it was found), before `path` is looked at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_id: Option<String>,
-    /// Make a missing sidecar now (default); false: only one that exists, else NOT_FOUND
-    /// (an attached window asks `media.index` for those instead).
+    /// Make a missing sidecar now (default); false: only one that exists, else NOT_FOUND.
     #[serde(default = "yes")]
     pub make: bool,
 }

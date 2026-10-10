@@ -183,6 +183,26 @@ fn activity_pauses_the_job() {
     assert_eq!(media_rows(&lib, &id), 5);
 }
 
+/// Review 44 B1: a sidecar job pauses 1 s after the user's last input, not 5 s like
+/// hashing: it runs between an attached window's activity notes (every 4 s).
+#[test]
+fn the_media_job_pauses_one_second_after_input() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    for i in 0..5 {
+        png(&files.path().join(format!("{i}.png")), 8, 8);
+    }
+    let (lib, id) = library(data.path(), files.path());
+    lib.note_activity();
+    assert!(lib.shared.busy_within(Duration::from_secs(1)));
+    let job = lib.media_job(&id).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(media_rows(&lib, &id), 0, "paused right after the input");
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    assert!(lib.user_active(), "done within the 5 s other jobs wait");
+    assert_eq!(media_rows(&lib, &id), 5);
+}
+
 /// `cargo test -p keel-core --release -- --ignored sidecar_perf --nocapture`
 #[test]
 #[ignore]

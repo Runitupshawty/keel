@@ -109,11 +109,6 @@ fn queue_drops_requests_that_scrolled_away() {
     q.forget(&["e"]);
     q.want(0, vec![("e", 0, ())]);
     assert_eq!(q.queued(), 1);
-    // Answered keys come back on `requeue` while wanted (attached: parked thumbnails).
-    q.try_pop(Stage::Load).unwrap();
-    q.done(&"e");
-    q.requeue(&["e", "gone"]);
-    assert_eq!(q.queued(), 1);
     q.try_pop(Stage::Load).unwrap();
     q.done(&"e");
     // Two views (pane grid and viewer) want x; one drops it, the other keeps it.
@@ -464,93 +459,4 @@ fn the_media_cache_never_lands_in_the_real_cache_folder() {
             assert!(!dir.starts_with(local.join(app)), "{}", dir.display());
         }
     }
-}
-
-fn file(i: u64) -> FileKey {
-    (VPath::local(format!("/photos/{i}.jpg")), 1, i)
-}
-
-/// Attached: a file the daemon has no sidecar for asks its source's sidecar job; while the
-/// job runs, misses only wait for its news; a miss after it ended (the job could not make
-/// it), or a file in no source, is made here.
-#[test]
-fn the_daemons_misses_ask_the_job_then_fall_back_to_local() {
-    let mut f = Fetches::default();
-    let t = Instant::now();
-    assert!(!f.local(&file(1)));
-    assert_eq!(
-        f.missed(file(1), Some("src"), t),
-        Missed::Index("src".into())
-    );
-    assert!(!f.local(&file(1)), "asked again after the job");
-    // Other files of that source while its job is asked for and runs: they wait.
-    assert_eq!(f.missed(file(2), Some("src"), t), Missed::Wait);
-    assert!(!f.started("src", Some(7)));
-    assert_eq!(
-        f.missed(file(1), Some("src"), t),
-        Missed::Wait,
-        "not counted"
-    );
-    f.news(7, false);
-    assert_eq!(
-        f.missed(file(2), Some("src"), t),
-        Missed::Wait,
-        "still running"
-    );
-    assert_eq!(
-        f.missed(file(3), Some("other"), t),
-        Missed::Index("other".into())
-    );
-    // The job ended without making file 1: made here from now on.
-    f.news(7, true);
-    assert_eq!(f.missed(file(1), Some("src"), t), Missed::Local);
-    assert!(f.local(&file(1)));
-    // A file first seen right after the job: it would have made it.
-    assert_eq!(f.missed(file(4), Some("src"), t), Missed::Local);
-    // Long after, a new file asks the job again (a second counted miss is final).
-    let later = t + INDEX_EVERY;
-    assert_eq!(
-        f.missed(file(5), Some("src"), later),
-        Missed::Index("src".into())
-    );
-    // The job ended before `media.index` answered, or the call failed: not waited for.
-    assert!(f.started("src", None));
-    assert_eq!(f.missed(file(3), Some("other"), t), Missed::Wait);
-    f.news(9, true);
-    assert!(f.started("other", Some(9)), "its end came first");
-    // No source: no job would make it.
-    assert_eq!(f.missed(file(6), None, t), Missed::Local);
-    assert!(f.local(&file(6)));
-    // The daemon failed otherwise (gone, unreadable): made here at once.
-    f.give_up(file(8));
-    assert!(f.local(&file(8)));
-}
-
-/// Parked thumbnails are queued again on the job's news; one parked after news came (the
-/// news raced the daemon's "no sidecar") is queued again at once.
-#[test]
-fn parked_thumbnails_are_asked_for_again_on_retry() {
-    let (_ctx, m) = idle_media();
-    let req = |i: usize| Req {
-        entry: crate::tab::test_entry(&VPath::local("/photos"), &format!("{i}.jpg"), Kind::File, 1),
-        real: VPath::local(format!("/photos/{i}.jpg")),
-    };
-    m.want(0, vec![(key(1), 0, req(1)), (key(2), 1, req(2))]);
-    let since = m.sh.retries.load(Ordering::SeqCst);
-    for _ in 0..2 {
-        let (k, _) = m.sh.queue.try_pop(Stage::Load).unwrap();
-        m.sh.queue.promote(&k);
-        let (k, _) = m.sh.queue.try_pop(Stage::Make).unwrap();
-        m.sh.park(&k, since);
-    }
-    assert_eq!(m.queued_for_tests(), 0, "waiting for the job");
-    m.news(7, false);
-    assert_eq!(m.queued_for_tests(), 2);
-    let (k, _) = m.sh.queue.try_pop(Stage::Load).unwrap();
-    m.sh.park(&k, since);
-    assert_eq!(
-        m.queued_for_tests(),
-        2,
-        "news came meanwhile: queued at once"
-    );
 }

@@ -199,12 +199,12 @@ pub fn on_battery() -> bool {
 
 /// Returns once the app is idle (and not on battery, unless that is allowed); `battery`
 /// caches the last reading. `Err(Cancelled)` when the job is asked to stop.
-/// Waits while the user is active (`on_activity`) or the machine runs on battery (when the
-/// library pauses on battery).
+/// Waits while the user was active within the last `pause` (zero: never) or the machine
+/// runs on battery (when the library pauses on battery).
 pub(crate) fn wait_until_idle(
     ctx: &JobCtx,
     battery: &mut Option<(Instant, bool)>,
-    on_activity: bool,
+    pause: Duration,
 ) -> Result<()> {
     loop {
         if ctx.stopping() {
@@ -219,7 +219,7 @@ pub(crate) fn wait_until_idle(
                 v
             }
         };
-        let busy = (on_activity && lib.busy())
+        let busy = (!pause.is_zero() && lib.busy_within(pause))
             || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
         if !busy {
             return Ok(());
@@ -284,8 +284,11 @@ impl HashJob {
     }
 
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        let on_activity = ctx.lib.hash_on_activity.load(Ordering::SeqCst);
-        wait_until_idle(ctx, &mut self.battery, on_activity)
+        let pause = match ctx.lib.hash_on_activity.load(Ordering::SeqCst) {
+            true => crate::library::ACTIVITY_PAUSE,
+            false => Duration::ZERO,
+        };
+        wait_until_idle(ctx, &mut self.battery, pause)
     }
 
     fn progress(&self) -> f32 {
@@ -661,8 +664,9 @@ impl Library {
         schedule(&self.shared)
     }
 
-    /// Tells the background jobs the user is busy (call it on every input): sidecar and
-    /// integrity jobs pause for the next 5 s, hashing too unless `set_hash_idle_only(false)`.
+    /// Tells the background jobs the user is busy (call it on every input): integrity jobs
+    /// pause for the next 5 s, hashing too unless `set_hash_idle_only(false)`, sidecar jobs
+    /// for the next 1 s.
     pub fn note_activity(&self) {
         let until = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1104,16 +1104,16 @@ const REMOTE_POLL: Duration = Duration::from_secs(3);
 /// Attached: Settings → Devices is written to the daemon once unchanged this long.
 const SETTLE: Duration = Duration::from_secs(1);
 
-/// Settings → Devices as `devices.settings_set` takes it: the label when set, the inbox
-/// resolved (the window's default is the Downloads folder's), the always-accept list and
-/// relays.
+/// Settings → Devices as `devices.settings_set` takes it: the label and the inbox when set
+/// (else the daemon keeps its own: drops land in the same folder whether or not a window
+/// is attached), the always-accept list and relays.
 pub fn settings_params(ds: &DeviceSettings) -> serde_json::Value {
     let mut p = json!({"auto_accept": ds.auto_accept, "relay": ds.relay});
     if !ds.label.trim().is_empty() {
         p["label"] = ds.label.trim().into();
     }
-    if let Some(dir) = ds.inbox_dir() {
-        p["inbox"] = dir.display().to_string().into();
+    if !ds.inbox.trim().is_empty() {
+        p["inbox"] = ds.inbox.trim().into();
     }
     p
 }
@@ -1691,17 +1691,20 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
             );
             ui.end_row();
             ui.label("Inbox");
-            let default = DeviceSettings::default()
-                .inbox_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
+            let default = match &d.remote_self {
+                Some(_) => "keel-daemon's (the inbox in its data folder)".to_owned(),
+                None => DeviceSettings::default()
+                    .inbox_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            };
             ui.add(
                 egui::TextEdit::singleline(&mut ds.inbox)
                     .hint_text(default)
                     .desired_width(240.0),
             );
             ui.end_row();
-            if ds.inbox.trim().is_empty() && downloads().is_none() {
+            if ds.inbox.trim().is_empty() && downloads().is_none() && d.remote_self.is_none() {
                 ui.label("");
                 match ds.inbox_dir() {
                     Some(dir) => ui.weak(format!(
@@ -1955,6 +1958,15 @@ mod tests {
         assert_eq!(at(" ", &None, &some_data), Some(data.join("inbox")));
         assert_eq!(at("", &None, &None), None);
         assert_eq!(at(" mine ", &None, &None), Some(PathBuf::from("mine")));
+    }
+
+    /// Review 44 minor 7: an attached window sends its inbox only when one is set.
+    #[test]
+    fn the_daemon_gets_the_inbox_only_when_set() {
+        let mut ds = DeviceSettings::default();
+        assert!(settings_params(&ds).get("inbox").is_none());
+        ds.inbox = " /drops ".into();
+        assert_eq!(settings_params(&ds)["inbox"], "/drops");
     }
 
     #[test]

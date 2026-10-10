@@ -1392,7 +1392,6 @@ impl AppState {
                         }
                     },
                     Event::Net(v) => self.devices_event(v),
-                    Event::Sidecars { job, done } => self.media.news(job, done),
                     Event::Jobs => {}
                 }
             }

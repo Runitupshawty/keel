@@ -335,8 +335,11 @@ pub(crate) fn count_unique(shared: &Shared) -> Result<u64> {
 
 /// How long `remove_source` waits for jobs and watchers to close a store it deletes.
 const REMOVE_WAIT: Duration = Duration::from_secs(10);
-/// How long hashing stays paused after `Library::note_activity`.
+/// How long hashing and integrity checks stay paused after `Library::note_activity`...
 pub(crate) const ACTIVITY_PAUSE: Duration = Duration::from_secs(5);
+/// ...and sidecar jobs: a window asked for those, and it says the user works at most every
+/// 4 s while the user does, so they run between its notes.
+pub(crate) const SIDECAR_PAUSE: Duration = Duration::from_secs(1);
 
 /// `p` relative to `root` ("" when equal), None when `p` is not inside `root`.
 pub(crate) fn relative(root: &VPath, p: &VPath) -> Option<String> {
@@ -487,7 +490,13 @@ impl Shared {
 
     /// The app reported activity within the last `ACTIVITY_PAUSE`.
     pub(crate) fn busy(&self) -> bool {
-        now_ms() < self.busy_until.load(Ordering::SeqCst)
+        self.busy_within(ACTIVITY_PAUSE)
+    }
+
+    /// The app reported activity within the last `pause` (at most `ACTIVITY_PAUSE`).
+    pub(crate) fn busy_within(&self, pause: Duration) -> bool {
+        let early = ACTIVITY_PAUSE.saturating_sub(pause).as_millis() as u64;
+        now_ms().saturating_add(early) < self.busy_until.load(Ordering::SeqCst)
     }
 
     /// (Re)starts the watcher of a watched source; a root that cannot be watched now leaves
