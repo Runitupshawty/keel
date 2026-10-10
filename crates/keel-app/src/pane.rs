@@ -481,6 +481,9 @@ pub fn context_menu(
     entry: Option<&keel_vfs::Entry>,
     out: &mut Vec<Action>,
 ) {
+    if tab.is_trash() {
+        return crate::trash_ui::context_menu(ui, entry, out);
+    }
     let on_item = entry.is_some();
     let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {

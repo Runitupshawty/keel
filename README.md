@@ -16,6 +16,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb, ods), Word documents (docx), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
 - **File operations**: copy, move, rename (F2), new folder/file, and delete to the OS trash (never a permanent delete), with progress, cancel, and skip/overwrite/rename prompts on name clashes. Drag and drop between panes and from other apps.
 - **System clipboard**: Ctrl+C / Ctrl+X / Ctrl+V exchange files with Explorer (including cut) and Finder / file managers on Linux (copy only for now).
+- **Recycle Bin / Trash**: the sidebar's Recycle Bin (Windows) or Trash (Linux) entry opens your bin as a folder showing where each item came from and when it was deleted. Right-click to Restore, Delete permanently or Empty; both deletes ask first. See [Recycle Bin and Trash](#recycle-bin-and-trash).
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](#remotes-over-ssh).
@@ -121,6 +122,10 @@ The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd
 Press Enter or double-click a `.zip`, `.jar`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst` or `.rar` file to open it as a folder (an archive inside an archive opens too). Up leaves the archive; preview works on the files inside. Right-click for **Extract here**, **Extract to folder**, **Extract to…**, **Add to "name.zip"** and **Compress to zip…**. Extraction asks before overwriting and refuses entries that would land outside the target folder.
 
 Archives are read-only: you can extract from any of them and add to a zip, but not delete, rename or create anything inside one. RAR is read through libunrar and never written. Password-protected entries are marked with a lock and cannot be previewed.
+
+## Recycle Bin and Trash
+
+Open **Recycle Bin** (Windows) or **Trash** (Linux, any freedesktop-compliant desktop) in the sidebar. Columns: Name, Original location, Size, Deleted on. **Restore** moves the selected items back to their original folders; if something with the same name is already there Keel stops and says so instead of overwriting it. **Delete permanently** and **Empty Recycle Bin** remove items for good and ask first (Empty shows the item count). The folder is read-only otherwise: nothing can be pasted, created or renamed in it, and a trashed folder cannot be browsed until it is restored. The preview panel shows trashed files where the system keeps them at a normal path (Windows `$R` files, Linux `files/`); otherwise it says there is no preview. macOS is not supported yet.
 
 ## Terminal
 

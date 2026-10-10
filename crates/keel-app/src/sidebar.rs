@@ -48,6 +48,12 @@ impl Default for Sidebar {
                 }
             }
         }
+        if keel_vfs::trashbin::SUPPORTED {
+            quick.push((
+                keel_vfs::trashbin::label().to_owned(),
+                keel_vfs::trashbin::root(),
+            ));
+        }
         Self {
             quick,
             drives: Vec::new(),

@@ -1265,6 +1265,13 @@ impl AppState {
         // Targets come from the visible rows; make sure they match this listing.
         let show_hidden = self.show_hidden;
         self.tab_mut(p).visible(show_hidden);
+        let in_trash = self.tab(p).is_trash();
+        if crate::trash_ui::refuses(&action, in_trash) {
+            return self.toasts.error(format!(
+                "The {} is read-only; restore items to work with them",
+                keel_vfs::trashbin::label()
+            ));
+        }
         if self.writes_into_archive(p, &action) {
             return self.toasts.error(READ_ONLY);
         }
@@ -1515,6 +1522,16 @@ impl AppState {
             }
             Action::Delete => {
                 let paths = self.target_paths(p);
+                if paths
+                    .first()
+                    .is_some_and(|p| p.scheme == keel_vfs::trashbin::SCHEME)
+                {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::trash_ui::delete_text(paths.len()),
+                        on_yes: Action::PurgeTrash(paths),
+                    });
+                    return;
+                }
                 let remote = paths.first().filter(|p| p.scheme == "sftp");
                 let cloud = paths.first().filter(|p| p.scheme == "cloud");
                 let cloud = cloud.map(|p| (p, self.clouds.account(&p.authority)));
@@ -1542,6 +1559,32 @@ impl AppState {
                         on_yes: Action::Trash(paths),
                     });
                 }
+            }
+            Action::RestoreTrash => {
+                let paths = self.target_paths(p);
+                if !paths.is_empty() {
+                    self.jobs
+                        .trash_op(jobs::TrashOp::Restore(paths), self.tx.clone());
+                }
+            }
+            Action::PurgeTrash(paths) => {
+                self.jobs
+                    .trash_op(jobs::TrashOp::Purge(paths), self.tx.clone());
+            }
+            Action::EmptyTrash => {
+                let n = self.tab(p).entries().len();
+                if n == 0 {
+                    self.toasts
+                        .info(format!("The {} is empty", keel_vfs::trashbin::label()));
+                } else {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::trash_ui::empty_text(n),
+                        on_yes: Action::EmptyTrashNow,
+                    });
+                }
+            }
+            Action::EmptyTrashNow => {
+                self.jobs.trash_op(jobs::TrashOp::Empty, self.tx.clone());
             }
             Action::DeleteRemote(paths) => {
                 self.jobs
@@ -1944,6 +1987,9 @@ impl AppState {
         // with the OS message). Archives open as folders, in this tab.
         if e.encrypted {
             self.toasts.error(crate::preview_panel::LOCKED);
+        } else if e.kind == Kind::Dir && e.path.scheme == keel_vfs::trashbin::SCHEME {
+            self.toasts
+                .info(format!("Restore {} to open it", e.path.name()));
         } else if e.kind == Kind::Dir {
             self.run(p, Action::Navigate(e.path));
         } else if jobs::is_archive_file(&e) {

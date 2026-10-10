@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Recycle Bin / Trash as a folder**: a "Recycle Bin" (Windows) or "Trash" (Linux) entry in the sidebar opens the current user's bin as a `trash://` tab with Name, Original location, Size and Deleted on columns. Restore puts items back where they were deleted from and reports a name clash instead of overwriting; Delete permanently and Empty ask first and say how many items go. Previews work for trashed files. Read-only otherwise (no paste, rename or new items). Not available on macOS yet.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
