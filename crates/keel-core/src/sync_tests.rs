@@ -65,7 +65,7 @@ impl Device {
             total.applied += done.applied;
             total.stale += done.stale;
             total.rejected += done.rejected;
-            if !page.more {
+            if !page.more && !done.restart {
                 return total;
             }
         }
@@ -89,6 +89,7 @@ fn page_of(entries: Vec<SyncEntry>) -> SyncPage {
         entries,
         more: false,
         upto,
+        epoch: String::new(),
     }
 }
 
@@ -518,4 +519,231 @@ fn a_huge_lamport_time_cannot_push_this_devices_changes_out_of_range() {
     // Another device still takes a's changes.
     assert_eq!(c.pull(&a).applied, 1);
     assert!(c.tag("Mine").is_some());
+}
+
+#[test]
+fn a_merged_tag_edited_on_both_devices_converges() {
+    let a = device("deva", &[]);
+    let b = device("devb", &[]);
+    let ta = a.lib.create_tag("Work", None, None).unwrap();
+    let tb = b.lib.create_tag("Work", None, None).unwrap();
+    b.pull(&a);
+    a.pull(&b);
+    assert_eq!(a.lib.tags().unwrap().len(), 1);
+    assert_eq!(b.lib.tags().unwrap().len(), 1);
+    a.lib.recolor_tag(ta, Some("#ff0000")).unwrap();
+    b.lib.recolor_tag(tb, Some("#0000ff")).unwrap();
+    b.pull(&a);
+    a.pull(&b);
+    let ca = a.lib.tags().unwrap()[0].color.clone();
+    let cb = b.lib.tags().unwrap()[0].color.clone();
+    a.lib.rename_tag(ta, "Job").unwrap();
+    b.lib.rename_tag(tb, "Office").unwrap();
+    b.pull(&a);
+    a.pull(&b);
+    let na = a.lib.tags().unwrap()[0].name.clone();
+    let nb = b.lib.tags().unwrap()[0].name.clone();
+    assert_eq!((ca, na), (cb, nb), "merged tag diverged");
+}
+
+#[test]
+fn a_tag_taken_off_a_local_copy_stays_off() {
+    let a = device("deva", &[("song.flac", "same")]);
+    let b = device("devb", &[("music/song.flac", "same")]);
+    b.hash();
+    let tag = a.lib.create_tag("Loved", None, None).unwrap();
+    a.lib.set_tag(tag, &[a.rec("song.flac")], true).unwrap();
+    a.hash();
+    b.pull(&a);
+    let loved = b.tag("Loved").unwrap().id;
+    assert_eq!(b.lib.tags_of(&b.rec("music/song.flac")).unwrap(), [loved]);
+    b.lib
+        .set_tag(loved, &[b.rec("music/song.flac")], false)
+        .unwrap();
+    assert!(b.lib.tags_of(&b.rec("music/song.flac")).unwrap().is_empty());
+    a.lib.create_tag("Other", None, None).unwrap();
+    b.pull(&a);
+    let after = names(&b.lib.tags_of(&b.rec("music/song.flac")).unwrap(), &b.lib);
+    assert!(after.is_empty(), "the tag came back on the untagged copy");
+}
+
+#[test]
+fn a_tag_taken_off_after_hashing_reaches_the_copy() {
+    let a = device("deva", &[("song.flac", "same")]);
+    let b = device("devb", &[("music/song.flac", "same")]);
+    b.hash();
+    let tag = a.lib.create_tag("Loved", None, None).unwrap();
+    a.lib.set_tag(tag, &[a.rec("song.flac")], true).unwrap();
+    a.hash();
+    b.pull(&a);
+    let loved = b.tag("Loved").unwrap().id;
+    assert_eq!(b.lib.tags_of(&b.rec("music/song.flac")).unwrap(), [loved]);
+    a.lib.set_tag(tag, &[a.rec("song.flac")], false).unwrap();
+    assert!(a.lib.tags_of(&a.rec("song.flac")).unwrap().is_empty());
+    assert_eq!(b.pull(&a).applied, 2, "the content and path entries");
+    let after = names(&b.lib.tags_of(&b.rec("music/song.flac")).unwrap(), &b.lib);
+    assert!(
+        after.is_empty(),
+        "removal on the origin did not reach the copy"
+    );
+}
+
+#[test]
+fn a_merged_tag_deleted_elsewhere_is_not_served_on() {
+    let a = device("deva", &[]);
+    let b = device("devb", &[]);
+    let d = device("devd", &[]);
+    a.lib.create_tag("Work", None, None).unwrap();
+    let tb = b.lib.create_tag("Work", None, None).unwrap();
+    a.pull(&b);
+    b.lib.delete_tag(tb).unwrap();
+    a.pull(&b);
+    assert!(a.tag("Work").is_none(), "deleted on a");
+    d.pull(&a);
+    assert!(d.tag("Work").is_none(), "a serves a tag it no longer has");
+}
+
+#[test]
+fn a_delete_against_a_later_rename_keeps_assignments_alike() {
+    let a = device("deva", &[("f.txt", "same")]);
+    let b = device("devb", &[("f.txt", "same")]);
+    a.hash();
+    b.hash();
+    let t = b.lib.create_tag("T", None, None).unwrap();
+    b.lib.set_tag(t, &[b.rec("f.txt")], true).unwrap();
+    a.pull(&b);
+    let on_a = a.tag("T").unwrap().id;
+    assert_eq!(a.lib.tags_of(&a.rec("f.txt")).unwrap(), [on_a]);
+    // Concurrently: a deletes the tag, b renames it twice (a later Lamport time).
+    a.lib.delete_tag(on_a).unwrap();
+    b.lib.rename_tag(t, "T2").unwrap();
+    b.lib.rename_tag(t, "T3").unwrap();
+    a.pull(&b);
+    b.pull(&a);
+    let ta = a
+        .tag("T3")
+        .map(|x| a.lib.tags_of(&a.rec("f.txt")).unwrap().contains(&x.id));
+    let tb = b
+        .tag("T3")
+        .map(|x| b.lib.tags_of(&b.rec("f.txt")).unwrap().contains(&x.id));
+    assert_eq!(ta, tb, "devices disagree after delete vs rename");
+    assert_eq!(
+        ta,
+        Some(true),
+        "the later rename brings the tag back, on the file"
+    );
+}
+
+#[test]
+fn a_device_whose_library_was_made_again_is_read_from_the_start() {
+    let b = device("devb", &[]);
+    {
+        let a = device("deva", &[]);
+        for name in ["One", "Two", "Three"] {
+            a.lib.create_tag(name, None, None).unwrap();
+        }
+        b.pull(&a);
+        assert_eq!(b.lib.sync_since("deva").unwrap(), 3);
+    }
+    // The same device id with a new library: its log starts over at 1.
+    let a = device("deva", &[]);
+    a.lib.create_tag("Fresh", None, None).unwrap();
+    let page = a.lib.sync_page(3, SYNC_PAGE).unwrap();
+    assert!(page.entries.is_empty() && !page.epoch.is_empty());
+    let done = b.lib.sync_apply("deva", &page).unwrap();
+    assert!(done.restart, "{done:?}");
+    assert_eq!(b.lib.sync_since("deva").unwrap(), 0);
+    b.pull(&a);
+    assert!(b.tag("Fresh").is_some());
+    // An unchanged log is read on from where it was.
+    assert!(
+        !b.lib
+            .sync_apply("deva", &a.lib.sync_page(1, SYNC_PAGE).unwrap())
+            .unwrap()
+            .restart
+    );
+}
+
+#[test]
+fn a_large_library_from_before_sync_is_logged_in_chunks() {
+    let a = device("deva", &[]);
+    let tag = a.lib.create_tag("Many", None, None).unwrap();
+    const N: i64 = 3_000;
+    {
+        // N records tagged, as a library from before sync (nothing logged, not seeded).
+        let mut c = a.src.store.get().unwrap();
+        let tx = c.transaction().unwrap();
+        let root: i64 = tx
+            .query_row("SELECT id FROM record WHERE parent IS NULL", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        for i in 0..N {
+            tx.execute(
+                "INSERT INTO record(parent, name, path, kind, fs_id, gen) VALUES (?1, ?2, ?2, 0, ?3, 1)",
+                params![root, format!("f{i}.txt"), format!("h:{i}")],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO record_tag(record, tag) VALUES (?1, ?2)",
+                params![tx.last_insert_rowid(), tag],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        a.lib
+            .shared
+            .db
+            .get()
+            .unwrap()
+            .execute_batch(
+                "DELETE FROM sync_log; DELETE FROM sync_key; DELETE FROM meta WHERE key = 'sync_seeded';",
+            )
+            .unwrap();
+    }
+    a.lib.sync_seed_in(1_000).unwrap();
+    let (rows, keys): (i64, i64) = a
+        .lib
+        .shared
+        .db
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT count(*), count(DISTINCT key) FROM sync_log",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    // The tag and every assignment, once each.
+    assert_eq!((rows, keys), (N + 1, N + 1));
+}
+
+#[test]
+fn tombstones_expire_while_the_library_stays_open() {
+    let a = device("deva", &[]);
+    let tag = a.lib.create_tag("Gone", None, None).unwrap();
+    a.lib.delete_tag(tag).unwrap();
+    let c = a.lib.shared.db.get().unwrap();
+    let old = crate::now() - TOMBSTONE_SECS - 10;
+    c.execute("UPDATE sync_key SET ts = ?1 WHERE live = 0", [old])
+        .unwrap();
+    c.execute("UPDATE sync_log SET ts = ?1 WHERE live = 0", [old])
+        .unwrap();
+    let count = |c: &rusqlite::Connection| -> i64 {
+        c.query_row("SELECT count(*) FROM sync_key WHERE live = 0", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    // Pruned at open a moment ago: not again yet.
+    a.lib.sync_page(0, SYNC_PAGE).unwrap();
+    assert_eq!(count(&c), 1);
+    // A day later, the next page served lets it go.
+    c.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'sync_pruned'",
+        [(crate::now() - PRUNE_SECS).to_string()],
+    )
+    .unwrap();
+    a.lib.sync_page(0, SYNC_PAGE).unwrap();
+    assert_eq!(count(&c), 0);
 }

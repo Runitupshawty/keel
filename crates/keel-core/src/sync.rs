@@ -7,7 +7,9 @@
 //! ([`Library::sync_apply`]); keel-net carries the pages between devices that opted in.
 //! Each key (a tag by its stable id, an assignment by tag and target, a content id by
 //! device, source and path) keeps the change with the highest (Lamport time, device id):
-//! last writer wins, the same on every device. Deletes are tombstones kept 30 days.
+//! last writer wins, the same on every device. A tag made on two devices under one name
+//! is one tag: both ids' changes compete for the local tag's key. Deletes are tombstones
+//! kept 30 days (pruned at open and daily).
 //!
 //! Sync is pairwise: a device serves only its own changes, never what it received, so
 //! three devices sync when each pair has the switch on. An assignment's target is a
@@ -32,6 +34,10 @@ pub const FAVORITES_UID: &str = "favorites";
 pub const SYNC_PAGE: usize = 1_000;
 /// Most bytes (as JSON) one page carries, well under keel-net's 1 MiB header limit.
 const PAGE_BYTES: usize = 640 * 1024;
+/// How often tombstones are looked at past the library's open (seconds).
+const PRUNE_SECS: i64 = 24 * 3600;
+/// Assignments logged per step when a library from before sync is first opened.
+const SEED_CHUNK: usize = 10_000;
 /// How long deletes are remembered (seconds).
 pub const TOMBSTONE_SECS: i64 = 30 * 24 * 3600;
 /// Lamport times above this are refused (no device gets near it; it keeps `+ 1` safe).
@@ -101,6 +107,10 @@ pub struct SyncPage {
     pub more: bool,
     /// The sequence number the page reaches (the next pull starts after it).
     pub upto: u64,
+    /// The serving device's log: a new one (its library was made again) starts its
+    /// sequence numbers over, so a puller that sees it change reads it from the start.
+    #[serde(default)]
+    pub epoch: String,
 }
 
 /// What `Library::sync_apply` did with a page.
@@ -112,6 +122,8 @@ pub struct SyncApplied {
     pub stale: usize,
     /// Entries refused (malformed or oversized).
     pub rejected: usize,
+    /// The device's log is a new one: nothing was applied, pull it again from the start.
+    pub restart: bool,
 }
 
 /// How far a device's log was read (`Library::sync_peers`).
@@ -215,14 +227,34 @@ impl SyncOp {
     /// The key it competes for. `device` is whose namespace a path is in ("" = this
     /// device).
     fn key(&self, device: &str) -> String {
+        self.key_as(device, None)
+    }
+
+    /// The tag it is about, if any.
+    fn tag_ref(&self) -> Option<&str> {
         match self {
-            SyncOp::Tag { uid, .. } | SyncOp::TagDeleted { uid } => format!("tag:{uid}"),
-            SyncOp::Assign { tag, target, .. } => match target {
-                SyncTarget::Content(h) => format!("as:{tag}:c:{h}"),
-                SyncTarget::Path { source, path } => {
-                    format!("as:{tag}:p:{device}:{source}:{path}")
+            SyncOp::Tag { uid, .. } | SyncOp::TagDeleted { uid } => Some(uid),
+            SyncOp::Assign { tag, .. } => Some(tag),
+            SyncOp::Content { .. } => None,
+        }
+    }
+
+    /// `key`, with the tag named by `tag` (the local stable id of a merged tag, so every
+    /// device's change of one tag competes for one key) when given.
+    fn key_as(&self, device: &str, tag: Option<&str>) -> String {
+        match self {
+            SyncOp::Tag { uid, .. } | SyncOp::TagDeleted { uid } => {
+                format!("tag:{}", tag.unwrap_or(uid))
+            }
+            SyncOp::Assign { tag: t, target, .. } => {
+                let tag = tag.unwrap_or(t);
+                match target {
+                    SyncTarget::Content(h) => format!("as:{tag}:c:{h}"),
+                    SyncTarget::Path { source, path } => {
+                        format!("as:{tag}:p:{device}:{source}:{path}")
+                    }
                 }
-            },
+            }
             SyncOp::Content { source, path, .. } => format!("ct:{device}:{source}:{path}"),
         }
     }
@@ -253,6 +285,15 @@ impl Change {
             serve: true,
         }
     }
+}
+
+/// What a page changed that received assignments may now reach.
+#[derive(Default)]
+struct Touched {
+    /// Tags (local stable ids) that arrived or changed.
+    tags: HashSet<String>,
+    /// Files whose content id arrived: the end of their path keys.
+    paths: HashSet<String>,
 }
 
 /// A `node://<device>/<source>/<sub>` root: (device, source, sub).
@@ -321,7 +362,9 @@ impl Library {
     /// The assignment changes for records of `src` whose tag `uid` was put on or taken
     /// off: by content id when the file is hashed, else by path. A file of another
     /// device's source without a content id is kept by that device's path and never
-    /// served (a device only sends paths in its own sources).
+    /// served (a device only sends paths in its own sources). Taking a tag off a hashed
+    /// file also takes off its path entry while that is on (it was put on before the file
+    /// was hashed), so neither device puts it back through the path.
     pub(crate) fn assign_changes(
         &self,
         uid: &str,
@@ -337,6 +380,9 @@ impl Library {
         let c = src.store.get()?;
         let mut stmt =
             c.prepare_cached("SELECT path, cas_id, remote_cas FROM record WHERE id = ?1")?;
+        let db = self.shared.db.get()?;
+        let mut path_on =
+            db.prepare_cached("SELECT EXISTS(SELECT 1 FROM sync_key WHERE key = ?1 AND live = 1)")?;
         let mut out = Vec::new();
         for id in records {
             type Row = (String, Option<Vec<u8>>, Option<Vec<u8>>);
@@ -348,38 +394,55 @@ impl Library {
             };
             // A device source's content ids are that device's word (`remote_cas`).
             let cas = if src.is_device() { remote_cas } else { cas };
-            let (target, device, serve) = match (cas, &node) {
-                (Some(h), _) if h.len() == 32 => {
-                    (SyncTarget::Content(hex(&h)), String::new(), true)
-                }
-                (_, Some((device, source, sub))) => (
+            let by_path = match &node {
+                Some((device, source, sub)) => Some((
                     SyncTarget::Path {
                         source: source.clone(),
                         path: join(sub, &path),
                     },
                     device.clone(),
                     false,
-                ),
-                _ if src.is_device() => continue,
-                _ => (
+                )),
+                None if src.is_device() => None,
+                None => Some((
                     SyncTarget::Path {
                         source: src.id.0.clone(),
                         path,
                     },
                     String::new(),
                     true,
-                ),
+                )),
             };
-            let op = SyncOp::Assign {
-                tag: uid.to_owned(),
-                target,
-                on,
+            let mut push = |target, device: &str, serve| {
+                let op = SyncOp::Assign {
+                    tag: uid.to_owned(),
+                    target,
+                    on,
+                };
+                out.push(Change {
+                    key: op.key(device),
+                    op,
+                    serve,
+                });
             };
-            out.push(Change {
-                key: op.key(&device),
-                op,
-                serve,
-            });
+            match (cas, by_path) {
+                (Some(h), by_path) if h.len() == 32 => {
+                    push(SyncTarget::Content(hex(&h)), "", true);
+                    if let Some((target, device, serve)) = by_path.filter(|_| !on) {
+                        let key = SyncOp::Assign {
+                            tag: uid.to_owned(),
+                            target: target.clone(),
+                            on,
+                        }
+                        .key(&device);
+                        if path_on.query_row([key], |r| r.get::<_, bool>(0))? {
+                            push(target, &device, serve);
+                        }
+                    }
+                }
+                (_, Some((target, device, serve))) => push(target, &device, serve),
+                _ => {}
+            }
         }
         Ok(out)
     }
@@ -424,12 +487,14 @@ impl Library {
         Ok(())
     }
 
-    /// Forgets the assignments of a deleted tag (its tombstone stands for them).
+    /// Forgets this device's assignments of a tag it deleted (its tombstone stands for
+    /// them). Received ones stay: they apply again if a later change of another device
+    /// brings the tag back.
     pub(crate) fn forget_assignments(&self, uid: &str) -> Result<()> {
         let (from, to) = (format!("as:{uid}:"), format!("as:{uid};"));
         let c = self.shared.db.get()?;
         c.execute(
-            "DELETE FROM sync_key WHERE key >= ?1 AND key < ?2",
+            "DELETE FROM sync_key WHERE key >= ?1 AND key < ?2 AND device = ''",
             [&from, &to],
         )?;
         c.execute(
@@ -439,9 +504,149 @@ impl Library {
         Ok(())
     }
 
+    /// Stand-ins for the other devices' stable ids merged into tag `id`, which is going:
+    /// tombstones kept here (never served), so their older changes stay deleted.
+    pub(crate) fn alias_tombstones(&self, id: TagId) -> Result<Vec<Change>> {
+        let c = self.shared.db.get()?;
+        let mut stmt = c.prepare("SELECT uid FROM tag_alias WHERE tag = ?1")?;
+        let uids = stmt.query_map([id], |r| r.get::<_, String>(0))?;
+        uids.map(|uid| {
+            let op = SyncOp::TagDeleted { uid: uid? };
+            Ok(Change {
+                key: op.key(""),
+                op,
+                serve: false,
+            })
+        })
+        .collect()
+    }
+
+    /// The local stable id of the tag `uid` names (itself when it names none).
+    fn canon_uid(&self, uid: &str) -> Result<String> {
+        let found: Option<String> = self
+            .shared
+            .db
+            .get()?
+            .query_row(
+                "SELECT uid FROM tag WHERE uid = ?1
+                 UNION ALL SELECT t.uid FROM tag_alias a JOIN tag t ON t.id = a.tag WHERE a.uid = ?1
+                 LIMIT 1",
+                [uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.unwrap_or_else(|| uid.to_owned()))
+    }
+
+    /// The tag here a received tag `name` under `parent` is the same as (made on both
+    /// devices): one of the same name among the same parent's children.
+    fn same_tag(&self, name: &str, parent: Option<TagId>) -> Result<Option<TagId>> {
+        Ok(self
+            .shared
+            .db
+            .get()?
+            .query_row(
+                "SELECT id FROM tag WHERE coalesce(parent, 0) = coalesce(?1, 0)
+                     AND name = ?2 COLLATE NOCASE AND id <> ?3",
+                params![parent, name, FAVORITES],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A received tag never seen before that has the name of a tag here becomes that tag
+    /// (an alias) before it competes, so both devices' later changes of it compete for one
+    /// key. Assignments that came before it move to that key (the later one stays). True
+    /// when it merged.
+    fn merge_received(&self, op: &SyncOp) -> Result<bool> {
+        let SyncOp::Tag {
+            uid, name, parent, ..
+        } = op
+        else {
+            return Ok(false);
+        };
+        if self.resolve_uid(uid)?.is_some() {
+            return Ok(false);
+        }
+        let seen: bool = self.shared.db.get()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_key WHERE key = ?1)",
+            [format!("tag:{uid}")],
+            |r| r.get(0),
+        )?;
+        if seen {
+            return Ok(false);
+        }
+        let parent = match parent {
+            Some(p) => self.resolve_uid(p)?.filter(|p| *p != FAVORITES),
+            None => None,
+        };
+        let Some(id) = self.same_tag(name, parent)? else {
+            return Ok(false);
+        };
+        let to = self.tag_uid(id)?;
+        let me = self.sync_device()?;
+        let mut c = self.shared.db.get()?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO tag_alias(uid, tag) VALUES (?1, ?2)",
+            params![uid, id],
+        )?;
+        type Row = (String, i64, String, String, bool, i64);
+        let rows: Vec<Row> = {
+            let mut stmt = tx.prepare(
+                "SELECT key, lamport, device, op, live, ts FROM sync_key WHERE key >= ?1 AND key < ?2",
+            )?;
+            let rows = stmt.query_map([format!("as:{uid}:"), format!("as:{uid};")], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (key, lamport, device, op, live, ts) in rows {
+            let moved = format!("as:{to}:{}", &key[4 + uid.len()..]);
+            let held: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT lamport, device FROM sync_key WHERE key = ?1",
+                    [&moved],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let who = |d: &str| {
+                if d.is_empty() {
+                    me.clone()
+                } else {
+                    d.to_owned()
+                }
+            };
+            if held.is_none_or(|(l, d)| (lamport, who(&device)) > (l, who(&d))) {
+                tx.execute(
+                    "INSERT OR REPLACE INTO sync_key(key, lamport, device, op, live, ts)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![moved, lamport, device, op, live, ts],
+                )?;
+            }
+            tx.execute("DELETE FROM sync_key WHERE key = ?1", [&key])?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Once per library: logs the tags and assignments that existed before sync, so a
     /// device that syncs later gets them too.
     pub(crate) fn sync_seed(&self) -> Result<()> {
+        self.sync_seed_in(SEED_CHUNK)
+    }
+
+    /// `sync_seed`, logging the assignments `chunk` links at a time (a library with a
+    /// million of them is not held in memory at once). Interrupted, it starts over at the
+    /// next open; what it logged twice is one key.
+    pub(crate) fn sync_seed_in(&self, chunk: usize) -> Result<()> {
         if self.shared.db.meta("sync_seeded")?.is_some() {
             return Ok(());
         }
@@ -458,6 +663,7 @@ impl Library {
             done.insert(t.id);
             changes.push(self.tag_change(t.id)?);
         }
+        self.log_sync(changes)?;
         let uids: std::collections::HashMap<TagId, String> = {
             let c = self.shared.db.get()?;
             let mut stmt = c.prepare("SELECT id, uid FROM tag")?;
@@ -466,29 +672,74 @@ impl Library {
         };
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         for src in &sources {
-            let links: Vec<(i64, TagId)> = {
-                let c = src.store.get()?;
-                let mut stmt =
-                    c.prepare("SELECT record, tag FROM record_tag ORDER BY tag, record")?;
-                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-                rows.collect::<rusqlite::Result<_>>()?
-            };
-            for group in links.chunk_by(|a, b| a.1 == b.1) {
-                let Some(uid) = uids.get(&group[0].1) else {
-                    continue;
+            let mut after = (i64::MIN, i64::MIN);
+            loop {
+                let mut links: Vec<(i64, TagId)> = {
+                    let c = src.store.get()?;
+                    let mut stmt = c.prepare_cached(
+                        "SELECT record, tag FROM record_tag WHERE (record, tag) > (?1, ?2)
+                         ORDER BY record, tag LIMIT ?3",
+                    )?;
+                    let rows = stmt.query_map(params![after.0, after.1, chunk as i64], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?;
+                    rows.collect::<rusqlite::Result<_>>()?
                 };
-                let ids: Vec<i64> = group.iter().map(|l| l.0).collect();
-                changes.extend(self.assign_changes(uid, src, &ids, true)?);
+                let Some(&last) = links.last() else { break };
+                after = last;
+                links.sort_by_key(|l| l.1);
+                let mut changes = Vec::new();
+                for group in links.chunk_by(|a, b| a.1 == b.1) {
+                    let Some(uid) = uids.get(&group[0].1) else {
+                        continue;
+                    };
+                    let ids: Vec<i64> = group.iter().map(|l| l.0).collect();
+                    changes.extend(self.assign_changes(uid, src, &ids, true)?);
+                }
+                self.log_sync(changes)?;
             }
         }
-        self.log_sync(changes)?;
         self.shared.db.set_meta("sync_seeded", "1")
     }
 
     /// Drops log entries a later local entry of the same key replaced, and tombstones (in
     /// the log and as winners) older than `TOMBSTONE_SECS`.
     pub(crate) fn sync_prune(&self) -> Result<()> {
-        self.sync_prune_before(crate::now() - TOMBSTONE_SECS)
+        let now = crate::now();
+        self.sync_prune_before(now - TOMBSTONE_SECS)?;
+        self.shared.db.set_meta("sync_pruned", &now.to_string())
+    }
+
+    /// `sync_prune` once a day, as pages are served and applied (a device that runs for
+    /// weeks still lets its tombstones go).
+    fn sync_prune_due(&self) -> Result<()> {
+        let last: i64 = self
+            .shared
+            .db
+            .meta("sync_pruned")?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if crate::now() - last >= PRUNE_SECS {
+            self.sync_prune()?;
+        }
+        Ok(())
+    }
+
+    /// This device's log's id (`SyncPage::epoch`), made with its first page.
+    fn sync_epoch(&self) -> Result<String> {
+        if let Some(epoch) = self.shared.db.meta("sync_epoch")? {
+            return Ok(epoch);
+        }
+        let c = self.shared.db.get()?;
+        c.execute(
+            "INSERT OR IGNORE INTO meta(key, value) VALUES ('sync_epoch', lower(hex(randomblob(16))))",
+            [],
+        )?;
+        Ok(
+            c.query_row("SELECT value FROM meta WHERE key = 'sync_epoch'", [], |r| {
+                r.get(0)
+            })?,
+        )
     }
 
     pub(crate) fn sync_prune_before(&self, cutoff: i64) -> Result<()> {
@@ -508,7 +759,9 @@ impl Library {
     /// when they would not fit a page. Their `device` is "" (the caller names this
     /// device).
     pub fn sync_page(&self, since: u64, limit: usize) -> Result<SyncPage> {
+        self.sync_prune_due()?;
         self.note_content()?;
+        let epoch = self.sync_epoch()?;
         let limit = limit.clamp(1, SYNC_PAGE);
         let c = self.shared.db.get()?;
         let mut stmt = c.prepare_cached(
@@ -524,6 +777,7 @@ impl Library {
         })?;
         let mut page = SyncPage {
             upto: since,
+            epoch,
             ..SyncPage::default()
         };
         let mut bytes = 0;
@@ -581,7 +835,9 @@ impl Library {
 
     /// Applies a page pulled from `device` (its id as the connection proved it): each
     /// entry that wins its key goes through the same code as a local edit (without being
-    /// logged again), then `device`'s position moves to `page.upto`.
+    /// logged again), then `device`'s position moves to `page.upto`. A page from a new
+    /// log of `device` (`SyncPage::epoch` changed) applies nothing and moves the position
+    /// back to the start (`SyncApplied::restart`).
     pub fn sync_apply(&self, device: &str, page: &SyncPage) -> Result<SyncApplied> {
         ensure!(valid_device(device), "invalid device id");
         let me = self.sync_device()?;
@@ -590,14 +846,42 @@ impl Library {
             page.entries.len() <= SYNC_PAGE,
             "too many entries in one page"
         );
+        ensure!(
+            page.epoch.is_empty() || valid_uid(&page.epoch),
+            "invalid sync log id"
+        );
         let mut done = SyncApplied::default();
+        if !page.epoch.is_empty() {
+            let known_key = format!("sync_epoch:{device}");
+            let known = self.shared.db.meta(&known_key)?;
+            if known.as_deref() != Some(page.epoch.as_str()) {
+                self.shared.db.set_meta(&known_key, &page.epoch)?;
+                if known.is_some() {
+                    self.shared
+                        .db
+                        .get()?
+                        .execute("UPDATE sync_peer SET seq = 0 WHERE device = ?1", [device])?;
+                    done.restart = true;
+                    return Ok(done);
+                }
+            }
+        }
         let mut tags_changed = false;
+        let mut touched = Touched::default();
         for e in &page.entries {
             if e.lamport > MAX_LAMPORT || e.op.check().is_err() {
                 done.rejected += 1;
                 continue;
             }
-            let key = e.op.key(device);
+            let merged = self.merge_received(&e.op)?;
+            let canon = match e.op.tag_ref() {
+                Some(uid) => Some(self.canon_uid(uid)?),
+                None => None,
+            };
+            if merged {
+                touched.tags.extend(canon.clone());
+            }
+            let key = e.op.key_as(device, canon.as_deref());
             let c = self.shared.db.get()?;
             c.execute(
                 "INSERT INTO meta(key, value) VALUES ('lamport', ?1) ON CONFLICT(key) DO
@@ -612,8 +896,8 @@ impl Library {
                 )
                 .optional()?;
             // An assignment of a deleted tag stays deleted.
-            let dead_tag = match &e.op {
-                SyncOp::Assign { tag, .. } => {
+            let dead_tag = match (&e.op, &canon) {
+                (SyncOp::Assign { .. }, Some(tag)) => {
                     c.query_row(
                         "SELECT live FROM sync_key WHERE key = ?1",
                         [format!("tag:{tag}")],
@@ -650,7 +934,16 @@ impl Library {
                 ],
             )?;
             drop(c);
-            tags_changed |= self.apply_op(device, &e.op)?;
+            tags_changed |= self.apply_op(device, &e.op, e.lamport)?;
+            match &e.op {
+                SyncOp::Tag { uid, .. } => {
+                    touched.tags.insert(self.canon_uid(uid)?);
+                }
+                SyncOp::Content { source, path, .. } => {
+                    touched.paths.insert(format!(":p:{device}:{source}:{path}"));
+                }
+                _ => {}
+            }
             done.applied += 1;
         }
         if tags_changed {
@@ -659,9 +952,12 @@ impl Library {
         }
         let revision = self.protection_revision();
         let recounted = self.shared.sync_reapplied.swap(revision, Ordering::SeqCst) != revision;
-        if done.applied > 0 || recounted {
+        if recounted {
             self.sync_reapply()?;
+        } else {
+            self.reapply_touched(device, &touched)?;
         }
+        self.sync_prune_due()?;
         self.shared.db.get()?.execute(
             "INSERT INTO sync_peer(device, seq, last_sync, received) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(device) DO UPDATE SET seq = max(seq, excluded.seq),
@@ -718,8 +1014,9 @@ impl Library {
         Ok(candidate)
     }
 
-    /// One winning remote change. True when the tag definitions changed.
-    fn apply_op(&self, device: &str, op: &SyncOp) -> Result<bool> {
+    /// One winning remote change (at Lamport time `lamport`). True when the tag
+    /// definitions changed.
+    fn apply_op(&self, device: &str, op: &SyncOp, lamport: u64) -> Result<bool> {
         match op {
             SyncOp::Tag {
                 uid,
@@ -746,15 +1043,8 @@ impl Library {
                         Ok(true)
                     }
                     None => {
+                        let same = self.same_tag(name, parent)?;
                         let c = self.shared.db.get()?;
-                        let same: Option<TagId> = c
-                            .query_row(
-                                "SELECT id FROM tag WHERE coalesce(parent, 0) = coalesce(?1, 0)
-                                     AND name = ?2 COLLATE NOCASE AND id <> ?3",
-                                params![parent, name, FAVORITES],
-                                |r| r.get(0),
-                            )
-                            .optional()?;
                         match same {
                             // The same tag made on both devices: one tag here.
                             Some(id) => c.execute(
@@ -772,22 +1062,52 @@ impl Library {
             }
             SyncOp::TagDeleted { uid } => {
                 let id = self.resolve_uid(uid)?;
+                let local = match id {
+                    Some(id) => self.tag_uid(id)?,
+                    None => uid.clone(),
+                };
+                // The other ids merged into it stay deleted here too.
+                let mut gone = vec![];
+                if let Some(id) = id.filter(|id| *id != FAVORITES) {
+                    gone = self.alias_tombstones(id)?;
+                    gone.retain(|ch| ch.op.tag_ref() != Some(uid.as_str()));
+                }
                 self.shared
                     .db
                     .get()?
                     .execute("DELETE FROM tag_alias WHERE uid = ?1", [uid])?;
                 // Its assignments go with it (';' sorts right after ':').
                 let c = self.shared.db.get()?;
-                c.execute(
-                    "DELETE FROM sync_key WHERE key >= ?1 AND key < ?2",
-                    [format!("as:{uid}:"), format!("as:{uid};")],
+                for u in [uid, &local] {
+                    c.execute(
+                        "DELETE FROM sync_key WHERE key >= ?1 AND key < ?2",
+                        [format!("as:{u}:"), format!("as:{u};")],
+                    )?;
+                }
+                // What this device served of the tag (entries under its own id) goes too,
+                // with a tombstone of its own, so a device pairing later does not get it.
+                let served: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_log WHERE key = ?1
+                         OR (key >= ?2 AND key < ?3))",
+                    [
+                        format!("tag:{local}"),
+                        format!("as:{local}:"),
+                        format!("as:{local};"),
+                    ],
+                    |r| r.get(0),
                 )?;
                 drop(c);
                 match id {
                     Some(id) if id != FAVORITES => {
                         if let Err(e) = self.delete_tag_rows(id) {
                             tracing::warn!("sync: deleting tag {id}: {e:#}");
+                            return Ok(true);
                         }
+                        if served {
+                            gone.push(self.tag_deleted(local.clone()));
+                        }
+                        self.log_sync(gone)?;
+                        self.forget_assignments(&local)?;
                         Ok(true)
                     }
                     _ => Ok(false),
@@ -796,7 +1116,8 @@ impl Library {
             SyncOp::Assign { tag, target, on } => {
                 // A tag not known yet: applied once it arrives (`sync_reapply`).
                 if let Some(id) = self.resolve_uid(tag)? {
-                    let records = self.records_for(device, target)?;
+                    let canon = self.canon_uid(tag)?;
+                    let records = self.records_for(device, target, &canon, lamport)?;
                     self.set_tag_rows(id, &records, *on)?;
                 }
                 Ok(false)
@@ -807,9 +1128,38 @@ impl Library {
 
     /// The records here that a target of `device` names: copies of the content, or the
     /// file in this library's sources of that device (and copies of its content when the
-    /// device said what it is).
-    fn records_for(&self, device: &str, target: &SyncTarget) -> Result<Vec<RecordRef>> {
+    /// device said what it is). A record reached through a path whose content has an
+    /// assignment of `tag` (local stable id) later than this one (`lamport`) is left to
+    /// that one: the tag was put on or taken off that content since.
+    fn records_for(
+        &self,
+        device: &str,
+        target: &SyncTarget,
+        tag: &str,
+        lamport: u64,
+    ) -> Result<Vec<RecordRef>> {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        let me = self.sync_device()?;
+        let later = |cas: &[u8]| -> Result<bool> {
+            let held: Option<(i64, String)> = self
+                .shared
+                .db
+                .get()?
+                .query_row(
+                    "SELECT lamport, device FROM sync_key WHERE key = ?1",
+                    [format!("as:{tag}:c:{}", hex(cas))],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            Ok(held.is_some_and(|(l, d)| {
+                let d = if d.is_empty() {
+                    me.as_str()
+                } else {
+                    d.as_str()
+                };
+                (l as u64, d) > (lamport, device)
+            }))
+        };
         let by_content = |cas: &str, out: &mut Vec<RecordRef>| -> Result<()> {
             let blob = unhex(cas);
             for src in &sources {
@@ -852,6 +1202,16 @@ impl Library {
                     };
                     let c = src.store.get()?;
                     if let Some((id, _)) = crate::index::resolve(&c, rel, false)? {
+                        let cas: Option<Vec<u8>> = c.query_row(
+                            "SELECT remote_cas FROM record WHERE id = ?1",
+                            [id],
+                            |r| r.get(0),
+                        )?;
+                        if let Some(h) = cas.filter(|h| h.len() == 32) {
+                            if later(&h)? {
+                                continue;
+                            }
+                        }
                         out.push(RecordRef {
                             source: src.id.clone(),
                             id,
@@ -871,7 +1231,9 @@ impl Library {
                 if let Some(SyncOp::Content { cas, .. }) =
                     known.and_then(|op| serde_json::from_str(&op).ok())
                 {
-                    by_content(&cas, &mut out)?;
+                    if !later(&unhex(&cas))? {
+                        by_content(&cas, &mut out)?;
+                    }
                 }
             }
         }
@@ -918,26 +1280,62 @@ impl Library {
 
     /// Puts every received assignment that is on onto the records it names now (a tag or
     /// a copy that arrived, was indexed or was hashed after it). Returns how many tags
-    /// were put on records. ponytail: goes over every received assignment; runs only after
-    /// a page applied something or the library recounted (a walk or hashing ended).
+    /// were put on records. ponytail: goes over every received assignment; runs only
+    /// after the library recounted (a walk or hashing ended); a page reapplies only what
+    /// it touched (`reapply_touched`).
     pub fn sync_reapply(&self) -> Result<usize> {
-        let rows: Vec<(String, String)> = {
+        let rows: Vec<(String, i64, String)> = {
             let c = self.shared.db.get()?;
             let mut stmt = c.prepare(
-                "SELECT device, op FROM sync_key WHERE key LIKE 'as:%' AND live = 1 AND device <> ''",
+                "SELECT device, lamport, op FROM sync_key
+                 WHERE key LIKE 'as:%' AND live = 1 AND device <> ''",
             )?;
-            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
+        self.reapply_rows(rows)
+    }
+
+    /// `sync_reapply` for the received assignments a page may have made reachable: those
+    /// of the tags it brought or changed, and the path ones of `device`'s files whose
+    /// content id it brought.
+    fn reapply_touched(&self, device: &str, touched: &Touched) -> Result<usize> {
+        let mut rows: Vec<(String, i64, String)> = Vec::new();
+        let c = self.shared.db.get()?;
+        let row = |r: &rusqlite::Row| Ok((r.get(0)?, r.get(1)?, r.get(2)?));
+        let mut by_tag = c.prepare_cached(
+            "SELECT device, lamport, op FROM sync_key
+             WHERE key >= ?1 AND key < ?2 AND live = 1 AND device <> ''",
+        )?;
+        for uid in &touched.tags {
+            let found = by_tag.query_map([format!("as:{uid}:"), format!("as:{uid};")], row)?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        let mut by_path = c.prepare_cached(
+            "SELECT device, lamport, op FROM sync_key
+             WHERE key LIKE 'as:%:p:%' AND live = 1 AND device = ?1
+                 AND substr(key, -length(?2)) = ?2",
+        )?;
+        for end in &touched.paths {
+            let found = by_path.query_map([device, end.as_str()], row)?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        drop((by_tag, by_path));
+        drop(c);
+        self.reapply_rows(rows)
+    }
+
+    fn reapply_rows(&self, rows: Vec<(String, i64, String)>) -> Result<usize> {
         let mut added = 0;
-        for (device, op) in rows {
+        for (device, lamport, op) in rows {
             let Ok(SyncOp::Assign { tag, target, .. }) = serde_json::from_str(&op) else {
                 continue;
             };
             let Some(id) = self.resolve_uid(&tag)? else {
                 continue;
             };
-            let records = self.records_for(&device, &target)?;
+            let canon = self.canon_uid(&tag)?;
+            let records = self.records_for(&device, &target, &canon, lamport as u64)?;
             added += self
                 .set_tag_rows(id, &records, true)?
                 .iter()

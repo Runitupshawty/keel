@@ -159,6 +159,7 @@ impl Node {
             entries: page.entries,
             more: page.more,
             upto: page.upto,
+            epoch: page.epoch,
         })
     }
 
@@ -208,12 +209,13 @@ impl Node {
             let pull = Request::SyncPull {
                 since: vec![(peer.0, since)],
             };
-            let (mut entries, mut more, mut upto) = match self.request(peer, pull).await? {
+            let (mut entries, mut more, mut upto, epoch) = match self.request(peer, pull).await? {
                 Response::SyncEntries {
                     entries,
                     more,
                     upto,
-                } => (entries, more, upto),
+                    epoch,
+                } => (entries, more, upto, epoch),
                 Response::Denied(why) => bail!("the device refused: {why}"),
                 Response::Error(e) => bail!("the device failed: {e}"),
                 _ => bail!("unexpected answer to a sync pull"),
@@ -239,10 +241,15 @@ impl Node {
                 entries,
                 more,
                 upto,
+                epoch,
             };
             let (h, p) = (self.handler.clone(), *peer);
             let done = tokio::task::spawn_blocking(move || h.sync_apply(&p, &page)).await??;
             *applied += done.applied;
+            if done.restart {
+                // A new log on that device: read it from the start.
+                continue;
+            }
             if limited {
                 tracing::debug!(peer = %peer.0, "library sync: rate limit reached; the rest waits");
             }

@@ -346,8 +346,10 @@ impl Library {
             .filter(|t| t.parent == Some(id))
             .map(|t| t.id)
             .collect();
+        let aliases = self.alias_tombstones(id)?;
         self.delete_tag_rows(id)?;
         let mut changes = vec![self.tag_deleted(uid.clone())];
+        changes.extend(aliases);
         for child in children {
             changes.push(self.tag_change(child)?);
         }

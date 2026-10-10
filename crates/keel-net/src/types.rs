@@ -358,6 +358,9 @@ pub enum Response {
         entries: Vec<keel_core::SyncEntry>,
         more: bool,
         upto: u64,
+        /// The host's log (`keel_core::SyncPage::epoch`).
+        #[serde(default)]
+        epoch: String,
     },
     Denied(String),
     Error(String),
