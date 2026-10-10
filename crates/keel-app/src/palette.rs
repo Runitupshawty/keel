@@ -37,7 +37,7 @@ fn context_items() -> Vec<Item> {
     use Action::*;
     [
         ("Open", "Enter", Enter),
-        ("Open with…", "", OpenWith),
+        ("Open with…", "Ctrl+Shift+O", OpenWith),
         ("Open location", "Ctrl+Enter", OpenLocation),
         ("Copy", "Ctrl+C", Copy),
         ("Cut", "Ctrl+X", Cut),

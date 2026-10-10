@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Open with… (Ctrl+Shift+O, context menu): Keel's own picker lists the recent apps for the file's extension, the apps the system knows for it (Linux: MIME associations; macOS: applications in /Applications and ~/Applications), Browse… for any executable or .app, and on Windows the system chooser. "Remember for .ext files" files the app in `open_with.recent` in config.toml. The context menu shows the last 5 apps for that extension in an "Open with" submenu. With several files selected, all of them open with the chosen app (one process per file, or one `open -a` on macOS).
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

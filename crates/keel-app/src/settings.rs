@@ -59,6 +59,35 @@ pub struct Settings {
     pub media_tile: crate::media::TileSize,
     /// Media view: date headers.
     pub media_dates: bool,
+    /// `[open_with.recent]`: apps used with "Open with…", per extension.
+    pub open_with: OpenWith,
+}
+
+/// Open with: most recently used apps per lowercase extension ("" = no extension), newest
+/// first. An app is an executable path, an `.app` path or a desktop id.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct OpenWith {
+    pub recent: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl OpenWith {
+    /// Apps kept per extension.
+    pub const LIMIT: usize = 8;
+
+    /// Puts `app` first for `ext`, dropping an earlier copy and the oldest beyond `LIMIT`.
+    pub fn remember(&mut self, ext: &str, app: &str) {
+        let list = self.recent.entry(ext.to_lowercase()).or_default();
+        list.retain(|a| a != app);
+        list.insert(0, app.to_owned());
+        list.truncate(Self::LIMIT);
+    }
+
+    pub fn recent(&self, ext: &str) -> &[String] {
+        self.recent
+            .get(&ext.to_lowercase())
+            .map_or(&[], Vec::as_slice)
+    }
 }
 
 impl Default for Settings {
@@ -86,6 +115,7 @@ impl Default for Settings {
             media_tile: Default::default(),
             media_dates: false,
             library: Default::default(),
+            open_with: Default::default(),
         }
     }
 }
@@ -504,7 +534,32 @@ pub fn window(
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{OpenWith, Settings};
+
+    #[test]
+    fn open_with_recents_order_cap_and_round_trip() {
+        let mut ow = OpenWith::default();
+        assert!(ow.recent("txt").is_empty());
+        ow.remember("TXT", "a");
+        ow.remember("txt", "b");
+        ow.remember("txt", "a"); // moves to the front, no duplicate
+        assert_eq!(ow.recent("txt"), ["a", "b"]);
+        for i in 0..20 {
+            ow.remember("txt", &format!("app{i}"));
+        }
+        assert_eq!(ow.recent("txt").len(), OpenWith::LIMIT);
+        assert_eq!(ow.recent("txt")[0], "app19");
+        ow.remember("", "noext");
+        let s = Settings {
+            open_with: ow,
+            ..Settings::default()
+        };
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.open_with, s.open_with);
+        // Old files without the table still load.
+        let old: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert!(old.open_with.recent.is_empty());
+    }
 
     #[test]
     fn a_bad_cloud_or_remote_entry_drops_only_itself() {

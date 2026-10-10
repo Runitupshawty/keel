@@ -148,10 +148,16 @@ pub enum Msg {
         paths: Vec<VPath>,
         info: Result<crate::dialogs::properties::Props, String>,
     },
-    /// Linux "Open with": the applications for `path`.
+    /// Open with…: the applications the system knows for `paths` (local copies).
     OpenWithApps {
-        path: std::path::PathBuf,
+        paths: Vec<std::path::PathBuf>,
         apps: Vec<(String, String)>,
+    },
+    /// Browse… answered: open `paths` with `app`.
+    OpenWithChosen {
+        paths: Vec<std::path::PathBuf>,
+        app: String,
+        remember: bool,
     },
     // --- Task 24 ---
     /// A later `keel` run handed over its command line (single instance).
@@ -736,11 +742,23 @@ impl AppState {
                     }
                 }
             }
-            Msg::OpenWithApps { path, apps } => {
+            Msg::OpenWithApps { paths, apps } => {
                 if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::OpenWith { path, apps });
+                    let ext = ext_of(&paths[0]);
+                    let recent = self.settings.open_with.recent(&ext).to_vec();
+                    self.dialog = Some(Dialog::OpenWith {
+                        paths,
+                        recent,
+                        apps,
+                        remember: true,
+                    });
                 }
             }
+            Msg::OpenWithChosen {
+                paths,
+                app,
+                remember,
+            } => self.open_with_app(paths, app, remember),
             // --- Task 24 ---
             Msg::External(req) => self.external(req),
             Msg::Library(msg) => self.library_msg(msg),
@@ -1432,34 +1450,59 @@ impl AppState {
                 });
             }
             Action::OpenWith => {
-                if let Some(e) = self.tab(p).targets().first() {
-                    let path = e.path.clone();
-                    if cfg!(target_os = "linux") {
-                        // No system picker on Linux: list the apps for an in-app one.
-                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                        let router = self.router.clone();
-                        worker::spawn("keel-open-with", move || {
-                            let found = crate::remotes::materialise(&router, &path, &tx, &ctx)
-                                .and_then(|local| {
-                                    let apps = platform::apps_for(&local)?;
-                                    Ok((local, apps))
-                                });
-                            let msg = match found {
-                                Ok((path, apps)) => Msg::OpenWithApps { path, apps },
-                                Err(e) => Msg::Toast(format!("Open with: {e:#}")),
-                            };
-                            worker::send(&tx, &ctx, msg);
-                        });
-                    } else {
-                        self.launch(path, platform::open_with);
-                    }
-                }
+                // Keel's picker: the system's apps for the first file (a worker lists them).
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                self.with_local_targets(p, move |paths| {
+                    let apps = platform::apps_for(&paths[0]).unwrap_or_default();
+                    worker::send(&tx, &ctx, Msg::OpenWithApps { paths, apps });
+                });
             }
-            Action::LaunchWith { id, path } => {
+            Action::OpenWithApp {
+                paths,
+                app,
+                remember,
+            } => self.open_with_app(paths, app, remember),
+            Action::OpenWithBrowse { paths, remember } => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                // The OS dialog blocks: never on the UI thread.
+                worker::spawn("keel-pick", move || {
+                    let mut dialog = rfd::FileDialog::new().set_title("Open with");
+                    if cfg!(windows) {
+                        dialog = dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
+                    } else if cfg!(target_os = "macos") {
+                        dialog = dialog.set_directory("/Applications");
+                    }
+                    if let Some(app) = dialog.pick_file() {
+                        let app = app.to_string_lossy().into_owned();
+                        let msg = Msg::OpenWithChosen {
+                            paths,
+                            app,
+                            remember,
+                        };
+                        worker::send(&tx, &ctx, msg);
+                    }
+                });
+            }
+            #[cfg(windows)]
+            Action::OpenWithSystem(path) => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-launch", move || {
-                    if let Err(e) = platform::launch_with(&id, &path) {
-                        worker::send(&tx, &ctx, Msg::Toast(format!("{id}: {e}")));
+                    if let Err(e) = platform::open_with_chooser(&path) {
+                        worker::send(&tx, &ctx, Msg::Toast(format!("Open with: {e}")));
+                    }
+                });
+            }
+            #[cfg(not(windows))]
+            Action::OpenWithSystem(_) => {}
+            Action::OpenWithRecent(app) => {
+                if let Some(ext) = self.tab(p).targets().first().map(|e| e.ext.clone()) {
+                    self.settings.open_with.remember(&ext, &app);
+                }
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                self.with_local_targets(p, move |paths| {
+                    if let Err(e) = platform::open_with(&app, &paths) {
+                        let label = platform::app_label(&app);
+                        worker::send(&tx, &ctx, Msg::Toast(format!("{label}: {e}")));
                     }
                 });
             }
@@ -1953,6 +1996,51 @@ impl AppState {
         }
     }
 
+    /// Runs `f` on a worker with local copies of the selected files (folders are skipped).
+    /// Nothing happens when no file is selected.
+    fn with_local_targets(
+        &self,
+        p: usize,
+        f: impl FnOnce(Vec<std::path::PathBuf>) + Send + 'static,
+    ) {
+        let files: Vec<VPath> = (self.tab(p).targets().iter())
+            .filter(|e| e.kind != Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+        let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
+        worker::spawn("keel-open-with", move || {
+            let mut local = Vec::new();
+            for path in &files {
+                match crate::remotes::materialise(&router, path, &tx, &ctx) {
+                    Ok(l) => local.push(l),
+                    Err(e) => {
+                        let msg = Msg::Toast(format!("{}: {e:#}", path.display()));
+                        return worker::send(&tx, &ctx, msg);
+                    }
+                }
+            }
+            f(local);
+        });
+    }
+
+    /// Opens `paths` with `app` on a worker; `remember` files it under their extension.
+    fn open_with_app(&mut self, paths: Vec<std::path::PathBuf>, app: String, remember: bool) {
+        let Some(first) = paths.first() else { return };
+        if remember {
+            self.settings.open_with.remember(&ext_of(first), &app);
+        }
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-launch", move || {
+            if let Err(e) = platform::open_with(&app, &paths) {
+                let label = platform::app_label(&app);
+                worker::send(&tx, &ctx, Msg::Toast(format!("{label}: {e}")));
+            }
+        });
+    }
+
     pub(crate) fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
         worker::spawn_local(
             self.router.clone(),
@@ -1962,6 +2050,12 @@ impl AppState {
             f,
         );
     }
+}
+
+/// Lowercase extension without the dot ("" when none), as `Entry::ext`.
+fn ext_of(path: &std::path::Path) -> String {
+    path.extension()
+        .map_or_else(String::new, |e| e.to_string_lossy().to_lowercase())
 }
 
 #[cfg(test)]

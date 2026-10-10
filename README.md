@@ -110,6 +110,7 @@ By default there is one Keel per user and profile: a second `keel` hands its fol
 | Ctrl+, | Settings |
 | Ctrl+Shift+T | Tag picker (library) |
 | Ctrl+D | Toggle favorite (library) |
+| Ctrl+Shift+O | Open with… (pick an app for the selected files) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
 | Ctrl+Shift+S | Stash the selection in the drop zone |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |

@@ -492,7 +492,23 @@ pub fn context_menu(
     };
     if on_item {
         item(ui, "Open", "Enter", Action::Enter);
-        item(ui, "Open with…", "", Action::OpenWith);
+        let recent: crate::settings::OpenWith = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("keel-open-with")))
+            .unwrap_or_default();
+        let apps = entry.map_or(&[][..], |e| recent.recent(&e.ext));
+        if apps.is_empty() {
+            item(ui, "Open with…", "Ctrl+Shift+O", Action::OpenWith);
+        } else {
+            ui.menu_button("Open with", |ui| {
+                for app in apps.iter().take(5) {
+                    let label = crate::platform::app_label(app);
+                    item(ui, &label, "", Action::OpenWithRecent(app.clone()));
+                }
+                ui.separator();
+                item(ui, "Choose app…", "Ctrl+Shift+O", Action::OpenWith);
+            });
+        }
         if search {
             item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
         }

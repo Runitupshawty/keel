@@ -410,6 +410,9 @@ impl App {
                 |ui| ui.label(drag_verb(&drag, over, shift)),
             );
         }
+        // Recent "Open with" apps for the context menu (read by `pane::context_menu`).
+        let recent = s.settings.open_with.clone();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("keel-open-with"), recent));
         s.viewer_ui(ctx); // Task 32
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
