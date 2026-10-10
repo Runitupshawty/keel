@@ -756,11 +756,12 @@ fn apply_change_creates_moves_and_removes() {
 }
 
 pub(crate) fn eventually(what: &str, check: impl Fn() -> bool) {
-    // Idle-priority jobs crawl on shared CI runners; 15 s is the target on a developer box.
+    // Idle-priority jobs crawl on shared CI runners and on a developer box running several
+    // builds at once; a few seconds is the normal case, the limit only bounds a starved run.
     let limit = if std::env::var_os("CI").is_some() {
         Duration::from_secs(90)
     } else {
-        Duration::from_secs(15)
+        Duration::from_secs(60)
     };
     let start = Instant::now();
     while !check() {
