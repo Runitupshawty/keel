@@ -7,8 +7,8 @@
 //! and return a [`types::PlanPreview`] (a plan id plus the hash of the exact input);
 //! `execute` with that id and hash applies it, refusing tampered or expired plans. File
 //! operations go through `plan` (keel-core's `validate -> preview -> execute`). Only
-//! `shares.revoke` (taking access away) acts directly. Mounts (`mounts.*`) need a host
-//! that serves them ([`Ctx::mounts`], set by keel-daemon).
+//! `shares.revoke` (taking access away) and `recents.note` (an opened file) act directly.
+//! Mounts (`mounts.*`) need a host that serves them ([`Ctx::mounts`], set by keel-daemon).
 
 pub mod client;
 pub mod config;

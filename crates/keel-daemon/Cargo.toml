@@ -17,6 +17,9 @@ rar = ["keel-vfs/rar"]
 winfsp = ["keel-mount/winfsp"]
 fuse = ["keel-mount/fuse"]
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "keel-daemon"
 path = "src/main.rs"

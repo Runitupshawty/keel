@@ -207,6 +207,9 @@ pub struct TagParams {
     pub tag: String,
     /// Indexed paths.
     pub paths: Vec<String>,
+    /// `tags.add`: the color of a tag it creates (`#3b82f6`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -305,6 +308,15 @@ pub struct Location {
     /// cloud account).
     pub volume: String,
     pub failure_domain: String,
+    /// The volume's state (`online`, `offline`, `archived`, `lost`, `retired`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<VolumeStateName>,
+    /// The volume is marked as a backup.
+    #[serde(default)]
+    pub backup: bool,
+    /// A device's word that it holds the content: never counted as a copy.
+    #[serde(default)]
+    pub claimed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -748,4 +760,159 @@ pub struct Inbox {
     pub pending: Vec<DropOffer>,
     /// What arrived, newest first (download with `file.get`).
     pub entries: Vec<EntryInfo>,
+}
+
+// --- what the desktop app needs while it is attached to a daemon ---
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IndexParams {
+    pub id: String,
+    /// Index whatever is at the root now, for a source held offline because another folder
+    /// (or nothing) is there.
+    #[serde(default)]
+    pub adopt: bool,
+}
+
+/// Counts over every source (the Overview's cards).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LibraryStats {
+    pub sources: usize,
+    pub offline_sources: usize,
+    /// Files and folders across every source's last generation.
+    pub records: u64,
+    pub files: u64,
+    pub bytes: u64,
+    /// Distinct content across sources, as of the last hashing run.
+    pub unique_content: u64,
+    pub running_jobs: usize,
+}
+
+/// The protection card: how safe the library's contents are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Protection {
+    /// Hashed contents held by one file only.
+    pub single_copy: u64,
+    /// Contents with two or more copies, all in one failure domain.
+    pub single_domain: u64,
+    /// Contents without a copy on a backup volume in a second failure domain.
+    pub unbacked: u64,
+    /// Files whose bytes changed while their size and times did not.
+    pub drifted: u64,
+    /// Files not hashed yet: in none of the counts above.
+    pub unchecked: u64,
+    pub offline_volumes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeKindName {
+    Fixed,
+    Removable,
+    Network,
+    Cloud,
+    Device,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeStateName {
+    Online,
+    Offline,
+    Archived,
+    Lost,
+    Retired,
+}
+
+/// A volume (disk, share, cloud account, device) holding sources.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct VolumeInfo {
+    pub id: String,
+    pub label: String,
+    pub kind: VolumeKindName,
+    pub failure_domain: String,
+    /// The failure domain was set by hand.
+    pub domain_set: bool,
+    pub state: VolumeStateName,
+    /// Unix seconds a source on it was last reachable (0: never).
+    pub last_seen: i64,
+    pub backup: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
+/// Drive inventory: one or more of a volume's settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeSetParams {
+    /// A volume id (`volumes.list`).
+    pub volume: String,
+    /// `archived`, `lost` or `retired`; `online` / `offline` make it automatic again.
+    #[serde(default)]
+    pub state: Option<VolumeStateName>,
+    /// Mark (or unmark) as a backup volume.
+    #[serde(default)]
+    pub backup: Option<bool>,
+    /// The failure domain; "" goes back to the detected one.
+    #[serde(default)]
+    pub failure_domain: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrityParams {
+    /// One source id; every source when absent.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Percentage of each source's hashed files to re-hash (default 1).
+    #[serde(default)]
+    pub sample_pct: Option<f64>,
+    /// Only when the last check ended this many days ago or longer (every source; the first
+    /// call only starts the clock).
+    #[serde(default)]
+    pub due_days: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HashingParams {
+    /// Hash contents after each walk (off cancels a running hash job).
+    pub on: bool,
+    /// Pause hashing while the user works (as the other background jobs do).
+    #[serde(default)]
+    pub idle_only: bool,
+}
+
+/// A job, when one was started.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MaybeJob {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<i64>,
+}
+
+/// A path with every tag on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TaggedPath {
+    pub path: String,
+    /// Tag ids (`tags.list`); Favorites is 1.
+    pub tags: Vec<i64>,
+}
+
+/// A saved view (sidebar).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewInfo {
+    pub id: i64,
+    pub name: String,
+    /// A `search` query.
+    pub query: String,
+    pub layout: String,
+}
+
+/// The copies of one file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FileCopies {
+    pub path: String,
+    pub copies: Copies,
 }

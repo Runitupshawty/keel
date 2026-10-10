@@ -3,14 +3,10 @@
 //! operations as JSON-RPC 2.0 on a per-user local socket, optionally on a WebSocket.
 //! See docs/api.md.
 
-mod server;
-mod share;
-mod web;
-mod ws;
-
 use clap::Parser;
 use keel_api::client::Client;
 use keel_api::config::{valid_profile, HostConfig, DEFAULT_PROFILE, PROFILE_RULE};
+use keel_daemon::server;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -145,4 +141,15 @@ fn status(cfg: &HostConfig) -> ExitCode {
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    #[test]
+    fn profile_names_are_validated() {
+        use clap::Parser;
+        for bad in ["../x", "a/b", "a\\b", "..", "", "nul"] {
+            let args = crate::Args::try_parse_from(["keel-daemon", "--profile", bad]);
+            assert!(args.is_err(), "{bad:?}");
+        }
+        let args = crate::Args::try_parse_from(["keel-daemon", "--profile", "work"]).unwrap();
+        assert_eq!(args.profile, "work");
+    }
+}

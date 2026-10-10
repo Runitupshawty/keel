@@ -63,7 +63,7 @@ fn registry_is_preview_first() {
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "duplicate operation names");
     for op in OPS {
-        let direct = ["shares.revoke", "execute"].contains(&op.name);
+        let direct = ["shares.revoke", "execute", "recents.note"].contains(&op.name);
         if op.mutating && !direct {
             assert!(op.previewed(), "{} mutates without a preview", op.name);
         }
@@ -119,6 +119,17 @@ fn registry_is_preview_first() {
         "spacedrop.send",
         "spacedrop.inbox",
         "spacedrop.answer",
+        "tags.tagged",
+        "views.list",
+        "recents.note",
+        "redundancy.folder",
+        "library.stats",
+        "protection.summary",
+        "volumes.list",
+        "volumes.set",
+        "integrity.check",
+        "hashing.set",
+        "media.index",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -1116,4 +1127,144 @@ fn spacedrop_send_inbox_and_answer() {
         a_node.close().await;
         b_node.close().await;
     });
+}
+
+/// What the desktop app reads and changes through the daemon: stats, tagged paths,
+/// views, recents, copies per folder, protection, the drive inventory, and the background
+/// jobs it drives (index with adopt, hashing, integrity, media).
+#[test]
+fn the_apps_library_operations() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
+    assert_eq!(stats["sources"], 1, "{stats}");
+    assert_eq!(stats["files"], 2, "{stats}");
+
+    let invoice = s(&f.files.path().join("docs").join("invoice-2026.pdf"));
+    let preview = call(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "receipts", "paths": [invoice], "color": "#e5484d"}),
+    )
+    .unwrap();
+    assert_eq!(preview["warnings"][0]["kind"], "creates_tag", "{preview}");
+    apply(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "receipts", "paths": [invoice], "color": "#e5484d"}),
+    );
+    apply(
+        &f.ctx,
+        "favorites.set",
+        json!({"paths": [invoice], "on": true}),
+    );
+    let tags = call(&f.ctx, "tags.list", Value::Null).unwrap();
+    let receipts = tags
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "receipts")
+        .unwrap()
+        .clone();
+    assert_eq!(receipts["color"], "#e5484d");
+    let tagged = call(&f.ctx, "tags.tagged", Value::Null).unwrap();
+    assert_eq!(tagged.as_array().unwrap().len(), 1, "{tagged}");
+    assert_eq!(tagged[0]["path"], invoice);
+    let ids: Vec<i64> = serde_json::from_value(tagged[0]["tags"].clone()).unwrap();
+    assert!(ids.contains(&receipts["id"].as_i64().unwrap()), "{ids:?}");
+    assert!(ids.contains(&keel_core::FAVORITES), "{ids:?}");
+    assert_eq!(call(&f.ctx, "views.list", Value::Null).unwrap(), json!([]));
+
+    // Opening a file puts it on top of recents, at once.
+    call(&f.ctx, "recents.note", json!({ "path": invoice })).unwrap();
+    let recents = call(&f.ctx, "recents", Value::Null).unwrap();
+    assert_eq!(recents[0]["path"], invoice, "{recents}");
+
+    let folder = call(
+        &f.ctx,
+        "redundancy.folder",
+        json!({"path": s(&f.files.path().join("docs"))}),
+    )
+    .unwrap();
+    assert_eq!(folder.as_array().unwrap().len(), 2, "{folder}");
+    assert_eq!(folder[0]["copies"]["copies"], 1, "{folder}");
+    assert_eq!(
+        folder[0]["copies"]["locations"][0]["state"], "online",
+        "{folder}"
+    );
+
+    let p = call(&f.ctx, "protection.summary", Value::Null).unwrap();
+    assert!(p["unchecked"].is_u64(), "{p}");
+    let volumes = call(&f.ctx, "volumes.list", Value::Null).unwrap();
+    let volume = volumes[0]["id"].as_str().unwrap().to_owned();
+    assert!(
+        call(&f.ctx, "volumes.set", json!({ "volume": volume })).is_err(),
+        "nothing to set"
+    );
+    let set = json!({"volume": volume, "backup": true, "failure_domain": "disk:test", "state": "archived"});
+    call(&f.ctx, "volumes.set", set.clone()).unwrap();
+    assert_eq!(
+        call(&f.ctx, "volumes.list", Value::Null).unwrap()[0]["backup"],
+        false,
+        "a preview changes nothing"
+    );
+    let v = apply(&f.ctx, "volumes.set", set);
+    assert_eq!(
+        (
+            &v["backup"],
+            &v["failure_domain"],
+            &v["state"],
+            &v["domain_set"]
+        ),
+        (
+            &json!(true),
+            &json!("disk:test"),
+            &json!("archived"),
+            &json!(true)
+        ),
+        "{v}"
+    );
+    let v = apply(
+        &f.ctx,
+        "volumes.set",
+        json!({"volume": volume, "failure_domain": "", "state": "online"}),
+    );
+    assert_eq!(v["domain_set"], false, "{v}");
+
+    let wait = |job: &Value| {
+        let info = f.ctx.lib.jobs().wait(job.as_i64().unwrap()).unwrap();
+        assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    };
+    // Adopting a root re-indexes whatever is there now.
+    let preview = call(&f.ctx, "sources.index", json!({"id": id, "adopt": true})).unwrap();
+    assert_eq!(preview["warnings"][0]["kind"], "adopts_root", "{preview}");
+    wait(&apply(&f.ctx, "sources.index", json!({"id": id, "adopt": true}))["job"]);
+    wait(
+        &apply(
+            &f.ctx,
+            "hashing.set",
+            json!({"on": true, "idle_only": false}),
+        )["job"],
+    );
+    assert_eq!(
+        apply(&f.ctx, "hashing.set", json!({"on": false}))["job"],
+        Value::Null
+    );
+    wait(&apply(&f.ctx, "integrity.check", json!({"sample_pct": 100.0}))["job"]);
+    // The first scheduled call only starts the clock.
+    let due = json!({"sample_pct": 1.0, "due_days": 7});
+    assert_eq!(apply(&f.ctx, "integrity.check", due)["job"], Value::Null);
+    assert!(call(&f.ctx, "integrity.check", json!({"sample_pct": 0.0})).is_err());
+    assert!(call(
+        &f.ctx,
+        "integrity.check",
+        json!({"source": id, "due_days": 1})
+    )
+    .is_err());
+    wait(&apply(&f.ctx, "media.index", json!({ "id": id }))["job"]);
+    let missing = json!({"id": "0123456789abcdef0123456789abcdef"});
+    assert_eq!(
+        call(&f.ctx, "media.index", missing).unwrap_err().code,
+        ApiError::NOT_FOUND
+    );
 }

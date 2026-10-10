@@ -385,17 +385,6 @@ fn web_refuses_remote_binds() {
 }
 
 #[test]
-fn profile_names_are_validated() {
-    use clap::Parser;
-    for bad in ["../x", "a/b", "a\\b", "..", "", "nul"] {
-        let args = crate::Args::try_parse_from(["keel-daemon", "--profile", bad]);
-        assert!(args.is_err(), "{bad:?}");
-    }
-    let args = crate::Args::try_parse_from(["keel-daemon", "--profile", "work"]).unwrap();
-    assert_eq!(args.profile, "work");
-}
-
-#[test]
 fn a_token_others_may_access_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("daemon.token");
@@ -883,4 +872,98 @@ fn web_share_target_parks_files_until_the_signed_in_client_claims_them() {
     let stat = json!({"jsonrpc":"2.0","id":2,"method":"stat","params":{"path": files[1]["path"]}});
     ws.send(Message::text(stat.to_string())).unwrap();
     assert_eq!(answer(&mut ws)["result"]["entry"]["size"], 5);
+}
+
+#[test]
+fn keeps_every_source_watched() {
+    let env = env();
+    let daemon = start(&env, None);
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let id = add_source(&mut c, &env);
+    let job = apply(&mut c, "sources.index", json!({ "id": id }))["job"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(wait_job(&mut c, job)["status"], "done");
+    // Once the watcher is armed (within WATCH_EVERY), a new file shows up without
+    // another index job.
+    std::thread::sleep(Duration::from_secs(4));
+    std::fs::write(env.files.path().join("later-memo.txt"), b"memo").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let hits = c.call("search", json!({"query": "later-memo"})).unwrap();
+        if !hits.as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the new file was never indexed");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// With devices on, the daemon's node serves the library's sources to granted devices
+/// and `node://` paths browse what a paired device shares.
+#[test]
+fn the_node_serves_sources_and_browses_devices() {
+    let start_net = |env: &Env| {
+        let mut cfg = env.cfg.clone();
+        cfg.net = true;
+        Daemon::start(Options {
+            cfg,
+            ws: None,
+            web: None,
+            ws_allow_remote: false,
+            web_hosts: Vec::new(),
+            net: Some(keel_api::host::NetSetup {
+                secrets: std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default()),
+                options: keel_net::NodeOptions::offline(),
+            }),
+        })
+        .unwrap()
+    };
+    let (ea, eb) = (env(), env());
+    let (da, db) = (start_net(&ea), start_net(&eb));
+    let (mut a, mut b) = (
+        Client::connect(da.name()).unwrap(),
+        Client::connect(db.name()).unwrap(),
+    );
+    let a_id = a.call("devices.list", Value::Null).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_id = b.call("devices.list", Value::Null).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ticket = apply(&mut a, "devices.pair_code", json!({}))["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    apply(&mut b, "devices.pair_with", json!({ "code": ticket }));
+    let source = add_source(&mut a, &ea);
+    apply(
+        &mut a,
+        "shares.grant",
+        json!({"peer": b_id, "source": source, "access": "read"}),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let root = format!("node://{a_id}/");
+    loop {
+        match b.call("list", json!({ "path": root })) {
+            Ok(l) if !l["entries"].as_array().unwrap().is_empty() => {
+                let src = l["entries"][0]["path"].as_str().unwrap().to_owned();
+                let files = b.call("list", json!({ "path": src })).unwrap();
+                let names: Vec<&str> = files["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e["name"].as_str().unwrap())
+                    .collect();
+                assert!(names.contains(&"notes.txt"), "{files}");
+                break;
+            }
+            other => {
+                assert!(Instant::now() < deadline, "{root}: {other:?}");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
 }

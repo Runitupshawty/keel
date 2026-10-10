@@ -1,9 +1,8 @@
-//! keel-net glue for hosts of the API. The daemon opens its node with [`NoSources`] until
-//! it hosts the library's sources through keel-net's `LibraryHandler` (the app does); it
-//! offers no source and refuses every file request, so grants made through `shares.grant`
-//! are recorded but give nothing yet. Spacedrops sent to it go through [`Drops`]: offers
-//! from `[devices] auto_accept` devices are accepted, the others wait for
-//! `spacedrop.answer` (declined when the sender stops waiting), and files land in the inbox.
+//! keel-net glue for hosts of the API. A host's node serves the library's sources through
+//! keel-net's `LibraryHandler` (`Host::open_net`); [`NoSources`] offers none (tests).
+//! Spacedrops sent to it go through [`Drops`]: offers from `[devices] auto_accept` devices
+//! are accepted, the others wait for `spacedrop.answer` (declined when the sender stops
+//! waiting), and files land in the inbox.
 
 use anyhow::{bail, Result};
 use keel_net::{
@@ -41,7 +40,7 @@ impl Drops {
     }
 
     /// keel-net caps waiting offers per device and in all; withdrawn ones are dropped here.
-    fn offer(&self, offer: IncomingDrop) -> Option<PathBuf> {
+    pub(crate) fn offer(&self, offer: IncomingDrop) -> Option<PathBuf> {
         if self.auto_accept.contains(&offer.peer.0.to_string()) {
             offer.reply.answer(true);
         } else {

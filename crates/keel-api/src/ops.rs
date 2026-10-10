@@ -62,8 +62,8 @@ pub static OPS: &[Operation] = &[
         AddSourceParams => AddedSource, sources_add_preview, sources_add, json!({"root": example_dir(), "label": "Photos"})),
     previewed!("sources.remove", "Forgets a source (its files are never touched; delete_store also deletes its index store, with its tags and favorites).",
         RemoveSourceParams => RemovedSource, sources_remove_preview, sources_remove, json!({"id": "0123456789abcdef0123456789abcdef"})),
-    previewed!("sources.index", "Indexes a source as a background job.",
-        SourceIdParams => JobStarted, sources_index_preview, sources_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
+    previewed!("sources.index", "Indexes a source as a background job (adopt: first accept whatever folder is at its root now).",
+        IndexParams => JobStarted, sources_index_preview, sources_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
     now!("list", "Lists a folder: a library path (library://<source>/<rel>, from the index, works offline) or any path Keel can reach.",
         ListParams => Listing, list, json!({"path": example_dir(), "max": 100})),
     now!("stat", "One file or folder, with its library record, tags and favorite state when indexed.",
@@ -80,6 +80,10 @@ pub static OPS: &[Operation] = &[
         SearchParams => Vec<Hit>, search, json!({"query": "invoice ext:pdf", "max": 20})),
     now!("tags.list", "All tags, or the tags on one indexed path.",
         TagsListParams => Vec<TagInfo>, tags_list, json!({})),
+    now!("tags.tagged", "Every tagged path (Favorites included) with its tag ids.",
+        NoParams => Vec<TaggedPath>, tags_tagged, json!({})),
+    now!("views.list", "Saved views (a name and a search query each).",
+        NoParams => Vec<ViewInfo>, views_list, json!({})),
     previewed!("tags.add", "Tags indexed paths (creating the tag when missing).",
         TagParams => Tagged, tags_add_preview, tags_add, json!({"tag": "receipts", "paths": [example_file()]})),
     previewed!("tags.remove", "Removes a tag from indexed paths.",
@@ -92,6 +96,8 @@ pub static OPS: &[Operation] = &[
         FavoritesSetParams => Tagged, favorites_set_preview, favorites_set, json!({"paths": [example_file()], "on": true})),
     now!("recents", "Recently opened files, newest first.",
         LimitParams => Vec<Hit>, recents, json!({"limit": 20})),
+    now!("recents.note", "Notes that an indexed file was opened (it moves to the top of recents); acts directly.",
+        true, PathParams => Done, recents_note, json!({"path": example_file()})),
     now!("jobs.list", "Library jobs (indexing, hashing, file operations), newest first.",
         NoParams => Vec<JobInfo>, jobs_list, json!({})),
     now!("jobs.info", "One job with its log.",
@@ -102,6 +108,22 @@ pub static OPS: &[Operation] = &[
         DuplicatesParams => Vec<DupGroup>, duplicates, json!({"min_size": 1048576, "max": 50})),
     now!("redundancy", "How many copies of a file's content the library knows, and where.",
         PathParams => Copies, redundancy, json!({"path": example_file()})),
+    now!("redundancy.folder", "The copies of every indexed file in a folder (the first 5000 files).",
+        PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
+    now!("library.stats", "Counts over every source: records, files, bytes, distinct contents, running jobs.",
+        NoParams => LibraryStats, library_stats, json!({})),
+    now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
+        NoParams => Protection, protection_summary, json!({})),
+    now!("volumes.list", "The drive inventory: volumes holding sources, their failure domain, state and backup mark.",
+        NoParams => Vec<VolumeInfo>, volumes_list, json!({})),
+    previewed!("volumes.set", "Sets a volume's state (archived, lost, retired; online makes it automatic), backup mark or failure domain.",
+        VolumeSetParams => VolumeInfo, volumes_set_preview, volumes_set, json!({"volume": "source:0123456789abcdef0123456789abcdef", "backup": true})),
+    previewed!("integrity.check", "Re-hashes a sample of hashed files as a job and marks files whose bytes changed (due_days: only when the last check is that old).",
+        IntegrityParams => MaybeJob, integrity_preview, integrity_check, json!({"sample_pct": 1.0})),
+    previewed!("hashing.set", "Turns content hashing after walks on or off (off cancels a running hash job; on starts one).",
+        HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true})),
+    previewed!("media.index", "Makes thumbnails and reads metadata of a source's photos and videos as an idle-priority job.",
+        SourceIdParams => JobStarted, media_index_preview, media_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
     now!("plan", "Previews a file operation (copy, move, delete, rename) from the index without touching anything. Returns a preview; call execute with the plan id and input hash to apply.",
         PlanParams => PlanPreview, plan, json!({"op": "copy", "paths": [example_file()], "to": example_dir(), "on_conflict": "skip"})),
     now!("execute", "Applies a previewed plan: pass the plan_id and input_hash of the preview being confirmed. Refuses expired, tampered or changed plans.",
@@ -448,8 +470,20 @@ fn sources_remove(ctx: &Ctx, p: RemoveSourceParams) -> Result<RemovedSource> {
     })
 }
 
-fn sources_index_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
+fn sources_index_preview(ctx: &Ctx, p: &IndexParams) -> Result<Preview> {
     let s = find_source(ctx, &p.id)?;
+    let mut warnings = Vec::new();
+    if p.adopt {
+        warnings.push(warning(
+            "adopts_root",
+            Some(s.root.display()),
+            format!(
+                "whatever is at {} now becomes the content of {}",
+                s.root.display(),
+                s.label
+            ),
+        ));
+    }
     Ok(Preview {
         pin: None,
         summary: format!("Index {} ({})", s.label, s.root.display()),
@@ -458,14 +492,22 @@ fn sources_index_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
             Some(s.root.display()),
             Some(s.label.clone()),
         )],
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
-fn sources_index(ctx: &Ctx, p: SourceIdParams) -> Result<JobStarted> {
+fn sources_index(ctx: &Ctx, p: IndexParams) -> Result<JobStarted> {
     find_source(ctx, &p.id)?;
+    let id = SourceId(p.id);
+    if p.adopt {
+        let src = ctx
+            .lib
+            .source(&id)
+            .ok_or_else(|| ApiError::not_found(format!("no source {}", id.0)))?;
+        keel_core::Indexer::adopt_root(&src)?;
+    }
     Ok(JobStarted {
-        job: ctx.lib.index(&SourceId(p.id))?,
+        job: ctx.lib.index(&id)?,
     })
 }
 
@@ -614,11 +656,39 @@ fn tag_named(ctx: &Ctx, name: &str) -> Result<Option<keel_core::Tag>> {
         .cloned())
 }
 
-fn tag_or_create(ctx: &Ctx, name: &str) -> Result<i64> {
+fn tag_or_create(ctx: &Ctx, name: &str, color: Option<&str>) -> Result<i64> {
     match tag_named(ctx, name)? {
         Some(t) => Ok(t.id),
-        None => Ok(ctx.lib.create_tag(name.trim(), None, None)?),
+        None => Ok(ctx.lib.create_tag(name.trim(), color, None)?),
     }
+}
+
+fn tags_tagged(ctx: &Ctx, _: NoParams) -> Result<Vec<TaggedPath>> {
+    let mut by_path: std::collections::BTreeMap<String, Vec<i64>> = Default::default();
+    let ids = ctx.lib.tags()?.into_iter().map(|t| t.id).chain([FAVORITES]);
+    for tag in ids {
+        for hit in ctx.lib.records_with_tag(tag)? {
+            by_path.entry(hit.path.display()).or_default().push(tag);
+        }
+    }
+    Ok(by_path
+        .into_iter()
+        .map(|(path, tags)| TaggedPath { path, tags })
+        .collect())
+}
+
+fn views_list(ctx: &Ctx, _: NoParams) -> Result<Vec<ViewInfo>> {
+    Ok(ctx
+        .lib
+        .views()?
+        .into_iter()
+        .map(|v| ViewInfo {
+            id: v.id,
+            name: v.name,
+            query: v.query,
+            layout: v.layout,
+        })
+        .collect())
 }
 
 fn tag_changes(action: &str, hits: &[LibraryHit], detail: &str) -> Vec<Change> {
@@ -650,7 +720,7 @@ fn tags_add_preview(ctx: &Ctx, p: &TagParams) -> Result<Preview> {
 
 fn tags_add(ctx: &Ctx, p: TagParams) -> Result<Tagged> {
     let hits = records(ctx, &p.paths)?;
-    let tag = tag_or_create(ctx, &p.tag)?;
+    let tag = tag_or_create(ctx, &p.tag, p.color.as_deref())?;
     ctx.lib.set_tag(tag, &refs(&hits), true)?;
     Ok(Tagged {
         records: hits.len(),
@@ -715,7 +785,7 @@ fn tags_set(ctx: &Ctx, p: TagsSetParams) -> Result<Tagged> {
     let want = p
         .tags
         .iter()
-        .map(|t| tag_or_create(ctx, t))
+        .map(|t| tag_or_create(ctx, t, None))
         .collect::<Result<Vec<_>>>()?;
     for h in &hits {
         for id in ctx.lib.tags_of(&h.record)? {
@@ -765,6 +835,11 @@ fn favorites_set(ctx: &Ctx, p: FavoritesSetParams) -> Result<Tagged> {
 
 fn recents(ctx: &Ctx, p: LimitParams) -> Result<Vec<Hit>> {
     Ok(hits(ctx.lib.recents(p.limit.unwrap_or(50).clamp(1, 1000))?))
+}
+
+fn recents_note(ctx: &Ctx, p: PathParams) -> Result<Done> {
+    ctx.lib.note_open(&record_at(ctx, &p.path)?.record)?;
+    Ok(Done { ok: true })
 }
 
 // --- jobs ---
@@ -853,22 +928,285 @@ fn duplicates(ctx: &Ctx, p: DuplicatesParams) -> Result<Vec<DupGroup>> {
 
 fn redundancy(ctx: &Ctx, p: PathParams) -> Result<Copies> {
     let h = record_at(ctx, &p.path)?;
-    let c = ctx.lib.redundancy(&h.record)?;
-    Ok(Copies {
-        copies: c.copies,
-        failure_domains: c.failure_domains,
-        backed_up: c.backed_up,
-        offline_copies: c.offline_copies,
-        locations: c
-            .locations
-            .into_iter()
-            .map(|l| Location {
-                path: l.path.display(),
-                source_label: l.source_label,
-                volume: l.volume.label.clone(),
-                failure_domain: l.volume.failure_domain.clone(),
+    Ok(ctx.lib.redundancy(&h.record)?.into())
+}
+
+/// Files per folder `redundancy.folder` answers for.
+const FOLDER_COPIES: usize = 5_000;
+
+fn redundancy_folder(ctx: &Ctx, p: PathParams) -> Result<Vec<FileCopies>> {
+    let dir = vpath(&p.path)?;
+    let (source, rel) = locate(ctx, &dir)?;
+    let files: Vec<LibraryHit> = ctx
+        .lib
+        .list_children(&source, &rel)
+        .map_err(|e| ApiError::not_found(format!("{e:#}")))?
+        .into_iter()
+        .filter(|h| !h.is_dir)
+        .take(FOLDER_COPIES)
+        .collect();
+    let all = ctx.lib.redundancies(&refs(&files))?;
+    Ok(files
+        .into_iter()
+        .zip(all)
+        .filter_map(|(h, r)| {
+            r.map(|r| FileCopies {
+                path: h.path.display(),
+                copies: r.into(),
             })
-            .collect(),
+        })
+        .collect())
+}
+
+/// A redundancy as the API shows it (every location with its volume's state).
+impl From<keel_core::Redundancy> for Copies {
+    fn from(c: keel_core::Redundancy) -> Copies {
+        Copies {
+            copies: c.copies,
+            failure_domains: c.failure_domains,
+            backed_up: c.backed_up,
+            offline_copies: c.offline_copies,
+            locations: c
+                .locations
+                .into_iter()
+                .map(|l| Location {
+                    path: l.path.display(),
+                    source_label: l.source_label,
+                    volume: l.volume.label.clone(),
+                    failure_domain: l.volume.failure_domain.clone(),
+                    state: Some(volume_state(l.volume.state)),
+                    backup: l.volume.backup,
+                    claimed: l.claimed,
+                })
+                .collect(),
+        }
+    }
+}
+
+// --- protection, volumes, background work ---
+
+fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
+    let s = ctx.lib.stats();
+    Ok(LibraryStats {
+        sources: s.sources,
+        offline_sources: s.offline_sources,
+        records: s.records,
+        files: s.files,
+        bytes: s.bytes,
+        unique_content: s.unique_content,
+        running_jobs: s.running_jobs,
+    })
+}
+
+fn protection_summary(ctx: &Ctx, _: NoParams) -> Result<Protection> {
+    let p = ctx.lib.protection_summary()?;
+    Ok(Protection {
+        single_copy: p.single_copy,
+        single_domain: p.single_domain,
+        unbacked: p.unbacked,
+        drifted: p.drifted,
+        unchecked: p.unchecked,
+        offline_volumes: p.offline_volumes,
+    })
+}
+
+fn volume_state(s: keel_core::VolumeState) -> VolumeStateName {
+    use keel_core::VolumeState as S;
+    match s {
+        S::Online => VolumeStateName::Online,
+        S::Offline => VolumeStateName::Offline,
+        S::Archived => VolumeStateName::Archived,
+        S::Lost => VolumeStateName::Lost,
+        S::Retired => VolumeStateName::Retired,
+    }
+}
+
+fn volume_info(v: keel_core::Volume) -> VolumeInfo {
+    use keel_core::VolumeKind as K;
+    VolumeInfo {
+        kind: match v.kind {
+            K::Fixed => VolumeKindName::Fixed,
+            K::Removable => VolumeKindName::Removable,
+            K::Network => VolumeKindName::Network,
+            K::Cloud => VolumeKindName::Cloud,
+            K::Device => VolumeKindName::Device,
+        },
+        state: volume_state(v.state),
+        used: v.capacity.map(|c| c.0),
+        total: v.capacity.map(|c| c.1),
+        id: v.id,
+        label: v.label,
+        failure_domain: v.failure_domain,
+        domain_set: v.domain_set,
+        last_seen: v.last_seen,
+        backup: v.backup,
+    }
+}
+
+fn volumes_list(ctx: &Ctx, _: NoParams) -> Result<Vec<VolumeInfo>> {
+    Ok(ctx.lib.volumes()?.into_iter().map(volume_info).collect())
+}
+
+fn find_volume(ctx: &Ctx, id: &str) -> Result<keel_core::Volume> {
+    ctx.lib
+        .volumes()?
+        .into_iter()
+        .find(|v| v.id == id)
+        .ok_or_else(|| ApiError::not_found(format!("no volume {id}")))
+}
+
+fn volumes_set_preview(ctx: &Ctx, p: &VolumeSetParams) -> Result<Preview> {
+    let v = find_volume(ctx, &p.volume)?;
+    let mut changes = Vec::new();
+    if let Some(state) = p.state {
+        let to = match state {
+            VolumeStateName::Online | VolumeStateName::Offline => "automatic".to_owned(),
+            s => format!("{s:?}").to_lowercase(),
+        };
+        changes.push(change("volume.state", None, Some(to)));
+    }
+    if let Some(on) = p.backup {
+        let detail = if on { "backup" } else { "not a backup" };
+        changes.push(change("volume.backup", None, Some(detail.into())));
+    }
+    if let Some(domain) = &p.failure_domain {
+        let detail = match domain.trim() {
+            "" => "detected".to_owned(),
+            d => d.to_owned(),
+        };
+        changes.push(change("volume.failure_domain", None, Some(detail)));
+    }
+    if changes.is_empty() {
+        return Err(ApiError::invalid_params(
+            "nothing to set: give state, backup or failure_domain",
+        ));
+    }
+    Ok(Preview {
+        pin: None,
+        summary: format!("Change volume {} ({})", v.label, v.id),
+        changes,
+        warnings: Vec::new(),
+    })
+}
+
+fn volumes_set(ctx: &Ctx, p: VolumeSetParams) -> Result<VolumeInfo> {
+    find_volume(ctx, &p.volume)?;
+    if let Some(state) = p.state {
+        use keel_core::VolumeState as S;
+        let state = match state {
+            VolumeStateName::Online => S::Online,
+            VolumeStateName::Offline => S::Offline,
+            VolumeStateName::Archived => S::Archived,
+            VolumeStateName::Lost => S::Lost,
+            VolumeStateName::Retired => S::Retired,
+        };
+        ctx.lib.set_volume_state(&p.volume, state)?;
+    }
+    if let Some(on) = p.backup {
+        ctx.lib.set_backup(&p.volume, on)?;
+    }
+    if let Some(domain) = &p.failure_domain {
+        let domain = Some(domain.trim()).filter(|d| !d.is_empty());
+        ctx.lib.set_failure_domain(&p.volume, domain)?;
+    }
+    Ok(volume_info(find_volume(ctx, &p.volume)?))
+}
+
+fn sample_pct(p: &IntegrityParams) -> Result<f64> {
+    match p.sample_pct.unwrap_or(1.0) {
+        pct if pct > 0.0 && pct <= 100.0 => Ok(pct),
+        pct => Err(ApiError::invalid_params(format!(
+            "sample_pct {pct} is not in (0, 100]"
+        ))),
+    }
+}
+
+fn integrity_preview(ctx: &Ctx, p: &IntegrityParams) -> Result<Preview> {
+    let pct = sample_pct(p)?;
+    if p.source.is_some() && p.due_days.is_some() {
+        return Err(ApiError::invalid_params(
+            "due_days checks every source: leave out source",
+        ));
+    }
+    let what = match &p.source {
+        Some(id) => find_source(ctx, id)?.label,
+        None => "every source".into(),
+    };
+    let when = match p.due_days {
+        Some(d) => format!(" when the last check is {d} day(s) old"),
+        None => String::new(),
+    };
+    Ok(Preview {
+        pin: None,
+        summary: format!("Re-hash {pct}% of the hashed files of {what}{when}"),
+        changes: vec![change("integrity.check", None, Some(what))],
+        warnings: Vec::new(),
+    })
+}
+
+fn integrity_check(ctx: &Ctx, p: IntegrityParams) -> Result<MaybeJob> {
+    let pct = sample_pct(&p)?;
+    let job = match (p.due_days, p.source) {
+        (Some(days), _) => {
+            let every = std::time::Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+            ctx.lib.schedule_integrity(pct, every)?
+        }
+        (None, source) => Some(ctx.lib.integrity(source.map(SourceId), pct)?),
+    };
+    Ok(MaybeJob { job })
+}
+
+fn hashing_preview(_: &Ctx, p: &HashingParams) -> Result<Preview> {
+    let summary = match (p.on, p.idle_only) {
+        (false, _) => "Turn content hashing off (a running hash job is cancelled)",
+        (true, true) => "Hash contents while the user is idle",
+        (true, false) => "Hash contents, also while the user works",
+    };
+    Ok(Preview {
+        pin: None,
+        summary: summary.into(),
+        changes: vec![change("hashing", None, Some(summary.into()))],
+        warnings: Vec::new(),
+    })
+}
+
+fn hashing_set(ctx: &Ctx, p: HashingParams) -> Result<MaybeJob> {
+    ctx.lib.set_hash_after_walk(p.on);
+    ctx.lib.set_hash_idle_only(p.idle_only);
+    if p.on {
+        return Ok(MaybeJob {
+            job: Some(ctx.lib.hash()?),
+        });
+    }
+    for j in ctx.lib.jobs().list()? {
+        let active = matches!(
+            j.status,
+            keel_core::JobStatus::Queued | keel_core::JobStatus::Running
+        );
+        if j.kind == "hash" && active {
+            ctx.lib.jobs().cancel(j.id)?;
+        }
+    }
+    Ok(MaybeJob { job: None })
+}
+
+fn media_index_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
+    let s = find_source(ctx, &p.id)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!(
+            "Make thumbnails and read metadata of the photos and videos in {}",
+            s.label
+        ),
+        changes: vec![change("media.index", Some(s.root.display()), Some(s.label))],
+        warnings: Vec::new(),
+    })
+}
+
+fn media_index(ctx: &Ctx, p: SourceIdParams) -> Result<JobStarted> {
+    find_source(ctx, &p.id)?;
+    Ok(JobStarted {
+        job: ctx.lib.media_job(&SourceId(p.id))?,
     })
 }
 

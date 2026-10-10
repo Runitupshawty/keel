@@ -209,6 +209,7 @@ impl Daemon {
             uploads: crate::share::Uploads::open(cfg.data_dir.join("shares")),
         });
         pump(&shared);
+        keep_watched(&shared);
         let ws_addr = match opts.ws {
             Some(addr) => Some(ws::serve(&shared, addr, &cfg.token_path())?),
             None => None,
@@ -254,7 +255,6 @@ impl Daemon {
     }
 
     /// The local socket name clients connect to.
-    #[cfg(test)]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -356,6 +356,43 @@ fn pump(shared: &Arc<Shared>) {
                 Err(_) => return,
             };
             s.hub.broadcast("net.event", params);
+        });
+}
+
+/// How often new sources are picked up for watching.
+const WATCH_EVERY: Duration = Duration::from_secs(2);
+
+/// Keeps every source current, as the window does: each one is watched (`Library::watch`:
+/// live changes for local folders, a periodic re-walk for the others; a completed walk
+/// schedules hashing) once no index job walks it, until it is removed or the daemon stops.
+fn keep_watched(shared: &Arc<Shared>) {
+    let s = Arc::downgrade(shared);
+    let _ = std::thread::Builder::new()
+        .name("keel-daemon-watch".into())
+        .spawn(move || {
+            let mut watched = std::collections::HashSet::new();
+            loop {
+                let Some(s) = s.upgrade() else { return };
+                if s.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                let lib = &s.ctx().lib;
+                let sources = lib.sources();
+                watched.retain(|id| sources.iter().any(|x| &x.id == id));
+                for src in sources {
+                    let indexing = matches!(src.status, keel_core::SourceStatus::Indexing { .. });
+                    if !indexing && !watched.contains(&src.id) {
+                        match lib.watch(&src.id) {
+                            Ok(()) => {
+                                watched.insert(src.id);
+                            }
+                            Err(e) => tracing::warn!("watch {}: {e:#}", src.label),
+                        }
+                    }
+                }
+                drop(s);
+                std::thread::sleep(WATCH_EVERY);
+            }
         });
 }
 

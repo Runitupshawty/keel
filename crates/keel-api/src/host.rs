@@ -103,7 +103,9 @@ impl Host {
     }
 
     /// Brings keel-net online when `cfg.net` is on and it is not yet (devices and shares
-    /// need it; nothing else does).
+    /// need it; nothing else does). The node serves the library's sources to the devices
+    /// granted them (keel-net's `LibraryHandler`, as the window does), takes Spacedrops
+    /// through [`crate::net::Drops`], and `node://<device>/` paths browse paired devices.
     pub fn open_net(&mut self, cfg: &HostConfig, net: NetSetup) -> anyhow::Result<()> {
         if !cfg.net || self.ctx.node.is_some() {
             return Ok(());
@@ -117,17 +119,23 @@ impl Host {
             cfg.inbox_dir(),
             cfg.auto_accept.clone(),
         ));
-        let handler = crate::net::NoSources {
-            drops: Some(drops.clone()),
-        };
+        let handler = Arc::new(keel_net::LibraryHandler::new(ctx.lib.clone()));
+        let offers = drops.clone();
+        handler.on_drop(cfg.inbox_dir(), move |offer| {
+            offers.offer(offer);
+        });
         let node = runtime
             .block_on(keel_net::Node::open_with_options(
                 net.secrets,
                 &cfg.data_dir,
-                Arc::new(handler),
+                handler,
                 net.options,
             ))
             .context("opening keel-net")?;
+        ctx.router.register(Arc::new(keel_net::NodeProvider::new(
+            node.clone(),
+            runtime.handle().clone(),
+        )));
         // Spacedrop jobs an earlier session left resume with the library's jobs.
         keel_net::spacedrop::register(&ctx.lib);
         ctx.node = Some(node);

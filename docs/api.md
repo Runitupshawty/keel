@@ -45,7 +45,7 @@ File operations run as jobs: `execute` returns `{"job": N}`; follow it with `job
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
-revoked.
+revoked. `recents.note` (a file was opened) also acts directly: it changes no file.
 
 ## Operations
 
@@ -55,7 +55,7 @@ revoked.
 | `sources.list` | read | Library sources with status (online / indexing / offline / error) |
 | `sources.add` | preview | Add a folder, drive or share as a source |
 | `sources.remove` | preview | Forget a source (files untouched; `delete_store` also deletes its index store): the preview states the store's size, tags and favorites (a `deletes_store` warning with `delete_store`) |
-| `sources.index` | preview | Index a source (a job) |
+| `sources.index` | preview | Index a source (a job); `adopt: true` first accepts whatever folder is at its root now, for a source held offline because a different folder (or nothing) is there (an `adopts_root` warning) |
 | `list` | read | List a folder: `library://` paths from the index (offline too), others live |
 | `stat` | read | One entry, plus its library record, tags and favorite state |
 | `read` | read | A byte range of a file (`path`, `offset`, `len` up to 4 MiB), base64; library paths read the real file. SFTP, cloud and device files are read from the offset (a ranged request); elsewhere (inside archives) an offset past 64 MiB is refused |
@@ -64,15 +64,26 @@ revoked.
 | `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
 | `search` | read | Library search: words, `"phrases"`, `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:` |
 | `tags.list` | read | All tags, or the tags on one path |
-| `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag) |
+| `tags.tagged` | read | Every tagged path with its tag ids (Favorites is id 1) |
+| `views.list` | read | Saved views: `id`, `name`, `query` (a `search` query), `layout` |
+| `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag, with `color` when given) |
 | `tags.set` | preview | Exactly these tags on the paths (Favorites kept) |
 | `favorites.list` | read | Favorites |
 | `favorites.set` | preview | Add to (or with `on: false` remove from) Favorites |
 | `recents` | read | Recently opened files |
+| `recents.note` | direct | Note that an indexed file was opened (it moves to the top of `recents`) |
 | `jobs.list` / `jobs.info` | read | Jobs; one job with its log |
 | `jobs.cancel` | preview | Cancel a job |
 | `duplicates` | read | Same-content groups, most wasted bytes first |
-| `redundancy` | read | How many copies of a file's content exist, and in which sources |
+| `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
+| `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
+| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs` |
+| `protection.summary` | read | The protection card: `single_copy`, `single_domain`, `unbacked`, `drifted`, `unchecked` (not hashed yet, in none of the other counts), `offline_volumes` |
+| `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
+| `volumes.set` | preview | Set a volume's `state` (`archived` / `lost` / `retired`; `online` makes it automatic again), `backup` mark or `failure_domain` (`""`: the detected one) |
+| `integrity.check` | preview | Re-hash `sample_pct` % (default 1) of the hashed files of one `source` or all, as a job; with `due_days`, only when the last check of every source is that old (the first call starts the clock; `job` absent when nothing is due) |
+| `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one |
+| `media.index` | preview | Thumbnails and metadata for a source's photos and videos, as an idle-priority job |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`) |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline) |
@@ -110,9 +121,12 @@ trusted yet is refused (there is no one to ask): connect once from the Keel wind
 trust it. Files extracted from archives go to `<data dir>/archives` (never the app's own
 cache). Other caches and temp folders (RAR extraction, SFTP, cloud and device downloads)
 live under `<KEEL_DATA_DIR>/cache` when that is set (`keel_vfs::cache_dir`). The data
-folder is created owner-only when the host creates it. Serving
-sources to peers arrives with the remote-source work (Task 36): until then a grant is
-recorded but the node offers no sources.
+folder is created owner-only when the host creates it. A host's node serves the
+library's sources to the devices granted them (as the window does), and `node://<device
+id>/` paths (`list`, `stat`, `read`) browse what paired devices share with this one.
+keel-daemon also keeps every source current: each one is watched (local folders live,
+the others re-walked periodically; a completed walk schedules hashing) once no index job
+walks it.
 
 Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
 command exits) and need a daemon built with a mount backend (`--features winfsp` on
