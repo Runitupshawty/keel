@@ -11,6 +11,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Protection counters follow changes made outside Keel: 5 s after the last change a watcher applied (a file created, modified, deleted, renamed or moved), and after operations Keel executes, the counters are recounted in the background, once for a whole burst and not while that source is being walked (the walk recounts when it ends). The Overview's Protection card and the Copies badges are read again afterwards, in the window and in windows attached to keel-daemon, which sends `library.changed` `{method: "protection", kind: "protection.recount"}` after every recount (the web client, which shows no protection, ignores it). A window's own source watchers now recount after each full walk too. A recount reads every store (about 0.12 s for 100,000 hashed files in a release build). This lifts the 0.7.0 known limitation that the counters caught up only at the next index, hash or integrity run.
+- A video whose strip (the hover and viewer frames) times out is no longer run through `ffmpeg` again every session: the timeout is remembered in the file's sidecar `meta.json` and the strip is tried again after 7 days or once the file's modified time or size changes. The viewer's **⋯** menu has **Retry strip** to run it again at once (it also retries a strip that failed). This lifts the 0.7.0 known limitation that a timed-out strip was retried each session.
 
 ## [0.11.0] - 2026-10-10
 

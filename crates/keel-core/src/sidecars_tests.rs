@@ -232,3 +232,73 @@ fn relink_moves_sidecars_to_the_content_key() {
         "nothing left to move"
     );
 }
+
+#[test]
+fn strip_timeouts_wait_a_week_or_a_change() {
+    let week = STRIP_RETRY.as_secs() as i64;
+    let t = TimedOutAt {
+        at: 1_000_000,
+        mtime: 5,
+        size: 10,
+    };
+    assert!(!strip_retry_due(&t, 1_000_000, 5, 10), "just now");
+    assert!(!strip_retry_due(&t, 1_000_000 + week - 1, 5, 10));
+    assert!(strip_retry_due(&t, 1_000_000 + week, 5, 10), "a week later");
+    assert!(strip_retry_due(&t, 1_000_000, 6, 10), "modified");
+    assert!(strip_retry_due(&t, 1_000_000, 5, 11), "resized");
+    assert!(strip_retry_due(&t, 999_999, 5, 10), "the clock went back");
+}
+
+/// The timeout is kept in `meta.json`: `ensure` refuses the strip at once (no ffmpeg run)
+/// until the file changes or `retry` forgets it; other kinds are not affected.
+#[test]
+fn a_strip_timeout_is_remembered_until_retried() {
+    let files = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let s = Sidecars::open(store.path(), DEFAULT_BUDGET).unwrap();
+    let clip = files.path().join("clip.mp4");
+    fs::write(&clip, b"not really a video").unwrap();
+    let key = SidecarKey {
+        cas_id: Some([3; 32]),
+        ..key_of(&clip)
+    };
+    let meta = MediaMeta {
+        duration_ms: Some(90 * 60 * 1000),
+        ..MediaMeta::default()
+    };
+    s.write(&key, SidecarKind::Meta, &serde_json::to_vec(&meta).unwrap())
+        .unwrap();
+    s.record_timeout(&key, crate::now()).unwrap();
+    // Reopened: the record is on disk.
+    let s = Sidecars::open(store.path(), DEFAULT_BUDGET).unwrap();
+    let kept = s.meta(&key).unwrap();
+    assert_eq!(
+        kept.duration_ms, meta.duration_ms,
+        "on the file's real metadata"
+    );
+    assert_eq!(kept.timed_out["strip.webp"].size, key.size);
+    let err = s.ensure(&key, SidecarKind::Strip, &clip).unwrap_err();
+    assert!(err.is::<StripWaits>(), "{err:#}");
+    // The same content at another mtime (a copy, an edit restoring the bytes): tried.
+    let touched = SidecarKey {
+        mtime: key.mtime + 1,
+        ..key.clone()
+    };
+    let tried = s.ensure(&touched, SidecarKind::Strip, &clip);
+    assert!(!tried.is_err_and(|e| e.is::<StripWaits>()));
+    // Retry strip forgets it (and a recorded failure).
+    s.record_timeout(&key, crate::now()).unwrap();
+    s.retry(&key, SidecarKind::Strip).unwrap();
+    let meta = s.meta(&key).unwrap();
+    assert!(meta.timed_out.is_empty() && meta.failure(SidecarKind::Strip).is_none());
+    let tried = s.ensure(&key, SidecarKind::Strip, &clip);
+    assert!(!tried.is_err_and(|e| e.is::<StripWaits>()));
+    // A key without a meta.json: nothing to forget.
+    let unknown = SidecarKey {
+        cas_id: None,
+        size: 1,
+        ..key
+    };
+    s.retry(&unknown, SidecarKind::Strip).unwrap();
+    assert!(s.meta(&unknown).is_none());
+}

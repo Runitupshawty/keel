@@ -43,7 +43,8 @@ pub use library::{
     SourceId, SourceKind, SourceStats, SourceStatus, SourceSummary, StoreUsage,
 };
 pub use media::{
-    ffmpeg_available, ffprobe_json, find_tool, parse_probe, read_meta, MediaMeta, MAX_PIXELS,
+    ffmpeg_available, ffprobe_json, find_tool, parse_probe, read_meta, MediaMeta, TimedOutAt,
+    MAX_PIXELS,
 };
 pub use oplog::{OpDone, OpLogEntry};
 pub use plan::{
@@ -53,8 +54,8 @@ pub use protect::{CopyAt, ProtectionSummary, Redundancy, Volume, VolumeKind, Vol
 pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
 pub use sidecar_job::SidecarJob;
 pub use sidecars::{
-    Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars,
-    DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET,
+    strip_retry_due, Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars, StripWaits,
+    DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET, STRIP_RETRY,
 };
 pub use tags::{Tag, TagId, View, FAVORITES};
 

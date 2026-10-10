@@ -374,7 +374,7 @@ impl AppState {
         }
 
         // Keys (the file list's key map is off while the viewer is open).
-        let (mut close, mut fav, mut play) = (false, false, false);
+        let (mut close, mut fav, mut play, mut retry) = (false, false, false, false);
         let mut zoom_by = None;
         let mut cmd: Option<Cmd> = None;
         ctx.input_mut(|i| {
@@ -485,6 +485,19 @@ impl AppState {
                 bar_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("×").on_hover_text("Close (Esc)").clicked() {
                         close = true;
+                    }
+                    if video {
+                        ui.menu_button("⋯", |ui| {
+                            let why = if strip_tex == Tex::Failed {
+                                "Run ffmpeg for this video's strip again (it failed or timed                                  out before; a timeout is otherwise retried after a week)"
+                            } else {
+                                "Run ffmpeg for this video's strip again"
+                            };
+                            if ui.button("Retry strip").on_hover_text(why).clicked() {
+                                retry = true;
+                                ui.close_menu();
+                            }
+                        });
                     }
                     if ui
                         .selectable_label(v.info, "Info")
@@ -709,6 +722,9 @@ impl AppState {
                 p.command(Cmd::Toggle);
             }
             self.launch(entry.path.clone(), crate::platform::open);
+        }
+        if retry && video {
+            self.media.retry(strip, req.clone());
         }
         if let Some(c) = cmd.filter(|_| video) {
             self.video_cmd(ctx, v, c, &entry.path, &req);

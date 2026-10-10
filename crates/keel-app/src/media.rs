@@ -757,25 +757,34 @@ fn make_loop(sh: Arc<Shared>) {
                 continue;
             }
         }
-        let image = (|| {
-            let store = sh.store()?;
-            let (sk, src) = sh.resolve(&req, false)?;
-            // Pinned from before it is made until it is decoded: eviction cannot delete a
-            // sidecar between `ensure` and the read.
-            let _pin = store.pin(&sk);
-            let local = sh.local(src)?;
-            let path = store
-                .ensure(&sk, key.kind, &local)
-                .map_err(|e| tracing::debug!("sidecar for {}: {e:#}", req.real.display()))
-                .ok()?;
-            #[cfg(test)]
-            if let Some(hook) = &*AFTER_ENSURE.lock() {
-                hook();
-            }
-            decode_file(&path, key.px)
-        })();
+        let image = make(&sh, &key, &req, false);
         sh.finish(key, image);
     }
+}
+
+/// Makes `key`'s sidecar when missing and decodes it; `retry`: first forget that it failed
+/// or timed out before (the viewer's Retry strip).
+fn make(sh: &Shared, key: &TexKey, req: &Req, retry: bool) -> Option<ColorImage> {
+    let store = sh.store()?;
+    let (sk, src) = sh.resolve(req, retry)?;
+    if retry {
+        if let Err(e) = store.retry(&sk, key.kind) {
+            tracing::warn!("retry {}: {e:#}", req.real.display());
+        }
+    }
+    // Pinned from before it is made until it is decoded: eviction cannot delete a
+    // sidecar between `ensure` and the read.
+    let _pin = store.pin(&sk);
+    let local = sh.local(src)?;
+    let path = store
+        .ensure(&sk, key.kind, &local)
+        .map_err(|e| tracing::debug!("sidecar for {}: {e:#}", req.real.display()))
+        .ok()?;
+    #[cfg(test)]
+    if let Some(hook) = &*AFTER_ENSURE.lock() {
+        hook();
+    }
+    decode_file(&path, key.px)
 }
 
 /// Runs between a maker's `ensure` and its decode (tests: eviction right there).
@@ -968,6 +977,27 @@ impl Media {
             t => t,
         };
         (thumb, false)
+    }
+
+    /// Makes `key` again (the viewer's Retry strip): forgets that it failed or timed out,
+    /// shows it as loading, and runs ffmpeg on a worker whatever happened before.
+    /// Grid tiles of the same file ask again once it is made.
+    pub fn retry(&mut self, key: TexKey, req: Req) {
+        let same: Vec<TexKey> = (self.cache.keys())
+            .filter(|k| k.path == key.path && k.kind == key.kind)
+            .cloned()
+            .collect();
+        for k in &same {
+            if let Some((_, _, bytes)) = self.cache.remove(k) {
+                self.bytes -= bytes;
+            }
+        }
+        self.sh.queue.forget(&same);
+        let sh = self.sh.clone();
+        crate::worker::spawn("keel-media-retry", move || {
+            let image = make(&sh, &key, &req, true);
+            sh.finish(key, image);
+        });
     }
 
     /// Replaces what `slot` wants loaded: `(key, priority, request)`, lower first.
