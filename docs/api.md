@@ -179,9 +179,9 @@ unknown host key on any hop fails the connection. `ProxyCommand` is refused, nev
 Paths stay `sftp://<host id>/...`; no operation changed.
 
 Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
-command exits) and need a daemon built with a mount backend (the Windows and Linux release
-builds have one; `--features winfsp` on Windows, `--features fuse` on Linux and macOS when
-building from source; see the README's Mounts section) and its driver installed;
+command exits) and need a daemon built with a mount backend (the Linux release build has
+one; from source, `--features winfsp` on Windows (GPL-3.0, in no release build) and
+`--features fuse` on Linux and macOS; see the README's Mounts section) and its driver installed;
 otherwise `mounts.add` fails with `MOUNTS_UNAVAILABLE` (-32008). The `mounts.add` preview checks the
 target is free and the source or subtree can be listed, and warns when the source is
 offline (`source_offline`: the mount then lists it from the index and cannot read or change files)

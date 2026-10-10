@@ -351,7 +351,7 @@ The source is given by id or label (`keel sources`). Mounts belong to the daemon
 | | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Backend | WinFsp | FUSE (through `fusermount3` or `fusermount`; no libfuse needed) | macFUSE |
-| In the release build | yes | yes (zip, tarball and .deb) | no: build it yourself |
+| In the release build | no: build from source (`--features winfsp`, GPL-3.0) | yes (tarball and .deb) | no: build it yourself |
 | Driver to install | [WinFsp](https://winfsp.dev) | `fuse3` (`sudo apt install fuse3`; the .deb recommends it) | [macFUSE](https://macfuse.github.io) |
 | Build `keel-daemon` from source with | `--features winfsp` (needs LLVM/libclang for bindgen: `scripts/libclang.ps1`) | `--features fuse` | `--features fuse` (needs macFUSE and `pkg-config` at build time) |
 | Target | `K:` or a new folder | empty folder (made when missing) | empty folder (made when missing) |
@@ -483,7 +483,7 @@ Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes
 
 What is next, from the known limitations still open:
 
-- Signed and notarized builds, and a macOS release build with a mount backend (macFUSE).
+- Signed and notarized builds, and Windows and macOS release builds with a mount backend (Windows: blocked by winfsp-rs being GPL-3.0; macOS: macFUSE cannot be installed on the build machines).
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
 - Drag-out to other apps on macOS and Linux, and the native Windows shell context menu.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
