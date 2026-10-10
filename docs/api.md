@@ -94,7 +94,7 @@ also act directly: they change no file.
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`). Paths inside a zip or jar on the host (`D:\x.zip!/dir/a.txt`) can be deleted, renamed and copied or moved into: the preview warns `rewrites_archive` with the archive's size (each execution rewrites it once, entries that stay copied byte for byte) and refuses 7z, tar and RAR archives, archives inside archives or on other providers, and moves out of an archive |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline) |
-| `devices.pair_code` | preview | One-time pairing code (10 minutes) |
+| `devices.pair_code` | preview | One-time pairing code (10 minutes); the short code is found through internet discovery or, on the same network, mDNS |
 | `devices.pair_with` | preview | Pair with a device's code (grants nothing) |
 | `devices.forget` | preview | Forget a device and its grants |
 | `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids and `relay` (as the node started) |

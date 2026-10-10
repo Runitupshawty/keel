@@ -136,7 +136,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 - Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land. One device can have at most 4 offers waiting (16 from all devices); more are refused as busy.
 - Anyone holding a still-valid code can pair, so show it only to the person in front of you.
 
-Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does).
+**Without internet.** The short code is found through iroh's internet discovery and, on the same network, through local network discovery (mDNS), so two devices on one Wi-Fi or LAN pair by short code with no internet, relay or DNS. A code shown while no relay answers within 5 seconds works on the same network only (the QR code and full ticket carry the device's addresses, as before). Paired devices also find each other on the same network after an address change. Local discovery advertises this device's id (and while a code is shown, the code's rendezvous id, which reveals nothing about the code) on the local network, as internet discovery already publishes them; it is on only while Devices are on. Where multicast is blocked (a firewall, some guest networks) Keel logs it once and pairs as before: by internet discovery or the full ticket.
 
 Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain, in the window, `keel-daemon` and the `keel` subcommands alike (tests and live checks; the device is new on every run and must pair again).
 
@@ -479,7 +479,6 @@ What is next, from the known limitations still open:
 - Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, the Recycle Bin / Trash folder on macOS, and the native Windows shell context menu.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
-- Devices: short-code pairing without internet discovery (the full ticket already works offline).
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).

@@ -4,14 +4,19 @@ use crate::{
 };
 use anyhow::{bail, ensure, Context, Result};
 use iroh::{
+    address_lookup::AddressLookup,
     endpoint::{presets, Builder, Connection},
     Endpoint, SecretKey,
 };
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use parking_lot::{Mutex, MutexGuard};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::Path,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -28,7 +33,11 @@ pub(crate) const MAX_CONNECTIONS_PER_PEER: usize = 4;
 #[derive(Clone, Debug)]
 pub struct NodeOptions {
     pub relay_mode: iroh::RelayMode,
+    /// Global address lookup: n0's DNS and pkarr servers.
     pub discovery: bool,
+    /// Local-network address lookup (mDNS): finds a short code's device and paired
+    /// devices on the same network with no relay, DNS or internet.
+    pub local_discovery: bool,
     pub bind_addr: Option<SocketAddr>,
     pub relay_only: bool,
     pub request_timeout: Duration,
@@ -41,6 +50,7 @@ impl Default for NodeOptions {
         Self {
             relay_mode: iroh::RelayMode::Default,
             discovery: true,
+            local_discovery: true,
             bind_addr: None,
             relay_only: false,
             request_timeout: Duration::from_secs(20),
@@ -63,6 +73,7 @@ impl NodeOptions {
         Self {
             relay_mode: iroh::RelayMode::Disabled,
             discovery: false,
+            local_discovery: false,
             bind_addr: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
             relay_only: false,
             request_timeout: Duration::from_secs(3),
@@ -94,6 +105,35 @@ impl NodeOptions {
             }
         }
         Ok(builder)
+    }
+    /// Binds an endpoint and adds local discovery to it. Local discovery that cannot
+    /// start (no multicast, a firewall) leaves the endpoint working without it.
+    pub(crate) async fn bind(&self, key: SecretKey) -> Result<Endpoint> {
+        let endpoint = self.builder(key)?.bind().await?;
+        if self.local_discovery {
+            let mdns = MdnsAddressLookup::builder()
+                .service_name(MDNS_SERVICE)
+                .build(endpoint.id());
+            add_local_discovery(&endpoint, mdns.map_err(anyhow::Error::from));
+        }
+        Ok(endpoint)
+    }
+}
+
+/// mDNS service name: Keel devices only see each other, not other iroh apps.
+const MDNS_SERVICE: &str = "keelnet1";
+/// Set once local discovery failed to start; later failures are not logged again.
+pub(crate) static MDNS_WARNED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn add_local_discovery(endpoint: &Endpoint, mdns: Result<impl AddressLookup>) {
+    let added = mdns.and_then(|mdns| {
+        endpoint.address_lookup()?.add(mdns);
+        Ok(())
+    });
+    if let Err(e) = added {
+        if !MDNS_WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!("local network discovery unavailable: {e:#}");
+        }
     }
 }
 
@@ -161,7 +201,7 @@ impl Node {
         })
         .await??;
         let (store, data) = Store::open(data_dir)?;
-        let endpoint = options.builder(secret)?.bind().await?;
+        let endpoint = options.bind(secret).await?;
         let node = Arc::new_cyclic(|weak| Self {
             endpoint,
             options,

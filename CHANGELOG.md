@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Devices find each other on the local network (mDNS, iroh's local discovery, service `keelnet1`) next to iroh's internet discovery and relays, which stay as they were, as does the **Relay** setting in Settings → Devices. A short code entered on a device on the same Wi-Fi or LAN reaches the device that shows it with no internet, relay or DNS (about a second on one test machine), and paired devices find each other there after an address change. The codes and tickets are unchanged; the pairing dialog says the code also works on the same network without internet. Local discovery runs only while Devices are on.
+
+### Fixed
+
+- Short-code pairing works on a network without internet, which lifts the 0.8.0 known limitation that the short code needed internet discovery and only the full ticket worked offline. **Show code** no longer fails with "pairing relay unavailable" when no relay answers: after 5 seconds it shows a code that works on the same network.
+
+### Known limitations
+
+- Where multicast is blocked (a firewall, some guest or corporate networks), local discovery cannot start or hear other devices; Keel logs it once and the short code needs internet discovery there, as before. Devices on different subnets do not see each other.
+- A code shown while no relay answered works on the same network only until the relay connects; its QR code and full ticket carry this device's network addresses but no relay.
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

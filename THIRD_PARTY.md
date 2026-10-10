@@ -6,6 +6,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | --- | --- | --- | --- |
 | `iroh`, `iroh-base`, `iroh-relay`, `iroh-dns` 1.3 | Encrypted device transport, relay fallback and public address lookup | MIT OR Apache-2.0 | Rust crates, compiled in |
 | `noq`, `noq-proto`, `noq-udp` 1.3 | iroh's QUIC implementation | MIT OR Apache-2.0 | Rust crates, compiled in |
+| `iroh-mdns-address-lookup` 0.6 (with `swarm-discovery` 0.6, `acto` 0.8, `hickory-proto` 0.26, `smol_str` 0.1, `critical-section` 1.2) | Local-network device discovery (mDNS) for pairing by short code without internet | MIT OR Apache-2.0; `swarm-discovery`: Apache-2.0 | Rust crates, compiled in |
 | `ciborium` 0.2 | Network protocol CBOR headers | Apache-2.0 | Rust crate, compiled in |
 | `async-trait` 0.1 | Async network Handler interface | MIT OR Apache-2.0 | Rust proc macro, build dependency |
 | `data-encoding` 2 | Public identity and pairing ticket base32 | MIT | Rust crate, compiled in |

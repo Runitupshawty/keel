@@ -1568,7 +1568,7 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 if let Some((_, tex)) = &s.devices.qr {
                     ui.add(egui::Image::new(tex).fit_to_exact_size([240.0, 240.0].into()));
                 }
-                ui.weak("The code works once, for ten minutes. Anyone who has it can pair.");
+                ui.weak("The code works once, for ten minutes, also on the same network without internet. Anyone who has it can pair.");
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Waiting for the other device…");
