@@ -36,6 +36,10 @@ const PAGE_BYTES: usize = 640 * 1024;
 pub const TOMBSTONE_SECS: i64 = 30 * 24 * 3600;
 /// Lamport times above this are refused (no device gets near it; it keeps `+ 1` safe).
 pub const MAX_LAMPORT: u64 = 1 << 53;
+/// A received Lamport time moves this device's clock at most this far, so a device that
+/// sent a huge one cannot push this device's own changes past `MAX_LAMPORT` (where every
+/// other device would refuse them).
+const LAMPORT_FOLLOW: u64 = MAX_LAMPORT / 2;
 const MAX_NAME: usize = 256;
 const MAX_COLOR: usize = 64;
 const MAX_PATH: usize = 4096;
@@ -598,7 +602,7 @@ impl Library {
             c.execute(
                 "INSERT INTO meta(key, value) VALUES ('lamport', ?1) ON CONFLICT(key) DO
                  UPDATE SET value = max(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
-                [e.lamport.to_string()],
+                [e.lamport.min(LAMPORT_FOLLOW).to_string()],
             )?;
             let winner: Option<(i64, String)> = c
                 .query_row(

@@ -496,3 +496,26 @@ fn tags_and_favorites_from_before_sync_are_logged_once() {
     assert_eq!(page.entries.len(), 3, "{page:?}");
     assert!(matches!(page.entries[0].op, SyncOp::Tag { .. }));
 }
+
+#[test]
+fn a_huge_lamport_time_cannot_push_this_devices_changes_out_of_range() {
+    let a = device("deva", &[]);
+    let c = device("devc", &[]);
+    let huge = page_of(vec![entry(
+        1,
+        MAX_LAMPORT,
+        SyncOp::Tag {
+            uid: "0123456789abcdef".into(),
+            name: "Pushed".into(),
+            color: None,
+            parent: None,
+        },
+    )]);
+    assert_eq!(a.lib.sync_apply("devb", &huge).unwrap().applied, 1);
+    a.lib.create_tag("Mine", None, None).unwrap();
+    let page = a.lib.sync_page(0, SYNC_PAGE).unwrap();
+    assert!(page.entries.iter().all(|e| e.lamport <= MAX_LAMPORT));
+    // Another device still takes a's changes.
+    assert_eq!(c.pull(&a).applied, 1);
+    assert!(c.tag("Mine").is_some());
+}
