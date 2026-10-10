@@ -451,7 +451,8 @@ pub struct ExecuteParams {
 pub struct Executed {
     pub plan_id: String,
     pub operation: String,
-    /// File operations run as a job: follow it with `jobs.info`.
+    /// Set when the operation runs as a job (file operations, `sources.index`,
+    /// `spacedrop.send`): follow it with `jobs.info`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<i64>,
     /// Other operations: their result.
@@ -666,4 +667,47 @@ pub struct FileLink {
     pub size: u64,
     /// Unix seconds.
     pub expires_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpacedropSendParams {
+    /// A paired device's id (`devices.list`).
+    pub peer: String,
+    /// Files or folders on this machine (folders are sent with their contents).
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpacedropAnswerParams {
+    /// The offering device's id.
+    pub peer: String,
+    /// The offer's id (`spacedrop.inbox`).
+    pub id: String,
+    pub accept: bool,
+}
+
+/// A Spacedrop offer waiting for this device's answer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DropOffer {
+    pub peer: String,
+    /// The sending device's label.
+    pub label: String,
+    pub id: String,
+    pub files: u64,
+    pub bytes: u64,
+    /// The first few relative names.
+    pub names: Vec<String>,
+}
+
+/// The Spacedrop inbox of the host's device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Inbox {
+    /// The inbox folder on the host's machine.
+    pub dir: String,
+    /// Offers waiting for an answer (`spacedrop.answer`).
+    pub pending: Vec<DropOffer>,
+    /// What arrived, newest first (download with `file.get`).
+    pub entries: Vec<EntryInfo>,
 }

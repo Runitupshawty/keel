@@ -31,9 +31,31 @@ pub fn url_carries_token(query: &str, fragment: &str) -> bool {
         .any(|(k, v)| named(&k) || hexy(&k) || hexy(&v))
 }
 
+/// Whether the page came over a connection others on the way can read: not `https:` and
+/// not a loopback host. The client then warns that the token and files cross the network
+/// in the clear.
+pub fn insecure(protocol: &str, hostname: &str) -> bool {
+    let loopback = matches!(
+        hostname.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1"
+    ) || hostname.to_ascii_lowercase().ends_with(".localhost");
+    protocol != "https:" && !loopback
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warns_unless_tls_or_loopback() {
+        assert!(!insecure("https:", "keel.example"));
+        assert!(!insecure("http:", "localhost"));
+        assert!(!insecure("http:", "127.0.0.1"));
+        assert!(!insecure("http:", "[::1]"));
+        assert!(insecure("http:", "192.0.2.7"));
+        assert!(insecure("http:", "keel.example"));
+        assert!(insecure("http:", "127.0.0.1.evil.example"));
+    }
 
     #[test]
     fn refuses_a_token_in_the_query_string_or_fragment() {

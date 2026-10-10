@@ -1,5 +1,6 @@
 //! Browser glue (wasm32 only): the WebSocket to `/rpc`, the token in `localStorage` (only
-//! when "remember on this device" is ticked), the address guard, downloads, and start-up.
+//! when "remember on this device" is ticked), the address guard, the share id in the
+//! address, the plain-http check, downloads, and start-up.
 
 use crate::conn::{Event, Transport};
 use std::cell::RefCell;
@@ -134,6 +135,33 @@ pub(crate) fn scrub_address() -> bool {
         let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
     }
     true
+}
+
+/// The address's query (`?share=<id>` after a share), then removed from the address bar
+/// and the current history entry, so a reload does not claim the share again.
+pub(crate) fn take_query() -> String {
+    let Some(window) = web_sys::window() else {
+        return String::new();
+    };
+    let loc = window.location();
+    let query = loc.search().unwrap_or_default();
+    if !query.is_empty() {
+        if let (Ok(history), Ok(path)) = (window.history(), loc.pathname()) {
+            let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
+        }
+    }
+    query
+}
+
+/// Plain http from a non-loopback host (`crate::guard::insecure`).
+pub(crate) fn insecure() -> bool {
+    let Some(loc) = web_sys::window().map(|w| w.location()) else {
+        return false;
+    };
+    crate::guard::insecure(
+        &loc.protocol().unwrap_or_default(),
+        &loc.hostname().unwrap_or_default(),
+    )
 }
 
 /// Downloads a `/file/<token>` link (same origin, no referrer).

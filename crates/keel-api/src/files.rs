@@ -90,7 +90,7 @@ pub(crate) fn readable(ctx: &Ctx, p: &VPath) -> Result<()> {
 }
 
 /// `p` is `dir` or inside it, after resolving links, `..` and (Windows, macOS) case.
-fn inside(p: &std::path::Path, dir: &std::path::Path) -> bool {
+pub(crate) fn inside(p: &std::path::Path, dir: &std::path::Path) -> bool {
     let resolve = |p: &std::path::Path| -> Option<std::path::PathBuf> {
         if let Ok(c) = std::fs::canonicalize(p) {
             return Some(c);

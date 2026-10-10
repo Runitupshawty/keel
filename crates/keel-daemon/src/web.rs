@@ -6,11 +6,14 @@
 //!   a WebSocket, so the first message must be `auth` with the token from
 //!   `<config dir>/daemon.token`; the token never travels in a URL (a query string on
 //!   `/rpc` is refused), so it cannot leak through history, referrers or logs;
-//! - `/file/<token>`: a download made by `file.get`, valid once for 60 seconds.
+//! - `/file/<token>`: a download made by `file.get`, valid once for 60 seconds;
+//! - `POST /share`: the PWA's Web Share Target; the files are parked until the signed-in
+//!   client claims them (`crate::share`). The only request that is not a `GET`.
 //!
 //! Every answer is `no-store` with `Referrer-Policy: no-referrer` and a CSP that allows
-//! only this origin (no CDN, no external fonts). The `Host` header must name a loopback
-//! host on a loopback bind, and the bound IP or a `--web-host` name on a remote one (DNS
+//! only this origin (no CDN, no external fonts; the manifest and the service worker from
+//! this origin too). The `Host` header must name a loopback
+//! host on a loopback bind or the bound IP on a remote one, or a `--web-host` name (DNS
 //! rebinding); a cross-origin WebSocket is refused. As on `--ws` (`crate::ws`), the
 //! request head must be in within `HANDSHAKE_WAIT` in all, at most `MAX_CONNECTIONS` are
 //! served at once and writes time out after `WRITE_WAIT`; of those, at most
@@ -75,17 +78,22 @@ pub(crate) struct Hosts {
 }
 
 impl Hosts {
-    /// Loopback bind: loopback names; remote bind: the bound IP or a `--web-host` name.
+    /// Loopback bind: loopback names; remote bind: the bound IP. Either: a `--web-host`
+    /// name (a tailnet name, or the name a TLS reverse proxy in front of a loopback bind
+    /// passes on).
     fn allow(&self, authority: &str) -> bool {
+        let name = host_name(authority).to_ascii_lowercase();
+        if self.names.contains(&name) {
+            return true;
+        }
         if self.bound.ip().is_loopback() {
             return loopback_host(authority);
         }
-        let name = host_name(authority).to_ascii_lowercase();
         let ip = match self.bound.ip() {
             IpAddr::V4(ip) => ip.to_string(),
             IpAddr::V6(ip) => format!("[{ip}]"),
         };
-        name == ip || self.names.contains(&name)
+        name == ip
     }
 }
 
@@ -113,6 +121,16 @@ pub(crate) fn serve(
             .map(|n| n.trim().to_ascii_lowercase())
             .collect(),
     };
+    let s = shared.clone();
+    // Unclaimed shares go after their wait even when no one posts or claims.
+    let _ = std::thread::Builder::new()
+        .name("keel-daemon-shares".into())
+        .spawn(move || {
+            while !s.stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_secs(5));
+                s.uploads.sweep();
+            }
+        });
     let s = shared.clone();
     let count = Arc::new(AtomicUsize::new(0));
     let unauthenticated = Arc::new(AtomicUsize::new(0));
@@ -166,6 +184,8 @@ struct Head {
     path: String,
     query: Option<String>,
     headers: Vec<(String, String)>,
+    /// Bytes read past the head (the start of a body).
+    rest: Vec<u8>,
 }
 
 impl Head {
@@ -177,7 +197,7 @@ impl Head {
     }
 }
 
-/// Reads and parses a request head (GET requests have no body), all of it by `deadline`:
+/// Reads and parses a request head (only `POST /share` has a body), all of it by `deadline`:
 /// non-blocking, so a client dripping bytes cannot stretch it (a per-read timeout restarts
 /// with every byte). Leaves the stream non-blocking; the caller makes it blocking again.
 fn read_head(stream: &mut TcpStream, deadline: Instant) -> io::Result<Option<Head>> {
@@ -204,10 +224,10 @@ fn read_head(stream: &mut TcpStream, deadline: Instant) -> io::Result<Option<Hea
     }
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
-    match req.parse(&buf) {
-        Ok(httparse::Status::Complete(_)) => {}
+    let used = match req.parse(&buf) {
+        Ok(httparse::Status::Complete(n)) => n,
         _ => return Ok(None),
-    }
+    };
     let target = req.path.unwrap_or("/");
     let (path, query) = match target.split_once('?') {
         Some((p, q)) => (p, Some(q.to_owned())),
@@ -227,6 +247,7 @@ fn read_head(stream: &mut TcpStream, deadline: Instant) -> io::Result<Option<Hea
                 )
             })
             .collect(),
+        rest: buf[used..].to_vec(),
     }))
 }
 
@@ -266,7 +287,8 @@ fn send(
          X-Frame-Options: DENY\r\nCross-Origin-Resource-Policy: same-origin\r\n\
          Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
          connect-src 'self' ws://{host} wss://{host}; img-src 'self' blob: data:; \
-         style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; \
+         style-src 'self' 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; \
+         base-uri 'none'; form-action 'none'; \
          frame-ancestors 'none'\r\nConnection: close\r\n",
         body.len()
     );
@@ -291,7 +313,8 @@ fn content_type(name: &str) -> &'static str {
         "js" => "text/javascript; charset=utf-8",
         "wasm" => "application/wasm",
         "css" => "text/css; charset=utf-8",
-        "json" | "webmanifest" => "application/json",
+        "json" => "application/json",
+        "webmanifest" => "application/manifest+json",
         "png" => "image/png",
         "svg" => "image/svg+xml",
         "ico" => "image/x-icon",
@@ -344,6 +367,9 @@ fn client(
         };
         return refuse(&mut stream, "403 Forbidden", &host, why);
     }
+    if head.method == "POST" && head.path == "/share" {
+        return share(shared, stream, head, &host);
+    }
     if head.method != "GET" {
         return refuse(&mut stream, "405 Method Not Allowed", &host, "GET only");
     }
@@ -373,6 +399,62 @@ fn client(
             PLACEHOLDER.as_bytes(),
         )?,
         None => return refuse(&mut stream, "404 Not Found", &host, "not found"),
+    }
+    Ok(())
+}
+
+/// How long a share upload may stall between reads.
+const SHARE_IDLE: Duration = Duration::from_secs(30);
+
+/// `POST /share` (the Web Share Target): parks the files and sends the browser to the
+/// client with the upload id, which only the signed-in client can claim.
+fn share(
+    shared: &Arc<Shared>,
+    mut stream: TcpStream,
+    head: Head,
+    host: &str,
+) -> anyhow::Result<()> {
+    // A page on another site may post a form here: browsers say where it came from. (The
+    // share sheet's own request is same-origin or user-initiated, `none`.)
+    let site = head.header("sec-fetch-site").unwrap_or("none");
+    let origin_ok = match head.header("origin") {
+        None | Some("null") => true,
+        Some(o) => o.split_once("://").map_or("", |(_, a)| a) == host,
+    };
+    if !origin_ok || !matches!(site, "none" | "same-origin") {
+        return refuse(
+            &mut stream,
+            "403 Forbidden",
+            host,
+            "cross-site share refused",
+        );
+    }
+    let Some(len) = head
+        .header("content-length")
+        .and_then(|l| l.trim().parse::<u64>().ok())
+    else {
+        return refuse(
+            &mut stream,
+            "411 Length Required",
+            host,
+            "Content-Length needed",
+        );
+    };
+    let ctype = head.header("content-type").unwrap_or_default().to_owned();
+    stream.set_read_timeout(Some(SHARE_IDLE))?;
+    let body = io::Cursor::new(head.rest).chain(&stream);
+    match shared.uploads.receive(body, len, &ctype) {
+        Ok(id) => send(
+            &mut stream,
+            "303 See Other",
+            host,
+            &[
+                ("Location", format!("/?share={id}")),
+                ("Content-Type", "text/plain; charset=utf-8".into()),
+            ],
+            b"Shared: open Keel to send it.",
+        )?,
+        Err(crate::share::Refused(status, why)) => refuse(&mut stream, status, host, &why)?,
     }
     Ok(())
 }
@@ -506,7 +588,8 @@ mod tests {
             bound: "127.0.0.1:7421".parse().unwrap(),
             names: vec!["keel.example".into()],
         };
-        assert!(local.allow("localhost:7421") && !local.allow("keel.example"));
+        assert!(local.allow("localhost:7421") && local.allow("KEEL.example:443"));
+        assert!(!local.allow("evil.example"), "only the names given");
         assert!(plain_host("host.example:7421"));
         assert!(!plain_host("a; script-src *"));
         assert!(!plain_host(""));

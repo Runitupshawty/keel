@@ -90,7 +90,7 @@ pub fn tool(op: &Operation) -> Value {
             "readOnlyHint": !op.mutating && op.name != "plan",
             "destructiveHint": op.name == "execute" || op.name == "shares.revoke",
             "idempotentHint": !op.mutating,
-            "openWorldHint": op.name.starts_with("devices.") || op.name.starts_with("shares."),
+            "openWorldHint": (["devices.", "shares.", "spacedrop."].iter().any(|p| op.name.starts_with(p))),
         },
     })
 }

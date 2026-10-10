@@ -1,7 +1,8 @@
 //! What a host (daemon or in-process CLI) reads from Keel's settings: the library name,
 //! whether keel-net is on and the SFTP hosts and cloud accounts, from
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `[devices] enabled`,
-//! `[[remotes]]`, `[[clouds]]`); the daemon's socket name and WebSocket token.
+//! `[devices] inbox` and `auto_accept`, `[[remotes]]`, `[[clouds]]`); the daemon's socket
+//! name and WebSocket token.
 
 use std::path::PathBuf;
 
@@ -53,6 +54,10 @@ pub struct HostConfig {
     pub data_dir: PathBuf,
     pub library: String,
     pub net: bool,
+    /// `[devices] inbox`: where Spacedrops land on this machine (None: `<data dir>/inbox`).
+    pub inbox: Option<PathBuf>,
+    /// `[devices] auto_accept`: device ids whose Spacedrops are accepted without asking.
+    pub auto_accept: Vec<String>,
     /// `[[remotes]]`: SFTP hosts (secrets stay in the OS keychain).
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts (non-secret fields only).
@@ -118,6 +123,16 @@ impl HostConfig {
             data_dir,
             library,
             net,
+            inbox: get("devices", "inbox")
+                .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            auto_accept: get("devices", "auto_accept")
+                .and_then(|v| v.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
             remotes: entries(&table, "remotes"),
             clouds: entries(&table, "clouds"),
         }
@@ -131,6 +146,13 @@ impl HostConfig {
             &format!("{}\0{}", self.profile, self.data_dir.display()),
             &self.config_dir,
         )
+    }
+
+    /// The Spacedrop inbox: `[devices] inbox`, else `<data dir>/inbox`.
+    pub fn inbox_dir(&self) -> PathBuf {
+        self.inbox
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("inbox"))
     }
 
     /// The WebSocket bearer token file.
@@ -203,6 +225,14 @@ mod tests {
         // Saved while Devices defaulted on (not explicit): off.
         std::fs::write(p.join("config.toml"), "[devices]\nenabled = true\n").unwrap();
         assert!(!HostConfig::read("work", dir.path().into(), dir.path().join("data")).net);
+        std::fs::write(
+            p.join("config.toml"),
+            "[devices]\ninbox = \" \"\nauto_accept = [\"abc\", 3]\n",
+        )
+        .unwrap();
+        let drops = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        assert_eq!(drops.inbox_dir(), dir.path().join("data").join("inbox"));
+        assert_eq!(drops.auto_accept, vec!["abc".to_owned()]);
         let other = HostConfig::read("work", dir.path().into(), dir.path().join("other"));
         assert_ne!(cfg.socket_name(), other.socket_name());
         assert!(cfg.socket_name().starts_with("keel-daemon-"));

@@ -112,15 +112,25 @@ impl Host {
             .enable_all()
             .thread_name("keel-net")
             .build()?;
+        let drops = Arc::new(crate::net::Drops::new(
+            cfg.inbox_dir(),
+            cfg.auto_accept.clone(),
+        ));
+        let handler = crate::net::NoSources {
+            drops: Some(drops.clone()),
+        };
         let node = runtime
             .block_on(keel_net::Node::open_with_options(
                 net.secrets,
                 &cfg.data_dir,
-                Arc::new(crate::net::NoSources),
+                Arc::new(handler),
                 net.options,
             ))
             .context("opening keel-net")?;
+        // Spacedrop jobs an earlier session left resume with the library's jobs.
+        keel_net::spacedrop::register(&ctx.lib);
         ctx.node = Some(node);
+        ctx.drops = Some(drops);
         ctx.rt = Some(runtime.handle().clone());
         self.rt = Some(runtime);
         Ok(())

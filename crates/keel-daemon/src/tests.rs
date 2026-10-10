@@ -647,3 +647,212 @@ fn a_rotated_token_closes_old_sessions() {
     ws.send(Message::text(auth(&new).to_string())).unwrap();
     assert_eq!(answer(&mut ws)["result"]["ok"], true);
 }
+
+/// The PWA: the manifest (with the share target), the icons and the service worker are
+/// served with their types, and the CSP admits them from this origin and nothing more.
+#[test]
+fn web_serves_the_pwa_manifest_icons_and_service_worker() {
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let host = addr.to_string();
+    let (status, headers, body) = http_get(addr, "/manifest.webmanifest", &host);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(
+        headers.contains("content-type: application/manifest+json"),
+        "{headers}"
+    );
+    let m: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(m["display"], "standalone");
+    assert_eq!(m["start_url"], "/");
+    let target = &m["share_target"];
+    assert_eq!(
+        (&target["action"], &target["method"], &target["enctype"]),
+        (
+            &json!("/share"),
+            &json!("POST"),
+            &json!("multipart/form-data")
+        )
+    );
+    assert_eq!(target["params"]["files"][0]["name"], "files");
+    let icons = m["icons"].as_array().unwrap();
+    let sizes: Vec<&str> = icons.iter().map(|i| i["sizes"].as_str().unwrap()).collect();
+    assert_eq!(sizes, ["192x192", "512x512"]);
+    for icon in icons {
+        let src = format!("/{}", icon["src"].as_str().unwrap());
+        let (status, headers, body) = http_get(addr, &src, &host);
+        assert_eq!(status, "HTTP/1.1 200 OK", "{src}");
+        assert!(headers.contains("content-type: image/png"), "{headers}");
+        assert!(body.starts_with(b"\x89PNG"), "{src}");
+    }
+
+    let (status, headers, body) = http_get(addr, "/sw.js", &host);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(
+        headers.contains("content-type: text/javascript"),
+        "{headers}"
+    );
+    let sw = String::from_utf8(body).unwrap();
+    assert!(sw.contains("\"keel-shell-\" + VERSION"), "{sw}");
+    // Only the shell is cached: never /rpc, /file/ downloads or /share.
+    let shell = &sw[sw.find("const SHELL = [").unwrap()..];
+    let shell = &shell[..shell.find("];").unwrap()];
+    for data in ["rpc", "file/", "share"] {
+        assert!(!shell.contains(data), "{shell}");
+    }
+    assert!(
+        sw.contains("req.method !== \"GET\""),
+        "only GETs are looked up"
+    );
+
+    let csp = headers
+        .lines()
+        .find(|l| l.starts_with("content-security-policy:"))
+        .unwrap();
+    assert!(csp.contains("manifest-src 'self'"), "{csp}");
+    assert!(csp.contains("worker-src 'self'"), "{csp}");
+    assert!(
+        !csp.replace("'wasm-unsafe-eval'", "")
+            .contains("unsafe-eval"),
+        "{csp}"
+    );
+    assert!(!csp.contains("http") && !csp.contains('*'), "{csp}");
+}
+
+/// A raw HTTP POST; returns the status line, headers and body.
+fn http_post(
+    addr: std::net::SocketAddr,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+) -> (String, String, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    let mut head = format!("POST {path} HTTP/1.1\r\n");
+    for (k, v) in headers {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    head.push_str("\r\n");
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).unwrap();
+    let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8(out[..split].to_vec()).unwrap();
+    let (status, headers) = head.split_once("\r\n").unwrap();
+    (
+        status.to_owned(),
+        headers.to_lowercase(),
+        out[split + 4..].to_vec(),
+    )
+}
+
+/// The share target: a POST parks the files and sends the browser to `/?share=<id>`;
+/// only a client signed in over `/rpc` can claim them, once. Cross-site posts, missing
+/// lengths and shares over the cap are refused before anything is stored.
+#[test]
+fn web_share_target_parks_files_until_the_signed_in_client_claims_them() {
+    use tungstenite::Message;
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let host = addr.to_string();
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let mut body = Vec::new();
+    for (name, file, data) in [
+        ("title", None, &b"holiday"[..]),
+        ("files", Some("beach.jpg"), &b"jpeg bytes"[..]),
+        ("files", Some("notes.txt"), &b"notes"[..]),
+    ] {
+        body.extend_from_slice(b"--KeelB\r\n");
+        let disposition = match file {
+            Some(f) => format!("form-data; name=\"{name}\"; filename=\"{f}\""),
+            None => format!("form-data; name=\"{name}\""),
+        };
+        body.extend_from_slice(format!("Content-Disposition: {disposition}\r\n\r\n").as_bytes());
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--KeelB--\r\n");
+    let headers = |origin: &str, site: &str, len: Option<u64>| {
+        let mut h = vec![
+            ("Host", host.clone()),
+            (
+                "Content-Type",
+                "multipart/form-data; boundary=KeelB".to_owned(),
+            ),
+            ("Origin", origin.to_owned()),
+            ("Sec-Fetch-Site", site.to_owned()),
+        ];
+        if let Some(n) = len {
+            h.push(("Content-Length", n.to_string()));
+        }
+        h
+    };
+    let ours = format!("http://{host}");
+    let shares = env.data.path().join("shares");
+    let refused = |h: Vec<(&str, String)>| http_post(addr, "/share", &h, b"").0;
+    assert_eq!(
+        refused(headers("http://evil.example", "cross-site", Some(0))),
+        "HTTP/1.1 403 Forbidden"
+    );
+    assert_eq!(
+        refused(headers("null", "cross-site", Some(0))),
+        "HTTP/1.1 403 Forbidden"
+    );
+    assert_eq!(
+        refused(headers(&ours, "same-origin", None)),
+        "HTTP/1.1 411 Length Required"
+    );
+    let over = crate::share::SHARE_MAX + 1;
+    assert_eq!(
+        refused(headers(&ours, "same-origin", Some(over))),
+        "HTTP/1.1 413 Payload Too Large"
+    );
+    assert!(
+        std::fs::read_dir(&shares).map_or(true, |d| d.count() == 0),
+        "nothing stored"
+    );
+
+    let (status, got, _) = http_post(
+        addr,
+        "/share",
+        &headers(&ours, "same-origin", Some(body.len() as u64)),
+        &body,
+    );
+    assert_eq!(status, "HTTP/1.1 303 See Other");
+    let id = got
+        .lines()
+        .find_map(|l| l.strip_prefix("location: /?share="))
+        .unwrap()
+        .to_owned();
+    assert_eq!(id.len(), 24, "{got}");
+
+    // Claiming needs the token.
+    let claim = json!({"jsonrpc":"2.0","id":1,"method":"share.claim","params":{"id": id}});
+    let mut ws = web_socket(addr);
+    ws.send(Message::text(claim.to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["error"]["code"], ApiError::UNAUTHORIZED);
+    let mut ws = web_socket(addr);
+    let auth = json!({"jsonrpc":"2.0","id":0,"method":"auth","params":{"token": token}});
+    ws.send(Message::text(auth.to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["result"]["ok"], true);
+    ws.send(Message::text(claim.to_string())).unwrap();
+    let claimed = answer(&mut ws)["result"].clone();
+    let files = claimed["files"].as_array().unwrap().clone();
+    let names: Vec<(&str, u64)> = files
+        .iter()
+        .map(|f| (f["name"].as_str().unwrap(), f["size"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(names, [("beach.jpg", 10), ("notes.txt", 5)]);
+    let path = std::path::PathBuf::from(files[0]["path"].as_str().unwrap());
+    assert!(path.starts_with(&shares), "{path:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"jpeg bytes");
+    // Once only.
+    ws.send(Message::text(claim.to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["error"]["code"], ApiError::NOT_FOUND);
+    // The claimed files are ordinary paths for the API (spacedrop.send, stat, …).
+    let stat = json!({"jsonrpc":"2.0","id":2,"method":"stat","params":{"path": files[1]["path"]}});
+    ws.send(Message::text(stat.to_string())).unwrap();
+    assert_eq!(answer(&mut ws)["result"]["entry"]["size"], 5);
+}

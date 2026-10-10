@@ -2,6 +2,15 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Phones: the web client installs as an app (a PWA: `manifest.webmanifest` with 192 and 512 px icons, standalone display, theme colours, and a service worker that caches only the app shell, keyed by the build's wasm hash, never `/rpc`, `/file/` downloads, `/share` or other answers). Below 700 px it switches to a phone layout: one pane or a media grid (pinch to resize the tiles), a bottom bar with Browse, Search, Library and Devices, the preview as a full-screen sheet with pinch zoom, double-tap and swipes between files, long-press menus, pull to refresh and larger touch targets. The desktop layout is unchanged above that width.
+- Share → Keel: the installed app is a Web Share Target. The daemon parks the shared files under `<data dir>/shares` (512 MiB, 100 files, 4 waiting at most; cross-site posts refused) until the signed-in client claims them with `share.claim`, once, within 5 minutes; unclaimed uploads are deleted. The client then sends them to the paired device the user picks with the new, previewed `spacedrop.send`.
+- `spacedrop.send` (preview lists every file and size, execute starts the drop job), `spacedrop.inbox` (waiting offers and what arrived) and `spacedrop.answer` (previewed accept or decline) in keel-api, so the daemon receives Spacedrops into `[devices] inbox` (default `<data dir>/inbox`, auto-accept from `[devices] auto_accept`) and the web client shows an Inbox with download links. `execute` now names the job of any operation that starts one.
+- The web client warns when the page came over plain http from a non-loopback host, and README has a Phones section (same LAN, a tailnet with `--web <tailnet IP>:7421 --ws-allow-remote --web-host <name>`, a TLS reverse proxy).
+
 ## [0.8.0] - 2026-10-09
 
 Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.

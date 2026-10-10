@@ -74,7 +74,7 @@ revoked.
 | `duplicates` | read | Same-content groups, most wasted bytes first |
 | `redundancy` | read | How many copies of a file's content exist, and in which sources |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`) |
-| `execute` | direct | Apply a preview (`plan_id`, `input_hash`) |
+| `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline) |
 | `devices.pair_code` | preview | One-time pairing code (10 minutes) |
 | `devices.pair_with` | preview | Pair with a device's code (grants nothing) |
@@ -82,11 +82,18 @@ revoked.
 | `shares.list` | read | Grants to paired devices |
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
 | `shares.revoke` | direct | Revoke a grant at once |
+| `spacedrop.send` | preview | Send files or folders on the host's machine to a paired device (`peer`, `paths`) as a job; the preview lists every file with its size (first 500) and warns when the device is offline. Paths in, or holding, Keel's configuration folder are refused |
+| `spacedrop.inbox` | read | The host's Spacedrop inbox: offers waiting for an answer (`pending`: device, id, file count, bytes, first names) and what arrived (`entries`, newest first; download with `file.get`) |
+| `spacedrop.answer` | preview | Accept or decline a waiting offer (`peer`, `id`, `accept`) |
 
 Devices and shares need keel-net: the window's Settings → Devices switch, written as
 `[devices] enabled = true` with `explicit = true` in the profile's `config.toml`
 (`<config dir>/profiles/<profile>/config.toml`); `[net] enabled = true` is read when
-`[devices]` has no explicit value. Otherwise they fail with `NET_DISABLED`. A
+`[devices]` has no explicit value. Otherwise they fail with `NET_DISABLED`. Spacedrops
+sent to a host (the daemon, or a CLI session holding the node) land in `[devices] inbox`
+(default `<data dir>/inbox`); offers from the device ids in `[devices] auto_accept` are
+accepted at once, the others wait in `spacedrop.inbox` for `spacedrop.answer` and are
+declined when the sender stops waiting. A
 configuration saved while Devices defaulted on (`enabled = true` without `explicit`) is
 treated as off, and the window switches it off once. `KEEL_NET_SECRET=memory` keeps the
 device identity in memory instead of the OS keychain (tests). keel-daemon owns the profile's one node while it runs; without it, a CLI
@@ -161,7 +168,8 @@ connections may stay open.
 
 Besides the operations: `subscribe` (then notifications `job.progress`
 `{id, status, progress}`, `library.changed` `{method}` and `net.event` arrive on that
-connection), `unsubscribe`, and `daemon.shutdown`.
+connection), `unsubscribe`, `daemon.shutdown`, and `share.claim` `{id}` (the web client's
+share target, below).
 
 **WebSocket (optional).** `--ws 127.0.0.1:7420` serves the same JSON-RPC, one message per
 text frame. Every connection must send `Authorization: Bearer <token>`, the token in
@@ -186,6 +194,8 @@ listener:
 | `/`, `/<file>` | the client bundle (a page saying how to build it when keel-daemon was built without one) |
 | `/rpc` | JSON-RPC over a WebSocket, one message per text frame |
 | `/file/<token>` | the download a `file.get` link names, once, within 60 s (`Content-Disposition: attachment`) |
+| `/manifest.webmanifest`, `/sw.js`, `/icon-192.png`, `/icon-512.png` | the installable app (PWA): manifest with the share target, and a service worker that caches the app shell only (never `/rpc`, `/file/`, `/share` or other answers); served even by a daemon built without the client |
+| `POST /share` | the Web Share Target ("Share → Keel" on a phone), `multipart/form-data` |
 
 Browsers cannot send an `Authorization` header on a WebSocket, so on `/rpc` the **first
 message must be `auth`** with the daemon token:
@@ -200,17 +210,32 @@ connection closes (a native client may still send the `Authorization: Bearer` he
 instead). Until `auth` succeeds a message (and frame) may be at most 4 KiB; a bigger one
 closes the connection. The token never travels in a URL: `/rpc` with a query string is refused (400).
 A WebSocket whose `Origin` is not this host is refused (403); on a loopback bind the
-`Host` header must be `localhost`, `127.0.0.1` or `[::1]`, and on a remote bind the bound
-IP or a name given with `--web-host` (403 otherwise, against DNS rebinding). Only `GET` is served. Every answer carries `Cache-Control: no-store`,
+`Host` header must be `localhost`, `127.0.0.1` or `[::1]`, on a remote bind the bound
+IP, and on either a name given with `--web-host` (a tailnet name, or the name a TLS
+reverse proxy passes on; 403 otherwise, against DNS rebinding). Only `GET` is served, and `POST /share`. Every answer carries `Cache-Control: no-store`,
 `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`
 and `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
-connect-src 'self' ws://<host> wss://<host>; ...`. As on `--ws`, the request head
+connect-src 'self' ws://<host> wss://<host>; ...; manifest-src 'self'; worker-src 'self'; ...`. As on `--ws`, the request head
 (the WebSocket handshake on `/rpc`) must be in within 5 s, at most 64 connections are
 served at once (more are closed at once), and the `auth` rule above follows the
 handshake. Of the 64, at most 16 may be connections that have not signed in (or are
 fetching a page), and at most 8 may come from one remote address (loopback is not
 limited this way), so held connections cannot lock the user out. Non-loopback addresses need `--ws-allow-remote`, exactly as `--ws`; there is
 no TLS (a tailnet, or a TLS proxy).
+
+**Share target (`POST /share`).** The browser makes this request itself when the user
+shares to the installed app, so it cannot carry the token. The daemon therefore only parks
+the files: it refuses a request whose `Origin` is another site's or whose
+`Sec-Fetch-Site` is `cross-site` / `same-site` (403), one without `Content-Length` (411),
+over 512 MiB (413, before reading the body), not `multipart/form-data` (415), or while 4
+shares already wait (429). Otherwise it writes the files (at most 100; names reduced to a
+plain file name) to `<data dir>/shares/<id>/` and answers `303 See Other` to
+`/?share=<id>` (24 hex digits). Nothing else happens until a client signed in over `/rpc`
+calls `share.claim` `{id}`, which works once and only within 5 minutes; it returns
+`{id, dir, files: [{name, path, size}]}`, and the client sends those paths with
+`spacedrop.send` (previewed) to the device the user picks. An upload not claimed in time
+is deleted; a claimed one after 24 hours (its drop reads the files); unclaimed uploads
+left by an earlier run are deleted at start.
 
 ## CLI
 
