@@ -103,10 +103,12 @@ impl Lister {
         }
     }
 
+    /// The source root (only ever called on it): a root that is a junction or symlink is
+    /// followed, so its target is indexed.
     fn stat(&self, p: &VPath) -> Result<Item> {
         match self {
             Lister::Local => {
-                Ok(fsid::stat(&local(p)?).with_context(|| format!("stat {}", p.display()))?)
+                Ok(fsid::stat_root(&local(p)?).with_context(|| format!("stat {}", p.display()))?)
             }
             Lister::Remote(provider) => Ok(item_of(provider.stat(p)?)),
         }
@@ -624,7 +626,12 @@ impl Indexer {
             if let (Some(now_id), Some(was), false) =
                 (&root.fs_id, src.store.meta("root_id")?, adopt)
             {
-                if *now_id != was {
+                // A link root indexed before 0.7.0 stored the link's own id.
+                let link_id = || {
+                    (src.def.root.to_local_path())
+                        .is_some_and(|p| crate::fsid::root_ids(&p).contains(&was))
+                };
+                if *now_id != was && !link_id() {
                     return Err(Offline(
                         OfflineReason::RootMismatch,
                         format!(

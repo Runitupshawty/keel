@@ -280,7 +280,7 @@ impl Source {
             return false;
         };
         let same = match self.store.meta("root_id").ok().flatten() {
-            Some(was) => crate::fsid::stat(&root).ok().and_then(|i| i.fs_id) == Some(was),
+            Some(was) => crate::fsid::root_ids(&root).contains(&was),
             None => true,
         };
         let filled = std::fs::read_dir(&root).is_ok_and(|mut d| d.next().is_some());
@@ -295,12 +295,12 @@ impl Source {
         if self.store.meta("adopt_root").ok().flatten().is_some() {
             return false;
         }
-        match (
-            self.store.meta("root_id").ok().flatten(),
-            crate::fsid::stat(&root).ok().and_then(|i| i.fs_id),
-        ) {
-            (Some(was), Some(now)) => was != now,
-            _ => false,
+        match self.store.meta("root_id").ok().flatten() {
+            Some(was) => {
+                let now = crate::fsid::root_ids(&root);
+                !now.is_empty() && !now.contains(&was)
+            }
+            None => false,
         }
     }
 }
