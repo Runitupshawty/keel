@@ -6,7 +6,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.6.0)
+## What works (v0.8.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
@@ -27,6 +27,10 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Drag out** of Keel onto other apps (Windows).
 - **Own search index** on Windows, so search works without Everything. See [Search without Everything](#search-without-everything).
 - **Library**: an index of every file across your folders, drives, SSH hosts and cloud accounts that keeps working when a drive is unplugged. Cross-source search, tags, favorites, saved views, a duplicate finder, and a preview before every copy, move or delete. See [Library](#library).
+- **Media view** (0.7.0): a square-tile grid for photos and videos from persistent thumbnail sidecars, with EXIF orientation applied, video thumbstrips you scrub with the mouse, and a full-window viewer (Space or Enter, arrows to move, `I` for the metadata panel). Sidecars are made by an idle-priority job, never on the UI thread, and kept within a size budget.
+- **Protection** (0.7.0): the Overview shows how safe your data is: copies per file counted by failure domain (two copies on one disk or one cloud account count once), backup state, integrity checks that flag files changed since they were last verified, an editable drive inventory, and "last copy" warnings in delete and move previews. Cloud accounts are indexed like local folders.
+- **Devices and Spacedrop**: pair your own machines with a short code or QR code, browse their shared folders as `node://` sources and send files with resumable, verified Spacedrop. See [Devices and Spacedrop](#devices-and-spacedrop).
+- **Daemon, CLI and MCP**: `keel-daemon` serves the library over JSON-RPC, `keel search`, `keel plan` and friends work from a terminal, and `keel mcp` lets Claude Code, Codex and other agents use the library with a preview before every change. See [Daemon, CLI and MCP](#daemon-cli-and-mcp).
 - **Open, open with, reveal** in the system file manager, open a terminal in the current folder.
 - **Themes**: dark and light (a TOML file in `<config>/themes/dark.toml` or `light.toml` overrides the built-in colours). One built-in file icon theme.
 - **Settings** (Ctrl+,): theme, hidden files, dual pane, preview panel, maximum preview size. Open tabs are restored on the next start; a local folder that was deleted falls back to your home folder, while a tab on an unreachable network share stays open and shows the error. A `config.toml` or `session.json` that cannot be read is kept as `config.toml.bad` / `session.json.bad`.
@@ -64,6 +68,83 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `in:photos` | under a path or source |
 
 Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+
+## Devices and Spacedrop
+
+Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Turn it on or off in Settings → Devices, where you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`) and which devices may send without asking. Keel's identity key lives in the OS keychain.
+
+**Pair two devices.**
+
+1. On one device open the sidebar's **Devices** section and choose **Pair a device… → Show code**. Keel shows a short code and a QR code (the QR carries the full ticket).
+2. On the other device choose **Pair a device… → Enter code** and type the short code, or paste the ticket.
+3. Both sides now list each other under Devices with a status dot (direct, relay or offline), the device's name and a storage bar.
+
+A code works for 10 minutes and for one pairing; showing a new code replaces the old one. Treat it like a password until it is used. Pairing grants nothing: a freshly paired device can see only its name until you share something. Each pair of devices keeps one connection, whichever side opened it.
+
+**Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared.
+
+**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...` (the tab title shows the raw id for now). It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
+
+**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). Cancel from the jobs panel.
+
+**Security model, in plain words.**
+
+- Only devices you paired can connect; everyone else is rejected before any request is read.
+- Pairing reveals nothing about either device until the other side proves it knows the code, and the code works once.
+- Every request is checked against your current grants, so a revoked or narrowed share applies even on an open connection. Paths that try to escape the shared folder (`..`, symlinks and junctions, Windows device names) are refused.
+- Each peer is limited in connections and in concurrent requests, and a transfer that stalls is dropped after an idle timeout.
+- Only one process may own a device store at a time, so grants cannot be changed behind the owner's back.
+- Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land.
+- Anyone holding a still-valid code can pair, so show it only to the person in front of you.
+
+Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
+
+## Daemon, CLI and MCP
+
+Everything the library can do is also a typed operation (29 of them: search, tags, favorites, sources, jobs, duplicates, redundancy, copy, move, delete and rename plans, devices and shares), reachable three ways: JSON-RPC from `keel-daemon`, `keel` subcommands, and an MCP server. The reference with schemas and examples is [docs/api.md](docs/api.md).
+
+**The preview-first rule.** A command that would change anything only returns a preview with a plan id and an input hash. `execute` applies exactly that plan; it refuses a wrong hash, a plan older than 10 minutes, and a plan whose sources changed in the meantime. Taking something away (`sources.remove`, `shares.revoke`) is the only thing done directly.
+
+**Start the daemon.** `keel daemon start` (or run `keel-daemon`) opens the profile's library in the background, resumes its jobs and listens on a per-user local socket (a named pipe on Windows) that only your user can reach; `keel daemon status` and `keel daemon stop` do what they say, and there is one daemon per profile. `keel-daemon --ws 127.0.0.1:7420` also serves a WebSocket that requires a bearer token from a file in the config folder. Devices need `[net] enabled = true` in the profile's `config.toml`. Without a daemon the subcommands open the library themselves, which works only while the Keel window is closed.
+
+**One-liners.**
+
+```sh
+keel search "invoice ext:pdf" --max 20
+keel tag add receipts ~/Docs/invoice-2026.pdf
+keel plan move ~/Downloads/old.iso --to /mnt/archive | keel execute
+keel plan delete ~/old-photos --json
+keel devices
+keel shares
+keel sources add ~/Photos --label photos
+keel daemon status
+```
+
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag` and `keel sources add|index` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview.
+
+**MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
+
+```sh
+claude mcp add keel --scope user -- keel mcp
+```
+
+or in a project's `.mcp.json`:
+
+```json
+{ "mcpServers": { "keel": { "command": "keel", "args": ["mcp"] } } }
+```
+
+For Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.keel]
+command = "keel"
+args = ["mcp"]
+```
+
+Use the full path to `keel` when it is not on `PATH`. Every mutating tool returns a preview and says to call `execute` with the plan id; tell your agent to show you the preview and run `execute` only after you agree. Read-only tools are marked as such.
+
+Limits: the window does not attach to a running daemon yet (only one of them can hold the library), and the daemon has no SFTP or cloud providers and no live file watching.
 
 ## Columns view and drop zone
 
@@ -226,13 +307,11 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 6 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library). Planned:
+Phases 1 to 8 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP). In progress:
 
-7. Media and protection: fast photo grid, video scrubbing, EXIF, redundancy and backup state per file.
-8. Devices: pairing and file transfer between your machines, a headless daemon and CLI.
 9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
 
-Known limitations of v0.5.0 are listed in [CHANGELOG.md](CHANGELOG.md).
+Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
