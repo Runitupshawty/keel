@@ -6,26 +6,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
-- Library search media filters: `camera:`, `taken:`, `w:` / `h:`, `duration:`, `has:gps` and `kind:photo`, from the sidecar media rows. Words that match no name or path also match camera and keywords, ranked below name hits.
-- Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
-- WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
-- Add to 7z, tar and tar.gz archives (not only zip): new entries are written to a staging file beside the archive and renamed over it, so cancel or an error leaves the original untouched. RAR stays read-only.
-- One-line installers: `scripts/install.ps1` (Windows, per user, Start menu shortcut, optional Desktop shortcut and `PATH`, Settings, Apps entry, `-Uninstall`) and `scripts/install.sh` (macOS, Linux, `--uninstall`). Both verify the download against the release's `SHA256SUMS`.
-- Releases now include `SHA256SUMS` and, for Linux, a `.deb` package.
-- CI: `cargo deny` (licenses, advisories, bans, sources; `deny.toml`) is required via the `check` job, and pull requests get GitHub dependency review. The workspace crates are marked `publish = false`.
-
-### Changed
-
-- 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
-
-### Fixed
-
-- A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
-
-## [0.8.0] - 2026-10-09
-
-Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
-
 ### Added
 
 - Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
@@ -40,11 +20,15 @@ Devices release: pair your own machines, browse and share folders between them, 
 
 ### Changed
 
+- 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
 - Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
 - Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
 
 ### Fixed
 
+- A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
+## [0.8.0] - 2026-10-09
+Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
 - Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
 
 ### Known limitations
@@ -55,6 +39,7 @@ Devices release: pair your own machines, browse and share folders between them, 
 - Writes from a device land only in local sources.
 - Tabs on `node://` sources show the raw id as their title.
 - Video in the viewer shows stills, not playback.
+
 
 ## [0.6.0] - 2026-10-09
 
