@@ -53,6 +53,8 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 **Preview before you act.** Copy, move, delete and rename started from a library view first show a preview built from the index: what will change, plus warnings for the last copy of a file, a permanent delete on SFTP or S3, content that has not been hashed (unverified), and an offline source. Execution checks the plan again and stops if anything changed since the preview.
 
+**Resuming.** A copy or move that stops before it ends (Keel or keel-daemon closed, the computer restarted, a crash) continues where it stopped the next time the library opens, and its log says "resumed at file N of M". The files it already placed are skipped without being written again, the file it was writing is continued from its partial copy when the target is a local folder or an SFTP host (cloud targets, and a partial copy that changed meanwhile, start that file again), and a placed file that someone changed in the meantime stops the job instead of being overwritten. A move deletes each source file only once its copy is complete and verified. Progress is recorded every 256 files or 4 MiB, so after a crash (rather than a close) files placed into a folder that existed before the copy, since that last record, get the conflict choice again.
+
 **Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview.
 
 **Search syntax.** Several terms must all match; results are ranked.
@@ -82,7 +84,7 @@ Words that match no name or path also search camera and photo keywords, ranked b
 
 While attached: files are read from their real paths (the daemon runs on the same machine). The media view shows the daemon's thumbnails (`media.thumb`, 256 px for tiles, 1024 px for the viewer and big tiles): the daemon makes a missing one on demand, visible tiles first and at most four at a time for the window, and its sidecar jobs fill the rest ahead; both sizes are kept in a small cache under the window's cache folder by content. A file the daemon cannot answer for is decoded in the window, and video strips and photo metadata (date headers, the viewer's info panel) are still made by the window. Your input reaches the daemon (`activity.note`), so *idle only* hashing and integrity checks pause while you work, as in-process, and sidecar jobs for a second after each input. Settings → Devices is written to the daemon as you change it: its device name, inbox (only when you set one: otherwise the daemon's own, `<data dir>/inbox`, so drops land in the same folder whether or not a window is open) and always-accept list change at once; relays only when the daemon starts again (it reads `[devices] relay` then). Switching to another library needs the daemon stopped first.
 
-Limits: hashing skips cloud sources unless Cloud hashing is on, and remote files over the size cap; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+Limits: hashing skips cloud sources unless Cloud hashing is on, and remote files over the size cap; remote and cloud sources are polled rather than watched.
 
 ## Media view
 
@@ -120,7 +122,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 
 **Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared. Forgetting a device ends its shares and removes its folders from the library.
 
-**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...`, titled with the device's name (and "<device> / <source>" in a shared folder); the breadcrumb and the tab's hover use the names too, and a device you forgot shows its id. It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
+**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...`, titled with the device's name (and "<device> / <source>" in a shared folder); the breadcrumb and the tab's hover use the names too, and a device you forgot shows its id. It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land in its shared folders whether they are local folders, SFTP hosts or cloud accounts, with the same grant and path checks; they are checked with BLAKE3 and published whole: into a local folder through a staging file renamed into place, into an SFTP or cloud source streamed through that host's connection to the server and placed by its own upload only after the check (a read-only or unreachable source refuses the write). Sharing a source whose deletes are permanent (SFTP, S3) read-write says so in the preview.
 
 **Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). A drop that already arrived is remembered for an hour, so a sender that lost the last reply finishes without asking you again or sending a second copy. Cancel from the jobs panel; a prompt whose sender gave up or stopped asking goes away by itself.
 
@@ -134,7 +136,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 - Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land. One device can have at most 4 offers waiting (16 from all devices); more are refused as busy.
 - Anyone holding a still-valid code can pair, so show it only to the person in front of you.
 
-Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
+Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does).
 
 Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain, in the window, `keel-daemon` and the `keel` subcommands alike (tests and live checks; the device is new on every run and must pair again).
 
@@ -475,8 +477,8 @@ What is next, from the known limitations still open:
 - Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, the Recycle Bin / Trash folder on macOS, and the native Windows shell context menu.
 - Archives: deleting, renaming and creating entries inside one, and extracting into a remote folder.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
-- Library and protection: a resumed folder copy that is not re-run as a merge, and disks without a serial or cloned with one (their failure domain is set by hand today).
-- Devices: short-code pairing without internet discovery (the full ticket already works offline), and device writes into sources that are not local.
+- Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
+- Devices: short-code pairing without internet discovery (the full ticket already works offline).
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).

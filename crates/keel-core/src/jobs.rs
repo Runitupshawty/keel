@@ -137,6 +137,57 @@ impl JobCtx {
         self.written(progress)
     }
 
+    /// What a copy or move job's running batch placed (`job_file`), by source path.
+    pub(crate) fn placed(&self) -> Result<HashMap<keel_vfs::VPath, keel_vfs::ops::Placed>> {
+        let conn = self.lib.db.get()?;
+        let mut stmt = conn.prepare("SELECT src, placed FROM job_file WHERE job = ?1")?;
+        let rows = stmt.query_map([self.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (src, placed) = row?;
+            out.insert(serde_json::from_str(&src)?, serde_json::from_str(&placed)?);
+        }
+        Ok(out)
+    }
+
+    /// `cursor`, with the files a copy or move placed (`job_file`), in one transaction;
+    /// `batch_done` clears the rows first (a batch ended: its files are behind the cursor).
+    /// Never stops the job: the transfer checks its own stop flag.
+    pub(crate) fn record_placed(
+        &self,
+        placed: &[(keel_vfs::VPath, keel_vfs::ops::Placed)],
+        cursor: &serde_json::Value,
+        progress: f32,
+        batch_done: bool,
+    ) -> Result<()> {
+        let mut conn = self.lib.db.get()?;
+        let tx = conn.transaction()?;
+        if batch_done {
+            tx.execute("DELETE FROM job_file WHERE job = ?1", [self.id])?;
+        }
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT OR REPLACE INTO job_file(job, src, placed) VALUES (?1, ?2, ?3)",
+            )?;
+            for (src, p) in placed {
+                insert.execute(params![
+                    self.id,
+                    serde_json::to_string(src)?,
+                    serde_json::to_string(p)?
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE job SET cursor = ?2, progress = ?3, updated = ?4 WHERE id = ?1",
+            params![self.id, cursor.to_string(), progress, crate::now()],
+        )?;
+        tx.commit()?;
+        self.running(progress);
+        Ok(())
+    }
+
     fn written(&self, progress: f32) -> Result<()> {
         self.running(progress);
         if self.stopping() {
@@ -175,6 +226,14 @@ impl JobCtx {
     pub fn log(&self, line: &str) -> Result<()> {
         let line = crate::oplog::redact_text(line, &crate::oplog::roots(&self.lib));
         append_log(&self.lib.db, self.id, &line)
+    }
+
+    /// Tests: as if the library closed right now (the job stops at its next check and
+    /// stays pending).
+    #[cfg(test)]
+    pub(crate) fn simulate_close(&self) {
+        self.lib.jobs.closing.store(true, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
     }
 
     pub fn router(&self) -> Arc<Router> {
@@ -474,6 +533,9 @@ fn finish(
         _ => Some(serde_json::Value::Null),
     };
     let conn = db.get()?;
+    if !matches!(status, JobStatus::Queued | JobStatus::Running) {
+        conn.execute("DELETE FROM job_file WHERE job = ?1", [id])?;
+    }
     // A full state supersedes the cursor laid over the old one.
     conn.execute(
         "UPDATE job SET status = ?2, state = coalesce(?3, state),
@@ -524,6 +586,11 @@ pub(crate) fn prune(db: &Pool) -> Result<()> {
              SELECT id FROM job WHERE status IN ('done', 'failed', 'cancelled')
              ORDER BY id DESC LIMIT ?1)",
         [KEEP_ENDED],
+    )?;
+    db.get()?.execute(
+        "DELETE FROM job_file WHERE job NOT IN (
+             SELECT id FROM job WHERE status IN ('queued', 'running'))",
+        [],
     )?;
     Ok(())
 }

@@ -132,6 +132,15 @@ pub trait Provider: Send + Sync {
         let _ = cancel;
         self.create_new(p)
     }
+    /// Writes `p` in place from byte `offset`, without staging: 0 creates it (or empties an
+    /// existing one), any other offset continues a file at least that long, cut to `offset`
+    /// first. For resumable transfers writing their own staging files: `flush()` makes what
+    /// was written so far durable (it may be called many times), dropping the writer closes
+    /// it. None where the provider cannot (cloud services take a file in one request).
+    fn write_at(&self, p: &VPath, offset: u64) -> Result<Option<Box<dyn Write + Send>>> {
+        let _ = (p, offset);
+        Ok(None)
+    }
     /// `Some(service)`: writers hold the whole file and send it on `flush()`, so a transfer
     /// reports "Uploading to <service>…" instead of counting bytes that are only buffered.
     fn uploads_on_flush(&self) -> Option<&'static str> {

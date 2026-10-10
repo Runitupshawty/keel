@@ -651,3 +651,102 @@ fn live_proxy_jump() {
     assert!(route.contains(" via "), "{route}");
     roundtrip_through(target, &config, &base);
 }
+
+/// `write_at` writes in place and continues a file cut to its offset; a resumable transfer
+/// stopped halfway keeps its staging file on the server and the next run finishes it.
+#[test]
+fn live_write_at_and_a_resumed_upload() {
+    let Some((host, base)) = live() else {
+        return;
+    };
+    let provider = std::sync::Arc::new(SftpProvider::new(
+        host.clone(),
+        crossbeam_channel::unbounded().0,
+    ));
+    let run = run_dir(&base, "resume");
+    let file = run.0.join("w.txt");
+    let mut w = provider.write_at(&file, 0).unwrap().unwrap();
+    w.write_all(b"hello world").unwrap();
+    w.flush().unwrap();
+    drop(w);
+    let mut w = provider.write_at(&file, 5).unwrap().unwrap();
+    w.write_all(b" there").unwrap();
+    drop(w);
+    let mut back = String::new();
+    provider
+        .read(&file)
+        .unwrap()
+        .read_to_string(&mut back)
+        .unwrap();
+    assert_eq!(back, "hello there");
+    assert!(
+        provider.write_at(&file, 100).is_err(),
+        "shorter than the offset"
+    );
+
+    let router = Router::new();
+    router.register_remote_provider(host.id.clone(), provider.clone());
+    let local = tempfile::tempdir().unwrap();
+    let big: Vec<u8> = (0..10 << 20).map(|i| (i % 249) as u8).collect();
+    std::fs::write(local.path().join("big.bin"), &big).unwrap();
+    let src = [VPath::local(local.path().join("big.bin"))];
+    let recorded = std::cell::RefCell::new(None);
+    let cancel = AtomicBool::new(false);
+    let mut journal = keel_vfs::ops::Journal::new(Default::default(), None, |_, u| {
+        *recorded.borrow_mut() = u.cloned();
+        Ok(())
+    });
+    let stop = |p: keel_vfs::Progress| {
+        if p.done_bytes >= 6 << 20 {
+            cancel.store(true, Ordering::SeqCst);
+        }
+    };
+    let result = keel_vfs::ops::transfer_resumable(
+        &src,
+        &run.0,
+        false,
+        Conflict::Skip,
+        &stop,
+        &cancel,
+        &router,
+        &mut journal,
+    );
+    assert!(result.is_err(), "stopped");
+    drop(journal);
+    let unfinished = recorded
+        .borrow()
+        .clone()
+        .expect("the partial copy is recorded");
+    assert!(unfinished.bytes >= 6 << 20, "{}", unfinished.bytes);
+    assert_eq!(
+        provider.stat(&unfinished.staging).unwrap().size,
+        unfinished.bytes
+    );
+    cancel.store(false, Ordering::SeqCst);
+    let mut journal =
+        keel_vfs::ops::Journal::new(Default::default(), Some(unfinished), |_, _| Ok(()));
+    keel_vfs::ops::transfer_resumable(
+        &src,
+        &run.0,
+        false,
+        Conflict::Skip,
+        &|_| {},
+        &cancel,
+        &router,
+        &mut journal,
+    )
+    .unwrap();
+    assert!(
+        journal.notes[0].starts_with("continued"),
+        "{:?}",
+        journal.notes
+    );
+    let mut back = Vec::new();
+    provider
+        .read(&run.0.join("big.bin"))
+        .unwrap()
+        .read_to_end(&mut back)
+        .unwrap();
+    assert!(back == big);
+    assert_eq!(names(&provider, &run.0), ["big.bin", "w.txt"]);
+}

@@ -5,7 +5,7 @@ use keel_vfs::{cloud::MemoryStore, Kind, Provider, VPath};
 use std::{
     io::{Read, Write},
     path::Path,
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
 };
 
 /// Pairs share the machine; a timed test runs alone (`alone`).
@@ -372,5 +372,167 @@ fn pushed_pieces_resume_from_the_staged_length_and_publish_verified() {
     assert!(matches!(partial(), Response::Partial { len: 0, .. }));
     // Listings never show staging files.
     assert_eq!(pair.provider().list(&pair.path("in")).unwrap().len(), 1);
+    pair.close();
+}
+
+/// A memory provider served as SFTP host `box`, shared as source "Box" (`/share` on it)
+/// by the pair's host: its id.
+fn remote_source(pair: &Pair) -> (Arc<keel_vfs::memory::MemoryProvider>, String) {
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.mkdir(&VPath::parse("sftp://box/share/in").unwrap())
+        .unwrap();
+    pair.lib
+        .router()
+        .register_remote_provider("box".into(), mem.clone());
+    let def = SourceDef {
+        label: "Box".into(),
+        root: VPath::parse("sftp://box/share").unwrap(),
+        ..folder(Path::new(""))
+    };
+    let id = pair.lib.add_source(def).unwrap().0;
+    (mem, id)
+}
+
+impl Pair {
+    fn grant_on(&self, source: &str, subtree: &str, access: Access) {
+        self.host
+            .grant(Grant {
+                peer: PeerId(self.guest.id()),
+                source: source.into(),
+                subtree: subtree.into(),
+                access,
+                created: 0,
+            })
+            .unwrap();
+    }
+    fn path_in(&self, source: &str, rel: &str) -> VPath {
+        VPath::parse(&format!("node://{}/{source}/{rel}", self.host.id())).unwrap()
+    }
+}
+
+/// A device writes into a source on an SFTP host (here a memory provider standing in for
+/// it): the file streams through the host's router into that provider, with the same
+/// grant and path checks as a local source; a read-only or offline provider refuses.
+#[test]
+fn device_writes_reach_a_remote_source() {
+    let pair = pair();
+    let (mem, source) = remote_source(&pair);
+    pair.grant_on(&source, "in", Access::ReadWrite);
+    let p = pair.provider();
+    p.list(&VPath::parse(&format!("node://{}/", pair.host.id())).unwrap())
+        .unwrap();
+    // Bigger than one read of the body: it streams.
+    let body: Vec<u8> = (0..3 << 20).map(|i| (i % 253) as u8).collect();
+    let mut w = p.write(&pair.path_in(&source, "in/a.bin")).unwrap();
+    w.write_all(&body).unwrap();
+    w.flush().unwrap();
+    drop(w);
+    assert_eq!(mem.get("/share/in/a.bin"), Some(body.clone()));
+    assert_eq!(read_all(&p, &pair.path_in(&source, "in/a.bin")), body);
+    p.mkdir(&pair.path_in(&source, "in/sub")).unwrap();
+    p.rename(
+        &pair.path_in(&source, "in/a.bin"),
+        &pair.path_in(&source, "in/sub/a.bin"),
+    )
+    .unwrap();
+    assert!(mem.get("/share/in/sub/a.bin").is_some());
+
+    // Outside the grant, or out of the folder: refused, nothing written.
+    for rel in ["out.txt", "in/../out.txt"] {
+        let Ok(mut w) = p.write(&pair.path_in(&source, rel)) else {
+            continue;
+        };
+        w.write_all(b"x").unwrap();
+        assert!(w.flush().is_err(), "{rel}");
+    }
+    assert_eq!(mem.paths(), ["/share/in/sub/a.bin"]);
+
+    // Read-only, then offline: the write is refused.
+    mem.read_only.store(true, Ordering::SeqCst);
+    let mut w = p.write(&pair.path_in(&source, "in/b.txt")).unwrap();
+    w.write_all(b"b").unwrap();
+    assert!(w.flush().is_err());
+    mem.read_only.store(false, Ordering::SeqCst);
+    mem.offline.store(true, Ordering::SeqCst);
+    let mut w = p.write(&pair.path_in(&source, "in/b.txt")).unwrap();
+    w.write_all(b"b").unwrap();
+    assert!(w.flush().is_err());
+    mem.offline.store(false, Ordering::SeqCst);
+    assert_eq!(mem.paths(), ["/share/in/sub/a.bin"]);
+
+    // The device only hears that the write failed; the host's op log says why.
+    let failed = |log: &[keel_core::OpLogEntry], why: &str| {
+        log.iter()
+            .any(|e| e.kind == "net.write" && e.ok == Some(false) && e.result.contains(why))
+    };
+    let log = log_until(&pair.lib, |log| {
+        failed(log, "read-only") && failed(log, "unreachable")
+    });
+    assert!(failed(&log, "read-only") && failed(&log, "unreachable"));
+    assert!(log
+        .iter()
+        .any(|e| e.kind == "net.write" && e.ok == Some(true)));
+    pair.close();
+}
+
+/// Pieces of a file pushed to a remote source resume from the staged length there and are
+/// published only whole and verified, as for a local source.
+#[test]
+fn pieces_pushed_to_a_remote_source_resume_and_publish_verified() {
+    let pair = pair();
+    let (mem, source) = remote_source(&pair);
+    pair.grant_on(&source, "in", Access::ReadWrite);
+    let host = PeerId(pair.host.id());
+    let body = vec![9u8; 3000];
+    let hash = *blake3::hash(&body).as_bytes();
+    let push = |offset: usize, len: usize, final_: bool, expect: Option<[u8; 32]>| {
+        let piece = body[offset..offset + len].to_vec();
+        let at = WriteAt {
+            offset: offset as u64,
+            size: len as u64,
+            final_,
+            expect,
+        };
+        pair.rt.block_on(pair.guest.write_stream(
+            &host,
+            &source,
+            "in/f.bin",
+            Box::new(std::io::Cursor::new(piece)),
+            at,
+        ))
+    };
+    let partial = || {
+        let request = Request::StatPartial {
+            source: source.clone(),
+            path: "in/f.bin".into(),
+        };
+        pair.rt
+            .block_on(pair.guest.request(&host, request))
+            .unwrap()
+    };
+    assert_eq!(push(0, 1000, false, None).unwrap(), Response::Ok);
+    assert!(matches!(partial(), Response::Partial { len: 1000, .. }));
+    assert!(mem.get("/share/in/f.bin").is_none());
+    assert!(matches!(
+        push(2000, 1000, false, None).unwrap(),
+        Response::Error(_)
+    ));
+    assert!(matches!(
+        push(1000, 2000, true, Some([0; 32])).unwrap(),
+        Response::Error(_)
+    ));
+    assert!(mem.get("/share/in/f.bin").is_none());
+    assert!(matches!(partial(), Response::Partial { len: 0, .. }));
+    assert_eq!(push(0, 1000, false, None).unwrap(), Response::Ok);
+    assert_eq!(push(1000, 2000, true, Some(hash)).unwrap(), Response::Ok);
+    assert_eq!(mem.get("/share/in/f.bin"), Some(body.clone()));
+    assert_eq!(mem.paths(), ["/share/in/f.bin"], "no staging file left");
+    assert_eq!(
+        pair.provider()
+            .list(&pair.path_in(&source, "in"))
+            .unwrap()
+            .len(),
+        1
+    );
     pair.close();
 }

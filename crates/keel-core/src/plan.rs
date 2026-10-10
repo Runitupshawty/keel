@@ -212,14 +212,9 @@ impl Plan {
         } else {
             Some(self.clone())
         };
-        lib.jobs().spawn(Box::new(ExecJob {
-            op: self.op,
-            expect,
-            next: 0,
-            skipped: 0,
-            log_id: None,
-            marks: Vec::new(),
-        }))
+        let files = self.changes.iter().map(|c| c.files).sum();
+        lib.jobs()
+            .spawn(Box::new(ExecJob::new(self.op, expect, Some(files))))
     }
 }
 
@@ -555,7 +550,10 @@ const STEP_BATCH: usize = 64;
 
 /// Runs an `Op` in batches of top-level paths; the op_log row is written before the first
 /// batch and completed at the end. The op (with the plan to check) is stored once, at
-/// spawn; each batch writes only the cursor (`JobCtx::cursor`), once.
+/// spawn; each batch writes only the cursor (`JobCtx::cursor`), once. A copy or move also
+/// records, every few files or MiB, what its batch placed and the file it is writing
+/// (`job_file` and the cursor's `unfinished`), so a resumed batch skips the files placed
+/// and continues the one in progress instead of running again as a merge.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ExecJob {
     op: Op,
@@ -570,15 +568,27 @@ pub(crate) struct ExecJob {
     /// batch's side effects, so a resumed job checks each before doing it again.
     #[serde(default)]
     marks: Vec<Started>,
+    /// Copy and move: the file the running batch was writing when it last recorded.
+    #[serde(default)]
+    unfinished: Option<keel_vfs::ops::Unfinished>,
+    /// Copy and move: files placed by the batches before `next`.
+    #[serde(default)]
+    files_done: u64,
+    /// Copy and move: files in the confirmed plan (for "resumed at file N of M").
+    #[serde(default)]
+    files_total: Option<u64>,
+    /// Tests: the library "closes" (the job stops where it is, as in a crash, and stays
+    /// pending) once a transfer has written this many bytes.
+    #[cfg(test)]
+    #[serde(skip)]
+    crash_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Started {
     item: usize,
     /// The copy/move target name existed before the step. Probed only where a re-run is
-    /// not safe (rename on conflict: it would copy again under a new name); elsewhere true,
-    /// so a begun step simply runs again (skip and overwrite are idempotent, and a skip
-    /// merges into a folder copied halfway).
+    /// not safe (rename on conflict: it would copy again under a new name); elsewhere true.
     target_existed: bool,
 }
 
@@ -637,46 +647,70 @@ fn batch_marks(ctx: &JobCtx, op: &Op, items: &[VPath], from: usize) -> Vec<Start
     marks
 }
 
-/// What a resumed job does with an item whose step may have begun before a crash.
-enum Resume {
-    /// The step happened: only the index catches up.
-    Done,
-    /// It began (its target appeared): run it again as a merge that skips what exists, so
-    /// a folder copy killed halfway gets its remaining files.
-    Merge,
-    Run,
+/// Whether an item whose step may have begun before a crash certainly ran: a move, delete
+/// or rename whose source is gone, a copy of a file whose target appeared (files are
+/// placed whole). Anything else runs again; a copy or move then continues from what its
+/// batch recorded.
+fn ran(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> bool {
+    let appeared = !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t));
+    match op {
+        Op::Copy { .. } => appeared && !is_dir(ctx, item),
+        _ => !live(ctx, item),
+    }
 }
 
-/// A move, delete or rename happened when its source is gone; a copy of a file when its
-/// target appeared (files are placed whole). A folder copy or move whose target appeared
-/// may be partial: merged. (A copy that renames on conflict onto a name that existed
-/// cannot tell; it runs again.)
-fn resume(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> Resume {
-    let appeared = !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t));
-    let is_dir = || {
-        ctx.router()
-            .provider_for(item)
-            .and_then(|p| p.stat(item).ok())
-            .is_some_and(|e| e.kind == Kind::Dir)
+fn is_dir(ctx: &JobCtx, p: &VPath) -> bool {
+    ctx.router()
+        .provider_for(p)
+        .and_then(|provider| provider.stat(p).ok())
+        .is_some_and(|e| e.kind == Kind::Dir)
+}
+
+/// Removes a copy or move's staging file (`Unfinished::staging`) that no run will continue.
+fn drop_staging(ctx: &JobCtx, u: &keel_vfs::ops::Unfinished) {
+    let removed = match u.staging.to_local_path() {
+        Some(local) => std::fs::remove_file(local).map_err(anyhow::Error::from),
+        None => ctx
+            .router()
+            .provider_for(&u.staging)
+            .context("no provider")
+            .and_then(|p| p.remove(&u.staging)),
     };
-    match op {
-        Op::Copy { .. } if appeared && is_dir() => Resume::Merge,
-        Op::Copy { .. } if appeared => Resume::Done,
-        Op::Copy { .. } => Resume::Run,
-        _ if !live(ctx, item) => Resume::Done,
-        Op::Move { .. } if appeared => Resume::Merge,
-        _ => Resume::Run,
+    if let Err(e) = removed {
+        tracing::debug!("partial copy left behind: {e:#}");
     }
 }
 
 impl ExecJob {
+    pub(crate) fn new(op: Op, expect: Option<Plan>, files_total: Option<u64>) -> ExecJob {
+        ExecJob {
+            op,
+            expect,
+            next: 0,
+            skipped: 0,
+            log_id: None,
+            marks: Vec::new(),
+            unfinished: None,
+            files_done: 0,
+            files_total,
+            #[cfg(test)]
+            crash_at: None,
+        }
+    }
+
     fn cursor(&self) -> serde_json::Value {
         serde_json::json!({
             "next": self.next,
             "skipped": self.skipped,
             "log_id": self.log_id,
             "marks": self.marks,
+            "unfinished": self.unfinished,
+            "files_done": self.files_done,
         })
+    }
+
+    fn transfers(&self) -> bool {
+        matches!(self.op, Op::Copy { .. } | Op::Move { .. })
     }
 
     fn count(&mut self, ctx: &JobCtx, item: &VPath, ran: bool) -> Result<()> {
@@ -688,30 +722,77 @@ impl ExecJob {
         Ok(())
     }
 
+    /// "resumed at file N of M" for a copy or move continuing after a crash or a close.
+    fn log_resume(&self, ctx: &JobCtx) -> Result<()> {
+        let placed = ctx.placed()?.values().filter(|p| p.file.is_some()).count() as u64;
+        let at = self.files_done + placed + 1;
+        ctx.log(&match self.files_total {
+            Some(total) => format!("resumed at file {} of {total}", at.min(total.max(1))),
+            None => format!("resumed at file {at}"),
+        })
+    }
+
+    /// Ends a batch: the cursor moves past it (and a copy or move's record of it goes).
+    fn batch_done(&mut self, ctx: &JobCtx, items: &[VPath]) -> Result<()> {
+        self.marks = batch_marks(ctx, &self.op, items, self.next);
+        let progress = self.next as f32 / items.len() as f32;
+        if !self.transfers() {
+            return ctx.cursor(self.cursor(), progress);
+        }
+        ctx.record_placed(&[], &self.cursor(), progress, true)?;
+        if ctx.stopping() {
+            return Err(Cancelled.into());
+        }
+        Ok(())
+    }
+
     fn steps(&mut self, ctx: &JobCtx, items: &[VPath], mut marked: bool) -> Result<()> {
         let n = items.len();
-        // Marks left by an earlier session: their items may have begun, each is settled
-        // on its own.
-        if !marked {
+        // Marks left by an earlier session: their items may have begun.
+        if !marked && self.transfers() {
+            self.log_resume(ctx)?;
+            if !self.marks.is_empty() {
+                // What certainly ran is settled; the rest of the batch runs again from
+                // what it recorded.
+                let (mut rest, mut seeds) = (Vec::new(), Vec::new());
+                for s in self.marks.clone() {
+                    let item = &items[s.item];
+                    if ran(ctx, &self.op, item, s) {
+                        ctx.log("resumed after the step had run")?;
+                        after(ctx, &self.op, std::slice::from_ref(item));
+                        continue;
+                    }
+                    // A folder target that was not there before the batch is its own.
+                    if let Some(to) = target(&self.op, item).filter(|_| !s.target_existed) {
+                        if is_dir(ctx, &to) {
+                            seeds.push((item.clone(), to));
+                        }
+                    }
+                    rest.push(item.clone());
+                }
+                let done = self.transfer_batch(ctx, &rest, n, Some(&seeds))?;
+                for (item, ran) in rest.iter().zip(done) {
+                    self.count(ctx, item, ran)?;
+                }
+                self.next += self.marks.len();
+                self.batch_done(ctx, items)?;
+                marked = true;
+            }
+        } else if !marked {
             // Settled marks go one by one: a stop here keeps the rest for the next resume.
             while let Some(s) = self.marks.first().copied().filter(|s| s.item == self.next) {
                 if ctx.stopping() {
                     return Err(Cancelled.into());
                 }
                 let item = &items[self.next];
-                let ran = match resume(ctx, &self.op, item, s) {
-                    Resume::Done => {
-                        ctx.log("resumed after the step had run")?;
-                        after(ctx, &self.op, std::slice::from_ref(item));
-                        true
-                    }
-                    Resume::Merge => {
-                        ctx.log("resumed a step that had begun: merging")?;
-                        step(ctx, &self.op, item, Some(OnConflict::Skip))?
-                    }
-                    Resume::Run => step(ctx, &self.op, item, None)?,
+                let done = if ran(ctx, &self.op, item, s) {
+                    ctx.log("resumed after the step had run")?;
+                    after(ctx, &self.op, std::slice::from_ref(item));
+                    true
+                } else {
+                    step(ctx, &self.op, item)?
                 };
-                self.count(ctx, item, ran)?;
+                self.count(ctx, item, done)?;
                 self.marks.remove(0);
                 self.next += 1;
             }
@@ -725,15 +806,26 @@ impl ExecJob {
                 ctx.cursor(self.cursor(), self.next as f32 / n as f32)?;
             }
             let batch = &items[self.next..self.next + self.marks.len()];
-            let ran = run_batch(ctx, &self.op, batch)?;
-            for (item, ran) in batch.iter().zip(ran) {
+            let done = if self.transfers() {
+                self.transfer_batch(ctx, batch, n, None)?
+            } else {
+                batch
+                    .iter()
+                    .map(|item| {
+                        if ctx.stopping() {
+                            return Err(Cancelled.into());
+                        }
+                        step(ctx, &self.op, item)
+                    })
+                    .collect::<Result<Vec<bool>>>()?
+            };
+            for (item, ran) in batch.iter().zip(done) {
                 self.count(ctx, item, ran)?;
             }
             // One write: this batch done, and the next one marked.
             self.next += batch.len();
-            self.marks = batch_marks(ctx, &self.op, items, self.next);
+            self.batch_done(ctx, items)?;
             marked = true;
-            ctx.cursor(self.cursor(), self.next as f32 / n as f32)?;
         }
         // A target renamed to avoid a conflict is found by listing its folder, once.
         if let Op::Copy {
@@ -750,6 +842,112 @@ impl ExecJob {
             refresh_children(ctx, dst_dir);
         }
         Ok(())
+    }
+
+    /// One batch of a copy or move (`n` items in the op): one transfer of its present
+    /// items, recording what it placed and the file it writes. `resumed`: the batch ran
+    /// before (a crash or a close) and continues from that record, with these (item,
+    /// target) folders known to be its own. Per item, false when it no longer exists
+    /// (skipped).
+    fn transfer_batch(
+        &mut self,
+        ctx: &JobCtx,
+        batch: &[VPath],
+        n: usize,
+        resumed: Option<&[(VPath, VPath)]>,
+    ) -> Result<Vec<bool>> {
+        let (Op::Copy {
+            dst_dir,
+            on_conflict,
+            ..
+        }
+        | Op::Move {
+            dst_dir,
+            on_conflict,
+            ..
+        }) = &self.op
+        else {
+            anyhow::bail!("not a copy or move");
+        };
+        let ran = batch
+            .iter()
+            .map(|item| present(ctx, item))
+            .collect::<Result<Vec<bool>>>()?;
+        let todo: Vec<VPath> = batch
+            .iter()
+            .zip(&ran)
+            .filter(|(_, ran)| **ran)
+            .map(|(item, _)| item.clone())
+            .collect();
+        if todo.is_empty() {
+            return Ok(ran);
+        }
+        let base = self.cursor();
+        let progress = self.next as f32 / n as f32;
+        let mut placed = HashMap::new();
+        if let Some(seeds) = resumed {
+            placed = ctx.placed()?;
+            for (item, target) in seeds {
+                // Keyed as the transfer keys local paths (normalized).
+                let key = match item.to_local_path() {
+                    Some(local) => VPath::local(keel_vfs::long(&local)?),
+                    None => item.clone(),
+                };
+                let file = None;
+                let target = target.clone();
+                placed
+                    .entry(key)
+                    .or_insert(keel_vfs::ops::Placed { target, file });
+            }
+        }
+        let mut journal =
+            keel_vfs::ops::Journal::new(placed, self.unfinished.take(), |placed, unfinished| {
+                let mut cursor = base.clone();
+                cursor["unfinished"] = serde_json::to_value(unfinished)?;
+                ctx.record_placed(&placed, &cursor, progress, false)
+            });
+        #[cfg(test)]
+        let crash_at = self.crash_at;
+        let report = |_p: keel_vfs::Progress| {
+            #[cfg(test)]
+            if crash_at.is_some_and(|at| _p.done_bytes >= at) {
+                ctx.simulate_close();
+            }
+        };
+        let result = keel_vfs::ops::transfer_resumable(
+            &todo,
+            dst_dir,
+            matches!(self.op, Op::Move { .. }),
+            (*on_conflict).into(),
+            &report,
+            ctx.stop_flag(),
+            &ctx.router(),
+            &mut journal,
+        );
+        let (notes, files, left) = (
+            std::mem::take(&mut journal.notes),
+            journal.files,
+            journal.unfinished.take(),
+        );
+        drop(journal);
+        for note in notes {
+            ctx.log(&note)?;
+        }
+        match result {
+            Ok(()) => {
+                // The file it was writing is no longer there to finish.
+                if let Some(u) = left {
+                    drop_staging(ctx, &u);
+                }
+                self.files_done += files;
+                after(ctx, &self.op, &todo);
+                Ok(ran)
+            }
+            Err(e) => {
+                self.unfinished = left;
+                Err(e)
+            }
+        }
     }
 }
 
@@ -787,13 +985,17 @@ impl Job for ExecJob {
         let summary = match &result {
             Ok(()) if self.skipped == 0 => "ok".to_owned(),
             Ok(()) => format!("{} skipped", self.skipped),
-            // Resumes on the next open.
+            // Resumes on the next open (a partial copy stays for it).
             Err(_) if ctx.closing() => return result,
             Err(e) if e.is::<Cancelled>() || ctx.stopping() => {
                 format!("cancelled after {} of {}", self.next, n)
             }
             Err(e) => format!("failed after {} of {}: {e:#}", self.next, n),
         };
+        // Ends here: nothing will continue a partial copy.
+        if let Some(u) = self.unfinished.take() {
+            drop_staging(ctx, &u);
+        }
         oplog::set_result(&lib, log_id, &summary, result.is_ok())?;
         result
     }
@@ -835,83 +1037,14 @@ fn present(ctx: &JobCtx, item: &VPath) -> Result<bool> {
     Ok(false)
 }
 
-/// One batch; per item, false when it no longer exists (skipped). A copy or move is one
-/// transfer of the batch's present items.
-fn run_batch(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
-    let (Op::Copy {
-        dst_dir,
-        on_conflict,
-        ..
-    }
-    | Op::Move {
-        dst_dir,
-        on_conflict,
-        ..
-    }) = op
-    else {
-        return batch
-            .iter()
-            .map(|item| {
-                if ctx.stopping() {
-                    return Err(Cancelled.into());
-                }
-                step(ctx, op, item, None)
-            })
-            .collect();
-    };
-    let ran = batch
-        .iter()
-        .map(|item| present(ctx, item))
-        .collect::<Result<Vec<bool>>>()?;
-    let todo: Vec<VPath> = batch
-        .iter()
-        .zip(&ran)
-        .filter(|(_, ran)| **ran)
-        .map(|(item, _)| item.clone())
-        .collect();
-    if !todo.is_empty() {
-        keel_vfs::ops::transfer(
-            &todo,
-            dst_dir,
-            matches!(op, Op::Move { .. }),
-            (*on_conflict).into(),
-            &|_| {},
-            ctx.stop_flag(),
-            &ctx.router(),
-        )?;
-        after(ctx, op, &todo);
-    }
-    Ok(ran)
-}
-
-/// One top-level path (with `conflict` instead of the op's own, when given); false when it
-/// no longer exists (skipped).
-fn step(ctx: &JobCtx, op: &Op, item: &VPath, conflict: Option<OnConflict>) -> Result<bool> {
+/// One delete or rename of a top-level path; false when it no longer exists (skipped).
+fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
     if !present(ctx, item)? {
         return Ok(false);
     }
     let router = ctx.router();
     match op {
-        Op::Copy {
-            dst_dir,
-            on_conflict,
-            ..
-        }
-        | Op::Move {
-            dst_dir,
-            on_conflict,
-            ..
-        } => {
-            keel_vfs::ops::transfer(
-                std::slice::from_ref(item),
-                dst_dir,
-                matches!(op, Op::Move { .. }),
-                conflict.unwrap_or(*on_conflict).into(),
-                &|_| {},
-                ctx.stop_flag(),
-                &router,
-            )?;
-        }
+        Op::Copy { .. } | Op::Move { .. } => anyhow::bail!("copies and moves run in batches"),
         Op::Delete { .. } => router
             .provider_for(item)
             .with_context(|| format!("no provider for {}", item.display()))?

@@ -181,7 +181,12 @@ Each path must canonicalize to exactly `<canonical root>/<path>` (compared exact
 so a link or junction anywhere on the way, a short name or a case variant of an
 existing name is refused; a listing shows the real names); writes re-check before
 publishing. A device source or a `node://` root is never served. Device writes go to
-local sources only. Every served request is appended to the library's op log as
+local sources through a staging file on this machine, and to SFTP and cloud sources
+through the router to their provider: a whole file streams into the provider's own
+upload, placed on `flush()` only after the BLAKE3 check and a fresh path check; pieces
+go to a `.keel-partial-<id>` file beside the target written in place
+(`Provider::write_at`), so `StatPartial` resumes there too. A read-only provider or an
+unreachable source refuses the write. Every served request is appended to the library's op log as
 `net.<op>` with the peer id and label; a logger thread writes the entries in batches
 (the library database syncs every commit), retries a failed batch once, and is
 flushed when the node closes (`Handler::close`, called by `Node::close`) and when the

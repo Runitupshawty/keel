@@ -42,6 +42,11 @@ It refuses (typed errors below) when the hash is not the previewed one, when the
 expired (10 minutes) or was already executed, and, for file operations, when the sources
 changed since the preview (the error's `data` is the fresh preview to confirm instead).
 File operations run as jobs: `execute` returns `{"job": N}`; follow it with `jobs.info`.
+A copy or move that stopped (the daemon closed, a crash) resumes when the library opens
+again, where it stopped: its log gets `resumed at file N of M`, files it placed are not
+written again, the file it was writing is continued on local and SFTP targets, and a
+placed file changed since makes the job fail (`… changed since the preview …`) rather
+than be overwritten. `jobs.info` keeps its shape.
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
@@ -95,7 +100,7 @@ also act directly: they change no file.
 | `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids and `relay` (as the node started) |
 | `devices.settings_set` | preview | Change any of `label` (at most 256 bytes, no control or direction characters, checked in the preview), `inbox` (an absolute folder, never in Keel's configuration or data folder but its inbox, nor a folder holding either), `auto_accept` and `relay` on the running host: the label, inbox and always-accept list apply at once; relays only when the host starts again (`restart: true` in the answer, and a `restart` warning in the preview). Nothing is written to `config.toml` |
 | `shares.list` | read | Grants to paired devices |
-| `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
+| `shares.grant` | preview | Give a device read or read-write access to a source or subtree (a local folder, an SFTP host or a cloud account: the device's writes go through that source's provider); a read-write preview warns `read_write`, and `deletes_permanent` where deletes there are for good (SFTP, S3) |
 | `shares.revoke` | direct | Revoke a grant at once |
 | `mounts.list` | read | Sources keel-daemon serves as drives or mount folders |
 | `mounts.add` | preview | Mount a source or a subtree (`source`, `subtree`, `target`: `K:` or a folder) |

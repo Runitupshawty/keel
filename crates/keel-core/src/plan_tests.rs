@@ -225,15 +225,11 @@ fn resume_after_crash(lib: &Library, op: Op, target_existed: bool) -> crate::Job
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
-            expect: None,
-            op,
-            next: 0,
-            skipped: 0,
-            log_id: None,
             marks: vec![Started {
                 item: 0,
                 target_existed,
             }],
+            ..ExecJob::new(op, None, None)
         }))
         .unwrap();
     lib.jobs().wait(job).unwrap()
@@ -499,16 +495,13 @@ fn remote_deletes_run_through_the_provider_and_skip_vanished_paths() {
     // Executed after the path vanished from the plan's second item: skipped, not failed.
     let job = lib
         .jobs()
-        .spawn(Box::new(ExecJob {
-            expect: None,
-            op: Op::Delete {
+        .spawn(Box::new(ExecJob::new(
+            Op::Delete {
                 paths: vec![f, VPath::parse("fake://box/gone.txt").unwrap()],
             },
-            next: 0,
-            skipped: 0,
-            log_id: None,
-            marks: Vec::new(),
-        }))
+            None,
+            None,
+        )))
         .unwrap();
     let info = lib.jobs().wait(job).unwrap();
     assert_eq!(info.status, JobStatus::Done, "{}", info.log);
@@ -529,16 +522,16 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
-            expect: None,
-            op: Op::Copy {
-                src: vec![v(&root.join("a.txt")), v(&root.join("b.txt"))],
-                dst_dir: v(&root.join("dst")),
-                on_conflict: OnConflict::Skip,
-            },
             next: 1,
-            skipped: 0,
-            log_id: None,
-            marks: Vec::new(),
+            ..ExecJob::new(
+                Op::Copy {
+                    src: vec![v(&root.join("a.txt")), v(&root.join("b.txt"))],
+                    dst_dir: v(&root.join("dst")),
+                    on_conflict: OnConflict::Skip,
+                },
+                None,
+                None,
+            )
         }))
         .unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
@@ -595,8 +588,8 @@ fn three_thousand_items_copy_fast() {
     );
 }
 
-/// Review item 1: a folder copy killed after 10 of its 150 files resumes as a merge, not as
-/// done (whatever the conflict policy).
+/// Review item 1: a folder copy killed after 10 of its 150 files resumes with the rest, not
+/// as done and not into a second folder (whatever the conflict policy).
 #[test]
 fn a_folder_copy_killed_halfway_resumes_with_every_file() {
     for on_conflict in [
@@ -612,10 +605,14 @@ fn a_folder_copy_killed_halfway_resumes_with_every_file() {
         std::fs::create_dir_all(root.join("dst")).unwrap();
         let (_data, lib, src) = library_with(folder("f", root));
         walk(&src, &lib.router()).unwrap();
-        // The kill: 10 files were copied, the folder exists.
-        for i in 0..10 {
-            write(&root.join(format!("dst/album/{i:03}.jpg")), "photo");
-        }
+        // The kill: 10 files were copied (as the copy does: same modified time), the
+        // folder exists, nothing was recorded.
+        std::fs::create_dir_all(root.join("dst/album")).unwrap();
+        let copied: Vec<_> = (0..10)
+            .map(|i| root.join(format!("album/{i:03}.jpg")))
+            .collect();
+        let (never, skip) = (Default::default(), keel_vfs::ops::Conflict::Skip);
+        keel_vfs::ops::copy_local(&copied, &root.join("dst/album"), skip, &|_| {}, &never).unwrap();
         let copy = Op::Copy {
             src: vec![v(&root.join("album"))],
             dst_dir: v(&root.join("dst")),
@@ -628,7 +625,7 @@ fn a_folder_copy_killed_halfway_resumes_with_every_file() {
             "{on_conflict:?}: {}",
             info.log
         );
-        assert!(info.log.contains("merging"), "{}", info.log);
+        assert!(info.log.contains("resumed at file 1"), "{}", info.log);
         let copied = std::fs::read_dir(root.join("dst/album")).unwrap().count();
         assert_eq!(copied, 150, "{on_conflict:?}");
         assert_eq!(
@@ -665,17 +662,13 @@ fn a_resumed_batch_settles_each_item() {
     let job = lib
         .jobs()
         .spawn(Box::new(ExecJob {
-            op: mv,
-            expect: None,
-            next: 0,
-            skipped: 0,
-            log_id: None,
             marks: (0..3)
                 .map(|item| Started {
                     item,
                     target_existed: false,
                 })
                 .collect(),
+            ..ExecJob::new(mv, None, None)
         }))
         .unwrap();
     let info = lib.jobs().wait(job).unwrap();
@@ -686,4 +679,272 @@ fn a_resumed_batch_settles_each_item() {
         assert!(id_of(&src, &format!("dst/{name}")).is_some(), "{name}");
         assert!(id_of(&src, name).is_none(), "{name}");
     }
+}
+
+/// Every file under `dir`: (path relative to it, content).
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).unwrap().to_string_lossy();
+                out.push((rel.replace('\\', "/"), std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+const MIB: usize = 1 << 20;
+/// 20 small files, one of 12 MiB, 10 more after it (in copy order).
+const SMALL: usize = 20;
+
+/// `root/album` as above, and a library over `root` with `root/dst`, walked.
+fn album(root: &Path) -> (tempfile::TempDir, Library) {
+    std::fs::create_dir_all(root.join("album")).unwrap();
+    for i in 0..SMALL {
+        let name = root.join(format!("album/{i:03}.txt"));
+        std::fs::write(name, vec![i as u8; 1024]).unwrap();
+    }
+    let big: Vec<u8> = (0..12 * MIB).map(|i| (i % 251) as u8).collect();
+    std::fs::write(root.join("album/big.bin"), big).unwrap();
+    for i in 0..10 {
+        std::fs::write(root.join(format!("album/z{i}.txt")), format!("z{i}")).unwrap();
+    }
+    std::fs::create_dir_all(root.join("dst")).unwrap();
+    let (data, lib, src) = library_with(folder("f", root));
+    walk(&src, &lib.router()).unwrap();
+    (data, lib)
+}
+
+/// Runs `op` (previewed, as confirmed) until 6 MiB of `big.bin` are written, then stops it
+/// as a crash would: the library goes, the job stays pending. Returns its id.
+fn stop_halfway(lib: &Library, op: Op) -> crate::JobId {
+    let plan = validate_preview_execute(lib, op.clone()).unwrap();
+    let files = plan.changes.iter().map(|c| c.files).sum();
+    let job = ExecJob {
+        crash_at: Some((SMALL * 1024 + 6 * MIB) as u64),
+        ..ExecJob::new(op, Some(plan), Some(files))
+    };
+    let id = lib.jobs().spawn(Box::new(job)).unwrap();
+    let info = lib.jobs().wait(id).unwrap();
+    assert_eq!(info.status, JobStatus::Running, "{}", info.log);
+    id
+}
+
+/// The staging file (`.keel-partial-…`) in `dir`.
+fn staging(dir: &Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains(".keel-partial"))
+}
+
+/// Reopens the library at `data` and runs the pending job `id` to its end.
+fn resume_job(data: &Path, id: crate::JobId, router: Option<Arc<Router>>) -> crate::JobInfo {
+    let lib = Library::open(data, "t").unwrap();
+    if let Some(router) = router {
+        lib.set_router(router);
+    }
+    assert_eq!(lib.jobs().resume_all().unwrap(), [id]);
+    lib.jobs().wait(id).unwrap()
+}
+
+/// A folder copy stopped halfway through a big file continues there after a restart:
+/// the files it placed are not written again, the big one is finished from its partial
+/// copy, and the result is what an uninterrupted copy makes.
+#[test]
+fn a_copy_stopped_mid_file_resumes_where_it_stopped() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    let (data, lib) = album(root);
+    let copy = Op::Copy {
+        src: vec![v(&root.join("album"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Skip,
+    };
+    let id = stop_halfway(&lib, copy);
+    drop(lib);
+    let dst = root.join("dst/album");
+    let partial = staging(&dst).expect("the partial copy is kept");
+    assert_eq!(std::fs::metadata(&partial).unwrap().len(), 6 * MIB as u64);
+    assert!(!dst.join("big.bin").exists() && !dst.join("z0.txt").exists());
+    // What the stopped run placed: identity and modified time, to check they stay.
+    let placed: Vec<_> = (0..SMALL)
+        .map(|i| {
+            let item = crate::fsid::stat(&dst.join(format!("{i:03}.txt"))).unwrap();
+            (item.fs_id, item.mtime)
+        })
+        .collect();
+    let info = resume_job(data.path(), id, None);
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert!(
+        info.log.contains("resumed at file 21 of 31"),
+        "{}",
+        info.log
+    );
+    assert!(info.log.contains("continued"), "{}", info.log);
+    for (i, before) in placed.iter().enumerate() {
+        let item = crate::fsid::stat(&dst.join(format!("{i:03}.txt"))).unwrap();
+        assert_eq!(
+            &(item.fs_id, item.mtime),
+            before,
+            "{i:03}.txt was written again"
+        );
+    }
+    assert!(staging(&dst).is_none(), "no partial copy left");
+    assert_eq!(tree(&dst), tree(&root.join("album")));
+    // As an uninterrupted copy.
+    std::fs::create_dir_all(root.join("dst2")).unwrap();
+    let lib = Library::open(data.path(), "t").unwrap();
+    let whole = Op::Copy {
+        src: vec![v(&root.join("album"))],
+        dst_dir: v(&root.join("dst2")),
+        on_conflict: OnConflict::Skip,
+    };
+    assert_eq!(run(&lib, whole).status, JobStatus::Done);
+    assert_eq!(tree(&root.join("dst2/album")), tree(&dst));
+    let entry = &lib.op_log(2).unwrap()[1];
+    assert_eq!((entry.kind.as_str(), entry.result.as_str()), ("copy", "ok"));
+}
+
+/// A partial copy that no longer matches its record (here cut short) is not continued:
+/// that file starts over.
+#[test]
+fn a_partial_copy_that_changed_starts_over() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    let (data, lib) = album(root);
+    let copy = Op::Copy {
+        src: vec![v(&root.join("album"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Overwrite,
+    };
+    let id = stop_halfway(&lib, copy);
+    drop(lib);
+    let dst = root.join("dst/album");
+    let partial = staging(&dst).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&partial)
+        .unwrap()
+        .set_len(MIB as u64)
+        .unwrap();
+    let info = resume_job(data.path(), id, None);
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert!(info.log.contains("restarted"), "{}", info.log);
+    assert!(!partial.exists() && staging(&dst).is_none());
+    assert_eq!(tree(&dst), tree(&root.join("album")));
+}
+
+/// A file the stopped run had placed and someone changed since is never overwritten: the
+/// resumed job fails as a plan whose sources changed does.
+#[test]
+fn a_changed_target_refuses_the_resumed_copy() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    let (data, lib) = album(root);
+    let copy = Op::Copy {
+        src: vec![v(&root.join("album"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::Overwrite,
+    };
+    let id = stop_halfway(&lib, copy);
+    drop(lib);
+    let dst = root.join("dst/album");
+    std::fs::write(dst.join("005.txt"), "edited meanwhile").unwrap();
+    let info = resume_job(data.path(), id, None);
+    assert_eq!(info.status, JobStatus::Failed, "{}", info.log);
+    assert!(
+        info.log.contains("changed since the preview"),
+        "{}",
+        info.log
+    );
+    assert_eq!(
+        std::fs::read(dst.join("005.txt")).unwrap(),
+        b"edited meanwhile"
+    );
+    assert!(!dst.join("big.bin").exists());
+    assert!(
+        staging(&dst).is_none(),
+        "the ended job dropped its partial copy"
+    );
+}
+
+/// A move into another location (copy, verify, delete) stopped mid-file keeps the sources
+/// of every file not copied whole; resumed, it continues and removes them.
+#[test]
+fn a_resumed_move_deletes_only_sources_copied_whole() {
+    use keel_vfs::Provider;
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    let (data, lib) = album(root);
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.mkdir(&VPath::parse("sftp://box/dst").unwrap()).unwrap();
+    let router = lib.router();
+    router.register_remote_provider("box".into(), mem.clone());
+    let mv = Op::Move {
+        src: vec![v(&root.join("album"))],
+        dst_dir: VPath::parse("sftp://box/dst").unwrap(),
+        on_conflict: OnConflict::Skip,
+    };
+    let source = tree(&root.join("album"));
+    let id = stop_halfway(&lib, mv);
+    drop(lib);
+    let album = root.join("album");
+    for i in 0..SMALL {
+        assert!(!album.join(format!("{i:03}.txt")).exists(), "{i:03}: moved");
+        assert!(mem.get(&format!("/dst/album/{i:03}.txt")).is_some());
+    }
+    assert!(album.join("big.bin").exists(), "its copy is incomplete");
+    assert!(album.join("z0.txt").exists());
+    let partial = mem
+        .paths()
+        .into_iter()
+        .find(|p| p.contains(".keel-partial"))
+        .expect("the partial copy is kept");
+    assert_eq!(mem.get(&partial).unwrap().len(), 6 * MIB);
+    let info = resume_job(data.path(), id, Some(router));
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    assert!(info.log.contains("continued"), "{}", info.log);
+    assert!(!album.exists(), "every source moved");
+    assert!(mem.paths().iter().all(|p| !p.contains(".keel-partial")));
+    for (rel, data) in source {
+        assert_eq!(mem.get(&format!("/dst/album/{rel}")), Some(data), "{rel}");
+    }
+}
+
+/// Rename on conflict: the folder name a stopped copy picked is recorded before the folder
+/// is made, so the resumed copy fills that folder instead of picking a third name.
+#[test]
+fn a_resumed_copy_keeps_the_name_it_picked() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path();
+    let (data, lib) = album(root);
+    std::fs::create_dir_all(root.join("dst/album")).unwrap();
+    std::fs::write(root.join("dst/album/old.txt"), "old").unwrap();
+    let copy = Op::Copy {
+        src: vec![v(&root.join("album"))],
+        dst_dir: v(&root.join("dst")),
+        on_conflict: OnConflict::RenameNew,
+    };
+    let id = stop_halfway(&lib, copy);
+    drop(lib);
+    assert!(staging(&root.join("dst/album (2)")).is_some());
+    let info = resume_job(data.path(), id, None);
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let mut names: Vec<_> = std::fs::read_dir(root.join("dst"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["album", "album (2)"]);
+    assert_eq!(tree(&root.join("dst/album (2)")), tree(&root.join("album")));
+    assert_eq!(tree(&root.join("dst/album")).len(), 1);
 }

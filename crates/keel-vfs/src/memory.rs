@@ -1,9 +1,9 @@
 //! An in-memory provider for tests (the `test-util` feature): files by path, folders
-//! implied by them, plus switches that take it offline, fail the reads of chosen paths or
-//! slow every read down. `put` and `remove` feed `changes` (its cursor is a position in
-//! the change log), which can be switched off or made to refuse its cursor once;
-//! `folder_times` gives folders a modified time that moves when an entry is added or
-//! removed, as on an SFTP server.
+//! implied by them or made with `mkdir`, plus switches that take it offline, make it
+//! read-only, fail the reads of chosen paths or slow every read down. `put` and `remove`
+//! feed `changes` (its cursor is a position in the change log), which can be switched off
+//! or made to refuse its cursor once; `folder_times` gives folders a modified time that
+//! moves when an entry is added or removed, as on an SFTP server.
 
 use crate::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, Entry, FeedError, Kind, Provider,
@@ -12,21 +12,29 @@ use crate::{
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     io::{Cursor, Read, Write},
     path::PathBuf,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
-type Files = BTreeMap<String, (Vec<u8>, SystemTime)>;
+type FileMap = BTreeMap<String, (Vec<u8>, SystemTime)>;
+type Files = Arc<Mutex<FileMap>>;
 
 #[derive(Default)]
 pub struct MemoryProvider {
     /// Contents and mtime by `VPath::path` (`/dir/a.txt`).
-    files: Mutex<Files>,
+    files: Files,
+    /// Folders made with `mkdir` (others are implied by the files in them).
+    dirs: Mutex<BTreeSet<String>>,
     /// Every call fails, as for a host that is down.
     pub offline: AtomicBool,
+    /// Writes, renames and removes are refused (`caps` says so).
+    pub read_only: AtomicBool,
     /// Reads of these paths fail.
     pub fail_reads: Mutex<HashSet<String>>,
     /// Milliseconds each `read` sleeps first.
@@ -92,7 +100,7 @@ impl MemoryProvider {
     /// An entry is added at `path` (`files` as before) or was removed from it (`files` as
     /// after): its folder's time moves, and so does the time of the folder above each
     /// folder that did not exist before (or no longer does).
-    fn touch_dirs(&self, path: &str, files: &Files) {
+    fn touch_dirs(&self, path: &str, files: &FileMap) {
         let now = SystemTime::UNIX_EPOCH
             + Duration::from_secs(1_800_000_000 + self.clock.fetch_add(1, Ordering::SeqCst));
         let mut times = self.dir_times.lock();
@@ -120,11 +128,42 @@ impl MemoryProvider {
         Some(self.dir_times.lock().get(dir).copied().unwrap_or(epoch))
     }
 
+    /// The file at `path`, if there is one.
+    pub fn get(&self, path: &str) -> Option<Vec<u8>> {
+        self.files.lock().get(path).map(|(data, _)| data.clone())
+    }
+
+    /// Every file's path, sorted.
+    pub fn paths(&self) -> Vec<String> {
+        self.files.lock().keys().cloned().collect()
+    }
+
     fn up(&self) -> Result<()> {
         if self.offline.load(Ordering::SeqCst) {
             bail!("memory provider is offline");
         }
         Ok(())
+    }
+
+    fn writable(&self, p: &VPath) -> Result<()> {
+        self.up()?;
+        if self.read_only.load(Ordering::SeqCst) {
+            bail!("memory provider is read-only: {}", p.display());
+        }
+        Ok(())
+    }
+
+    /// A file or folder at `path`.
+    fn exists(&self, path: &str) -> bool {
+        let below = format!("{}/", path.trim_end_matches('/'));
+        let files = self.files.lock();
+        files.contains_key(path)
+            || files.keys().any(|k| k.starts_with(&below))
+            || self
+                .dirs
+                .lock()
+                .iter()
+                .any(|d| d == path || d.starts_with(&below))
     }
 
     fn entry(p: &VPath, kind: Kind, size: u64, modified: Option<SystemTime>) -> Entry {
@@ -144,6 +183,111 @@ impl MemoryProvider {
             encrypted: false,
         }
     }
+
+    fn writer(&self, p: &VPath, mode: Mode) -> Result<Box<dyn Write + Send>> {
+        self.writable(p)?;
+        if mode == Mode::New && self.exists(&p.path) {
+            bail!("{} exists", p.display());
+        }
+        Ok(Box::new(MemoryWrite {
+            files: self.files.clone(),
+            path: p.path.clone(),
+            buf: Vec::new(),
+            mode,
+        }))
+    }
+
+    /// Moves `from` (a file, or a folder with everything in it) to `to`.
+    fn move_to(&self, from: &VPath, to: &VPath, replace: bool) -> Result<()> {
+        self.writable(from)?;
+        if !self.exists(&from.path) {
+            bail!("no such entry {}", from.display());
+        }
+        let file = self.files.lock().get(&from.path).cloned();
+        if let Some(file) = file {
+            let taken = self.files.lock().contains_key(&to.path);
+            if taken && !replace || !taken && self.exists(&to.path) {
+                bail!("{} exists", to.display());
+            }
+            let mut files = self.files.lock();
+            files.remove(&from.path);
+            files.insert(to.path.clone(), file);
+            return Ok(());
+        }
+        if self.exists(&to.path) {
+            bail!("{} exists", to.display());
+        }
+        let (old, new) = (prefix(from), prefix(to));
+        let mut files = self.files.lock();
+        let moved: Vec<String> = files
+            .keys()
+            .filter(|k| k.starts_with(&old))
+            .cloned()
+            .collect();
+        for k in moved {
+            if let Some(file) = files.remove(&k) {
+                files.insert(format!("{new}{}", &k[old.len()..]), file);
+            }
+        }
+        let mut dirs = self.dirs.lock();
+        let moved: Vec<String> = dirs
+            .iter()
+            .filter(|d| **d == from.path || d.starts_with(&old))
+            .cloned()
+            .collect();
+        for d in moved {
+            dirs.remove(&d);
+            dirs.insert(format!("{}{}", to.path, &d[from.path.len()..]));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Placed on `flush()`, replacing what is there.
+    Replace,
+    /// Placed on `flush()` only while nothing is there.
+    New,
+    /// Each write lands at once (`write_at`).
+    Direct,
+}
+
+struct MemoryWrite {
+    files: Files,
+    path: String,
+    buf: Vec<u8>,
+    mode: Mode,
+}
+
+impl Write for MemoryWrite {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.mode == Mode::Direct {
+            let mut files = self.files.lock();
+            let file = files
+                .get_mut(&self.path)
+                .ok_or_else(|| std::io::Error::other("file removed while written"))?;
+            file.0.extend_from_slice(bytes);
+            file.1 = SystemTime::now();
+        } else {
+            self.buf.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.mode == Mode::Direct {
+            return Ok(());
+        }
+        let mut files = self.files.lock();
+        if self.mode == Mode::New && files.contains_key(&self.path) {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        let data = std::mem::take(&mut self.buf);
+        files.insert(self.path.clone(), (data, SystemTime::now()));
+        // Placed: later writes go straight in.
+        self.mode = Mode::Direct;
+        Ok(())
+    }
 }
 
 /// `dir` with exactly one trailing slash.
@@ -156,7 +300,13 @@ impl Provider for MemoryProvider {
         "memory"
     }
     fn caps(&self) -> Caps {
-        Caps::default()
+        let write = !self.read_only.load(Ordering::SeqCst);
+        Caps {
+            write,
+            rename: write,
+            delete: write,
+            watch: false,
+        }
     }
     fn list(&self, dir: &VPath) -> Result<Vec<Entry>> {
         self.up()?;
@@ -175,6 +325,13 @@ impl Provider for MemoryProvider {
             };
             out.insert(e.name.clone(), e);
         }
+        for d in self.dirs.lock().iter() {
+            if let Some(rest) = d.strip_prefix(&prefix) {
+                let sub = rest.split('/').next().unwrap_or(rest);
+                out.entry(sub.to_owned())
+                    .or_insert_with(|| Self::entry(&dir.join(sub), Kind::Dir, 0, None));
+            }
+        }
         Ok(out.into_values().collect())
     }
     fn list_complete(&self, dir: &VPath) -> Result<Vec<Entry>> {
@@ -182,13 +339,10 @@ impl Provider for MemoryProvider {
     }
     fn stat(&self, p: &VPath) -> Result<Entry> {
         self.up()?;
-        let files = self.files.lock();
-        if let Some((data, mtime)) = files.get(&p.path) {
+        if let Some((data, mtime)) = self.files.lock().get(&p.path) {
             return Ok(Self::entry(p, Kind::File, data.len() as u64, Some(*mtime)));
         }
-        let prefix = prefix(p);
-        if prefix == "/" || files.keys().any(|k| k.starts_with(&prefix)) {
-            drop(files);
+        if prefix(p) == "/" || self.exists(&p.path) {
             return Ok(Self::entry(p, Kind::Dir, 0, self.dir_time(&p.path)));
         }
         Err(std::io::Error::new(
@@ -214,23 +368,69 @@ impl Provider for MemoryProvider {
         self.served.fetch_add(data.len() as u64, Ordering::SeqCst);
         Ok(Box::new(Cursor::new(data)))
     }
+    /// Placed on `flush()`.
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
-        bail!("memory provider is read-only: {}", p.display())
+        self.writer(p, Mode::Replace)
+    }
+    fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        self.writer(p, Mode::New)
+    }
+    fn write_at(&self, p: &VPath, offset: u64) -> Result<Option<Box<dyn Write + Send>>> {
+        self.writable(p)?;
+        {
+            let mut files = self.files.lock();
+            let file = files
+                .entry(p.path.clone())
+                .or_insert_with(|| (Vec::new(), SystemTime::now()));
+            if (file.0.len() as u64) < offset {
+                bail!("only {} of {offset} bytes are there", file.0.len());
+            }
+            file.0.truncate(offset as usize);
+        }
+        self.writer(p, Mode::Direct).map(Some)
     }
     fn mkdir(&self, p: &VPath) -> Result<()> {
-        bail!("memory provider is read-only: {}", p.display())
+        self.writable(p)?;
+        if self.exists(&p.path) {
+            bail!("{} exists", p.display());
+        }
+        self.dirs.lock().insert(p.path.clone());
+        Ok(())
     }
-    fn rename(&self, from: &VPath, _: &VPath) -> Result<()> {
-        bail!("memory provider is read-only: {}", from.display())
+    /// Never replaces an existing target.
+    fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.move_to(from, to, false)
     }
-    /// A file, or a folder with everything in it.
+    fn rename_noreplace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.move_to(from, to, false)
+    }
+    fn rename_replace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.move_to(from, to, true)
+    }
+    fn remove_empty_dir(&self, p: &VPath) -> Result<()> {
+        self.writable(p)?;
+        let below = prefix(p);
+        if self.files.lock().keys().any(|k| k.starts_with(&below))
+            || self.dirs.lock().iter().any(|d| d.starts_with(&below))
+        {
+            bail!("{} is not empty", p.display());
+        }
+        self.dirs.lock().remove(&p.path);
+        Ok(())
+    }
+    /// Gone for good, a folder with everything in it.
     fn remove(&self, p: &VPath) -> Result<()> {
-        self.up()?;
-        let inside = prefix(p);
+        self.writable(p)?;
+        let below = prefix(p);
         let mut files = self.files.lock();
         let before = files.len();
-        files.retain(|k, _| *k != p.path && !k.starts_with(&inside));
-        if files.len() != before {
+        files.retain(|k, _| *k != p.path && !k.starts_with(&below));
+        let mut dirs = self.dirs.lock();
+        let dirs_before = dirs.len();
+        dirs.retain(|d| *d != p.path && !d.starts_with(&below));
+        let removed = files.len() != before || dirs.len() != dirs_before;
+        drop(dirs);
+        if removed {
             self.touch_dirs(&p.path, &files);
             drop(files);
             self.push_change(&p.path, ChangeKind::Removed);

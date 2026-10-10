@@ -417,6 +417,35 @@ fn devices_and_shares() {
     .unwrap();
     assert_eq!(revoked["existed"], true);
     assert!(a_node.grants().is_empty());
+    // Device writes reach a source on another provider too: a read-write share of one
+    // whose deletes are permanent says so.
+    a.ctx.router.register(Arc::new(Mem {
+        data: Vec::new(),
+        ranged: false,
+        served: Default::default(),
+    }));
+    let def = keel_core::SourceDef {
+        label: "Mem".into(),
+        root: keel_vfs::VPath::parse("mem://x/share").unwrap(),
+        kind: keel_core::SourceKind::Folder,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    };
+    let remote = a.ctx.lib.add_source(def).unwrap().0;
+    let peer = b_node.id().to_string();
+    let rw = |source: &Value| json!({"peer": peer, "source": source, "access": "read_write"});
+    let preview = call(&a.ctx, "shares.grant", rw(&json!(remote))).unwrap();
+    assert!(
+        preview.to_string().contains("deletes_permanent"),
+        "{preview}"
+    );
+    let preview = call(&a.ctx, "shares.grant", rw(&source)).unwrap();
+    assert!(
+        !preview.to_string().contains("deletes_permanent"),
+        "{preview}"
+    );
     let unknown = json!({"peer": "a".repeat(52), "source": source, "access": "read"});
     assert!(call(&a.ctx, "shares.grant", unknown).is_err());
     apply(
