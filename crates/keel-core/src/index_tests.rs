@@ -1702,3 +1702,67 @@ fn folder_times_find_added_and_removed_entries_without_a_walk() {
     assert_eq!(src.generation.load(Ordering::SeqCst), 1, "no walk");
     drop(handle);
 }
+
+/// A host that stops answering between walks shows as offline at the next poll (the
+/// failed feed read brings the walk forward), not after the 6-hour walk.
+#[test]
+fn a_source_whose_feed_stops_answering_goes_offline_at_the_next_poll() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    let handle = Indexer::watch_with(&src, &router, fast_polls()).unwrap();
+    eventually("first walk", || cursor_of(&src).is_some());
+    assert!(matches!(*src.status.read(), SourceStatus::Online { .. }));
+    mem.offline.store(true, Ordering::SeqCst);
+    eventually("offline", || {
+        matches!(*src.status.read(), SourceStatus::Offline { .. })
+    });
+    mem.offline.store(false, Ordering::SeqCst);
+    eventually("online again", || {
+        matches!(*src.status.read(), SourceStatus::Online { .. })
+    });
+    drop(handle);
+}
+
+/// Walks that keep failing are tried again at the next poll, then less and less often.
+#[test]
+fn failing_walks_back_off() {
+    let poll = Duration::from_secs(120);
+    let waits: Vec<u64> = (0..7).map(|n| retry_walk(poll, n).as_secs()).collect();
+    assert_eq!(waits, [120, 240, 480, 960, 1800, 1800, 1800]);
+    assert_eq!(
+        retry_walk(Duration::from_secs(3600), 3),
+        Duration::from_secs(3600)
+    );
+    assert!(is_unreachable(
+        &anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+            .context("cannot reach")
+    ));
+    assert!(!is_unreachable(&anyhow::anyhow!("cloud HTTP 500")));
+}
+
+/// Folder times are read for at most `max` folders a poll, in turn: a folder past the
+/// first `max` is checked at a later poll, and then the first ones again.
+#[test]
+fn folder_polls_take_their_folders_in_turn() {
+    let (mem, router, _data, _lib, src) = memory_source();
+    mem.folder_times.store(true, Ordering::SeqCst);
+    mem.put("/srv/d2/x.txt", "x");
+    mem.put("/srv/d3/y.txt", "y");
+    walk(&src, &router).unwrap();
+    let provider = router.provider_for(&src.def.root).unwrap();
+    let never = AtomicBool::new(false);
+    // Folders in path order: "", "d", "d2", "d3".
+    mem.put("/srv/d3/late.txt", "l");
+    mem.put("/srv/top.txt", "t");
+    assert!(Indexer::poll_folders(&src, &provider, 2, &never).unwrap());
+    assert!(
+        id_of(&src, "top.txt").is_some(),
+        "the root is in the first two"
+    );
+    assert!(id_of(&src, "d3/late.txt").is_none(), "d3 waits its turn");
+    assert!(Indexer::poll_folders(&src, &provider, 2, &never).unwrap());
+    assert!(id_of(&src, "d3/late.txt").is_some());
+    // Round again from the start.
+    mem.put("/srv/again.txt", "a");
+    assert!(Indexer::poll_folders(&src, &provider, 2, &never).unwrap());
+    assert!(id_of(&src, "again.txt").is_some());
+}

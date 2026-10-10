@@ -965,25 +965,50 @@ impl Indexer {
     }
 
     /// One cheap poll of a remote source whose folder times move when entries come and go
-    /// (SFTP): every indexed folder is stat'ed and the ones whose time moved are listed
-    /// again (vanished entries removed, new ones added, new folders walked). Changes inside
-    /// a file do not move its folder's time: the full walk every `reconcile` finds those.
+    /// (SFTP): at most `max` indexed folders are stat'ed, in path order from where the last
+    /// poll stopped (wrapping around), and the ones whose time moved are listed again
+    /// (vanished entries removed, new ones added, new folders walked). Changes inside a
+    /// file do not move its folder's time: the full walk every `reconcile` finds those.
     /// Ok(false): only a full walk catches up (the source is held).
-    /// ponytail: one stat after another; tens of thousands of folders want them pipelined.
+    /// ponytail: one stat after another, `max` per poll; pipeline them if a source of
+    /// tens of thousands of folders needs each one checked every poll.
     pub(crate) fn poll_folders(
         src: &Source,
         provider: &Arc<dyn Provider>,
+        max: usize,
         cancel: &AtomicBool,
     ) -> Result<bool> {
         if src.held().is_some() {
             return Ok(false);
         }
-        let folders: Vec<(String, Option<i64>)> = src
-            .store
-            .get()?
-            .prepare("SELECT path, mtime FROM record WHERE kind = ?1 AND flags & ?2 = 0")?
-            .query_map(params![DIR, LINK], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
+        let from = src.store.meta(POLL_FROM)?;
+        // Folders after `after` up to `upto` (None: no bound), at most `limit`.
+        let conn = src.store.get()?;
+        let mut query = conn.prepare(
+            "SELECT path, mtime FROM record WHERE kind = ?1 AND flags & ?2 = 0 \
+             AND (?3 IS NULL OR path > ?3) AND (?4 IS NULL OR path <= ?4) \
+             ORDER BY path LIMIT ?5",
+        )?;
+        let mut folders_in = |after: Option<&str>, upto: Option<&str>, limit: usize| {
+            query
+                .query_map(params![DIR, LINK, after, upto, limit as i64], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        };
+        let mut folders = folders_in(from.as_deref(), None, max)?;
+        // Past the last folder: round again from the first.
+        if folders.len() < max && from.is_some() {
+            let more = folders_in(None, from.as_deref(), max - folders.len())?;
+            folders.extend(more);
+        }
+        drop(query);
+        drop(conn);
+        // The next poll goes on after the last folder here, or from the start.
+        let next = match folders.last() {
+            Some((last, _)) if folders.len() == max => Some(last.clone()),
+            _ => None,
+        };
         let mut moved = Vec::new();
         for (rel, was) in folders {
             if cancel.load(Ordering::Relaxed) || src.removed.load(Ordering::Relaxed) {
@@ -1001,12 +1026,34 @@ impl Indexer {
                 Err(e) => return Err(e),
             }
         }
+        match &next {
+            Some(last) => src.store.set_meta(POLL_FROM, last)?,
+            None => {
+                (src.store.get()?).execute("DELETE FROM meta WHERE key = ?1", [POLL_FROM])?;
+            }
+        }
         if moved.is_empty() {
             return Ok(true);
         }
         moved.sort();
         let relist: Vec<(String, bool)> =
             moved.iter().map(|(rel, _)| (rel.clone(), false)).collect();
+        // Listing a folder writes its subfolders' times as listed: they keep the times
+        // they were last checked at, or a change inside one would never be seen.
+        let kept = {
+            let c = src.store.get()?;
+            let mut q = c.prepare(
+                "SELECT c.path, c.mtime FROM record c JOIN record p ON c.parent = p.id                  WHERE p.path = ?1 AND p.kind = ?2 AND c.kind = ?2",
+            )?;
+            let mut kept = Vec::new();
+            for (rel, _) in &moved {
+                let rows = q.query_map(params![rel, DIR], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+                })?;
+                kept.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+            kept
+        };
         let lister = Lister::Remote(provider.clone());
         if !apply_batch(src, &lister, &[], &relist, false, cancel)? {
             return Ok(false);
@@ -1014,7 +1061,7 @@ impl Indexer {
         // Each folder's time as it was before its listing: a change made meanwhile moves
         // it again. Written after the batch: a time is no reason to recount.
         let c = src.store.get()?;
-        for (rel, now) in moved {
+        for (rel, now) in kept.into_iter().chain(moved) {
             c.execute(
                 "UPDATE record SET mtime = ?2 WHERE path = ?1 AND kind = ?3",
                 params![rel, now, DIR],
@@ -1152,9 +1199,12 @@ enum Between {
 
 /// The remote poll loop: a full walk first (with a feed cursor taken just before it),
 /// then every `cfg.poll` the feed or the folder times, and a full walk again every
-/// `cfg.reconcile` (`cfg.walk` without either), at once when the feed asks for one, and
-/// at the next poll after a walk that failed (an offline source stays offline until then).
-/// Ends when `quit` is set, the source is removed or `stop` disconnects.
+/// `cfg.reconcile` (`cfg.walk` without either), at once when the feed asks for one or
+/// when reading the feed or the folder times failed because the host or service did not
+/// answer (the walk marks the source offline), and after a walk that failed at the next
+/// poll, then less and less often (`retry_walk`; an offline source stays offline until
+/// then). Feed requests stop once `quit` is set. Ends when `quit` is set, the source is
+/// removed or `stop` disconnects.
 fn poll_loop(
     src: &Source,
     router: &Router,
@@ -1165,6 +1215,7 @@ fn poll_loop(
 ) {
     let mut between = Between::Walks;
     let mut walk_at = Instant::now();
+    let mut failed_walks = 0;
     while !quit.load(Ordering::SeqCst) && !src.removed.load(Ordering::SeqCst) {
         let provider = router.provider_for(&src.def.root);
         if Instant::now() >= walk_at {
@@ -1199,20 +1250,29 @@ fn poll_loop(
                         Between::Walks => cfg.walk.max(cfg.poll),
                         Between::Feed | Between::FolderTimes => cfg.reconcile,
                     };
+                failed_walks = 0;
             } else {
-                walk_at = Instant::now() + cfg.poll;
+                walk_at = Instant::now() + retry_walk(cfg.poll, failed_walks);
+                failed_walks += 1;
             }
         } else if let Some(p) = provider {
             let caught_up = match between {
                 Between::Feed => follow_feed(src, &p, quit),
-                Between::FolderTimes => Indexer::poll_folders(src, &p, quit),
+                Between::FolderTimes => Indexer::poll_folders(src, &p, FOLDERS_PER_POLL, quit),
                 Between::Walks => Ok(true),
             };
             match caught_up {
                 Ok(true) => {}
                 Ok(false) => walk_at = Instant::now(),
-                // The cursor stays: asked again at the next poll.
-                Err(e) => tracing::debug!("changes of {}: {e:#}", src.def.label),
+                Err(_) if quit.load(Ordering::SeqCst) => {}
+                // The cursor stays: asked again at the next poll, unless the host or service
+                // is gone, which only a walk tells (and shows: the source goes offline).
+                Err(e) => {
+                    tracing::debug!("changes of {}: {e:#}", src.def.label);
+                    if is_unreachable(&e) || p.stat(&src.def.root).is_err() {
+                        walk_at = Instant::now();
+                    }
+                }
             }
         }
         let next = (Instant::now() + cfg.poll).min(walk_at);
@@ -1226,6 +1286,42 @@ fn poll_loop(
             }
         }
     }
+}
+
+/// Folders whose times one poll reads (`Indexer::poll_folders`); a source with more has
+/// them read in turn over several polls.
+const FOLDERS_PER_POLL: usize = 2_000;
+/// `store` meta key: the folder after which the next `Indexer::poll_folders` goes on.
+const POLL_FROM: &str = "poll_from";
+
+/// Longest wait before a remote source whose walks keep failing is walked again.
+const MAX_WALK_RETRY: Duration = Duration::from_secs(30 * 60);
+
+/// The wait before walking again after `failed` walks in a row failed: `poll`, doubling
+/// with each failure up to `MAX_WALK_RETRY` (never less than `poll`).
+fn retry_walk(poll: Duration, failed: u32) -> Duration {
+    poll.saturating_mul(1 << failed.min(16))
+        .min(MAX_WALK_RETRY.max(poll))
+}
+
+/// The host or service did not answer (as opposed to an answer refusing something).
+fn is_unreachable(e: &anyhow::Error) -> bool {
+    use std::io::ErrorKind::*;
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                ConnectionRefused
+                    | ConnectionReset
+                    | ConnectionAborted
+                    | NotConnected
+                    | TimedOut
+                    | HostUnreachable
+                    | NetworkUnreachable
+                    | NetworkDown
+            )
+        })
+    })
 }
 
 fn save_cursor(src: &Source, cursor: Option<&ChangeCursor>) -> Result<()> {

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_LIBRARY: &str = "main";
+/// Seconds `[library] remote_poll_secs` is kept within (a value outside is clamped).
+pub const REMOTE_POLL_SECS: std::ops::RangeInclusive<u64> = 30..=3600;
 /// Days between scheduled integrity checks (keel-app's default).
 pub const DEFAULT_INTEGRITY_DAYS: u32 = 7;
 
@@ -62,7 +64,8 @@ pub struct HostConfig {
     pub integrity_days: u32,
     pub integrity_pct: f64,
     /// `[library] remote_poll_secs`: how often watched remote and cloud sources are asked
-    /// what changed (keel-app's Settings → Library; default 120).
+    /// what changed (keel-app's Settings → Library; default 120, within
+    /// `REMOTE_POLL_SECS`).
     pub remote_poll_secs: u64,
     pub net: bool,
     /// `[devices] inbox`: where Spacedrops land on this machine (None: `<data dir>/inbox`).
@@ -147,6 +150,7 @@ impl HostConfig {
                 .and_then(|v| v.as_integer())
                 .and_then(|s| u64::try_from(s).ok())
                 .filter(|s| *s > 0)
+                .map(|s| s.clamp(*REMOTE_POLL_SECS.start(), *REMOTE_POLL_SECS.end()))
                 .unwrap_or(keel_core::POLL_INTERVAL.as_secs()),
             net,
             inbox: get("devices", "inbox")
@@ -284,6 +288,16 @@ mod tests {
         assert_eq!((cfg.library.as_str(), cfg.net), ("lab", true));
         assert_eq!((cfg.integrity_days, cfg.integrity_pct), (0, 2.5));
         assert_eq!(cfg.remote_poll_secs, 30);
+        // A hand-edited value outside 30 s to an hour is clamped.
+        for (secs, kept) in [(1, 30), (86_400, 3600)] {
+            std::fs::write(
+                p.join("config.toml"),
+                format!("[library]\nremote_poll_secs = {secs}\n"),
+            )
+            .unwrap();
+            let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+            assert_eq!(cfg.remote_poll_secs, kept);
+        }
         // `[devices] enabled` (the app's switch) wins once it is explicit.
         std::fs::write(
             p.join("config.toml"),

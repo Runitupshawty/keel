@@ -1011,9 +1011,12 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             ui.end_row();
             ui.label("Check remote sources every");
             ui.add(
-                egui::Slider::new(&mut lib_settings.remote_poll_secs, 30..=3600)
-                    .logarithmic(true)
-                    .suffix(" s"),
+                egui::Slider::new(
+                    &mut lib_settings.remote_poll_secs,
+                    keel_api::config::REMOTE_POLL_SECS,
+                )
+                .logarithmic(true)
+                .suffix(" s"),
             )
             .on_hover_text(
                 "Google Drive and Dropbox report their changes, SFTP folders are checked for \
