@@ -956,6 +956,14 @@ impl IconThemes {
 }
 
 #[cfg(test)]
+impl IconThemes {
+    /// A downloaded package, as if from the Marketplace: its license dialog shows next.
+    pub fn offer(&mut self, v: Vsix) {
+        self.license = Some(Box::new(v));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;

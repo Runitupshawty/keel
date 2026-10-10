@@ -43,11 +43,11 @@ fn out_dir() -> PathBuf {
 }
 
 /// 2026-09-12 + `days`, at `hour`.
-fn at(days: u64, hour: u64) -> SystemTime {
+pub(crate) fn at(days: u64, hour: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(1_789_171_200 + days * 86_400 + hour * 3_600)
 }
 
-fn write(path: &Path, body: impl AsRef<[u8]>, modified: SystemTime) {
+pub(crate) fn write(path: &Path, body: impl AsRef<[u8]>, modified: SystemTime) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, body).unwrap();
     let f = std::fs::File::options().write(true).open(path).unwrap();
@@ -94,7 +94,7 @@ fn landscape(seed: u32, w: u32, h: u32) -> image::RgbImage {
     })
 }
 
-fn jpeg(path: &Path, seed: u32, modified: SystemTime) {
+pub(crate) fn jpeg(path: &Path, seed: u32, modified: SystemTime) {
     let mut out = std::io::Cursor::new(Vec::new());
     landscape(seed, 960, 640)
         .write_to(&mut out, image::ImageFormat::Jpeg)
@@ -104,7 +104,7 @@ fn jpeg(path: &Path, seed: u32, modified: SystemTime) {
 
 /// A one-page report: a title band, a few lines and a bar chart (plain PDF, no fonts
 /// embedded: Helvetica).
-fn report_pdf() -> Vec<u8> {
+pub(crate) fn report_pdf() -> Vec<u8> {
     let mut page = String::from(
         "0.16 0.27 0.45 rg 0 742 595 100 re f\n\
          1 1 1 rg BT /F1 26 Tf 50 782 Td (Garden report 2026) Tj ET\n\
@@ -158,7 +158,7 @@ fn report_pdf() -> Vec<u8> {
     out.into_bytes()
 }
 
-fn zip(path: &Path, files: &[(&str, &str)]) {
+pub(crate) fn zip(path: &Path, files: &[(&str, &str)]) {
     let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
     let opts = zip::write::SimpleFileOptions::default();
     for (name, body) in files {
@@ -219,7 +219,7 @@ April,8.75,0,26.30\n";
 
 /// Documents (left pane), Pictures (photos for the grid and the media view) and Backup
 /// (a few copies, and an older notes.md, for duplicates and the conflict).
-fn write_fixture(root: &Path) {
+pub(crate) fn write_fixture(root: &Path) {
     // Only ever replace a folder this test made.
     let marker = root.join(".keel-shots");
     assert!(
@@ -311,7 +311,7 @@ fn write_fixture(root: &Path) {
 }
 
 /// The fixture's sidebar: these quick-access folders and one drive, never the real ones.
-fn neutral_sidebar(s: &mut AppState, root: &Path) {
+pub(crate) fn neutral_sidebar(s: &mut AppState, root: &Path) {
     let p = |name: &str| VPath::local(root.join(name));
     s.sidebar.quick = vec![
         ("Home".into(), VPath::local(root)),
@@ -360,7 +360,7 @@ fn harness(
 }
 
 /// Steps until `done` (at most `secs`); false when it timed out.
-fn wait(h: &mut Harness<App>, secs: u64, done: &dyn Fn(&AppState) -> bool) -> bool {
+pub(crate) fn wait(h: &mut Harness<App>, secs: u64, done: &dyn Fn(&AppState) -> bool) -> bool {
     let end = Instant::now() + Duration::from_secs(secs);
     while !done(&h.state().state) {
         if Instant::now() > end {
@@ -373,11 +373,11 @@ fn wait(h: &mut Harness<App>, secs: u64, done: &dyn Fn(&AppState) -> bool) -> bo
     true
 }
 
-fn listed(s: &AppState) -> bool {
+pub(crate) fn listed(s: &AppState) -> bool {
     (0..2).all(|p| !s.tab(p).loading)
 }
 
-fn previewed(s: &AppState) -> bool {
+pub(crate) fn previewed(s: &AppState) -> bool {
     let target = s.tab(s.active).cursor.clone();
     s.preview.current.is_some()
         && s.preview.key.as_ref().map(|k| k.path.name()) == target.as_deref()
@@ -399,7 +399,7 @@ fn shot(h: &mut Harness<App>, root: &Path, name: &str) {
     println!("shot {}", path.display());
 }
 
-fn select(s: &mut AppState, p: usize, names: &[&str]) {
+pub(crate) fn select(s: &mut AppState, p: usize, names: &[&str]) {
     let tab = s.tab_mut(p);
     tab.selected.clear();
     for (i, n) in names.iter().enumerate() {
