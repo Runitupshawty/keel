@@ -1662,7 +1662,9 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             }
             Pair::Showing { short, ticket } => {
                 ui.label("On the other device: Pair… → Enter code, then type or scan:");
-                ui.monospace(egui::RichText::new(&short).size(18.0));
+                // One line: a code wrapped at a hyphen reads as two.
+                let code = egui::RichText::new(&short).monospace().size(18.0);
+                ui.add(egui::Label::new(code).extend());
                 if ui.small_button("Copy full code").clicked() {
                     ui.ctx().copy_text(ticket.clone());
                 }
@@ -2015,6 +2017,26 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA walkthrough 2026-10-10: the short code wrapped onto a second line at a hyphen.
+    #[test]
+    fn the_pair_code_is_one_line() {
+        use egui_kittest::kittest::Queryable;
+        let dir = std::env::temp_dir().join(format!("keel-pair-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| crate::app::App::new(cc, crate::app::Boot::at(VPath::local(&dir))));
+        let short = "keel1-wgpikpw-deekyoa-wsnxoo-72w7g4";
+        h.state_mut().state.devices.pair = Some(Pair::Showing {
+            short: short.into(),
+            ticket: "keel1-full-ticket".into(),
+        });
+        h.run_steps(3);
+        let b = h.get_by_label(short).raw_bounds().unwrap();
+        assert!(b.y1 - b.y0 < 30.0, "{b:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use keel_core::{SourceId, SourceStatus};
     use keel_net::{NodeId, Storage};
 
