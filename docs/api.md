@@ -173,7 +173,7 @@ SFTP remotes in `[[remotes]]` take `use_ssh_config` (default `true`, so remotes 
 before it existed read the config too): `host` may then be an alias from
 `~/.ssh/config`, and an empty `user`, an empty key-file path and `port = 22` take the
 config's values, including `ProxyJump` routes
-([what is read](../README.md#openssh-configuration-and-jump-hosts)). The daemon resolves
+([what is read](remotes.md#openssh-configuration-and-jump-hosts)). The daemon resolves
 the config on every connection like the window; with no window to confirm a prompt, an
 unknown host key on any hop fails the connection. `ProxyCommand` is refused, never run.
 Paths stay `sftp://<host id>/...`; no operation changed.
