@@ -440,9 +440,11 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 8 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP). In progress:
+Phases 1 to 9 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients: the web client and phone app, mounts, Share → Keel). In progress, as follow-ups to Phase 9:
 
-9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
+- The desktop app attaching to a running keel-daemon instead of opening the library itself.
+- A Mount… action in the sidebar (built, unreleased: see CHANGELOG).
+- A Playwright run of the web client in CI (built, unreleased: see CHANGELOG).
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 

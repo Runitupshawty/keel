@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Desktop app: Mount… on a library source (sidebar context menu, and Mount this folder… on a folder in a `library://` tab). The dialog picks a free drive letter (K: to Z:) on Windows or a folder (default `~/Keel Mounts/<label>`) elsewhere, shows the subtree read-only, previews `mounts.add` through keel-daemon, asks to confirm, then executes. Mounted sources show a "mounted K:" badge and an Unmount entry. A stopped daemon or a daemon without a mount backend is a toast with the `keel daemon start` hint.
+- CI: a `web-e2e` job (not part of `check`) runs the web client in Chromium under Playwright against a fixture keel-daemon: sign in, open a source, search, preview a text file, preview a delete and cancel it, service worker ready, no console errors. Run it locally with `tests/web-e2e/run.sh` (README, Contributing).
+
 ## [0.9.0] - 2026-10-10
 
 ### Added
