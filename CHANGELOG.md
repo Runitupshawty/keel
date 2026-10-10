@@ -12,6 +12,20 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Desktop app: Mount… on a library source (sidebar context menu, and Mount this folder… on a folder in a `library://` tab). The dialog picks a free drive letter (K: to Z:) on Windows or a folder (default `~/Keel Mounts/<label>`) elsewhere, shows the subtree read-only, previews `mounts.add` through keel-daemon, asks to confirm, then executes. Mounted sources show a "mounted K:" badge and an Unmount entry. A stopped daemon or a daemon without a mount backend is a toast with the `keel daemon start` hint.
 - CI: a `web-e2e` job (not part of `check`) runs the web client in Chromium under Playwright against a fixture keel-daemon: sign in, open a source, search, preview a text file, preview a delete and cancel it, service worker ready, no console errors. Run it locally with `tests/web-e2e/run.sh` (README, Contributing).
 
+### Fixed
+
+- An attached window no longer makes every client refresh everything once a minute: `library.changed` now names the change (`kind`: the executed operation, or `recents.note` / `shares.revoke`) and is not sent when nothing changed (an `execute` that started no job and returned nothing, such as an integrity check that was not due); the window refreshes only what a kind can change and ignores job starters and policy changes, whose jobs refresh it when they end. While attached, keel-daemon runs the scheduled integrity checks itself (`[library] integrity_days` and `integrity_pct` from the profile's config.toml) and the window no longer asks for them.
+- Reconnect and Open in this window right after the daemon said it stops no longer fail while it is still closing the library: they wait up to 15 s for it to let go, keep the read-only banner until the library is open again (and keep it, with the error, if that fails), and are disabled while they run. Before, Open in this window left the Overview saying the library is off, and Reconnect started a daemon that exited on the held library.
+- "Hash now" while attached no longer turns off the daemon's *idle only* hashing.
+- A tag created outside the tag picker while attached no longer fails: `tags.add` with no paths only creates the tag.
+- Opening a file is announced to other clients (Recents), and a drive inventory change by another client refreshes the protection card.
+- The window keeps at most four idle connections to the daemon, and closes its event subscription when it lets go of the daemon (library off, switching, Reconnect).
+- A keel-daemon started by the window is reaped when it ends (no zombie process on Linux and macOS), and when it exits before answering the window says so at once, with the end of `daemon.log`, instead of waiting 15 s.
+- The daemon is started with `--profile=<name>`, and profile names may no longer start with `-` (such a profile could not start its daemon).
+- Mount…: the mount list is not polled while the daemon is lost; with the library open in this window the dialog and the error point to Settings → Library → "Run the library in a background daemon" (`keel daemon start` cannot work while the window holds the library); on Linux and macOS a new mount folder is made by the daemon when the confirmed mount runs (removed again if mounting fails), not before the preview.
+- The default library name is `main`. A profile without `[library] name` that has no `main` yet but one existing library from before opens that one (the window then saves its name).
+- CI `web-e2e`: the browser test drives the app through a test hook (`window.__keel`, built only with keel-web's `e2e` feature and enabled by `?e2e=1`; the release bundle is checked not to contain it) instead of clicking guessed positions on the canvas, which could not find the delete preview. It also previews a rename and cancels it, and checks that nothing was executed and the fixture is unchanged. `tests/web-e2e` has a `package-lock.json` (`npm ci`).
+
 ## [0.9.0] - 2026-10-10
 
 ### Added

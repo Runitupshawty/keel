@@ -66,7 +66,7 @@ revoked. `recents.note` (a file was opened) also acts directly: it changes no fi
 | `tags.list` | read | All tags, or the tags on one path |
 | `tags.tagged` | read | Every tagged path with its tag ids (Favorites is id 1) |
 | `views.list` | read | Saved views: `id`, `name`, `query` (a `search` query), `layout` |
-| `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag, with `color` when given) |
+| `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag, with `color` when given; with no paths it only creates the tag) |
 | `tags.set` | preview | Exactly these tags on the paths (Favorites kept) |
 | `favorites.list` | read | Favorites |
 | `favorites.set` | preview | Add to (or with `on: false` remove from) Favorites |
@@ -136,7 +136,9 @@ target is free and the source or subtree can be listed, and warns when the sourc
 offline (`source_offline`: the mount then lists it from the index and cannot read or change files)
 or deletes are permanent there (`deletes_permanent`: SFTP, S3). The `mounts.remove`
 preview warns when files are still being written through the mount (`discards_writes`).
-A target inside the folder the mount shows is refused. While a file is written through a
+A target inside the folder the mount shows is refused. On Linux and macOS a target folder
+that does not exist yet (its parent must) is made when the mount runs, after the preview
+was confirmed, and removed again if mounting fails. While a file is written through a
 mount, only its writer sees the new content (other opens are busy, listings show the saved
 file); it is published when the writer closes it, and a failed publish keeps the data as
 `<name> (unsaved <date>).<ext>`. Mounts are unmounted when the daemon stops (writes still
@@ -203,9 +205,20 @@ connections may stay open.
 ```
 
 Besides the operations: `subscribe` (then notifications `job.progress`
-`{id, status, progress}`, `library.changed` `{method}`, `net.event` and, when the daemon
-stops, `daemon.stopping` `{pid}` arrive on that connection), `unsubscribe`,
+`{id, status, progress}`, `library.changed` `{method, kind}`, `net.event` and, when the
+daemon stops, `daemon.stopping` `{pid}` arrive on that connection), `unsubscribe`,
 `daemon.shutdown`, and `share.claim` `{id}` (the web client's share target, below).
+`library.changed` follows a call by any client that changed something: `method` is the
+call (`execute`, `shares.revoke` or `recents.note`) and `kind` what changed (the executed
+plan's operation, such as `tags.add`, `volumes.set` or `integrity.check`, else the
+method). An `execute` that started no job and returned an empty result (an integrity
+check with `due_days` that was not due yet) changed nothing and sends none. A client
+refreshes what that kind can change; for job starters (`sources.index`, `hashing.set`,
+`integrity.check`, `media.index`) the job's `job.progress` to `done` is the moment to.
+
+The daemon also runs the scheduled integrity check of every source (`[library]
+integrity_days`, default 7, 0 turns it off, and `integrity_pct`, default 1, in the
+profile's config.toml, read again each time), so clients need not ask for it.
 
 **WebSocket (optional).** `--ws 127.0.0.1:7420` serves the same JSON-RPC, one message per
 text frame. Every connection must send `Authorization: Bearer <token>`, the token in
