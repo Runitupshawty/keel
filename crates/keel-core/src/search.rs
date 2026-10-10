@@ -815,20 +815,36 @@ fn search_text(
             .join(" AND ")
     };
     let m = all_of(&parts);
-    // A tag holding few records: those that match, scored (ranking every match and then
-    // dropping the untagged ones read all of a common word's matches twice).
-    if let Some(tag) = q.tags.first() {
+    let matches = count(src, &m)?;
+    if matches == 0 {
+        return Ok(Vec::new());
+    }
+    let candidates = (q.max * 4).max(1_000) as i64;
+    // A tag holding few records: its records that match, scored (ranking every match and
+    // then dropping the untagged ones read all of a common word's matches twice). Ranked
+    // by bm25 where the path below would be, so the order is the same.
+    #[cfg(test)]
+    let narrow = !tests::WIDE_TAGS.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let narrow = true;
+    if let Some(tag) = q.tags.first().filter(|_| narrow) {
         let tag = Value::Text(tag.clone());
         if count_upto(src, TAGGED, std::slice::from_ref(&tag), NARROW_CAP)? <= NARROW_CAP {
+            let ranked = matches > DIRECT.max(candidates) && matches as usize <= RANK_CAP;
+            let rank = if ranked {
+                "bm25(record_fts, 4.0, 1.0)"
+            } else {
+                "0.0"
+            };
+            // `+rowid`: the tag's records are a set to check the matches against; as a
+            // rowid constraint FTS5 would run the match once per tagged record.
             let cand = format!(
-                "SELECT DISTINCT record AS id, 0.0 AS rank FROM ({TAGGED})
-                 WHERE record IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)"
+                "SELECT rowid AS id, {rank} AS rank FROM record_fts
+                 WHERE record_fts MATCH ? AND +rowid IN ({TAGGED})"
             );
-            return run(src, q, now, &cand, vec![tag, Value::Text(m)], &[]);
+            return run(src, q, now, &cand, vec![Value::Text(m), tag], &[]);
         }
     }
-    let matches = count(src, &m)?;
-    let candidates = (q.max * 4).max(1_000) as i64;
     const ALL: &str = "SELECT rowid AS id, 0.0 AS rank FROM record_fts WHERE record_fts MATCH ?";
     if matches <= DIRECT.max(candidates) {
         return run(src, q, now, ALL, vec![Value::Text(m)], &[]);

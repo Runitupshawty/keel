@@ -5,6 +5,12 @@ use crate::SourceDef;
 use keel_search::Searcher;
 use std::time::{Duration, Instant};
 
+thread_local! {
+    /// A tag's records are never the candidates: the path a tag with words took before
+    /// they were (the reference for the order it ranks in).
+    pub(super) static WIDE_TAGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// 2026-10-09 12:00 UTC.
 const NOW: i64 = 1_791_547_200;
 
@@ -638,4 +644,90 @@ fn media_filter_parse_errors() {
     ] {
         assert!(LibraryQuery::parse_at(bad, NOW, 0).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn a_tag_with_a_common_word_ranks_as_without_its_narrow_path() {
+    use crate::index::tests::{fake, library_with};
+    use crate::{RecordRef, SourceKind};
+    use keel_vfs::{Router, VPath};
+    const WORDS: [&str; 8] = [
+        "budget", "report", "notes", "photo", "scan", "contract", "draft", "final",
+    ];
+    // 40,000 files; "invoice" in a quarter of the names (over 5,000 matches: bm25 ranks).
+    let router = Router::new();
+    router.register(Arc::new(fake(|path: &str| {
+        if path == "/" {
+            return Ok((0..40).map(|d| (format!("d{d:03}"), true, 0)).collect());
+        }
+        let d: u64 = path.trim_start_matches("/d").parse()?;
+        Ok((0..1_000u64)
+            .map(|i| {
+                let n = (d * 1_000 + i).wrapping_mul(2_654_435_761);
+                let w1 = if n.is_multiple_of(4) {
+                    "invoice"
+                } else {
+                    WORDS[(n % 8) as usize]
+                };
+                let w2 = WORDS[((n >> 8) % 8) as usize];
+                let rare = if n % 50 == 1 { " rareword" } else { "" };
+                let pad = "x".repeat(((n >> 12) % 30) as usize);
+                (
+                    format!("{w1} {w2}{rare} {pad} {i:04}.pdf"),
+                    false,
+                    n % 1_000_000,
+                )
+            })
+            .collect())
+    })));
+    let (_data, lib, src) = library_with(SourceDef {
+        label: "tagged".into(),
+        root: VPath::parse("fake://tagged/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    });
+    walk(&src, &router).unwrap();
+    let ids: Vec<i64> = {
+        let c = src.store.get().unwrap();
+        let mut stmt = c
+            .prepare("SELECT id FROM record WHERE kind = 0 ORDER BY id")
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    let refs = |keep: &dyn Fn(i64) -> bool| -> Vec<RecordRef> {
+        ids.iter()
+            .filter(|id| keep(**id))
+            .map(|&id| RecordRef {
+                source: src.id.clone(),
+                id,
+            })
+            .collect()
+    };
+    let big = lib.create_tag("big", None, None).unwrap();
+    lib.set_tag(big, &refs(&|id| id % 3 == 0), true).unwrap();
+    let paths = |q: &str, wide: bool| -> Vec<String> {
+        WIDE_TAGS.with(|w| w.set(wide));
+        let hits = lib.search(&LibraryQuery::parse(q, 0).unwrap()).unwrap();
+        WIDE_TAGS.with(|w| w.set(false));
+        hits.into_iter().map(|h| h.path.path).collect()
+    };
+    for q in [
+        "tag:big invoice",
+        "tag:big invoice ext:pdf",
+        "tag:big rareword",
+        "tag:big \"invoice budget\"",
+    ] {
+        let narrow = paths(q, false);
+        assert!(!narrow.is_empty(), "{q}");
+        assert_eq!(
+            narrow,
+            paths(q, true),
+            "{q}: the top page in the same order"
+        );
+    }
+    assert!(paths("tag:big nosuchword", false).is_empty());
 }
