@@ -18,6 +18,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
 - `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
 
+
 ### Changed
 
 - 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
