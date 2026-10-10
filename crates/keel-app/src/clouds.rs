@@ -17,7 +17,7 @@ use keel_vfs::cloud::{
 };
 use keel_vfs::{
     Caps, CloudAccount, CloudKind, CloudProvider, ConnStatus, Entry, Progress, Provider,
-    RemoteEvent, RemoveKind, Router, S3Config, SecretStore, VPath,
+    RemoteEvent, RemoveKind, Router, S3Config, SecretStore, VPath, WebDavConfig,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -53,7 +53,13 @@ pub fn kind_name(kind: CloudKind) -> &'static str {
         CloudKind::GoogleDrive => "Google Drive",
         CloudKind::Dropbox => "Dropbox",
         CloudKind::S3 => "S3",
+        CloudKind::WebDav => "WebDAV",
     }
+}
+
+/// Drive and Dropbox sign in with OAuth; S3 and WebDAV use keys typed into the form.
+fn uses_oauth(kind: CloudKind) -> bool {
+    !matches!(kind, CloudKind::S3 | CloudKind::WebDav)
 }
 
 /// `cloud://<id>/`: the account's root (its `root` folder is applied by the provider).
@@ -360,9 +366,10 @@ impl Clouds {
                 for a in &s.clouds {
                     ui.strong(&a.label);
                     ui.label(kind_name(a.kind));
-                    ui.weak(match &a.s3 {
-                        Some(s3) => format!("{} / {}", s3.endpoint, s3.bucket),
-                        None => a.root.clone().unwrap_or_else(|| "/".into()),
+                    ui.weak(match (&a.s3, &a.webdav) {
+                        (Some(s3), _) => format!("{} / {}", s3.endpoint, s3.bucket),
+                        (_, Some(dav)) => dav.url.clone(),
+                        _ => a.root.clone().unwrap_or_else(|| "/".into()),
                     });
                     ui.horizontal(|ui| {
                         if ui.button("Edit…").clicked() {
@@ -424,6 +431,10 @@ pub fn remove_text(a: &CloudAccount) -> String {
             "Remove {label}? Keel deletes its keys from this PC (revoke them in the \
              provider's console); the files in the bucket stay."
         ),
+        CloudKind::WebDav => format!(
+            "Remove {label}? Keel deletes its password from this PC (change it on the server \
+             if you want it invalid); the files on the server stay."
+        ),
         _ => format!(
             "Remove {label}?\n\nSign out and remove: signs this app out of {label} everywhere \
              it uses this client id and deletes its keys from this PC.\n\nRemove from this PC \
@@ -441,7 +452,7 @@ fn remove_ui(ctx: &egui::Context, a: &CloudAccount) -> Option<Option<CloudCmd>> 
         ui.label(remove_text(a));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if a.kind == CloudKind::S3 {
+            if !uses_oauth(a.kind) {
                 if ui.button("Remove").clicked() {
                     answer = Some(Some(CloudCmd::RemoveLocal));
                 }
@@ -485,7 +496,7 @@ pub enum Outcome {
     Open,
     Cancelled,
     /// Save `account` (its secrets are already in the keychain).
-    Done(CloudAccount),
+    Done(Box<CloudAccount>),
 }
 
 /// Add / Edit account dialog, also used alone for "sign in again". Secrets typed here go
@@ -507,6 +518,14 @@ pub struct Wizard {
     pub bucket: String,
     pub access_key: Zeroizing<String>,
     pub secret_key: Zeroizing<String>,
+    /// WebDAV: collection URL, user name, password (keychain) and the plain-http opt-in.
+    pub dav_url: String,
+    pub username: String,
+    pub password: Zeroizing<String>,
+    pub insecure: bool,
+    /// "Test connection": the worker's answer, and the last one shown.
+    test: Option<Receiver<Result<String, String>>>,
+    pub test_result: Option<Result<String, String>>,
     pub error: Option<String>,
 }
 
@@ -525,6 +544,12 @@ impl Default for Wizard {
             bucket: String::new(),
             access_key: Zeroizing::default(),
             secret_key: Zeroizing::default(),
+            dav_url: String::new(),
+            username: String::new(),
+            password: Zeroizing::default(),
+            insecure: false,
+            test: None,
+            test_result: None,
             error: None,
         }
     }
@@ -550,6 +575,13 @@ impl Wizard {
             endpoint: s3.endpoint,
             region: s3.region,
             bucket: s3.bucket,
+            dav_url: a.webdav.as_ref().map(|d| d.url.clone()).unwrap_or_default(),
+            username: a
+                .webdav
+                .as_ref()
+                .map(|d| d.username.clone())
+                .unwrap_or_default(),
+            insecure: a.webdav.as_ref().is_some_and(|d| d.insecure),
             ..Self::default()
         }
     }
@@ -590,6 +622,7 @@ impl Wizard {
         let key = |field: &str| format!("{id}/{field}");
         let mut secrets = Secrets::new();
         let client_id = self.client_id.trim();
+        let mut webdav = None;
         let s3 = if self.kind == CloudKind::S3 {
             let (endpoint, region, bucket) =
                 (self.endpoint.trim(), self.region.trim(), self.bucket.trim());
@@ -616,6 +649,24 @@ impl Wizard {
                 region: region.to_owned(),
                 bucket: bucket.to_owned(),
             })
+        } else if self.kind == CloudKind::WebDav {
+            let url = WebDavConfig::normalize_url(&self.dav_url, self.insecure)
+                .map_err(|e| format!("{e:#}"))?;
+            let username = self.username.trim();
+            if username.is_empty() {
+                return Err("Enter the user name".into());
+            }
+            if !self.password.is_empty() {
+                secrets.push((key("password"), self.password.to_string().into()));
+            } else if new {
+                return Err("Enter the password (an app password works best)".into());
+            }
+            webdav = Some(WebDavConfig {
+                insecure: url.starts_with("http://"),
+                url,
+                username: username.to_owned(),
+            });
+            None
         } else {
             if client_id.is_empty() && self.kind.default_client().is_none() {
                 return Err("Enter your app's client id (Keel ships none)".into());
@@ -632,9 +683,10 @@ impl Wizard {
                 label: label.to_owned(),
                 kind: self.kind,
                 root: (!root.is_empty()).then(|| format!("/{root}")),
-                client_id_override: (self.kind != CloudKind::S3 && !client_id.is_empty())
+                client_id_override: (uses_oauth(self.kind) && !client_id.is_empty())
                     .then(|| client_id.to_owned()),
                 s3,
+                webdav,
             },
             secrets,
         ))
@@ -659,10 +711,11 @@ impl Wizard {
             &mut self.client_secret,
             &mut self.access_key,
             &mut self.secret_key,
+            &mut self.password,
         ] {
             typed.zeroize();
         }
-        let sign_in = sign_in && account.kind != CloudKind::S3;
+        let sign_in = sign_in && uses_oauth(account.kind);
         let old = existing.iter().find(|a| a.id == account.id);
         let save = Save {
             new: old.is_none(),
@@ -720,7 +773,7 @@ impl Wizard {
                 let Step::Pending(p) = std::mem::replace(&mut self.step, Step::Fields) else {
                     unreachable!("checked above")
                 };
-                Outcome::Done(p.account)
+                Outcome::Done(Box::new(p.account))
             }
             Err(e) => {
                 self.step = Step::Fields;
@@ -753,6 +806,10 @@ impl Wizard {
         store: &Arc<dyn SecretStore>,
         events: &Sender<RemoteEvent>,
     ) -> Outcome {
+        if let Some(answer) = self.test.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.test = None;
+            self.test_result = Some(answer);
+        }
         let polled = self.poll();
         if !matches!(polled, Outcome::Open) {
             return polled;
@@ -773,9 +830,15 @@ impl Wizard {
                     ui.label("Which service?");
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        for kind in [CloudKind::GoogleDrive, CloudKind::Dropbox, CloudKind::S3] {
+                        for kind in [
+                            CloudKind::GoogleDrive,
+                            CloudKind::Dropbox,
+                            CloudKind::S3,
+                            CloudKind::WebDav,
+                        ] {
                             let text = match kind {
                                 CloudKind::S3 => "S3-compatible (B2, AWS, MinIO)",
+                                CloudKind::WebDav => "WebDAV (Nextcloud, ownCloud, NAS)",
                                 k => kind_name(k),
                             };
                             if ui.button(text).clicked() {
@@ -788,7 +851,7 @@ impl Wizard {
                         outcome = Outcome::Cancelled;
                     }
                 }
-                Step::Fields => submit = self.fields_ui(ui, &mut outcome),
+                Step::Fields => submit = self.fields_ui(ui, &mut outcome, existing, store, ctx),
                 Step::Pending(p) => {
                     match self.left() {
                         Some(left) => {
@@ -826,9 +889,60 @@ impl Wizard {
         outcome
     }
 
+    /// Lists the WebDAV root on a worker with the typed (or, when editing, the stored)
+    /// password; the answer shows under the form. Nothing is saved.
+    fn test_connection(
+        &mut self,
+        existing: &[CloudAccount],
+        store: &Arc<dyn SecretStore>,
+        ctx: &egui::Context,
+    ) {
+        self.test_result = None;
+        let (account, secrets) = match self.build(existing) {
+            Ok(built) => built,
+            Err(e) => return self.test_result = Some(Err(e)),
+        };
+        let typed = secrets.into_iter().next().map(|(_, v)| v);
+        let (store, ctx) = (store.clone(), ctx.clone());
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let started = spawn("keel-cloud-test", move || {
+            let list = || -> anyhow::Result<usize> {
+                let key = format!("{}/password", account.id);
+                let password = match typed {
+                    Some(p) => p.to_string(),
+                    None => store
+                        .get(&key)?
+                        .ok_or_else(|| anyhow::anyhow!("Enter the password"))?,
+                };
+                let temp = Arc::new(cloud::MemoryStore::default());
+                temp.set(&key, &password)?;
+                let dav = CloudProvider::connect(&account, temp, crossbeam_channel::unbounded().0)?;
+                Ok(dav.list_complete(&root_of(&account.id))?.len())
+            };
+            let answer = list()
+                .map(|n| format!("Connected: {n} items in the root folder"))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(answer);
+            ctx.request_repaint();
+        });
+        if started {
+            self.test = Some(rx);
+        } else {
+            self.test_result = Some(Err("Could not start a worker thread".into()));
+        }
+    }
+
     /// The form; Some(sign_in) when submitted.
-    fn fields_ui(&mut self, ui: &mut egui::Ui, outcome: &mut Outcome) -> Option<bool> {
-        let oauth = self.kind != CloudKind::S3;
+    fn fields_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        outcome: &mut Outcome,
+        existing: &[CloudAccount],
+        store: &Arc<dyn SecretStore>,
+        ctx: &egui::Context,
+    ) -> Option<bool> {
+        let oauth = uses_oauth(self.kind);
+        let dav = self.kind == CloudKind::WebDav;
         let editing = self.id.is_some();
         let mut submit = None;
         egui::Grid::new("cloud-wizard")
@@ -874,6 +988,21 @@ impl Wizard {
                     ui.label("");
                     ui.hyperlink_to("Bring your own client id", CLIENT_ID_HELP);
                     ui.end_row();
+                } else if dav {
+                    field(
+                        ui,
+                        "Address",
+                        &mut self.dav_url,
+                        "https://host/remote.php/dav/files/<user>/",
+                    );
+                    field(ui, "User name", &mut self.username, "");
+                    let hint = if editing {
+                        "leave empty to keep the stored one"
+                    } else {
+                        "app password; kept in the OS keychain"
+                    };
+                    secret(ui, "Password", &mut self.password, hint);
+                    field(ui, "Root folder", &mut self.root, "/ (optional)");
                 } else {
                     field(
                         ui,
@@ -893,7 +1022,20 @@ impl Wizard {
                     secret(ui, "Secret key", &mut self.secret_key, hint);
                 }
             });
-        if !oauth && insecure_endpoint(&self.endpoint) {
+        if dav {
+            ui.checkbox(
+                &mut self.insecure,
+                "Allow http:// (files and password travel unencrypted)",
+            );
+            if let Some(result) = &self.test_result {
+                let (color, text) = match result {
+                    Ok(t) => (ui.visuals().text_color(), t),
+                    Err(e) => (ui.visuals().error_fg_color, e),
+                };
+                ui.colored_label(color, text);
+            }
+        }
+        if !oauth && !dav && insecure_endpoint(&self.endpoint) {
             ui.add_space(4.0);
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -917,6 +1059,18 @@ impl Wizard {
                 }
                 if oauth && ui.button("Sign in again…").clicked() {
                     submit = Some(true);
+                }
+            }
+            if dav {
+                let testing = self.test.is_some();
+                if ui
+                    .add_enabled(!testing, egui::Button::new("Test connection"))
+                    .clicked()
+                {
+                    self.test_connection(existing, store, ctx);
+                }
+                if testing {
+                    ui.spinner();
                 }
             }
             if !editing && ui.button("Back").clicked() {
@@ -1022,7 +1176,7 @@ impl AppState {
         let label = &account.label;
         match status {
             ConnStatus::Connected => self.toasts.info(format!("Connected to {label}")),
-            ConnStatus::Failed if account.kind != CloudKind::S3 && needs_sign_in(&detail) => {
+            ConnStatus::Failed if uses_oauth(account.kind) && needs_sign_in(&detail) => {
                 self.toasts.with_action(
                     format!("{label}: the sign-in expired or was revoked"),
                     "Sign in",
@@ -1153,6 +1307,7 @@ impl AppState {
             Outcome::Open => {}
             Outcome::Cancelled => self.clouds.wizard = None,
             Outcome::Done(account) => {
+                let account = *account;
                 self.clouds.wizard = None;
                 let id = account.id.clone();
                 let text = format!("Saved {}", account.label);
@@ -1185,6 +1340,7 @@ mod tests {
             root: None,
             client_id_override: None,
             s3: None,
+            webdav: None,
         }
     }
 
@@ -1263,7 +1419,7 @@ mod tests {
         assert!(matches!(w.step, Step::Fields));
         assert_eq!(w.error.as_deref(), Some("browser said no"));
         w.start(account.clone(), true, &ctx, |_| Ok(()));
-        assert!(matches!(settle(&mut w), Outcome::Done(a) if a == account));
+        assert!(matches!(settle(&mut w), Outcome::Done(a) if *a == account));
         // No client id anywhere: refused before any browser opens.
         let mut w = Wizard::default();
         w.choose(CloudKind::GoogleDrive);
@@ -1278,6 +1434,43 @@ mod tests {
         });
         upper.client_id = "123.apps.googleusercontent.com".into();
         assert!(upper.build(&[]).unwrap_err().contains("lowercase"));
+    }
+
+    #[test]
+    fn webdav_form_validates_and_keeps_the_password_out_of_the_account() {
+        let mut w = Wizard::default();
+        w.choose(CloudKind::WebDav);
+        assert_eq!(w.label, "WebDAV");
+        assert!(w.build(&[]).unwrap_err().contains("valid address"));
+        w.dav_url = "webdav://dav.invalid/files".into();
+        assert!(w.build(&[]).unwrap_err().contains("webdav://"));
+        w.dav_url = "http://dav.invalid/files".into();
+        assert!(w.build(&[]).unwrap_err().contains("unencrypted"));
+        w.dav_url = "https://dav.invalid/files".into();
+        assert!(w.build(&[]).unwrap_err().contains("user name"));
+        w.username = " alice ".into();
+        assert!(w.build(&[]).unwrap_err().contains("password"));
+        w.password = Zeroizing::new("pw-not-in-config".into());
+        w.root = "/Photos/".into();
+        let (a, secrets) = w.build(&[]).unwrap();
+        let dav = a.webdav.clone().unwrap();
+        assert_eq!(dav.url, "https://dav.invalid/files/");
+        assert_eq!(dav.username, "alice");
+        assert!(!dav.insecure);
+        assert_eq!(a.root.as_deref(), Some("/Photos"));
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].0, format!("{}/password", a.id));
+        assert!(!toml::to_string(&a).unwrap().contains("pw-not-in-config"));
+        // http:// only with the explicit opt-in.
+        w.dav_url = "http://dav.invalid/files".into();
+        w.insecure = true;
+        assert!(w.build(&[]).unwrap().0.webdav.unwrap().insecure);
+        // Editing keeps the stored password when the field is empty.
+        let mut edit = Wizard::edit(&a);
+        let (_, secrets) = edit.build(std::slice::from_ref(&a)).unwrap();
+        assert!(secrets.is_empty());
+        edit.password = Zeroizing::new("new".into());
+        assert_eq!(edit.build(&[a]).unwrap().1.len(), 1);
     }
 
     #[test]
@@ -1419,6 +1612,7 @@ mod tests {
             (CloudKind::GoogleDrive, keel_vfs::RemoveKind::Trash),
             (CloudKind::Dropbox, keel_vfs::RemoveKind::RecoverableDelete),
             (CloudKind::S3, keel_vfs::RemoveKind::Permanent),
+            (CloudKind::WebDav, keel_vfs::RemoveKind::Permanent),
         ] {
             let p = lazy(account("x", kind), MemoryStore::default());
             assert_eq!(

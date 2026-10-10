@@ -29,7 +29,9 @@ pub mod volume;
 pub use volume::{volume_info, VolumeInfo, VolumeType};
 // --- end Task 33 ---
 #[cfg(feature = "cloud")]
-pub use cloud::{CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore};
+pub use cloud::{
+    CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore, WebDavConfig,
+};
 pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
 pub use provider::{Caps, Provider, RemoveKind};

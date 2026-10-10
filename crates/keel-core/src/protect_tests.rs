@@ -377,6 +377,7 @@ fn cloud_sources_walk_the_provider_listing_as_their_own_domain() {
         root: None,
         client_id_override: None,
         s3: None,
+        webdav: None,
     };
     let cloud =
         keel_vfs::CloudProvider::with_operator(account, op, crossbeam_channel::unbounded().0)
