@@ -12,6 +12,40 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
 
+## [0.8.0] - 2026-10-09
+
+Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
+
+### Added
+
+- Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
+- Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
+- Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
+- Spacedrop: send files and folders to a paired device in resumable 4 MiB chunks, verified with BLAKE3 over the whole file, staged in a `.keel-partial` folder and moved into the receiver's inbox folder only when complete. The receiver gets an accept prompt, with per-device auto-accept. Drops run as durable jobs that survive a dropped link or a restart.
+- App: a Devices sidebar section (status dot, name, storage bar, Browse, Send files, Shares, Forget), a pairing dialog with the code and QR, a shares dialog, "Send with Spacedrop..." in the context menu, and Settings → Devices (enable, device name, inbox, relays, auto-accept list).
+- `keel-api`, a typed operation registry with 29 operations and generated JSON schemas. Mutating operations are preview-first: `plan` returns a preview with a plan id and an input hash, and `execute` applies only that exact input, refusing a wrong hash, a changed source or a plan older than 10 minutes.
+- `keel-daemon`, a headless host for the profile's library that serves the API as JSON-RPC on a per-user local socket, with an optional token-authenticated loopback WebSocket, notifications for job progress, library changes and device events, and a single daemon per profile.
+- Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
+- `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
+
+### Changed
+
+- Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
+- Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
+
+### Fixed
+
+- Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
+
+### Known limitations
+
+- The window does not yet attach to a running daemon; only one of them can hold the library at a time.
+- Short-code pairing needs internet discovery; on an offline network use the full ticket.
+- The daemon's router has no SFTP or cloud providers and does not watch folders live.
+- Writes from a device land only in local sources.
+- Tabs on `node://` sources show the raw id as their title.
+- Video in the viewer shows stills, not playback.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
