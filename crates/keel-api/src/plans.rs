@@ -1,10 +1,12 @@
 //! Previewed plans waiting for `execute`. A plan is the exact input that was previewed
-//! (a keel-core file `Plan`, or a registered operation and its parameters) and the BLAKE3
-//! hash of that input; `execute` must name both, before the plan expires (`TTL`).
+//! (a keel-core file `Plan` with its changes and warnings, or a registered operation and
+//! its parameters) and the BLAKE3 hash of all of it; `execute` must name both, before the
+//! plan expires (`TTL`). The hash is computed again over what is stored, so a plan
+//! altered on disk is refused.
 //!
-//! The store is a file in the library folder (`api-plans.json`, owner-only on Unix), so a
-//! `keel plan` and a later `keel execute` work in-process too: only one process holds a
-//! library open at a time. Plans of operations with secret parameters (a pairing code)
+//! The store is a file in the library folder (`api-plans.json`, owner-only: `private`),
+//! so a `keel plan` and a later `keel execute` work in-process too: only one process holds
+//! a library open at a time. Plans of operations with secret parameters (a pairing code)
 //! stay in memory only.
 
 use crate::error::{ApiError, Result};
@@ -27,10 +29,16 @@ pub enum Input {
 }
 
 impl Input {
-    /// The canonical form that is hashed: object keys sorted at every level.
+    /// The canonical form that is hashed (everything `execute` runs: file plans with their
+    /// changes and warnings): object keys sorted at every level.
     fn canonical(&self) -> Value {
         let v = match self {
-            Input::Files(plan) => serde_json::json!({ "method": "plan", "op": plan.op }),
+            Input::Files(plan) => serde_json::json!({
+                "method": "plan",
+                "op": plan.op,
+                "changes": plan.changes,
+                "warnings": plan.warnings,
+            }),
             Input::Call { method, params } => {
                 serde_json::json!({ "method": method, "params": params })
             }
@@ -120,15 +128,8 @@ impl PlanStore {
     fn save(&self, plans: &HashMap<String, Stored>) {
         let Some(path) = &self.path else { return };
         let kept: HashMap<_, _> = plans.iter().filter(|(_, s)| !s.secret).collect();
-        let write = || -> std::io::Result<()> {
-            let tmp = path.with_extension("json.tmp");
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-            std::io::Write::write_all(&mut opts.open(&tmp)?, &serde_json::to_vec(&kept)?)?;
-            std::fs::rename(&tmp, path)
-        };
+        let write =
+            || -> std::io::Result<()> { crate::private::write(path, &serde_json::to_vec(&kept)?) };
         if let Err(e) = write() {
             tracing::warn!("saving plans: {e}");
         }
@@ -154,8 +155,16 @@ impl PlanStore {
         Ok((id, hash, (created + self.ttl.as_millis() as i64) / 1000))
     }
 
+    /// The operation plan `id` runs, if there is such a plan.
+    pub fn method(&self, id: &str) -> Option<String> {
+        let plans = self.plans.lock();
+        plans.get(id).map(|s| s.input.method().to_owned())
+    }
+
     /// Takes the plan `id` out if `hash` is its input hash and it has not expired. A wrong
-    /// hash leaves the plan in place (only the caller holding the preview can run it).
+    /// hash leaves the plan in place (only the caller holding the preview can run it). The
+    /// hash is computed again over the stored input and must match both the stored and the
+    /// given hash: a plan altered on disk is dropped.
     pub fn take(&self, id: &str, hash: &str) -> Result<Input> {
         let mut plans = self.plans.lock();
         let now = now_ms();
@@ -173,7 +182,16 @@ impl PlanStore {
                 format!("plan {id} expired: preview again"),
             ));
         }
-        if !constant_eq(stored.hash.as_bytes(), hash.trim().as_bytes()) {
+        let actual = stored.input.hash();
+        if !constant_eq(stored.hash.as_bytes(), actual.as_bytes()) {
+            plans.remove(id);
+            self.save(&plans);
+            return Err(ApiError::new(
+                ApiError::PLAN_MISMATCH,
+                format!("plan {id} was altered after its preview: refused, preview again"),
+            ));
+        }
+        if !constant_eq(actual.as_bytes(), hash.trim().as_bytes()) {
             return Err(ApiError::new(
                 ApiError::PLAN_MISMATCH,
                 "the input hash does not match the previewed input: refused",
@@ -246,6 +264,96 @@ mod tests {
             store.take(&id, &hash).unwrap_err().code,
             ApiError::PLAN_EXPIRED
         );
+    }
+
+    /// Stores `input` in a file store at `path`, rewrites `from` as `to` in the file, and
+    /// tries to execute the plan with its preview's hash.
+    fn tampered(path: &std::path::Path, input: Input, from: &str, to: &str) -> ApiError {
+        let (id, hash, _) = PlanStore::open(path.into(), TTL)
+            .insert(input, false)
+            .unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(from), "{text}");
+        std::fs::write(path, text.replace(from, to)).unwrap();
+        let store = PlanStore::open(path.into(), TTL);
+        let err = store.take(&id, &hash).unwrap_err();
+        assert_eq!(
+            store.take(&id, &hash).unwrap_err().code,
+            ApiError::PLAN_EXPIRED,
+            "an altered plan is dropped"
+        );
+        err
+    }
+
+    #[test]
+    fn a_plan_altered_on_disk_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-plans.json");
+        let params = Input::Call {
+            method: "tags.add".into(),
+            params: serde_json::json!({ "tag": "previewed", "paths": [] }),
+        };
+        let err = tampered(&path, params, "previewed", "other");
+        assert_eq!(err.code, ApiError::PLAN_MISMATCH);
+        // A file plan: its destination (in `op` and `changes`), or only the changes it runs.
+        let at = |name: &str| keel_vfs::VPath::local(dir.path().join(name));
+        let plan = keel_core::Plan {
+            op: keel_core::Op::Copy {
+                src: vec![at("secret.txt")],
+                dst_dir: at("previewed_dst"),
+                on_conflict: keel_core::OnConflict::Skip,
+            },
+            changes: vec![keel_core::Change {
+                action: keel_core::Action::Copy,
+                from: at("secret.txt"),
+                to: Some(at("previewed_dst/secret.txt")),
+                files: 1,
+                bytes: 6,
+            }],
+            warnings: Vec::new(),
+        };
+        let err = tampered(
+            &path,
+            Input::Files(plan.clone()),
+            "previewed_dst",
+            "other_dst",
+        );
+        assert_eq!(err.code, ApiError::PLAN_MISMATCH);
+        let mut changes_only = plan;
+        changes_only.changes[0].to = Some(at("changes_only/secret.txt"));
+        let err = tampered(
+            &path,
+            Input::Files(changes_only),
+            "changes_only",
+            "other_dst",
+        );
+        assert_eq!(err.code, ApiError::PLAN_MISMATCH);
+        // An untouched file plan survives the round trip through the file.
+        let store = PlanStore::open(path.clone(), TTL);
+        let (id, hash, _) = store
+            .insert(
+                Input::Files(keel_core::Plan {
+                    op: keel_core::Op::Delete {
+                        paths: vec![at("x")],
+                    },
+                    changes: Vec::new(),
+                    warnings: vec![keel_core::Warning::NotIndexed { path: at("x") }],
+                }),
+                false,
+            )
+            .unwrap();
+        drop(store);
+        assert!(PlanStore::open(path, TTL).take(&id, &hash).is_ok());
+    }
+
+    #[test]
+    fn the_plan_file_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-plans.json");
+        PlanStore::open(path.clone(), TTL)
+            .insert(call(1), false)
+            .unwrap();
+        assert!(crate::private::read(&path).unwrap().is_some());
     }
 
     #[test]

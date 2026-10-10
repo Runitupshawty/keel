@@ -158,7 +158,8 @@ usage. `keel plan` prints the preview, the plan id and hash; `keel execute` read
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
 job. Other mutating subcommands (`tag`, `sources add|index`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the
-library folder (`api-plans.json`), so `keel plan` and a later `keel execute` work without
+library folder (`api-plans.json`, owner-only; the hash covers everything a plan runs and is
+checked again at `execute`, so a plan altered there is refused), so `keel plan` and a later `keel execute` work without
 a daemon too. Release builds on Windows are GUI programs that attach to the calling
 console, which does not wait for them: pipe the output (`keel … | more`, PowerShell
 `keel … | Out-Host`) to see it in order. Redirected output (`--json` into a file or a
