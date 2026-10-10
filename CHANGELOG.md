@@ -2,7 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.14.0] - 2026-10-10
 
 ### Added
 
@@ -50,7 +50,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Renaming a file that is being created over an existing file replaces that file only when the new one is published; until then the existing file keeps its old content.
 - Where the free space cannot be told (a paired device, an SFTP server without `statvfs@openssh.com`, a cloud account without a quota), Linux and macOS show 0 and Windows a large placeholder; it is read at most every 10 seconds.
 - Windows and macOS release builds have no mount backend: build `keel-daemon` from source with `--features winfsp` on Windows (winfsp-rs is GPL-3.0, so that daemon is distributed under the GPL-3.0) or with `--features fuse` after installing macFUSE on macOS.
-
 
 ## [0.13.0] - 2026-10-10
 
