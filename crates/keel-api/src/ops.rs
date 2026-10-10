@@ -1781,6 +1781,21 @@ fn grant_preview(ctx: &Ctx, p: &GrantParams) -> Result<Preview> {
                 peer.label
             ),
         ));
+        // Device writes reach SFTP and cloud sources too, through their provider.
+        if ctx
+            .router
+            .provider_for(&source.root)
+            .is_some_and(|p| p.remove_kind() == keel_vfs::RemoveKind::Permanent)
+        {
+            warnings.push(warning(
+                "deletes_permanent",
+                Some(source.root.display()),
+                format!(
+                    "files {} deletes in {what} are gone for good (no trash)",
+                    peer.label
+                ),
+            ));
+        }
     }
     Ok(Preview {
         pin: None,

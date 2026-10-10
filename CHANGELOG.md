@@ -7,11 +7,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Copy and move jobs record their progress durably as they go (every 256 files or 4 MiB, in one row of the library's job table plus the files of the running batch, never one write per file): which files were placed, at which name, with their size and modified time, and how far the file in progress got in its `.keel-partial` copy. A copy or move resumed after Keel or keel-daemon closed, or after a crash, continues from there and its log says "resumed at file N of M".
+- Device writes reach shared sources that are not local: a read-write grant on an SFTP host or a cloud account lets the device write, make folders, rename and delete there, through this machine's connection to that server, with the same grant and path checks (inside the shared folder, no links, no `..`) as a local folder. A file streams to the server (never held whole), is checked with BLAKE3 and placed by the server's own upload only once complete; pieces of a file resume from a staging file beside the target where the server can write in place (SFTP). The `shares.grant` preview of a read-write share warns `deletes_permanent` when deletes there are for good (SFTP, S3).
 - keel-vfs: `Provider::write_at` (write a file in place from an offset, for resumable transfers; local folders, SFTP and the test memory provider) and `ops::transfer_resumable` with its `Journal`.
 
 ### Fixed
 
 - A folder copy or move resumed after a crash no longer runs again as a merge into the half-written target, which lifts the 0.6.0 known limitation. Files it had placed are skipped without being written again, the file it was writing is continued from its partial copy on local folders and SFTP hosts (started again on cloud targets, or when the partial copy no longer matches the record), a name picked by Rename new is kept instead of a third copy being made, and a placed file that changed in the meantime stops the job ("changed since the preview") instead of being overwritten. A move still deletes each source file only after its copy is complete and verified.
+
+- Writes from a device into a shared source that is not local are no longer refused, which lifts the 0.8.0 known limitation that they landed only in local sources. A read-only or unreachable source refuses the write, as before.
 
 ### Known limitations
 

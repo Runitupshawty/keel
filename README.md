@@ -122,7 +122,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 
 **Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared. Forgetting a device ends its shares and removes its folders from the library.
 
-**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...`, titled with the device's name (and "<device> / <source>" in a shared folder); the breadcrumb and the tab's hover use the names too, and a device you forgot shows its id. It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
+**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...`, titled with the device's name (and "<device> / <source>" in a shared folder); the breadcrumb and the tab's hover use the names too, and a device you forgot shows its id. It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land in its shared folders whether they are local folders, SFTP hosts or cloud accounts, with the same grant and path checks; they are checked with BLAKE3 and published whole: into a local folder through a staging file renamed into place, into an SFTP or cloud source streamed through that host's connection to the server and placed by its own upload only after the check (a read-only or unreachable source refuses the write). Sharing a source whose deletes are permanent (SFTP, S3) read-write says so in the preview.
 
 **Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). A drop that already arrived is remembered for an hour, so a sender that lost the last reply finishes without asking you again or sending a second copy. Cancel from the jobs panel; a prompt whose sender gave up or stopped asking goes away by itself.
 
@@ -136,7 +136,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 - Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land. One device can have at most 4 offers waiting (16 from all devices); more are refused as busy.
 - Anyone holding a still-valid code can pair, so show it only to the person in front of you.
 
-Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
+Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does).
 
 Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain, in the window, `keel-daemon` and the `keel` subcommands alike (tests and live checks; the device is new on every run and must pair again).
 
@@ -479,7 +479,7 @@ What is next, from the known limitations still open:
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Cloud: resumable uploads instead of the 256 MB (Drive) and 150 MB (Dropbox) single-request limits, and cancelling an upload whose request is already on the wire.
 - Library and protection: live changes for remote and cloud sources instead of polling, and disks without a serial or cloned with one (their failure domain is set by hand today).
-- Devices: short-code pairing without internet discovery (the full ticket already works offline), and device writes into sources that are not local.
+- Devices: short-code pairing without internet discovery (the full ticket already works offline).
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).

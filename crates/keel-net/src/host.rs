@@ -4,7 +4,9 @@
 //! resolved through the router and refused unless its real location (after following
 //! links, junctions and short names) is exactly the requested one under the source root,
 //! so a link inside a shared folder cannot reach outside the grant. Every served request
-//! is appended to the library's op log with the requesting device's id.
+//! is appended to the library's op log with the requesting device's id. Writes into a
+//! local source are staged on this machine; writes into an SFTP or cloud source stream
+//! through the router to that source's provider.
 use crate::*;
 use anyhow::{ensure, Context, Result};
 use keel_core::{Library, SourceId, SourceKind};
@@ -12,7 +14,7 @@ use keel_vfs::{Entry, Kind, Provider, VPath};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
@@ -256,14 +258,25 @@ impl AsyncRead for Bridge {
     }
 }
 
-/// `.keel-partial-<id>` next to `dest`: `<id>` is fixed per device and target, so a
-/// transfer that broke off resumes into the same file.
-fn staging_for(peer: &PeerId, dest: &Path) -> PathBuf {
+/// `.keel-partial-<id>`, `<id>` fixed per device and `target`, so a transfer that broke
+/// off resumes into the same file.
+fn staging_name(peer: &PeerId, target: &[u8]) -> String {
     let mut h = blake3::Hasher::new();
     h.update(&peer.0 .0);
-    h.update(dest.as_os_str().as_encoded_bytes());
+    h.update(target);
     let id = data_encoding::HEXLOWER.encode(&h.finalize().as_bytes()[..16]);
-    dest.with_file_name(format!(".keel-partial-{id}"))
+    format!(".keel-partial-{id}")
+}
+
+/// The staging file next to a local `dest`.
+fn staging_for(peer: &PeerId, dest: &Path) -> PathBuf {
+    dest.with_file_name(staging_name(peer, dest.as_os_str().as_encoded_bytes()))
+}
+
+/// The staging file next to `dest` in a source that is not local.
+fn remote_staging(peer: &PeerId, dest: &VPath) -> Result<VPath> {
+    let folder = dest.parent().context("no parent folder")?;
+    Ok(folder.join(&staging_name(peer, dest.path.as_bytes())))
 }
 
 fn local_dest(lib: &Library, id: &str, rel: &str) -> Result<PathBuf> {
@@ -271,6 +284,126 @@ fn local_dest(lib: &Library, id: &str, rel: &str) -> Result<PathBuf> {
     let (abs, _) = locate(lib, id, rel)?;
     abs.to_local_path()
         .context("devices can only write to local folders")
+}
+
+/// Where a device write to `rel` goes.
+enum Dest {
+    /// A file of a local source, staged on this machine.
+    Local(PathBuf),
+    /// A path of a source that is not local (SFTP, cloud), and its provider.
+    Remote(VPath, Arc<dyn Provider>),
+}
+
+/// `rel` of source `id` as a write target, with the same path checks as every request.
+/// A source that is not local must be writable and reachable.
+fn write_dest(lib: &Library, id: &str, rel: &str) -> Result<Dest> {
+    changes(rel)?;
+    let (abs, provider) = locate(lib, id, rel)?;
+    if let Some(local) = abs.to_local_path() {
+        return Ok(Dest::Local(local));
+    }
+    ensure!(provider.caps().write, "the source is read-only");
+    let root = source(lib, id)?.def.root.clone();
+    provider.stat(&root).context("source unreachable")?;
+    Ok(Dest::Remote(abs, provider))
+}
+
+/// A device's request body read from a blocking task (`write` into a remote source).
+struct Blocking {
+    rt: tokio::runtime::Handle,
+    body: Box<dyn AsyncRead + Send + Unpin>,
+}
+impl Read for Blocking {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use tokio::io::AsyncReadExt;
+        self.rt.block_on(self.body.read(buf))
+    }
+}
+
+/// `body` copied into `out`, hashed on the way; returns its length.
+fn copy_hashed(body: &mut dyn Read, out: &mut dyn Write, hash: &mut blake3::Hasher) -> Result<u64> {
+    let mut buf = vec![0; 1 << 20];
+    let mut n = 0;
+    loop {
+        let got = body.read(&mut buf)?;
+        if got == 0 {
+            return Ok(n);
+        }
+        hash.update(&buf[..got]);
+        out.write_all(&buf[..got])?;
+        n += got as u64;
+    }
+}
+
+/// A device write into a source that is not local, streamed (never held whole) to the
+/// source's provider. A whole file in one piece goes into the provider's own upload, which
+/// places it only on `flush()`: after the content check and a fresh path check. Pieces
+/// go into a staging file beside the target, written in place where the provider can
+/// (`Provider::write_at`; else the file must come in one piece), and the final one is
+/// checked and renamed over the target.
+fn remote_write(
+    lib: &Library,
+    (id, rel): (&str, &str),
+    peer: &PeerId,
+    body: &mut dyn Read,
+    at: WriteAt,
+) -> Result<()> {
+    let Dest::Remote(dest, provider) = write_dest(lib, id, rel)? else {
+        anyhow::bail!("target moved");
+    };
+    let moved = |lib: &Library| -> Result<bool> {
+        Ok(match write_dest(lib, id, rel)? {
+            Dest::Remote(again, _) => !same(&again, &dest),
+            Dest::Local(_) => true,
+        })
+    };
+    let mut body = body.take(at.size);
+    let mut hash = blake3::Hasher::new();
+    if at.offset == 0 && at.final_ {
+        let mut upload = provider.write(&dest)?;
+        let n = copy_hashed(&mut body, &mut *upload, &mut hash)?;
+        ensure!(n == at.size, "body size mismatch");
+        if let Some(expect) = at.expect {
+            ensure!(
+                *hash.finalize().as_bytes() == expect,
+                "content check failed"
+            );
+        }
+        ensure!(!moved(lib)?, "target moved");
+        // Dropped unflushed above, nothing is placed.
+        upload.flush()?;
+        return Ok(());
+    }
+    let staging = remote_staging(peer, &dest)?;
+    if at.offset > 0 {
+        let len = provider.stat(&staging).map_or(0, |e| e.size);
+        ensure!(
+            len == at.offset,
+            "offset {} != staged length {len}",
+            at.offset
+        );
+    }
+    let mut out = provider
+        .write_at(&staging, at.offset)?
+        .context("this source takes a file in one piece: send it whole")?;
+    let n = copy_hashed(&mut body, &mut *out, &mut hash)?;
+    out.flush()?;
+    drop(out);
+    ensure!(n == at.size, "body size mismatch");
+    if !at.final_ {
+        return Ok(());
+    }
+    if let Some(expect) = at.expect {
+        let mut whole = blake3::Hasher::new();
+        let mut reader = provider.read(&staging)?;
+        copy_hashed(&mut reader, &mut std::io::sink(), &mut whole)?;
+        if *whole.finalize().as_bytes() != expect {
+            let _ = provider.remove(&staging);
+            anyhow::bail!("content check failed");
+        }
+    }
+    ensure!(!moved(lib)?, "target moved");
+    provider.rename_replace(&staging, &dest)
 }
 
 #[async_trait::async_trait]
@@ -351,10 +484,9 @@ impl Handler for LibraryHandler {
             .await?;
         Ok(Box::new(Bridge::new(reader)))
     }
-    /// Local sources only (ponytail: SFTP/cloud-backed sources refuse device writes;
-    /// bridge the body into `Provider::write` if that is ever wanted). The piece goes
-    /// into the staging file (see `staging_for`); a final piece is verified, the path
-    /// re-checked and the staging file renamed over the target.
+    /// A local source: the piece goes into the staging file (see `staging_for`); a final
+    /// piece is verified, the path re-checked and the staging file renamed over the
+    /// target. Any other source: streamed to its provider (see `remote_write`).
     async fn write(
         &self,
         ctx: &RequestCtx,
@@ -366,9 +498,26 @@ impl Handler for LibraryHandler {
         let (id, rel, peer) = (source.to_owned(), path.to_owned(), ctx.peer);
         let payload = json!({"source": source, "path": path, "offset": at.offset,
             "size": at.size, "final": at.final_});
-        let staged = async {
+        let dest = {
             let (lib, id, rel) = (self.lib.clone(), id.clone(), rel.clone());
-            let dest = tokio::task::spawn_blocking(move || local_dest(&lib, &id, &rel)).await??;
+            tokio::task::spawn_blocking(move || write_dest(&lib, &id, &rel))
+                .await
+                .map_err(|e| anyhow::anyhow!("host task failed: {e}"))
+                .and_then(|r| r)
+        };
+        if let Ok(Dest::Remote(..)) = dest {
+            let rt = tokio::runtime::Handle::current();
+            let mut body = Blocking { rt, body };
+            return self
+                .serve(ctx, "write", payload, move |lib| {
+                    remote_write(lib, (&id, &rel), &peer, &mut body, at)
+                })
+                .await;
+        }
+        let staged = async {
+            let Dest::Local(dest) = dest? else {
+                anyhow::bail!("target moved");
+            };
             let piece = crate::stage::write_piece(staging_for(&peer, &dest), body, at).await?;
             Ok::<_, anyhow::Error>((piece, dest))
         }
@@ -391,8 +540,14 @@ impl Handler for LibraryHandler {
         let (id, rel, peer) = (source.to_owned(), path.to_owned(), ctx.peer);
         let payload = json!({"source": source, "path": path});
         self.serve(ctx, "stat-partial", payload, move |lib| {
-            let staging = staging_for(&peer, &local_dest(lib, &id, &rel)?);
-            Ok(std::fs::metadata(staging).map_or(0, |m| m.len()))
+            Ok(match write_dest(lib, &id, &rel)? {
+                Dest::Local(dest) => {
+                    std::fs::metadata(staging_for(&peer, &dest)).map_or(0, |m| m.len())
+                }
+                Dest::Remote(dest, provider) => provider
+                    .stat(&remote_staging(&peer, &dest)?)
+                    .map_or(0, |e| e.size),
+            })
         })
         .await
     }
@@ -418,7 +573,8 @@ impl Handler for LibraryHandler {
         })
         .await
     }
-    /// Local sources: to the host's trash.
+    /// Local sources: to the host's trash; others as their provider removes (SFTP and S3
+    /// for good).
     async fn remove(&self, ctx: &RequestCtx, source: &str, path: &str) -> Result<()> {
         changes(path)?;
         let (id, rel) = (source.to_owned(), path.to_owned());

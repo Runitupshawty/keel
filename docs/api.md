@@ -100,7 +100,7 @@ also act directly: they change no file.
 | `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids and `relay` (as the node started) |
 | `devices.settings_set` | preview | Change any of `label` (at most 256 bytes, no control or direction characters, checked in the preview), `inbox` (an absolute folder, never in Keel's configuration or data folder but its inbox, nor a folder holding either), `auto_accept` and `relay` on the running host: the label, inbox and always-accept list apply at once; relays only when the host starts again (`restart: true` in the answer, and a `restart` warning in the preview). Nothing is written to `config.toml` |
 | `shares.list` | read | Grants to paired devices |
-| `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
+| `shares.grant` | preview | Give a device read or read-write access to a source or subtree (a local folder, an SFTP host or a cloud account: the device's writes go through that source's provider); a read-write preview warns `read_write`, and `deletes_permanent` where deletes there are for good (SFTP, S3) |
 | `shares.revoke` | direct | Revoke a grant at once |
 | `mounts.list` | read | Sources keel-daemon serves as drives or mount folders |
 | `mounts.add` | preview | Mount a source or a subtree (`source`, `subtree`, `target`: `K:` or a folder) |

@@ -36,4 +36,6 @@ fs4 = "0.13"
 windows.workspace = true
 
 [dev-dependencies]
+# MemoryProvider: a remote source in the device-write tests.
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud", "test-util"] }
 rustls-graviola.workspace = true
