@@ -822,14 +822,16 @@ fn attached_media_tiles_come_from_the_daemons_sidecars() {
     m.want(0, vec![(key.clone(), 0, req)]);
     // 600x300 -> Thumb256 (256x128) -> shorter side 96.
     assert_eq!(tile(&mut m, &ctx, &key), egui::vec2(192.0, 96.0));
-    // Kept by content id and size (the alias names the file's content id).
+    // Kept by content id and size: this file's alias (named after its path, mtime and
+    // size, as `Thumbs` names it) holds its content id. The folder is shared with the
+    // other attached tests, so any other alias may name a file with no 1024 px one.
     let dir = keel_vfs::cache_dir().join("daemon-thumbs");
-    let cas = std::fs::read_dir(&dir)
-        .unwrap()
-        .flatten()
-        .filter_map(|f| std::fs::read_to_string(f.path()).ok())
-        .find(|c| c.len() == 64)
-        .expect("an alias");
+    let alias = {
+        let local = key.path.to_local_path().unwrap();
+        keel_core::SidecarKey::local(&local, key.mtime, key.size, None).dir_name()
+    };
+    let cas = std::fs::read_to_string(dir.join(alias)).expect("the photo's alias");
+    assert_eq!(cas.len(), 64, "{cas}");
     assert!(dir.join(format!("{cas}-256.webp")).is_file());
     // The viewer's 1024 px thumbnail (never enlarged).
     let e = media_entry(&photo);
