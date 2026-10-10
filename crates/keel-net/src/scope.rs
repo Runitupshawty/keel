@@ -39,7 +39,7 @@ fn device(part: &str) -> bool {
 }
 
 /// Device and peer labels: at most 256 bytes, no control or bidi characters.
-pub(crate) fn valid_label(label: &str) -> bool {
+pub fn valid_label(label: &str) -> bool {
     label.len() <= 256 && !label.chars().any(|c| c.is_control() || bidi(c))
 }
 

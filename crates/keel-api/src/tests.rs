@@ -1160,6 +1160,13 @@ fn spacedrop_send_inbox_and_answer() {
     let cfg_inbox = json!({"inbox": s(b.cfg.path())});
     let e = call(&b.ctx, "devices.settings_set", cfg_inbox).unwrap_err();
     assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e}");
+    // Review 44 minor 5: nor a folder holding them (drops would land among them).
+    let above = json!({"inbox": s(b.cfg.path().parent().unwrap())});
+    let e = call(&b.ctx, "devices.settings_set", above).unwrap_err();
+    assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e}");
+    // Minor 6: a label the node would refuse fails at the preview.
+    let e = call(&b.ctx, "devices.settings_set", json!({"label": "a\nb"})).unwrap_err();
+    assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e}");
     let bad = json!({"label": "x", "auto_accept": ["nope"]});
     assert!(call(&b.ctx, "devices.settings_set", bad).is_err());
     assert_eq!(b_node.label(), "Den");

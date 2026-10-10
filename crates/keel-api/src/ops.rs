@@ -1514,10 +1514,18 @@ fn devices_settings(ctx: &Ctx, _: NoParams) -> Result<DeviceSettingsInfo> {
     })
 }
 
-/// `p` checked: its inbox folder (never inside Keel's configuration folder, nor its data
-/// folder but for its inbox there), its device ids parsed.
+/// `p` checked: its label, its inbox folder (never inside Keel's configuration folder,
+/// nor its data folder but for its inbox there, nor a folder holding either), its device
+/// ids parsed.
 fn settings_check(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Option<std::path::PathBuf>> {
     node(ctx)?;
+    if let Some(label) = p.label.as_deref().map(str::trim) {
+        if !keel_net::valid_label(label) {
+            return Err(ApiError::invalid_params(
+                "not a device name: at most 256 bytes, no control or direction characters",
+            ));
+        }
+    }
     if p.inbox.is_some() || p.auto_accept.is_some() {
         drops(ctx)?;
     }
@@ -1535,8 +1543,13 @@ fn settings_check(ctx: &Ctx, p: &DeviceSettingsParams) -> Result<Option<std::pat
     }
     use crate::files::inside;
     let kept = |d: &Option<std::path::PathBuf>| d.as_ref().is_some_and(|d| inside(&dir, d));
+    let holds = |d: &Option<std::path::PathBuf>| d.as_ref().is_some_and(|d| inside(d, &dir));
     let data_inbox = ctx.data_dir.as_ref().map(|d| d.join("inbox"));
-    if kept(&ctx.config_dir) || (kept(&ctx.data_dir) && !kept(&data_inbox)) {
+    if kept(&ctx.config_dir)
+        || holds(&ctx.config_dir)
+        || holds(&ctx.data_dir)
+        || (kept(&ctx.data_dir) && !kept(&data_inbox))
+    {
         return Err(ApiError::invalid_params(format!(
             "{inbox}: Keel's configuration and data folders cannot be the inbox"
         )));

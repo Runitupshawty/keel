@@ -25,7 +25,7 @@ Maintainer: Keel contributors <noreply@users.noreply.github.com>
 Section: utils
 Priority: optional
 Installed-Size: $size
-Depends: libc6 (>= 2.35), libgtk-3-0, libxkbcommon0, libwayland-client0
+Depends: libc6 (>= 2.35), libgtk-3-0, libxkbcommon0, libwayland-client0, libasound2 | libasound2t64
 Recommends: mesa-vulkan-drivers | libvulkan1, ffmpeg
 Homepage: https://github.com/Runitupshawty/keel
 Description: Fast cross-platform file manager
