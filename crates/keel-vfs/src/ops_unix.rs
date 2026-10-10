@@ -11,9 +11,22 @@ use std::{
 /// A case-only rename on a case-insensitive filesystem (`a.txt` -> `A.txt` on APFS) finds
 /// `to` already there as the same file, and is allowed.
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    // ponytail: check-then-rename can race; use renameat2(RENAME_NOREPLACE) if that matters.
-    if fs::symlink_metadata(to).is_ok() && !same_file::is_same_file(from, to)? {
+    let meta = fs::symlink_metadata(from)?;
+    if fs::symlink_metadata(to).is_ok() {
+        if same_file::is_same_file(from, to)? {
+            return fs::rename(from, to);
+        }
         return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    if meta.is_file() {
+        // link() refuses an existing target atomically, so two writers racing for one
+        // name cannot both win (plain rename replaces); the old name goes afterwards.
+        match fs::hard_link(from, to) {
+            Ok(()) => return fs::remove_file(from),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
+            // No hard links here (FAT, some network mounts): check-then-rename it is.
+            Err(_) => {}
+        }
     }
     fs::rename(from, to)
 }
