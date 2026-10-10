@@ -640,7 +640,7 @@ const PARTIAL: &str = ".keel-partial";
 const STALE_PARTIAL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// A staging name for `name`, unique to this attempt and at most 255 bytes (NAME_MAX).
-fn partial_name(name: &str) -> String {
+pub fn partial_name(name: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let suffix = format!(
         "{PARTIAL}-{}-{}",
@@ -657,7 +657,7 @@ fn partial_name(name: &str) -> String {
 /// numbers written as `partial_name` writes them (no leading zeros), so a user's
 /// `report.keel-partial-2024-05` is never taken for a staging file and swept. Also used by
 /// the SFTP provider, which stages under the same names.
-pub(crate) fn is_partial(name: &str) -> bool {
+pub fn is_partial(name: &str) -> bool {
     name.rsplit_once(PARTIAL).is_some_and(|(stem, rest)| {
         let number = |n: &str| {
             n.bytes().all(|c| c.is_ascii_digit())
