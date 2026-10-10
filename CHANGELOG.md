@@ -11,6 +11,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Files of any size can be uploaded to Google Drive and Dropbox, which lifts the 0.3.0 known limitation that uploads were single requests capped at 256 MB (Drive) and 150 MB (Dropbox) and held in memory. An S3 upload that fails partway is aborted, so its parts are not left in the bucket (and billed) until a lifecycle rule removes them; a Drive or Dropbox session that is not finished expires on its own.
+- Cancelling a job that uploads to Google Drive, Dropbox, S3 or WebDAV now stops the request already on the wire (the connection is closed) instead of letting it finish first, so an upload stops within its current chunk. Nothing more is sent afterwards except the abort of an unfinished S3 multipart upload, and the job's error says what was cancelled: the file, how much of it had been sent, and what became of the partial upload. This lifts the 0.3.0 known limitation that a cancelled upload's request in flight finished first.
 
 ### Known limitations
 

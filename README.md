@@ -456,7 +456,7 @@ WebDAV accounts and local files have no Copy link.
 Limits and requirements:
 
 - Account ids are lowercase (`[a-z0-9_-]`), because Windows Credential Manager ignores case.
-- Uploads to Google Drive, Dropbox and S3 have no size cap: a file over 8 MiB goes in 8 MiB chunks through the service's upload session (Drive resumable upload, Dropbox upload session, S3 multipart upload; S3 allows 10,000 parts, so an object can be up to about 78 GiB), each chunk retried on its own, and a Drive or Dropbox upload carries on from what the service holds after a dropped connection. At most one chunk is held in memory, and the job's byte count moves as the chunks go up (it can run up to one chunk ahead of what has been sent). A failed S3 upload is aborted; an unfinished Drive or Dropbox session expires on its own after about a week.
+- Uploads to Google Drive, Dropbox and S3 have no size cap: a file over 8 MiB goes in 8 MiB chunks through the service's upload session (Drive resumable upload, Dropbox upload session, S3 multipart upload; S3 allows 10,000 parts, so an object can be up to about 78 GiB), each chunk retried on its own, and a Drive or Dropbox upload carries on from what the service holds after a dropped connection. At most one chunk is held in memory, and the job's byte count moves as the chunks go up (it can run up to one chunk ahead of what has been sent). A failed S3 upload is aborted; an unfinished Drive or Dropbox session expires on its own after about a week. Cancelling the job stops the request on the wire at once; the job's error names the file, how much had been sent and what became of the partial upload.
 - Google Docs, Sheets and other Drive-native files, and Drive shortcuts, have no bytes to download; they are not listed, so copying a folder skips them.
 - A folder shows at most 50,000 entries.
 - HTTPS uses rustls with the pure-Rust graviola crypto and the operating system's certificate store. Graviola needs an x86-64 CPU with AES, AVX2, ADX and BMI2 (most made since about 2014) or a 64-bit ARM CPU with AES, PMULL and SHA-2 (Apple silicon, Raspberry Pi 5); on other CPUs adding or opening a cloud account fails with "cloud accounts need a CPU with ...".
@@ -475,7 +475,6 @@ What is next, from the known limitations still open:
 - Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, the Recycle Bin / Trash folder on macOS, and the native Windows shell context menu.
 - Archives: deleting, renaming and creating entries inside one, and extracting into a remote folder.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
-- Cloud: cancelling an upload whose request is already on the wire.
 - Library and protection: live changes for remote and cloud sources instead of polling, a resumed folder copy that is not re-run as a merge, and disks without a serial or cloned with one (their failure domain is set by hand today).
 - Devices: short-code pairing without internet discovery (the full ticket already works offline), and device writes into sources that are not local.
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.

@@ -59,6 +59,35 @@ fn exists(p: &VPath) -> anyhow::Error {
     .into()
 }
 
+/// Runs `work` on the shared runtime until it ends, or until `cancel` or `stop` is set:
+/// then its task is aborted, which drops a request in flight (closing its connection), and
+/// None is returned. The flags are checked every 20 ms.
+pub(super) fn until_cancelled<T: Send + 'static>(
+    cancel: &AtomicBool,
+    stop: &AtomicBool,
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    let runtime = crate::sftp::conn::runtime();
+    let mut task = runtime.spawn(work);
+    runtime.block_on(async {
+        loop {
+            tokio::select! {
+                done = &mut task => return match done {
+                    Ok(value) => Some(value),
+                    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                    Err(_) => None,
+                },
+                () = tokio::time::sleep(Duration::from_millis(20)) => {
+                    if cancel.load(Ordering::SeqCst) || stop.load(Ordering::SeqCst) {
+                        task.abort();
+                        return None;
+                    }
+                }
+            }
+        }
+    })
+}
+
 pub(super) fn request(
     method: http::Method,
     url: &str,
@@ -227,7 +256,8 @@ impl Core {
             let mut req = reqwest::Request::try_from(req).context("invalid cloud request")?;
             *req.timeout_mut() = Some(timeout);
             let client = client.clone();
-            let answer = crate::sftp::conn::runtime().block_on(async move {
+            // A cancel ends the request on the wire, not after it.
+            let answer = until_cancelled(cancel, &self.stop, async move {
                 let reply = client.execute(req).await?;
                 let (status, headers) = (reply.status().as_u16(), reply.headers().clone());
                 let body = reply.bytes().await?.to_vec();
@@ -236,7 +266,8 @@ impl Core {
                     headers,
                     body,
                 })
-            });
+            })
+            .ok_or_else(cancelled)?;
             let status = match answer {
                 Ok(a) if a.status == 401 && self.oauth.is_some() && !refreshed => {
                     refreshed = true;
@@ -612,8 +643,8 @@ enum Session {
 /// One upload, written straight to the target: the file (or object) only changes once the
 /// upload completes, so no staging name is needed. Up to one chunk is buffered; a file of
 /// at most one chunk goes in one request on `flush()`, a bigger one in chunks as it is
-/// written (the last on `flush()`), through an upload session. Retry waits end on
-/// `cancel`. Accounts without sessions (WebDAV) hold the whole file until `flush()`.
+/// written (the last on `flush()`), through an upload session. `cancel` ends a request on
+/// the wire as well as retry waits. Accounts without sessions (WebDAV) hold the whole file until `flush()`.
 /// Dropped without `flush()`: nothing is written (an S3 upload is aborted, Drive and
 /// Dropbox sessions expire on their own).
 pub(super) struct CloudUpload<'c> {
@@ -763,9 +794,18 @@ impl<'c> CloudUpload<'c> {
                     if_not_exists: self.exclusive && self.core.caps().write_with_if_not_exists,
                     ..Default::default()
                 };
+                let cancel = self.cancel;
                 self.core
-                    .call_cancellable(&self.target, self.cancel, |op| {
-                        op.write_options(&k, data.clone(), opts.clone())
+                    .call_cancellable(&self.target, cancel, |op| {
+                        // Async, so that a cancel ends the request on the wire.
+                        let op = opendal::Operator::from(op.clone());
+                        let (k, data, opts) = (k.clone(), data.clone(), opts.clone());
+                        until_cancelled(cancel, &NEVER, async move {
+                            op.write_options(&k, data, opts).await
+                        })
+                        .unwrap_or_else(|| {
+                            Err(opendal::Error::new(ErrorKind::Unexpected, "cancelled"))
+                        })
                     })
                     .map(drop)
             }
@@ -813,7 +853,12 @@ impl Write for CloudUpload<'_> {
             let rest = self.buf.split_off(self.core.chunk);
             let piece = std::mem::replace(&mut self.buf, rest);
             if let Err(e) = self.chunk(piece, false) {
-                return Err(to_io(self.fail(e)));
+                let e = to_io(self.fail(e));
+                // `write_all` and `io::copy` retry `Interrupted`: a cancel must end them.
+                return Err(match e.kind() {
+                    io::ErrorKind::Interrupted => io::Error::other(e.to_string()),
+                    _ => e,
+                });
             }
         }
         Ok(bytes.len())

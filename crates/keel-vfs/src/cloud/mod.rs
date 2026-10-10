@@ -1021,6 +1021,9 @@ impl Core {
                 Ok(v) => return Ok(v),
                 Err(e) => e,
             };
+            if cancel.load(Ordering::SeqCst) {
+                return Err(cancelled());
+            }
             if http_status(&e) == Some(401) && self.oauth.is_some() && !refreshed {
                 refreshed = true;
                 self.refresh(Some(generation))?;

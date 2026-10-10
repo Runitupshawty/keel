@@ -131,6 +131,8 @@ struct S3Fake {
     fail_part: Option<(u32, u16)>,
     /// (part number, delay): that part is answered late, once.
     stall_part: Option<(u32, Duration)>,
+    /// A held-back answer has begun.
+    stalling: bool,
     /// "METHOD key?query names" of every request, and the body of each complete.
     log: Vec<String>,
 }
@@ -141,7 +143,12 @@ fn s3_fake() -> (String, Arc<Mutex<S3Fake>>) {
     let shared = state.clone();
     let base = serve(move |req| {
         let part = req.query.get("partNumber").and_then(|n| n.parse().ok());
-        let stall = shared.lock().stall_part.take_if(|(n, _)| Some(*n) == part);
+        let stall = {
+            let mut s = shared.lock();
+            let stall = s.stall_part.take_if(|(n, _)| Some(*n) == part);
+            s.stalling |= stall.is_some();
+            stall
+        };
         if let Some((_, delay)) = stall {
             std::thread::sleep(delay);
         }
@@ -423,6 +430,8 @@ struct DropboxFake {
     modes: Vec<String>,
     /// (endpoint, delay): that endpoint is answered late, once.
     stall: Option<(&'static str, Duration)>,
+    /// A held-back answer has begun.
+    stalling: bool,
     /// The append at this offset is kept but answered 503, once (a lost answer).
     lose_answer: Option<u64>,
 }
@@ -454,7 +463,12 @@ fn dropbox_fake() -> (String, Arc<Mutex<DropboxFake>>) {
     let shared = state.clone();
     let base = serve(move |req| {
         let endpoint = req.path.trim_start_matches("/2/files/").to_owned();
-        let stall = shared.lock().stall.take_if(|(e, _)| *e == endpoint);
+        let stall = {
+            let mut s = shared.lock();
+            let stall = s.stall.take_if(|(e, _)| *e == endpoint);
+            s.stalling |= stall.is_some();
+            stall
+        };
         if let Some((_, delay)) = stall {
             std::thread::sleep(delay);
         }
@@ -2640,5 +2654,133 @@ fn chunked_uploads_count_progress_once_while_they_run() {
         seen.iter()
             .any(|(done, held)| *held > 0 && *done < size as u64),
         "chunks were sent while the file was still being read: {seen:?}"
+    );
+}
+
+/// Cancels `cancel` once `stalling` (a fake's answer is being held back) and returns when
+/// that was.
+fn cancel_when_stalled<'s>(
+    scope: &'s std::thread::Scope<'s, '_>,
+    stalling: impl Fn() -> bool + Send + 's,
+    cancel: &'s AtomicBool,
+) -> std::thread::ScopedJoinHandle<'s, Instant> {
+    scope.spawn(move || {
+        while !stalling() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        cancel.store(true, Ordering::SeqCst);
+        Instant::now()
+    })
+}
+/// Cancelled while the answer is held back for 5 s, the upload returns at once.
+fn returned_within_the_chunk(cancelled_at: Instant) {
+    if std::env::var_os("CI").is_none() {
+        let took = cancelled_at.elapsed();
+        assert!(took < Duration::from_secs(2), "{took:?} after the cancel");
+    }
+}
+
+#[test]
+fn cancelling_stops_a_dropbox_chunk_on_the_wire_and_sends_nothing_more() {
+    let (base, fake) = dropbox_fake();
+    let dbx = dropbox_chunked(&base);
+    fake.lock().stall = Some(("upload_session/append_v2", Duration::from_secs(5)));
+    let cancel = AtomicBool::new(false);
+    let data = pattern(4 * TEST_CHUNK);
+    let (err, cancelled_at) = std::thread::scope(|s| {
+        let canceller = cancel_when_stalled(s, || fake.lock().stalling, &cancel);
+        let mut w = dbx
+            .create_new_cancellable(&vp("cloud://dbx/c.bin"), &cancel)
+            .unwrap();
+        let err = data
+            .chunks(100_000)
+            .find_map(|piece| w.write_all(piece).err())
+            .expect("cancelled");
+        (err, canceller.join().unwrap())
+    });
+    returned_within_the_chunk(cancelled_at);
+    // Not `Interrupted`: `write_all` would retry that.
+    assert_eq!(err.kind(), io::ErrorKind::Other, "{err}");
+    let text = err.to_string();
+    assert!(
+        text.contains("upload to Dropbox cancelled after 256 KiB had been sent")
+            && text.contains("the unfinished upload session expires on its own"),
+        "{text}"
+    );
+    // Only the start and the held-back append ever reached the service.
+    std::thread::sleep(Duration::from_millis(300));
+    let fake = fake.lock();
+    let sent: Vec<_> = (fake.log.iter())
+        .map(|(e, _)| e.as_str())
+        .filter(|e| *e != "get_metadata")
+        .collect();
+    assert_eq!(sent, ["upload_session/start"]);
+    assert!(fake.files.is_empty());
+}
+
+#[test]
+fn cancelling_stops_an_s3_part_on_the_wire_and_aborts_the_upload() {
+    let (base, fake) = s3_fake();
+    let mut cloud = s3_cloud(&base);
+    cloud.tune(|c| c.chunk = TEST_CHUNK);
+    fake.lock().stall_part = Some((2, Duration::from_secs(5)));
+    let cancel = AtomicBool::new(false);
+    let data = pattern(4 * TEST_CHUNK);
+    let (err, cancelled_at) = std::thread::scope(|s| {
+        let canceller = cancel_when_stalled(s, || fake.lock().stalling, &cancel);
+        let mut w = cloud
+            .create_new_cancellable(&vp("cloud://fake/c.bin"), &cancel)
+            .unwrap();
+        let err = data
+            .chunks(100_000)
+            .find_map(|piece| w.write_all(piece).err())
+            .expect("cancelled");
+        (err, canceller.join().unwrap())
+    });
+    returned_within_the_chunk(cancelled_at);
+    assert_eq!(err.kind(), io::ErrorKind::Other, "{err}");
+    assert!(
+        err.to_string()
+            .contains("upload to S3 cancelled after 256 KiB had been sent (the unfinished S3 upload was aborted)"),
+        "{err}"
+    );
+    let fake = fake.lock();
+    assert!(fake.uploads.is_empty(), "aborted");
+    let start = fake
+        .log
+        .iter()
+        .position(|l| l == "POST c.bin?uploads")
+        .unwrap();
+    assert_eq!(
+        fake.log[start..],
+        [
+            "POST c.bin?uploads",
+            "PUT c.bin?partNumber&uploadId",
+            "DELETE c.bin?uploadId",
+        ]
+    );
+}
+
+#[test]
+fn cancelling_stops_a_single_request_upload_on_the_wire() {
+    let (base, fake) = dropbox_fake();
+    let dbx = dropbox_chunked(&base);
+    fake.lock().stall = Some(("upload", Duration::from_secs(5)));
+    let cancel = AtomicBool::new(false);
+    let (err, cancelled_at) = std::thread::scope(|s| {
+        let canceller = cancel_when_stalled(s, || fake.lock().stalling, &cancel);
+        let mut w = dbx
+            .create_new_cancellable(&vp("cloud://dbx/small.txt"), &cancel)
+            .unwrap();
+        w.write_all(b"small").unwrap();
+        let err = w.flush().unwrap_err();
+        (err, canceller.join().unwrap())
+    });
+    returned_within_the_chunk(cancelled_at);
+    assert_eq!(err.kind(), io::ErrorKind::Interrupted, "{err}");
+    assert!(
+        err.to_string().contains("upload to Dropbox cancelled"),
+        "{err}"
     );
 }
