@@ -260,7 +260,11 @@ pub fn ui(
                                             });
                                         }
                                     } else {
-                                        r.request_focus();
+                                        crate::pane::rename_focus(
+                                            &r,
+                                            text,
+                                            e.kind == keel_vfs::Kind::Dir,
+                                        );
                                     }
                                 }
                                 _ => {

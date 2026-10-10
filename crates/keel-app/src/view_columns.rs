@@ -624,7 +624,7 @@ fn column(
                                     });
                                 }
                             } else {
-                                te.request_focus();
+                                crate::pane::rename_focus(&te, edit, e.kind == keel_vfs::Kind::Dir);
                             }
                         }
                         _ => {

@@ -738,6 +738,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// QA walkthrough 2026-10-10: F2 put the caret after the name, so typing a new name
+    /// appended it ("notes.txtideas"). The stem is selected now; a folder's whole name.
+    #[test]
+    fn f2_selects_the_stem_so_typing_replaces_it() {
+        let start = fixture("keel-f2-fixture");
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_eframe(|cc| App::new(cc, Boot::at(start)));
+        wait_listed(&mut harness);
+        let edited = |h: &Harness<App>| h.state().state.tab(0).renaming.clone().unwrap().1;
+        for (name, typed, want) in [("notes.txt", "ideas", "ideas.txt"), ("src", "lib", "lib")] {
+            harness
+                .state_mut()
+                .state
+                .tab_mut(0)
+                .click(name, false, false);
+            harness.press_key(Key::F2);
+            harness.run_steps(2);
+            harness
+                .input_mut()
+                .events
+                .push(egui::Event::Text(typed.into()));
+            harness.run_steps(2);
+            assert_eq!(edited(&harness), want);
+            harness.press_key(Key::Escape);
+            harness.run_steps(2);
+        }
+    }
+
     #[test]
     fn panicking_frame_is_logged_and_survived() {
         let start = fixture("keel-crash-fixture");

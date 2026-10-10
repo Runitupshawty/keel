@@ -592,6 +592,28 @@ pub fn context_menu(
     item(ui, "Properties", "", Action::Properties);
 }
 
+/// Keeps the inline rename box focused. The frame it takes the focus the name's stem is
+/// selected (a folder's whole name), so typing replaces the name and keeps the extension,
+/// as in Explorer and Finder.
+pub fn rename_focus(r: &egui::Response, text: &str, dir: bool) {
+    if r.has_focus() {
+        return;
+    }
+    r.request_focus();
+    let end = match text.rfind('.') {
+        Some(i) if i > 0 && !dir => text[..i].chars().count(),
+        _ => text.chars().count(),
+    };
+    let mut state = egui::TextEdit::load_state(&r.ctx, r.id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(end),
+        )));
+    state.store(&r.ctx, r.id);
+}
+
 /// Shared row/tile click handling: select, double-click opens, middle-click new tab.
 pub fn handle_click(
     r: &egui::Response,
