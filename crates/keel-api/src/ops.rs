@@ -110,7 +110,7 @@ pub static OPS: &[Operation] = &[
         PathParams => Copies, redundancy, json!({"path": example_file()})),
     now!("redundancy.folder", "The copies of every indexed file in a folder (the first 5000 files).",
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
-    now!("library.stats", "Counts over every source: records, files, bytes, distinct contents, running jobs.",
+    now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline).",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
         NoParams => Protection, protection_summary, json!({})),
@@ -1013,6 +1013,20 @@ fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
         bytes: s.bytes,
         unique_content: s.unique_content,
         running_jobs: s.running_jobs,
+        per_source: s
+            .per_source
+            .into_iter()
+            .map(|p| SourceStats {
+                id: p.id.0,
+                label: p.label,
+                files: p.files,
+                folders: p.folders,
+                bytes: p.bytes,
+                hashed_files: p.hashed_files,
+                last_walk: p.last_walk,
+                offline: p.offline,
+            })
+            .collect(),
     })
 }
 

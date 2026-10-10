@@ -614,6 +614,45 @@ fn volume(id: &str, state: VolumeState, backup: bool, capacity: Option<(u64, u64
 }
 
 #[test]
+fn per_source_table_model() {
+    let stats = |label: &str, files, hashed, last_walk, offline| keel_core::SourceStats {
+        id: SourceId(label.to_lowercase()),
+        label: label.into(),
+        files,
+        folders: 1_200,
+        bytes: 3_000_000,
+        hashed_files: hashed,
+        last_walk,
+        offline,
+    };
+    let rows = source_count_rows(&[
+        stats("Photos", 12_345, 9_876, Some(1_700_000_000), false),
+        stats("Empty", 0, 0, None, true),
+    ]);
+    let r = &rows[0];
+    assert_eq!(
+        (
+            r.label.as_str(),
+            r.files.as_str(),
+            r.folders.as_str(),
+            r.size.as_str(),
+            r.hashed.as_str(),
+            r.offline
+        ),
+        ("Photos", "12,345", "1,200", "3 MB", "80 %", false)
+    );
+    assert_eq!(r.last_walk, when(Some(1_700_000_000)));
+    assert_eq!(
+        (
+            rows[1].hashed.as_str(),
+            rows[1].last_walk.as_str(),
+            rows[1].offline
+        ),
+        ("—", "never", true)
+    );
+}
+
+#[test]
 fn volume_table_and_protection_card_models() {
     let rows = volume_rows(&[
         volume("a", VolumeState::Online, true, Some((1_000_000, 4_000_000))),

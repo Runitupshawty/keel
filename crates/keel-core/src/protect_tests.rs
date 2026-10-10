@@ -715,9 +715,10 @@ fn recount_100k() {
             .unwrap()
             .execute(
                 "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<49999)
-             INSERT INTO record(name,path,kind,size,fs_id,cas_id,gen)
+             INSERT INTO record(name,path,kind,size,fs_id,cas_id,sampled_hash,gen,parent)
              SELECT 'file-'||x, 'file-'||x, 0, 1024, ?1||':'||x,
-                    CAST(printf('%032d', x) AS BLOB), 1 FROM n",
+                    CAST(printf('%032d', x) AS BLOB), CAST(printf('%032d', x) AS BLOB), 1, 1
+             FROM n",
                 [i],
             )
             .unwrap();
@@ -728,6 +729,13 @@ fn recount_100k() {
         "100000 records, two sources: protection scan {:?}",
         start.elapsed()
     );
+    let start = Instant::now();
+    let stats = lib.stats();
+    println!(
+        "100000 records, two sources: library stats with per-source counts {:?}",
+        start.elapsed()
+    );
+    assert_eq!(stats.per_source[0].hashed_files, 50_000);
     let summary = lib.protection_summary().unwrap();
     assert_eq!(summary.single_copy, 0);
     assert_eq!(summary.single_domain, 0);

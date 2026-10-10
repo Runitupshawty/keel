@@ -832,6 +832,26 @@ pub struct LibraryStats {
     /// Distinct content across sources, as of the last hashing run.
     pub unique_content: u64,
     pub running_jobs: usize,
+    /// Each source's own counts (absent from daemons before 0.12).
+    #[serde(default)]
+    pub per_source: Vec<SourceStats>,
+}
+
+/// One source's counts on the Overview, from its index as last walked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SourceStats {
+    pub id: String,
+    pub label: String,
+    pub files: u64,
+    /// Folders below the source's root.
+    pub folders: u64,
+    pub bytes: u64,
+    /// Files with a content hash (`hashing.set`); the rest are not checked for copies yet.
+    pub hashed_files: u64,
+    /// The last completed full walk, unix seconds (absent: never indexed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_walk: Option<i64>,
+    pub offline: bool,
 }
 
 /// The protection card: how safe the library's contents are.

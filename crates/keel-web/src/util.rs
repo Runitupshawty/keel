@@ -16,6 +16,21 @@ pub fn human(n: u64) -> String {
     }
 }
 
+/// How long ago unix second `then` was, at `now` (seconds): `5 min ago`, `3 h ago`,
+/// `2 d ago`; `never` for None.
+pub fn ago(then: Option<i64>, now: f64) -> String {
+    let Some(then) = then else {
+        return "never".into();
+    };
+    let secs = (now as i64 - then).max(0);
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", secs / 60),
+        3600..86400 => format!("{} h ago", secs / 3600),
+        _ => format!("{} d ago", secs / 86400),
+    }
+}
+
 /// The parent of a daemon path (`library://src/a/b`, `D:\x\y`, `/home/x`); None at a root.
 pub fn parent(path: &str) -> Option<String> {
     // A URI's root is `scheme://authority/`.
@@ -57,6 +72,17 @@ mod tests {
         assert_eq!(p("/home").as_deref(), Some("/"));
         assert_eq!(p("/"), None);
         assert_eq!(p("sftp://host/a/b").as_deref(), Some("sftp://host/a"));
+    }
+
+    #[test]
+    fn ages() {
+        let now = 1_000_000.0;
+        assert_eq!(ago(None, now), "never");
+        assert_eq!(ago(Some(999_990), now), "just now");
+        assert_eq!(ago(Some(1_000_100), now), "just now", "clock skew");
+        assert_eq!(ago(Some(1_000_000 - 300), now), "5 min ago");
+        assert_eq!(ago(Some(1_000_000 - 3 * 3600), now), "3 h ago");
+        assert_eq!(ago(Some(1_000_000 - 2 * 86400), now), "2 d ago");
     }
 
     #[test]

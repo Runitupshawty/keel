@@ -45,7 +45,7 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 **Add a source.** In the sidebar's Library section choose **Add source…** and pick a local folder, a configured remote or a cloud account. Indexing starts at once and runs in the background; the source shows a status dot. Local sources are watched live and fully re-checked every 6 hours; remote and cloud sources are re-walked on a poll interval (15 minutes by default).
 
-**Sidebar.** Overview (counts, storage, sources, running jobs, duplicates), Favorites (Ctrl+D toggles), Recents, Sources, Tags and saved Views. Sources open as `library://` tabs that work offline. Ctrl+Shift+T opens the tag picker; tags show as chips on rows. Search can use the Library as its backend.
+**Sidebar.** Overview (counts, storage, sources, a per-source table of files, folders, size, share hashed and last walk, running jobs, duplicates), Favorites (Ctrl+D toggles), Recents, Sources, Tags and saved Views. Sources open as `library://` tabs that work offline. Ctrl+Shift+T opens the tag picker; tags show as chips on rows. Search can use the Library as its backend.
 
 **Where data lives.** Each source has its own SQLite store (with full-text search) in `<data dir>/library/<name>/`, where `<data dir>` is `%LOCALAPPDATA%\Keel` (Windows), `~/Library/Application Support/Keel` (macOS) or `~/.local/share/keel` (Linux). Set `KEEL_DATA_DIR` to use another folder. The library only changes your files through an operation you confirmed.
 
@@ -82,7 +82,7 @@ Words that match no name or path also search camera and photo keywords, ranked b
 
 While attached: files are read from their real paths (the daemon runs on the same machine). The media view shows the daemon's thumbnails (`media.thumb`, 256 px for tiles, 1024 px for the viewer and big tiles): the daemon makes a missing one on demand, visible tiles first and at most four at a time for the window, and its sidecar jobs fill the rest ahead; both sizes are kept in a small cache under the window's cache folder by content. A file the daemon cannot answer for is decoded in the window, and video strips and photo metadata (date headers, the viewer's info panel) are still made by the window. Your input reaches the daemon (`activity.note`), so *idle only* hashing and integrity checks pause while you work, as in-process, and sidecar jobs for a second after each input. Settings → Devices is written to the daemon as you change it: its device name, inbox (only when you set one: otherwise the daemon's own, `<data dir>/inbox`, so drops land in the same folder whether or not a window is open) and always-accept list change at once; relays only when the daemon starts again (it reads `[devices] relay` then). Switching to another library needs the daemon stopped first.
 
-Limits: hashing skips remote and cloud sources; the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+Limits: hashing skips remote and cloud sources; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
 
 ## Media view
 

@@ -4,6 +4,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Per-source counts: the library Overview has a **Per source** table (files, folders, size, share of files hashed, last walk, offline sources flagged; a name opens the source), `library.stats` answers `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`), `keel sources` prints each source's counts under it and adds them to every source in `--json`, and the web client shows them under its sources (**Counts**). They come from each store's counters and indexes, about 2 ms for 100,000 records. This lifts the 0.6.0 known limitation that the Overview showed library totals only.
+
 ### Fixed
 
 - Protection counters follow changes made outside Keel: 5 s after the last change a watcher applied (a file created, modified, deleted, renamed or moved), and after operations Keel executes, the counters are recounted in the background, once for a whole burst and not while that source is being walked (the walk recounts when it ends). The Overview's Protection card and the Copies badges are read again afterwards, in the window and in windows attached to keel-daemon, which sends `library.changed` `{method: "protection", kind: "protection.recount"}` after every recount (the web client, which shows no protection, ignores it). A window's own source watchers now recount after each full walk too. A recount reads every store (about 0.12 s for 100,000 hashed files in a release build). This lifts the 0.7.0 known limitation that the counters caught up only at the next index, hash or integrity run.

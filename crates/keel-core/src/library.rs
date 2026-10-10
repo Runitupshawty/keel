@@ -428,6 +428,24 @@ pub struct LibraryStats {
     /// `count_unique_content`).
     pub unique_content: u64,
     pub running_jobs: usize,
+    /// Each source's own counts, in the library's order.
+    pub per_source: Vec<SourceStats>,
+}
+
+/// One source's counts (`LibraryStats::per_source`), from its store as last indexed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceStats {
+    pub id: SourceId,
+    pub label: String,
+    pub files: u64,
+    /// Folders below the root.
+    pub folders: u64,
+    pub bytes: u64,
+    /// Files with a content hash (a sampled hash at least).
+    pub hashed_files: u64,
+    /// The last completed full walk (unix seconds).
+    pub last_walk: Option<i64>,
+    pub offline: bool,
 }
 
 /// Unix milliseconds.
@@ -1053,23 +1071,48 @@ impl Library {
             running_jobs: self.jobs.running(),
             ..LibraryStats::default()
         };
-        let counts = |s: &Source| -> Result<(u64, u64, u64)> {
-            Ok(s.store
-                .get()?
-                .query_row("SELECT records, files, bytes FROM counts", [], |r| {
+        // From the trigger-kept `counts` row and two partial indexes (no table scan).
+        let counts = |s: &Source| -> Result<(u64, SourceStats)> {
+            let c = s.store.get()?;
+            let (records, files, bytes, folders, hashed, walked) = c.query_row(
+                "SELECT records, files, bytes,
+                     (SELECT count(*) FROM record WHERE kind = 1 AND parent IS NOT NULL),
+                     (SELECT count(*) FROM record WHERE sampled_hash IS NOT NULL),
+                     (SELECT value FROM meta WHERE key = 'last_full_walk')
+                 FROM counts",
+                [],
+                |r| {
                     Ok((
                         r.get::<_, i64>(0)? as u64,
                         r.get::<_, i64>(1)? as u64,
                         r.get::<_, i64>(2)? as u64,
+                        r.get::<_, i64>(3)? as u64,
+                        r.get::<_, i64>(4)? as u64,
+                        r.get::<_, Option<String>>(5)?,
                     ))
-                })?)
+                },
+            )?;
+            Ok((
+                records,
+                SourceStats {
+                    id: s.id.clone(),
+                    label: s.def.label.clone(),
+                    files,
+                    folders,
+                    bytes,
+                    hashed_files: hashed,
+                    last_walk: walked.and_then(|t| t.parse().ok()),
+                    offline: matches!(*s.status.read(), SourceStatus::Offline { .. }),
+                },
+            ))
         };
         for s in &sources {
             match counts(s) {
-                Ok((records, files, bytes)) => {
+                Ok((records, one)) => {
                     stats.records += records;
-                    stats.files += files;
-                    stats.bytes += bytes;
+                    stats.files += one.files;
+                    stats.bytes += one.bytes;
+                    stats.per_source.push(one);
                 }
                 Err(e) => tracing::warn!("stats for source {}: {e:#}", s.def.label),
             }
@@ -1332,6 +1375,41 @@ pub(crate) mod tests {
             .unwrap();
         let stats = lib.stats();
         assert_eq!((stats.records, stats.files, stats.bytes), (5, 3, 115));
+        // Per source: a folder below the root, a hashed file and the last walk.
+        src.store
+            .get()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO record(name, path, kind, size, fs_id, gen, parent)
+                     VALUES ('docs', 'docs', 1, 0, 'd', 1, 1);
+                 UPDATE record SET sampled_hash = x'09' WHERE name = 'x';",
+            )
+            .unwrap();
+        src.store.set_meta("last_full_walk", "1700000000").unwrap();
+        let stats = lib.stats();
+        let per: Vec<_> = stats
+            .per_source
+            .iter()
+            .map(|s| {
+                (
+                    s.label.as_str(),
+                    s.files,
+                    s.folders,
+                    s.bytes,
+                    s.hashed_files,
+                    s.last_walk,
+                    s.offline,
+                )
+            })
+            .collect();
+        assert_eq!(
+            per,
+            [
+                ("a", 1, 1, 100, 1, Some(1_700_000_000), false),
+                ("b", 2, 0, 15, 0, None, false)
+            ]
+        );
+        assert_eq!(stats.per_source[0].id, src.id);
     }
 
     #[test]

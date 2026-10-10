@@ -78,7 +78,7 @@ also act directly: they change no file.
 | `duplicates` | read | Same-content groups, most wasted bytes first |
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
-| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs` |
+| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below) |
 | `protection.summary` | read | The protection card: `single_copy`, `single_domain`, `unbacked`, `drifted`, `unchecked` (not hashed yet, in none of the other counts), `offline_volumes` |
 | `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
 | `volumes.set` | preview | Set a volume's `state` (`archived` / `lost` / `retired`; `online` makes it automatic again), `backup` mark or `failure_domain` (`""`: the detected one) |
@@ -103,6 +103,20 @@ also act directly: they change no file.
 | `spacedrop.send` | preview | Send files or folders on the host's machine to a paired device (`peer`, `paths`) as a job; the preview lists every file with its size (first 500) and warns when the device is offline. Only paths in a library source, the Spacedrop inbox or a claimed share upload are sent; Keel's configuration and data folders (and folders holding them) are refused, for the paths given and every file reached; links inside folders are skipped. `execute` sends exactly the previewed files: a folder that changed since the preview gives -32004 with the new preview |
 | `spacedrop.inbox` | read | The host's Spacedrop inbox: offers waiting for an answer (`pending`: device, id, file count, bytes, first names) and what arrived (`entries`, newest first; download with `file.get`) |
 | `spacedrop.answer` | preview | Accept or decline a waiting offer (`peer`, `id`, `accept`) |
+
+`library.stats` answers, for one source walked at a Unix time and half hashed:
+
+```json
+{"sources":1,"offline_sources":0,"records":1302,"files":1200,"bytes":5368709120,
+ "unique_content":580,"running_jobs":0,
+ "per_source":[{"id":"3f2a","label":"Photos","files":1200,"folders":101,"bytes":5368709120,
+   "hashed_files":600,"last_walk":1790000000,"offline":false}]}
+```
+
+`folders` counts the folders below the root, `hashed_files` the files with a content hash
+(only those are checked for copies), and `last_walk` (absent before the first walk) is the
+last completed full walk. The counts come from each store's counters and indexes, not a
+scan (about 2 ms for 100,000 records).
 
 Devices and shares need keel-net: the window's Settings → Devices switch, written as
 `[devices] enabled = true` with `explicit = true` in the profile's `config.toml`

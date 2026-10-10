@@ -2469,6 +2469,38 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
         .collect()
 }
 
+/// One row of the Overview's per-source table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceCountRow {
+    pub id: SourceId,
+    pub label: String,
+    pub files: String,
+    pub folders: String,
+    pub size: String,
+    /// "80 %" of the files hashed ("—" without files).
+    pub hashed: String,
+    pub last_walk: String,
+    pub offline: bool,
+}
+
+pub fn source_count_rows(per: &[keel_core::SourceStats]) -> Vec<SourceCountRow> {
+    per.iter()
+        .map(|s| SourceCountRow {
+            id: s.id.clone(),
+            label: s.label.clone(),
+            files: count(s.files),
+            folders: count(s.folders),
+            size: humansize::format_size(s.bytes, humansize::DECIMAL),
+            hashed: match s.files {
+                0 => "—".into(),
+                n => format!("{} %", s.hashed_files.min(n) * 100 / n),
+            },
+            last_walk: when(s.last_walk),
+            offline: s.offline,
+        })
+        .collect()
+}
+
 /// One line of the protection card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProtectionLine {
