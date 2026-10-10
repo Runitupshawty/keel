@@ -186,21 +186,9 @@ mod tests {
         assert!(!is_prompt(ShellKind::Posix, "postgres=# ", ""));
         assert!(!is_prompt(ShellKind::Posix, "total cost: 5$", ""));
         // WSL knows this machine's name: an ssh session's prompt names another host.
-        assert!(is_prompt(
-            ShellKind::Wsl,
-            "me@DESKTOP:/mnt/d$ ",
-            "desktop"
-        ));
-        assert!(is_prompt(
-            ShellKind::Wsl,
-            "me@desktop.lan:~$ ",
-            "DESKTOP"
-        ));
-        assert!(!is_prompt(
-            ShellKind::Wsl,
-            "me@fileserver:~$ ",
-            "DESKTOP"
-        ));
+        assert!(is_prompt(ShellKind::Wsl, "me@DESKTOP:/mnt/d$ ", "desktop"));
+        assert!(is_prompt(ShellKind::Wsl, "me@desktop.lan:~$ ", "DESKTOP"));
+        assert!(!is_prompt(ShellKind::Wsl, "me@fileserver:~$ ", "DESKTOP"));
     }
     #[test]
     fn cd_quotes_paths_without_executing_path_text() {
