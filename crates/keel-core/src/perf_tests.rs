@@ -37,6 +37,24 @@ fn db_size(dir: &Path, name: &str) -> u64 {
         .sum()
 }
 
+/// Reads every file below `dir` once at normal priority, so a job that reads them at
+/// background I/O priority is measured from a warm file cache (as right after the files
+/// were made); on a cold cache it waits on the disk at background priority instead.
+pub(crate) fn warm_up(dir: &Path) -> Duration {
+    let start = Instant::now();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                stack.push(e.path());
+            } else {
+                std::fs::read(e.path()).unwrap();
+            }
+        }
+    }
+    start.elapsed()
+}
+
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
@@ -205,6 +223,7 @@ fn perf_hash_10k_files_of_1mib() {
             std::fs::write(sub.join(format!("f{i:05}.bin")), &body).unwrap();
         }
     });
+    let warm = warm_up(&root);
     let data = tempfile::tempdir().unwrap();
     let lib = Library::open(data.path(), "hash").unwrap();
     lib.set_pause_on_battery(false);
@@ -225,13 +244,13 @@ fn perf_hash_10k_files_of_1mib() {
     let dups = lib.duplicates(0).unwrap();
     eprintln!(
         "PERF hash_10k_1mib: {took:?} ({:.0} files/s), {hashed} sampled, {whole} with a \
-         content id, {} duplicate groups",
+         content id, {} duplicate groups (the files read first, warming the cache: {warm:?})",
         10_000.0 / took.as_secs_f64(),
         dups.len()
     );
     assert_eq!(hashed, 10_000);
     assert_eq!(dups.len(), 1_000);
-    assert!(took < Duration::from_secs(60), "{took:?}");
+    assert!(took < Duration::from_secs(20), "{took:?}");
 }
 
 /// 200,000 generated records (`fake://perf/`: 200 folders of 1,000 files, never on disk).

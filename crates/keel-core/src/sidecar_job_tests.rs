@@ -246,13 +246,15 @@ fn perf_sidecar_5k_jpegs() {
         }
         std::fs::write(&done, b"").unwrap();
     }
+    let warm = crate::perf_tests::warm_up(&dir);
     let data = tempfile::tempdir().unwrap();
     let (lib, id) = library(data.path(), &dir);
     let start = Instant::now();
     run(&lib, &id);
     let took = start.elapsed();
     eprintln!(
-        "PERF sidecar_5k: 5,000 1024x768 JPEGs -> Thumb256 + Meta in {took:?} ({:.0} photos/s)",
+        "PERF sidecar_5k: 5,000 1024x768 JPEGs -> Thumb256 + Meta in {took:?} ({:.0} photos/s; \
+         the files read first, warming the cache: {warm:?})",
         5_000.0 / took.as_secs_f64()
     );
     assert_eq!(media_rows(&lib, &id), 5_000);
