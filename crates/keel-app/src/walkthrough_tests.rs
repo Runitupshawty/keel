@@ -1197,19 +1197,18 @@ fn command_palette_every_command() {
         key(&mut h, CMD_SHIFT, Key::P);
         type_text(&mut h, &label);
         // The palette lists a selection's commands once the listing has settled: poll.
-        let mut found: Vec<Pos2> = Vec::new();
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            found = h
+        let found: Vec<Pos2> = loop {
+            let found: Vec<Pos2> = h
                 .query_all_by_label(&label)
                 .map(|n| center_of(&n))
                 .collect();
             if !found.is_empty() || std::time::Instant::now() > end {
-                break;
+                break found;
             }
             h.step();
             std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        };
         let at = *found.last().unwrap_or_else(|| panic!("{label:?} listed"));
         click_at(&mut h, at, NONE, PointerButton::Primary);
         assert!(!s(&h).palette.open, "{label}: the palette closes");
