@@ -161,9 +161,11 @@ register it with the router (`router.register`). It lives here, not in keel-vfs,
 because keel-net already depends on keel-vfs. A device's root lists the sources it
 granted; listings walk every page; writes buffer to an anonymous temp file (the OS
 deletes it with the handle; a big upload sits in the temp folder until `flush()`)
-and are pushed on `flush()` as one verified final piece; `local_copy` downloads into
-a `keel-node-*` temp folder, and folders a day old are swept when a provider is
-created; `caps` follow the grants devices reported; `remove` is permanent from the
+and are pushed on `flush()` as one verified final piece; `read_range` asks the device
+for a byte range (the protocol's ranged `Read`); `local_copy` downloads into a
+`keel-node-*` folder under `<keel_vfs::cache_dir()>/node` (`KEEL_DATA_DIR` honoured),
+and folders a day old are swept when a provider is created; `caps` follow the grants
+devices reported; `remove` is permanent from the
 client's view (a library host trashes). Its calls block on the node's runtime, so
 call them off async tasks.
 
@@ -181,7 +183,9 @@ existing name is refused; a listing shows the real names); writes re-check befor
 publishing. A device source or a `node://` root is never served. Device writes go to
 local sources only. Every served request is appended to the library's op log as
 `net.<op>` with the peer id and label; a logger thread writes the entries in batches
-(the library database syncs every commit).
+(the library database syncs every commit), retries a failed batch once, and is
+flushed when the node closes (`Handler::close`, called by `Node::close`) and when the
+handler is dropped.
 
 ## Spacedrop
 
@@ -195,23 +199,38 @@ offer) and fails after ten minutes without one. Before each file it asks `StatPa
 and resumes from the staged length, re-hashing the bytes it skips, so the final piece
 always carries the whole file's BLAKE3; each sent file is logged as `net.drop-sent`
 (`JobCtx::log_op`). A dropped link, or a closed and reopened sender node, is retried
-with backoff until nothing has moved for ten minutes; a decline, a changed source file,
+with backoff until nothing has moved for ten minutes; a decline or any other `Denied`
+(an invalid offer, a staging failure, `busy`, with the reason), a changed source file,
 an unsendable name or an offer too big for one request header (about 1 MiB of names)
-fails the job; cancelling it, or failing, sends `DropCancel`.
+fails the job at once; cancelling it, or failing, sends `DropCancel`. A file the
+receiver reports complete on resume (its last reply was lost) is logged as
+`net.drop-sent` too, with `"resumed": true`.
 
 The receiving node registers the offer, then hands it to `Handler::drop_offer`, which
 must not wait: it passes `IncomingDrop::reply` to whoever decides and names the inbox
 (default: decline; `LibraryHandler::on_drop(inbox, ask)`). An answer holds for that
 device, drop id and file list only: the same id with another list is asked again, and
-a completed, cancelled or forgotten drop forgets its answer. `DropCancel` withdraws a
-prompt still waiting (`DropReply::withdrawn`); staging is set up only when the sender
-polls an accepted offer, so an answer given after the sender left stages nothing.
+a declined, cancelled or forgotten drop forgets its answer. A completed drop is
+remembered for `spacedrop::DONE_KEEP` (1 hour) by device, id and a hash of its file
+list: a re-offer of the same list and `DropStatus` answer `Ok`, and `StatPartial`
+reports `complete`, so a sender that lost the reply to the last piece neither asks the
+user again nor sends a file twice. At most `PENDING_PER_DEVICE` (4) offers of one device
+and `PENDING_TOTAL` (16) in all wait for an answer or staging; more get
+`Denied("busy")`. `DropCancel` withdraws a prompt still waiting (`DropReply::withdrawn`),
+and so does a sender that stops polling for `NodeOptions::drop_answer_wait` (default
+`GIVE_UP`, 10 minutes; a `DropStatus` waiting for the answer counts as polling). Invalid
+offers and staging failures are answered `Denied` with the reason (not `Error`, which
+the sender retries). Staging is set up only when the sender polls an accepted offer, so
+an answer given after the sender left stages nothing.
 Only the accepted device may send pieces of that drop; grants are not involved. Offered names must pass the receiving host's path rules above
-(so a Windows receiver declines `CON.txt` or `a:b`), and every piece and status
-request rides the peer's one held connection. Pieces stage in
+(so a Windows receiver declines `CON.txt` or `a:b`, and 8.3 short-name shapes such as
+`KEEL-P~1`), and every piece and status request rides the peer's one held connection.
+Publishing refuses a name whose folder really (after links, junctions and short names)
+lies outside the inbox or inside a staging folder. Pieces stage in
 `<inbox>/.keel-partial-<key>/` (`<key>` from the device and drop id; hidden on Windows
 too) with a `meta.json` written once on accept and a line per published file in
-`published`, so a restarted receiver resumes when the sender re-offers the same files.
+`published` (synced to disk as each file lands), so a restarted receiver resumes when
+the sender re-offers the same files.
 Each file is verified and moved into the inbox only when complete, with a no-replace
 rename (`name (1).ext` when the name is taken, also when two drops land one name at
 once), emitting `NetEvent::DropReceived` and logging `net.drop-received` (drop id,

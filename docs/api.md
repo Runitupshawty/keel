@@ -13,7 +13,12 @@ Every operation has a stable name, JSON schemas for its parameters and result (g
 from the Rust types with `schemars`), and an example. Paths are strings: an absolute local
 path (`D:\Photos\a.jpg`, `/home/me/a.jpg`, `D:\x.zip!/inside.txt`) or a VPath URI
 (`library://<source id>/<path>`, `sftp://<host id>/<path>`, `cloud://<account id>/<path>`). Relative paths are refused: the
-daemon's working folder is not the caller's.
+daemon's working folder is not the caller's. The read operations (`list`, `stat`, `read`,
+`preview.render`, `media.thumb`, `file.get`) refuse anything inside Keel's configuration
+folder (the daemon token, keys; links, `..` and case are resolved first, library paths
+included) and, on Windows, UNC and device paths (`\\server\share`, `\\?\UNC\...`,
+`\\.\...`) outside the library's sources, since opening one sends the user's
+credentials to that server.
 
 ## Preview first
 
@@ -25,7 +30,7 @@ it validates its input and returns a `PlanPreview`:
   "plan_id": "5247b6c49c4b619d0012fe5fe04ea6db",
   "input_hash": "9c9fc3349e6b2e93b6a9cdebf373ecf2b2821f2992b2e541e8742788031166bf",
   "operation": "plan",
-  "summary": "Copy 1 item(s), 1 file(s), 6 bytes to D:\\dst",
+  "summary": "Copy 1 item(s) (D:\\src\\invoice.txt), 1 file(s), 6 bytes to D:\\dst",
   "changes": [{"action": "copy", "path": "D:\\src\\invoice.txt", "to": "D:\\dst\\invoice.txt", "files": 1, "bytes": 6}],
   "warnings": [{"kind": "not_indexed", "path": "D:\\src\\invoice.txt", "message": "…"}],
   "expires_at": 1791589924
@@ -38,8 +43,9 @@ expired (10 minutes) or was already executed, and, for file operations, when the
 changed since the preview (the error's `data` is the fresh preview to confirm instead).
 File operations run as jobs: `execute` returns `{"job": N}`; follow it with `jobs.info`.
 
-Only `sources.remove` and `shares.revoke` (taking something away) act directly; they
-return what they removed.
+File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
+more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
+revoked.
 
 ## Operations
 
@@ -48,11 +54,11 @@ return what they removed.
 | `version` | read | Keel version, API revision, open library, pid of the host |
 | `sources.list` | read | Library sources with status (online / indexing / offline / error) |
 | `sources.add` | preview | Add a folder, drive or share as a source |
-| `sources.remove` | direct | Forget a source (files untouched; `delete_store` drops its index) |
+| `sources.remove` | preview | Forget a source (files untouched; `delete_store` also deletes its index store): the preview states the store's size, tags and favorites (a `deletes_store` warning with `delete_store`) |
 | `sources.index` | preview | Index a source (a job) |
 | `list` | read | List a folder: `library://` paths from the index (offline too), others live |
 | `stat` | read | One entry, plus its library record, tags and favorite state |
-| `read` | read | A byte range of a file (`path`, `offset`, `len` up to 4 MiB), base64; library paths read the real file |
+| `read` | read | A byte range of a file (`path`, `offset`, `len` up to 4 MiB), base64; library paths read the real file. SFTP, cloud and device files are read from the offset (a ranged request); elsewhere (inside archives) an offset past 64 MiB is refused |
 | `preview.render` | read | The desktop previewers' output: `kind` `text` (code, Markdown, tables as TSV, documents, hex) or `image` (a PNG of at most `max_px` 64..2048, default 1024: images, a PDF `page`, a video frame), or `none` with a `message`; `content_id` when indexed (a cache key) |
 | `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed; made on first request, served from earlier sidecars when the source is offline |
 | `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
@@ -77,9 +83,13 @@ return what they removed.
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
 | `shares.revoke` | direct | Revoke a grant at once |
 
-Devices and shares need keel-net: `[net] enabled = true` in the profile's
-`config.toml` (`<config dir>/profiles/<profile>/config.toml`); otherwise they fail with
-`NET_DISABLED`. keel-daemon owns the profile's one node while it runs; without it, a CLI
+Devices and shares need keel-net: the window's Settings → Devices switch, written as
+`[devices] enabled = true` with `explicit = true` in the profile's `config.toml`
+(`<config dir>/profiles/<profile>/config.toml`); `[net] enabled = true` is read when
+`[devices]` has no explicit value. Otherwise they fail with `NET_DISABLED`. A
+configuration saved while Devices defaulted on (`enabled = true` without `explicit`) is
+treated as off, and the window switches it off once. `KEEL_NET_SECRET=memory` keeps the
+device identity in memory instead of the OS keychain (tests). keel-daemon owns the profile's one node while it runs; without it, a CLI
 or MCP session brings the node online itself, only for its first device or share call.
 
 Both hosts (the daemon and the in-process CLI) register the profile's SFTP hosts
@@ -88,7 +98,9 @@ secrets from the OS keychain, so `sftp://<host id>/…` and `cloud://<account id
 paths work and Share / Cloud sources can be listed and indexed. A host key that is not
 trusted yet is refused (there is no one to ask): connect once from the Keel window to
 trust it. Files extracted from archives go to `<data dir>/archives` (never the app's own
-cache). Serving
+cache). Other caches and temp folders (RAR extraction, SFTP, cloud and device downloads)
+live under `<KEEL_DATA_DIR>/cache` when that is set (`keel_vfs::cache_dir`). The data
+folder is created owner-only when the host creates it. Serving
 sources to peers arrives with the remote-source work (Task 36): until then a grant is
 recorded but the node offers no sources.
 
@@ -109,15 +121,16 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32004 | the sources changed since the preview; `data` is the new preview |
 | -32005 | devices are off (keel-net disabled) |
 | -32006 | the request timed out (the daemon answers within 120 s) |
-| -32007 | `--web`: a message before `auth`, or a wrong token (the connection closes) |
+| -32007 | `--web`: a message before `auth`, a wrong token or no `auth` within 10 s; `--ws`/`--web`: the token was rotated (the connection closes) |
 
 ## keel-daemon (JSON-RPC)
 
 ```
 keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT] [--web [127.0.0.1:PORT]] [--ws-allow-remote]
-                                # NAME: letters, digits, . _ -
+            [--web-host NAME]...  # NAME: letters, digits, . _ -
 keel-daemon --status            # exit 0 when one runs for the profile, 1 when not
 keel daemon start|stop|status   # the same from keel (start runs it in the background)
+keel daemon rotate-token        # a new token: clients sign in again
 ```
 
 The daemon opens the profile's library (`[library] name` in the profile's config.toml,
@@ -154,7 +167,10 @@ connection), `unsubscribe`, and `daemon.shutdown`.
 text frame. Every connection must send `Authorization: Bearer <token>`, the token in
 `<config dir>/daemon.token` (created on first use, owner-only: a protected DACL for the
 user alone on Windows, mode 0600 on Unix). A token file anybody else may read or change
-is replaced with a new token at start, since it may have been read or planted. Browsers
+is replaced with a new token at start, since it may have been read or planted. The daemon
+reads the file for each connection: `keel daemon rotate-token` writes a new token, new
+connections need it, and connections signed in with the old one get -32007 and are
+closed (within a few seconds). Browsers
 cannot set that header, so web pages cannot connect. The handshake (token check
 included) must be over within 5 s, and at most 64 connections are served at once; more
 are closed at once. Non-loopback addresses need
@@ -181,16 +197,19 @@ message must be `auth`** with the daemon token:
 
 Anything else first, a wrong token, or no `auth` within 10 s gets error -32007 and the
 connection closes (a native client may still send the `Authorization: Bearer` header
-instead). The token never travels in a URL: `/rpc` with a query string is refused (400).
+instead). Until `auth` succeeds a message (and frame) may be at most 4 KiB; a bigger one
+closes the connection. The token never travels in a URL: `/rpc` with a query string is refused (400).
 A WebSocket whose `Origin` is not this host is refused (403); on a loopback bind the
-`Host` header must be `localhost`, `127.0.0.1` or `[::1]` (403 otherwise, against DNS
-rebinding). Only `GET` is served. Every answer carries `Cache-Control: no-store`,
+`Host` header must be `localhost`, `127.0.0.1` or `[::1]`, and on a remote bind the bound
+IP or a name given with `--web-host` (403 otherwise, against DNS rebinding). Only `GET` is served. Every answer carries `Cache-Control: no-store`,
 `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`
 and `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
 connect-src 'self' ws://<host> wss://<host>; ...`. As on `--ws`, the request head
 (the WebSocket handshake on `/rpc`) must be in within 5 s, at most 64 connections are
 served at once (more are closed at once), and the `auth` rule above follows the
-handshake. Non-loopback addresses need `--ws-allow-remote`, exactly as `--ws`; there is
+handshake. Of the 64, at most 16 may be connections that have not signed in (or are
+fetching a page), and at most 8 may come from one remote address (loopback is not
+limited this way), so held connections cannot lock the user out. Non-loopback addresses need `--ws-allow-remote`, exactly as `--ws`; there is
 no TLS (a tailnet, or a TLS proxy).
 
 ## CLI
@@ -203,21 +222,24 @@ keel plan delete <paths…> [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel devices | keel shares
-keel daemon start|stop|status
+keel daemon start|stop|status|rotate-token
 keel mcp [--allow-execute]
 ```
 
 All take `--profile NAME` and `--json`; `--json` prints exactly one JSON document per
 invocation (`sources add` returns the source with its index job under `job`; a failure
 is `{"error": {"code", "message", "data"?}}`). Exit codes: 0 ok, 1 the operation failed,
-2 usage. A lone argument that names an existing folder opens that folder in the window
-even when it is a subcommand name (`keel search` where `search` is a folder); write
-`keel ./search` for the folder, and run a subcommand with any further argument or from
-another folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
+2 usage. Typed at a terminal, a lone argument that names an existing folder opens that
+folder in the window even when it is a subcommand name (`keel devices` where `devices` is
+a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
+subcommand; without a terminal (an agent starting `keel mcp`, a script) a name is never
+taken as a folder. `keel ./name` always means the folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
-job. Other mutating subcommands (`tag`, `sources add|index`) print the preview and
+job. Other mutating subcommands (`tag`, `sources add|remove|index`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the
-library folder (`api-plans.json`, owner-only; the hash covers everything a plan runs and is
+library folder (`api-plans.json`, owner-only; on Windows a file owned by the user, the
+token's default owner or Administrators, with a protected DACL naming only them and
+SYSTEM; the hash covers everything a plan runs and is
 checked again at `execute`, so a plan altered there is refused), so `keel plan` and a later `keel execute` work without
 a daemon too. Release builds on Windows are GUI programs that attach to the calling
 console, which does not wait for them: pipe the output (`keel … | more`, PowerShell
@@ -248,8 +270,9 @@ same session, and only after the user confirmed:
 - When the client cannot ask, `execute` is refused: show the user the preview and apply
   it with `keel execute <plan_id> --hash <input_hash>`. Starting the server with
   `keel mcp --allow-execute` lets such a client execute, but every call must pass the
-  preview's `summary` string exactly (`"summary": "Delete 1 item(s), …"`), so the
-  client's own tool-approval prompt shows what runs. Use it only with a client that
+  preview's `summary` string exactly (`"summary": "Delete 1 item(s) (D:\\old.iso), …"`;
+  file-plan summaries name the first three paths), so the client's own tool-approval
+  prompt shows what runs. Use it only with a client that
   prompts before each tool call.
 
 ```

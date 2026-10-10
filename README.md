@@ -100,7 +100,7 @@ With the library on, Keel tells you how safe your files are. Every source sits o
 
 ## Devices and Spacedrop
 
-Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Devices are off until you turn them on in Settings → Devices; that creates this device's identity, kept in the OS keychain. There you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`, or `<data dir>/inbox` without a Downloads folder) and which devices may send without asking.
+Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Devices are off until you turn them on in Settings → Devices; that creates this device's identity, kept in the OS keychain. (A configuration saved by an earlier 0.8 build, while Devices were on by default, is switched off once; turn them on again if you want them.) There you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`, or `<data dir>/inbox` without a Downloads folder) and which devices may send without asking.
 
 **Pair two devices.**
 
@@ -114,7 +114,7 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 
 **Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...` (the tab title shows the raw id for now). It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
 
-**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). Cancel from the jobs panel.
+**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). A drop that already arrived is remembered for an hour, so a sender that lost the last reply finishes without asking you again or sending a second copy. Cancel from the jobs panel; a prompt whose sender gave up or stopped asking goes away by itself.
 
 **Security model, in plain words.**
 
@@ -123,20 +123,20 @@ A code works for 10 minutes and for one pairing; showing a new code replaces the
 - Every request is checked against your current grants, so a revoked or narrowed share applies even on an open connection. Paths that try to escape the shared folder (`..`, symlinks and junctions, Windows device names) are refused.
 - Each peer is limited in connections and in concurrent requests, and a transfer that stalls is dropped after an idle timeout.
 - Only one process may own a device store at a time, so grants cannot be changed behind the owner's back.
-- Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land.
+- Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land. One device can have at most 4 offers waiting (16 from all devices); more are refused as busy.
 - Anyone holding a still-valid code can pair, so show it only to the person in front of you.
 
 Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
 
-Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain (tests and live checks; the device is new on every run and must pair again).
+Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain, in the window, `keel-daemon` and the `keel` subcommands alike (tests and live checks; the device is new on every run and must pair again).
 
 ## Daemon, CLI and MCP
 
 Everything the library can do is also a typed operation (29 of them: search, tags, favorites, sources, jobs, duplicates, redundancy, copy, move, delete and rename plans, devices and shares), reachable three ways: JSON-RPC from `keel-daemon`, `keel` subcommands, and an MCP server. The reference with schemas and examples is [docs/api.md](docs/api.md).
 
-**The preview-first rule.** A command that would change anything only returns a preview with a plan id and an input hash. `execute` applies exactly that plan; it refuses a wrong hash, a plan older than 10 minutes, and a plan whose sources changed in the meantime. Taking something away (`sources.remove`, `shares.revoke`) is the only thing done directly.
+**The preview-first rule.** A command that would change anything only returns a preview with a plan id and an input hash. `execute` applies exactly that plan; it refuses a wrong hash, a plan older than 10 minutes, and a plan whose sources changed in the meantime. Revoking a share (`shares.revoke`) is the only thing done directly; removing a source previews too, with what its index store holds (size, tags, favorites).
 
-**Start the daemon.** `keel daemon start` (or run `keel-daemon`) opens the profile's library in the background, resumes its jobs and listens on a per-user local socket (a named pipe on Windows) that only your user can reach; `keel daemon status` and `keel daemon stop` do what they say, and there is one daemon per profile. `keel-daemon --ws 127.0.0.1:7420` also serves a WebSocket that requires a bearer token from a file in the config folder. Devices need `[net] enabled = true` in the profile's `config.toml`. Without a daemon the subcommands open the library themselves, which works only while the Keel window is closed.
+**Start the daemon.** `keel daemon start` (or run `keel-daemon`) opens the profile's library in the background, resumes its jobs and listens on a per-user local socket (a named pipe on Windows) that only your user can reach; `keel daemon status` and `keel daemon stop` do what they say, and there is one daemon per profile. `keel-daemon --ws 127.0.0.1:7420` also serves a WebSocket that requires a bearer token from a file in the config folder; `keel daemon rotate-token` replaces it (clients sign in again, sessions with the old token are closed). Devices follow the window's Settings → Devices switch (`[devices] enabled` in the profile's `config.toml`). The read operations never open Keel's configuration folder, and on Windows they open network (UNC) paths only inside your library sources. Without a daemon the subcommands open the library themselves, which works only while the Keel window is closed.
 
 **One-liners.**
 
@@ -151,7 +151,7 @@ keel sources add ~/Photos --label photos
 keel daemon status
 ```
 
-`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag` and `keel sources add|index` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview.
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag` and `keel sources add|remove|index` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
 
 **MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
 
@@ -231,7 +231,9 @@ keel-daemon --web                   # http://127.0.0.1:7421/ (or --web 127.0.0.1
 
 **The token.** The first visit asks for the token in `daemon.token` in Keel's configuration folder on the daemon's machine (`%APPDATA%\Keel`, `~/Library/Application Support/Keel`, `~/.config/keel`, or `KEEL_CONFIG_DIR`). Tick **Remember on this device** to keep it in that browser's local storage; leave it off on a shared computer (it then lives only in the open tab). **Sign out** forgets it. The page sends the token as its first WebSocket message; it never goes in an address, and an address that carries one is refused and scrubbed from the address bar. Download links (`/file/...`) are one-time and expire after 60 seconds. Every page is served `no-store`, without referrers, under a same-origin content security policy; nothing is loaded from a CDN.
 
-**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). Anyone who can reach the port still needs the token. Keep loopback when you do not need it.
+**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). The page answers only to the bound IP; add `--web-host <name>` for each host name you use to reach it (a tailnet name, for example). Anyone who can reach the port still needs the token, and until they sign in a connection is held to small messages and few connections at once. Keep loopback when you do not need it.
+
+**Revoking access.** `keel daemon rotate-token` writes a new token: every browser and client signs in again, and sessions signed in with the old token are closed.
 
 ## Keyboard shortcuts
 
