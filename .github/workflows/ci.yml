@@ -173,8 +173,8 @@ jobs:
             libs: Everything64.dll pdfium.dll
             # Static CRT: keel.exe runs without the VC++ redistributable (VCRUNTIME140.dll).
             rustflags: -C target-feature=+crt-static
-            # GPL-3.0 (winfsp-rs): keel-daemon.exe ships under the GPL-3.0, see THIRD_PARTY.md.
-            mount: winfsp
+            # No mount backend: winfsp-rs is GPL-3.0 and the shipped daemon stays MIT/Apache.
+            # Build keel-daemon with --features winfsp from source for WinFsp mounts.
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64

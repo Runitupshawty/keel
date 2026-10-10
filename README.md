@@ -356,7 +356,7 @@ The source is given by id or label (`keel sources`). Mounts belong to the daemon
 | Build `keel-daemon` from source with | `--features winfsp` (needs LLVM/libclang for bindgen: `scripts/libclang.ps1`) | `--features fuse` | `--features fuse` (needs macFUSE and `pkg-config` at build time) |
 | Target | `K:` or a new folder | empty folder (made when missing) | empty folder (made when missing) |
 
-The Windows and Linux release builds of `keel-daemon` include the backend; install the driver to mount. Without the driver, `keel mount` fails with error -32008 and says what to install (the daemon itself starts and works as usual). The macOS release builds have no backend, because macFUSE (a kernel extension) cannot be installed on the build machines: build `keel-daemon` yourself with `--features fuse` after installing macFUSE (`cargo build --release -p keel-daemon --features fuse`). Note that the `winfsp` backend links winfsp-rs, which is GPL-3.0 licensed: the Windows release's `keel-daemon.exe` is therefore distributed under the GPL-3.0 (its license text is in `licenses/winfsp-rs/COPYING`, the source is this repository at the release's tag; see [THIRD_PARTY.md](THIRD_PARTY.md)). `keel.exe` does not include it and stays MIT or Apache-2.0.
+The Linux release build of `keel-daemon` includes the FUSE backend; install `fuse3` to mount. The Windows and macOS builds include no backend: winfsp-rs is GPL-3.0, so the shipped daemon stays MIT/Apache (build `keel-daemon` from source with `--features winfsp`, which needs the WinFsp driver to mount), and macFUSE cannot be installed on the build machines. Without the driver or the backend, `keel mount` fails with error -32008 and says what to install or build.
 
 What a mount does:
 
