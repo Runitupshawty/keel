@@ -1,8 +1,11 @@
 //! JSON-RPC over a WebSocket (`--ws`): off by default, loopback only unless
 //! `--ws-allow-remote`, and every connection must send `Authorization: Bearer <token>`
-//! with the token from `<config dir>/daemon.token` (created owner-only on first use).
-//! Browsers cannot set that header on a WebSocket, so web pages cannot connect. No TLS:
-//! a remote bind should sit behind a TLS proxy or a private network.
+//! with the token from `<config dir>/daemon.token` (owner-only: `keel_api::private`).
+//! Browsers cannot set that header on a WebSocket, so web pages cannot connect here
+//! (`--web` serves them, with the token as the first message: [`run`]). No TLS: a remote
+//! bind should sit behind a TLS proxy or a private network. At most `MAX_CONNECTIONS`
+//! connections are served at once (more are closed at once), and the handshake must be
+//! over within `HANDSHAKE_WAIT`.
 
 use crate::server::{Session, Shared};
 use keel_api::{rpc, ApiError};
@@ -10,27 +13,43 @@ use serde_json::{json, Value};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tungstenite::handshake::HandshakeError;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
-/// The handshake must finish within this.
+/// The whole handshake (the token check included) must be over within this; `--web`
+/// uses it for the request head.
 pub(crate) const HANDSHAKE_WAIT: Duration = Duration::from_secs(5);
+/// Connections served at once by one listener (`--ws` or `--web`), handshakes included.
+pub(crate) const MAX_CONNECTIONS: usize = 64;
 /// A browser connection must authenticate within this.
 const AUTH_WAIT: Duration = Duration::from_secs(10);
+/// Each write must go through within this.
+pub(crate) const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// How often an idle connection checks for notifications.
 const POLL: Duration = Duration::from_millis(100);
 
-/// The bearer token in `path`, created (32 random bytes, hex, owner-only) when missing.
+/// The bearer token in `path`: 32 random bytes, hex, in an owner-only file. A missing
+/// token, or one in a file anybody else may read or change (it could have been planted
+/// or read), is replaced by a new one.
 pub fn token(path: &Path) -> io::Result<String> {
-    if let Ok(t) = std::fs::read_to_string(path) {
-        let t = t.trim();
-        if t.len() >= 32 {
-            return Ok(t.to_owned());
+    match keel_api::private::read(path) {
+        Ok(Some(t)) => {
+            let t = String::from_utf8_lossy(&t);
+            if t.trim().len() >= 32 {
+                return Ok(t.trim().to_owned());
+            }
         }
+        Ok(None) => tracing::warn!(
+            "{} may be read or changed by others: replacing the token",
+            path.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -38,17 +57,24 @@ pub fn token(path: &Path) -> io::Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    io::Write::write_all(&mut opts.open(path)?, token.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    keel_api::private::write(path, token.as_bytes())?;
     Ok(token)
+}
+
+/// One of a listener's `MAX_CONNECTIONS`; given back on drop.
+pub(crate) struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    pub(crate) fn take(count: &Arc<AtomicUsize>) -> Option<Slot> {
+        let slot = Slot(count.clone());
+        (count.fetch_add(1, Ordering::AcqRel) < MAX_CONNECTIONS).then_some(slot)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
@@ -66,6 +92,7 @@ pub(crate) fn serve(
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
     let s = shared.clone();
+    let count = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("keel-daemon-ws".into())
         .spawn(move || {
@@ -74,10 +101,15 @@ pub(crate) fn serve(
                     break;
                 }
                 let Ok(stream) = stream else { continue };
+                let Some(slot) = Slot::take(&count) else {
+                    tracing::debug!("websocket: over {MAX_CONNECTIONS} connections, dropped");
+                    continue; // dropping `stream` closes it
+                };
                 let (s, token) = (s.clone(), token.clone());
                 let _ = std::thread::Builder::new()
                     .name("keel-daemon-ws-client".into())
                     .spawn(move || {
+                        let _slot = slot;
                         if let Err(e) = client(&s, stream, &token) {
                             tracing::debug!("websocket client: {e}");
                         }
@@ -91,8 +123,10 @@ pub(crate) fn serve(
 // tungstenite's handshake callback returns its (large) http response as the error.
 #[allow(clippy::result_large_err)]
 fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Result<()> {
-    stream.set_read_timeout(Some(HANDSHAKE_WAIT))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    // Non-blocking until the handshake is over, so its deadline holds however slowly the
+    // client sends (a per-read timeout restarts with every byte).
+    stream.set_nonblocking(true)?;
+    let deadline = Instant::now() + HANDSHAKE_WAIT;
     let expected = format!("Bearer {token}");
     let check = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         let given = req
@@ -108,8 +142,20 @@ fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Resul
             Err(refused)
         }
     };
-    let config = config();
-    let mut ws = tungstenite::accept_hdr_with_config(stream, check, Some(config))?;
+    let mut shake = tungstenite::accept_hdr_with_config(stream, check, Some(config()));
+    let mut ws = loop {
+        match shake {
+            Ok(ws) => break ws,
+            Err(HandshakeError::Interrupted(mid)) => {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("no handshake within {HANDSHAKE_WAIT:?}");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                shake = mid.handshake();
+            }
+            Err(HandshakeError::Failure(e)) => return Err(e.into()),
+        }
+    };
     run(shared, &mut ws, None)
 }
 
@@ -120,15 +166,18 @@ pub(crate) fn config() -> WebSocketConfig {
         .max_frame_size(Some(rpc::MAX_REQUEST))
 }
 
-/// Answers JSON-RPC on `ws` until it closes. `need_auth`: the first message must be
-/// `auth` with this token (else the answer is an error and the connection closes), and it
-/// must come within `AUTH_WAIT`.
+/// Answers JSON-RPC on `ws` (handshake done) until it closes: blocking again, reads poll
+/// every `POLL`, writes time out after `WRITE_WAIT`. `need_auth`: the first message must
+/// be `auth` with this token (else the answer is an error and the connection closes), and
+/// it must come within `AUTH_WAIT`.
 pub(crate) fn run(
     shared: &Arc<Shared>,
     ws: &mut WebSocket<TcpStream>,
     mut need_auth: Option<&str>,
 ) -> anyhow::Result<()> {
+    ws.get_ref().set_nonblocking(false)?;
     ws.get_ref().set_read_timeout(Some(POLL))?;
+    ws.get_ref().set_write_timeout(Some(WRITE_WAIT))?;
     let auth_by = Instant::now() + AUTH_WAIT;
     let mut session = Session::default();
     let result = loop {

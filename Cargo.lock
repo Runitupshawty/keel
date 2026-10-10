@@ -4456,6 +4456,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "widestring",
+ "windows 0.58.0",
 ]
 
 [[package]]

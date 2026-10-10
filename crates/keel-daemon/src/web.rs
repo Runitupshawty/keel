@@ -10,17 +10,19 @@
 //!
 //! Every answer is `no-store` with `Referrer-Policy: no-referrer` and a CSP that allows
 //! only this origin (no CDN, no external fonts). On a loopback bind the `Host` header must
-//! name a loopback host (DNS rebinding); a cross-origin WebSocket is refused. No TLS: put a
-//! remote bind behind a TLS proxy or a private network (a tailnet).
+//! name a loopback host (DNS rebinding); a cross-origin WebSocket is refused. As on `--ws`
+//! (`crate::ws`), the request head must be in within `HANDSHAKE_WAIT` in all, at most
+//! `MAX_CONNECTIONS` are served at once and writes time out after `WRITE_WAIT`. No TLS:
+//! put a remote bind behind a TLS proxy or a private network (a tailnet).
 
 use crate::server::Shared;
 use crate::ws;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::protocol::Role;
 use tungstenite::WebSocket;
 
@@ -45,6 +47,7 @@ pub(crate) fn serve(
     let bound = listener.local_addr()?;
     let loopback = addr.ip().is_loopback();
     let s = shared.clone();
+    let count = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("keel-daemon-web".into())
         .spawn(move || {
@@ -53,10 +56,15 @@ pub(crate) fn serve(
                     break;
                 }
                 let Ok(stream) = stream else { continue };
+                let Some(slot) = ws::Slot::take(&count) else {
+                    tracing::debug!("web: over {} connections, dropped", ws::MAX_CONNECTIONS);
+                    continue; // dropping `stream` closes it
+                };
                 let (s, token) = (s.clone(), token.clone());
                 let _ = std::thread::Builder::new()
                     .name("keel-daemon-web-client".into())
                     .spawn(move || {
+                        let _slot = slot;
                         if let Err(e) = client(&s, stream, &token, loopback) {
                             tracing::debug!("web client: {e}");
                         }
@@ -83,15 +91,26 @@ impl Head {
     }
 }
 
-/// Reads and parses a request head (GET requests have no body).
-fn read_head(stream: &mut TcpStream) -> io::Result<Option<Head>> {
+/// Reads and parses a request head (GET requests have no body), all of it by `deadline`:
+/// non-blocking, so a client dripping bytes cannot stretch it (a per-read timeout restarts
+/// with every byte). Leaves the stream non-blocking; the caller makes it blocking again.
+fn read_head(stream: &mut TcpStream, deadline: Instant) -> io::Result<Option<Head>> {
+    stream.set_nonblocking(true)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
         if buf.len() > MAX_HEAD {
             return Ok(None);
         }
-        let n = stream.read(&mut chunk)?;
+        let n = match stream.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                crate::server::time_left(deadline)?;
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             return Ok(None);
         }
@@ -215,9 +234,10 @@ fn client(
     token: &str,
     loopback: bool,
 ) -> anyhow::Result<()> {
-    stream.set_read_timeout(Some(ws::HANDSHAKE_WAIT))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let Some(head) = read_head(&mut stream)? else {
+    let head = read_head(&mut stream, Instant::now() + ws::HANDSHAKE_WAIT)?;
+    stream.set_nonblocking(false)?;
+    stream.set_write_timeout(Some(ws::WRITE_WAIT))?;
+    let Some(head) = head else {
         return refuse(&mut stream, "400 Bad Request", "localhost", "bad request");
     };
     let host = head.header("host").unwrap_or_default().to_owned();

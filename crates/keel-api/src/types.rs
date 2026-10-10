@@ -403,6 +403,42 @@ pub struct PlanPreview {
     pub expires_at: i64,
 }
 
+impl PlanPreview {
+    /// The summary, then up to `max_changes` changes (one per line) and every warning: what
+    /// a person confirms.
+    pub fn describe(&self, max_changes: usize) -> String {
+        let mut text = format!("{}\n", self.summary);
+        for c in self.changes.iter().take(max_changes) {
+            text.push_str(&format!(
+                "  {:<8} {}",
+                c.action,
+                c.path.as_deref().unwrap_or("")
+            ));
+            if let Some(to) = &c.to {
+                text.push_str(&format!(" -> {to}"));
+            }
+            if let (Some(files), Some(bytes)) = (c.files, c.bytes) {
+                text.push_str(&format!("  ({files} file(s), {bytes} bytes)"));
+            }
+            if let Some(d) = &c.detail {
+                text.push_str(&format!("  [{d}]"));
+            }
+            text.push('\n');
+        }
+        if self.changes.len() > max_changes {
+            let more = self.changes.len() - max_changes;
+            text.push_str(&format!("  ... and {more} more\n"));
+        }
+        if !self.warnings.is_empty() {
+            text.push_str("Warnings:\n");
+            for w in &self.warnings {
+                text.push_str(&format!("  ! {}\n", w.message));
+            }
+        }
+        text
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecuteParams {

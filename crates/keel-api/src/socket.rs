@@ -8,26 +8,94 @@
 
 use interprocess::local_socket::{prelude::*, ListenerOptions, Name, Stream};
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::time::Duration;
 
 pub use interprocess::local_socket::Listener;
 
-/// `<prefix>-<hash of user and key>`: per user, and per profile (the key). Both are hashed
-/// (FNV-1a, stable across builds): user names may be anything (non-ASCII, spaces), and a
-/// Unix socket path must stay short.
+/// `<prefix>-<hash of the user's SID (Windows) or uid (Unix) and key>`: per user, and per
+/// profile (the key). Hashed (FNV-1a, stable across builds) so a Unix socket path stays
+/// short.
 pub fn name(prefix: &str, key: &str) -> String {
-    let user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default();
-    name_for(prefix, &user, key)
+    name_for(prefix, &user_id(), key)
+}
+
+/// As [`name`], salted with this user's random `socket.salt` in `config_dir` (created
+/// owner-only on first use): another local user cannot predict the name, so cannot take
+/// it first.
+pub fn salted_name(prefix: &str, key: &str, config_dir: &Path) -> String {
+    salted_name_for(prefix, &user_id(), &salt(config_dir), key)
 }
 
 pub fn name_for(prefix: &str, user: &str, key: &str) -> String {
+    salted_name_for(prefix, user, "", key)
+}
+
+pub fn salted_name_for(prefix: &str, user: &str, salt: &str, key: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in user.bytes().chain([0]).chain(key.bytes()) {
+    let bytes = user.bytes().chain([0]).chain(salt.bytes()).chain([0]);
+    for b in bytes.chain(key.bytes()) {
         hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
     }
     format!("{prefix}-{hash:016x}")
+}
+
+/// The user's SID / uid (never an environment variable another process could set).
+fn user_id() -> String {
+    #[cfg(windows)]
+    let id = keel_vfs::pipe::user_sid().unwrap_or_else(|e| {
+        tracing::warn!("no user SID: {e}");
+        String::new()
+    });
+    #[cfg(unix)]
+    let id = unsafe { libc::geteuid() }.to_string();
+    id
+}
+
+/// The 128-bit hex salt in `<dir>/socket.salt`, created when missing; one that others may
+/// access (or a damaged one) is replaced. Empty when none can be had (every process of
+/// the user then agrees on the unsalted name).
+fn salt(dir: &Path) -> String {
+    let path = dir.join("socket.salt");
+    for _ in 0..40 {
+        match crate::private::read(&path) {
+            Ok(Some(s)) if s.len() == 32 && s.iter().all(u8::is_ascii_hexdigit) => {
+                return String::from_utf8_lossy(&s).into_owned();
+            }
+            // Another process created it and is about to write it.
+            Ok(Some(s)) if s.is_empty() => {
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            Ok(_) => {
+                tracing::warn!("{} is damaged or not private: replacing it", path.display());
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!("{}: {e}", path.display());
+                return String::new();
+            }
+        }
+        let _ = std::fs::create_dir_all(dir);
+        match crate::private::create_new(&path) {
+            Ok(mut f) => {
+                let Ok(salt) = crate::plans::random_id() else {
+                    return String::new();
+                };
+                return match f.write_all(salt.as_bytes()) {
+                    Ok(()) => salt,
+                    Err(_) => String::new(),
+                };
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                tracing::warn!("{}: {e}", path.display());
+                return String::new();
+            }
+        }
+    }
+    String::new()
 }
 
 /// Windows: a named pipe (its namespace refuses a second listener). Unix: a socket file in
@@ -202,10 +270,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_are_per_user_and_key() {
-        assert_eq!(name_for("p", "james", "a"), name_for("p", "james", "a"));
-        assert_ne!(name_for("p", "james", "a"), name_for("p", "jim", "a"));
-        assert_ne!(name_for("p", "james", "a"), name_for("q", "james", "a"));
+    fn names_are_per_user_salt_and_key() {
+        let n = |prefix, user, salt, key| salted_name_for(prefix, user, salt, key);
+        assert_eq!(
+            n("p", "S-1-5-21-1", "s", "a"),
+            n("p", "S-1-5-21-1", "s", "a")
+        );
+        assert_ne!(
+            n("p", "S-1-5-21-1", "s", "a"),
+            n("p", "S-1-5-21-2", "s", "a")
+        );
+        assert_ne!(
+            n("p", "S-1-5-21-1", "s", "a"),
+            n("p", "S-1-5-21-1", "t", "a")
+        );
+        assert_ne!(
+            n("p", "S-1-5-21-1", "s", "a"),
+            n("p", "S-1-5-21-1", "s", "b")
+        );
+        assert_ne!(
+            n("p", "S-1-5-21-1", "s", "a"),
+            n("q", "S-1-5-21-1", "s", "a")
+        );
+        assert_ne!(
+            n("p", "u", "sa", "b"),
+            n("p", "u", "s", "ab"),
+            "fields are separated"
+        );
+        assert_eq!(n("keel", "x", "", "y"), name_for("keel", "x", "y"));
         assert_eq!(name_for("keel", "x", "y").len(), 21);
+        assert!(!user_id().is_empty());
+    }
+
+    #[test]
+    fn the_salt_is_random_private_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = salted_name("p", "k", dir.path());
+        assert_eq!(a, salted_name("p", "k", dir.path()), "kept");
+        let salt = std::fs::read_to_string(dir.path().join("socket.salt")).unwrap();
+        assert_eq!(salt.len(), 32);
+        assert!(crate::private::read(&dir.path().join("socket.salt"))
+            .unwrap()
+            .is_some());
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(a, salted_name("p", "k", other.path()), "per salt");
+        assert_ne!(a, name("p", "k"));
+        // A salt others could read or have planted is replaced.
+        let planted = tempfile::tempdir().unwrap();
+        std::fs::write(planted.path().join("socket.salt"), &salt).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::Permissions::from_mode(0o644);
+            std::fs::set_permissions(planted.path().join("socket.salt"), perm).unwrap();
+        }
+        assert_ne!(a, salted_name("p", "k", planted.path()));
     }
 }

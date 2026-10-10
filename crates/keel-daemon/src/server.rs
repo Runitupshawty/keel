@@ -15,15 +15,15 @@ use crossbeam_channel::{Receiver, Sender};
 use interprocess::local_socket::{prelude::*, Stream};
 use keel_api::config::HostConfig;
 use keel_api::host::{Host, NetSetup};
-use keel_api::rpc::{self, Request};
+use keel_api::rpc::{self, Line, Request};
 use keel_api::{socket, ApiError, Ctx};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Once a request has started, the rest of it must arrive within this.
 pub const READ_WAIT: Duration = Duration::from_secs(30);
@@ -341,23 +341,25 @@ fn pump(shared: &Arc<Shared>) {
         });
 }
 
-enum Got {
-    Line(Vec<u8>),
-    TooLarge,
-    Eof,
-}
-
-/// Reads one request: waits as long as it takes for its first byte, then `READ_WAIT` for
-/// the rest. Over `MAX_REQUEST`: reads on to the end of the line and reports `TooLarge`.
-fn read_request(reader: &mut BufReader<&Stream>, conn: &Stream) -> io::Result<Got> {
+/// Reads one request: waits as long as it takes for its first byte, then `READ_WAIT` in
+/// all for the rest (checked before every read; on Unix each read also times out when the
+/// time is up, on Windows a watchdog cancels it). Over `MAX_REQUEST`: reads on to the end
+/// of the line and reports `TooLarge`.
+fn read_request(reader: &mut BufReader<&Stream>, conn: &Stream) -> io::Result<Line> {
     if reader.fill_buf()?.is_empty() {
-        return Ok(Got::Eof);
+        return Ok(Line::Eof);
     }
     #[cfg(windows)]
     let _watchdog = socket::Watchdog::arm(conn, READ_WAIT);
-    #[cfg(unix)]
-    conn.set_recv_timeout(Some(READ_WAIT))?;
-    let got = read_line(reader);
+    let deadline = Instant::now() + READ_WAIT;
+    let got = rpc::read_line(reader, || {
+        let left = time_left(deadline)?;
+        #[cfg(unix)]
+        conn.set_recv_timeout(Some(left))?;
+        #[cfg(windows)]
+        let _ = left;
+        Ok(())
+    });
     #[cfg(unix)]
     conn.set_recv_timeout(None)?;
     #[cfg(windows)]
@@ -365,35 +367,14 @@ fn read_request(reader: &mut BufReader<&Stream>, conn: &Stream) -> io::Result<Go
     got
 }
 
-fn read_line(reader: &mut impl BufRead) -> io::Result<Got> {
-    let mut line = Vec::new();
-    reader
-        .by_ref()
-        .take(rpc::MAX_REQUEST as u64 + 1)
-        .read_until(b'\n', &mut line)?;
-    if line.ends_with(b"\n") {
-        line.pop();
-        return Ok(Got::Line(line));
-    }
-    if line.len() <= rpc::MAX_REQUEST {
-        return Ok(Got::Eof); // closed mid-request
-    }
-    drop(line);
-    loop {
-        let buf = reader.fill_buf()?;
-        if buf.is_empty() {
-            return Ok(Got::Eof);
-        }
-        match buf.iter().position(|&b| b == b'\n') {
-            Some(i) => {
-                reader.consume(i + 1);
-                return Ok(Got::TooLarge);
-            }
-            None => {
-                let n = buf.len();
-                reader.consume(n);
-            }
-        }
+/// The time left until `deadline`; TimedOut once it has passed.
+pub(crate) fn time_left(deadline: Instant) -> io::Result<Duration> {
+    match deadline.saturating_duration_since(Instant::now()) {
+        left if left.is_zero() => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the request did not arrive in time",
+        )),
+        left => Ok(left),
     }
 }
 
@@ -430,11 +411,11 @@ fn serve(shared: &Arc<Shared>, conn: Stream) {
             break;
         }
         let answer = match read_request(&mut reader, &out.conn) {
-            Ok(Got::Line(line)) => {
+            Ok(Line::Line(line)) => {
                 rpc::handle(&line, &mut |req| shared.dispatch(req, &mut session))
             }
-            Ok(Got::TooLarge) => Some(rpc::too_large()),
-            Ok(Got::Eof) => break,
+            Ok(Line::TooLarge) => Some(rpc::too_large()),
+            Ok(Line::Eof) => break,
             Err(e) => {
                 tracing::debug!("client read: {e}");
                 break;
