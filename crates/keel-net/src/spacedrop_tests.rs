@@ -656,7 +656,7 @@ fn an_answer_holds_for_one_device_id_and_file_list_only() {
         raw(&pair, Request::DropStatus { id: id.into() }),
         Response::Denied(_)
     ));
-    // A completed drop forgets its answer: the same id again asks again.
+    // A declined offer forgets its answer: the same id again asks again.
     assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Pending);
     held.lock().pop().unwrap().reply.answer(true);
     assert_eq!(
@@ -664,6 +664,27 @@ fn an_answer_holds_for_one_device_id_and_file_list_only() {
         Response::Ok
     );
     assert_eq!(put(&pair, id, "a.txt", b"a"), Response::Ok);
+    // A completed drop answers Ok from its record (a sender that lost the last reply):
+    // no prompt, nothing to send again.
+    assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Ok);
+    assert!(held.lock().is_empty(), "not asked again");
+    assert_eq!(
+        raw(&pair, Request::DropStatus { id: id.into() }),
+        Response::Ok
+    );
+    let partial = Request::StatPartial {
+        source: format!("drop:{id}"),
+        path: "a.txt".into(),
+    };
+    assert!(
+        matches!(
+            raw(&pair, partial),
+            Response::Partial { complete: true, .. }
+        ),
+        "complete"
+    );
+    assert!(matches!(put(&pair, id, "a.txt", b"a"), Response::Denied(_)));
+    assert_eq!(names(inbox.path()), ["a.txt"], "no a (1).txt, no staging");
     assert_eq!(offer(&pair, id, &[("payload.exe", 7)]), Response::Pending);
     assert!(matches!(
         put(&pair, id, "payload.exe", b"payload"),
@@ -815,7 +836,18 @@ fn two_thousand_files_arrive_in_linear_time() {
         };
         assert!(matches!(raw(&pair, status), Response::Partial { .. }));
     }
-    let budget = Duration::from_secs(3).max(floor.elapsed() * 3);
+    // Plus one fsync per file (the `published` marker is synced as each file lands).
+    let synced = Instant::now();
+    let mut marker = std::fs::File::create(inbox.path().join("sync-probe")).unwrap();
+    for _ in 0..200 {
+        use std::io::Write;
+        marker.write_all(b"1\n").unwrap();
+        marker.sync_all().unwrap();
+    }
+    drop(marker);
+    std::fs::remove_file(inbox.path().join("sync-probe")).unwrap();
+    let fsyncs = synced.elapsed() * 10;
+    let budget = Duration::from_secs(3).max(floor.elapsed() * 3) + fsyncs;
     let started = Instant::now();
     send(&files[..1000]);
     let first = started.elapsed();
@@ -1025,4 +1057,133 @@ fn received_files_and_pairings_are_never_dropped_from_events() {
     pair.host.emit_request(guest, "stat");
     assert_eq!(rest.try_iter().count(), 0, "within the same second");
     pair.close();
+}
+
+#[test]
+fn offers_per_device_are_capped() {
+    let pair = pair();
+    let inbox = tempfile::tempdir().unwrap();
+    let held = hold(&pair, inbox.path());
+    let ids: Vec<String> = (0..=spacedrop::PENDING_PER_DEVICE)
+        .map(|i| format!("{i:032x}"))
+        .collect();
+    for id in &ids[..spacedrop::PENDING_PER_DEVICE] {
+        assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Pending);
+    }
+    let last = &ids[spacedrop::PENDING_PER_DEVICE];
+    assert_eq!(
+        offer(&pair, last, &[("a.txt", 1)]),
+        Response::Denied("busy".into())
+    );
+    assert_eq!(
+        held.lock().len(),
+        spacedrop::PENDING_PER_DEVICE,
+        "no prompt"
+    );
+    // A re-offer of a waiting one is not a new offer.
+    assert_eq!(offer(&pair, &ids[0], &[("a.txt", 1)]), Response::Pending);
+    // One answered: room for another.
+    held.lock().remove(0).reply.answer(false);
+    assert!(matches!(
+        raw(&pair, Request::DropStatus { id: ids[0].clone() }),
+        Response::Denied(_)
+    ));
+    assert_eq!(offer(&pair, last, &[("a.txt", 1)]), Response::Pending);
+    pair.close();
+}
+
+#[test]
+fn an_offer_its_sender_stopped_polling_is_withdrawn() {
+    let wait = Duration::from_millis(400);
+    let pair = crate::library_tests::pair_with(NodeOptions {
+        drop_answer_wait: wait,
+        ..NodeOptions::offline()
+    });
+    let inbox = tempfile::tempdir().unwrap();
+    let held = hold(&pair, inbox.path());
+    let id = "abababababababababababababababab";
+    assert_eq!(offer(&pair, id, &[("a.txt", 1)]), Response::Pending);
+    // Polled: kept past the wait.
+    let polled_until = Instant::now() + wait * 3;
+    while Instant::now() < polled_until {
+        assert_eq!(
+            raw(&pair, Request::DropStatus { id: id.into() }),
+            Response::Pending
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let prompt = held.lock().pop().unwrap();
+    assert!(!prompt.reply.withdrawn());
+    // Not polled: withdrawn, the prompt goes.
+    wait_for("the withdrawal", || prompt.reply.withdrawn());
+    assert!(matches!(
+        raw(&pair, Request::DropStatus { id: id.into() }),
+        Response::Error(_)
+    ));
+    pair.close();
+}
+
+#[test]
+fn invalid_offers_and_staging_failures_are_denied_for_good() {
+    let pair = pair();
+    let inbox = tempfile::tempdir().unwrap();
+    // An inbox that cannot hold a staging folder (it is a file).
+    let not_a_folder = inbox.path().join("file");
+    std::fs::write(&not_a_folder, b"x").unwrap();
+    pair.handler
+        .on_drop(not_a_folder, |d: IncomingDrop| d.reply.answer(true));
+    let id = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+    let denied = |r: Response, why: &str| match r {
+        Response::Denied(m) => assert!(m.contains(why), "{m}"),
+        r => panic!("{r:?}"),
+    };
+    denied(offer(&pair, id, &[("../x", 1)]), "invalid");
+    denied(offer(&pair, id, &[("a.txt", 1)]), "stage");
+    if cfg!(windows) {
+        // 8.3 short names (a staging folder's is `KEEL-P~1`) are refused on Windows.
+        denied(offer(&pair, id, &[("KEEL-P~1/published", 1)]), "invalid");
+    }
+    pair.close();
+}
+
+#[test]
+fn publishing_refuses_a_folder_that_leads_into_staging() {
+    let inbox = tempfile::tempdir().unwrap();
+    let staging = inbox.path().join(".keel-partial-0123");
+    std::fs::create_dir(&staging).unwrap();
+    let file = inbox.path().join("piece");
+    std::fs::write(&file, b"x").unwrap();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&staging, inbox.path().join("door"));
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&staging, inbox.path().join("door"));
+    if linked.is_err() {
+        eprintln!("no symlinks here (Windows without developer mode); skipped");
+        return;
+    }
+    let err = spacedrop::publish(&file, inbox.path(), "door/published").unwrap_err();
+    assert!(format!("{err:#}").contains("staging"), "{err:#}");
+    assert!(!staging.join("published").exists());
+    assert!(spacedrop::publish(&file, inbox.path(), "ok/piece").is_ok());
+}
+
+#[test]
+fn the_op_log_is_written_out_on_close() {
+    let pair = pair();
+    let ctx = RequestCtx {
+        peer: PeerId(pair.guest.id()),
+        label: "Desk".into(),
+    };
+    for i in 0..50 {
+        pair.handler
+            .log(&ctx, "probe", serde_json::json!({ "n": i }), true);
+    }
+    pair.rt.block_on(pair.host.close());
+    let log = pair.lib.op_log(1000).unwrap();
+    assert_eq!(
+        log.iter().filter(|e| e.kind == "net.probe").count(),
+        50,
+        "all written by the time close returns"
+    );
+    pair.rt.block_on(pair.guest.close());
 }

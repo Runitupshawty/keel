@@ -32,6 +32,9 @@ pub struct NodeOptions {
     pub bind_addr: Option<SocketAddr>,
     pub relay_only: bool,
     pub request_timeout: Duration,
+    /// Spacedrop: an offer whose sender stopped asking (`DropStatus`) for this long is
+    /// withdrawn (its prompt taken down).
+    pub drop_answer_wait: Duration,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -41,6 +44,7 @@ impl Default for NodeOptions {
             bind_addr: None,
             relay_only: false,
             request_timeout: Duration::from_secs(20),
+            drop_answer_wait: crate::spacedrop::GIVE_UP,
         }
     }
 }
@@ -62,6 +66,7 @@ impl NodeOptions {
             bind_addr: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
             relay_only: false,
             request_timeout: Duration::from_secs(3),
+            drop_answer_wait: crate::spacedrop::GIVE_UP,
         }
     }
     pub(crate) fn builder(&self, key: SecretKey) -> Result<Builder> {
@@ -493,6 +498,8 @@ impl Node {
         self.endpoint.close().await;
         self.tasks.close();
         self.tasks.wait().await;
+        let handler = self.handler.clone();
+        let _ = tokio::task::spawn_blocking(move || handler.close()).await;
         // Persist last_seen and release the directory lock.
         if let Some(mut store) = self.store.lock().take() {
             let seen = self.state.lock().last_seen();

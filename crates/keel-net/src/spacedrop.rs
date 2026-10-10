@@ -14,6 +14,13 @@
 //!
 //! Receiver: the node hands the offer to its `Handler::drop_offer`, which names the inbox
 //! and passes the reply on. An answer holds for that device, drop id and file list only.
+//! At most `PENDING_PER_DEVICE` offers of one device (`PENDING_TOTAL` in all) wait for an
+//! answer; more are refused (`Denied("busy")`), and an offer its sender stopped polling
+//! for `NodeOptions::drop_answer_wait` is withdrawn. A completed drop is remembered for
+//! `DONE_KEEP`: a re-offer of the same list, `DropStatus` and `StatPartial` answer from
+//! it, so a lost reply to the last piece never asks again or sends the file twice.
+//! Offers the receiver cannot take (an invalid name, a staging failure) are `Denied`
+//! with the reason: retrying cannot help.
 //! Pieces are staged in `<inbox>/.keel-partial-<key>/<n>` (`meta.json` written once, and a
 //! line per published file in `published`, so a restarted receiver resumes when the sender
 //! re-offers); a file is moved into the inbox only when complete and verified, never
@@ -44,6 +51,12 @@ pub const GIVE_UP: Duration = Duration::from_secs(10 * 60);
 /// Request source prefix for drop pieces.
 pub(crate) const SOURCE: &str = "drop:";
 const MAX_FILES: usize = 100_000;
+/// Offers of one device waiting for the user (or being staged) at once.
+pub const PENDING_PER_DEVICE: usize = 4;
+/// Offers waiting at once, all devices together.
+pub const PENDING_TOTAL: usize = 16;
+/// How long a completed drop is remembered (a sender that lost the last reply resumes).
+pub const DONE_KEEP: Duration = Duration::from_secs(60 * 60);
 
 /// Open nodes by id, for jobs restored from a checkpoint (one node per identity).
 type Nodes = HashMap<NodeId, (Weak<Node>, Handle)>;
@@ -98,6 +111,30 @@ fn valid_rel(rel: &str) -> bool {
             .any(|part| part.starts_with(".keel-partial-"))
 }
 
+/// An 8.3 short name (`KEEL-P~1`, `PROGRA~1.TXT`): Windows resolves one to another
+/// entry's long name (a staging folder's, say), so a Windows receiver refuses the shape.
+fn short_name(part: &str) -> bool {
+    let (base, ext) = part.rsplit_once('.').unwrap_or((part, ""));
+    let Some((stem, n)) = base.rsplit_once('~') else {
+        return false;
+    };
+    (1..=6).contains(&stem.len())
+        && (1..=6).contains(&n.len())
+        && n.bytes().all(|b| b.is_ascii_digit())
+        && ext.len() <= 3
+}
+
+/// What a completed drop remembers of its file list.
+fn list_hash(files: &[(String, u64)]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    for (p, n) in files {
+        h.update(p.as_bytes());
+        h.update(&[0]);
+        h.update(&n.to_le_bytes());
+    }
+    *h.finalize().as_bytes()
+}
+
 // ---- receiver ----
 
 /// Offers by device, then drop id: a decision is the device's and that file list's only.
@@ -112,19 +149,53 @@ pub(crate) enum Offer {
         answer: watch::Receiver<Option<bool>>,
         /// A `DropStatus` waits for the answer (one at a time).
         waiting: bool,
+        /// The sender's last offer or `DropStatus` (unpolled for long: withdrawn).
+        polled: Instant,
     },
     /// Accepted; its staging folder is being set up.
     Preparing {
         files: Vec<(String, u64)>,
     },
     Accepted(Incoming),
+    /// Every file arrived (kept `DONE_KEEP`).
+    Completed {
+        list: [u8; 32],
+        files: usize,
+        at: Instant,
+    },
 }
 
 impl Offer {
-    fn files(&self) -> &[(String, u64)] {
+    /// The same file list.
+    fn same(&self, files: &[(String, u64)]) -> bool {
         match self {
-            Offer::Asking { files, .. } | Offer::Preparing { files } => files,
-            Offer::Accepted(d) => &d.files,
+            Offer::Asking { files: f, .. } | Offer::Preparing { files: f } => f == files,
+            Offer::Accepted(d) => d.files == files,
+            Offer::Completed { list, .. } => *list == list_hash(files),
+        }
+    }
+
+    fn count(&self) -> usize {
+        match self {
+            Offer::Asking { files, .. } | Offer::Preparing { files } => files.len(),
+            Offer::Accepted(d) => d.files.len(),
+            Offer::Completed { files, .. } => *files,
+        }
+    }
+
+    /// Waiting for an answer or being staged (counts against the caps).
+    fn pending(&self) -> bool {
+        matches!(self, Offer::Asking { .. } | Offer::Preparing { .. })
+    }
+
+    fn expired(&self, wait: Duration) -> bool {
+        match self {
+            // A `DropStatus` waiting for the answer is the sender asking.
+            Offer::Asking {
+                polled, waiting, ..
+            } => !*waiting && polled.elapsed() >= wait,
+            Offer::Completed { at, .. } => at.elapsed() >= DONE_KEEP,
+            _ => false,
         }
     }
 }
@@ -248,11 +319,24 @@ pub fn sweep(inbox: &Path, older_than: Duration) {
 
 /// Moves the verified staging file to `inbox/rel`, or `name (n).ext` beside it when that
 /// is taken; never replaces anything (no-replace rename, so two drops landing one name at
-/// once both arrive).
+/// once both arrive). Refused when `rel`'s folder really is (after links, junctions and
+/// short names) outside the inbox or inside a staging folder.
 pub(crate) fn publish(staged: &Path, inbox: &Path, rel: &str) -> Result<PathBuf> {
     let target = rel.split('/').fold(inbox.to_owned(), |p, c| p.join(c));
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
+        let real = std::fs::canonicalize(parent)?;
+        let inside = real
+            .strip_prefix(std::fs::canonicalize(inbox)?)
+            .map_err(|_| anyhow!("{rel} leads outside the inbox"))?
+            .to_owned();
+        ensure!(
+            !inside.components().any(|c| c
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(".keel-partial-")),
+            "{rel} leads into a staging folder"
+        );
     }
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let (stem, ext) = match name.rsplit_once('.') {
@@ -275,20 +359,21 @@ pub(crate) fn publish(staged: &Path, inbox: &Path, rel: &str) -> Result<PathBuf>
 }
 
 impl Node {
-    /// A drop piece is allowed only for the device whose offer was accepted.
+    /// A drop piece is allowed only for the device whose offer was accepted (and asking
+    /// how much arrived, also once the drop completed).
     pub(crate) fn drop_permits(&self, peer: PeerId, req: &Request) -> bool {
-        let id = match req {
-            Request::Write { source, .. } | Request::StatPartial { source, .. } => {
-                source.strip_prefix(SOURCE)
-            }
-            _ => None,
+        let (id, stat) = match req {
+            Request::Write { source, .. } => (source.strip_prefix(SOURCE), false),
+            Request::StatPartial { source, .. } => (source.strip_prefix(SOURCE), true),
+            _ => (None, false),
         };
         id.is_some_and(|id| {
             let drops = self.drops.lock();
-            matches!(
-                drops.get(&peer).and_then(|m| m.get(id)),
-                Some(Offer::Accepted(_))
-            )
+            match drops.get(&peer).and_then(|m| m.get(id)) {
+                Some(Offer::Accepted(_)) => true,
+                Some(Offer::Completed { .. }) => stat,
+                _ => false,
+            }
         })
     }
 
@@ -296,9 +381,9 @@ impl Node {
         self.handler.log(ctx, op, payload, ok);
     }
 
-    /// Answers at once: `Ok` (accepted), `Pending` (the user is deciding: poll with
-    /// `DropStatus`) or `Denied`. The same device offering the same id with another file
-    /// list is asked again.
+    /// Answers at once: `Ok` (accepted, or already received), `Pending` (the user is
+    /// deciding: poll with `DropStatus`) or `Denied` (declined, invalid, busy). The same
+    /// device offering the same id with another file list is asked again.
     pub(crate) async fn drop_offer(
         &self,
         ctx: &RequestCtx,
@@ -306,28 +391,49 @@ impl Node {
         files: Vec<(String, u64)>,
     ) -> Result<Response> {
         let names: HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-        ensure!(
-            valid_id(id)
-                && !files.is_empty()
-                && files.len() <= MAX_FILES
-                && names.len() == files.len()
-                && files.iter().all(|(p, _)| valid_rel(p)),
-            "invalid drop offer"
-        );
+        let valid = valid_id(id)
+            && !files.is_empty()
+            && files.len() <= MAX_FILES
+            && names.len() == files.len()
+            && files.iter().all(|(p, _)| valid_rel(p))
+            && !(cfg!(windows) && files.iter().any(|(p, _)| p.split('/').any(short_name)));
+        if !valid {
+            let payload = json!({"drop": id, "files": files.len()});
+            self.log_drop(ctx, "drop-offer", payload, false);
+            return Ok(Response::Denied("invalid drop offer".into()));
+        }
+        let wait = self.options.drop_answer_wait;
         // Registered before the handler is asked, so concurrent re-offers ask once.
         let (ask, replaced) = {
             let mut drops = self.drops.lock();
             let mine = drops.entry(ctx.peer).or_default();
-            if mine.get(id).is_some_and(|o| o.files() == files.as_slice()) {
+            mine.retain(|_, o| !o.expired(wait));
+            if mine.get(id).is_some_and(|o| o.same(&files)) {
                 (None, None)
             } else {
                 let replaced = mine.remove(id);
+                let mine_pending = mine.values().filter(|o| o.pending()).count();
+                let all_pending: usize = drops
+                    .values()
+                    .map(|m| m.values().filter(|o| o.pending()).count())
+                    .sum();
+                let mine = drops.entry(ctx.peer).or_default();
+                if mine_pending >= PENDING_PER_DEVICE || all_pending >= PENDING_TOTAL {
+                    if let Some(old) = replaced {
+                        mine.insert(id.to_owned(), old);
+                    }
+                    drop(drops);
+                    let payload = json!({"drop": id, "files": files.len()});
+                    self.log_drop(ctx, "drop-offer", payload, false);
+                    return Ok(Response::Denied("busy".into()));
+                }
                 let (tx, rx) = watch::channel(None);
                 let asking = Offer::Asking {
                     files: files.clone(),
                     inbox: None,
                     answer: rx,
                     waiting: false,
+                    polled: Instant::now(),
                 };
                 mine.insert(id.to_owned(), asking);
                 (Some(tx), replaced)
@@ -335,6 +441,9 @@ impl Node {
         };
         if let Some(Offer::Accepted(old)) = replaced {
             let _ = tokio::fs::remove_dir_all(&old.dir).await;
+        }
+        if ask.is_some() {
+            self.withdraw_unpolled(ctx.clone(), id.to_owned());
         }
         if let Some(tx) = ask {
             let offer = IncomingDrop {
@@ -362,6 +471,43 @@ impl Node {
         self.drop_status(ctx, id, Duration::ZERO).await
     }
 
+    /// Withdraws offer `id` of `ctx`'s device once its sender has not asked about it for
+    /// `drop_answer_wait` (the prompt sees `DropReply::withdrawn`).
+    fn withdraw_unpolled(&self, ctx: RequestCtx, id: String) {
+        let (weak, stop) = (self.weak.clone(), self.stop.clone());
+        let wait = self.options.drop_answer_wait;
+        self.tasks.spawn(async move {
+            let mut pause = wait;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => return,
+                    _ = tokio::time::sleep(pause) => {}
+                }
+                let Some(node) = weak.upgrade() else { return };
+                let gone = {
+                    let mut drops = node.drops.lock();
+                    let Some(mine) = drops.get_mut(&ctx.peer) else {
+                        return;
+                    };
+                    match mine.get(&id) {
+                        Some(o @ Offer::Asking { polled, .. }) if !o.expired(wait) => {
+                            pause = wait.saturating_sub(polled.elapsed()).max(wait / 4);
+                            None
+                        }
+                        Some(Offer::Asking { .. }) => mine.remove(&id),
+                        _ => return,
+                    }
+                };
+                if let Some(offer) = gone {
+                    let payload = json!({"drop": id, "files": offer.count(), "expired": true});
+                    node.log_drop(&ctx, "drop-offer", payload, false);
+                    return;
+                }
+            }
+        });
+    }
+
     /// `DropStatus`: waits up to `wait` for the user (one waiter per offer; others get
     /// `Pending` at once), then answers like `drop_offer`. Unknown: `Error`.
     pub(crate) async fn drop_status(
@@ -377,8 +523,11 @@ impl Node {
                 let Some(offer) = drops.get_mut(&peer).and_then(|m| m.get_mut(id)) else {
                     return Ok(Response::Error("no such drop".into()));
                 };
+                if let Offer::Asking { polled, .. } = offer {
+                    *polled = Instant::now();
+                }
                 match offer {
-                    Offer::Accepted(_) => return Ok(Response::Ok),
+                    Offer::Accepted(_) | Offer::Completed { .. } => return Ok(Response::Ok),
                     Offer::Preparing { .. } => return Ok(Response::Pending),
                     // The handler is still being asked.
                     Offer::Asking { inbox: None, .. } => return Ok(Response::Pending),
@@ -404,15 +553,17 @@ impl Node {
                     let _ = tokio::time::timeout(wait, answer.wait_for(Option::is_some)).await;
                     wait = Duration::ZERO;
                     let mut drops = self.drops.lock();
-                    if let Some(Offer::Asking { waiting, .. }) =
-                        drops.get_mut(&peer).and_then(|m| m.get_mut(id))
+                    if let Some(Offer::Asking {
+                        waiting, polled, ..
+                    }) = drops.get_mut(&peer).and_then(|m| m.get_mut(id))
                     {
                         *waiting = false;
+                        *polled = Instant::now();
                     }
                 }
                 Ok(false) => {
                     let gone = self.drops.lock().get_mut(&peer).and_then(|m| m.remove(id));
-                    let n = gone.map_or(0, |o| o.files().len());
+                    let n = gone.map_or(0, |o| o.count());
                     self.log_drop(ctx, "drop-offer", json!({"drop": id, "files": n}), false);
                     return Ok(Response::Denied("declined".into()));
                 }
@@ -462,17 +613,21 @@ impl Node {
                 let _ = std::fs::remove_dir_all(&incoming.dir);
                 return Ok(Response::Error("no such drop".into()));
             }
+            // For good: a re-offer would fail the same way.
             (Err(e), _) => {
                 if let Some(m) = drops.get_mut(&peer) {
                     m.remove(id);
                 }
-                Err(e)
+                tracing::warn!("spacedrop: staging drop {id}: {e:#}");
+                Err(Response::Denied(format!(
+                    "the device could not stage the drop: {e:#}"
+                )))
             }
         };
         drop(drops);
         let ok = result.is_ok();
         self.log_drop(ctx, "drop-offer", json!({"drop": id, "files": n}), ok);
-        result
+        Ok(result.unwrap_or_else(|denied| denied))
     }
 
     /// (inbox, staging folder, index, size, published) of `path` in drop `id` from `peer`.
@@ -497,6 +652,17 @@ impl Node {
     }
 
     pub(crate) fn drop_partial(&self, peer: PeerId, id: &str, path: &str) -> Result<Response> {
+        let done = matches!(
+            self.drops.lock().get(&peer).and_then(|m| m.get(id)),
+            Some(Offer::Completed { .. })
+        );
+        if done {
+            // Received in full: the sender lost a reply; nothing more to send.
+            return Ok(Response::Partial {
+                len: 0,
+                complete: true,
+            });
+        }
         let (_, dir, i, size, published) = self.drop_file(peer, id, path)?;
         Ok(if published {
             Response::Partial {
@@ -545,6 +711,7 @@ impl Node {
                 .append(true)
                 .open(marks)?;
             writeln!(log, "{i}")?;
+            log.sync_all()?;
             Ok(target)
         })
         .await??;
@@ -560,8 +727,16 @@ impl Node {
             }
         };
         if finished {
+            // Remembered: a sender that lost this reply re-offers or asks again.
             if let Some(m) = self.drops.lock().get_mut(&peer) {
-                m.remove(id);
+                if let Some(Offer::Accepted(d)) = m.get(id) {
+                    let done = Offer::Completed {
+                        list: list_hash(&d.files),
+                        files: d.files.len(),
+                        at: Instant::now(),
+                    };
+                    m.insert(id.to_owned(), done);
+                }
             }
             let _ = tokio::fs::remove_dir_all(&dir).await;
         }
@@ -746,7 +921,12 @@ impl DropJob {
             match answer {
                 Response::Ok => return Ok(()),
                 Response::Pending => {}
-                Response::Denied(_) => return Err(permanent("the device declined the drop")),
+                Response::Denied(why) if why == "declined" => {
+                    return Err(permanent("the device declined the drop"))
+                }
+                Response::Denied(why) => {
+                    return Err(permanent(format!("the device refused the drop: {why}")))
+                }
                 // The device forgot the offer (it restarted): offer again.
                 Response::Error(e) => bail!("the device lost the offer: {e}"),
                 _ => return Err(permanent("the device could not take the drop")),
@@ -806,6 +986,11 @@ impl DropJob {
             _ => bail!("the device lost the drop"),
         };
         if complete {
+            // Delivered before (its reply was lost): logged here.
+            let payload = json!({"peer": self.peer.0.to_string(), "drop": self.id,
+                "path": f.rel, "from": f.src.display(), "size": f.size, "blake3": null,
+                "resumed": true});
+            ctx.log_op("net.drop-sent", &payload, "ok", true)?;
             return Ok(());
         }
         let offset = if len <= f.size { len } else { 0 };

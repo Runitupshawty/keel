@@ -25,26 +25,55 @@ pub struct LibraryHandler {
     drops: Mutex<Option<(PathBuf, Ask)>>,
     /// Op log entries, written in batches by a logger thread (each library commit syncs;
     /// one per served request or received file would cap a drop of small files at a few
-    /// dozen a second).
-    log: crossbeam_channel::Sender<keel_core::OpDone>,
+    /// dozen a second). `close` (and dropping the handler) waits until they are written.
+    log: crossbeam_channel::Sender<Logged>,
 }
+
+/// What the op log thread gets: an entry, or a request to say once all before it are in.
+enum Logged {
+    Op(keel_core::OpDone),
+    Flush(crossbeam_channel::Sender<()>),
+}
+
+/// How long `close` waits for the op log to be written.
+const FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 type Ask = Arc<dyn Fn(IncomingDrop) + Send + Sync>;
 
 impl LibraryHandler {
     pub fn new(lib: Arc<Library>) -> Self {
-        let (log, entries) = crossbeam_channel::unbounded::<keel_core::OpDone>();
+        let (log, entries) = crossbeam_channel::unbounded::<Logged>();
         let logger = lib.clone();
         // Ends (after writing what is queued) once the handler is gone.
         let _ = std::thread::Builder::new()
             .name("keel-net-oplog".into())
             .spawn(move || {
-                while let Ok(first) = entries.recv() {
-                    let mut batch = vec![first];
-                    batch.extend(entries.try_iter().take(999));
-                    if let Err(e) = logger.log_ops(&batch) {
-                        tracing::warn!("op log: {e:#}");
+                let write = |batch: &mut Vec<keel_core::OpDone>| {
+                    if batch.is_empty() {
+                        return;
                     }
+                    // One retry (a busy library); then the batch is lost, logged.
+                    if let Err(e) = logger.log_ops(batch) {
+                        tracing::warn!("op log, retrying: {e:#}");
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        if let Err(e) = logger.log_ops(batch) {
+                            tracing::warn!("op log: {} entries lost: {e:#}", batch.len());
+                        }
+                    }
+                    batch.clear();
+                };
+                let mut batch = Vec::new();
+                while let Ok(first) = entries.recv() {
+                    for msg in std::iter::once(first).chain(entries.try_iter().take(999)) {
+                        match msg {
+                            Logged::Op(op) => batch.push(op),
+                            Logged::Flush(done) => {
+                                write(&mut batch);
+                                let _ = done.send(());
+                            }
+                        }
+                    }
+                    write(&mut batch);
                 }
             });
         Self {
@@ -55,7 +84,16 @@ impl LibraryHandler {
     }
 
     fn log_op(&self, kind: String, payload: serde_json::Value, result: String, ok: bool) {
-        let _ = self.log.send((kind, payload, result, ok));
+        let _ = self.log.send(Logged::Op((kind, payload, result, ok)));
+    }
+
+    /// Waits (up to 10 s) until every op log entry queued so far is written. The handler
+    /// stays usable (a reopened node may serve with it again).
+    pub fn flush(&self) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if self.log.send(Logged::Flush(tx)).is_ok() {
+            let _ = rx.recv_timeout(FLUSH_WAIT);
+        }
     }
 
     /// Accepts Spacedrop offers into `inbox` when `ask` answers yes (it may answer later,
@@ -90,6 +128,12 @@ impl LibraryHandler {
         };
         self.log_op(format!("net.{op}"), payload, text, ok);
         result
+    }
+}
+
+impl Drop for LibraryHandler {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -393,6 +437,9 @@ impl Handler for LibraryHandler {
         Some(inbox)
     }
     /// `net.<op>` with the device's id and label.
+    fn close(&self) {
+        self.flush();
+    }
     fn log(&self, ctx: &RequestCtx, op: &str, mut payload: serde_json::Value, ok: bool) {
         payload["peer"] = json!(ctx.peer.0.to_string());
         payload["device"] = json!(ctx.label);

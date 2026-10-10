@@ -172,6 +172,8 @@ pub trait Handler: Send + Sync {
         drop(offer);
         None
     }
+    /// The node is closing: write out anything buffered (the op log). Blocking.
+    fn close(&self) {}
     /// The op log hook: what the node handled itself for `ctx`'s device (`drop-offer`,
     /// `drop-received`, `drop-cancel`), with whether it went through.
     fn log(&self, ctx: &RequestCtx, op: &str, payload: serde_json::Value, ok: bool) {

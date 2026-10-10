@@ -40,6 +40,11 @@ pub(crate) fn folder(root: &Path) -> SourceDef {
 
 /// A host serving a library with one folder source, and a paired guest.
 pub(crate) fn pair() -> Pair {
+    pair_with(NodeOptions::offline())
+}
+
+/// `pair` with these options for the host (the receiving side).
+pub(crate) fn pair_with(host_options: NodeOptions) -> Pair {
     let load = Some(LOAD.read_recursive());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -56,7 +61,7 @@ pub(crate) fn pair() -> Pair {
             Arc::new(MemoryStore::default()),
             dirs[1].path(),
             handler.clone(),
-            NodeOptions::offline(),
+            host_options,
         )
         .await
         .unwrap();

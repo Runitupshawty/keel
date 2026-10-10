@@ -27,6 +27,10 @@ use std::time::{Duration, Instant};
 
 /// Paired devices are pinged this often (link state and storage in the sidebar).
 const PING_EVERY: Duration = Duration::from_secs(30);
+/// Events waiting for the UI (`forward`).
+const FORWARD_BACKLOG: usize = 256;
+/// While a drop prompt is up, this often the UI checks whether it was withdrawn.
+const PROMPT_CHECK: Duration = Duration::from_millis(250);
 
 /// Settings → Devices (`[devices]` in config.toml).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -113,9 +117,11 @@ pub fn offer_text(from: &str, files: &[(String, u64)]) -> String {
 }
 
 /// Node events into a channel the UI drains each frame, asking for a repaint as each one
-/// arrives (an idle UI otherwise sleeps). Ends when the node or the UI side goes.
+/// arrives (an idle UI otherwise sleeps). Ends when the node or the UI side goes. Bounded
+/// like the node's own backlog: while the UI does not drain it, this thread waits and the
+/// node's backlog rules apply (requests dropped, pairings and received files kept).
 pub fn forward(events: Receiver<NetEvent>, ctx: egui::Context) -> Receiver<NetEvent> {
-    let (tx, rx) = crossbeam_channel::unbounded();
+    let (tx, rx) = crossbeam_channel::bounded(FORWARD_BACKLOG);
     let _ = std::thread::Builder::new()
         .name("keel-net-events".into())
         .spawn(move || {
@@ -596,8 +602,12 @@ impl Devices {
                 drop,
                 always: false,
             }));
-        // The sender cancelled, or the device was forgotten.
+        // The sender cancelled or stopped asking, or the device was forgotten: down at
+        // once (checked again shortly while any prompt is up).
         self.offers.retain(|o| !o.drop.reply.withdrawn());
+        if !self.offers.is_empty() {
+            self.ctx.request_repaint_after(PROMPT_CHECK);
+        }
         self.refresh();
         if let (Some(node), Some(rt)) = (&self.node, &self.rt) {
             if Instant::now() >= self.next_ping {
