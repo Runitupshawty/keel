@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod conn;
 pub mod hostkeys;
+pub mod ssh_config;
 use crate::{Caps, Entry, Kind, Progress, Provider, VPath};
 use anyhow::{Context, Result};
 pub use conn::ConnPool;
@@ -36,6 +37,146 @@ pub struct RemoteHost {
     pub auth: RemoteAuth,
     pub home: Option<String>,
     pub bookmarks: Vec<(String, String)>,
+    /// Resolve `host` through `~/.ssh/config` (aliases, identities, ProxyJump). Fields set
+    /// here win: a nonempty `user`, a port other than 22, a key-file path.
+    #[serde(default = "yes")]
+    pub use_ssh_config: bool,
+}
+fn yes() -> bool {
+    true
+}
+
+/// One SSH session to open: a jump host or the target, after `~/.ssh/config` and the
+/// remote's own settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Endpoint {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: RemoteAuth,
+    /// From the config: tried when the key-file path is empty, and with `identities_only`
+    /// the only agent keys offered.
+    pub identity_files: Vec<PathBuf>,
+    pub identities_only: bool,
+    pub keepalive: Option<Duration>,
+}
+impl Endpoint {
+    pub fn address(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+/// The sessions to open in order: the jump hosts, then the target (always last).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub hops: Vec<Endpoint>,
+    /// Whether `~/.ssh/config` had anything for the host.
+    pub from_config: bool,
+    pub notes: Vec<String>,
+}
+const KEEPALIVE: Duration = Duration::from_secs(10);
+
+/// Resolves `host` through `config` (None: `~/.ssh/config`) when `use_ssh_config` is on.
+/// Reads files: call on a worker.
+pub fn plan(host: &RemoteHost, config: Option<&Path>) -> Result<Plan> {
+    let direct = Endpoint {
+        host: host.host.clone(),
+        port: host.port,
+        user: host.user.clone(),
+        auth: host.auth.clone(),
+        identity_files: Vec::new(),
+        identities_only: false,
+        keepalive: Some(KEEPALIVE),
+    };
+    let resolver = host
+        .use_ssh_config
+        .then(|| ssh_config::Resolver::for_current_user(config))
+        .flatten();
+    let Some(resolver) = resolver else {
+        return Ok(Plan {
+            hops: vec![direct],
+            from_config: false,
+            notes: Vec::new(),
+        });
+    };
+    let r = resolver.resolve(&host.host)?;
+    let endpoint = |r: &ssh_config::Resolved, auth: RemoteAuth| Endpoint {
+        host: r.host_name.clone(),
+        port: r.port,
+        user: r.user.clone(),
+        auth,
+        identity_files: r.identity_files.clone(),
+        identities_only: r.identities_only,
+        keepalive: match r.server_alive_interval {
+            Some(0) => None,
+            Some(s) => Some(Duration::from_secs(s)),
+            None => Some(KEEPALIVE),
+        },
+    };
+    // Jump hosts sign in like the target, but never with its password.
+    let jump_auth = match &host.auth {
+        RemoteAuth::PasswordInKeyring => RemoteAuth::KeyFile {
+            path: PathBuf::new(),
+            passphrase_in_keyring: false,
+        },
+        other => other.clone(),
+    };
+    let mut hops: Vec<Endpoint> = r
+        .jumps
+        .iter()
+        .map(|j| endpoint(j, jump_auth.clone()))
+        .collect();
+    let mut target = endpoint(&r, host.auth.clone());
+    if host.port != 22 {
+        target.port = host.port;
+    }
+    if !host.user.is_empty() {
+        target.user = host.user.clone();
+    }
+    hops.push(target);
+    Ok(Plan {
+        hops,
+        from_config: r.matched,
+        notes: r.notes,
+    })
+}
+
+/// The Settings → Remotes line under the host field. Reads files: call on a worker.
+pub fn describe(host: &RemoteHost, config: Option<&Path>) -> String {
+    if !host.use_ssh_config {
+        return "~/.ssh/config is not used".into();
+    }
+    let plan = match plan(host, config) {
+        Ok(plan) => plan,
+        Err(e) => return format!("{e:#}"),
+    };
+    let (target, jumps) = plan.hops.split_last().expect("the target");
+    let mut text = if plan.from_config {
+        format!("connects to {} as {}", target.address(), target.user)
+    } else {
+        format!(
+            "no ~/.ssh/config entry; connects to {} as {}",
+            target.address(),
+            target.user
+        )
+    };
+    if !jumps.is_empty() {
+        let route: Vec<String> = jumps
+            .iter()
+            .map(|j| format!("{}@{}", j.user, j.address()))
+            .collect();
+        text = format!("{text} via {}", route.join(" -> "));
+    }
+    for note in plan.notes {
+        text = format!(
+            "{text}
+{note}"
+        );
+    }
+    text
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RemoteAuth {
@@ -62,6 +203,8 @@ pub enum RemoteEvent {
     },
     HostKeyPrompt {
         host_id: String,
+        /// The resolved `host:port` whose key this is, `jump host ` first for a ProxyJump hop.
+        endpoint: String,
         fingerprint: String,
         reply: Sender<bool>,
     },
@@ -187,6 +330,10 @@ impl SftpProvider {
     }
     pub fn set_timeout(&self, timeout: Duration) {
         self.conn.set_timeout(timeout);
+    }
+    /// Reads this OpenSSH client configuration instead of `~/.ssh/config` (tests).
+    pub fn set_ssh_config(&self, path: PathBuf) {
+        self.conn.set_ssh_config(path);
     }
     fn validate(&self, p: &VPath) -> Result<()> {
         anyhow::ensure!(
@@ -1043,6 +1190,102 @@ impl Downloads {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote(host: &str) -> RemoteHost {
+        RemoteHost {
+            id: "nas".into(),
+            label: String::new(),
+            host: host.into(),
+            port: 22,
+            user: String::new(),
+            auth: RemoteAuth::PasswordInKeyring,
+            home: None,
+            bookmarks: vec![],
+            use_ssh_config: true,
+        }
+    }
+
+    /// Empty or default Keel fields take the config's values, set ones win; jump hosts
+    /// never get the target's password; ServerAliveInterval sets each hop's keepalive.
+    #[test]
+    fn plan_merges_ssh_config_with_explicit_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(
+            &config,
+            "Host nas\n HostName nas.example.invalid\n Port 2200\n User cfg\n \
+             ServerAliveInterval 0\n ProxyJump hop\nHost hop\n HostName hop.example.invalid\n \
+             User jumper\n ServerAliveInterval 30\nHost evil\n ProxyCommand nc %h %p\n",
+        )
+        .unwrap();
+        let plan = super::plan(&remote("nas"), Some(&config)).unwrap();
+        assert!(plan.from_config);
+        let [hop, target] = &plan.hops[..] else {
+            panic!("{plan:?}")
+        };
+        assert_eq!(
+            (target.host.as_str(), target.port, target.user.as_str()),
+            ("nas.example.invalid", 2200, "cfg")
+        );
+        assert_eq!(target.keepalive, None);
+        assert_eq!(target.auth, RemoteAuth::PasswordInKeyring);
+        assert_eq!(hop.address(), "hop.example.invalid:22");
+        assert_eq!(hop.user, "jumper");
+        assert_eq!(hop.keepalive, Some(Duration::from_secs(30)));
+        assert!(
+            matches!(&hop.auth, RemoteAuth::KeyFile { path, passphrase_in_keyring: false } if path.as_os_str().is_empty())
+        );
+
+        let key = RemoteAuth::KeyFile {
+            path: "explicit_key".into(),
+            passphrase_in_keyring: true,
+        };
+        let explicit = RemoteHost {
+            port: 2222,
+            user: "me".into(),
+            auth: key.clone(),
+            ..remote("nas")
+        };
+        let plan = super::plan(&explicit, Some(&config)).unwrap();
+        assert_eq!(plan.hops[1].address(), "nas.example.invalid:2222");
+        assert_eq!(plan.hops[1].user, "me");
+        assert_eq!(plan.hops[0].auth, key);
+
+        let off = RemoteHost {
+            use_ssh_config: false,
+            ..remote("nas")
+        };
+        let plan = super::plan(&off, Some(&config)).unwrap();
+        assert_eq!(plan.hops.len(), 1);
+        assert_eq!(plan.hops[0].address(), "nas:22");
+        assert_eq!(plan.hops[0].keepalive, Some(KEEPALIVE));
+
+        let text = describe(&remote("nas"), Some(&config));
+        assert_eq!(
+            text,
+            "connects to nas.example.invalid:2200 as cfg via jumper@hop.example.invalid:22"
+        );
+        assert!(describe(&remote("other"), Some(&config)).starts_with("no ~/.ssh/config entry"));
+        assert_eq!(describe(&off, Some(&config)), "~/.ssh/config is not used");
+        let text = describe(&remote("evil"), Some(&config));
+        assert!(
+            text.contains("evil") && text.contains(":12") && text.contains("ProxyCommand"),
+            "{text}"
+        );
+        // Explicit settings for an unknown alias still apply.
+        let plan = super::plan(
+            &RemoteHost {
+                user: "u".into(),
+                ..remote("other")
+            },
+            Some(&config),
+        )
+        .unwrap();
+        assert_eq!(
+            (plan.hops[0].address(), plan.hops[0].user.as_str()),
+            ("other:22".into(), "u")
+        );
+    }
     #[test]
     fn local_cache_names_are_safe_and_readable() {
         assert_eq!(super::local_name("report 2026.pdf"), "report 2026.pdf");
@@ -1083,6 +1326,7 @@ mod tests {
             auth: RemoteAuth::Agent,
             home: None,
             bookmarks: vec![],
+            use_ssh_config: false,
         };
         let provider = SftpProvider::new(host, crossbeam_channel::unbounded().0);
         let bad = VPath::parse("sftp://offline/dir/bad\u{FFFD}name").unwrap();

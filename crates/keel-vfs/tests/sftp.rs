@@ -33,6 +33,7 @@ fn live() -> Option<(RemoteHost, VPath)> {
         },
         home: None,
         bookmarks: vec![],
+        use_ssh_config: false,
     };
     assert!(
         dir.starts_with('/') && dir != "/",
@@ -278,6 +279,7 @@ fn remote_config_roundtrip_and_path() {
         auth: RemoteAuth::Agent,
         home: Some("/".into()),
         bookmarks: vec![("Files".into(), "/files".into())],
+        use_ssh_config: true,
     };
     for auth in [
         RemoteAuth::Agent,
@@ -294,6 +296,12 @@ fn remote_config_roundtrip_and_path() {
         let encoded = toml::to_string(&host).unwrap();
         assert_eq!(toml::from_str::<RemoteHost>(&encoded).unwrap(), host);
     }
+    // Remotes saved before the setting existed read ~/.ssh/config.
+    let older = toml::to_string(&host)
+        .unwrap()
+        .replace("use_ssh_config = true\n", "");
+    assert!(!older.contains("use_ssh_config"));
+    assert!(toml::from_str::<RemoteHost>(&older).unwrap().use_ssh_config);
     let path = VPath::parse("sftp://test-remote/space and ü/file").unwrap();
     assert_eq!(path.authority, host.id);
     assert_eq!(path.parent().unwrap().path, "/space and ü");
@@ -551,4 +559,95 @@ fn live_download_cancel_then_cached_copy() {
         .local_copy_cancellable(&file, &|_| {}, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(std::fs::read(copy).unwrap(), payload);
+}
+
+/// `user@host[:port]` from an environment variable as an ssh_config block for `alias`.
+fn config_block(alias: &str, login: &str) -> String {
+    let (user, address) = login.split_once('@').expect("user@host[:port]");
+    let (host, port) = address.rsplit_once(':').unwrap_or((address, "22"));
+    format!("Host {alias}\n HostName {host}\n Port {port}\n User {user}\n")
+}
+
+/// Lists, writes and reads back a file through `host` resolved from `config`.
+fn roundtrip_through(host: RemoteHost, config: &std::path::Path, base: &VPath) {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let provider = SftpProvider::new(host, tx);
+    provider.set_ssh_config(config.to_owned());
+    let file = base.join(&format!("sshcfg-{}.txt", std::process::id()));
+    {
+        let mut w = provider
+            .write(&file)
+            .expect("write through the resolved host");
+        w.write_all(b"through ssh_config").unwrap();
+        w.flush().unwrap();
+    }
+    let mut back = String::new();
+    provider
+        .read(&file)
+        .unwrap()
+        .read_to_string(&mut back)
+        .unwrap();
+    assert_eq!(back, "through ssh_config");
+    provider.remove(&file).unwrap();
+    assert_eq!(provider.status(), ConnStatus::Connected);
+    provider.disconnect();
+    assert!(
+        !rx.try_iter()
+            .any(|event| matches!(event, keel_vfs::RemoteEvent::HostKeyPrompt { .. })),
+        "live hosts must already be trusted"
+    );
+}
+
+/// An alias in a temp ssh_config pointing at the live host; Keel's user and port stay empty
+/// and default, so both come from the config.
+#[test]
+fn live_ssh_config_alias() {
+    let Some((host, base)) = live() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    let login = std::env::var("KEEL_SFTP_TEST").unwrap();
+    std::fs::write(&config, config_block("keel-live-alias", &login)).unwrap();
+    let alias = RemoteHost {
+        host: "keel-live-alias".into(),
+        port: 22,
+        user: String::new(),
+        use_ssh_config: true,
+        ..host
+    };
+    roundtrip_through(alias, &config, &base);
+}
+
+/// ProxyJump: the live host reached through `KEEL_SFTP_JUMP_TEST` (`user@host[:port]`;
+/// jumping through the same host to itself is fine).
+#[test]
+fn live_proxy_jump() {
+    let Ok(jump) = std::env::var("KEEL_SFTP_JUMP_TEST") else {
+        eprintln!("SKIP live ProxyJump: KEEL_SFTP_JUMP_TEST is not set");
+        return;
+    };
+    let Some((host, base)) = live() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    let login = std::env::var("KEEL_SFTP_TEST").unwrap();
+    std::fs::write(
+        &config,
+        config_block("keel-live-target", &login)
+            .replace("\n User", "\n ProxyJump keel-live-jump\n User")
+            + &config_block("keel-live-jump", &jump),
+    )
+    .unwrap();
+    let target = RemoteHost {
+        host: "keel-live-target".into(),
+        port: 22,
+        user: String::new(),
+        use_ssh_config: true,
+        ..host
+    };
+    let route = keel_vfs::sftp::describe(&target, Some(&config));
+    assert!(route.contains(" via "), "{route}");
+    roundtrip_through(target, &config, &base);
 }

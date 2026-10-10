@@ -57,7 +57,8 @@ pub fn known_key_types(host: &str, port: u16) -> Vec<String> {
     types
 }
 
-fn glob(pattern: &str, text: &str) -> bool {
+/// `*` and `?` wildcards, ASCII case-insensitive (known_hosts and ssh_config patterns).
+pub(super) fn glob(pattern: &str, text: &str) -> bool {
     let (p, t) = (pattern.as_bytes(), text.as_bytes());
     let (mut i, mut j, mut star, mut retry) = (0, 0, None, 0);
     while j < t.len() {

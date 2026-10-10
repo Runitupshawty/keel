@@ -1,4 +1,4 @@
-use super::{conn::Client, RemoteAuth, RemoteHost};
+use super::{conn::Client, Endpoint, RemoteAuth};
 use anyhow::{Context, Result};
 use russh::{
     client::Handle,
@@ -38,8 +38,8 @@ pub fn default_key_files() -> Vec<PathBuf> {
         .collect()
 }
 
-async fn secret(host: &RemoteHost, kind: &'static str) -> Result<String> {
-    let account = format!("{}:{kind}", host.id);
+async fn secret(host_id: &str, kind: &'static str) -> Result<String> {
+    let account = format!("{host_id}:{kind}");
     tokio::task::spawn_blocking(move || {
         keyring::Entry::new(KEYRING_SERVICE, &account)?.get_password()
     })
@@ -48,10 +48,15 @@ async fn secret(host: &RemoteHost, kind: &'static str) -> Result<String> {
     .map_err(|_| anyhow::anyhow!("required credential unavailable in OS keychain"))
 }
 
-pub(super) async fn authenticate(session: &mut Handle<Client>, host: &RemoteHost) -> Result<()> {
+/// Signs in to one hop. `host_id` names the remote's keychain entries.
+pub(super) async fn authenticate(
+    session: &mut Handle<Client>,
+    host_id: &str,
+    host: &Endpoint,
+) -> Result<()> {
     let success = match &host.auth {
         RemoteAuth::PasswordInKeyring => session
-            .authenticate_password(&host.user, secret(host, "password").await?)
+            .authenticate_password(&host.user, secret(host_id, "password").await?)
             .await?
             .success(),
         RemoteAuth::KeyFile {
@@ -59,19 +64,28 @@ pub(super) async fn authenticate(session: &mut Handle<Client>, host: &RemoteHost
             passphrase_in_keyring,
         } => {
             let passphrase = if *passphrase_in_keyring {
-                Some(secret(host, "passphrase").await?)
+                Some(secret(host_id, "passphrase").await?)
             } else {
                 None
             };
-            // An empty path means "the default keys", tried in order like `ssh` does.
-            let paths = if path.as_os_str().is_empty() {
-                default_key_files()
-            } else {
+            // An empty path means the config's IdentityFile entries that exist, else the
+            // default keys, tried in order like `ssh` does.
+            let configured: Vec<PathBuf> = host
+                .identity_files
+                .iter()
+                .filter(|p| p.is_file())
+                .cloned()
+                .collect();
+            let paths = if !path.as_os_str().is_empty() {
                 vec![path.clone()]
+            } else if !configured.is_empty() {
+                configured
+            } else {
+                default_key_files()
             };
             anyhow::ensure!(
                 !paths.is_empty(),
-                "no SSH key found in ~/.ssh (id_ed25519, id_ecdsa, id_rsa)"
+                "no SSH key found (IdentityFile, or id_ed25519, id_ecdsa, id_rsa in ~/.ssh)"
             );
             let hash = session.best_supported_rsa_hash().await?.flatten();
             let (mut loaded, mut success) = (0, false);
@@ -115,8 +129,29 @@ pub(super) async fn authenticate(session: &mut Handle<Client>, host: &RemoteHost
                 .await
                 .context("SSH agent not reachable (SSH_AUTH_SOCK unset or stale)")?;
             let hash = session.best_supported_rsa_hash().await?.flatten();
-            let keys = agent.request_identities().await?;
+            let mut keys = agent.request_identities().await?;
             anyhow::ensure!(!keys.is_empty(), "SSH agent has no keys loaded");
+            // IdentitiesOnly: only the agent keys whose IdentityFile has a `.pub` beside it.
+            if host.identities_only && !host.identity_files.is_empty() {
+                let allowed: Vec<_> = host
+                    .identity_files
+                    .iter()
+                    .filter_map(|p| {
+                        let mut pub_file = p.clone().into_os_string();
+                        pub_file.push(".pub");
+                        russh::keys::load_public_key(pub_file).ok()
+                    })
+                    .collect();
+                keys.retain(|k| {
+                    allowed
+                        .iter()
+                        .any(|a| a.key_data() == k.public_key().key_data())
+                });
+                anyhow::ensure!(
+                    !keys.is_empty(),
+                    "IdentitiesOnly: no SSH agent key matches an IdentityFile (its .pub file)"
+                );
+            }
             let mut success = false;
             for key in keys {
                 let key = key.public_key().into_owned();

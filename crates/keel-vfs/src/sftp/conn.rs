@@ -1,10 +1,11 @@
-use super::{auth, hostkeys, ConnStatus, RemoteEvent, RemoteHost};
+use super::{auth, hostkeys, ConnStatus, Endpoint, RemoteEvent, RemoteHost};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
 use russh::client;
 use russh_sftp::client::RawSftpSession;
 use std::{
     future::Future,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, OnceLock,
@@ -34,7 +35,12 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 struct Backoff(u64);
 
 pub(super) struct Client {
-    host: RemoteHost,
+    host_id: String,
+    /// The resolved `host_name` and port: the host key is checked and stored for these.
+    host: String,
+    port: u16,
+    /// "jump host " for a ProxyJump hop, empty for the target.
+    role: &'static str,
     events: Sender<RemoteEvent>,
     problem: Arc<parking_lot::Mutex<Option<String>>>,
     prompting: Arc<AtomicBool>,
@@ -53,8 +59,7 @@ impl client::Handler for Client {
             return Ok(false);
         };
         let key = ssh_key::PublicKey::from_openssh(&key.to_openssh()?)?;
-        let host = self.host.host.clone();
-        let port = self.host.port;
+        let (host, port) = (self.host.clone(), self.port);
         let candidate = key.clone();
         let verdict = tokio::task::spawn_blocking(move || {
             hostkeys::known_hosts_check(&host, port, &candidate)
@@ -64,9 +69,9 @@ impl client::Handler for Client {
             hostkeys::HostKeyVerdict::Known => Ok(true),
             hostkeys::HostKeyVerdict::Mismatch => {
                 *self.problem.lock() = Some(format!(
-                    "host key for {} does not match ~/.ssh/known_hosts (changed or revoked); \
+                    "host key for {}{} does not match ~/.ssh/known_hosts (changed or revoked); \
                      refusing to connect. If the host was reinstalled, remove its old entry.",
-                    self.host.host
+                    self.role, self.host
                 ));
                 Ok(false)
             }
@@ -74,9 +79,9 @@ impl client::Handler for Client {
             // instead of pinning a worker for PROMPT_TIMEOUT.
             hostkeys::HostKeyVerdict::Unknown(_) if !self.listener.load(Ordering::SeqCst) => {
                 *self.problem.lock() = Some(format!(
-                    "host key for {} is not known yet and no Keel window is open to confirm \
+                    "host key for {}{} is not known yet and no Keel window is open to confirm \
                      it; connect from the Keel window first",
-                    self.host.host
+                    self.role, self.host
                 ));
                 Ok(false)
             }
@@ -84,7 +89,8 @@ impl client::Handler for Client {
                 let (reply, receiver) = crossbeam_channel::bounded(1);
                 self.events
                     .try_send(RemoteEvent::HostKeyPrompt {
-                        host_id: self.host.id.clone(),
+                        host_id: self.host_id.clone(),
+                        endpoint: format!("{}{}", self.role, address(&self.host, port)),
                         fingerprint,
                         reply,
                     })
@@ -100,7 +106,7 @@ impl client::Handler for Client {
                     *self.problem.lock() = Some("host key was not trusted".into());
                     return Ok(false);
                 }
-                let host = self.host.host.clone();
+                let host = self.host.clone();
                 tokio::task::spawn_blocking(move || hostkeys::add_known_host(&host, port, &key))
                     .await??;
                 Ok(true)
@@ -112,6 +118,8 @@ impl client::Handler for Client {
 pub(super) struct Session {
     pub raw: RawSftpSession,
     pub ssh: client::Handle<Client>,
+    /// The ProxyJump sessions the target runs over, first hop first.
+    pub jumps: Vec<client::Handle<Client>>,
     pub posix_rename: bool,
 }
 impl Drop for Session {
@@ -134,6 +142,8 @@ pub struct ConnPool {
     state: Mutex<State>,
     status: parking_lot::Mutex<ConnStatus>,
     timeout: parking_lot::RwLock<Duration>,
+    /// None: `~/.ssh/config`.
+    ssh_config: parking_lot::RwLock<Option<PathBuf>>,
 }
 impl ConnPool {
     /// Assumes something answers `HostKeyPrompt` events on `events`.
@@ -157,7 +167,12 @@ impl ConnPool {
             }),
             status: parking_lot::Mutex::new(ConnStatus::Disconnected),
             timeout: parking_lot::RwLock::new(Duration::from_secs(20)),
+            ssh_config: parking_lot::RwLock::default(),
         }
+    }
+    /// Reads this OpenSSH client configuration instead of `~/.ssh/config` (tests).
+    pub fn set_ssh_config(&self, path: PathBuf) {
+        *self.ssh_config.write() = Some(path);
     }
     pub fn set_timeout(&self, timeout: Duration) {
         *self.timeout.write() = timeout.max(Duration::from_millis(1));
@@ -182,10 +197,11 @@ impl ConnPool {
             let mut state = self.state.lock().await;
             if let Some(session) = state.session.take() {
                 let _ = session.raw.close_session();
-                let _ = session
-                    .ssh
-                    .disconnect(russh::Disconnect::ByApplication, "", "")
-                    .await;
+                for ssh in std::iter::once(&session.ssh).chain(session.jumps.iter().rev()) {
+                    let _ = ssh
+                        .disconnect(russh::Disconnect::ByApplication, "", "")
+                        .await;
+                }
             }
             state.failures = 0;
             state.retry_at = Instant::now();
@@ -204,15 +220,17 @@ impl ConnPool {
     }
     pub(super) fn session(&self) -> Result<Arc<Session>> {
         let timeout = *self.timeout.read();
-        // Worst case, each bounded by `timeout`: the backoff wait, TCP connect, the
-        // handshake up to the host key check, the handshake slice in which a prompt ends,
-        // and auth + SFTP start; an answered host key prompt adds up to PROMPT_TIMEOUT.
+        // Worst case per hop, each bounded by `timeout`: TCP connect (or the forwarding
+        // channel), the handshake up to the host key check, the handshake slice in which a
+        // prompt ends, and auth (+ SFTP start); an answered host key prompt adds up to
+        // PROMPT_TIMEOUT. Plus the backoff wait and reading the SSH configuration.
         let prompt = if self.listener.load(Ordering::SeqCst) {
             PROMPT_TIMEOUT
         } else {
             Duration::ZERO
         };
-        let result = run_for(timeout * 5 + prompt, async {
+        let hops = super::ssh_config::MAX_DEPTH as u32 + 1;
+        let result = run_for(timeout * 3 + (timeout * 4 + prompt) * hops, async {
             let mut state = self.state.lock().await;
             if let Some(s) = &state.session {
                 if !s.ssh.is_closed() {
@@ -228,7 +246,17 @@ impl ConnPool {
             }
             tokio::time::sleep(wait).await;
             self.event(ConnStatus::Connecting, "connecting");
-            let session = self.open(timeout).await?;
+            let (host, config) = (self.host.clone(), self.ssh_config.read().clone());
+            let plan = tokio::time::timeout(
+                timeout,
+                tokio::task::spawn_blocking(move || super::plan(&host, config.as_deref())),
+            )
+            .await
+            .context("reading the SSH configuration timed out")???;
+            let budget = timeout + (timeout * 4 + prompt) * plan.hops.len() as u32;
+            let session = tokio::time::timeout(budget, self.open(&plan.hops, timeout))
+                .await
+                .context("SSH connection timed out")??;
             state.failures = 0;
             state.session = Some(session.clone());
             Ok((session, true))
@@ -248,24 +276,111 @@ impl ConnPool {
             }
         }
     }
-    async fn open(&self, timeout: Duration) -> Result<Arc<Session>> {
+    /// Opens `hops` in order, each over a forwarding channel of the one before (the
+    /// first over TCP), and starts SFTP on the last. Dropping the handles on an error
+    /// closes every session already open.
+    async fn open(&self, hops: &[Endpoint], timeout: Duration) -> Result<Arc<Session>> {
+        let mut handles: Vec<client::Handle<Client>> = Vec::new();
+        for (i, hop) in hops.iter().enumerate() {
+            let role = if i + 1 < hops.len() { "jump host " } else { "" };
+            let what = || format!("{role}{}", address(&hop.host, hop.port));
+            let ssh = match handles.last() {
+                None => {
+                    let stream = tokio::time::timeout(
+                        timeout,
+                        tokio::net::TcpStream::connect((hop.host.as_str(), hop.port)),
+                    )
+                    .await
+                    .context("TCP connect timed out")
+                    .and_then(|r| r.context("TCP connect failed"))
+                    .with_context(what)?;
+                    self.handshake(hop, role, stream, timeout).await
+                }
+                Some(prev) => {
+                    let channel = tokio::time::timeout(
+                        timeout,
+                        prev.channel_open_direct_tcpip(
+                            hop.host.clone(),
+                            hop.port.into(),
+                            "127.0.0.1",
+                            0,
+                        ),
+                    )
+                    .await
+                    .context("opening the forwarding channel timed out")
+                    .and_then(|r| r.context("the jump host refused to forward"))
+                    .with_context(what)?;
+                    self.handshake(hop, role, channel.into_stream(), timeout)
+                        .await
+                }
+            };
+            // Only jump hops get the address prefix: the target's errors read as before.
+            let mut ssh = if role.is_empty() {
+                ssh?
+            } else {
+                ssh.with_context(what)?
+            };
+            let auth =
+                tokio::time::timeout(timeout, auth::authenticate(&mut ssh, &self.host.id, hop))
+                    .await
+                    .context("SSH authentication timed out")
+                    .and_then(|r| r);
+            if role.is_empty() {
+                auth?
+            } else {
+                auth.with_context(what)?
+            }
+            handles.push(ssh);
+        }
+        let ssh = handles.pop().context("no SSH host to connect to")?;
+        tokio::time::timeout(timeout, async {
+            let channel = ssh.channel_open_session().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let raw = RawSftpSession::new(channel.into_stream());
+            raw.set_timeout(timeout.as_secs().max(1));
+            let version = raw.init().await?;
+            Ok(Arc::new(Session {
+                raw,
+                ssh,
+                jumps: handles,
+                posix_rename: version.extensions.contains_key("posix-rename@openssh.com"),
+            }))
+        })
+        .await
+        .context("SFTP start timed out")?
+    }
+    /// The SSH handshake with `hop` over `stream`, its host key checked against the
+    /// resolved `host:port`.
+    async fn handshake<S>(
+        &self,
+        hop: &Endpoint,
+        role: &'static str,
+        stream: S,
+        timeout: Duration,
+    ) -> Result<client::Handle<Client>>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let problem = Arc::new(parking_lot::Mutex::new(None));
         let prompting = Arc::new(AtomicBool::new(false));
         let handler = Client {
-            host: self.host.clone(),
+            host_id: self.host.id.clone(),
+            host: hop.host.clone(),
+            port: hop.port,
+            role,
             events: self.events.clone(),
             problem: problem.clone(),
             prompting: prompting.clone(),
             listener: self.listener.clone(),
         };
         let mut config = client::Config {
-            keepalive_interval: Some(Duration::from_secs(10)),
+            keepalive_interval: hop.keepalive,
             keepalive_max: 2,
             ..Default::default()
         };
         // A host with known keys may only present one of those key types: offering others
         // would let an attacker with a different key type get a first-connect prompt.
-        let (host, port) = (self.host.host.clone(), self.host.port);
+        let (host, port) = (hop.host.clone(), hop.port);
         let known =
             tokio::task::spawn_blocking(move || hostkeys::known_key_types(&host, port)).await?;
         if !known.is_empty() {
@@ -276,16 +391,9 @@ impl ConnPool {
                 .filter(|a| known.iter().any(|k| k == key_type(a)))
                 .cloned()
                 .collect();
-            anyhow::ensure!(!keys.is_empty(), algorithm_changed(&self.host.host, &known));
+            anyhow::ensure!(!keys.is_empty(), algorithm_changed(&hop.host, &known));
             config.preferred.key = keys.into();
         }
-        let stream = tokio::time::timeout(
-            timeout,
-            tokio::net::TcpStream::connect((self.host.host.as_str(), self.host.port)),
-        )
-        .await
-        .context("TCP connect timed out")?
-        .context("TCP connect failed")?;
         let connecting = client::connect_stream(Arc::new(config), stream, handler);
         tokio::pin!(connecting);
         let connected = loop {
@@ -295,7 +403,7 @@ impl ConnPool {
                 Err(_) => anyhow::bail!("SSH handshake timed out"),
             }
         };
-        let mut ssh = connected.map_err(|e| match problem.lock().take() {
+        connected.map_err(|e| match problem.lock().take() {
             Some(problem) => anyhow::anyhow!(problem),
             None if !known.is_empty()
                 && matches!(
@@ -306,25 +414,10 @@ impl ConnPool {
                     })
                 ) =>
             {
-                anyhow::anyhow!(algorithm_changed(&self.host.host, &known))
+                anyhow::anyhow!(algorithm_changed(&hop.host, &known))
             }
             None => e.context("SSH handshake failed"),
-        })?;
-        tokio::time::timeout(timeout, async {
-            auth::authenticate(&mut ssh, &self.host).await?;
-            let channel = ssh.channel_open_session().await?;
-            channel.request_subsystem(true, "sftp").await?;
-            let raw = RawSftpSession::new(channel.into_stream());
-            raw.set_timeout(timeout.as_secs().max(1));
-            let version = raw.init().await?;
-            Ok(Arc::new(Session {
-                raw,
-                ssh,
-                posix_rename: version.extensions.contains_key("posix-rename@openssh.com"),
-            }))
         })
-        .await
-        .context("SSH authentication or SFTP start timed out")?
     }
     /// Drops the session and schedules the next reconnect after the backoff.
     pub(super) fn failed(&self, detail: &str) {
@@ -347,6 +440,14 @@ fn run_for<T>(timeout: Duration, future: impl Future<Output = Result<T>>) -> Res
             .await
             .context("SFTP operation timed out")?
     })
+}
+/// `host:port`, IPv6 in brackets.
+fn address(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 fn backoff(failures: u32) -> Duration {
     Duration::from_secs((1u64 << failures.min(5)).min(30))
@@ -382,6 +483,7 @@ mod tests {
             auth: super::super::RemoteAuth::Agent,
             home: None,
             bookmarks: vec![],
+            use_ssh_config: false,
         };
         let pool = ConnPool::new(host, tx);
         pool.set_timeout(Duration::from_millis(20));
@@ -409,6 +511,7 @@ mod tests {
             auth: super::super::RemoteAuth::Agent,
             home: None,
             bookmarks: vec![],
+            use_ssh_config: false,
         };
         let pool = ConnPool::new(host, tx);
         pool.set_timeout(Duration::from_millis(300));
@@ -433,12 +536,20 @@ mod tests {
         assert_eq!(pool.status(), ConnStatus::Disconnected);
     }
 
+    #[derive(Clone)]
     struct Nobody;
     impl russh::server::Handler for Nobody {
         type Error = russh::Error;
     }
     /// An in-process SSH server with a fresh `algorithm` host key that rejects all logins.
     fn fake_server(algorithm: russh::keys::Algorithm) -> (u16, russh::keys::PublicKey) {
+        serve(algorithm, Nobody)
+    }
+    /// An in-process SSH server with a fresh `algorithm` host key run by `handler`.
+    fn serve<H>(algorithm: russh::keys::Algorithm, handler: H) -> (u16, russh::keys::PublicKey)
+    where
+        H: russh::server::Handler + Clone + Send + 'static,
+    {
         let key = russh::keys::PrivateKey::random(&mut rand::rng(), algorithm).unwrap();
         let public = key.public_key().clone();
         let config = Arc::new(russh::server::Config {
@@ -451,9 +562,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         runtime().spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
-                let config = config.clone();
+                let (config, handler) = (config.clone(), handler.clone());
                 tokio::spawn(async move {
-                    if let Ok(session) = russh::server::run_stream(config, socket, Nobody).await {
+                    if let Ok(session) = russh::server::run_stream(config, socket, handler).await {
                         let _ = session.await;
                     }
                 });
@@ -472,6 +583,7 @@ mod tests {
             auth: super::super::RemoteAuth::PasswordInKeyring,
             home: None,
             bookmarks: vec![],
+            use_ssh_config: false,
         };
         let pool = ConnPool::with_prompt_listener(host, tx, Arc::new(AtomicBool::new(listener)));
         pool.set_timeout(Duration::from_secs(5));
@@ -528,5 +640,145 @@ mod tests {
         *hostkeys::TEST_FILE.lock() = None;
         // Past the host key check: the login itself fails (no stored password).
         assert!(err.contains("keychain"), "{err}");
+    }
+
+    /// A jump host: accepts any key and forwards `direct-tcpip` channels, logging both.
+    #[derive(Clone)]
+    struct Jump(Arc<parking_lot::Mutex<Vec<String>>>);
+    impl russh::server::Handler for Jump {
+        type Error = russh::Error;
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            _: &russh::keys::PublicKey,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            self.0.lock().push(format!("auth {user}"));
+            Ok(russh::server::Auth::Accept)
+        }
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: russh::Channel<russh::server::Msg>,
+            host: &str,
+            port: u32,
+            _: &str,
+            _: u32,
+            reply: russh::server::ChannelOpenHandle,
+            _: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            self.0.lock().push(format!("forward {host}:{port}"));
+            let Ok(mut tcp) = tokio::net::TcpStream::connect((host.to_owned(), port as u16)).await
+            else {
+                return Ok(()); // Dropping `reply` refuses the channel.
+            };
+            reply.accept().await;
+            tokio::spawn(async move {
+                let mut stream = channel.into_stream();
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut tcp).await;
+            });
+            Ok(())
+        }
+    }
+
+    /// ProxyJump from a temp `~/.ssh/config`: the target is reached over the jump host's
+    /// forwarding channel, the jump signs in as the config's user with the remote's key
+    /// file, and each hop's host key is checked (and prompted for) under its own resolved
+    /// address.
+    #[test]
+    fn proxy_jump_through_a_local_jump_host() {
+        let _guard = hostkeys::TEST_LOCK.lock();
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("known_hosts");
+        *hostkeys::TEST_FILE.lock() = Some(file.clone());
+        let log = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (jport, jkey) = serve(russh::keys::Algorithm::Ed25519, Jump(log.clone()));
+        let (tport, tkey) = fake_server(russh::keys::Algorithm::Ed25519);
+        let line = |port: u16, key: &russh::keys::PublicKey| {
+            format!("[127.0.0.1]:{port} {}\n", key.to_openssh().unwrap())
+        };
+        let id = home.path().join("id_test");
+        let secret =
+            russh::keys::PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519)
+                .unwrap();
+        std::fs::write(&id, secret.to_openssh(ssh_key::LineEnding::LF).unwrap()).unwrap();
+        let config = home.path().join("config");
+        std::fs::write(
+            &config,
+            format!(
+                "Host target\n HostName 127.0.0.1\n Port {tport}\n ProxyJump jumper\n\
+                 Host jumper\n HostName 127.0.0.1\n Port {jport}\n User hop\n"
+            ),
+        )
+        .unwrap();
+        let host = RemoteHost {
+            id: "jumped".into(),
+            label: String::new(),
+            host: "target".into(),
+            port: 22,
+            user: "nobody".into(),
+            auth: super::super::RemoteAuth::KeyFile {
+                path: id,
+                passphrase_in_keyring: false,
+            },
+            home: None,
+            bookmarks: vec![],
+            use_ssh_config: true,
+        };
+        let pool = |listener: bool| {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let pool = ConnPool::with_prompt_listener(
+                host.clone(),
+                tx,
+                Arc::new(AtomicBool::new(listener)),
+            );
+            pool.set_ssh_config(config.clone());
+            pool.set_timeout(Duration::from_secs(5));
+            (pool, rx)
+        };
+
+        // Only the target is trusted: the jump's unknown key fails at once, named as the jump.
+        std::fs::write(&file, line(tport, &tkey)).unwrap();
+        let err = format!("{:#}", pool(false).0.connect().unwrap_err());
+        assert!(
+            err.contains(&format!("jump host 127.0.0.1:{jport}")),
+            "{err}"
+        );
+        assert!(err.contains("not known yet"), "{err}");
+
+        // Both trusted: through the jump to the target, whose login is then refused.
+        std::fs::write(&file, line(jport, &jkey) + &line(tport, &tkey)).unwrap();
+        log.lock().clear();
+        let err = format!("{:#}", pool(false).0.connect().unwrap_err());
+        assert!(err.contains("SSH authentication rejected"), "{err}");
+        assert!(!err.contains("jump host"), "{err}");
+        assert_eq!(
+            *log.lock(),
+            ["auth hop".to_owned(), format!("forward 127.0.0.1:{tport}")]
+        );
+
+        // The target is new: its prompt names the target's own address; trusting it stores
+        // the key under that address.
+        std::fs::write(&file, line(jport, &jkey)).unwrap();
+        let (pool, rx) = pool(true);
+        let answer = std::thread::spawn(move || {
+            for event in rx.iter() {
+                if let RemoteEvent::HostKeyPrompt {
+                    endpoint, reply, ..
+                } = event
+                {
+                    let _ = reply.send(true);
+                    return endpoint;
+                }
+            }
+            String::new()
+        });
+        let err = format!("{:#}", pool.connect().unwrap_err());
+        assert!(err.contains("SSH authentication rejected"), "{err}");
+        assert_eq!(answer.join().unwrap(), format!("127.0.0.1:{tport}"));
+        let trusted = std::fs::read_to_string(&file).unwrap();
+        *hostkeys::TEST_FILE.lock() = None;
+        assert!(
+            trusted.contains(&format!("[127.0.0.1]:{tport} ")),
+            "{trusted}"
+        );
     }
 }

@@ -44,6 +44,8 @@ pub enum RemoteCmd {
 
 pub struct HostKeyPrompt {
     pub host_id: String,
+    /// The resolved `host:port` (`jump host ` first for a ProxyJump hop).
+    pub endpoint: String,
     pub fingerprint: String,
     reply: Sender<bool>,
     since: Instant,
@@ -201,6 +203,7 @@ impl Remotes {
         let modal = Modal::new(Id::new("keel-host-key")).show(ctx, |ui| {
             ui.set_width(440.0);
             ui.strong(format!("First connection to {label}"));
+            ui.label(&p.endpoint);
             ui.add_space(4.0);
             ui.label(
                 "This host's key is not in ~/.ssh/known_hosts yet. Check that the fingerprint \
@@ -333,8 +336,13 @@ pub struct Editor {
     pub secret: String,
     pub home: String,
     pub bookmarks: Vec<(String, String)>,
+    pub use_ssh_config: bool,
     pub error: Option<String>,
     picker: Option<Receiver<Option<PathBuf>>>,
+    /// The resolved-connection line under the host field, and the fields it was made from.
+    summary: String,
+    summary_of: Option<RemoteHost>,
+    summary_rx: Option<Receiver<String>>,
 }
 
 impl Default for Editor {
@@ -351,8 +359,12 @@ impl Default for Editor {
             secret: String::new(),
             home: String::new(),
             bookmarks: Vec::new(),
+            use_ssh_config: true,
             error: None,
             picker: None,
+            summary: String::new(),
+            summary_of: None,
+            summary_rx: None,
         }
     }
 }
@@ -432,6 +444,7 @@ impl Editor {
             passphrase_in_keyring,
             home: h.home.clone().unwrap_or_default(),
             bookmarks: h.bookmarks.clone(),
+            use_ssh_config: h.use_ssh_config,
             ..Self::default()
         }
     }
@@ -452,7 +465,8 @@ impl Editor {
             Ok(p) if p > 0 => p,
             _ => return Err("The port must be 1-65535".into()),
         };
-        if !valid_user(user) {
+        // With ~/.ssh/config an empty user comes from the config (or the local account).
+        if !(valid_user(user) || user.is_empty() && self.use_ssh_config) {
             return Err("Enter a user name (letters, digits, . _ -)".into());
         }
         let home = self.home.trim();
@@ -509,6 +523,7 @@ impl Editor {
                 auth,
                 home: (!home.is_empty()).then(|| home.to_owned()),
                 bookmarks,
+                use_ssh_config: self.use_ssh_config,
             },
             secret,
         ))
@@ -521,6 +536,7 @@ impl Editor {
                 self.key_path = path.display().to_string();
             }
         }
+        self.refresh_summary(ctx);
         let mut outcome = EditorOutcome::Open;
         let title = if self.id.is_some() {
             "Edit remote host"
@@ -545,7 +561,22 @@ impl Editor {
                         ui.end_row();
                     };
                     field(ui, "Label", &mut self.label, "Mac mini");
-                    field(ui, "Host", &mut self.host, "host name or IP");
+                    field(
+                        ui,
+                        "Host",
+                        &mut self.host,
+                        "host name, IP or ~/.ssh/config alias",
+                    );
+                    ui.label("");
+                    ui.vertical(|ui| {
+                        ui.checkbox(&mut self.use_ssh_config, "Use ~/.ssh/config");
+                        if !self.summary.is_empty() {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&self.summary).small()).wrap(),
+                            );
+                        }
+                    });
+                    ui.end_row();
                     field(ui, "Port", &mut self.port, "22");
                     field(ui, "User", &mut self.user, "");
                     ui.label("Sign in with");
@@ -644,6 +675,46 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// Re-resolves the summary on a worker whenever the fields it depends on change; only
+    /// the newest answer is kept (an older worker's send goes to a dropped receiver).
+    fn refresh_summary(&mut self, ctx: &egui::Context) {
+        if let Some(Ok(text)) = self.summary_rx.as_ref().map(Receiver::try_recv) {
+            self.summary = text;
+            self.summary_rx = None;
+        }
+        let host = self.host.trim();
+        if !valid_host(host) {
+            self.summary.clear();
+            self.summary_of = None;
+            return;
+        }
+        let draft = RemoteHost {
+            id: self.id.clone().unwrap_or_else(|| "draft".into()),
+            label: String::new(),
+            host: host.to_owned(),
+            port: self.port.trim().parse().unwrap_or(22),
+            user: self.user.trim().to_owned(),
+            auth: RemoteAuth::Agent,
+            home: None,
+            bookmarks: Vec::new(),
+            use_ssh_config: self.use_ssh_config,
+        };
+        if self.summary_of.as_ref() == Some(&draft) {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.summary_of = Some(draft.clone());
+        self.summary_rx = Some(rx);
+        let ctx = ctx.clone();
+        spawn("keel-ssh-config", move || {
+            if tx.send(keel_vfs::sftp::describe(&draft, None)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+}
+
 fn secret_field(ui: &mut egui::Ui, secret: &mut String, editing: bool) {
     let hint = if editing {
         "leave empty to keep the stored one"
@@ -702,9 +773,14 @@ pub fn address(h: &RemoteHost) -> String {
     } else {
         h.host.clone()
     };
+    let login = if h.user.is_empty() {
+        host
+    } else {
+        format!("{}@{host}", h.user)
+    };
     match h.port {
-        22 => format!("sftp://{}@{host}", h.user),
-        port => format!("sftp://{}@{host}:{port}", h.user),
+        22 => format!("sftp://{login}"),
+        port => format!("sftp://{login}:{port}"),
     }
 }
 
@@ -712,9 +788,15 @@ pub fn address(h: &RemoteHost) -> String {
 /// could do more than name a host (it is hand-editable).
 pub fn ssh_command(h: &RemoteHost) -> Option<String> {
     let host = h.host.trim_start_matches('[').trim_end_matches(']');
-    (valid_host(host) && valid_user(&h.user)).then(|| match h.port {
-        22 => format!("ssh {}@{host}", h.user),
-        port => format!("ssh -p {port} {}@{host}", h.user),
+    // No user: `ssh` takes it from the same ~/.ssh/config (an alias resolves there too).
+    let login = match h.user.as_str() {
+        "" if h.use_ssh_config => host.to_owned(),
+        user if valid_user(user) => format!("{user}@{host}"),
+        _ => return None,
+    };
+    valid_host(host).then(|| match h.port {
+        22 => format!("ssh {login}"),
+        port => format!("ssh -p {port} {login}"),
     })
 }
 
@@ -890,10 +972,12 @@ impl AppState {
             }
             RemoteEvent::HostKeyPrompt {
                 host_id,
+                endpoint,
                 fingerprint,
                 reply,
             } => self.remotes.prompts.push_back(HostKeyPrompt {
                 host_id,
+                endpoint,
                 fingerprint,
                 reply,
                 since: Instant::now(),
@@ -1009,6 +1093,7 @@ mod tests {
             auth,
             home: Some("/srv/data".into()),
             bookmarks: vec![("Logs".into(), "/var/log".into())],
+            use_ssh_config: false,
         }
     }
 
@@ -1060,6 +1145,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_editor_accepts_config_defaults() {
+        let editor = Editor {
+            label: "Alias".into(),
+            host: "alias".into(),
+            ..Editor::default()
+        };
+        let (host, _) = editor.build(&[]).expect("empty user inherits SSH config");
+        assert!(host.use_ssh_config && host.user.is_empty());
+        assert_eq!(address(&host), "sftp://alias");
+        assert_eq!(ssh_command(&host).as_deref(), Some("ssh alias"));
+        let off = Editor {
+            use_ssh_config: false,
+            ..editor
+        };
+        assert!(
+            off.build(&[]).is_err(),
+            "without the config a user is needed"
+        );
+    }
+
+    #[test]
     fn sidebar_rows_follow_config_and_status() {
         let hosts = vec![
             host("nas", RemoteAuth::Agent),
@@ -1107,6 +1213,7 @@ mod tests {
             let (reply, answer) = crossbeam_channel::bounded(1);
             state.apply(Msg::Remote(RemoteEvent::HostKeyPrompt {
                 host_id: "nas".into(),
+                endpoint: "nas.example.invalid:22".into(),
                 fingerprint: "SHA256:abc".into(),
                 reply,
             }));
