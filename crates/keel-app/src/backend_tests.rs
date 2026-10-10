@@ -182,7 +182,19 @@ fn wait_job(b: &LibraryBackend, id: JobId) {
         let row = jobs.iter().find(|(j, _)| *j == id).map(|(_, r)| r.clone());
         match row {
             Some(r) if r.status == JobStatus::Done => return,
-            Some(r) if !r.active() => panic!("job {id}: {:?}", r.status),
+            Some(r) if !r.active() => {
+                let log = match b {
+                    LibraryBackend::Daemon(remote) => remote
+                        .call::<api::JobInfo>("jobs.info", json!({ "id": id }))
+                        .map_or_else(|e| format!("{e:#}"), |i| i.log.unwrap_or_default()),
+                    _ => String::new(),
+                };
+                panic!(
+                    "job {id} ({}): {:?}
+{log}",
+                    r.kind, r.status
+                )
+            }
             _ => {}
         }
         assert!(Instant::now() < deadline, "job {id} did not finish");
