@@ -2050,6 +2050,16 @@ fn dropbox_quota_reads_individual_and_team_allocations() {
         let dbx = api_cloud(account("dbx", CloudKind::Dropbox), &api);
         assert_eq!(dbx.quota(), Some(crate::Quota { used: 120, total }));
         assert_eq!(log.lock()[0].0, "POST");
+        // A mount's free space is what the quota leaves.
+        let root = VPath::parse("cloud://dbx/").unwrap();
+        let t = total.unwrap();
+        assert_eq!(
+            dbx.space(&root),
+            Some(crate::Space {
+                free: t - 120,
+                total: t
+            })
+        );
     }
 }
 

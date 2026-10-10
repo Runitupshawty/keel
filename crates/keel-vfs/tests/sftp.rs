@@ -68,6 +68,9 @@ fn live_operations_transfers_cache_and_cleanup() {
     provider
         .mkdir(&root)
         .expect("create unique test directory (base must exist and key must be trusted)");
+    // OpenSSH answers statvfs@openssh.com: a mount of this host shows real free space.
+    let space = provider.space(&root).expect("statvfs@openssh.com");
+    assert!(space.total > 0 && space.free <= space.total, "{space:?}");
     let file = root.join("space ü.txt");
     let payload = vec![42; 2 * 1024 * 1024 + 17];
     {

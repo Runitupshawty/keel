@@ -351,20 +351,23 @@ The source is given by id or label (`keel sources`). Mounts belong to the daemon
 | | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Backend | WinFsp | FUSE (through `fusermount3` or `fusermount`; no libfuse needed) | macFUSE |
-| Build `keel-daemon` with | `--features winfsp` (needs LLVM/libclang for bindgen) | `--features fuse` | `--features fuse` (needs macFUSE and `pkg-config` at build time) |
-| Driver to install | [WinFsp](https://winfsp.dev) | `fuse3` (usually present) | [macFUSE](https://macfuse.github.io) |
+| In the release build | yes | yes (zip, tarball and .deb) | no: build it yourself |
+| Driver to install | [WinFsp](https://winfsp.dev) | `fuse3` (`sudo apt install fuse3`; the .deb recommends it) | [macFUSE](https://macfuse.github.io) |
+| Build `keel-daemon` from source with | `--features winfsp` (needs LLVM/libclang for bindgen: `scripts/libclang.ps1`) | `--features fuse` | `--features fuse` (needs macFUSE and `pkg-config` at build time) |
 | Target | `K:` or a new folder | empty folder (made when missing) | empty folder (made when missing) |
 
-Release builds do not include a backend yet: build `keel-daemon` yourself with the feature for your platform (`cargo build --release -p keel-daemon --features winfsp`). Without one, `keel mount` says so. A daemon built with `winfsp` still starts where WinFsp is not installed; only mounting fails. Note that the `winfsp` feature links winfsp-rs, which is GPL-3.0 licensed (see [THIRD_PARTY.md](THIRD_PARTY.md)): a `keel-daemon` built with it may only be distributed under the GPL-3.0.
+The Windows and Linux release builds of `keel-daemon` include the backend; install the driver to mount. Without the driver, `keel mount` fails with error -32008 and says what to install (the daemon itself starts and works as usual). The macOS release builds have no backend, because macFUSE (a kernel extension) cannot be installed on the build machines: build `keel-daemon` yourself with `--features fuse` after installing macFUSE (`cargo build --release -p keel-daemon --features fuse`). Note that the `winfsp` backend links winfsp-rs, which is GPL-3.0 licensed: the Windows release's `keel-daemon.exe` is therefore distributed under the GPL-3.0 (its license text is in `licenses/winfsp-rs/COPYING`, the source is this repository at the release's tag; see [THIRD_PARTY.md](THIRD_PARTY.md)). `keel.exe` does not include it and stays MIT or Apache-2.0.
 
 What a mount does:
 
 - **Listings** come from the source while it is online and from the library index while it is offline, so an unplugged drive or an unreachable server still shows its folders (files cannot be opened or changed until it is back).
 - **Reads** are on demand: a program reading part of a file reads that range through Keel's VFS (local, SFTP, cloud), nothing is downloaded up front.
 - **Writes** go to a `.keel-partial-…` staging file next to the target (for remote sources, a local spool uploaded on close) and replace the file atomically when the program closes it (before its `close` returns), so other programs never see a half-written file and an aborted or interrupted write leaves the old file (or none) in place. While a file is being written only the program writing it sees the new content: listings show the saved file, opening it elsewhere fails with a sharing violation (`EBUSY` on Linux and macOS) until it is closed, and a file being created does not show yet. If publishing fails, the program's close reports an error and the data is kept as `<name> (unsaved <date>).<ext>` (next to the file, or in `mount-spool` under the data folder for remote sources), a name Keel never cleans up; the daemon log says where. Unmounting drops writes still open (the files stay as they were).
+- **Renames** of a file being written (or of a folder holding one, or a move to another folder) take effect at once: the write is published under the new name when the program closes the file. A file being created is not on the source until then, so renaming it only moves its write (over an existing file, that file is replaced when the new one is published). A file being written is never replaced by a rename.
 - **Deletes** go to the trash for local sources, like Keel's own delete; on SFTP and S3 they are permanent (the `mounts.add` preview says so).
+- **Attributes**: files and folders show the source's modified time (also as the access and change time); entries without one (S3 folders) take the time from the library index. While a file is being written, the system sees its written length and the time of its last write. Files of a read-only source show as read-only (`r--`, the Windows read-only attribute) and changes fail with "read-only file system" (`EROFS`). `df` and the drive's properties show the free and total space of the source's volume: the local disk, the SFTP server's filesystem (servers with the `statvfs@openssh.com` extension, as OpenSSH has), the cloud account's quota. Where Keel cannot tell, Linux and macOS show 0 and Windows a large placeholder (Explorer refuses to copy onto a drive with no free space).
 
-Limits: file times, attributes and permissions are the source's and cannot be changed through the mount; a file being written cannot be renamed until it is closed; a mount folder inside the folder it shows is refused; staging files and (on Windows) names Windows cannot show (`aux.txt`, `a:b`, names differing only in case on a case-sensitive source) are hidden; the free space shown for the drive is a placeholder; on Windows only the current user, SYSTEM and Administrators can open the drive. SFTP and cloud sources mount the same way, through the profile's remotes and cloud accounts that keel-daemon registers.
+Limits: file times, attributes and permissions are the source's and cannot be changed through the mount; a mount folder inside the folder it shows is refused; staging files and (on Windows) names Windows cannot show (`aux.txt`, `a:b`, names differing only in case on a case-sensitive source) are hidden; Windows refuses to rename a folder holding a file being written on a local source, as it does for any open file; on Windows only the current user, SYSTEM and Administrators can open the drive. SFTP and cloud sources mount the same way, through the profile's remotes and cloud accounts that keel-daemon registers.
 
 ## Install
 
@@ -480,12 +483,11 @@ Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes
 
 What is next, from the known limitations still open:
 
-- Signed and notarized builds, and release builds that include a mount backend.
+- Signed and notarized builds, and a macOS release build with a mount backend (macFUSE).
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
 - Drag-out to other apps on macOS and Linux, and the native Windows shell context menu.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
-- Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 

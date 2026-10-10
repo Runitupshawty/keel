@@ -43,6 +43,18 @@ pub fn backend() -> Option<&'static str> {
     }
 }
 
+/// Why this machine cannot mount although [`backend`] is built in: the driver is not
+/// installed (WinFsp, fuse3, macFUSE), with what to install. None when it is (or when
+/// there is no backend).
+pub fn driver_missing() -> Option<String> {
+    #[cfg(all(windows, feature = "winfsp"))]
+    return winfsp::driver_missing();
+    #[cfg(all(unix, feature = "fuse"))]
+    return fuse::driver_missing();
+    #[allow(unreachable_code)]
+    None
+}
+
 /// What to say when [`backend`] is None.
 pub const NO_BACKEND: &str = "this keel-daemon has no mount backend: build it with \
     `--features winfsp` (Windows, needs WinFsp) or `--features fuse` (Linux FUSE, macFUSE)";
@@ -204,6 +216,9 @@ impl Mounts {
         target: &str,
     ) -> anyhow::Result<(String, Arc<MountFs>)> {
         let backend = backend().context(NO_BACKEND)?;
+        if let Some(why) = driver_missing() {
+            bail!(why);
+        }
         let target = normalize_target(target)?;
         if self.get(&target).is_some() {
             bail!("{target} is already a Keel mount");

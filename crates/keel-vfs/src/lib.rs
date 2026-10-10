@@ -40,7 +40,7 @@ pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
 pub use provider::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, FeedError, Provider, Quota,
-    RemoveKind, ShareLink,
+    RemoveKind, ShareLink, Space,
 };
 pub use router::Router;
 pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};

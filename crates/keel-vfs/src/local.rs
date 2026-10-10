@@ -262,6 +262,13 @@ impl Provider for LocalProvider {
     fn remove(&self, p: &VPath) -> Result<()> {
         trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
     }
+    fn space(&self, p: &VPath) -> Option<crate::Space> {
+        let s = fs4::statvfs(local(p).ok()?).ok()?;
+        Some(crate::Space {
+            free: s.available_space(),
+            total: s.total_space(),
+        })
+    }
     fn remove_kind(&self) -> crate::provider::RemoveKind {
         crate::provider::RemoveKind::Trash
     }

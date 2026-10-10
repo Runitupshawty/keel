@@ -89,6 +89,47 @@ jobs:
           path: tests/web-e2e/out
           if-no-files-found: ignore
 
+  # The mount backends the release builds ship (the `build` job keeps the default features):
+  # Linux builds keel-daemon with `fuse` and mounts for real (the round trip in
+  # crates/keel-mount/tests, through fusermount3); Windows builds and lints it with `winfsp`
+  # (bindgen needs libclang; the WinFsp driver is only needed to mount).
+  mount:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            features: fuse
+          - os: windows-latest
+            features: winfsp
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux system libraries and FUSE
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev fuse3
+          test -c /dev/fuse && which fusermount3
+      - name: libclang for bindgen (WinFsp headers)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/libclang.ps1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mount-${{ matrix.features }}
+      - run: cargo build --locked -p keel-daemon --features ${{ matrix.features }}
+      - run: cargo clippy --locked -p keel-mount --features ${{ matrix.features }} --all-targets -- -D warnings
+      # Linux only: a test binary with `winfsp` needs the WinFsp DLL to start (keel-daemon
+      # delay-loads it; test binaries do not).
+      - name: keel-mount tests with a real FUSE mount
+        if: runner.os == 'Linux'
+        env:
+          KEEL_FUSE_TEST: 1
+        run: cargo test --locked -p keel-mount --features fuse
+
   # Licenses, advisories, banned crates and sources; policy in deny.toml.
   deny:
     runs-on: ubuntu-latest
@@ -110,14 +151,15 @@ jobs:
 
   # The single required status check for branch protection.
   check:
-    needs: [build, wasm, deny]
+    needs: [build, wasm, mount, deny]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
 
   # Tag v* -> one archive per platform on the GitHub release. macOS x64 is cross-built on the
   # arm64 runner (no Intel runner needed); fetch-deps picks the matching pdfium via
-  # KEEL_PDFIUM_ASSET.
+  # KEEL_PDFIUM_ASSET. keel-daemon gets the platform's mount backend (`mount`: WinFsp on
+  # Windows, FUSE on Linux; none on macOS, where macFUSE cannot be installed on the runner).
   package:
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
@@ -131,6 +173,8 @@ jobs:
             libs: Everything64.dll pdfium.dll
             # Static CRT: keel.exe runs without the VC++ redistributable (VCRUNTIME140.dll).
             rustflags: -C target-feature=+crt-static
+            # GPL-3.0 (winfsp-rs): keel-daemon.exe ships under the GPL-3.0, see THIRD_PARTY.md.
+            mount: winfsp
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
@@ -147,12 +191,17 @@ jobs:
             name: linux-x64
             pdfium: pdfium-linux-x64
             libs: libpdfium.so
+            mount: fuse
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - name: Linux system libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev
+      - name: libclang for bindgen (WinFsp headers)
+        if: matrix.mount == 'winfsp'
+        shell: pwsh
+        run: ./scripts/libclang.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }},wasm32-unknown-unknown
@@ -175,10 +224,15 @@ jobs:
       - name: Web client bundle
         shell: bash
         run: bash scripts/build-web.sh
+      # Two builds: one cargo run would unify keel-mount's features, compiling the mount
+      # backend (and on Windows its GPL-3.0 code) into keel as well.
       - name: Build release
+        shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release --locked -p keel-app -p keel-daemon --target ${{ matrix.target }}
+        run: |
+          cargo build --release --locked -p keel-app --target ${{ matrix.target }}
+          cargo build --release --locked -p keel-daemon --target ${{ matrix.target }} ${{ matrix.mount && format('--features {0}', matrix.mount) || '' }}
       - name: Package release
         shell: bash
         run: |
@@ -198,6 +252,11 @@ jobs:
           cp "$bin/$exe" "$bin/$daemon" "dist/$name/"
           for lib in ${{ matrix.libs }}; do cp "target/deps/$lib" "dist/$name/"; done
           cp -R target/deps/licenses "dist/$name/licenses"
+          if [ "${{ matrix.mount }}" = winfsp ]; then
+            # keel-daemon.exe links winfsp-rs (GPL-3.0): the license text goes with it.
+            mkdir -p "dist/$name/licenses/winfsp-rs"
+            cp assets/GPL-3.0.txt "dist/$name/licenses/winfsp-rs/COPYING"
+          fi
           cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md README.md CHANGELOG.md "dist/$name/"
           if [ "$RUNNER_OS" = Linux ]; then cp assets/keel.desktop assets/keel.png "dist/$name/"; fi
           cd dist

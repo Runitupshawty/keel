@@ -7,7 +7,7 @@ use crate::path::MountPath;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
     KernelConfig, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -36,6 +36,7 @@ fn errno(e: &io::Error) -> Errno {
         K::ResourceBusy => Errno::EBUSY,
         K::NotConnected => Errno::ENOTCONN,
         K::BrokenPipe => Errno::EBADF,
+        K::ReadOnlyFilesystem => Errno::EROFS,
         _ => Errno::EIO,
     }
 }
@@ -121,7 +122,12 @@ impl Fuse {
             } else {
                 FileType::RegularFile
             },
-            perm: if a.is_dir { 0o755 } else { 0o644 },
+            perm: match (a.is_dir, a.readonly) {
+                (true, false) => 0o755,
+                (true, true) => 0o555,
+                (false, false) => 0o644,
+                (false, true) => 0o444,
+            },
             nlink: if a.is_dir { 2 } else { 1 },
             uid: self.uid,
             gid: self.gid,
@@ -132,7 +138,7 @@ impl Fuse {
     }
 
     fn entry(&self, p: MountPath, reply: ReplyEntry) {
-        match self.fs.lookup(&p) {
+        match self.fs.attr(&p) {
             Ok((p, a)) => reply.entry(&TTL, &self.attr(&p, &a), Generation(0)),
             Err(e) => reply.error(errno(&e)),
         }
@@ -169,7 +175,7 @@ impl Filesystem for Fuse {
             None => self
                 .path(ino)
                 .map_err(|_| io::Error::from(io::ErrorKind::NotFound))
-                .and_then(|p| self.fs.lookup(&p)),
+                .and_then(|p| self.fs.attr(&p)),
         };
         match r {
             Ok((p, a)) => reply.attr(&TTL, &self.attr(&p, &a)),
@@ -214,7 +220,7 @@ impl Filesystem for Fuse {
             }
         }
         // Mode, owner and times are the source's own: accepted and ignored.
-        match self.fs.lookup(&path) {
+        match self.fs.attr(&path) {
             Ok((p, a)) => reply.attr(&TTL, &self.attr(&p, &a)),
             Err(e) => reply.error(errno(&e)),
         }
@@ -357,6 +363,22 @@ impl Filesystem for Fuse {
         Self::done(reply, self.fs.release(fh.0));
     }
 
+    /// `df`: the source volume's free and total space (0 / 0 when it is unknown).
+    fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
+        const BLOCK: u64 = 4096;
+        let (free, total) = self.fs.space().map_or((0, 0), |s| (s.free, s.total));
+        reply.statfs(
+            total / BLOCK,
+            free / BLOCK,
+            free / BLOCK,
+            0,
+            0,
+            BLOCK as u32,
+            255,
+            BLOCK as u32,
+        );
+    }
+
     fn fsync(
         &self,
         _req: &Request,
@@ -439,6 +461,26 @@ impl Filesystem for Fuse {
             Err(e) => reply.error(errno(&e)),
         }
     }
+}
+
+/// What is missing for a FUSE mount, if anything: the kernel device and `fusermount3`
+/// (Linux), macFUSE (macOS).
+pub(crate) fn driver_missing() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return (!std::path::Path::new("/Library/Filesystems/macfuse.fs").exists()).then(|| {
+            "macFUSE is not installed: install it (https://macfuse.github.io) to mount".into()
+        });
+    }
+    if !std::path::Path::new("/dev/fuse").exists() {
+        return Some("FUSE is not available here (no /dev/fuse): mounts need it".into());
+    }
+    let dirs = std::env::var_os("PATH").unwrap_or_default();
+    let found = std::env::split_paths(&dirs)
+        .chain(["/bin".into(), "/usr/bin".into()])
+        .any(|d| d.join("fusermount3").is_file() || d.join("fusermount").is_file());
+    (!found).then(|| {
+        "fusermount3 was not found: install FUSE 3 to mount (`sudo apt install fuse3`)".into()
+    })
 }
 
 /// Unmounts (and joins the session thread) when dropped.

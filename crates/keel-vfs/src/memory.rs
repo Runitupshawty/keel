@@ -1,11 +1,12 @@
 //! An in-memory provider for tests (the `test-util` feature): files by path, folders
 //! implied by them or made with `mkdir`, plus switches that take it offline, make it
-//! read-only, fail the reads of chosen paths or slow every read down. A writer's file is
-//! placed whole on `flush()` (`write_at`, and every writer while `write_through` is set,
-//! put each write in place). Every change (`put`, `remove`, a placed writer, a rename)
-//! feeds `changes` (its cursor is a position in the change log), which can be switched off
-//! or made to refuse its cursor once; `folder_times` gives folders a modified time that
-//! moves when an entry is added or removed, as on an SFTP server.
+//! read-only, fail the reads of chosen paths, slow every read down or set the free space
+//! `space` reports. A writer's file is placed whole on `flush()` (`write_at`, and every
+//! writer while `write_through` is set, put each write in place). Every change (`put`,
+//! `remove`, a placed writer, a rename) feeds `changes` (its cursor is a position in the
+//! change log), which can be switched off or made to refuse its cursor once;
+//! `folder_times` gives folders a modified time that moves when an entry is added or
+//! removed, as on an SFTP server.
 
 use crate::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, Entry, FeedError, Kind, Provider,
@@ -60,6 +61,8 @@ pub struct MemoryProvider {
     /// Folders report a modified time that moves when an entry is added to or removed from
     /// them, and `folder_times_track_entries` says so.
     pub folder_times: AtomicBool,
+    /// What `space` answers (None: unknown).
+    pub space: Mutex<Option<crate::Space>>,
 }
 
 /// What changed, for `changes` and `folder_times`.
@@ -367,6 +370,9 @@ fn prefix(dir: &VPath) -> String {
 impl Provider for MemoryProvider {
     fn scheme(&self) -> &'static str {
         "memory"
+    }
+    fn space(&self, _: &VPath) -> Option<crate::Space> {
+        *self.space.lock()
     }
     fn caps(&self) -> Caps {
         let write = !self.read_only.load(Ordering::SeqCst);

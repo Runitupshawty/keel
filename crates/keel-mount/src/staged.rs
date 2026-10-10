@@ -40,6 +40,8 @@ pub(crate) enum State {
 pub(crate) struct Staged {
     target: VPath,
     pub(crate) state: State,
+    /// Data was written since it was staged (truncating alone does not count).
+    pub(crate) written: bool,
 }
 
 fn closed() -> io::Error {
@@ -122,6 +124,7 @@ impl Staged {
         Ok(Staged {
             target: target.clone(),
             state: State::Open(spool),
+            written: false,
         })
     }
 
@@ -136,6 +139,7 @@ impl Staged {
         let f = self.spool()?;
         f.seek(SeekFrom::Start(offset))?;
         f.write_all(data)?;
+        self.written = true;
         Ok(data.len())
     }
 
@@ -158,6 +162,35 @@ impl Staged {
 
     pub(crate) fn len(&mut self) -> io::Result<u64> {
         Ok(self.spool()?.metadata()?.len())
+    }
+
+    /// When the staged copy was last written.
+    pub(crate) fn modified(&mut self) -> io::Result<SystemTime> {
+        self.spool()?.metadata()?.modified()
+    }
+
+    /// The write now lands at `target`: the file, or a folder above it, was renamed. A
+    /// local spool moves to stay beside its target (a hidden staging name in the target's
+    /// folder); it is found where it was or, when its folder was the one renamed, under
+    /// its name in the new folder. A spool that cannot move stays put and is renamed
+    /// across folders when the write is published.
+    pub(crate) fn retarget(&mut self, target: VPath) {
+        if let State::Open(Spool::Beside { path, .. }) = &mut self.state {
+            if let (Some(new), Some(name)) = (target.to_local_path(), path.file_name()) {
+                let moved = new.with_file_name(name);
+                let now = if fs::symlink_metadata(&*path).is_ok() {
+                    path.clone()
+                } else {
+                    moved
+                };
+                let want = new.with_file_name(keel_vfs::ops::partial_name(target.name()));
+                *path = match fs::rename(&now, &want) {
+                    Ok(()) => want,
+                    Err(_) => now,
+                };
+            }
+        }
+        self.target = target;
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -390,6 +423,47 @@ mod tests {
         s.write_at(0, b"x").unwrap();
         drop(s);
         assert_eq!(names(dir.path()), vec!["a.bin"]);
+    }
+
+    #[test]
+    fn a_retargeted_write_moves_its_spool_and_lands_under_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("a")).unwrap();
+        fs::create_dir(dir.path().join("b")).unwrap();
+        let p = keel_vfs::LocalProvider;
+        let mut s = Staged::begin(
+            &p,
+            &VPath::local(dir.path().join("a/x.txt")),
+            true,
+            dir.path(),
+        )
+        .unwrap();
+        s.write_at(0, b"one ").unwrap();
+        // Renamed in its folder, then moved to another one: the spool follows.
+        s.retarget(VPath::local(dir.path().join("a/y.txt")));
+        s.retarget(VPath::local(dir.path().join("b/z.txt")));
+        assert!(names(&dir.path().join("a")).is_empty());
+        let spool = names(&dir.path().join("b"));
+        assert_eq!(spool.len(), 1);
+        assert!(keel_vfs::ops::is_partial(&spool[0]), "{spool:?}");
+        assert!(spool[0].starts_with("z.txt"), "{spool:?}");
+        s.write_at(4, b"two").unwrap();
+        // Its folder renamed under it (the spool moved with the folder). Windows refuses
+        // to rename a folder holding an open file, like any other program's.
+        let last = match fs::rename(dir.path().join("b"), dir.path().join("c")) {
+            Ok(()) => dir.path().join("c"),
+            Err(e) => {
+                if !cfg!(windows) {
+                    panic!("{e}");
+                }
+                dir.path().join("b")
+            }
+        };
+        s.retarget(VPath::local(last.join("z.txt")));
+        s.publish(&p).unwrap();
+        assert_eq!(fs::read(last.join("z.txt")).unwrap(), b"one two");
+        assert_eq!(names(&last), vec!["z.txt"]);
+        assert!(s.modified().is_err(), "closed");
     }
 
     fn memory_cloud() -> Arc<dyn Provider> {
