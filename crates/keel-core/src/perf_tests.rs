@@ -120,9 +120,9 @@ fn perf_index_200k_files() {
 
 /// The same tree as `perf_index_200k_files`, generated (no disk, no native ids): what the
 /// store costs for 20,000 folders of 10 files. Each folder was its own transaction (and FTS5
-/// segment) until 0.16: 12.0 s, then 5.5 s.
+/// segment) until 0.16: 12.0 s, then 5.1 s.
 #[test]
-#[ignore = "release measurement: 220,200 generated records in small folders"]
+#[ignore = "release measurement: 220,201 generated records in small folders"]
 fn perf_index_small_folders_generated() {
     let router = Router::new();
     router.register(Arc::new(fake(|path: &str| {

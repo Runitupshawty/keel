@@ -1071,6 +1071,14 @@ fn zip_compress_and_extract() {
     click(&mut h, "Extract here");
     assert!(wait(&mut h, 20, &job_done));
     assert!(a.join("README.md").is_file() && a.join("css").join("style.css").is_file());
+
+    // Inside the zip no zip can be made: neither zip item is offered there.
+    let zip = VPath::local(a.join("site.zip"));
+    sm(&mut h).run(0, Action::Navigate(VPath::join_archive(&zip, "recipes")));
+    assert!(wait(&mut h, 10, &listed));
+    right_click_row(&mut h, "bread.md");
+    assert!(has(&h, "Copy path"), "the item's menu is open");
+    assert!(!has_contains(&h, "Add to \"") && !has(&h, "Compress to zip…"));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1600,11 +1608,15 @@ fn remotes_add_edit_remove() {
     fill(&mut h, at, "NAS");
     let at = field(&h, "Host");
     fill(&mut h, at, "nas.example.com");
-    // The host's summary line appears below it a moment later and moves the rows down.
-    for _ in 0..20 {
+    // The host's summary line appears below it a moment later (from a worker) and moves
+    // the rows down: the next field is found after it is shown.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !has_contains(&h, "~/.ssh/config is not used") {
+        assert!(std::time::Instant::now() < end, "the host's summary line");
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    h.run_steps(2);
     let at = field(&h, "User");
     fill(&mut h, at, "demo");
     click(&mut h, "SSH agent");

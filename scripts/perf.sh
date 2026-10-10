@@ -11,7 +11,7 @@ set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 only="${1:-}"
-scratch="$(mktemp -d "${TMPDIR:-${TMP:-/tmp}}/keel-perf.XXXXXX")"
+scratch="$(mktemp -d "${TMPDIR:-${TMP:-/tmp}}/keel-perf.XXXXXX")" || exit 1
 trap 'rm -rf "$scratch"' EXIT
 export KEEL_CONFIG_DIR="$scratch/config" KEEL_DATA_DIR="$scratch/data" KEEL_NET_SECRET=memory
 jobs="${CARGO_BUILD_JOBS:-2}"

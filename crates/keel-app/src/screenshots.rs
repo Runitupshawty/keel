@@ -326,7 +326,9 @@ pub(crate) fn neutral_sidebar(s: &mut AppState, root: &Path) {
         182_000_000_000,
         511_000_000_000,
     )];
-    s.sidebar.drives_requested = Some(Instant::now());
+    // Never refreshed from the real drives while a harness runs (a flow longer than
+    // `DRIVES_REFRESH` would show this machine's figures).
+    s.sidebar.drives_requested = Some(Instant::now() + Duration::from_secs(86_400));
 }
 
 fn harness(
