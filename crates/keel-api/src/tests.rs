@@ -490,6 +490,17 @@ fn reads_ranges_previews_thumbs_and_one_time_links() {
     let stats = f.ctx.lib.sidecars().unwrap().stats();
     assert!(stats.keys >= 1, "{stats:?}");
     assert!(call(&f.ctx, "media.thumb", json!({"path": notes})).is_err());
+    // `make: false` answers only from sidecars that exist; a content id needs 64 hex digits.
+    let big = json!({"path": s(&photo), "size": "thumb1024", "make": false});
+    let missing = call(&f.ctx, "media.thumb", big).unwrap_err();
+    assert_eq!(missing.code, ApiError::NOT_FOUND, "{missing:?}");
+    let nothing = call(&f.ctx, "media.thumb", json!({})).unwrap_err();
+    assert_eq!(nothing.code, ApiError::INVALID_PARAMS);
+    let bad = call(&f.ctx, "media.thumb", json!({"content_id": "zz"})).unwrap_err();
+    assert_eq!(bad.code, ApiError::INVALID_PARAMS);
+    let unknown = json!({"content_id": "0".repeat(64)});
+    let unknown = call(&f.ctx, "media.thumb", unknown).unwrap_err();
+    assert_eq!(unknown.code, ApiError::NOT_FOUND);
 
     // A download link works once.
     let link: FileLink =

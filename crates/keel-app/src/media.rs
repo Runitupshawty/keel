@@ -8,6 +8,12 @@
 //! prefetch rows; tiles that scrolled away are dropped before they are decoded or made.
 //! With the library open the sidecars are the library's (the sidecar job fills them, so
 //! most tiles are instant); without it they live in a cache under the cache folder.
+//! Attached to keel-daemon, thumbnails are the daemon's sidecars (`media.thumb`, kept in a
+//! small cache under the cache folder by content id and size): a missing one is asked of
+//! the source's sidecar job (`media.index`) and asked for again when the daemon says it
+//! made some ([`Media::news`]); a file the daemon has none for twice is decoded here
+//! ([`Fetches`]). 1024 px thumbnails (no job makes them) the daemon makes on request;
+//! video strips and metadata are always made here.
 
 use egui::{pos2, ColorImage, Rect, TextureHandle, Vec2};
 use keel_core::{Library, MediaMeta, SidecarKey, SidecarKind, Sidecars};
@@ -39,6 +45,10 @@ pub const STRIP_FRAMES: u32 = 20;
 const CACHE_BUDGET: u64 = 2 << 30;
 /// Library record lookups (content ids per folder) are reused this long.
 const RECORDS_TTL: Duration = Duration::from_secs(60);
+/// Attached: the daemon's thumbnails kept here (bytes; oldest dropped first).
+const THUMBS_BUDGET: u64 = 256 << 20;
+/// Attached: `media.index` for one source at most this often.
+pub const INDEX_EVERY: Duration = Duration::from_secs(10);
 const DAYS_CHUNK: usize = 2000;
 
 pub const IMAGE_EXTS: &[&str] = &[
@@ -315,6 +325,18 @@ impl<K: Clone + Eq + Hash, V: Clone> Queue<K, V> {
         }
     }
 
+    /// Answered keys a view still wants: queued for loading again.
+    pub fn requeue(&self, keys: &[K]) {
+        let mut s = self.s.lock();
+        for k in keys {
+            if let Some(i) = s.items.get_mut(k).filter(|i| i.state == State::Done) {
+                i.state = State::Queued(Stage::Load);
+            }
+        }
+        drop(s);
+        self.cv.notify_all();
+    }
+
     pub fn close(&self) {
         self.s.lock().closed = true;
         self.cv.notify_all();
@@ -327,6 +349,193 @@ impl<K: Clone + Eq + Hash, V: Clone> Queue<K, V> {
             .filter(|i| matches!(i.state, State::Queued(_)))
             .count()
     }
+}
+
+// ---------------------------------------------------------------- attached: the daemon's
+
+/// A file as the daemon's answers are counted: real path, mtime, size.
+pub type FileKey = (VPath, i64, u64);
+
+/// What to do after the daemon had no sidecar for a file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Missed {
+    /// Ask `media.index` for this source (then [`Fetches::started`]) and wait.
+    Index(String),
+    /// Its source's sidecar job runs: wait for its news ([`Media::news`]).
+    Wait,
+    /// Make it here.
+    Local,
+}
+
+/// A source's sidecar job as this window asked for it.
+struct SourceJob {
+    asked: Instant,
+    /// Known once `media.index` answered.
+    job: Option<keel_core::JobId>,
+    ended: bool,
+}
+
+/// Attached: the daemon's "no sidecar" answers. The first one for a file asks its source's
+/// sidecar job (`media.index`); answers while that job runs only wait for its news; the
+/// second one counted (after the job ended) means the job cannot make it, so it is made
+/// here, as are files in no source (no job would make them).
+// ponytail: grows with the files that missed in this connection; a new connection starts over.
+#[derive(Default)]
+pub struct Fetches {
+    misses: HashMap<FileKey, u8>,
+    jobs: HashMap<String, SourceJob>,
+    /// Jobs whose end was announced, for a `media.index` answer that comes after it.
+    ended: std::collections::HashSet<keel_core::JobId>,
+}
+
+impl Fetches {
+    /// Made here from now on.
+    pub fn local(&self, f: &FileKey) -> bool {
+        self.misses.get(f).is_some_and(|n| *n >= 2)
+    }
+
+    /// The daemon had no sidecar for `f` (in `source`, if any) at `now`.
+    pub fn missed(&mut self, f: FileKey, source: Option<&str>, now: Instant) -> Missed {
+        let Some(source) = source else {
+            self.give_up(f);
+            return Missed::Local;
+        };
+        let recent = match self.jobs.get(source) {
+            Some(j) if !j.ended => return Missed::Wait,
+            Some(j) => now.saturating_duration_since(j.asked) < INDEX_EVERY,
+            None => false,
+        };
+        let n = self.misses.entry(f.clone()).or_default();
+        *n += 1;
+        // Its job just went over the source and did not make it.
+        if *n >= 2 || recent {
+            self.give_up(f);
+            return Missed::Local;
+        }
+        let job = SourceJob {
+            asked: now,
+            job: None,
+            ended: false,
+        };
+        self.jobs.insert(source.to_owned(), job);
+        Missed::Index(source.to_owned())
+    }
+
+    /// `media.index` for `source` answered: its job, or None when it failed. True when that
+    /// job already ended (ask the parked thumbnails again).
+    pub fn started(&mut self, source: &str, job: Option<keel_core::JobId>) -> bool {
+        let Some(j) = self.jobs.get_mut(source) else {
+            return false;
+        };
+        j.job = job;
+        j.ended = job.is_none_or(|id| self.ended.contains(&id));
+        j.ended
+    }
+
+    /// A sidecar job made thumbnails; `done`: it ended.
+    pub fn news(&mut self, job: keel_core::JobId, done: bool) {
+        if done {
+            self.ended.insert(job);
+            for j in self.jobs.values_mut().filter(|j| j.job == Some(job)) {
+                j.ended = true;
+            }
+        }
+    }
+
+    /// The daemon cannot be asked about `f` (an error other than "no sidecar").
+    pub fn give_up(&mut self, f: FileKey) {
+        self.misses.insert(f, 2);
+    }
+}
+
+/// The daemon's thumbnails on disk: `<content id>-<px>.webp`, and per file (named after
+/// its sidecar key without content id) the content id it had.
+struct Thumbs {
+    dir: PathBuf,
+    /// Bytes written since the folder was last trimmed.
+    written: std::sync::atomic::AtomicU64,
+}
+
+impl Thumbs {
+    fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            // Trimmed on the first write.
+            written: std::sync::atomic::AtomicU64::new(THUMBS_BUDGET),
+        }
+    }
+
+    fn alias(&self, f: &FileKey) -> Option<PathBuf> {
+        let local = f.0.to_local_path()?;
+        let key = SidecarKey::local(&local, f.1, f.2, None);
+        Some(self.dir.join(key.dir_name()))
+    }
+
+    fn data(&self, cas: &str, kind: SidecarKind) -> PathBuf {
+        let px = if kind == SidecarKind::Thumb1024 {
+            1024
+        } else {
+            256
+        };
+        self.dir.join(format!("{cas}-{px}.webp"))
+    }
+
+    /// The content id `f` had when its thumbnail was last fetched.
+    fn content_id(&self, f: &FileKey) -> Option<String> {
+        let cas = std::fs::read_to_string(self.alias(f)?).ok()?;
+        (cas.len() == 64 && cas.bytes().all(|b| b.is_ascii_hexdigit())).then_some(cas)
+    }
+
+    fn read(&self, f: &FileKey, kind: SidecarKind) -> Option<Vec<u8>> {
+        std::fs::read(self.data(&self.content_id(f)?, kind)).ok()
+    }
+
+    fn write(&self, f: &FileKey, cas: &str, kind: SidecarKind, bytes: &[u8]) {
+        let Some(alias) = self.alias(f) else { return };
+        let wrote = std::fs::create_dir_all(&self.dir)
+            .and_then(|()| std::fs::write(self.data(cas, kind), bytes))
+            .and_then(|()| std::fs::write(alias, cas));
+        if let Err(e) = wrote {
+            return tracing::debug!("thumbnail cache {}: {e}", self.dir.display());
+        }
+        let n = bytes.len() as u64 + 64;
+        if self.written.fetch_add(n, Ordering::Relaxed) + n >= THUMBS_BUDGET / 8 {
+            self.written.store(0, Ordering::Relaxed);
+            trim(&self.dir, THUMBS_BUDGET);
+        }
+    }
+}
+
+/// Deletes the oldest files in `dir` until the rest fit in `budget` bytes.
+fn trim(dir: &Path, budget: u64) {
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = (std::fs::read_dir(dir)
+        .into_iter())
+    .flatten()
+    .flatten()
+    .filter_map(|e| {
+        let m = e.metadata().ok()?;
+        Some((m.modified().ok()?, m.len(), e.path()))
+    })
+    .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort();
+    for (_, len, path) in files {
+        if total <= budget {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+/// What the daemon answered for one thumbnail.
+enum Fetched {
+    Image(Option<ColorImage>),
+    /// Asked again on the job's news.
+    Parked,
+    /// Make it here.
+    Local,
 }
 
 // ---------------------------------------------------------------- workers
@@ -364,6 +573,14 @@ pub(crate) struct Shared {
     tx: crossbeam_channel::Sender<Loaded>,
     ctx: egui::Context,
     records: Mutex<Records>,
+    /// Attached: the daemon whose sidecars are shown.
+    daemon: RwLock<Option<Arc<crate::backend::Remote>>>,
+    fetches: Mutex<Fetches>,
+    /// Thumbnails the daemon has no sidecar for yet: asked again on [`Media::news`].
+    parked: Mutex<Vec<TexKey>>,
+    /// Retries (news, a new daemon) so far.
+    retries: std::sync::atomic::AtomicU64,
+    thumbs: Thumbs,
 }
 
 impl Shared {
@@ -468,6 +685,105 @@ impl Shared {
         self.ctx.request_repaint();
     }
 
+    /// Attached: the daemon to ask for `key` (a thumbnail of a local file not made here).
+    fn daemon_for(&self, key: &TexKey, req: &Req) -> Option<Arc<crate::backend::Remote>> {
+        if !matches!(key.kind, SidecarKind::Thumb256 | SidecarKind::Thumb1024) {
+            return None;
+        }
+        req.real.to_local_path()?;
+        let daemon = self.daemon.read().clone()?;
+        (!self.fetches.lock().local(&file_key(key, req))).then_some(daemon)
+    }
+
+    /// Asks the daemon for `key`'s thumbnail (`media.thumb`): a 256 px one only when its
+    /// sidecar exists (the source's sidecar job makes those), a 1024 px one made on request
+    /// (no job makes them).
+    fn fetch(&self, remote: &crate::backend::Remote, key: &TexKey, req: &Req) -> Fetched {
+        let f = file_key(key, req);
+        let (size, make) = match key.kind {
+            SidecarKind::Thumb1024 => ("thumb1024", true),
+            _ => ("thumb256", false),
+        };
+        let since = self.retries.load(Ordering::SeqCst);
+        let mut params =
+            serde_json::json!({"path": req.real.display(), "size": size, "make": make});
+        if let Some(cas) = self.thumbs.content_id(&f) {
+            params["content_id"] = cas.into();
+        }
+        let missed = match remote.call_raw("media.thumb", params) {
+            Ok(v) => {
+                use base64::Engine;
+                let thumb = serde_json::from_value::<keel_api::types::Thumb>(v).ok();
+                let bytes = thumb.as_ref().and_then(|t| {
+                    let b64 = base64::engine::general_purpose::STANDARD;
+                    b64.decode(&t.data).ok()
+                });
+                let (Some(thumb), Some(bytes)) = (thumb, bytes) else {
+                    return Fetched::Image(None);
+                };
+                if let Some(cas) = &thumb.content_id {
+                    self.thumbs.write(&f, cas, key.kind, &bytes);
+                }
+                return Fetched::Image(decode_webp(&bytes, key.px));
+            }
+            Err(e) if e.code == keel_api::ApiError::NOT_FOUND && !make => {
+                let sources = remote.cached_sources();
+                let source = crate::library::locate(&sources, &req.real).map(|(id, _)| id.0);
+                let now = Instant::now();
+                self.fetches.lock().missed(f, source.as_deref(), now)
+            }
+            Err(e) => {
+                tracing::debug!("media.thumb {}: {}", req.real.display(), e.message);
+                self.fetches.lock().give_up(f);
+                Missed::Local
+            }
+        };
+        match missed {
+            Missed::Local => Fetched::Local,
+            Missed::Wait => {
+                self.park(key, since);
+                Fetched::Parked
+            }
+            Missed::Index(id) => {
+                // Parked first: the job's first news may come before this call returns.
+                self.park(key, since);
+                let asked = remote.apply("media.index", serde_json::json!({ "id": id }));
+                let job = asked
+                    .map_err(|e| tracing::debug!("media.index {id}: {e:#}"))
+                    .ok()
+                    .and_then(|done| done.job);
+                if self.fetches.lock().started(&id, job) {
+                    self.retry();
+                }
+                Fetched::Parked
+            }
+        }
+    }
+
+    /// `key` waits for the daemon's sidecar job (its worker is done with it); asked
+    /// again at once when news came since the daemon was asked (retry `since`).
+    fn park(&self, key: &TexKey, since: u64) {
+        self.queue.done(key);
+        let mut parked = self.parked.lock();
+        if self.retries.load(Ordering::SeqCst) != since {
+            drop(parked);
+            return self.queue.requeue(std::slice::from_ref(key));
+        }
+        if !parked.contains(key) {
+            parked.push(key.clone());
+        }
+    }
+
+    /// The parked thumbnails are asked for again.
+    fn retry(&self) {
+        let parked = {
+            let mut parked = self.parked.lock();
+            self.retries.fetch_add(1, Ordering::SeqCst);
+            std::mem::take(&mut *parked)
+        };
+        self.queue.requeue(&parked);
+    }
+
     fn local(&self, src: Src) -> Option<PathBuf> {
         match src {
             Src::Local(p) => Some(p),
@@ -543,8 +859,23 @@ fn read_children(store_dir: &Path, parent: &str) -> anyhow::Result<HashMap<Strin
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+fn file_key(key: &TexKey, req: &Req) -> FileKey {
+    (req.real.clone(), key.mtime, key.size)
+}
+
 fn load_loop(sh: Arc<Shared>) {
     while let Some((key, req)) = sh.queue.pop(Stage::Load) {
+        // Attached: the daemon's thumbnail kept on disk, else ask the daemon (a maker).
+        if sh.daemon_for(&key, &req).is_some() {
+            let kept = sh.thumbs.read(&file_key(&key, &req), key.kind);
+            match kept.and_then(|b| decode_webp(&b, key.px)) {
+                Some(image) => sh.finish(key, Some(image)),
+                None => {
+                    sh.queue.promote(&key);
+                }
+            }
+            continue;
+        }
         let Some((store, (sk, _))) = sh.store().zip(sh.resolve(&req, false)) else {
             sh.finish(key, None);
             continue;
@@ -572,6 +903,16 @@ fn load_loop(sh: Arc<Shared>) {
 
 fn make_loop(sh: Arc<Shared>) {
     while let Some((key, req)) = sh.queue.pop(Stage::Make) {
+        if let Some(remote) = sh.daemon_for(&key, &req) {
+            match sh.fetch(&remote, &key, &req) {
+                Fetched::Image(image) => {
+                    sh.finish(key, image);
+                    continue;
+                }
+                Fetched::Parked => continue,
+                Fetched::Local => {}
+            }
+        }
         let image = (|| {
             let store = sh.store()?;
             let (sk, src) = sh.resolve(&req, false)?;
@@ -598,8 +939,11 @@ fn make_loop(sh: Arc<Shared>) {
 pub(crate) static AFTER_ENSURE: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
 pub fn decode_file(path: &Path, px: u32) -> Option<ColorImage> {
-    let bytes = std::fs::read(path).ok()?;
-    let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::WebP).ok()?;
+    decode_webp(&std::fs::read(path).ok()?, px)
+}
+
+fn decode_webp(bytes: &[u8], px: u32) -> Option<ColorImage> {
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::WebP).ok()?;
     Some(color_image(img, px))
 }
 
@@ -680,6 +1024,11 @@ impl Media {
             tx,
             ctx,
             records: Mutex::default(),
+            daemon: RwLock::new(None),
+            fetches: Mutex::default(),
+            parked: Mutex::default(),
+            retries: Default::default(),
+            thumbs: Thumbs::new(keel_vfs::cache_dir().join("daemon-thumbs")),
         });
         for _ in 0..loaders {
             let sh = sh.clone();
@@ -715,6 +1064,23 @@ impl Media {
             *self.sh.lib.write() = lib.cloned();
             self.sh.records.lock().clear();
         }
+    }
+
+    /// Follows the attached daemon (None: in-process or no library).
+    pub fn sync_daemon(&mut self, remote: Option<&Arc<crate::backend::Remote>>) {
+        let id = remote.map(|r| r.id);
+        if self.sh.daemon.read().as_ref().map(|r| r.id) != id {
+            *self.sh.daemon.write() = remote.cloned();
+            *self.sh.fetches.lock() = Fetches::default();
+            self.sh.retry();
+        }
+    }
+
+    /// A sidecar job of the daemon made thumbnails (`library.changed` `media.index` from
+    /// the job; `done`: it ended): the thumbnails it had none for are asked for again.
+    pub fn news(&self, job: keel_core::JobId, done: bool) {
+        self.sh.fetches.lock().news(job, done);
+        self.sh.retry();
     }
 
     #[cfg(test)]
@@ -960,6 +1326,7 @@ impl crate::state::AppState {
         let m = &mut self.media;
         m.set_remote(self.settings.remote_thumbnails);
         m.sync_library(self.library.lib.as_ref());
+        m.sync_daemon(self.library.remote().filter(|_| !self.library.lost));
         self.settings.media_tile = m.tile;
         self.settings.media_dates = m.dates;
         let mut dated = Vec::new();

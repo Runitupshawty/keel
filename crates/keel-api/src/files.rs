@@ -333,6 +333,29 @@ pub(crate) fn thumb(ctx: &Ctx, p: ThumbParams) -> Result<Thumb> {
         ThumbSize::Thumb256 => SidecarKind::Thumb256,
         ThumbSize::Thumb1024 => SidecarKind::Thumb1024,
     };
+    let answer = |made: std::path::PathBuf, cas: Option<[u8; 32]>| -> Result<Thumb> {
+        Ok(Thumb {
+            mime: "image/webp".into(),
+            data: b64(&std::fs::read(made).map_err(io)?),
+            content_id: cas.map(|c| hex(&c)),
+        })
+    };
+    if let Some(id) = p.content_id.as_deref() {
+        let cas = unhex32(id)
+            .ok_or_else(|| ApiError::invalid_params(format!("not a content id: {id}")))?;
+        let store = ctx.lib.sidecars()?;
+        // Sidecars of hashed files live under their content id, whatever the path.
+        let key = SidecarKey::local(std::path::Path::new(""), 0, 0, Some(cas));
+        let _pin = store.pin(&key);
+        if let Some(made) = store.get(&key, kind) {
+            return answer(made, Some(cas));
+        }
+        if p.path.is_empty() {
+            return Err(ApiError::not_found(format!("no sidecar for content {id}")));
+        }
+    } else if p.path.is_empty() {
+        return Err(ApiError::invalid_params("give a path or a content_id"));
+    }
     let path = real(ctx, &vpath(&p.path)?)?;
     readable(ctx, &path)?;
     let local = path.to_local_path().ok_or_else(|| {
@@ -364,15 +387,22 @@ pub(crate) fn thumb(ctx: &Ctx, p: ThumbParams) -> Result<Thumb> {
     let _pin = store.pin(&key);
     let made = match store.get(&key, kind) {
         Some(made) => made,
-        None if local.is_file() => store.ensure(&key, kind, &local)?,
-        None => return Err(ApiError::not_found(format!("no thumbnail of {}", p.path))),
+        None if p.make && local.is_file() => store.ensure(&key, kind, &local)?,
+        None => return Err(ApiError::not_found(format!("no sidecar for {}", p.path))),
     };
-    let data = std::fs::read(made).map_err(io)?;
-    Ok(Thumb {
-        mime: "image/webp".into(),
-        data: b64(&data),
-        content_id: key.cas_id.map(|c| hex(&c)),
-    })
+    answer(made, key.cas_id)
+}
+
+/// 64 hex digits as 32 bytes.
+fn unhex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 /// One-time download links made by `file.get`, taken by the daemon's `/file/<token>`.

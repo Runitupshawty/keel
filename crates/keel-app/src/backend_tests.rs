@@ -719,3 +719,121 @@ fn reconnect_and_open_here_wait_for_a_stopping_daemon() {
     assert!(!st.library.lost && st.library.remote().is_none() && st.library.lib.is_some());
     st.library.close_now();
 }
+
+/// The media entry of a local file.
+fn media_entry(path: &std::path::Path) -> Entry {
+    let md = std::fs::metadata(path).unwrap();
+    Entry {
+        path: VPath::local(path),
+        name: path.file_name().unwrap().to_string_lossy().into_owned(),
+        kind: keel_vfs::Kind::File,
+        size: md.len(),
+        modified: md.modified().ok(),
+        hidden: false,
+        is_link: false,
+        encrypted: false,
+        ext: "png".into(),
+    }
+}
+
+/// Waits until `m` shows `key` (handing it the sidecar news, as the window does).
+fn tile(
+    m: &mut crate::media::Media,
+    ctx: &egui::Context,
+    key: &crate::media::TexKey,
+    news: &crossbeam_channel::Receiver<(JobId, bool)>,
+) -> egui::Vec2 {
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        for (job, done) in news.try_iter() {
+            m.news(job, done);
+        }
+        m.upload(ctx);
+        if let crate::media::Tex::Ready(_, size) = m.get(key) {
+            return size;
+        }
+        assert!(
+            Instant::now() < until,
+            "no thumbnail for {}",
+            key.path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Attached, the media grid shows the daemon's sidecars: the first ask finds none, so the
+/// source's sidecar job is started; its news brings the thumbnail, which is kept on disk
+/// by content id. A file in no source is made in the window.
+#[test]
+fn attached_media_tiles_come_from_the_daemons_sidecars() {
+    use crate::media::{tile_key, Media, Req};
+    let s = served();
+    let photo = s.files.path().join("docs").join("photo.png");
+    image::RgbImage::from_pixel(600, 300, image::Rgb([10, 200, 30]))
+        .save(&photo)
+        .unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let loose = elsewhere.path().join("loose.png");
+    image::RgbImage::from_pixel(300, 300, image::Rgb([200, 10, 30]))
+        .save(&loose)
+        .unwrap();
+    let remote = Remote::connect(s.daemon.name()).unwrap();
+    let b = LibraryBackend::Daemon(remote.clone());
+    wait_job(&b, b.add_source(def(s.files.path())).unwrap());
+    b.set_hashing(true, false).unwrap();
+    wait_job(&b, b.hash(false).unwrap());
+    b.sources().unwrap();
+    let (tx, news) = crossbeam_channel::unbounded();
+    let _jobs = remote
+        .subscribe(move |e| {
+            if let Event::Sidecars { job, done } = e {
+                let _ = tx.send((job, done));
+            }
+        })
+        .unwrap();
+    let ctx = egui::Context::default();
+    let mut m = Media::new(ctx.clone(), Arc::new(keel_vfs::Router::new()));
+    m.sync_daemon(Some(&remote));
+
+    let e = media_entry(&photo);
+    let key = tile_key(&e, false, 96);
+    let req = Req {
+        real: e.path.clone(),
+        entry: e,
+    };
+    m.want(0, vec![(key.clone(), 0, req)]);
+    // 600x300 -> Thumb256 (256x128) -> shorter side 96.
+    assert_eq!(tile(&mut m, &ctx, &key, &news), egui::vec2(192.0, 96.0));
+    let kinds = b.job_kinds().unwrap();
+    assert!(kinds.iter().any(|(_, k)| k == "sidecar"), "{kinds:?}");
+    // Kept by content id and size (the alias names the file's content id).
+    let dir = keel_vfs::cache_dir().join("daemon-thumbs");
+    let cas = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|f| std::fs::read_to_string(f.path()).ok())
+        .find(|c| c.len() == 64)
+        .expect("an alias");
+    assert!(dir.join(format!("{cas}-256.webp")).is_file());
+    // The viewer's 1024 px thumbnail (no job makes those, never enlarged): the daemon
+    // makes it on request.
+    let e = media_entry(&photo);
+    let big = crate::media::TexKey::of(&e, keel_core::SidecarKind::Thumb1024, 0);
+    let req = Req {
+        real: e.path.clone(),
+        entry: e,
+    };
+    m.want(crate::media::VIEWER_SLOT, vec![(big.clone(), 0, req)]);
+    assert_eq!(tile(&mut m, &ctx, &big, &news), egui::vec2(600.0, 300.0));
+    assert!(dir.join(format!("{cas}-1024.webp")).is_file());
+
+    // Not in a source: no job would make it, so the window does.
+    let e = media_entry(&loose);
+    let key = tile_key(&e, false, 96);
+    let req = Req {
+        real: e.path.clone(),
+        entry: e,
+    };
+    m.want(0, vec![(key.clone(), 0, req)]);
+    assert_eq!(tile(&mut m, &ctx, &key, &news), egui::vec2(96.0, 96.0));
+}

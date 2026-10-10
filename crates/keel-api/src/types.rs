@@ -653,10 +653,19 @@ pub enum ThumbSize {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThumbParams {
-    /// An image or video.
+    /// An image or video ("" when `content_id` names the content).
+    #[serde(default)]
     pub path: String,
     #[serde(default)]
     pub size: ThumbSize,
+    /// A content id (64 hex digits): answered from a sidecar made earlier for that content
+    /// (wherever it was found), before `path` is looked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+    /// Make a missing sidecar now (default); false: only one that exists, else NOT_FOUND
+    /// (an attached window asks `media.index` for those instead).
+    #[serde(default = "yes")]
+    pub make: bool,
 }
 
 /// A media thumbnail from the sidecar store (made on first request).

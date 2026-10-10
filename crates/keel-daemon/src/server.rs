@@ -330,29 +330,59 @@ impl Drop for Daemon {
     }
 }
 
+/// While a sidecar job runs, `library.changed` `{method: "job", kind: "media.index", job,
+/// done}` goes out at most this often (and when it ends, `done: true`): attached windows
+/// ask again for the thumbnails it made.
+pub const SIDECARS_EVERY: Duration = Duration::from_secs(2);
+
 /// Job and device events to subscribers, until the daemon stops.
 fn pump(shared: &Arc<Shared>) {
     let jobs = shared.ctx().lib.jobs().subscribe();
     let s = Arc::downgrade(shared);
     let _ = std::thread::Builder::new()
         .name("keel-daemon-jobs".into())
-        .spawn(move || loop {
-            let ev = jobs.recv_timeout(Duration::from_millis(500));
-            let Some(s) = s.upgrade() else { return };
-            if s.stop.load(Ordering::Acquire) {
-                return;
-            }
-            match ev {
-                Ok(ev) => s.hub.broadcast(
+        .spawn(move || {
+            // Per job: whether it makes sidecars, and when it last said so (or started).
+            let mut sidecars: std::collections::HashMap<i64, (bool, Instant)> =
+                Default::default();
+            loop {
+                let ev = jobs.recv_timeout(Duration::from_millis(500));
+                let Some(s) = s.upgrade() else { return };
+                if s.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                let ev = match ev {
+                    Ok(ev) => ev,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => return,
+                };
+                s.hub.broadcast(
                     "job.progress",
                     json!({
                         "id": ev.id,
                         "status": format!("{:?}", ev.status).to_lowercase(),
                         "progress": ev.progress,
                     }),
-                ),
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(_) => return,
+                );
+                let lib = &s.ctx().lib;
+                let (makes, last) = sidecars.entry(ev.id).or_insert_with(|| {
+                    let kind = lib.jobs().info(ev.id).map(|j| j.kind).unwrap_or_default();
+                    (kind == keel_core::SidecarJob::KIND, Instant::now())
+                });
+                let ended = !matches!(
+                    ev.status,
+                    keel_core::JobStatus::Queued | keel_core::JobStatus::Running
+                );
+                if *makes && (ended || last.elapsed() >= SIDECARS_EVERY) {
+                    *last = Instant::now();
+                    s.hub.broadcast(
+                        "library.changed",
+                        json!({"method": "job", "kind": "media.index", "job": ev.id, "done": ended}),
+                    );
+                }
+                if ended {
+                    sidecars.remove(&ev.id);
+                }
             }
         });
     let Some(node) = shared.ctx().node.clone() else {
