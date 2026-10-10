@@ -11,7 +11,9 @@
 
 pub mod client;
 pub mod config;
+pub mod daemon_provider;
 pub mod error;
+pub mod files;
 pub mod host;
 pub mod mcp;
 pub mod net;
@@ -21,6 +23,7 @@ pub mod rpc;
 pub mod socket;
 pub mod types;
 
+pub use daemon_provider::DaemonProvider;
 pub use error::{ApiError, Result};
 pub use ops::OPS;
 pub use plans::PlanStore;
@@ -43,6 +46,8 @@ pub struct Ctx {
     pub plans: PlanStore,
     /// Seconds east of UTC, for `dm:` dates in search queries.
     pub utc_offset: i64,
+    /// One-time links made by `file.get`.
+    pub downloads: files::Downloads,
 }
 
 impl Ctx {
@@ -56,6 +61,7 @@ impl Ctx {
             rt: None,
             plans,
             utc_offset: 0,
+            downloads: Default::default(),
         }
     }
 

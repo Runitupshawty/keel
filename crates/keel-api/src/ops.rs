@@ -68,6 +68,14 @@ pub static OPS: &[Operation] = &[
         ListParams => Listing, list, json!({"path": example_dir(), "max": 100})),
     now!("stat", "One file or folder, with its library record, tags and favorite state when indexed.",
         PathParams => StatInfo, stat, json!({"path": example_dir()})),
+    now!("read", "Reads a byte range of a file (at most 4 MiB per call, base64).",
+        ReadParams => Chunk, crate::files::read, json!({"path": example_file(), "offset": 0, "len": 65536})),
+    now!("preview.render", "Renders a file's preview as the desktop app shows it: text, or a PNG (images, a PDF page, a video frame) of bounded size.",
+        RenderParams => Rendered, crate::files::render, json!({"path": example_file(), "page": 0, "max_px": 1024})),
+    now!("media.thumb", "A photo or video thumbnail (256 or 1024 px WebP) from the sidecar store, made on first request.",
+        ThumbParams => Thumb, crate::files::thumb, json!({"path": example_file(), "size": "thumb256"})),
+    now!("file.get", "A one-time download link (/file/<token> on keel-daemon's --web address, valid 60 s) for a file.",
+        PathParams => FileLink, crate::files::file_get, json!({"path": example_file()})),
     now!("search", "Searches the library index across all sources (words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:).",
         SearchParams => Vec<Hit>, search, json!({"query": "invoice ext:pdf", "max": 20})),
     now!("tags.list", "All tags, or the tags on one indexed path.",
@@ -239,7 +247,7 @@ fn locate(ctx: &Ctx, p: &VPath) -> Result<(SourceId, String)> {
 }
 
 /// The indexed record at `path`.
-fn record_at(ctx: &Ctx, path: &str) -> Result<LibraryHit> {
+pub(crate) fn record_at(ctx: &Ctx, path: &str) -> Result<LibraryHit> {
     let p = vpath(path)?;
     let (source, rel) = locate(ctx, &p)?;
     if rel.is_empty() {

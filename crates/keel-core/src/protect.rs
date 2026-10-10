@@ -544,6 +544,31 @@ impl Library {
             .collect())
     }
 
+    /// The record's content id: `None` before hashing, or when `now` (the file's mtime in
+    /// ns and size as it is now) differs from the record. `now: None` (an offline file):
+    /// the content id as last indexed.
+    pub fn content_id(
+        &self,
+        record: &RecordRef,
+        now: Option<(i64, u64)>,
+    ) -> Result<Option<[u8; 32]>> {
+        let src = self
+            .source(&record.source)
+            .with_context(|| format!("no source {}", record.source))?;
+        let row: Option<(Option<Vec<u8>>, i64, i64)> = src
+            .store
+            .get()?
+            .query_row(
+                "SELECT cas_id, coalesce(mtime, 0), size FROM record WHERE id = ?1",
+                [record.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(row
+            .filter(|(_, m, s)| now.is_none_or(|now| now == (*m, *s as u64)))
+            .and_then(|(cas, _, _)| cas?.try_into().ok()))
+    }
+
     /// How many files hold this record's content (hard links of one file once; lost and
     /// retired volumes not counted), in how many failure domains, whether it is backed
     /// up, and where.

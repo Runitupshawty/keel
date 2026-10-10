@@ -5,19 +5,22 @@
 //! a remote bind should sit behind a TLS proxy or a private network.
 
 use crate::server::{Session, Shared};
-use keel_api::rpc;
+use keel_api::{rpc, ApiError};
+use serde_json::{json, Value};
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::protocol::WebSocketConfig;
-use tungstenite::Message;
+use tungstenite::{Message, WebSocket};
 
 /// The handshake must finish within this.
-const HANDSHAKE_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const HANDSHAKE_WAIT: Duration = Duration::from_secs(5);
+/// A browser connection must authenticate within this.
+const AUTH_WAIT: Duration = Duration::from_secs(10);
 /// How often an idle connection checks for notifications.
 const POLL: Duration = Duration::from_millis(100);
 
@@ -48,7 +51,7 @@ pub fn token(path: &Path) -> io::Result<String> {
     Ok(token)
 }
 
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -105,21 +108,40 @@ fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Resul
             Err(refused)
         }
     };
-    let config = WebSocketConfig::default()
-        .max_message_size(Some(rpc::MAX_REQUEST))
-        .max_frame_size(Some(rpc::MAX_REQUEST));
+    let config = config();
     let mut ws = tungstenite::accept_hdr_with_config(stream, check, Some(config))?;
+    run(shared, &mut ws, None)
+}
+
+/// The settings both WebSocket endpoints use.
+pub(crate) fn config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(rpc::MAX_REQUEST))
+        .max_frame_size(Some(rpc::MAX_REQUEST))
+}
+
+/// Answers JSON-RPC on `ws` until it closes. `need_auth`: the first message must be
+/// `auth` with this token (else the answer is an error and the connection closes), and it
+/// must come within `AUTH_WAIT`.
+pub(crate) fn run(
+    shared: &Arc<Shared>,
+    ws: &mut WebSocket<TcpStream>,
+    mut need_auth: Option<&str>,
+) -> anyhow::Result<()> {
     ws.get_ref().set_read_timeout(Some(POLL))?;
+    let auth_by = Instant::now() + AUTH_WAIT;
     let mut session = Session::default();
-    loop {
-        if shared.stop.load(Ordering::Acquire) {
+    let result = loop {
+        if shared.stop.load(Ordering::Acquire) || (need_auth.is_some() && Instant::now() > auth_by)
+        {
             let _ = ws.close(None);
-            return Ok(());
+            let _ = ws.flush();
+            break Ok(());
         }
         let msg = match ws.read() {
             Ok(Message::Text(t)) => t.as_bytes().to_vec(),
             Ok(Message::Binary(b)) => b.to_vec(),
-            Ok(Message::Close(_)) => return Ok(()),
+            Ok(Message::Close(_)) => break Ok(()),
             Ok(_) => continue,
             Err(tungstenite::Error::Io(e))
                 if matches!(
@@ -138,10 +160,45 @@ fn client(shared: &Arc<Shared>, stream: TcpStream, token: &str) -> anyhow::Resul
                 })?;
                 continue;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => break Err(e.into()),
         };
+        if let Some(token) = need_auth {
+            let (answer, ok) = auth(&msg, token);
+            ws.send(Message::text(answer.to_string()))?;
+            if !ok {
+                let _ = ws.close(None);
+                let _ = ws.flush();
+                break Ok(());
+            }
+            need_auth = None;
+            continue;
+        }
         if let Some(answer) = rpc::handle(&msg, &mut |req| shared.dispatch(req, &mut session)) {
             ws.send(Message::text(answer.to_string()))?;
         }
+    };
+    if let Some((id, _)) = session.sub.take() {
+        shared.hub.unsubscribe(id);
+    }
+    result
+}
+
+/// Checks the first message of a browser connection:
+/// `{"jsonrpc":"2.0","id":1,"method":"auth","params":{"token":"…"}}`.
+fn auth(msg: &[u8], token: &str) -> (Value, bool) {
+    let v: Value = serde_json::from_slice(msg).unwrap_or_default();
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    let given = match v.get("method").and_then(Value::as_str) {
+        Some("auth") => v["params"]["token"].as_str().unwrap_or_default(),
+        _ => "",
+    };
+    if same(given.as_bytes(), token.as_bytes()) {
+        (rpc::response(id, Ok(json!({"ok": true}))), true)
+    } else {
+        let e = ApiError::new(
+            ApiError::UNAUTHORIZED,
+            "the first message must be auth with the daemon token",
+        );
+        (rpc::response(id, Err(e)), false)
     }
 }
