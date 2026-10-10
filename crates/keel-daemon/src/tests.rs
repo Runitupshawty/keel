@@ -42,6 +42,7 @@ fn start(env: &Env, ws: Option<&str>) -> Daemon {
     Daemon::start(Options {
         cfg: env.cfg.clone(),
         ws: ws.map(|a| a.parse().unwrap()),
+        web: None,
         ws_allow_remote: false,
         net: None,
     })
@@ -125,6 +126,7 @@ fn second_daemon_for_the_profile_exits() {
     let err = Daemon::start(Options {
         cfg: env.cfg.clone(),
         ws: None,
+        web: None,
         ws_allow_remote: false,
         net: None,
     })
@@ -230,10 +232,137 @@ fn websocket_refuses_remote_binds() {
     let err = Daemon::start(Options {
         cfg: env.cfg.clone(),
         ws: Some("0.0.0.0:0".parse().unwrap()),
+        web: None,
         ws_allow_remote: false,
         net: None,
     })
     .err()
     .unwrap();
     assert!(err.to_string().contains("--ws-allow-remote"), "{err:#}");
+}
+
+/// A raw HTTP GET; returns the status line, headers and body.
+fn http_get(addr: std::net::SocketAddr, path: &str, host: &str) -> (String, String, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).unwrap();
+    let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8(out[..split].to_vec()).unwrap();
+    let (status, headers) = head.split_once("\r\n").unwrap();
+    (
+        status.to_owned(),
+        headers.to_lowercase(),
+        out[split + 4..].to_vec(),
+    )
+}
+
+#[test]
+#[allow(clippy::result_large_err)]
+fn web_serves_the_client_and_rpc_with_in_band_auth() {
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::Message;
+    let env = env();
+    let daemon = Daemon::start(Options {
+        cfg: env.cfg.clone(),
+        ws: None,
+        web: Some("127.0.0.1:0".parse().unwrap()),
+        ws_allow_remote: false,
+        net: None,
+    })
+    .unwrap();
+    let addr = daemon.web_addr().unwrap();
+    let host = addr.to_string();
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+
+    // The bundle (or, unbuilt, the page saying how to build it), never cached.
+    let (status, headers, body) = http_get(addr, "/", &host);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(headers.contains("content-type: text/html"), "{headers}");
+    assert!(headers.contains("cache-control: no-store"), "{headers}");
+    assert!(
+        headers.contains("referrer-policy: no-referrer"),
+        "{headers}"
+    );
+    assert!(
+        headers.contains("content-security-policy: default-src 'none'"),
+        "{headers}"
+    );
+    assert!(String::from_utf8_lossy(&body).contains("<title>Keel</title>"));
+    assert_eq!(
+        http_get(addr, "/nope.js", &host).0,
+        "HTTP/1.1 404 Not Found"
+    );
+    // DNS rebinding: a loopback bind answers loopback host names only.
+    assert_eq!(
+        http_get(addr, "/", "evil.example").0,
+        "HTTP/1.1 403 Forbidden"
+    );
+    // The token is never taken from the address.
+    let q = format!("/rpc?token={token}");
+    assert_eq!(http_get(addr, &q, &host).0, "HTTP/1.1 400 Bad Request");
+
+    let connect = |origin: Option<&str>| {
+        let mut req = format!("ws://{addr}/rpc").into_client_request().unwrap();
+        if let Some(o) = origin {
+            req.headers_mut().insert("origin", o.parse().unwrap());
+        }
+        tungstenite::client(req, std::net::TcpStream::connect(addr).unwrap())
+    };
+    match connect(Some("http://evil.example")) {
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => {
+            assert_eq!(r.status(), 403)
+        }
+        other => panic!("cross-origin: {:?}", other.map(|_| ())),
+    }
+    let send = |ws: &mut tungstenite::WebSocket<_>, v: Value| -> Value {
+        ws.send(Message::text(v.to_string())).unwrap();
+        serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap()
+    };
+    // Anything before auth is refused and the connection closes.
+    let (mut ws, _) = connect(Some(&format!("http://{host}"))).unwrap();
+    let answer = send(&mut ws, json!({"jsonrpc":"2.0","id":1,"method":"version"}));
+    assert_eq!(answer["error"]["code"], ApiError::UNAUTHORIZED);
+    assert!(!matches!(ws.read(), Ok(Message::Text(_))));
+    let (mut ws, _) = connect(None).unwrap();
+    let wrong = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": "0".repeat(64)}});
+    assert_eq!(
+        send(&mut ws, wrong)["error"]["code"],
+        ApiError::UNAUTHORIZED
+    );
+
+    let (mut ws, _) = connect(Some(&format!("http://{host}"))).unwrap();
+    let auth = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": token}});
+    assert_eq!(send(&mut ws, auth)["result"]["ok"], true);
+    let v = send(&mut ws, json!({"jsonrpc":"2.0","id":2,"method":"version"}));
+    assert_eq!(v["result"]["library"], "james", "{v}");
+
+    // A one-time download link.
+    let notes = env.files.path().join("notes.txt").display().to_string();
+    let link = send(
+        &mut ws,
+        json!({"jsonrpc":"2.0","id":3,"method":"file.get","params":{"path": notes}}),
+    );
+    let url = link["result"]["url"].as_str().unwrap().to_owned();
+    let (status, headers, body) = http_get(addr, &url, &host);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(headers.contains("filename*=utf-8''notes.txt"), "{headers}");
+    assert_eq!(body, b"notes");
+    assert_eq!(http_get(addr, &url, &host).0, "HTTP/1.1 404 Not Found");
+}
+
+#[test]
+fn web_refuses_remote_binds() {
+    let env = env();
+    let err = Daemon::start(Options {
+        cfg: env.cfg.clone(),
+        ws: None,
+        web: Some("0.0.0.0:0".parse().unwrap()),
+        ws_allow_remote: false,
+        net: None,
+    })
+    .err()
+    .unwrap();
+    assert!(err.to_string().contains("--web 0.0.0.0:0"), "{err:#}");
 }

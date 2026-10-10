@@ -52,6 +52,10 @@ return what they removed.
 | `sources.index` | preview | Index a source (a job) |
 | `list` | read | List a folder: `library://` paths from the index (offline too), others live |
 | `stat` | read | One entry, plus its library record, tags and favorite state |
+| `read` | read | A byte range of a file (`path`, `offset`, `len` up to 4 MiB), base64; library paths read the real file |
+| `preview.render` | read | The desktop previewers' output: `kind` `text` (code, Markdown, tables as TSV, documents, hex) or `image` (a PNG of at most `max_px` 64..2048, default 1024: images, a PDF `page`, a video frame), or `none` with a `message`; `content_id` when indexed (a cache key) |
+| `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed; made on first request, served from earlier sidecars when the source is offline |
+| `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
 | `search` | read | Library search: words, `"phrases"`, `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:` |
 | `tags.list` | read | All tags, or the tags on one path |
 | `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag) |
@@ -96,11 +100,12 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32004 | the sources changed since the preview; `data` is the new preview |
 | -32005 | devices are off (keel-net disabled) |
 | -32006 | the request timed out (the daemon answers within 120 s) |
+| -32007 | `--web`: a message before `auth`, or a wrong token (the connection closes) |
 
 ## keel-daemon (JSON-RPC)
 
 ```
-keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT [--ws-allow-remote]]
+keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT] [--web [127.0.0.1:PORT]] [--ws-allow-remote]
 keel-daemon --status            # exit 0 when one runs for the profile, 1 when not
 keel daemon start|stop|status   # the same from keel (start runs it in the background)
 ```
@@ -138,6 +143,35 @@ text frame. Every connection must send `Authorization: Bearer <token>`, the toke
 set that header, so web pages cannot connect. Non-loopback addresses need
 `--ws-allow-remote`; there is no TLS, so put a remote bind behind a TLS proxy or a
 private network.
+
+**Web client (`--web`, optional).** `--web` (default `127.0.0.1:7421`) serves the
+browser client (crate keel-web, embedded at build time; README "Web client") on one
+listener:
+
+| Path | What |
+| --- | --- |
+| `/`, `/<file>` | the client bundle (a page saying how to build it when keel-daemon was built without one) |
+| `/rpc` | JSON-RPC over a WebSocket, one message per text frame |
+| `/file/<token>` | the download a `file.get` link names, once, within 60 s (`Content-Disposition: attachment`) |
+
+Browsers cannot send an `Authorization` header on a WebSocket, so on `/rpc` the **first
+message must be `auth`** with the daemon token:
+
+```
+→ {"jsonrpc":"2.0","id":0,"method":"auth","params":{"token":"<daemon.token>"}}
+← {"jsonrpc":"2.0","id":0,"result":{"ok":true}}
+```
+
+Anything else first, a wrong token, or no `auth` within 10 s gets error -32007 and the
+connection closes (a native client may still send the `Authorization: Bearer` header
+instead). The token never travels in a URL: `/rpc` with a query string is refused (400).
+A WebSocket whose `Origin` is not this host is refused (403); on a loopback bind the
+`Host` header must be `localhost`, `127.0.0.1` or `[::1]` (403 otherwise, against DNS
+rebinding). Only `GET` is served. Every answer carries `Cache-Control: no-store`,
+`Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`
+and `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
+connect-src 'self' ws://<host> wss://<host>; ...`. Non-loopback addresses need
+`--ws-allow-remote`, exactly as `--ws`; there is no TLS (a tailnet, or a TLS proxy).
 
 ## CLI
 

@@ -103,6 +103,22 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
 
+## Web client
+
+`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete (preview first, then execute, exactly as in the window), follow jobs, see your devices, and download files.
+
+```sh
+scripts/build-web.sh                # once, or scripts\build-web.ps1: builds crates/keel-web/dist
+cargo build --release -p keel-daemon  # embeds that bundle
+keel-daemon --web                   # http://127.0.0.1:7421/ (or --web 127.0.0.1:PORT)
+```
+
+`build-web` needs `rustup target add wasm32-unknown-unknown` and `wasm-bindgen-cli` of the `wasm-bindgen` version in Cargo.lock (the script prints how to install it). A daemon built without the bundle serves a page saying so.
+
+**The token.** The first visit asks for the token in `daemon.token` in Keel's configuration folder on the daemon's machine (`%APPDATA%\Keel`, `~/Library/Application Support/Keel`, `~/.config/keel`, or `KEEL_CONFIG_DIR`). Tick **Remember on this device** to keep it in that browser's local storage; leave it off on a shared computer (it then lives only in the open tab). **Sign out** forgets it. The page sends the token as its first WebSocket message; it never goes in an address, and an address that carries one is refused and scrubbed from the address bar. Download links (`/file/...`) are one-time and expire after 60 seconds. Every page is served `no-store`, without referrers, under a same-origin content security policy; nothing is loaded from a CDN.
+
+**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). Anyone who can reach the port still needs the token. Keep loopback when you do not need it.
+
 ## Keyboard shortcuts
 
 | Key | Action |

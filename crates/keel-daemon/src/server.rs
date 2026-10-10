@@ -36,7 +36,9 @@ pub struct Options {
     pub cfg: HostConfig,
     /// `--ws`: also serve JSON-RPC over a WebSocket on this address.
     pub ws: Option<SocketAddr>,
-    /// `--ws-allow-remote`: allow a non-loopback `ws` address.
+    /// `--web`: serve the browser client (and its WebSocket) on this address.
+    pub web: Option<SocketAddr>,
+    /// `--ws-allow-remote`: allow a non-loopback `ws` or `web` address.
     pub ws_allow_remote: bool,
     /// keel-net identity store and options (when `cfg.net` is on); the OS keychain and
     /// public discovery by default.
@@ -70,7 +72,7 @@ impl Hub {
         (id, rx)
     }
 
-    fn unsubscribe(&self, id: u64) {
+    pub(crate) fn unsubscribe(&self, id: u64) {
         self.subs.lock().retain(|(i, _)| *i != id);
     }
 
@@ -153,15 +155,16 @@ pub struct Daemon {
     shared: Arc<Shared>,
     name: String,
     ws_addr: Option<SocketAddr>,
+    web_addr: Option<SocketAddr>,
     requests: Receiver<()>,
 }
 
 impl Daemon {
     /// Claims the profile's socket, opens its library (and keel-net) and serves.
     pub fn start(opts: Options) -> anyhow::Result<Daemon> {
-        if let Some(addr) = opts.ws {
-            if !addr.ip().is_loopback() && !opts.ws_allow_remote {
-                bail!("--ws {addr} is not a loopback address; add --ws-allow-remote to bind it");
+        for (flag, addr) in [("--ws", opts.ws), ("--web", opts.web)] {
+            if let Some(addr) = addr.filter(|a| !a.ip().is_loopback() && !opts.ws_allow_remote) {
+                bail!("{flag} {addr} is not a loopback address; add --ws-allow-remote to bind it");
             }
         }
         let cfg = opts.cfg;
@@ -198,6 +201,10 @@ impl Daemon {
             Some(addr) => Some(ws::serve(&shared, addr, &cfg.token_path())?),
             None => None,
         };
+        let web_addr = match opts.web {
+            Some(addr) => Some(crate::web::serve(&shared, addr, &cfg.token_path())?),
+            None => None,
+        };
         let s = shared.clone();
         std::thread::Builder::new()
             .name("keel-daemon-accept".into())
@@ -224,6 +231,7 @@ impl Daemon {
             shared,
             name,
             ws_addr,
+            web_addr,
             requests,
         })
     }
@@ -239,6 +247,11 @@ impl Daemon {
         self.ws_addr
     }
 
+    /// The web client's bound address (`--web`).
+    pub fn web_addr(&self) -> Option<SocketAddr> {
+        self.web_addr
+    }
+
     /// Fires when a client called `daemon.shutdown`.
     pub fn shutdown_requests(&self) -> &Receiver<()> {
         &self.requests
@@ -251,8 +264,8 @@ impl Daemon {
         }
         // Wakes the accept loops, which then see `stop` and let go of the socket.
         let _ = socket::connect(&self.name, Duration::from_millis(500));
-        if let Some(addr) = self.ws_addr {
-            let _ = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500));
+        for addr in self.ws_addr.iter().chain(&self.web_addr) {
+            let _ = std::net::TcpStream::connect_timeout(addr, Duration::from_millis(500));
         }
         if !self.shared.host.close() {
             tracing::warn!("a job was still busy when the library closed");

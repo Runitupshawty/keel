@@ -4,6 +4,7 @@
 //! See docs/api.md.
 
 mod server;
+mod web;
 mod ws;
 
 use clap::Parser;
@@ -27,8 +28,12 @@ struct Args {
     /// send `Authorization: Bearer <token>` from <config dir>/daemon.token.
     #[arg(long, value_name = "ADDR")]
     ws: Option<SocketAddr>,
-    /// Allow --ws on a non-loopback address.
-    #[arg(long, requires = "ws")]
+    /// Serve the browser client on this address (default 127.0.0.1:7421): the page asks
+    /// for the token from <config dir>/daemon.token.
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "127.0.0.1:7421")]
+    web: Option<SocketAddr>,
+    /// Allow --ws or --web on a non-loopback address (use TLS or a private network).
+    #[arg(long)]
     ws_allow_remote: bool,
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
     #[arg(long)]
@@ -54,9 +59,14 @@ fn main() -> ExitCode {
     if args.status {
         return status(&cfg);
     }
+    if args.ws_allow_remote && args.ws.is_none() && args.web.is_none() {
+        eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
+        return ExitCode::FAILURE;
+    }
     let daemon = match server::Daemon::start(server::Options {
         cfg: cfg.clone(),
         ws: args.ws,
+        web: args.web,
         ws_allow_remote: args.ws_allow_remote,
         net: None,
     }) {
@@ -81,6 +91,10 @@ fn main() -> ExitCode {
             .ws_addr()
             .map(|a| format!(", WebSocket on ws://{a}"))
             .unwrap_or_default()
+            + &daemon
+                .web_addr()
+                .map(|a| format!(", web client on http://{a}/"))
+                .unwrap_or_default()
     );
     crossbeam_channel::select! {
         recv(signals) -> _ => tracing::info!("signal: stopping"),

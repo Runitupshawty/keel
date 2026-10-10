@@ -2215,6 +2215,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
+ "glow",
  "glutin",
  "glutin-winit",
  "home",
@@ -4433,14 +4434,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "blake3",
  "crossbeam-channel",
  "directories",
  "getrandom 0.3.4",
+ "image",
  "interprocess",
  "jsonschema",
  "keel-core",
  "keel-net",
+ "keel-preview",
  "keel-vfs",
  "libc",
  "parking_lot",
@@ -4547,6 +4551,7 @@ dependencies = [
  "crossbeam-channel",
  "ctrlc",
  "getrandom 0.3.4",
+ "httparse",
  "interprocess",
  "keel-api",
  "keel-core",
@@ -4695,6 +4700,23 @@ dependencies = [
  "windows 0.58.0",
  "windows-core 0.58.0",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "keel-web"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "eframe",
+ "egui",
+ "image",
+ "js-sys",
+ "schemars",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

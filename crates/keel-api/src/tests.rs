@@ -87,6 +87,10 @@ fn registry_is_preview_first() {
         "sources.index",
         "list",
         "stat",
+        "read",
+        "preview.render",
+        "media.thumb",
+        "file.get",
         "search",
         "tags.list",
         "tags.add",
@@ -398,4 +402,114 @@ fn devices_and_shares() {
         a_node.close().await;
         b_node.close().await;
     });
+}
+
+fn unb64(v: &Value) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(v.as_str().unwrap())
+        .unwrap()
+}
+
+#[test]
+fn reads_ranges_previews_thumbs_and_one_time_links() {
+    let f = fixture(None);
+    let photo = f.files.path().join("docs/photo.png");
+    image::RgbaImage::from_pixel(600, 300, image::Rgba([200, 30, 30, 255]))
+        .save(&photo)
+        .unwrap();
+    let id = add_and_index(&f);
+    let notes = format!("library://{id}/docs/notes.txt");
+
+    // Ranges, through the index path as well as the real one.
+    let chunk = call(
+        &f.ctx,
+        "read",
+        json!({"path": notes, "offset": 5, "len": 3}),
+    )
+    .unwrap();
+    assert_eq!(unb64(&chunk["data"]), b"not");
+    assert_eq!(chunk["eof"], false);
+    let rest = call(
+        &f.ctx,
+        "read",
+        json!({"path": s(&f.files.path().join("docs/notes.txt")), "offset": 5}),
+    )
+    .unwrap();
+    assert_eq!(unb64(&rest["data"]), b"notes");
+    assert_eq!(rest["eof"], true);
+    let folder = call(&f.ctx, "read", json!({"path": s(f.files.path())})).unwrap_err();
+    assert_eq!(folder.code, ApiError::INVALID_PARAMS);
+
+    // Previews: text as text, images as a bounded PNG.
+    let text = call(&f.ctx, "preview.render", json!({"path": notes})).unwrap();
+    assert_eq!(text["kind"], "text");
+    assert_eq!(text["text"], "some notes");
+    let img = call(
+        &f.ctx,
+        "preview.render",
+        json!({"path": s(&photo), "max_px": 100}),
+    )
+    .unwrap();
+    assert_eq!(img["kind"], "image", "{img}");
+    assert_eq!(
+        (img["width"].as_u64(), img["height"].as_u64()),
+        (Some(100), Some(50))
+    );
+    let png = image::load_from_memory(&unb64(&img["png"])).unwrap();
+    assert_eq!(png.width(), 100);
+
+    // Thumbnails come from (and land in) the sidecar store.
+    let thumb = call(&f.ctx, "media.thumb", json!({"path": s(&photo)})).unwrap();
+    assert_eq!(thumb["mime"], "image/webp");
+    let webp = image::load_from_memory(&unb64(&thumb["data"])).unwrap();
+    assert_eq!(webp.width().max(webp.height()), 256);
+    let stats = f.ctx.lib.sidecars().unwrap().stats();
+    assert!(stats.keys >= 1, "{stats:?}");
+    assert!(call(&f.ctx, "media.thumb", json!({"path": notes})).is_err());
+
+    // A download link works once.
+    let link: FileLink =
+        serde_json::from_value(call(&f.ctx, "file.get", json!({"path": notes})).unwrap()).unwrap();
+    assert_eq!((link.name.as_str(), link.size), ("notes.txt", 10));
+    let token = link.url.strip_prefix("/file/").unwrap();
+    assert_eq!(token.len(), 64);
+    let (name, size, mut body) = crate::files::open_link(&f.ctx, token).unwrap();
+    let mut got = String::new();
+    std::io::Read::read_to_string(&mut body, &mut got).unwrap();
+    assert_eq!(
+        (name.as_str(), size, got.as_str()),
+        ("notes.txt", 10, "some notes")
+    );
+    assert!(
+        crate::files::open_link(&f.ctx, token).is_err(),
+        "used twice"
+    );
+    assert!(crate::files::open_link(&f.ctx, "0".repeat(64).as_str()).is_err());
+}
+
+#[test]
+fn file_plans_take_library_paths() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let preview: PlanPreview = serde_json::from_value(
+        call(
+            &f.ctx,
+            "plan",
+            json!({"op": "rename", "paths": [format!("library://{id}/docs/notes.txt")], "new_name": "notes-2026.txt"}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let done = call(
+        &f.ctx,
+        "execute",
+        json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
+    )
+    .unwrap();
+    let job = done["job"].as_i64().unwrap();
+    let info = f.ctx.lib.jobs().wait(job).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert!(f.files.path().join("docs/notes-2026.txt").is_file());
+    assert!(!f.files.path().join("docs/notes.txt").exists());
 }

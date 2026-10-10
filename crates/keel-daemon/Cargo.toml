@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Headless Keel: the library (and keel-net) behind JSON-RPC on a per-user local socket"
+# Embeds the web client bundle (crates/keel-web/dist) when it has been built.
+build = "build.rs"
 
 [features]
 default = ["rar"]
@@ -30,6 +32,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 interprocess = "2.4.4"
 # WebSocket transport (no TLS: loopback by default).
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# --web: request heads (already in the tree through tungstenite).
+httparse = "1"
 # SIGTERM / Ctrl-C / console close.
 ctrlc = { version = "3.5", features = ["termination"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
