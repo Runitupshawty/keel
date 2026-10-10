@@ -785,6 +785,24 @@ impl Devices {
         });
     }
 
+    /// Tests: a node the test opened (offline), as `reopen` sets one up.
+    #[cfg(test)]
+    pub fn set_open(
+        &mut self,
+        lib: Arc<Library>,
+        node: Arc<Node>,
+        handler: Arc<LibraryHandler>,
+        rt: Arc<tokio::runtime::Runtime>,
+    ) {
+        self.handler = Some(handler);
+        self.lib = Some(lib);
+        self.events = Some(forward(node.events(), self.ctx.clone()));
+        self.node = Some(node);
+        self.rt = Some(rt);
+        self.next_ping = Instant::now();
+        self.refresh();
+    }
+
     /// Exit: closes the node (waits up to 3 s).
     pub fn close_now(&mut self) {
         if let (Some(node), Some(rt)) = (self.node.take(), self.rt.clone()) {
