@@ -16,6 +16,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - The 0.2.0 known limitation that nothing can be deleted, renamed or created inside an archive is lifted for zip and jar archives on this computer. 7z, tar (all compressions) and RAR archives, archives inside archives and archives on SFTP hosts or cloud accounts stay read-only; a write there is refused with a message naming the format (or saying that the archive is inside another one or not on this computer). Add to "name"… still writes 7z, tar and tar.gz archives as before.
 - The 0.2.0 known limitation that extracting into a remote folder is not supported is lifted: archives extract into folders on SFTP hosts and cloud accounts.
+- TIFF photos over 64 MiB get their EXIF orientation in thumbnails and media view tiles, lifting the 0.7.0 known limitation. The orientation of every TIFF is now read from the file's header and first directory (a few KiB, little- or big-endian, classic or BigTIFF) instead of the whole file; capture time, camera and the other EXIF fields of TIFFs over 64 MiB are still not read.
 - **New file** on an SFTP host or a cloud account now creates the file. The empty upload was never committed, so the file was discarded.
 
 ## [0.12.0] - 2026-10-10

@@ -131,6 +131,85 @@ fn thumbnails_apply_exif_orientation() {
     assert!(r > 200);
 }
 
+/// A 40 x 20 RGB TIFF, left half red and right half blue, with orientation 6, in either
+/// byte order.
+fn tiff(path: &std::path::Path, le: bool) {
+    let (w, h) = (40u32, 20u32);
+    let mut pixels = Vec::new();
+    for _ in 0..h {
+        for x in 0..w {
+            pixels.extend(if x < w / 2 { [255, 0, 0] } else { [0, 0, 255] });
+        }
+    }
+    let p16 = |v: u16| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+    let p32 = |v: u32| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+    // Header, pixels, the bits-per-sample values, then the IFD.
+    let data = 8u32;
+    let bits = data + pixels.len() as u32;
+    let ifd = bits + 6;
+    let mut out = Vec::new();
+    out.extend(if le { *b"II" } else { *b"MM" });
+    out.extend(p16(42));
+    out.extend(p32(ifd));
+    out.extend(&pixels);
+    for _ in 0..3 {
+        out.extend(p16(8));
+    }
+    // SHORT values sit left-aligned in the 4-byte value field.
+    let short = |v: u16| {
+        let mut f = p16(v).to_vec();
+        f.extend([0, 0]);
+        f
+    };
+    let entries: [(u16, u16, u32, Vec<u8>); 10] = [
+        (256, 3, 1, short(w as u16)),
+        (257, 3, 1, short(h as u16)),
+        (258, 3, 3, p32(bits).to_vec()),
+        (259, 3, 1, short(1)),
+        (262, 3, 1, short(2)),
+        (273, 4, 1, p32(data).to_vec()),
+        (274, 3, 1, short(6)),
+        (277, 3, 1, short(3)),
+        (278, 3, 1, short(h as u16)),
+        (279, 4, 1, p32(pixels.len() as u32).to_vec()),
+    ];
+    out.extend(p16(entries.len() as u16));
+    for (tag, kind, count, value) in entries {
+        out.extend(p16(tag));
+        out.extend(p16(kind));
+        out.extend(p32(count));
+        out.extend(value);
+    }
+    out.extend(p32(0));
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn tiff_orientation_comes_from_the_header_in_either_byte_order() {
+    let dir = tempfile::tempdir().unwrap();
+    for le in [true, false] {
+        let path = dir.path().join(format!("photo-{le}.tif"));
+        tiff(&path, le);
+        assert_eq!(tiff_orientation(&path).unwrap(), Some(6), "le {le}");
+        let meta = read_meta(&path).unwrap();
+        assert_eq!(meta.orientation, 6);
+        assert_eq!((meta.width, meta.height), (20, 40), "as displayed");
+        let img = decode_image(&path).unwrap();
+        assert_eq!((img.width(), img.height()), (20, 40));
+        // Rotated 90 degrees clockwise: the left (red) half ends up on top.
+        let [r, _, b] = rgb(&img, 10, 5);
+        assert!(r > 200 && b < 60, "top is red: {r} {b}");
+        let [r, _, b] = rgb(&img, 10, 35);
+        assert!(b > 200 && r < 60, "bottom is blue: {r} {b}");
+    }
+    // Not a TIFF, or cut off after the header: no orientation, no error.
+    let junk = dir.path().join("junk.tif");
+    std::fs::write(&junk, [b'I', b'I', 42, 0, 0xff, 0xff, 0xff, 0x7f]).unwrap();
+    assert_eq!(tiff_orientation(&junk).unwrap(), None);
+    std::fs::write(&junk, b"GIF89a").unwrap();
+    assert_eq!(tiff_orientation(&junk).unwrap(), None);
+}
+
 #[test]
 fn png_meta_and_thumbnail_sizes() {
     let dir = tempfile::tempdir().unwrap();
