@@ -1,0 +1,72 @@
+# cargo-deny policy; run with `cargo deny check` (see README, Contributing).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Known vulnerabilities are always an error. These are warnings so a new notice does not block unrelated work.
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+# One entry per advisory with the reason. Unmaintained notices are also listed here because cargo-deny
+# 0.20 reports them as errors and has no per-severity warn setting.
+ignore = [
+    # Vulnerabilities in the current tree. Each needs a dependency bump upstream; revisit when the parent crate updates.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 quadratic attribute check, now only via zbus_xml 4 <- zbus-lockstep 0.4 <- atspi-common 0.6 <- accesskit_unix (eframe 0.31, Linux). zbus-lockstep parses atspi's bundled D-Bus XML in a proc macro at build time and in atspi's own tests; Keel never runs it. Drops with the eframe/accesskit upgrade (zbus_xml 5)." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 namespace allocation DoS; same build-time-only zbus_xml path as RUSTSEC-2026-0194." },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc (Marvin timing attack, no fixed release) via russh 0.64 feature `rsa` and its ssh-key 0.7: RSA host-key checks and RSA user-key (id_rsa, agent) signatures. Marvin targets RSA decryption; russh has no RSA key exchange and never decrypts with RSA, and James's keys are ed25519. Turning off russh's `rsa` feature drops the crate but also every ssh-rsa / rsa-sha2 host and user key, so it stays." },
+    # Unmaintained crates (transitive, no drop-in replacement through our direct dependencies).
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained, pulled by syntect 5.3 (`dump-load`: its bundled syntax and theme dumps, also via two-face); no syntect feature avoids it." },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (proc macro, build time only), pulled by metal 0.31 (wgpu-hal 24, eframe 0.31), pulp 0.22 (exr, image) and rav1e 0.8 (ravif, image)." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz 0.18 unmaintained, pulled by usvg 0.44 <- resvg 0.44 (keel-preview SVG text)." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained: 0.24 via fontdb 0.22 and rustybuzz 0.18 (usvg/resvg 0.44, keel-preview), 0.25 via owned_ttf_parser <- ab_glyph <- epaint 0.31 (egui)." },
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",   # not used today; older unicode-ident releases
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",            # not used today; kept for ring-style crates
+    "BSL-1.0",
+    "0BSD",
+    # Needed by the current tree:
+    "OFL-1.1",            # epaint_default_fonts (bundled egui fonts)
+    "Ubuntu-font-1.0",    # epaint_default_fonts
+    "bzip2-1.0.6",        # libbz2-rs-sys (bzip2 via zip, keel-vfs)
+    "NCSA",               # libfuzzer-sys (via rav1e, image AVIF; not shipped)
+    "CDLA-Permissive-2.0", # webpki-root-certs (reqwest TLS roots)
+]
+# Per-crate only: iroh-relay's browser WebSocket transport (wasm32 targets only, never in a native build).
+exceptions = [
+    { name = "ws_stream_wasm", allow = ["Unlicense"] },
+    { name = "async_io_stream", allow = ["Unlicense"] },
+    { name = "pharos", allow = ["Unlicense"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates are publish = false and reference each other by path (no version).
+allow-wildcard-paths = true
+deny = [
+    { name = "openssl" },
+    { name = "native-tls" },
+    { name = "openssl-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

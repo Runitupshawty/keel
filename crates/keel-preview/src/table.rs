@@ -73,9 +73,9 @@ fn workbook(req: &Request) -> Result<TableData, String> {
     if let Sheets::Xlsx(xlsx) = &mut workbook {
         return xlsx_streamed(xlsx);
     }
-    // ponytail: xls/xlsb/ods have no streaming reader in calamine 0.26, so the whole first
-    // sheet is materialised as a dense Range (bounded by MAX_PREVIEW_BYTES on disk); stream
-    // them too if calamine grows a cells reader for those formats.
+    // ponytail: xls/xlsb/ods are read as one dense Range of the first sheet (bounded by
+    // MAX_PREVIEW_BYTES on disk); calamine 0.36 also has a cells reader for xlsb, stream it
+    // like xlsx if large xlsb previews matter (xls/ods still have none).
     let range = workbook
         .worksheet_range_at(0)
         .ok_or_else(|| "workbook contains no sheets".to_owned())?

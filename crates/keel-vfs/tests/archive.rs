@@ -128,7 +128,7 @@ fn sevenz_metadata_and_single_entry() {
     fs::create_dir(&src).unwrap();
     fs::write(src.join("a.txt"), b"seven hello").unwrap();
     let path = tmp.path().join("seven.bin");
-    sevenz_rust::compress_to_path(&src, &path).unwrap();
+    sevenz_rust2::compress_to_path(&src, &path).unwrap();
     let mut archive = keel_vfs::archive::open_archive(&path).unwrap();
     let entries = archive.entries().unwrap();
     let entry = entries.iter().find(|e| e.inner == "a.txt").unwrap();
@@ -140,6 +140,22 @@ fn sevenz_metadata_and_single_entry() {
         .read_to_string(&mut body)
         .unwrap();
     assert_eq!(body, "seven hello");
+    assert!(!entry.encrypted);
+    // Encrypted bodies under a plain header list, flagged.
+    let locked = tmp.path().join("locked.7z");
+    let mut writer = sevenz_rust2::ArchiveWriter::create(&locked).unwrap();
+    writer.set_content_methods(vec![
+        sevenz_rust2::encoder_options::AesEncoderOptions::new("pw".into()).into(),
+        sevenz_rust2::EncoderMethod::LZMA2.into(),
+    ]);
+    writer.set_encrypt_header(false);
+    writer.push_source_path(&src, |_| true).unwrap();
+    writer.finish().unwrap();
+    let entries = keel_vfs::archive::open_archive(&locked)
+        .unwrap()
+        .entries()
+        .unwrap();
+    assert!(entries.iter().all(|e| e.encrypted), "{entries:?}");
 }
 
 #[cfg(feature = "rar")]
@@ -609,7 +625,7 @@ fn corrupt_archives_are_errors_not_panics() {
     fs::create_dir(&src).unwrap();
     fs::write(src.join("a.txt"), [9; 4096]).unwrap();
     let seven = tmp.path().join("good.7z");
-    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    sevenz_rust2::compress_to_path(&src, &seven).unwrap();
     let seven = fs::read(seven).unwrap();
     let mut cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty.zip", Vec::new()),
@@ -692,7 +708,7 @@ fn extracts_7z_folders_and_archives_nested_in_archives() {
     fs::write(src.join("sub/b.txt"), b"seven b").unwrap();
     fs::write(src.join("empty.txt"), b"").unwrap();
     let seven = tmp.path().join("s.7z");
-    sevenz_rust::compress_to_path(&src, &seven).unwrap();
+    sevenz_rust2::compress_to_path(&src, &seven).unwrap();
     let dst = tmp.path().join("out7");
     fs::create_dir(&dst).unwrap();
     extract_all(&VPath::local(&seven), &dst, &router).unwrap();
@@ -1035,7 +1051,7 @@ fn solid_7z(tmp: &Path) -> std::path::PathBuf {
         fs::write(src.join(name), format!("file {n} ").repeat(1000)).unwrap();
     }
     let path = tmp.join("solid.7z");
-    let mut writer = sevenz_rust::SevenZWriter::create(&path).unwrap();
+    let mut writer = sevenz_rust2::ArchiveWriter::create(&path).unwrap();
     writer.push_source_path(&src, |_| true).unwrap();
     writer.finish().unwrap();
     path
@@ -1085,6 +1101,66 @@ fn solid_7z_reads_and_extracts_any_entry() {
         fs::read(dst.join("f3.txt")).unwrap(),
         "file 3 ".repeat(1000).as_bytes()
     );
+}
+
+/// RUSTSEC-2026-0245 is in sevenz-rust's own extractor, which Keel never calls: every
+/// format goes through `ops::extract`, which refuses a traversing or absolute name before
+/// writing anything. The archives are built raw, since the writers' own checks would refuse.
+#[test]
+fn extract_refuses_traversal_and_absolute_names_in_7z_tar_and_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let router = router(&tmp);
+    let dst = tmp.path().join("a/b/dst");
+    fs::create_dir_all(&dst).unwrap();
+    for (i, bad) in ["../../evil.txt", "/evil.txt", "C:/evil.txt"]
+        .into_iter()
+        .enumerate()
+    {
+        let seven = tmp.path().join(format!("{i}.7z"));
+        let mut writer = sevenz_rust2::ArchiveWriter::create(&seven).unwrap();
+        for name in ["good.txt", bad] {
+            writer
+                .push_archive_entry(
+                    sevenz_rust2::ArchiveEntry::new_file(name),
+                    Some(&b"bytes"[..]),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let mut tar = tar::Builder::new(Vec::new());
+        for name in ["good.txt", bad] {
+            let mut header = tar::Header::new_ustar();
+            header.as_ustar_mut().unwrap().name[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_size(5);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, &b"bytes"[..]).unwrap();
+        }
+        let tarball = tmp.path().join(format!("{i}.tar"));
+        fs::write(&tarball, tar.into_inner().unwrap()).unwrap();
+        let zip = tmp.path().join(format!("{i}.zip"));
+        zip_file(&zip, &[("good.txt", b"bytes"), (bad, b"bytes")]);
+        for archive in [&seven, &tarball, &zip] {
+            let names: Vec<_> = keel_vfs::archive::open_archive(archive)
+                .unwrap()
+                .entries()
+                .unwrap()
+                .into_iter()
+                .map(|e| e.inner)
+                .collect();
+            assert_eq!(names, ["good.txt", bad], "{}", archive.display());
+            let err = extract_all(&VPath::local(archive), &dst, &router).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("unsafe archive path"),
+                "{}: {err:#}",
+                archive.display()
+            );
+            assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+        }
+    }
+    for dir in [tmp.path(), &tmp.path().join("a"), &tmp.path().join("a/b")] {
+        assert!(!dir.join("evil.txt").exists());
+    }
 }
 
 #[test]

@@ -23,16 +23,17 @@ windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_Fil
 libloading = "0.8"
 nucleo = "0.5"
 ignore = "0.4"
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# Bundled dumps only (no YAML or plist syntax loading, so no yaml-rust): fancy-regex, pure Rust.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 pulldown-cmark = "0.12"
 image = "0.25"
 resvg = "0.44"
-calamine = "0.26"
+calamine = "0.36"
 csv = "1"
 pdfium-render = { version = "0.8", features = ["sync"] }
 docx-rs = "0.4"
-russh = "0.50"
-russh-sftp = "2"
+russh = { version = "0.64", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh-sftp = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native-async-persistent", "crypto-rust", "async-io"] }
 ssh-key = "0.6"
@@ -42,7 +43,8 @@ hmac = "0.12"
 sha1 = "0.10"
 # Archive codecs are pure Rust (cross-checks need no C toolchain); only unrar builds C++.
 zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "time"] }
-sevenz-rust = "0.6"
+# Reader only; the writer (`compress`, `util`) is enabled for tests in keel-vfs.
+sevenz-rust2 = { version = "0.23", default-features = false }
 tar = "0.4"
 flate2 = "1"
 bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"] }
@@ -51,7 +53,7 @@ ruzstd = "0.8"
 time = "0.3"
 unrar = "0.5"
 # Cloud (Phase 4): only the three services; TLS is rustls (no OpenSSL / native-tls).
-opendal = { version = "0.59", default-features = false, features = ["services-gdrive", "services-dropbox", "services-s3", "executors-tokio", "blocking", "http-transport-reqwest-rustls-no-provider"] }
+opendal = { version = "0.59", default-features = false, features = ["services-gdrive", "services-dropbox", "services-s3", "services-webdav", "executors-tokio", "blocking", "http-transport-reqwest-rustls-no-provider"] }
 # opendal's facade only installs a transport with its own TLS provider: Keel installs this one
 # (its reqwest client, timeouts, rustls + platform verifier) explicitly.
 opendal-http-transport-reqwest = { version = "0.59.4", default-features = false, features = ["rustls-no-provider"] }
@@ -76,7 +78,8 @@ notify = "6"
 directories = "5"
 # Library content ids (Phase 6): pure Rust so cross-target checks need no C toolchain.
 blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
-battery = "0.7"
+# Maintained fork of `battery` (nix 0.19 and mach are gone); same API, imported as `battery`.
+battery = { package = "starship-battery", version = "0.12" }
 # Media sidecars (Phase 7): EXIF and XMP readers are pure Rust; HEIC (libheif, C) is opt-in.
 kamadak-exif = "0.6"
 quick-xml = "0.42"

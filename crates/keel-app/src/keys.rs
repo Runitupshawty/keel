@@ -39,6 +39,14 @@ pub enum Action {
         from: VPath,
         to: String,
     },
+    /// Bulk rename dialog for the selection (Ctrl+F2).
+    BulkRename,
+    /// The dialog answered: `(item, new name)` pairs, already checked.
+    BulkRenameApply {
+        renames: Vec<(VPath, String)>,
+    },
+    /// Reverse the last bulk rename.
+    UndoBulkRename,
     /// Asks before trashing the targets.
     Delete,
     /// Confirmed: send these to the OS trash.
@@ -80,12 +88,23 @@ pub enum Action {
     NewFolder,
     NewFile,
     CopyPath,
+    /// Open with… (Ctrl+Shift+O): Keel's picker for the targets.
     OpenWith,
-    /// Linux "Open with": launch the picked application (desktop id) on `path`.
-    LaunchWith {
-        id: String,
-        path: PathBuf,
+    /// Open `paths` with `app`; `remember` puts it in the recent list for their extension.
+    OpenWithApp {
+        paths: Vec<PathBuf>,
+        app: String,
+        remember: bool,
     },
+    /// The picker's Browse…: choose an executable or .app, then as `OpenWithApp`.
+    OpenWithBrowse {
+        paths: Vec<PathBuf>,
+        remember: bool,
+    },
+    /// Windows: the system "Open with" chooser for the first of `paths`.
+    OpenWithSystem(PathBuf),
+    /// A recent app from the context menu, on the current targets.
+    OpenWithRecent(String),
     Properties,
     /// Explorer's own Properties sheet (Windows).
     ShellProperties(PathBuf),
@@ -130,6 +149,19 @@ pub enum Action {
         zip: PathBuf,
         src: Vec<PathBuf>,
     },
+    /// The Compress dialog's answer: `ZipTo`, and `format` becomes the default.
+    CompressTo {
+        zip: PathBuf,
+        src: Vec<PathBuf>,
+        format: crate::settings::ArchiveFormat,
+    },
+    /// Targets: one existing archive plus items beside it; confirm, then `ZipTo`.
+    AddToArchive,
+    /// Items dropped on an archive row: confirm, then `ZipTo`.
+    AddTo {
+        archive: VPath,
+        src: Vec<VPath>,
+    },
     /// Show tab `tab` of pane `pane` (sidebar "Open archives").
     FocusTab {
         pane: usize,
@@ -151,6 +183,14 @@ pub enum Action {
     // --- Task 29 ---
     /// Library sidebar, overview, dialogs, tags (`library.rs`).
     Library(crate::library::LibCmd),
+    /// Recycle Bin / Trash tab: put the targets back where they were deleted from.
+    RestoreTrash,
+    /// Confirmed: delete these trash items for good.
+    PurgeTrash(Vec<VPath>),
+    /// Recycle Bin / Trash tab: asks, then `EmptyTrashNow`.
+    EmptyTrash,
+    /// Confirmed: delete everything in the trash for good.
+    EmptyTrashNow,
     // --- Task 36 ---
     /// Devices sidebar, pair / shares dialogs, Spacedrop (`devices.rs`).
     Devices(crate::devices::DevCmd),
@@ -193,6 +233,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
+    (CMD_SHIFT, Key::O, Action::OpenWith),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
     (CMD_SHIFT, Key::S, Action::StashSelection),
     // Task 29: Ctrl+T stays New tab; the tag picker is Ctrl+Shift+T.
@@ -220,6 +261,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
     (Modifiers::ALT, Key::ArrowRight, Action::Forward),
     (Modifiers::NONE, Key::Backspace, Action::Backspace),
+    (CMD, Key::F2, Action::BulkRename),
     (Modifiers::NONE, Key::F2, Action::Rename),
     (Modifiers::NONE, Key::F3, Action::TogglePreview),
     (Modifiers::NONE, Key::F5, Action::Refresh),

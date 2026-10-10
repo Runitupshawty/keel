@@ -1,5 +1,5 @@
 use super::{ArchiveEntry, ArchiveReader};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     fs::File,
     io::{BufReader, Read},
@@ -115,4 +115,136 @@ impl ArchiveReader for Reader {
         }
         end_marker(archive.into_inner())
     }
+}
+
+/// Writes the old tar entries (minus replaced names) and then the new ones into
+/// `job.out`, gzip-compressed when the old file was (or, for a new file, when `gzip`).
+/// Only plain and gzip tars can be changed.
+pub(crate) fn rewrite(job: crate::ops::Rewrite<'_>, gzip: bool) -> Result<()> {
+    use std::io::Write;
+    let mut gzip = gzip;
+    if let Some(old) = job.old {
+        let mut magic = [0; 6];
+        let n = File::open(old)?.read(&mut magic)?;
+        let magic = &magic[..n];
+        anyhow::ensure!(
+            !(magic.starts_with(b"BZh")
+                || magic.starts_with(b"\xfd7zXZ\0")
+                || magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd])),
+            "only plain and gzip tar archives can be changed"
+        );
+        gzip = magic.starts_with(&[0x1f, 0x8b]);
+    }
+    let out = std::io::BufWriter::new(&mut *job.out);
+    let job = Job {
+        old: job.old,
+        files: job.files,
+        state: job.state,
+        progress: job.progress,
+        cancel: job.cancel,
+    };
+    if gzip {
+        let encoder = flate2::write::GzEncoder::new(out, flate2::Compression::default());
+        build(encoder, job)?.finish()?.flush()?;
+    } else {
+        build(out, job)?.flush()?;
+    }
+    Ok(())
+}
+
+struct Job<'a> {
+    old: Option<&'a Path>,
+    files: crate::ops::AddFiles,
+    state: &'a mut crate::Progress,
+    progress: &'a dyn Fn(crate::Progress),
+    cancel: &'a std::sync::atomic::AtomicBool,
+}
+
+fn build<W: std::io::Write>(sink: W, job: Job<'_>) -> Result<W> {
+    use crate::ops::Feed;
+    use std::io::BufReader;
+    let Job {
+        old,
+        files,
+        state,
+        progress,
+        cancel,
+    } = job;
+    let cancelled = || {
+        anyhow::ensure!(
+            !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "operation cancelled"
+        );
+        Ok(())
+    };
+    let replaced: std::collections::HashSet<String> = files
+        .keys()
+        .map(|k| k.trim_end_matches('/').to_owned())
+        .collect();
+    let mut builder = ::tar::Builder::new(sink);
+    if let Some(old) = old {
+        let mut scratch = state.clone();
+        let compression = {
+            let mut magic = [0; 2];
+            let n = File::open(old)?.read(&mut magic)?;
+            if magic[..n] == [0x1f, 0x8b] {
+                Compression::Gzip
+            } else {
+                Compression::Plain
+            }
+        };
+        let mut archive = ::tar::Archive::new(Reader::new(old, compression).input()?);
+        for entry in archive.entries()? {
+            cancelled()?;
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            let key = String::from_utf8_lossy(&entry.path_bytes())
+                .trim_end_matches('/')
+                .to_owned();
+            if replaced.contains(&key) {
+                continue;
+            }
+            let mut header = entry.header().clone();
+            let kind = header.entry_type();
+            if kind.is_file() || kind.is_dir() {
+                let feed = Feed {
+                    inner: &mut entry,
+                    state: &mut scratch,
+                    progress: &|_| {},
+                    cancel,
+                };
+                builder.append_data(&mut header, &path, feed)?;
+            } else if kind.is_symlink() || kind.is_hard_link() {
+                let target = entry
+                    .link_name()?
+                    .context("link entry without a target")?
+                    .into_owned();
+                builder.append_link(&mut header, &path, &target)?;
+            } else {
+                anyhow::bail!("cannot rewrite a tar with a special entry: {key}");
+            }
+        }
+        end_marker(archive.into_inner())?;
+    }
+    for (name, (path, meta)) in files {
+        cancelled()?;
+        state.current = name.clone();
+        let mut header = ::tar::Header::new_gnu();
+        header.set_metadata(&meta);
+        if meta.is_dir() {
+            builder.append_data(&mut header, &name, std::io::empty())?;
+        } else {
+            let mut file = File::open(&path)?;
+            let feed = Feed {
+                inner: &mut file,
+                state: &mut *state,
+                progress,
+                cancel,
+            };
+            builder.append_data(&mut header, &name, BufReader::with_capacity(64 << 10, feed))?;
+        }
+        state.done_items += 1;
+        progress(state.clone());
+    }
+    Ok(builder.into_inner()?)
 }

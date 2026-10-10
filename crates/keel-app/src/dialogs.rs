@@ -5,6 +5,7 @@ pub mod properties;
 
 use crate::jobs::Transfer;
 use crate::keys::Action;
+use crate::settings::ArchiveFormat;
 use egui::{Id, Key, Modal};
 use keel_vfs::{Conflict, VPath};
 use std::path::PathBuf;
@@ -32,16 +33,23 @@ pub enum Dialog {
         src: Vec<PathBuf>,
         text: String,
         focus: bool,
+        format: ArchiveFormat,
+        /// The user typed in the name field: a format change leaves it alone.
+        edited: bool,
     },
     /// Properties of `paths`; `info` arrives from a worker.
     Properties {
         paths: Vec<VPath>,
         info: Option<Result<properties::Props, String>>,
     },
-    /// Linux "Open with": `(name, desktop id)` of the applications for `path`.
+    /// Bulk rename (Ctrl+F2).
+    BulkRename(Box<crate::bulk_rename::BulkRename>),
+    /// Open with…: `recent` apps for the extension, then the system's `(name, app)` list.
     OpenWith {
-        path: PathBuf,
+        paths: Vec<PathBuf>,
+        recent: Vec<String>,
         apps: Vec<(String, String)>,
+        remember: bool,
     },
 }
 
@@ -63,6 +71,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     let yes = ui.button(match on_yes {
                         Action::DeleteRemote(_) if !text.starts_with("Move ") => "Delete",
                         Action::Cloud { .. } => "Remove",
+                        Action::ZipTo { .. } => "Add",
+                        Action::PurgeTrash(_) => "Delete permanently",
+                        Action::EmptyTrashNow => "Empty",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");
@@ -142,26 +153,35 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 src,
                 text,
                 focus,
+                format,
+                edited,
             } => {
                 ui.label(format!("Compress {} to", crate::jobs::items(src.len())));
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                *edited |= r.changed();
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.horizontal(|ui| {
+                    for f in ArchiveFormat::ALL {
+                        if ui.selectable_label(*format == f, f.label()).clicked() {
+                            pick_format(text, format, *edited, f);
+                        }
+                    }
+                });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if (ui.button("Compress").clicked() || enter) && !text.trim().is_empty() {
                         let name = text.trim();
-                        let has_ext = name.to_ascii_lowercase().ends_with(".zip");
-                        let name = if has_ext {
-                            name.to_owned()
-                        } else {
-                            format!("{name}.zip")
+                        let (name, format) = match ArchiveFormat::of_name(name) {
+                            Some(f) => (name.to_owned(), f),
+                            None => (format!("{name}{}", format.ext()), *format),
                         };
-                        out = Some(Action::ZipTo {
+                        out = Some(Action::CompressTo {
                             zip: dir.join(name),
                             src: src.clone(),
+                            format,
                         });
                     }
                     cancel |= ui.button("Cancel").clicked();
@@ -172,29 +192,69 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.add_space(8.0);
                 cancel |= ui.button("Close").clicked();
             }
-            Dialog::OpenWith { path, apps } => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                ui.label(format!("Open \"{name}\" with"));
+            Dialog::BulkRename(m) => {
+                if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
+                    out = Some(Action::BulkRenameApply { renames });
+                }
+            }
+            Dialog::OpenWith {
+                paths,
+                recent,
+                apps,
+                remember,
+            } => {
+                let name = paths[0].file_name().unwrap_or_default().to_string_lossy();
+                ui.label(match paths.len() {
+                    1 => format!("Open \"{name}\" with"),
+                    n => format!("Open {n} files with"),
+                });
                 ui.add_space(4.0);
-                if apps.is_empty() {
-                    ui.weak("No applications are registered for this file type");
+                let ext = paths[0]
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase());
+                ui.checkbox(
+                    remember,
+                    match &ext {
+                        Some(e) => format!("Remember for .{e} files"),
+                        None => "Remember for files without an extension".to_owned(),
+                    },
+                );
+                ui.add_space(4.0);
+                let shown: Vec<(String, String)> = (recent.iter())
+                    .map(|a| (crate::platform::app_label(a), a.clone()))
+                    .chain(apps.iter().filter(|(_, a)| !recent.contains(a)).cloned())
+                    .collect();
+                if shown.is_empty() {
+                    ui.weak("No applications are known for this file type");
                 }
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        for (label, id) in apps.iter() {
+                        for (label, app) in &shown {
                             let button = egui::Button::new(label.as_str())
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
-                            if ui.add(button).on_hover_text(id.as_str()).clicked() {
-                                out = Some(Action::LaunchWith {
-                                    id: id.clone(),
-                                    path: path.clone(),
+                            if ui.add(button).on_hover_text(app.as_str()).clicked() {
+                                out = Some(Action::OpenWithApp {
+                                    paths: paths.clone(),
+                                    app: app.clone(),
+                                    remember: *remember,
                                 });
                             }
                         }
                     });
                 ui.add_space(8.0);
-                cancel |= ui.button("Cancel").clicked();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse…").clicked() {
+                        out = Some(Action::OpenWithBrowse {
+                            paths: paths.clone(),
+                            remember: *remember,
+                        });
+                    }
+                    if cfg!(windows) && ui.button("System chooser…").clicked() {
+                        out = Some(Action::OpenWithSystem(paths[0].clone()));
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
             }
         }
     });
@@ -204,12 +264,25 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
     out
 }
 
+/// The Compress dialog's format choice: swaps the name's extension unless the user edited it.
+pub fn pick_format(
+    text: &mut String,
+    current: &mut ArchiveFormat,
+    edited: bool,
+    new: ArchiveFormat,
+) {
+    if !edited {
+        *text = new.apply(text, *current);
+    }
+    *current = new;
+}
+
 /// Why `name` cannot be a file name here, if it cannot.
 pub fn invalid_name(name: &str) -> Option<String> {
     invalid_name_for(name, cfg!(windows))
 }
 
-fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
+pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return Some(format!("\"{name}\" is not a valid name"));
     }
@@ -260,5 +333,23 @@ mod tests {
         for ok in ["a:b", "CON", "q?", "dot."] {
             assert_eq!(invalid_name_for(ok, false), None, "{ok} on Unix");
         }
+    }
+
+    #[test]
+    fn format_choice_rewrites_the_extension_only_when_untouched() {
+        use ArchiveFormat::*;
+        let (mut text, mut fmt) = ("photos.zip".to_string(), Zip);
+        pick_format(&mut text, &mut fmt, false, TarGz);
+        assert_eq!((text.as_str(), fmt), ("photos.tar.gz", TarGz));
+        pick_format(&mut text, &mut fmt, false, SevenZ);
+        assert_eq!((text.as_str(), fmt), ("photos.7z", SevenZ));
+        // Edited: the name stays, the format still changes.
+        let mut text = "mine.zip".to_string();
+        let mut fmt = Zip;
+        pick_format(&mut text, &mut fmt, true, Tar);
+        assert_eq!((text.as_str(), fmt), ("mine.zip", Tar));
+        // An extension-less name gets the new one; a dotted stem keeps its dots.
+        assert_eq!(Tar.apply("a.b", Zip), "a.b.tar");
+        assert_eq!(Zip.apply("v1.2.TAR.GZ", TarGz), "v1.2.zip");
     }
 }

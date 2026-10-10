@@ -37,11 +37,12 @@ fn context_items() -> Vec<Item> {
     use Action::*;
     [
         ("Open", "Enter", Enter),
-        ("Open with…", "", OpenWith),
+        ("Open with…", "Ctrl+Shift+O", OpenWith),
         ("Open location", "Ctrl+Enter", OpenLocation),
         ("Copy", "Ctrl+C", Copy),
         ("Cut", "Ctrl+X", Cut),
         ("Rename", "F2", Rename),
+        ("Bulk rename…", "Ctrl+F2", BulkRename),
         ("Move to trash", "Del", Delete),
         ("Properties", "", Properties),
         ("Extract here", "", ExtractHere),
@@ -94,6 +95,7 @@ fn global_items() -> Vec<Item> {
         ("Select all", "Ctrl+A", SelectAll),
         ("Invert selection", "", InvertSelection),
         ("Paste", "Ctrl+V", Paste),
+        ("Undo bulk rename", "", UndoBulkRename),
         ("Copy path", "", CopyPath),
         ("New folder", "Ctrl+Shift+N", NewFolder),
         ("New file", "", NewFile),

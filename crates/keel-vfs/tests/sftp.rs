@@ -208,6 +208,33 @@ fn live_operations_transfers_cache_and_cleanup() {
         &router
     )
     .is_err());
+    // Same-host move: renamed on the server (file and folder), source gone.
+    let moved = root.join("moved");
+    provider.mkdir(&moved).unwrap();
+    for source in [&other, &root.join(file.name())] {
+        transfer(
+            std::slice::from_ref(source),
+            &moved,
+            true,
+            Conflict::Skip,
+            &|_| {},
+            &cancel,
+            &router,
+        )
+        .unwrap();
+        assert!(provider.stat(source).is_err());
+    }
+    assert_eq!(
+        provider
+            .stat(&moved.join("other").join(file.name()))
+            .unwrap()
+            .size,
+        payload.len() as u64
+    );
+    assert_eq!(
+        provider.stat(&moved.join(file.name())).unwrap().size,
+        payload.len() as u64
+    );
     provider.remove(&root).unwrap();
     assert!(provider.stat(&root).is_err());
     assert!(

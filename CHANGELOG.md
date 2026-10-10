@@ -4,12 +4,74 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+
+- Library search media filters: `camera:`, `taken:`, `w:` / `h:`, `duration:`, `has:gps` and `kind:photo`, from the sidecar media rows. Words that match no name or path also match camera and keywords, ranked below name hits.
+- Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
+- WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
+- Add to 7z, tar and tar.gz archives (not only zip): new entries are written to a staging file beside the archive and renamed over it, so cancel or an error leaves the original untouched. RAR stays read-only.
+- One-line installers: `scripts/install.ps1` (Windows, per user, Start menu shortcut, optional Desktop shortcut and `PATH`, Settings, Apps entry, `-Uninstall`) and `scripts/install.sh` (macOS, Linux, `--uninstall`). Both verify the download against the release's `SHA256SUMS`.
+- Releases now include `SHA256SUMS` and, for Linux, a `.deb` package.
+- CI: `cargo deny` (licenses, advisories, bans, sources; `deny.toml`) is required via the `check` job, and pull requests get GitHub dependency review. The workspace crates are marked `publish = false`.
+- Persistent name index for macOS and Linux (and the last resort on Windows): search works instantly without Spotlight or `locate`. It walks your home folder, keeps names, sizes and dates in SQLite under the cache folder, follows file changes live, and rebuilds weekly; the status bar shows "indexing N files…" while it builds. It also feeds the folder jump (Ctrl+P).
+- Compress dialog: choose Zip, 7z, Tar or Tar.gz (the name's extension follows unless you edited it; the choice is remembered as `archive.default_format`). New **Add to "name"…** context-menu entry when you select one zip, 7z, tar or tar.gz plus items beside it, and dropping files on such an archive row does the same; both ask first and run as a job with progress and cancel.
+- Open with… (Ctrl+Shift+O, context menu): Keel's own picker lists the recent apps for the file's extension, the apps the system knows for it (Linux: MIME associations; macOS: applications in /Applications and ~/Applications), Browse… for any executable or .app, and on Windows the system chooser. "Remember for .ext files" files the app in `open_with.recent` in config.toml. The context menu shows the last 5 apps for that extension in an "Open with" submenu. With several files selected, all of them open with the chosen app (one process per file, or one `open -a` on macOS).
+- Bulk rename (Ctrl+F2, or "Bulk rename…" in the context menu and palette): a pattern with `{name}`, `{ext}`, `{n}` / `{n:3}` (counter with start and step), `{date}` and `{parent}`, find/replace (plain or regex, optionally case-insensitive) and a case transform, with a live old-to-new preview. Duplicate targets, names that collide with other files, invalid names, empty names and reserved Windows names are flagged and block Apply. Renames go through the folder's provider (local, SFTP, cloud), swaps and chains use temporary names, a partial failure lists the items that failed, and "Undo bulk rename" (toast button or palette) reverses it until the next operation.
+- **Recycle Bin / Trash as a folder**: a "Recycle Bin" (Windows) or "Trash" (Linux) entry in the sidebar opens the current user's bin as a `trash://` tab with Name, Original location, Size and Deleted on columns. Restore puts items back where they were deleted from and reports a name clash instead of overwriting; Delete permanently and Empty ask first and say how many items go. Previews work for trashed files. Read-only otherwise (no paste, rename or new items). Not available on macOS yet.
+
+### Changed
+
+- 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
+- `syntect` is built with only what the previews use (bundled syntax and theme dumps, fancy-regex), which drops the unmaintained `yaml-rust` (RUSTSEC-2024-0320). The remaining `cargo deny` advisory ignores now name the crate that pulls each one and why it stays.
+
+### Fixed
+
+- A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
+- SFTP: `russh` 0.50 to 0.64 and `russh-sftp` 2.4 to 3.0, fixing unbounded memory allocation driven by a hostile server (RUSTSEC-2026-0154, RUSTSEC-2026-0153). Host key trust, key file, agent and password logins, keepalive and cancellation behave as before; a host certificate offered by a server is refused.
+- Spreadsheet previews: `calamine` 0.26 to 0.36, which moves its XML parser to `quick-xml` 0.41 and fixes a quadratic-time attribute check and a namespace allocation DoS on crafted xlsx/ods files (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
+- 7z: the unmaintained `sevenz-rust` 0.6 is replaced by its maintained fork `sevenz-rust2` 0.23 (RUSTSEC-2026-0246; RUSTSEC-2026-0245 is a path traversal in its own extractor, which Keel never used). A test now proves that 7z, tar and zip entries named `../../evil.txt`, `/evil.txt` or `C:/evil.txt` refuse the whole extraction and nothing is written.
+- Battery detection: `battery` 0.7 is replaced by its maintained fork `starship-battery` 0.12, which drops `nix` 0.19 (out-of-bounds write in `getgrouplist`, RUSTSEC-2021-0119; never called by Keel) and the unmaintained `mach` (RUSTSEC-2020-0168). The `power` feature is unchanged.
+
+## [0.8.0] - 2026-10-09
+
+Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
+
+### Added
+
+- Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
+- Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
+- Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
+- Spacedrop: send files and folders to a paired device in resumable 4 MiB chunks, verified with BLAKE3 over the whole file, staged in a `.keel-partial` folder and moved into the receiver's inbox folder only when complete. The receiver gets an accept prompt, with per-device auto-accept. Drops run as durable jobs that survive a dropped link or a restart.
+- App: a Devices sidebar section (status dot, name, storage bar, Browse, Send files, Shares, Forget), a pairing dialog with the code and QR, a shares dialog, "Send with Spacedrop..." in the context menu, and Settings → Devices (enable, device name, inbox, relays, auto-accept list).
+- `keel-api`, a typed operation registry with 29 operations and generated JSON schemas. Mutating operations are preview-first: `plan` returns a preview with a plan id and an input hash, and `execute` applies only that exact input, refusing a wrong hash, a changed source or a plan older than 10 minutes.
+- `keel-daemon`, a headless host for the profile's library that serves the API as JSON-RPC on a per-user local socket, with an optional token-authenticated loopback WebSocket, notifications for job progress, library changes and device events, and a single daemon per profile.
+- Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
+- `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
+
+### Changed
+
+- Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
+- Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
+
+### Fixed
+
+- Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
+
 ### Security
 
 - API plans: the hash covers everything a plan runs (for file operations also the changes and warnings) and is checked again at `execute`; `api-plans.json` is owner-only on every platform, so a plan altered on disk is refused.
 - MCP: `execute` applies a plan only after the user confirmed it through the client (MCP elicitation, showing the summary, changes and warnings); a client that cannot ask is refused unless `keel mcp --allow-execute`, and then each call must repeat the preview's summary. Nothing but `ping` is answered before `initialize`; bad or oversized lines get an error and the session goes on.
 - keel-daemon: the WebSocket handshake (`--ws`, and the request head on `--web`) has a 5 s deadline and at most 64 connections are served per listener; `daemon.token` is owner-only and a token file others can access is replaced; a request on the local socket must arrive within 30 s however slowly it trickles in; the socket name is derived from the user's SID or uid and a per-user random salt; `--profile` is validated.
 - CLI: `--json` prints one JSON document per invocation; a lone argument naming an existing folder opens it even when it matches a subcommand (`keel ./search` always does); the in-process host keeps extracted archives under the data folder, brings keel-net online only for devices and shares, and registers the profile's SFTP hosts and cloud accounts.
+
+### Known limitations
+
+- The window does not yet attach to a running daemon; only one of them can hold the library at a time.
+- Short-code pairing needs internet discovery; on an offline network use the full ticket.
+- The daemon's router has no SFTP or cloud providers and does not watch folders live.
+- Writes from a device land only in local sources.
+- Tabs on `node://` sources show the raw id as their title.
+- Video in the viewer shows stills, not playback.
 
 ## [0.6.0] - 2026-10-09
 

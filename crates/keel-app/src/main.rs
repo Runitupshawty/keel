@@ -3,6 +3,7 @@
 
 mod anim;
 mod app;
+mod bulk_rename;
 mod clipboard;
 mod clouds;
 mod crash;
@@ -34,6 +35,7 @@ mod tab;
 mod term_pane;
 mod theme;
 mod toast;
+mod trash_ui;
 mod view_columns;
 mod view_details;
 mod view_grid;

@@ -24,17 +24,21 @@ pub mod sftp;
 /// Explorer Properties sheet (Windows).
 #[cfg(windows)]
 pub mod shell;
+pub mod trashbin;
 // --- Task 33 ---
 pub mod volume;
 pub use volume::{volume_info, VolumeInfo, VolumeType};
 // --- end Task 33 ---
 #[cfg(feature = "cloud")]
-pub use cloud::{CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore};
+pub use cloud::{
+    CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore, WebDavConfig,
+};
 pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
 pub use provider::{Caps, Provider, RemoveKind};
 pub use router::Router;
 pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
+pub use trashbin::TrashProvider;
 pub mod ops;
 #[cfg(not(windows))]
 mod ops_unix;
@@ -43,7 +47,7 @@ use ops_unix as sys;
 #[cfg(windows)]
 mod ops_windows;
 #[cfg(feature = "zip")]
-pub use ops::add_to_zip;
+pub use ops::{add_to_archive, add_to_zip};
 pub use ops::{copy_local, extract, extract_under, move_local, plan_size, Conflict, Progress};
 #[cfg(windows)]
 use ops_windows as sys;

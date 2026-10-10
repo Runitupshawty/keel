@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "keel-app"
 version.workspace = true
 edition.workspace = true
@@ -46,6 +47,7 @@ open = "5"
 humansize = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 natord = "1"
+regex.workspace = true
 # No http loader: Markdown previews must not fetch remote images.
 egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
 ignore.workspace = true

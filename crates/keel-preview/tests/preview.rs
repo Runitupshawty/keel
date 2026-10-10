@@ -257,10 +257,17 @@ fn csv_stops_at_row_cap() {
 
 #[test]
 fn xlsx_has_data_rows() {
-    let Preview::Table { rows, .. } = preview(&request("sample.xlsx")) else {
+    let Preview::Table {
+        headers,
+        rows,
+        truncated,
+    } = preview(&request("sample.xlsx"))
+    else {
         panic!("expected table preview");
     };
-    assert!(!rows.is_empty());
+    assert_eq!(headers, ["name", "value"]);
+    assert_eq!(rows, [["alpha", "1"]]);
+    assert!(!truncated);
 }
 
 #[test]
@@ -404,4 +411,278 @@ fn crlf_lines_keep_their_colours() {
         "string drawn in the background colour"
     );
     assert!(lines.iter().flatten().all(|(_, t)| !t.contains('\r')));
+}
+
+// ---- pptx / OpenDocument / richer docx (fixtures are built here, not committed) ----
+
+fn zip_file(dir: &Path, name: &str, entries: &[(&str, Vec<u8>)]) -> PathBuf {
+    use std::io::Write;
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (entry, bytes) in entries {
+        zip.start_file(*entry, options).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap();
+    path
+}
+
+fn doc_blocks(path: &Path, ext: &str) -> Vec<DocBlock> {
+    match preview(&temp_request(path, ext, 256)) {
+        Preview::Doc { blocks } => blocks,
+        other => panic!("expected document preview, got {other:?}"),
+    }
+}
+
+fn paras(blocks: &[DocBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .map(|b| match b {
+            DocBlock::Heading(n, s) => format!("{}{}", "#".repeat(*n as usize), s),
+            DocBlock::Para(s) => s.clone(),
+            DocBlock::Table(rows) => rows
+                .iter()
+                .map(|r| r.join(" | "))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            DocBlock::Image(_) => "<img>".into(),
+        })
+        .collect()
+}
+
+fn error_of(path: &Path, ext: &str) -> String {
+    match preview(&temp_request(path, ext, 256)) {
+        Preview::Error(message) => message,
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+const P_NS: &str = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main""#;
+
+fn slide_xml(title: &str, body: &str) -> Vec<u8> {
+    format!(
+        r#"<p:sld {P_NS}><p:cSld><p:spTree>
+<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{title}</a:t></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{body} &amp; more</a:t></a:r><a:r><a:t/></a:r></a:p></p:txBody></p:sp>
+<p:sp><p:nvSpPr><p:nvPr><p:ph type="sldNum"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>7</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn pptx_text_per_slide_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = zip_file(
+        dir.path(),
+        "deck.pptx",
+        &[
+            ("ppt/slides/slide10.xml", slide_xml("Ten", "last")),
+            ("ppt/slides/slide2.xml", slide_xml("Two", "second")),
+            ("ppt/slides/slide1.xml", slide_xml("One", "first")),
+        ],
+    );
+    assert!(accepts("pptx"));
+    assert_eq!(
+        paras(&doc_blocks(&path, "pptx")),
+        [
+            "##Slide 1",
+            "###One",
+            "first & more",
+            "##Slide 2",
+            "###Two",
+            "second & more",
+            "##Slide 3",
+            "###Ten",
+            "last & more"
+        ]
+    );
+}
+
+#[test]
+fn pptx_truncates_after_200_slides() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries: Vec<(String, Vec<u8>)> = (1..=205)
+        .map(|i| (format!("ppt/slides/slide{i}.xml"), slide_xml("T", "b")))
+        .collect();
+    let refs: Vec<(&str, Vec<u8>)> = entries
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.clone()))
+        .collect();
+    let path = zip_file(dir.path(), "big.pptx", &refs);
+    let text = paras(&doc_blocks(&path, "pptx"));
+    assert_eq!(text.last().unwrap(), "… (truncated)");
+    assert_eq!(
+        text.iter().filter(|t| t.starts_with("##Slide")).count(),
+        200
+    );
+}
+
+const ODF_NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0""#;
+
+fn odf(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let xml = format!(
+        "<office:document-content {ODF_NS}><office:body>{body}</office:body></office:document-content>"
+    );
+    zip_file(dir, name, &[("content.xml", xml.into_bytes())])
+}
+
+#[test]
+fn odt_headings_paragraphs_lists_and_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = odf(
+        dir.path(),
+        "a.odt",
+        r#"<office:text><text:h text:outline-level="2">Title</text:h>
+<text:p>Hello<text:s text:c="2"/>there &amp; <text:span>you</text:span></text:p>
+<text:list><text:list-item><text:p>one</text:p></text:list-item><text:list-item><text:p>two</text:p></text:list-item></text:list>
+<table:table table:name="T"><table:table-row><table:table-cell><text:p>a</text:p></table:table-cell><table:table-cell><text:p>b</text:p></table:table-cell></table:table-row></table:table>
+<text:p>note<text:note><text:note-body><text:p>SKIPPED</text:p></text:note-body></text:note></text:p></office:text>"#,
+    );
+    assert_eq!(
+        paras(&doc_blocks(&path, "odt")),
+        [
+            "##Title",
+            "Hello  there & you",
+            "• one",
+            "• two",
+            "a | b",
+            "note"
+        ]
+    );
+}
+
+#[test]
+fn ods_sheets_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = odf(
+        dir.path(),
+        "a.ods",
+        r#"<office:spreadsheet><table:table table:name="Sheet1"><table:table-row><table:table-cell><text:p>x</text:p></table:table-cell><table:table-cell/><table:table-cell><text:p>z</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell/></table:table-row></table:table>
+<table:table table:name="Sheet2"><table:table-row><table:table-cell><text:p>q</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet>"#,
+    );
+    assert_eq!(
+        paras(&doc_blocks(&path, "ods")),
+        ["##Sheet1", "x |  | z", "##Sheet2", "q"]
+    );
+}
+
+#[test]
+fn odp_slides() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = odf(
+        dir.path(),
+        "a.odp",
+        r#"<office:presentation><draw:page draw:name="p1"><text:p>first</text:p></draw:page><draw:page draw:name="p2"><text:p>second</text:p></draw:page></office:presentation>"#,
+    );
+    assert_eq!(
+        paras(&doc_blocks(&path, "odp")),
+        ["##Slide 1", "first", "##Slide 2", "second"]
+    );
+}
+
+#[test]
+fn odt_truncates_at_paragraph_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!(
+        "<office:text>{}</office:text>",
+        "<text:p>x</text:p>".repeat(20_100)
+    );
+    let path = odf(dir.path(), "long.odt", &body);
+    let text = paras(&doc_blocks(&path, "odt"));
+    assert_eq!(text.last().unwrap(), "… (truncated)");
+    assert!(text.len() <= 20_002);
+}
+
+#[test]
+fn zip_bomb_is_capped_not_allocated() {
+    let dir = tempfile::tempdir().unwrap();
+    // 65 MiB of one repeated byte deflates to a few dozen KiB.
+    let bomb = vec![b' '; 65 * 1024 * 1024];
+    let path = zip_file(dir.path(), "bomb.odt", &[("content.xml", bomb.clone())]);
+    assert!(std::fs::metadata(&path).unwrap().len() < 1024 * 1024);
+    for (name, ext, entry) in [
+        ("bomb.odt", "odt", "content.xml"),
+        ("bomb.pptx", "pptx", "ppt/slides/slide1.xml"),
+        ("bomb.docx", "docx", "word/document.xml"),
+    ] {
+        let path = zip_file(dir.path(), name, &[(entry, bomb.clone())]);
+        let message = error_of(&path, ext);
+        assert!(message.contains("decompressed limit"), "{ext}: {message}");
+    }
+}
+
+#[test]
+fn malformed_and_non_zip_inputs_are_clear_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = b"<a><b></a>".to_vec();
+    let path = zip_file(dir.path(), "bad.odt", &[("content.xml", bad.clone())]);
+    assert!(error_of(&path, "odt").contains("malformed"));
+    let path = zip_file(dir.path(), "bad.pptx", &[("ppt/slides/slide1.xml", bad)]);
+    assert!(error_of(&path, "pptx").contains("malformed"));
+    let path = zip_file(dir.path(), "empty.odp", &[("mimetype", b"x".to_vec())]);
+    assert!(error_of(&path, "odp").contains("content.xml"));
+    for ext in ["pptx", "odt", "ods", "odp", "docx"] {
+        let path = dir.path().join(format!("plain.{ext}"));
+        std::fs::write(&path, b"this is not a zip").unwrap();
+        assert!(!error_of(&path, ext).is_empty(), "{ext}");
+    }
+}
+
+#[test]
+fn docx_lists_page_breaks_and_tables() {
+    use docx_rs::*;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rich2.docx");
+    let level = |format: &str| {
+        Level::new(
+            0,
+            Start::new(1),
+            NumberFormat::new(format),
+            LevelText::new("%1."),
+            LevelJc::new("left"),
+        )
+    };
+    let item = |text: &str, id: usize| {
+        Paragraph::new()
+            .add_run(Run::new().add_text(text))
+            .numbering(NumberingId::new(id), IndentLevel::new(0))
+    };
+    Docx::new()
+        .add_abstract_numbering(AbstractNumbering::new(1).add_level(level("decimal")))
+        .add_abstract_numbering(AbstractNumbering::new(2).add_level(level("bullet")))
+        .add_numbering(Numbering::new(1, 1))
+        .add_numbering(Numbering::new(2, 2))
+        .add_paragraph(
+            Paragraph::new()
+                .style("Heading1")
+                .add_run(Run::new().add_text("Head")),
+        )
+        .add_paragraph(item("first", 1))
+        .add_paragraph(item("second", 1))
+        .add_paragraph(item("dot", 2))
+        .add_paragraph(
+            Paragraph::new().add_run(Run::new().add_text("before").add_break(BreakType::Page)),
+        )
+        .add_table(Table::new(vec![TableRow::new(vec![
+            TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("c1"))),
+            TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("c2"))),
+        ])]))
+        .build()
+        .pack(File::create(&path).unwrap())
+        .unwrap();
+    assert_eq!(
+        paras(&doc_blocks(&path, "docx")),
+        [
+            "#Head",
+            "1. first",
+            "2. second",
+            "• dot",
+            "before",
+            "---",
+            "c1 | c2"
+        ]
+    );
 }
