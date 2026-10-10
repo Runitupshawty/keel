@@ -15,7 +15,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Filter by typing**: start typing in a list to filter it; Esc clears.
 - **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb), Word documents (docx, with headings, lists, tables and page breaks), PowerPoint slide text (pptx), OpenDocument text, spreadsheets and presentations (odt, ods, odp), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
 - **File operations**: copy, move, rename (F2; Ctrl+F2 renames many at once), new folder/file, and delete to the OS trash (never a permanent delete), with progress, cancel, and skip/overwrite/rename prompts on name clashes. Drag and drop between panes and from other apps.
-- **System clipboard**: Ctrl+C / Ctrl+X / Ctrl+V exchange files with Explorer (including cut) and Finder / file managers on Linux (copy only for now).
+- **System clipboard**: Ctrl+C / Ctrl+X / Ctrl+V exchange files with Explorer and with Linux file managers, cut included (on Linux through X11, or XWayland in a Wayland session: GNOME Files, Nemo, Caja, Thunar and PCManFM read `x-special/gnome-copied-files`, Dolphin `application/x-kde-cutselection`, and a cut made in those apps pastes in Keel as a move), and with Finder (copy; Finder has no cut on the clipboard, so a cut made in Keel is a move only when pasted in Keel).
 - **Recycle Bin / Trash**: the sidebar's Recycle Bin (Windows) or Trash (macOS, Linux) entry opens your bin as a folder showing when each item was deleted and, on Windows and Linux, where it came from. Right-click to Restore (macOS: Restore to…), Delete permanently or Empty; both deletes ask first. See [Recycle Bin and Trash](#recycle-bin-and-trash).
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too; entries of a zip can be deleted, renamed, moved and added. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
@@ -478,7 +478,7 @@ What is next, from the known limitations still open:
 
 - Signed and notarized builds, and release builds that include a mount backend.
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
-- Drag-out to other apps on macOS and Linux, the cut flag on the Linux clipboard, and the native Windows shell context menu.
+- Drag-out to other apps on macOS and Linux, and the native Windows shell context menu.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.

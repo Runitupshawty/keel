@@ -76,6 +76,11 @@ global-hotkey = "0.8.0"
 [target.'cfg(not(windows))'.dependencies]
 arboard = { version = "3.6", default-features = false }
 
+# Linux file clipboard with the cut flag (arboard has no custom targets); pure Rust and
+# already in the tree through arboard and winit.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
 [dev-dependencies]
 # tests/cli.rs: temp library folders, unique profile names.
 tempfile = "3"

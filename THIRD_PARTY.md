@@ -12,6 +12,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | `data-encoding` 2 | Public identity and pairing ticket base32 | MIT | Rust crate, compiled in |
 | `tokio-util` 0.7 | Network cancellation and task tracking | MIT | Rust crate, compiled in |
 | `serde_bytes` 0.11 | Content ids as CBOR byte strings in the network protocol | MIT OR Apache-2.0 | Rust crate, compiled in |
+| `x11rb` 0.13 (already used by `arboard` and `winit`) | Linux file clipboard with the cut flag (X11 selection owner) | MIT OR Apache-2.0 | Rust crate, compiled in (Linux only) |
 | `qrcode` 0.14 | Device pairing QR codes (no image renderers) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [Everything SDK](https://www.voidtools.com/support/everything/sdk/) by voidtools | Fast Windows file search | MIT | Downloaded by `scripts/fetch-deps.ps1`; `Everything64.dll` is placed in `target/deps/` and the SDK license text in `target/deps/licenses/everything/` (the `Everything.h` header, which carries the MIT notice, when the SDK zip has no separate license file) |
 | [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) / PDFium | PDF rendering | PDFium: BSD 3-Clause; pdfium-binaries build scripts: MIT | Downloaded (pinned to `chromium/7543`) by `scripts/fetch-deps.ps1` / `fetch-deps.sh`; `pdfium.dll` (Windows), `libpdfium.dylib` (macOS) or `libpdfium.so` (Linux) is placed in `target/deps/`, and its license bundle is preserved in `target/deps/licenses/pdfium/` for releases |
