@@ -582,6 +582,12 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
                     terms.push(term_of(rest));
                 }
             } else if let Some(rest) = strip_ci(&term, "in:") {
+                // The index stores resolved roots (macOS: /private/var for /var), so a typed
+                // folder is resolved the same way when it exists.
+                #[cfg(not(windows))]
+                let rest: String = std::fs::canonicalize(rest)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| rest.to_owned());
                 within = Some(rest.replace('\\', "/").to_lowercase());
             } else if let Some(rest) = strip_ci(&term, "regex:") {
                 terms.push(Term::Pattern(rest.to_owned()));
