@@ -45,7 +45,8 @@ File operations run as jobs: `execute` returns `{"job": N}`; follow it with `job
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
-revoked. `recents.note` (a file was opened) also acts directly: it changes no file.
+revoked. `recents.note` (a file was opened) and `activity.note` (the user is working)
+also act directly: they change no file.
 
 ## Operations
 
@@ -60,7 +61,7 @@ revoked. `recents.note` (a file was opened) also acts directly: it changes no fi
 | `stat` | read | One entry, plus its library record, tags and favorite state |
 | `read` | read | A byte range of a file (`path`, `offset`, `len` up to 4 MiB), base64; library paths read the real file. SFTP, cloud and device files are read from the offset (a ranged request); elsewhere (inside archives) an offset past 64 MiB is refused |
 | `preview.render` | read | The desktop previewers' output: `kind` `text` (code, Markdown, tables as TSV, documents, hex) or `image` (a PNG of at most `max_px` 64..2048, default 1024: images, a PDF `page`, a video frame), or `none` with a `message`; `content_id` when indexed (a cache key) |
-| `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed; made on first request, served from earlier sidecars when the source is offline |
+| `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed (`content_id` in the answer); made on first request, served from earlier sidecars when the source is offline. `make: false` answers only from a sidecar that exists (NOT_FOUND otherwise); `content_id` (64 hex digits) answers from a sidecar made earlier for that content, before `path` (which may then be left out) is looked at |
 | `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
 | `search` | read | Library search: words, `"phrases"`, `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:` |
 | `tags.list` | read | All tags, or the tags on one path |
@@ -84,12 +85,15 @@ revoked. `recents.note` (a file was opened) also acts directly: it changes no fi
 | `integrity.check` | preview | Re-hash `sample_pct` % (default 1) of the hashed files of one `source` or all, as a job; with `due_days`, only when the last check of every source is that old (the first call starts the clock; `job` absent when nothing is due) |
 | `hashing.set` | preview | Content hashing after walks `on` / off (`idle_only`: pause while the user works); on returns the hash `job`, off cancels a running one |
 | `media.index` | preview | Thumbnails and metadata for a source's photos and videos, as an idle-priority job |
+| `activity.note` | direct | The user is working: idle-only hashing, sidecar and integrity jobs pause for the next 5 s (an attached window sends it on input, at most every 4 s) |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`) |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline) |
 | `devices.pair_code` | preview | One-time pairing code (10 minutes) |
 | `devices.pair_with` | preview | Pair with a device's code (grants nothing) |
 | `devices.forget` | preview | Forget a device and its grants |
+| `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids and `relay` (as the node started) |
+| `devices.settings_set` | preview | Change any of `label`, `inbox` (an absolute folder, never in Keel's configuration or data folder but its inbox), `auto_accept` and `relay` on the running host: the label, inbox and always-accept list apply at once; relays only when the host starts again (`restart: true` in the answer, and a `restart` warning in the preview). Nothing is written to `config.toml` |
 | `shares.list` | read | Grants to paired devices |
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
 | `shares.revoke` | direct | Revoke a grant at once |
@@ -107,7 +111,10 @@ Devices and shares need keel-net: the window's Settings → Devices switch, writ
 sent to a host (the daemon, or a CLI session holding the node) land in `[devices] inbox`
 (default `<data dir>/inbox`); offers from the device ids in `[devices] auto_accept` are
 accepted at once, the others wait in `spacedrop.inbox` for `spacedrop.answer` and are
-declined when the sender stops waiting. A
+declined when the sender stops waiting. `[devices] relay = false` starts the node without
+public relays. These are read when the host starts; `devices.settings_set` changes the
+label, inbox and always-accept list of a running host (an attached window writes its
+Settings → Devices through it), relays need a restart. A
 configuration saved while Devices defaulted on (`enabled = true` without `explicit`) is
 treated as off, and the window switches it off once. `KEEL_NET_SECRET=memory` keeps the
 device identity in memory instead of the OS keychain (tests). keel-daemon owns the profile's one node while it runs; without it, a CLI
@@ -215,6 +222,9 @@ method). An `execute` that started no job and returned an empty result (an integ
 check with `due_days` that was not due yet) changed nothing and sends none. A client
 refreshes what that kind can change; for job starters (`sources.index`, `hashing.set`,
 `integrity.check`, `media.index`) the job's `job.progress` to `done` is the moment to.
+A sidecar job also sends `library.changed` `{method: "job", kind: "media.index", job,
+done}` every 2 s while it runs and when it ends (`done: true`): an attached window then
+asks again for the thumbnails it had none for.
 
 The daemon also runs the scheduled integrity check of every source (`[library]
 integrity_days`, default 7, 0 turns it off, and `integrity_pct`, default 1, in the
