@@ -1995,6 +1995,9 @@ pub fn badge_of(r: &Redundancy) -> Badge {
         if c.volume.backup {
             flags += " [backup]";
         }
+        if c.claimed {
+            flags += " [claimed by the device, not counted]";
+        }
         hover += &format!(
             "\n• {} on {} ({}){flags}",
             c.path.display(),

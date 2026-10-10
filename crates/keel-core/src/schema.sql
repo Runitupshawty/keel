@@ -255,3 +255,11 @@ ALTER TABLE source ADD COLUMN volume_id TEXT;
 -- change time did not (unix seconds; NULL = never). A real change resets it with the hashes.
 ALTER TABLE record ADD COLUMN drift INTEGER;
 CREATE INDEX record_drift ON record(drift) WHERE drift IS NOT NULL;
+
+-- @source 8
+-- Devices (Task 36): the content id a paired device claims for a file of a device source.
+-- It is that device's word, never checked here: it may show where a content is said to be,
+-- but it never counts as a copy (protection, duplicates). A walk of a device source moves
+-- any id an earlier version wrote into `cas_id` here.
+ALTER TABLE record ADD COLUMN remote_cas BLOB;
+CREATE INDEX record_remote_cas ON record(remote_cas) WHERE remote_cas IS NOT NULL;

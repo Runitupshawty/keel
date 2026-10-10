@@ -99,7 +99,7 @@ impl Lister {
                 Ok(fsid::list(&local(dir)?).with_context(|| format!("list {}", dir.display()))?)
             }
             // Fresh and complete: a cut-off listing fails (the folder is kept as unreadable).
-            // Device sources: with the content ids their host sent.
+            // Device sources: with the content ids their host claims (`remote_cas`).
             Lister::Remote(p) => Ok(p
                 .list_complete_ids(dir)?
                 .into_iter()
@@ -492,12 +492,16 @@ impl Walk<'_> {
                     &gone,
                     &still,
                 )?;
-                if let Some(cas) = item.cas.filter(|_| item.kind == FILE) {
+                if matches!(self.lister, Lister::Remote(_)) && item.kind == FILE {
+                    // What a device claims (absent: no claim) stays apart from confirmed
+                    // content ids: it never counts as a copy.
+                    let claim = item.cas.map(|c| c.to_vec());
                     self.conn
                         .prepare_cached(
-                            "UPDATE record SET cas_id = ?2 WHERE id = ?1 AND cas_id IS NOT ?2",
+                            "UPDATE record SET remote_cas = ?2, cas_id = NULL
+                             WHERE id = ?1 AND (remote_cas IS NOT ?2 OR cas_id IS NOT NULL)",
                         )?
-                        .execute(params![id, &cas[..]])?;
+                        .execute(params![id, claim])?;
                 }
                 if item.kind == DIR && !item.link {
                     stack.push(Pending {

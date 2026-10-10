@@ -650,6 +650,7 @@ fn copies_badge_model() {
         path: VPath::local(std::env::temp_dir().join(label).join("x.jpg")),
         source_label: label.into(),
         volume: volume(label, state, backup, None),
+        claimed: label == "f",
     };
     let b = badge_of(&Redundancy {
         copies: 2,
@@ -675,7 +676,10 @@ fn copies_badge_model() {
         failure_domains: 2,
         backed_up: true,
         offline_copies: 1,
-        locations: vec![copy("e", VolumeState::Archived, true)],
+        locations: vec![
+            copy("e", VolumeState::Archived, true),
+            copy("f", VolumeState::Online, false),
+        ],
     });
     assert_eq!(b.text, "3× · 2");
     assert!(!b.risk);
@@ -683,6 +687,11 @@ fn copies_badge_model() {
         .hover
         .starts_with("3 copies in 2 failure domains (1 offline); backed up"));
     assert!(b.hover.contains("[archived] [backup]"), "{}", b.hover);
+    assert!(
+        b.hover.contains("[claimed by the device, not counted]"),
+        "{}",
+        b.hover
+    );
     // The preview dialog's failure-domain warning.
     let text = warning_text(
         &Warning::SingleDomain {

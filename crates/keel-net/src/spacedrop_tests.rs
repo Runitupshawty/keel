@@ -371,15 +371,18 @@ fn device_source_rewalk_picks_up_a_changed_listing_with_content_ids() {
         n.sort();
         n
     };
-    let cas = |name: &str| {
-        let p = pair.provider();
-        let entries: Vec<Entry> = p
-            .list(&pair.path(""))
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.name == name)
-            .collect();
-        guest.content_ids(&id, "", &entries).unwrap()[0]
+    // What the host claims is kept apart (`remote_cas`): never a confirmed content id.
+    let cas = |name: &str| -> Option<[u8; 32]> {
+        let db = rusqlite::Connection::open(src.store_dir().join("source.db")).unwrap();
+        let (claim, confirmed): (Option<Vec<u8>>, Option<Vec<u8>>) = db
+            .query_row(
+                "SELECT remote_cas, cas_id FROM record WHERE path = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(confirmed, None);
+        claim.map(|c| c.try_into().unwrap())
     };
 
     walk();
@@ -400,4 +403,175 @@ fn device_source_rewalk_picks_up_a_changed_listing_with_content_ids() {
     assert_eq!(cas("a.txt"), None);
     drop(guest);
     pair.close();
+}
+
+/// Serves a real library but claims `claim` as the content id of every file it lists.
+struct Liar {
+    inner: LibraryHandler,
+    claim: [u8; 32],
+}
+#[async_trait::async_trait]
+impl Handler for Liar {
+    async fn sources(&self, c: &RequestCtx) -> Vec<SourceInfo> {
+        self.inner.sources(c).await
+    }
+    async fn list(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<Vec<EntryInfo>> {
+        let mut v = self.inner.list(c, s, p).await?;
+        for e in v.iter_mut().filter(|e| !e.is_dir) {
+            e.content_id = Some(self.claim);
+        }
+        Ok(v)
+    }
+    async fn stat(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<EntryInfo> {
+        self.inner.stat(c, s, p).await
+    }
+    async fn read(
+        &self,
+        c: &RequestCtx,
+        s: &str,
+        p: &str,
+        r: Option<(u64, u64)>,
+    ) -> anyhow::Result<Box<dyn tokio::io::AsyncRead + Send + Unpin>> {
+        self.inner.read(c, s, p, r).await
+    }
+    async fn write(
+        &self,
+        c: &RequestCtx,
+        s: &str,
+        p: &str,
+        b: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+        at: WriteAt,
+    ) -> anyhow::Result<()> {
+        self.inner.write(c, s, p, b, at).await
+    }
+    async fn stat_partial(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<u64> {
+        self.inner.stat_partial(c, s, p).await
+    }
+    async fn mkdir(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<()> {
+        self.inner.mkdir(c, s, p).await
+    }
+    async fn rename(&self, c: &RequestCtx, s: &str, a: &str, b: &str) -> anyhow::Result<()> {
+        self.inner.rename(c, s, a, b).await
+    }
+    async fn remove(&self, c: &RequestCtx, s: &str, p: &str) -> anyhow::Result<()> {
+        self.inner.remove(c, s, p).await
+    }
+    async fn storage(&self, c: &RequestCtx) -> Option<Storage> {
+        self.inner.storage(c).await
+    }
+}
+
+/// A paired device listing a decoy under a stolen content id: the only real copy still
+/// warns LastCopy, the decoy is no duplicate, and it shows only as a claim.
+#[test]
+fn a_device_claiming_a_content_id_never_counts_as_a_copy() {
+    use keel_core::{validate_preview_execute, Op, Warning};
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dirs: Vec<_> = (0..6).map(|_| tempfile::tempdir().unwrap()).collect();
+    let precious = b"the only copy of this document".to_vec();
+    let only = dirs[0].path().join("precious.txt");
+    std::fs::write(&only, &precious).unwrap();
+    let victim = Arc::new(Library::open(dirs[1].path(), "victim").unwrap());
+    victim.set_pause_on_battery(false);
+    let router = Arc::new(Router::new());
+    victim.set_router(router.clone());
+    let local = victim
+        .add_source(crate::library_tests::folder(dirs[0].path()))
+        .unwrap();
+    let done = |job| {
+        let info = victim.jobs().wait(job).unwrap();
+        assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    };
+    done(victim.index(&local).unwrap());
+    done(victim.hash().unwrap());
+    let warnings = || {
+        validate_preview_execute(
+            &victim,
+            Op::Delete {
+                paths: vec![VPath::local(&only)],
+            },
+        )
+        .unwrap()
+        .warnings
+    };
+    assert!(matches!(warnings()[..], [Warning::LastCopy { .. }]));
+
+    std::fs::write(dirs[2].path().join("decoy.txt"), b"junk").unwrap();
+    let attacker = Arc::new(Library::open(dirs[3].path(), "attacker").unwrap());
+    let shared = attacker
+        .add_source(crate::library_tests::folder(dirs[2].path()))
+        .unwrap();
+    let claim = *blake3::hash(&precious).as_bytes();
+    let (host, guest) = rt.block_on(async {
+        let host = Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dirs[4].path(),
+            Arc::new(Liar {
+                inner: LibraryHandler::new(attacker.clone()),
+                claim,
+            }),
+            NodeOptions::offline(),
+        )
+        .await
+        .unwrap();
+        let guest = Node::open_with_options(
+            Arc::new(keel_vfs::cloud::MemoryStore::default()),
+            dirs[5].path(),
+            Arc::new(LibraryHandler::new(victim.clone())),
+            NodeOptions::offline(),
+        )
+        .await
+        .unwrap();
+        let code = host.pair_code().await.unwrap();
+        guest
+            .pair_with(&code.ticket().parse().unwrap())
+            .await
+            .unwrap();
+        (host, guest)
+    });
+    host.grant(Grant {
+        peer: PeerId(guest.id()),
+        source: shared.0.clone(),
+        subtree: String::new(),
+        access: Access::Read,
+        created: 0,
+    })
+    .unwrap();
+    router.register(Arc::new(NodeProvider::new(
+        guest.clone(),
+        rt.handle().clone(),
+    )));
+    let device = victim
+        .add_source(SourceDef {
+            label: "Other device".into(),
+            root: VPath::parse(&format!("node://{}/{}", host.id(), shared.0)).unwrap(),
+            kind: SourceKind::Device,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })
+        .unwrap();
+    let src = victim.source(&device).unwrap();
+    Indexer::full_walk(&src, &router, &|_| {}, &AtomicBool::new(false)).unwrap();
+    victim.recount_protection().unwrap();
+
+    assert!(matches!(warnings()[..], [Warning::LastCopy { .. }]));
+    assert!(victim.duplicates(0).unwrap().is_empty());
+    assert_eq!(victim.protection_summary().unwrap().single_copy, 1);
+    let mine = victim.list_children(&local, "").unwrap();
+    let r = victim.redundancy(&mine[0].record).unwrap();
+    assert_eq!((r.copies, r.failure_domains), (1, 1));
+    let claimed: Vec<_> = r.locations.iter().filter(|l| l.claimed).collect();
+    assert_eq!(claimed.len(), 1, "the decoy shows as a claim only");
+    assert_eq!(claimed[0].path.name(), "decoy.txt");
+    assert!(victim.last_copy(&mine[0].record).unwrap());
+    assert_eq!(victim.record_copies(&claim).unwrap().len(), 1);
+    rt.block_on(async {
+        host.close().await;
+        guest.close().await;
+    });
 }
