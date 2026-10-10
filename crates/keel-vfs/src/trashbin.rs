@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn a_folder_trash_lists_restores_and_purges() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = test_dir();
         let (home, volumes) = (dir.path().join("home"), dir.path().join("Volumes"));
         let trash = home.join(".Trash");
         let usb = volumes.join("USB").join(".Trashes").join("501");
@@ -648,7 +648,7 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn linux_payload_is_the_files_entry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = test_dir();
         let (info_dir, files) = (dir.path().join("info"), dir.path().join("files"));
         std::fs::create_dir_all(&info_dir).unwrap();
         std::fs::create_dir_all(&files).unwrap();
@@ -667,6 +667,25 @@ mod tests {
     // `keel-trash-test-*` that it created, and purges them again. A system with no usable
     // trash (CI without a desktop) skips.
     static BIN: Mutex<()> = Mutex::new(());
+
+    /// A folder to delete test files from. On macOS NSFileManager moves a file into the
+    /// Trash of the file's own volume and only the home volume's Trash is listed, so the
+    /// folder is made under the home folder there (a temp folder can be on another volume,
+    /// as on the CI machines).
+    fn test_dir() -> tempfile::TempDir {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+                if let Ok(d) = tempfile::Builder::new()
+                    .prefix(".keel-trash-test-")
+                    .tempdir_in(&home)
+                {
+                    return d;
+                }
+            }
+        }
+        tempfile::tempdir().unwrap()
+    }
 
     fn unique(tag: &str) -> String {
         let n = SystemTime::now()
@@ -739,7 +758,7 @@ mod tests {
         let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
         let name = unique("round");
         let _clean = Cleanup(name.clone());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = test_dir();
         let Some(file) = trash_new(dir.path(), &name) else {
             return;
         };
@@ -782,7 +801,7 @@ mod tests {
         let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
         let name = unique("clash");
         let _clean = Cleanup(name.clone());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = test_dir();
         let Some(file) = trash_new(dir.path(), &name) else {
             return;
         };
