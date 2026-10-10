@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Tabs on `node://` sources are titled with the device's name at its root and "<device name> / <source label>" in a shared source, and the breadcrumb and the tab's hover show the names instead of the raw ids; only a device that is no longer paired (forgotten) still shows its id. The web client's source list and path box show the same names on hover. This lifts the 0.8.0 known limitation about raw ids in tab titles.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added

@@ -24,6 +24,7 @@ use keel_net::{
 use keel_vfs::{Router, VPath};
 use parking_lot::RwLock;
 use serde_json::json;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -147,6 +148,104 @@ pub fn forward(events: Receiver<NetEvent>, ctx: egui::Context) -> Receiver<NetEv
 /// `node://<id>/`: a device's granted sources.
 pub fn root_of(peer: &PeerId) -> VPath {
     VPath::parse(&format!("node://{}/", peer.0)).expect("a node id is a valid authority")
+}
+
+thread_local! {
+    /// Paired devices' names by id, for `node://` titles: the UI thread's, where devices
+    /// are refreshed and titles drawn (a forgotten device drops out, so its tabs show the
+    /// id again).
+    static NODE_NAMES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    /// Shared source labels by (device id, source id), from listings of a device's root
+    /// and from library sources on a device (kept for forgotten devices: harmless).
+    static NODE_SOURCES: RefCell<Vec<((String, String), String)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Remembers the paired devices' names (in-process node or the daemon's device list).
+pub fn note_peers(peers: &[Peer]) {
+    let names: Vec<(String, String)> = (peers.iter())
+        .map(|p| (p.id.0.to_string(), label_of(peers, &p.id)))
+        .collect();
+    NODE_NAMES.with_borrow_mut(|n| *n = names);
+}
+
+/// Remembers the label of the shared source at `root` (`node://<device>/<source>`).
+/// `replace`: over one seen before (the device's own word; a library source's label only
+/// fills a gap).
+pub fn note_source(root: &VPath, label: &str, replace: bool) {
+    let source = root.path.trim_matches('/');
+    if root.scheme != "node" || source.is_empty() || source.contains('/') || label.is_empty() {
+        return;
+    }
+    let key = (root.authority.clone(), source.to_owned());
+    NODE_SOURCES.with_borrow_mut(|labels| match labels.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, l)) if replace && l != label => *l = label.to_owned(),
+        Some(_) => {}
+        None => labels.push((key, label.to_owned())),
+    });
+}
+
+/// A listing of `node://<device>/` names its sources: their labels are remembered.
+pub fn note_listing(dir: &VPath, entries: &[keel_vfs::Entry]) {
+    if dir.scheme == "node" && dir.path.trim_matches('/').is_empty() {
+        for e in entries {
+            note_source(&e.path, &e.name, true);
+        }
+    }
+}
+
+/// `node://<device>/<source>/rest` as (device name, source label, rest); None for other
+/// paths and for a device that is not paired (its id is all there is). A source whose
+/// label was never seen keeps its id.
+fn node_parts(dir: &VPath) -> Option<(String, Option<String>, String)> {
+    if dir.scheme != "node" {
+        return None;
+    }
+    let device = NODE_NAMES.with_borrow(|names| {
+        (names.iter())
+            .find(|(id, _)| *id == dir.authority)
+            .map(|(_, name)| name.clone())
+    })?;
+    let rest = dir.path.trim_matches('/');
+    let (source, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    let source = (!source.is_empty()).then(|| {
+        NODE_SOURCES.with_borrow(|labels| {
+            (labels.iter())
+                .find(|((d, s), _)| *d == dir.authority && s == source)
+                .map_or_else(|| source.to_owned(), |(_, l)| l.clone())
+        })
+    });
+    Some((device, source, rest.to_owned()))
+}
+
+/// A `node://` tab's title: the device's name at its root, "<device> / <source>" at a
+/// shared source, the folder's name below (None: not a node path, or the device is
+/// unknown).
+pub fn node_title(dir: &VPath) -> Option<String> {
+    match node_parts(dir)? {
+        (device, None, _) => Some(device),
+        (device, Some(source), rest) if rest.is_empty() => Some(format!("{device} / {source}")),
+        _ => None,
+    }
+}
+
+/// The breadcrumb for a `node://` folder: the device's name at its root and the source's
+/// label at a shared source (None elsewhere).
+pub fn node_crumb(dir: &VPath) -> Option<String> {
+    match node_parts(dir)? {
+        (device, None, _) => Some(device),
+        (_, Some(source), rest) if rest.is_empty() => Some(source),
+        _ => None,
+    }
+}
+
+/// "<device> / <source> / rest" for hovers (None: not a node path, or unknown device).
+pub fn node_location(dir: &VPath) -> Option<String> {
+    Some(match node_parts(dir)? {
+        (device, None, _) => device,
+        (device, Some(source), rest) if rest.is_empty() => format!("{device} / {source}"),
+        (device, Some(source), rest) => format!("{device} / {source} / {rest}"),
+    })
 }
 
 /// One sidebar row (rebuilt from the node's peers every frame).
@@ -619,6 +718,7 @@ impl Devices {
         if let Some(node) = &self.node {
             self.peers = node.peers();
             self.grants = node.grants();
+            note_peers(&self.peers);
         }
     }
 
@@ -867,6 +967,7 @@ impl AppState {
                 d.error = None;
                 d.peers = r.peers;
                 d.grants = r.grants;
+                note_peers(&d.peers);
                 // Offers still waiting keep their "always" box.
                 let old = std::mem::take(&mut d.remote_offers);
                 d.remote_offers = (r.offers.into_iter())
@@ -1765,6 +1866,55 @@ mod tests {
     fn peer(n: u8) -> PeerId {
         // Any 32 bytes make a NodeId for display and comparison.
         PeerId(NodeId([n; 32]))
+    }
+
+    #[test]
+    fn node_tabs_are_titled_by_device_name_and_source_label() {
+        let at = |s: &str| VPath::parse(&format!("node://{}{s}", peer(7).0)).unwrap();
+        let tab = |s: &str| crate::tab::Tab::new(at(s));
+        let unknown = tab("/").title();
+        assert_eq!(unknown, at("/").display(), "an unknown device shows its id");
+        assert_eq!(tab("/src1").title(), "src1");
+        note_peers(&[Peer {
+            id: peer(7),
+            label: "Laptop".into(),
+            last_seen: None,
+            link: Link::Lan,
+            storage: None,
+        }]);
+        assert_eq!(tab("/").title(), "Laptop");
+        assert_eq!(tab("/src1").title(), "Laptop / src1", "label not seen yet");
+        // Listing the device's root names its sources.
+        let mut root = tab("/");
+        root.set_listing(crate::tab::Listing::new(vec![crate::tab::test_entry(
+            &at("/"),
+            "src1",
+            keel_vfs::Kind::Dir,
+            0,
+        )]));
+        root.set_listing(crate::tab::Listing::new(vec![keel_vfs::Entry {
+            name: "Photos".into(),
+            ..crate::tab::test_entry(&at("/"), "src1", keel_vfs::Kind::Dir, 0)
+        }]));
+        assert_eq!(tab("/src1").title(), "Laptop / Photos");
+        assert_eq!(tab("/src1/2026/june").title(), "june");
+        assert_eq!(node_crumb(&at("/")).as_deref(), Some("Laptop"));
+        assert_eq!(node_crumb(&at("/src1")).as_deref(), Some("Photos"));
+        assert_eq!(node_crumb(&at("/src1/2026")), None);
+        assert_eq!(
+            node_location(&at("/src1/2026/june")).as_deref(),
+            Some("Laptop / Photos / 2026/june")
+        );
+        // A library source's own label never overrides the device's word.
+        note_source(&at("/src1"), "My photos", false);
+        assert_eq!(tab("/src1").title(), "Laptop / Photos");
+        note_source(&at("/src2"), "Docs", false);
+        assert_eq!(tab("/src2").title(), "Laptop / Docs");
+        // Forgotten: the id again.
+        note_peers(&[]);
+        assert_eq!(tab("/").title(), unknown);
+        assert_eq!(tab("/src1").title(), "src1");
+        assert_eq!(node_location(&at("/src1")), None);
     }
 
     #[test]

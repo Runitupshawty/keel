@@ -213,6 +213,11 @@ impl Tab {
             TabKind::Search { query, .. } => format!("Search: {query}"),
             TabKind::Overview => "Overview".into(),
             TabKind::Dir => match self.dir.name() {
+                _ if self.dir.scheme == "node" => crate::devices::node_title(&self.dir)
+                    .unwrap_or_else(|| match self.dir.name() {
+                        "" => self.dir.display(),
+                        name => name.to_owned(),
+                    }),
                 "" if self.dir.scheme == keel_vfs::library::SCHEME => {
                     crate::library::label_of(&self.dir.authority)
                         .unwrap_or_else(|| "Library".into())
@@ -235,6 +240,7 @@ impl Tab {
 
     /// Replaces the listing; selection names that no longer exist are dropped.
     pub fn set_listing(&mut self, listing: Listing) {
+        crate::devices::note_listing(&self.dir, &listing.entries);
         let old = std::mem::replace(&mut self.entries, listing.entries);
         let old_lower = std::mem::replace(&mut self.lower, listing.lower);
         self.order = listing.order;

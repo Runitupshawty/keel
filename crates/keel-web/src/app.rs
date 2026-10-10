@@ -13,7 +13,7 @@ use crate::layout::{Screen, Tab as PhoneTab};
 use crate::refresh::Refresh;
 use crate::share::{self, SharedFile};
 use crate::types::*;
-use crate::util::{human, parent};
+use crate::util::{human, node_title, parent};
 use crate::web::{self, Events, Socket};
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -741,9 +741,10 @@ impl WebApp {
         let sources = self.sources.clone();
         for s in sources {
             let text = format!("{} ({})", s.label, s.status);
+            let hover = self.node_title(&s.root).unwrap_or_else(|| s.root.clone());
             if ui
                 .selectable_label(false, text)
-                .on_hover_text(&s.root)
+                .on_hover_text(hover)
                 .clicked()
             {
                 self.tab = Tab::Browse;
@@ -754,6 +755,22 @@ impl WebApp {
         if self.sources.is_empty() {
             ui.weak("No sources yet.");
         }
+    }
+
+    /// A `node://` path with the device's name and the source's label (`util::node_title`).
+    fn node_title(&self, path: &str) -> Option<String> {
+        let devices: Vec<(&str, &str)> = match &self.devices {
+            Ok(d) => d
+                .peers
+                .iter()
+                .map(|p| (p.id.as_str(), p.label.as_str()))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let sources: Vec<(&str, &str)> = (self.sources.iter())
+            .map(|s| (s.root.as_str(), s.label.as_str()))
+            .collect();
+        node_title(path, &devices, &sources)
     }
 
     fn jobs_ui(&mut self, ui: &mut egui::Ui) {
@@ -1010,15 +1027,19 @@ impl WebApp {
 
     fn path_bar(&mut self, ui: &mut egui::Ui, i: usize) {
         let mut go = None;
+        let named = self.node_title(&self.panes[i].path);
         ui.horizontal(|ui| {
             if ui.button("⬆").on_hover_text("Up").clicked() {
                 go = parent(&self.panes[i].path);
             }
-            let edit = ui.add(
+            let mut edit = ui.add(
                 egui::TextEdit::singleline(&mut self.panes[i].edit)
                     .desired_width(f32::INFINITY)
                     .hint_text("library://… or a path on the daemon's machine"),
             );
+            if let Some(named) = named {
+                edit = edit.on_hover_text(named);
+            }
             if edit.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter)) {
                 go = Some(self.panes[i].edit.trim().to_owned());
             }
