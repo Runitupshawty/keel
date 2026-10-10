@@ -183,6 +183,14 @@ pub enum Action {
     // --- Task 29 ---
     /// Library sidebar, overview, dialogs, tags (`library.rs`).
     Library(crate::library::LibCmd),
+    /// Recycle Bin / Trash tab: put the targets back where they were deleted from.
+    RestoreTrash,
+    /// Confirmed: delete these trash items for good.
+    PurgeTrash(Vec<VPath>),
+    /// Recycle Bin / Trash tab: asks, then `EmptyTrashNow`.
+    EmptyTrash,
+    /// Confirmed: delete everything in the trash for good.
+    EmptyTrashNow,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;

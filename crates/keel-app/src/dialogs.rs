@@ -72,6 +72,8 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         Action::DeleteRemote(_) if !text.starts_with("Move ") => "Delete",
                         Action::Cloud { .. } => "Remove",
                         Action::ZipTo { .. } => "Add",
+                        Action::PurgeTrash(_) => "Delete permanently",
+                        Action::EmptyTrashNow => "Empty",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");

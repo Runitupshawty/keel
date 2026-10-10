@@ -186,6 +186,12 @@ impl Tab {
         matches!(self.kind, TabKind::Search { .. })
     }
 
+    /// A tab showing the Recycle Bin / Trash (`trash://`): its rows are restored or
+    /// deleted for good, never pasted into or edited.
+    pub fn is_trash(&self) -> bool {
+        self.kind == TabKind::Dir && self.dir.scheme == keel_vfs::trashbin::SCHEME
+    }
+
     /// The name shown for `e`: search rows are keyed by full path but show the file name.
     pub fn shown_name<'a>(&self, e: &'a Entry) -> &'a str {
         if self.is_search() {
@@ -211,6 +217,7 @@ impl Tab {
                     crate::library::label_of(&self.dir.authority)
                         .unwrap_or_else(|| "Library".into())
                 }
+                "" if self.is_trash() => keel_vfs::trashbin::label().into(),
                 "" => self.dir.display(),
                 name => name.to_owned(),
             },

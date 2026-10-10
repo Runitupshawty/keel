@@ -34,6 +34,7 @@ mod tab;
 mod term_pane;
 mod theme;
 mod toast;
+mod trash_ui;
 mod view_columns;
 mod view_details;
 mod view_grid;

@@ -205,6 +205,23 @@ impl Jobs {
         })
     }
 
+    /// Restores, permanently deletes or empties the Recycle Bin / Trash (a `trash://` tab).
+    pub fn trash_op(&mut self, op: TrashOp, tx: Sender<Msg>) -> u64 {
+        let title = match &op {
+            TrashOp::Restore(p) => format!("Restoring {}", items(p.len())),
+            TrashOp::Purge(p) => format!("Deleting {} permanently", items(p.len())),
+            TrashOp::Empty => format!("Emptying the {}", keel_vfs::trashbin::label()),
+        };
+        self.spawn(title, tx, move |_, _| {
+            let bin = keel_vfs::TrashProvider;
+            match op {
+                TrashOp::Restore(p) => bin.restore_paths(&p),
+                TrashOp::Purge(p) => bin.purge_paths(&p),
+                TrashOp::Empty => bin.empty().map(drop),
+            }
+        })
+    }
+
     fn mark_remote(&mut self, id: u64, remote: bool) {
         if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
             job.remote = remote;
@@ -494,6 +511,13 @@ pub fn zip_name(tab: &crate::tab::Tab) -> String {
         },
     };
     format!("{stem}.zip")
+}
+
+/// A Recycle Bin / Trash job (`trash_op`).
+pub enum TrashOp {
+    Restore(Vec<VPath>),
+    Purge(Vec<VPath>),
+    Empty,
 }
 
 pub fn items(n: usize) -> String {

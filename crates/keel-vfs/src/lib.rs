@@ -24,6 +24,7 @@ pub mod sftp;
 /// Explorer Properties sheet (Windows).
 #[cfg(windows)]
 pub mod shell;
+pub mod trashbin;
 // --- Task 33 ---
 pub mod volume;
 pub use volume::{volume_info, VolumeInfo, VolumeType};
@@ -37,6 +38,7 @@ pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
 pub use provider::{Caps, Provider, RemoveKind};
 pub use router::Router;
 pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
+pub use trashbin::TrashProvider;
 pub mod ops;
 #[cfg(not(windows))]
 mod ops_unix;
