@@ -38,7 +38,7 @@ pub use cloud::{
 };
 pub use entry::{Entry, Kind};
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
-pub use provider::{Caps, Provider, RemoveKind};
+pub use provider::{Caps, Provider, Quota, RemoveKind, ShareLink};
 pub use router::Router;
 pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
 pub use trashbin::TrashProvider;

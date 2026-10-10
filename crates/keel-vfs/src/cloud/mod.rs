@@ -5,6 +5,7 @@
 //! the HTTP status, never server text or URLs.
 pub mod oauth;
 pub mod secrets;
+mod share;
 use crate::{Caps, ConnStatus, Entry, Kind, Progress, Provider, RemoteEvent, VPath};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
@@ -12,6 +13,7 @@ pub use oauth::{oauth_authorize, OAuthClient, OAuthTokens, AUTH_TIMEOUT};
 use opendal::{blocking, options, Buffer, ErrorKind};
 use parking_lot::{Mutex, RwLock};
 pub use secrets::{forget_account, KeyringStore, MemoryStore, SecretStore, KEYRING_SERVICE};
+pub use share::S3_LINK_TTL;
 use std::{
     collections::{HashMap, HashSet},
     io::{self, Read, Write},
@@ -590,6 +592,8 @@ type MakeOp = Box<dyn Fn(&str) -> Result<opendal::Operator> + Send + Sync>;
 struct OAuth {
     client: OAuthClient,
     endpoints: oauth::Endpoints,
+    /// The access token the operator was built with (the services' own API calls use it).
+    access: Mutex<String>,
     expires_at: Mutex<SystemTime>,
     /// One refresh at a time.
     refreshing: Mutex<()>,
@@ -603,12 +607,14 @@ impl OAuth {
     fn new(
         client: OAuthClient,
         endpoints: oauth::Endpoints,
+        access: &str,
         expires_at: SystemTime,
         make_op: MakeOp,
     ) -> Self {
         Self {
             client,
             endpoints,
+            access: Mutex::new(access.to_owned()),
             expires_at: Mutex::new(expires_at),
             refreshing: Mutex::new(()),
             revoked: Mutex::new(None),
@@ -632,6 +638,8 @@ struct Core {
     list_cap: usize,
     /// For services that take a file in one request (it is held in memory until then).
     upload_limit: Option<u64>,
+    /// The service's own API (quota, share links): scheme and host, no trailing slash.
+    api: String,
 }
 
 /// One cloud account. Cheap to share: the router holds it as `Arc<dyn Provider>`.
@@ -779,7 +787,8 @@ impl CloudProvider {
                 };
                 let op = make_op(&access)?;
                 let endpoints = oauth::Endpoints::for_kind(kind)?;
-                (op, Some(OAuth::new(client, endpoints, expires_at, make_op)))
+                let oauth = OAuth::new(client, endpoints, &access, expires_at, make_op);
+                (op, Some(oauth))
             }
         };
         Self::build(account.clone(), op, oauth, secrets, events)
@@ -807,6 +816,7 @@ impl CloudProvider {
         Ok(Self {
             core: Arc::new(Core {
                 upload_limit: account.kind.upload_limit(),
+                api: share::api_base(account.kind).to_owned(),
                 account,
                 op: RwLock::new(blocking_op(op)?),
                 generation: AtomicU64::new(0),
@@ -907,6 +917,7 @@ impl Core {
             *current = op;
             self.generation.fetch_add(1, Ordering::SeqCst);
         }
+        *oauth.access.lock() = access.to_owned();
         *oauth.expires_at.lock() = expires_at;
         Ok(())
     }
@@ -1704,6 +1715,18 @@ impl Provider for CloudProvider {
     }
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
+    }
+    /// Drive and Dropbox; None for S3 and WebDAV, and when the request fails.
+    fn quota(&self) -> Option<crate::Quota> {
+        self.core
+            .quota()
+            .inspect_err(|e| tracing::debug!(account = %self.core.account.id, "no quota: {e:#}"))
+            .ok()
+    }
+    /// Drive: the file's own link (sharing unchanged). Dropbox: an existing link, else one
+    /// made after a yes. S3: a presigned GET for `S3_LINK_TTL`, after a yes.
+    fn share_link(&self, p: &VPath, create: bool) -> Result<crate::ShareLink> {
+        self.core.share_link(p, create)
     }
     /// Through the same download cache as SFTP (`<cache>/remote/cloud-<id>/`), with fresh
     /// stats (not the listing cache) for its "source changed" check.

@@ -39,9 +39,61 @@ pub fn parent(path: &str) -> Option<String> {
     }
 }
 
+/// `node://<device>/<source>/rest` for people: "<device> / <source label> / rest", with
+/// the device names from `devices.list` (id, label) and the labels of the library's sources
+/// (root, label). None for other paths and for a device not in `devices` (forgotten: its
+/// id is all there is). A device without a name shows the start of its id.
+pub fn node_title(
+    path: &str,
+    devices: &[(&str, &str)],
+    sources: &[(&str, &str)],
+) -> Option<String> {
+    let rest = path.strip_prefix("node://")?;
+    let (device, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    let label = devices.iter().find(|(id, _)| *id == device)?.1.trim();
+    let name = match label {
+        "" => device.chars().take(8).collect(),
+        label => label.to_owned(),
+    };
+    let rest = rest.trim_matches('/');
+    let (source, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    if source.is_empty() {
+        return Some(name);
+    }
+    let root = format!("node://{device}/{source}");
+    let source = (sources.iter())
+        .find(|(r, _)| r.trim_end_matches('/') == root)
+        .map_or(source, |(_, l)| l);
+    Some(match rest {
+        "" => format!("{name} / {source}"),
+        rest => format!("{name} / {source} / {rest}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_paths_read_as_device_and_source_names() {
+        let devices = [("abc123def456", "Laptop"), ("0123456789ab", " ")];
+        let sources = [("node://abc123def456/s1", "Photos")];
+        let t = |p: &str| node_title(p, &devices, &sources);
+        assert_eq!(t("node://abc123def456/").as_deref(), Some("Laptop"));
+        assert_eq!(
+            t("node://abc123def456/s1").as_deref(),
+            Some("Laptop / Photos")
+        );
+        assert_eq!(
+            t("node://abc123def456/s1/2026/june").as_deref(),
+            Some("Laptop / Photos / 2026/june")
+        );
+        assert_eq!(t("node://abc123def456/s2").as_deref(), Some("Laptop / s2"));
+        assert_eq!(t("node://0123456789ab/").as_deref(), Some("01234567"));
+        // A forgotten device keeps its id; other paths are not node paths.
+        assert_eq!(t("node://ffff/s1"), None);
+        assert_eq!(t("library://s1/a"), None);
+    }
 
     #[test]
     fn parents() {

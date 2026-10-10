@@ -2246,6 +2246,8 @@ impl LibraryUi {
         // Kept for removed sources too (ids are random; a stale label harms nothing).
         let mut labels = LABELS.write();
         for s in &self.sources {
+            // A source on a device also names that device's shared source (tab titles).
+            crate::devices::note_source(&s.root, &s.label, false);
             match labels.iter_mut().find(|(id, _)| *id == s.id.0) {
                 Some(l) if l.1 != s.label => l.1 = s.label.clone(),
                 Some(_) => {}

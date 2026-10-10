@@ -16,8 +16,8 @@ use keel_vfs::cloud::{
     AUTH_TIMEOUT,
 };
 use keel_vfs::{
-    Caps, CloudAccount, CloudKind, CloudProvider, ConnStatus, Entry, Progress, Provider,
-    RemoteEvent, RemoveKind, Router, S3Config, SecretStore, VPath, WebDavConfig,
+    Caps, CloudAccount, CloudKind, CloudProvider, ConnStatus, Entry, Kind, Progress, Provider,
+    Quota, RemoteEvent, RemoveKind, Router, S3Config, SecretStore, ShareLink, VPath, WebDavConfig,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -46,7 +46,64 @@ pub enum CloudCmd {
     /// Run the browser sign-in again (revoked or expired grant).
     SignIn,
     Add,
+    /// Ask for the storage quota unless a fresh answer is there (sidebar hover; Settings →
+    /// Cloud → Refresh asks `Clouds::want_quota` directly).
+    Quota,
 }
+
+/// How long an account's storage quota is shown before it is asked again.
+pub const QUOTA_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// An account's storage quota as last asked.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QuotaSlot {
+    /// When the last answer came.
+    pub at: Option<Instant>,
+    /// None: unknown (the request failed).
+    pub value: Option<Quota>,
+    pub asking: bool,
+}
+
+/// Drive and Dropbox report their storage; S3 and WebDAV do not.
+pub fn has_quota(kind: CloudKind) -> bool {
+    matches!(kind, CloudKind::GoogleDrive | CloudKind::Dropbox)
+}
+
+/// "12.3 GB of 15 GB used" (sidebar hover, Settings → Cloud).
+pub fn quota_text(slot: Option<&QuotaSlot>) -> String {
+    let size = |n: u64| {
+        let one_place = humansize::FormatSizeOptions::from(humansize::DECIMAL).decimal_places(1);
+        humansize::format_size(n, one_place)
+    };
+    match slot {
+        Some(QuotaSlot { value: Some(q), .. }) => match q.total {
+            Some(total) => format!("{} of {} used", size(q.used), size(total)),
+            None => format!("{} used (no limit)", size(q.used)),
+        },
+        Some(s) if s.asking => "Checking storage…".into(),
+        _ => "Quota unknown".into(),
+    }
+}
+
+/// Whether "Copy link" is offered for `e`: Drive and Dropbox files and folders, S3 files.
+/// The account kinds come from `Clouds::sync` (`ctx` data), so a menu reads no config.
+pub fn can_link(ctx: &egui::Context, e: &Entry) -> bool {
+    if e.path.scheme != "cloud" {
+        return false;
+    }
+    let kinds: Vec<(String, CloudKind)> = ctx
+        .data(|d| d.get_temp(Id::new(LINK_KINDS)))
+        .unwrap_or_default();
+    kinds.iter().any(|(id, kind)| {
+        *id == e.path.authority
+            && match kind {
+                CloudKind::GoogleDrive | CloudKind::Dropbox => true,
+                CloudKind::S3 => e.kind == Kind::File,
+                CloudKind::WebDav => false,
+            }
+    })
+}
+const LINK_KINDS: &str = "keel-cloud-kinds";
 
 pub fn kind_name(kind: CloudKind) -> &'static str {
     match kind {
@@ -256,6 +313,12 @@ impl Provider for LazyCloud {
     ) -> anyhow::Result<PathBuf> {
         self.get()?.local_copy_cancellable(p, progress, cancel)
     }
+    fn quota(&self) -> Option<Quota> {
+        self.get().ok()?.quota()
+    }
+    fn share_link(&self, p: &VPath, create: bool) -> anyhow::Result<ShareLink> {
+        self.get()?.share_link(p, create)
+    }
 }
 
 pub struct Clouds {
@@ -273,6 +336,13 @@ pub struct Clouds {
     pub cpu: Result<(), String>,
     /// How a sign-out revokes the grant (`cloud::revoke_tokens`; a recorder in tests).
     pub revoke: Revoke,
+    /// The registered providers by account id (quota and link questions go to them).
+    pub providers: HashMap<String, Arc<dyn Provider>>,
+    pub quota: HashMap<String, QuotaSlot>,
+    /// "Create a link…?" waiting for a yes: the file and the question.
+    pub link_ask: Option<(VPath, String)>,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
 }
 
 /// Revokes a grant from tokens in memory.
@@ -281,9 +351,10 @@ pub type Revoke = fn(CloudKind, &OAuthTokens, &OAuthClient) -> anyhow::Result<()
 impl Clouds {
     pub fn new(tx: Sender<Msg>, ctx: egui::Context, secrets: Arc<dyn SecretStore>) -> Self {
         let (events, rx) = crossbeam_channel::unbounded::<RemoteEvent>();
+        let (to_ui, repaint) = (tx.clone(), ctx.clone());
         spawn("keel-cloud-events", move || {
             for event in rx {
-                send(&tx, &ctx, Msg::Remote(event));
+                send(&to_ui, &repaint, Msg::Remote(event));
             }
         });
         Self {
@@ -295,6 +366,11 @@ impl Clouds {
             removing: None,
             cpu: cloud::check_cpu().map_err(|e| e.to_string()),
             revoke: cloud::revoke_tokens,
+            providers: HashMap::new(),
+            quota: HashMap::new(),
+            link_ask: None,
+            tx,
+            ctx,
         }
     }
 
@@ -314,24 +390,33 @@ impl Clouds {
         for old in &self.accounts {
             if !accounts.iter().any(|a| a.id == old.id) {
                 router.unregister_cloud(&old.id);
+                self.providers.remove(&old.id);
+                self.quota.remove(&old.id);
                 removed.push(old.id.clone());
             }
         }
         self.status
             .retain(|id, _| accounts.iter().any(|a| a.id == *id));
         self.accounts = accounts.to_vec();
+        let kinds: Vec<(String, CloudKind)> =
+            accounts.iter().map(|a| (a.id.clone(), a.kind)).collect();
+        self.ctx
+            .data_mut(|d| d.insert_temp(Id::new(LINK_KINDS), kinds));
         removed
     }
 
     fn register(&mut self, router: &Router, a: &CloudAccount) {
-        let provider = LazyCloud {
+        let provider: Arc<dyn Provider> = Arc::new(LazyCloud {
             account: a.clone(),
             secrets: self.secrets.clone(),
             events: self.events.clone(),
             inner: Mutex::default(),
             last: Mutex::default(),
-        };
-        router.register_cloud_provider(a.id.clone(), Arc::new(provider));
+        });
+        router.register_cloud_provider(a.id.clone(), provider.clone());
+        self.providers.insert(a.id.clone(), provider);
+        // A changed account or a new sign-in: its quota is asked again.
+        self.quota.remove(&a.id);
         self.status
             .insert(a.id.clone(), (ConnStatus::Disconnected, String::new()));
     }
@@ -347,6 +432,42 @@ impl Clouds {
         self.accounts.iter().find(|a| a.id == id)
     }
 
+    /// Asks account `id` for its storage quota on a worker, unless an answer younger than
+    /// `QUOTA_TTL` is there or a question is out (`force`: ask anyway, unless one is out).
+    /// Never blocks: the answer comes as `Msg::CloudQuota`.
+    pub fn want_quota(&mut self, id: &str, force: bool) {
+        if !self.account(id).is_some_and(|a| has_quota(a.kind)) {
+            return;
+        }
+        let Some(provider) = self.providers.get(id).cloned() else {
+            return;
+        };
+        let slot = self.quota.entry(id.to_owned()).or_default();
+        let fresh = slot.at.is_some_and(|at| at.elapsed() < QUOTA_TTL);
+        if slot.asking || (fresh && !force) {
+            return;
+        }
+        slot.asking = true;
+        let (tx, ctx, id) = (self.tx.clone(), self.ctx.clone(), id.to_owned());
+        spawn("keel-cloud-quota", move || {
+            let quota = provider.quota();
+            send(&tx, &ctx, Msg::CloudQuota { id, quota });
+        });
+    }
+
+    /// Asks for a link to `path` on a worker (`create`: the user said yes to making one).
+    /// The answer comes as `Msg::CloudLink`.
+    pub fn want_link(&self, path: VPath, create: bool) {
+        let Some(provider) = self.providers.get(&path.authority).cloned() else {
+            return;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        spawn("keel-cloud-link", move || {
+            let result = provider.share_link(&path, create);
+            send(&tx, &ctx, Msg::CloudLink { path, result });
+        });
+    }
+
     /// Settings → Cloud: the account list with Add / Edit / Remove.
     /// Remove asks in the same dialog as the sidebar's (`AppState::cloud_modals`).
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings, _tx: &Sender<Msg>) {
@@ -359,8 +480,9 @@ impl Clouds {
         if s.clouds.is_empty() {
             ui.weak("No cloud accounts yet.");
         }
+        let mut ask = Vec::new();
         egui::Grid::new("settings-clouds")
-            .num_columns(4)
+            .num_columns(5)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 for a in &s.clouds {
@@ -370,6 +492,18 @@ impl Clouds {
                         (Some(s3), _) => format!("{} / {}", s3.endpoint, s3.bucket),
                         (_, Some(dav)) => dav.url.clone(),
                         _ => a.root.clone().unwrap_or_else(|| "/".into()),
+                    });
+                    ui.horizontal(|ui| {
+                        if !has_quota(a.kind) {
+                            return;
+                        }
+                        let slot = self.quota.get(&a.id);
+                        ui.label(quota_text(slot));
+                        let idle = !slot.is_some_and(|q| q.asking);
+                        let refresh = ui
+                            .add_enabled(idle, egui::Button::new("Refresh"))
+                            .on_hover_text("Ask the service for its storage now");
+                        ask.push((a.id.clone(), refresh.clicked()));
                     });
                     ui.horizontal(|ui| {
                         if ui.button("Edit…").clicked() {
@@ -382,6 +516,10 @@ impl Clouds {
                     ui.end_row();
                 }
             });
+        // Shown: asked when older than QUOTA_TTL; Refresh asks now.
+        for (id, force) in ask {
+            self.want_quota(&id, force);
+        }
         ui.add_space(6.0);
         let add = ui.add_enabled(self.cpu.is_ok(), egui::Button::new("Add account…"));
         if add.clicked() {
@@ -471,6 +609,28 @@ fn remove_ui(ctx: &egui::Context, a: &CloudAccount) -> Option<Option<CloudCmd>> 
     });
     if answer.is_none() && modal.should_close() {
         answer = Some(None);
+    }
+    answer
+}
+
+/// "Create a link anyone can open?": Some(yes) once answered.
+fn link_ui(ctx: &egui::Context, question: &str) -> Option<bool> {
+    let mut answer = None;
+    let modal = Modal::new(Id::new("keel-cloud-link")).show(ctx, |ui| {
+        ui.set_width(380.0);
+        ui.label(question);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Create link").clicked() {
+                answer = Some(true);
+            }
+            if ui.button("Cancel").clicked() {
+                answer = Some(false);
+            }
+        });
+    });
+    if answer.is_none() && modal.should_close() {
+        answer = Some(false);
     }
     answer
 }
@@ -1205,8 +1365,11 @@ impl AppState {
                 }
             }
         }
-        self.sidebar.clouds =
-            crate::sidebar_remotes::cloud_rows(&self.settings.clouds, &self.clouds.status);
+        self.sidebar.clouds = crate::sidebar_remotes::cloud_rows(
+            &self.settings.clouds,
+            &self.clouds.status,
+            &self.clouds.quota,
+        );
     }
 
     /// Lists every tab on account `id` again.
@@ -1269,7 +1432,44 @@ impl AppState {
                 );
                 self.clouds.wizard = Some(w);
             }
+            CloudCmd::Quota => self.clouds.want_quota(&id, false),
             CloudCmd::Add => {}
+        }
+    }
+
+    /// A quota answer: shown until `QUOTA_TTL` has passed.
+    pub fn cloud_quota(&mut self, id: String, quota: Option<Quota>) {
+        if self.clouds.account(&id).is_none() {
+            return;
+        }
+        self.clouds.quota.insert(
+            id,
+            QuotaSlot {
+                at: Some(Instant::now()),
+                value: quota,
+                asking: false,
+            },
+        );
+    }
+
+    /// "Copy link" on the selected cloud item (the context menu offers it only there).
+    pub fn copy_link(&mut self, p: usize) {
+        let target = self.tab(p).targets().first().map(|e| (*e).clone());
+        match target {
+            Some(e) if can_link(&self.ctx, &e) => self.clouds.want_link(e.path, false),
+            _ => self.toasts.info("Copy link works on cloud files"),
+        }
+    }
+
+    /// A link answer: copied with a note on who can open it, or a question first.
+    pub fn cloud_link(&mut self, path: VPath, result: anyhow::Result<ShareLink>) {
+        match result {
+            Ok(ShareLink::Ready { url, note }) => {
+                self.ctx.copy_text(url);
+                self.toasts.info(note);
+            }
+            Ok(ShareLink::Confirm { question }) => self.clouds.link_ask = Some((path, question)),
+            Err(e) => self.toasts.error(format!("Copy link: {e:#}")),
         }
     }
 
@@ -1277,6 +1477,15 @@ impl AppState {
     /// `settings.clouds` (written by the persistence worker) and reconnected so its new
     /// secrets are read.
     pub fn cloud_modals(&mut self, ctx: &egui::Context) {
+        if let Some((path, question)) = self.clouds.link_ask.clone() {
+            if let Some(yes) = link_ui(ctx, &question) {
+                self.clouds.link_ask = None;
+                if yes {
+                    self.clouds.want_link(path, true);
+                }
+            }
+            return;
+        }
         if let Some(id) = self.clouds.removing.clone() {
             let Some(account) = self.clouds.account(&id).cloned() else {
                 self.clouds.removing = None;
@@ -1525,7 +1734,21 @@ mod tests {
         ];
         let mut status = HashMap::new();
         status.insert("b2".to_owned(), (ConnStatus::Failed, "unreachable".into()));
-        let rows = crate::sidebar_remotes::cloud_rows(&accounts, &status);
+        let mut quota = HashMap::new();
+        quota.insert(
+            "drive".to_owned(),
+            QuotaSlot {
+                at: Some(Instant::now()),
+                value: Some(Quota {
+                    used: 12_300_000_000,
+                    total: Some(15_000_000_000),
+                }),
+                asking: false,
+            },
+        );
+        let rows = crate::sidebar_remotes::cloud_rows(&accounts, &status, &quota);
+        assert_eq!(rows[0].quota.as_deref(), Some("12.3 GB of 15 GB used"));
+        assert_eq!(rows[1].quota, None, "S3 reports no storage");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "drive label");
         assert_eq!(rows[0].status, ConnStatus::Disconnected);
@@ -1859,6 +2082,229 @@ mod tests {
             "moved out of the cloud"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quota_text_reads_like_a_sentence() {
+        let slot = |value, asking| QuotaSlot {
+            at: Some(Instant::now()),
+            value,
+            asking,
+        };
+        let q = |used, total| Some(Quota { used, total });
+        assert_eq!(
+            quota_text(Some(&slot(q(12_345_678_901, Some(15_000_000_000)), false))),
+            "12.3 GB of 15 GB used"
+        );
+        assert_eq!(
+            quota_text(Some(&slot(q(1_500_000, None), false))),
+            "1.5 MB used (no limit)"
+        );
+        assert_eq!(quota_text(Some(&slot(None, true))), "Checking storage…");
+        assert_eq!(quota_text(Some(&slot(None, false))), "Quota unknown");
+        assert_eq!(quota_text(None), "Quota unknown");
+    }
+
+    /// Answers quota and link questions from fixed answers and counts them; nothing else.
+    #[derive(Default)]
+    struct Answers {
+        quota: Option<Quota>,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+    impl Provider for Answers {
+        fn scheme(&self) -> &'static str {
+            "cloud"
+        }
+        fn caps(&self) -> Caps {
+            Caps::default()
+        }
+        fn list(&self, _: &VPath) -> anyhow::Result<Vec<Entry>> {
+            anyhow::bail!("not here")
+        }
+        fn list_complete(&self, _: &VPath) -> anyhow::Result<Vec<Entry>> {
+            anyhow::bail!("not here")
+        }
+        fn stat(&self, _: &VPath) -> anyhow::Result<Entry> {
+            anyhow::bail!("not here")
+        }
+        fn read(&self, _: &VPath) -> anyhow::Result<Box<dyn Read + Send>> {
+            anyhow::bail!("not here")
+        }
+        fn write(&self, _: &VPath) -> anyhow::Result<Box<dyn Write + Send>> {
+            anyhow::bail!("not here")
+        }
+        fn mkdir(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("not here")
+        }
+        fn rename(&self, _: &VPath, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("not here")
+        }
+        fn remove(&self, _: &VPath) -> anyhow::Result<()> {
+            anyhow::bail!("not here")
+        }
+        fn remove_kind(&self) -> RemoveKind {
+            RemoveKind::Permanent
+        }
+        fn local_copy(&self, _: &VPath) -> anyhow::Result<PathBuf> {
+            anyhow::bail!("not here")
+        }
+        fn quota(&self) -> Option<Quota> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.quota
+        }
+        /// `new.txt` has no link until `create`; the others have one.
+        fn share_link(&self, p: &VPath, create: bool) -> anyhow::Result<ShareLink> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            Ok(match (p.name(), create) {
+                ("new.txt", false) => ShareLink::Confirm {
+                    question: "Create a link anyone can open?".into(),
+                },
+                (name, _) => ShareLink::Ready {
+                    url: format!("https://share.example/{name}"),
+                    note: "Link copied.".into(),
+                },
+            })
+        }
+    }
+    /// Applies worker messages until `done` (10 s at most).
+    fn pump(state: &mut AppState, done: impl Fn(&AppState) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(state) {
+            assert!(Instant::now() < deadline, "no answer from the worker");
+            if let Ok(m) = state.rx.recv_timeout(Duration::from_millis(20)) {
+                state.apply(m);
+            }
+        }
+    }
+
+    #[test]
+    fn quota_is_asked_on_a_worker_kept_ten_minutes_and_refreshed() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        state.settings.clouds = vec![
+            account("drive", CloudKind::GoogleDrive),
+            account("b2", CloudKind::S3),
+        ];
+        state.cloud_tick();
+        let answers = Arc::new(Answers {
+            quota: Some(Quota {
+                used: 12_300_000_000,
+                total: Some(15_000_000_000),
+            }),
+            ..Default::default()
+        });
+        state
+            .clouds
+            .providers
+            .insert("drive".into(), answers.clone());
+        let row = |s: &mut AppState| {
+            s.cloud_tick();
+            s.sidebar.clouds[0].quota.clone().unwrap()
+        };
+        assert_eq!(row(&mut state), "Quota unknown");
+        // The sidebar hover asks; the row says so until the worker answers.
+        state.run(
+            0,
+            Action::Cloud {
+                id: "drive".into(),
+                cmd: CloudCmd::Quota,
+            },
+        );
+        assert_eq!(row(&mut state), "Checking storage…");
+        pump(&mut state, |s| !s.clouds.quota["drive"].asking);
+        assert_eq!(row(&mut state), "12.3 GB of 15 GB used");
+        assert_eq!(answers.asked.load(Ordering::SeqCst), 1);
+        // Fresh: not asked again; Refresh asks now; an old answer is asked again.
+        state.cloud_cmd("drive".into(), CloudCmd::Quota);
+        assert!(!state.clouds.quota["drive"].asking);
+        state.clouds.want_quota("drive", true);
+        pump(&mut state, |s| !s.clouds.quota["drive"].asking);
+        assert_eq!(answers.asked.load(Ordering::SeqCst), 2);
+        let old = Instant::now().checked_sub(QUOTA_TTL + Duration::from_secs(1));
+        state.clouds.quota.get_mut("drive").unwrap().at = old;
+        state.cloud_cmd("drive".into(), CloudCmd::Quota);
+        pump(&mut state, |s| !s.clouds.quota["drive"].asking);
+        assert_eq!(answers.asked.load(Ordering::SeqCst), 3);
+        // S3 reports none: nothing asked, no hover line.
+        state.cloud_cmd("b2".into(), CloudCmd::Quota);
+        assert!(!state.clouds.quota.contains_key("b2"));
+        assert_eq!(state.sidebar.clouds[1].quota, None);
+        // A failed answer leaves the quota unknown.
+        state.apply(Msg::CloudQuota {
+            id: "drive".into(),
+            quota: None,
+        });
+        assert_eq!(row(&mut state), "Quota unknown");
+    }
+
+    #[test]
+    fn copy_link_copies_the_string_or_asks_first() {
+        let dir = VPath::local(std::env::temp_dir());
+        let ctx = egui::Context::default();
+        let mut state = AppState::new(ctx.clone(), Arc::new(Router::new()), dir.clone());
+        state.settings.clouds = vec![
+            account("dbx", CloudKind::Dropbox),
+            account("b2", CloudKind::S3),
+            account("dav", CloudKind::WebDav),
+        ];
+        state.cloud_tick();
+        let answers = Arc::new(Answers::default());
+        state.clouds.providers.insert("dbx".into(), answers.clone());
+        // Offered on Drive and Dropbox items, S3 files, never on WebDAV or local files.
+        let entry = |dir: &VPath, name, kind| crate::tab::test_entry(dir, name, kind, 1);
+        assert!(can_link(&ctx, &entry(&root_of("dbx"), "docs", Kind::Dir)));
+        assert!(can_link(&ctx, &entry(&root_of("b2"), "a.txt", Kind::File)));
+        assert!(!can_link(&ctx, &entry(&root_of("b2"), "docs", Kind::Dir)));
+        assert!(!can_link(
+            &ctx,
+            &entry(&root_of("dav"), "a.txt", Kind::File)
+        ));
+        assert!(!can_link(&ctx, &entry(&dir, "a.txt", Kind::File)));
+        let copied = |ctx: &egui::Context| -> Vec<String> {
+            ctx.output(|o| o.commands.clone())
+                .into_iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t),
+                    _ => None,
+                })
+                .collect()
+        };
+        let remote = root_of("dbx");
+        state.tab_mut(0).dir = remote.clone();
+        state.tab_mut(0).set_listing(crate::tab::Listing::new(vec![
+            entry(&remote, "a.txt", Kind::File),
+            entry(&remote, "new.txt", Kind::File),
+        ]));
+        // An existing link: copied at once, with the note.
+        state.tab_mut(0).click("a.txt", false, false);
+        state.run(0, Action::CopyLink);
+        pump(&mut state, |_| copied(&ctx).len() == 1);
+        assert_eq!(copied(&ctx), ["https://share.example/a.txt"]);
+        assert!(state.toasts.list.iter().any(|t| t.text == "Link copied."));
+        // None yet: the question first, nothing copied; the yes makes and copies it.
+        state.tab_mut(0).click("new.txt", false, false);
+        state.run(0, Action::CopyLink);
+        pump(&mut state, |s| s.clouds.link_ask.is_some());
+        let (path, question) = state.clouds.link_ask.clone().unwrap();
+        assert_eq!(question, "Create a link anyone can open?");
+        assert_eq!(path, remote.join("new.txt"));
+        assert_eq!(copied(&ctx).len(), 1);
+        state.clouds.link_ask = None;
+        state.clouds.want_link(path, true);
+        pump(&mut state, |_| copied(&ctx).len() == 2);
+        assert_eq!(copied(&ctx)[1], "https://share.example/new.txt");
+        assert_eq!(answers.asked.load(Ordering::SeqCst), 3);
+        // An error is a toast, never a clipboard write.
+        state.apply(Msg::CloudLink {
+            path: remote.join("a.txt"),
+            result: Err(anyhow::anyhow!("cloud HTTP 409")),
+        });
+        assert!(state
+            .toasts
+            .list
+            .iter()
+            .any(|t| t.text == "Copy link: cloud HTTP 409"));
+        assert_eq!(copied(&ctx).len(), 2);
     }
 
     #[test]

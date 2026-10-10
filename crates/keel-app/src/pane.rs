@@ -249,7 +249,10 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                 for (i, tab) in pane.tabs.iter().enumerate() {
                     let drag = ui.dnd_drag_source(ui.id().with(("tab", i)), (idx, i), |ui| {
                         ui.selectable_label(i == pane.active, tab.title())
-                            .on_hover_text(tab.dir.display())
+                            .on_hover_text(
+                                crate::devices::node_location(&tab.dir)
+                                    .unwrap_or_else(|| tab.dir.display()),
+                            )
                     });
                     let label = drag.inner;
                     if label.clicked() {
@@ -389,7 +392,10 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     if i > 0 {
                         ui.weak("›");
                     }
+                    // A device's name and a shared source's label, not their ids.
+                    let node = crate::devices::node_crumb(dir);
                     let label = match dir.name() {
+                        _ if node.is_some() => node.unwrap_or_default(),
                         name if i > 0 && !name.is_empty() => name.to_owned(),
                         // Task 29: a library source root reads as its label.
                         _ if dir.scheme == keel_vfs::library::SCHEME => {
@@ -538,6 +544,9 @@ pub fn context_menu(
         item(ui, "Mount this folder…", "", a);
     }
     item(ui, "Copy path", "", Action::CopyPath);
+    if entry.is_some_and(|e| crate::clouds::can_link(ui.ctx(), e)) {
+        item(ui, "Copy link", "", Action::CopyLink);
+    }
     if on_item {
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);

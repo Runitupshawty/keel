@@ -2,7 +2,7 @@
 //! nested below, and a right-click menu (connect, disconnect, edit, ssh, copy address).
 //! The "Cloud" section: one row per account with a status dot (reconnect, edit, remove).
 
-use crate::clouds::{needs_sign_in, root_of, CloudCmd};
+use crate::clouds::{has_quota, needs_sign_in, quota_text, root_of, CloudCmd, QuotaSlot};
 use crate::keys::Action;
 use crate::remotes::{home_of, remote_path, RemoteCmd};
 use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, VPath};
@@ -144,11 +144,14 @@ pub struct CloudRow {
     pub status: ConnStatus,
     pub detail: String,
     pub root: VPath,
+    /// "12.3 GB of 15 GB used" (hover), for accounts that report storage.
+    pub quota: Option<String>,
 }
 
 pub fn cloud_rows(
     accounts: &[CloudAccount],
     status: &HashMap<String, (ConnStatus, String)>,
+    quota: &HashMap<String, QuotaSlot>,
 ) -> Vec<CloudRow> {
     accounts
         .iter()
@@ -163,12 +166,14 @@ pub fn cloud_rows(
                 status,
                 detail,
                 root: root_of(&a.id),
+                quota: has_quota(a.kind).then(|| quota_text(quota.get(&a.id))),
             }
         })
         .collect()
 }
 
-/// No "Copy link": the cloud provider exposes no share links yet.
+/// Hovering a row asks for its storage quota (cached for `clouds::QUOTA_TTL`). Share
+/// links are in the file context menu ("Copy link").
 pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut Vec<Action>) {
     let cmd = |id: &str, cmd| Action::Cloud {
         id: id.to_owned(),
@@ -197,10 +202,16 @@ pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut
                 )
             })
             .inner;
-        let tip = match row.status {
+        let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected yet".to_owned(),
             _ => row.detail.clone(),
         };
+        if let Some(quota) = &row.quota {
+            tip = format!("{tip}\n{quota}");
+            if r.hovered() {
+                out.push(cmd(&row.id, CloudCmd::Quota));
+            }
+        }
         let r = r.on_hover_text(tip);
         if r.clicked() {
             out.push(Action::Navigate(row.root.clone()));

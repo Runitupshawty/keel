@@ -459,6 +459,7 @@ fn oauth_cloud_over(
     let oauth = OAuth::new(
         client,
         endpoints,
+        "at-1",
         expires_at,
         Box::new(move |access| Ok(op_for(access))),
     );
@@ -1750,4 +1751,268 @@ fn webdav_live_roundtrip() {
     assert_eq!(get(&dav, &format!("{dir}/b.txt")), b"hello");
     dav.remove(&vp(&dir)).unwrap();
     assert!(dav.stat(&vp(&dir)).is_err());
+}
+
+// --- Quota and share links (the services' own APIs) -----------------------------------
+
+/// A signed-in Drive or Dropbox account (fresh token "at-1") whose API calls go to `api`.
+fn api_cloud(a: CloudAccount, api: &str) -> CloudProvider {
+    init().unwrap();
+    let op = opendal::Operator::new(opendal::services::Memory::default()).unwrap();
+    let mut endpoints = oauth::Endpoints::for_kind(a.kind).unwrap();
+    // Never asked: the token is fresh.
+    endpoints.token = "http://127.0.0.1:9/token".into();
+    let client = OAuthClient {
+        id: "app".into(),
+        secret: None,
+    };
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let make = op.clone();
+    let oauth = OAuth::new(
+        client,
+        endpoints,
+        "at-1",
+        far,
+        Box::new(move |_| Ok(make.clone())),
+    );
+    let store = Arc::new(MemoryStore::default());
+    let mut cloud =
+        CloudProvider::build(a, op, Some(oauth), store, crossbeam_channel::unbounded().0).unwrap();
+    let api = api.to_owned();
+    cloud.tune(|c| c.api = api);
+    cloud
+}
+/// (method, path, query `q` or `fields`, JSON body) of each request to a fake API.
+type ApiLog = Arc<Mutex<Vec<(String, String, String, Value)>>>;
+/// A fake API answering `reply(path, query, body)`; every request must carry "Bearer at-1".
+fn api_fake(
+    reply: impl Fn(&str, &HashMap<String, String>, &Value) -> Reply + Send + 'static,
+) -> (String, ApiLog) {
+    let log = ApiLog::default();
+    let seen = log.clone();
+    let base = serve(move |req| {
+        assert_eq!(
+            req.headers.get("authorization").map(String::as_str),
+            Some("Bearer at-1")
+        );
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or_default();
+        let q = req.query.get("q").or(req.query.get("fields"));
+        seen.lock().push((
+            req.method.clone(),
+            req.path.clone(),
+            q.cloned().unwrap_or_default(),
+            body.clone(),
+        ));
+        reply(&req.path, &req.query, &body)
+    });
+    (base, log)
+}
+
+#[test]
+fn drive_quota_with_and_without_a_limit() {
+    for (quota, total) in [
+        (
+            json!({"usage": "1230000000", "limit": "15000000000"}),
+            Some(15_000_000_000),
+        ),
+        (json!({"usage": "1230000000"}), None),
+    ] {
+        let (api, log) = api_fake(move |path, _, _| {
+            assert_eq!(path, "/drive/v3/about");
+            json_reply(200, json!({ "storageQuota": quota }))
+        });
+        let drive = api_cloud(account("drive", CloudKind::GoogleDrive), &api);
+        assert_eq!(
+            drive.quota(),
+            Some(crate::Quota {
+                used: 1_230_000_000,
+                total
+            })
+        );
+        assert_eq!(log.lock()[0].2, "storageQuota");
+    }
+}
+
+#[test]
+fn dropbox_quota_reads_individual_and_team_allocations() {
+    for (allocation, total) in [
+        (json!({".tag": "individual", "allocated": 2000}), Some(2000)),
+        (
+            json!({".tag": "team", "used": 900, "allocated": 5000,
+                   "user_within_team_space_allocated": 0}),
+            Some(5000),
+        ),
+        (
+            json!({".tag": "team", "used": 900, "allocated": 5000,
+                   "user_within_team_space_allocated": 1500}),
+            Some(1500),
+        ),
+    ] {
+        let (api, log) = api_fake(move |path, _, _| {
+            assert_eq!(path, "/2/users/get_space_usage");
+            json_reply(200, json!({ "used": 120, "allocation": allocation }))
+        });
+        let dbx = api_cloud(account("dbx", CloudKind::Dropbox), &api);
+        assert_eq!(dbx.quota(), Some(crate::Quota { used: 120, total }));
+        assert_eq!(log.lock()[0].0, "POST");
+    }
+}
+
+#[test]
+fn a_failed_quota_request_leaves_the_quota_unknown() {
+    let (api, log) = api_fake(|_, _, _| json_reply(403, json!({"error": "no"})));
+    let drive = api_cloud(account("drive", CloudKind::GoogleDrive), &api);
+    assert_eq!(drive.quota(), None);
+    assert_eq!(log.lock().len(), 1, "a refusal is not retried");
+    let (api, _) = api_fake(|_, _, _| json_reply(200, json!({"unexpected": true})));
+    assert_eq!(
+        api_cloud(account("dbx", CloudKind::Dropbox), &api).quota(),
+        None
+    );
+    // S3 and WebDAV report none (and ask nothing).
+    assert_eq!(memory_cloud("bucket").quota(), None);
+}
+
+#[test]
+fn drive_links_are_the_files_own_and_change_no_sharing() {
+    let (api, log) = api_fake(|path, query, _| match path {
+        "/drive/v3/files" => {
+            let id = match query["q"].as_str() {
+                q if q.starts_with("'root' in parents and name = 'Work'") => "f1",
+                q if q.starts_with("'f1' in parents and name = 'it\\'s.txt'") => "f2",
+                _ => return json_reply(200, json!({ "files": [] })),
+            };
+            json_reply(200, json!({ "files": [{ "id": id }] }))
+        }
+        "/drive/v3/files/f2" => {
+            assert_eq!(query["fields"], "webViewLink");
+            json_reply(
+                200,
+                json!({"webViewLink": "https://drive.example/file/d/f2/view"}),
+            )
+        }
+        _ => (404, vec![], vec![]),
+    });
+    let mut a = account("drive", CloudKind::GoogleDrive);
+    a.root = Some("/Work".into());
+    let drive = api_cloud(a, &api);
+    let link = drive
+        .share_link(&vp("cloud://drive/it's.txt"), false)
+        .unwrap();
+    assert_eq!(
+        link,
+        crate::ShareLink::Ready {
+            url: "https://drive.example/file/d/f2/view".into(),
+            note: "Link copied. It opens only for people who already have access.".into(),
+        }
+    );
+    assert!(log.lock().iter().all(|(m, ..)| m == "GET"), "read-only");
+    let err = drive
+        .share_link(&vp("cloud://drive/missing.txt"), false)
+        .unwrap_err();
+    assert_eq!(kind_of(&err), Some(io::ErrorKind::NotFound));
+}
+
+/// A Dropbox sharing API holding `links` (path -> url); a create adds one.
+fn dropbox_links(links: &[(&str, &str)]) -> (String, ApiLog) {
+    let links: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(
+        (links.iter())
+            .map(|(p, u)| (p.to_string(), u.to_string()))
+            .collect(),
+    ));
+    api_fake(move |path, _, body| {
+        let at = body["path"].as_str().unwrap().to_owned();
+        match path {
+            "/2/sharing/list_shared_links" => {
+                assert_eq!(body["direct_only"], true);
+                let found: Vec<Value> = (links.lock().get(&at).into_iter())
+                    .map(|u| json!({".tag": "file", "url": u, "path_lower": at}))
+                    .collect();
+                json_reply(200, json!({ "links": found, "has_more": false }))
+            }
+            "/2/sharing/create_shared_link_with_settings" => {
+                let url = format!("https://dropbox.example/s/new{at}");
+                links.lock().insert(at, url.clone());
+                json_reply(200, json!({ "url": url }))
+            }
+            _ => (404, vec![], vec![]),
+        }
+    })
+}
+fn creates(log: &ApiLog) -> usize {
+    (log.lock().iter())
+        .filter(|(_, p, ..)| p.ends_with("create_shared_link_with_settings"))
+        .count()
+}
+
+#[test]
+fn dropbox_reuses_an_existing_link_without_creating_one() {
+    let (api, log) = dropbox_links(&[("/a.txt", "https://dropbox.example/s/old")]);
+    let dbx = api_cloud(account("dbx", CloudKind::Dropbox), &api);
+    for create in [false, true] {
+        assert_eq!(
+            dbx.share_link(&vp("cloud://dbx/a.txt"), create).unwrap(),
+            crate::ShareLink::Ready {
+                url: "https://dropbox.example/s/old".into(),
+                note: "Link copied.".into()
+            }
+        );
+    }
+    assert_eq!(creates(&log), 0);
+}
+
+#[test]
+fn dropbox_creates_a_link_only_after_a_yes() {
+    let (api, log) = dropbox_links(&[]);
+    let mut a = account("dbx", CloudKind::Dropbox);
+    a.root = Some("/Team".into());
+    let dbx = api_cloud(a, &api);
+    let p = vp("cloud://dbx/docs/b.pdf");
+    assert_eq!(
+        dbx.share_link(&p, false).unwrap(),
+        crate::ShareLink::Confirm {
+            question: "Create a link anyone can open?".into()
+        }
+    );
+    assert_eq!(creates(&log), 0);
+    let crate::ShareLink::Ready { url, note } = dbx.share_link(&p, true).unwrap() else {
+        panic!("no link");
+    };
+    assert_eq!(url, "https://dropbox.example/s/new/Team/docs/b.pdf");
+    assert!(note.contains("Anyone with it"), "{note}");
+    assert_eq!(creates(&log), 1);
+    // The next time it is the existing one.
+    assert!(matches!(
+        dbx.share_link(&p, false).unwrap(),
+        crate::ShareLink::Ready { .. }
+    ));
+    assert_eq!(creates(&log), 1);
+}
+
+#[test]
+fn s3_links_are_presigned_for_an_hour_after_a_yes() {
+    let (base, fake) = s3_fake();
+    let cloud = s3_cloud(&base);
+    let p = vp("cloud://fake/docs/a b.txt");
+    let crate::ShareLink::Confirm { question } = cloud.share_link(&p, false).unwrap() else {
+        panic!("S3 asks first");
+    };
+    assert!(question.contains("next hour"), "{question}");
+    let crate::ShareLink::Ready { url, note } = cloud.share_link(&p, true).unwrap() else {
+        panic!("no link");
+    };
+    assert!(
+        url.starts_with(&format!("{base}/b/docs/a%20b.txt?")),
+        "{url}"
+    );
+    assert!(url.contains("X-Amz-Expires=3600"), "{url}");
+    assert!(url.contains("X-Amz-Signature="), "{url}");
+    assert!(url.contains("AKIDFAKE"), "{url}");
+    assert!(!url.contains("fake-secret"), "the secret key never leaves");
+    assert!(note.contains("1 hour"), "{note}");
+    assert!(fake.lock().objects.is_empty(), "signing asks nothing");
+    let err = memory_cloud_of("dav", CloudKind::WebDav)
+        .share_link(&vp("cloud://dav/a"), true)
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("no share links"), "{err:#}");
 }

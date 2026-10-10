@@ -173,6 +173,16 @@ pub enum Msg {
     // --- Task 36 ---
     Devices(crate::devices::DevMsg),
     Mount(crate::mount_ui::MountMsg),
+    /// An account's storage quota (None: unknown).
+    CloudQuota {
+        id: String,
+        quota: Option<keel_vfs::Quota>,
+    },
+    /// "Copy link" answered for `path`.
+    CloudLink {
+        path: VPath,
+        result: anyhow::Result<keel_vfs::ShareLink>,
+    },
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -813,6 +823,8 @@ impl AppState {
             Msg::Library(msg) => self.library_msg(msg),
             Msg::Devices(msg) => self.devices_msg(msg),
             Msg::Mount(msg) => self.mount_msg(msg),
+            Msg::CloudQuota { id, quota } => self.cloud_quota(id, quota),
+            Msg::CloudLink { path, result } => self.cloud_link(path, result),
         }
     }
 
@@ -1526,6 +1538,7 @@ impl AppState {
                     n => format!("Copied {n} paths"),
                 });
             }
+            Action::CopyLink => self.copy_link(p),
             Action::OpenWith => {
                 // Keel's picker: the system's apps for the first file (a worker lists them).
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
