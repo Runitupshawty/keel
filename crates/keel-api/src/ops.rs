@@ -777,13 +777,18 @@ fn redundancy(ctx: &Ctx, p: PathParams) -> Result<Copies> {
     let h = record_at(ctx, &p.path)?;
     let c = ctx.lib.redundancy(&h.record)?;
     Ok(Copies {
-        count: c.count,
+        copies: c.copies,
+        failure_domains: c.failure_domains,
+        backed_up: c.backed_up,
+        offline_copies: c.offline_copies,
         locations: c
             .locations
             .into_iter()
             .map(|l| Location {
-                source: l.source.0,
-                label: l.label,
+                path: l.path.display(),
+                source_label: l.source_label,
+                volume: l.volume.label.clone(),
+                failure_domain: l.volume.failure_domain.clone(),
             })
             .collect(),
     })
@@ -893,6 +898,15 @@ fn file_warning(w: &keel_core::Warning) -> Warning {
             Some(*files),
             format!(
                 "{files} file(s) in {} are the last indexed copy of their content",
+                path.display()
+            ),
+        ),
+        W::SingleDomain { path, files } => (
+            "single_domain",
+            Some(path),
+            Some(*files),
+            format!(
+                "{files} file(s) in {} would leave every remaining copy on one disk or account",
                 path.display()
             ),
         ),

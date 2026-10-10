@@ -297,14 +297,27 @@ pub struct DupGroup {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Location {
-    pub source: String,
-    pub label: String,
+    /// The copy's path.
+    pub path: String,
+    /// The source holding it.
+    pub source_label: String,
+    /// The volume it sits on and that volume's failure domain (disk serial, server or
+    /// cloud account).
+    pub volume: String,
+    pub failure_domain: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Copies {
-    /// Files holding this content (at least 1).
-    pub count: u64,
+    /// Files holding this content on volumes that count (hard links once; at least 1).
+    pub copies: u64,
+    /// Distinct failure domains among those copies.
+    pub failure_domains: u64,
+    /// A copy is on a backup volume in a second failure domain.
+    pub backed_up: bool,
+    /// Copies on offline or archived volumes.
+    pub offline_copies: u64,
+    /// Every record holding it (lost and retired volumes included).
     pub locations: Vec<Location>,
 }
 
@@ -364,7 +377,7 @@ pub struct Change {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Warning {
-    /// `last_copy`, `offline_source`, `not_indexed`, `exists`, `permanent`,
+    /// `last_copy`, `single_domain`, `offline_source`, `not_indexed`, `exists`, `permanent`,
     /// `content_unverified`, `creates_tag`, `secret`…
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
