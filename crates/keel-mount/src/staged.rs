@@ -328,6 +328,7 @@ mod tests {
             root: None,
             client_id_override: None,
             s3: None,
+            webdav: None,
         };
         Arc::new(
             keel_vfs::CloudProvider::with_operator(account, op, crossbeam_channel::unbounded().0)

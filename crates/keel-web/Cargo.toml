@@ -1,0 +1,44 @@
+[package]
+publish = false
+name = "keel-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Keel's browser client: an egui web app served by keel-daemon --web"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The connection logic, the address guard and the API types build everywhere (tested
+# natively); the UI and the browser glue only for wasm32.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# The API types are keel-api's own file (src/types.rs), shared by path.
+schemars = "1.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.31"
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+base64.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "CloseEvent",
+    "console",
+    "Document",
+    "Element",
+    "Event",
+    "History",
+    "HtmlAnchorElement",
+    "HtmlCanvasElement",
+    "Location",
+    "MessageEvent",
+    "Storage",
+    "WebSocket",
+    "Window",
+] }

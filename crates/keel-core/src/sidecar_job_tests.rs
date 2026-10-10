@@ -3,6 +3,7 @@ use crate::index::tests::{eventually, walk};
 use crate::library::tests::folder;
 use crate::media::tests::{exif_jpeg, png};
 use crate::JobStatus;
+use std::time::Duration;
 
 fn library(data: &Path, root: &Path) -> (Library, SourceId) {
     let lib = Library::open(data, "m").unwrap();
@@ -202,4 +203,41 @@ fn sidecar_perf_1000_images() {
     println!("1000 64x64 images -> Thumb256 + Meta: {took:?}");
     assert_eq!(media_rows(&lib, &id), 1000);
     assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// Review M7: input pauses the media and integrity jobs whatever the hashing policy;
+/// hashing pauses on it only when idle-only.
+#[test]
+fn activity_pauses_media_and_integrity_jobs_but_not_hashing_unless_idle_only() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    for i in 0..5 {
+        png(&files.path().join(format!("{i}.png")), 8, 8);
+    }
+    let (lib, id) = library(data.path(), files.path());
+    lib.set_hash_after_walk(false);
+    // "Pause on battery" policy: hashing runs through input.
+    lib.set_hash_idle_only(false);
+    lib.note_activity();
+    assert!(lib.user_active());
+    let job = lib.media_job(&id).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(media_rows(&lib, &id), 0, "paused after note_activity");
+    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    let hash = lib.hash().unwrap();
+    eventually("hashing while the user is active", || {
+        lib.jobs().info(hash).unwrap().status == JobStatus::Done
+    });
+    let check = lib.integrity(None, 100.0).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let info = lib.jobs().info(check).unwrap();
+    assert_eq!(
+        (info.status, info.result),
+        (JobStatus::Running, None),
+        "integrity paused"
+    );
+    lib.shared.busy_until.store(0, Ordering::SeqCst);
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    assert_eq!(lib.jobs().wait(check).unwrap().status, JobStatus::Done);
+    assert_eq!(media_rows(&lib, &id), 5);
 }

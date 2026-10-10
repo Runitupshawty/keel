@@ -1,4 +1,4 @@
-//! Cloud storage as folders: Google Drive, Dropbox and S3-compatible buckets over `opendal`,
+//! Cloud storage as folders: Google Drive, Dropbox, S3-compatible buckets and WebDAV over `opendal`,
 //! addressed as `cloud://<account id>/path`. Synchronous like the SFTP provider: call on a
 //! worker thread. Tokens and keys live in a `SecretStore` (the OS keychain in the app),
 //! never in config, logs or error messages: errors carry only the opendal error kind and
@@ -44,12 +44,61 @@ pub struct CloudAccount {
     /// Required for `CloudKind::S3`; its keys are always in the secret store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3: Option<S3Config>,
+    /// Required for `CloudKind::WebDav`; its password is the secret `<id>/password`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav: Option<WebDavConfig>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CloudKind {
     GoogleDrive,
     Dropbox,
     S3,
+    /// Nextcloud, ownCloud, Synology, Apache mod_dav: any WebDAV collection URL.
+    WebDav,
+}
+/// A WebDAV account (basic auth; the password or app password is in the secret store as
+/// `<id>/password`). The account's `root` is a folder below `url`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WebDavConfig {
+    /// e.g. `https://host/remote.php/dav/files/<user>/` (see `normalize_url`).
+    pub url: String,
+    pub username: String,
+    /// The user accepted plain `http://` (files and password travel unencrypted).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insecure: bool,
+}
+impl WebDavConfig {
+    /// The collection URL with a trailing slash. `https://` only, or `http://` with
+    /// `insecure`; other schemes (`webdav://`, ...) are refused, as are credentials,
+    /// queries and fragments in the URL (the password has its own field).
+    pub fn normalize_url(url: &str, insecure: bool) -> Result<String> {
+        let mut u = url::Url::parse(url.trim())
+            .map_err(|_| anyhow::anyhow!("not a valid address; use https://host/path/"))?;
+        match u.scheme() {
+            "https" => {}
+            "http" if insecure => {}
+            "http" => anyhow::bail!("http:// sends the password unencrypted; use https://"),
+            other => anyhow::bail!("unsupported scheme {other}://; use https://"),
+        }
+        anyhow::ensure!(u.host_str().is_some(), "the address has no host");
+        anyhow::ensure!(
+            u.username().is_empty() && u.password().is_none(),
+            "leave the user name and password out of the address"
+        );
+        anyhow::ensure!(
+            u.query().is_none() && u.fragment().is_none(),
+            "the address must not have a query or fragment"
+        );
+        if !u.path().ends_with('/') {
+            let path = format!("{}/", u.path());
+            u.set_path(&path);
+        }
+        Ok(u.into())
+    }
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(!self.username.trim().is_empty(), "enter the user name");
+        Self::normalize_url(&self.url, self.insecure).map(|_| ())
+    }
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct S3Config {
@@ -83,6 +132,9 @@ const DROPBOX_UPLOAD_LIMIT: u64 = 150 * 1024 * 1024;
 const DRIVE_UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 /// Entries shown per folder. ponytail: a bigger folder is cut off here (and a warning
 /// logged); page it in the UI if anyone keeps that many files in one folder.
+/// WebDAV uploads are one request with the whole file in memory (opendal's WebDAV writer
+/// does not stream), so they are capped. ponytail: chunked upload is server-specific.
+const WEBDAV_UPLOAD_LIMIT: u64 = 1024 * 1024 * 1024;
 const LIST_CAP: usize = 50_000;
 
 impl CloudKind {
@@ -90,7 +142,7 @@ impl CloudKind {
         match self {
             CloudKind::GoogleDrive => RemoveKind::Trash,
             CloudKind::Dropbox => RemoveKind::RecoverableDelete,
-            CloudKind::S3 => RemoveKind::Permanent,
+            CloudKind::S3 | CloudKind::WebDav => RemoveKind::Permanent,
         }
     }
     fn name(self) -> &'static str {
@@ -98,6 +150,7 @@ impl CloudKind {
             CloudKind::GoogleDrive => "Google Drive",
             CloudKind::Dropbox => "Dropbox",
             CloudKind::S3 => "S3",
+            CloudKind::WebDav => "WebDAV",
         }
     }
     /// Largest file one upload request may carry.
@@ -106,6 +159,7 @@ impl CloudKind {
             CloudKind::GoogleDrive => Some(DRIVE_UPLOAD_LIMIT),
             CloudKind::Dropbox => Some(DROPBOX_UPLOAD_LIMIT),
             CloudKind::S3 => None,
+            CloudKind::WebDav => Some(WEBDAV_UPLOAD_LIMIT),
         }
     }
     /// The app registration shipped in `assets/cloud-clients.toml`, unless it is still a
@@ -122,7 +176,7 @@ impl CloudKind {
         let entry = table.get(match self {
             CloudKind::GoogleDrive => "google_drive",
             CloudKind::Dropbox => "dropbox",
-            CloudKind::S3 => return None,
+            CloudKind::S3 | CloudKind::WebDav => return None,
         })?;
         let placeholder = |s: &str| s.trim().is_empty() || s.contains("YOUR_");
         (!placeholder(&entry.client_id)).then(|| OAuthClient {
@@ -247,7 +301,9 @@ pub fn sign_out_with(
     });
     forget_account(secrets, &account.id);
     match tokens {
-        Some(tokens) if account.kind != CloudKind::S3 => revoke(&tokens, &client),
+        Some(tokens) if !matches!(account.kind, CloudKind::S3 | CloudKind::WebDav) => {
+            revoke(&tokens, &client)
+        }
         _ => Ok(()),
     }
 }
@@ -608,7 +664,7 @@ fn oauth_op(kind: CloudKind, root: Option<&str>, access: &str) -> Result<opendal
                 .root(root)
                 .access_token(access),
         )?,
-        CloudKind::S3 => anyhow::bail!("S3 does not use OAuth"),
+        CloudKind::S3 | CloudKind::WebDav => anyhow::bail!("this account kind does not use OAuth"),
     })
 }
 
@@ -649,6 +705,33 @@ fn s3_op(account: &CloudAccount, key_id: &str, secret: &str) -> Result<opendal::
     Ok(opendal::Operator::new(builder)?)
 }
 
+/// The WebDAV operator: basic auth, and its own HTTP client (30 s without a byte from the
+/// server ends a request; the process-wide one allows 60).
+fn webdav_op(account: &CloudAccount, password: &str) -> Result<opendal::Operator> {
+    let cfg = account
+        .webdav
+        .as_ref()
+        .context("WebDAV account without address and user name")?;
+    cfg.validate()?;
+    let url = WebDavConfig::normalize_url(&cfg.url, cfg.insecure)?;
+    let builder = opendal::services::Webdav::default()
+        // opendal appends rooted paths (`/a/b`) to the endpoint.
+        .endpoint(url.trim_end_matches('/'))
+        .username(cfg.username.trim())
+        .password(password)
+        .root(account.root.as_deref().unwrap_or("/"));
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .context("HTTP client unavailable")?;
+    let transport = opendal::HttpTransporter::new(
+        opendal_http_transport_reqwest::ReqwestTransport::new(client),
+    );
+    Ok(opendal::Operator::new(builder)?
+        .with_context(opendal::OperationContext::new().with_http_transport(transport)))
+}
+
 impl CloudProvider {
     /// Builds the account's operator from the secret store. Reads the keychain but makes no
     /// network request: an expired access token is refreshed by the first operation.
@@ -676,6 +759,12 @@ impl CloudProvider {
                     .get(&key("secret_access_key"))?
                     .ok_or_else(missing)?;
                 (s3_op(account, &id, &secret)?, None)
+            }
+            CloudKind::WebDav => {
+                let password = secrets
+                    .get(&key("password"))?
+                    .context("WebDAV password missing from the keychain")?;
+                (webdav_op(account, &password)?, None)
             }
             kind => {
                 let client = resolve_client(account, &*secrets)?;
@@ -1081,10 +1170,21 @@ impl Core {
         }
     }
     fn read(&self, p: &VPath, cancel: &AtomicBool) -> Result<Box<dyn Read + Send>> {
+        self.read_from(p, 0, cancel)
+    }
+    /// The file from byte `offset` (a ranged request; the size is the service's, not the
+    /// listing cache's). Read it lazily: bytes are fetched as they are read.
+    fn read_from(
+        &self,
+        p: &VPath,
+        offset: u64,
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn Read + Send>> {
         let entry = self.stat(p)?;
         anyhow::ensure!(entry.kind == Kind::File, "not a file: {}", p.display());
         let k = key(p, false);
-        let reader = self.call_cancellable(p, cancel, |op| op.reader(&k)?.into_std_read(..))?;
+        let reader =
+            self.call_cancellable(p, cancel, |op| op.reader(&k)?.into_std_read(offset..))?;
         Ok(Box::new(CloudReader {
             inner: reader,
             path: p.clone(),
@@ -1548,6 +1648,11 @@ impl Provider for CloudProvider {
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
         self.core.read(p, &NEVER)
     }
+    fn read_range(&self, p: &VPath, offset: u64, len: u64) -> Result<Option<Box<dyn Read + Send>>> {
+        Ok(Some(Box::new(
+            self.core.read_from(p, offset, &NEVER)?.take(len),
+        )))
+    }
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         Ok(Box::new(CloudUpload::start(
             self.core.clone(),
@@ -1614,6 +1719,11 @@ impl Provider for CloudProvider {
             a.s3.as_ref()
                 .map(|s| format!("{}|{}", s.endpoint, s.bucket))
                 .unwrap_or_default();
+        let dav = a
+            .webdav
+            .as_ref()
+            .map(|w| format!("{}|{}", w.url, w.username))
+            .unwrap_or_default();
         let kind = format!("{:?}", a.kind);
         crate::sftp::cached_download(
             &Fresh {
@@ -1622,7 +1732,7 @@ impl Provider for CloudProvider {
             },
             p,
             &format!("cloud-{}", a.id),
-            &[&kind, &a.id, a.root.as_deref().unwrap_or(""), &s3],
+            &[&kind, &a.id, a.root.as_deref().unwrap_or(""), &s3, &dav],
             progress,
             cancel,
         )

@@ -377,8 +377,8 @@ pub struct Change {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Warning {
-    /// `last_copy`, `single_domain`, `offline_source`, `not_indexed`, `exists`, `permanent`,
-    /// `content_unverified`, `creates_tag`, `secret`…
+    /// `last_copy`, `single_domain`, `copies_offline`, `offline_source`, `not_indexed`, `exists`,
+    /// `permanent`, `content_unverified`, `creates_tag`, `secret`…
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -401,6 +401,42 @@ pub struct PlanPreview {
     pub warnings: Vec<Warning>,
     /// Unix seconds; `execute` refuses the plan after this.
     pub expires_at: i64,
+}
+
+impl PlanPreview {
+    /// The summary, then up to `max_changes` changes (one per line) and every warning: what
+    /// a person confirms.
+    pub fn describe(&self, max_changes: usize) -> String {
+        let mut text = format!("{}\n", self.summary);
+        for c in self.changes.iter().take(max_changes) {
+            text.push_str(&format!(
+                "  {:<8} {}",
+                c.action,
+                c.path.as_deref().unwrap_or("")
+            ));
+            if let Some(to) = &c.to {
+                text.push_str(&format!(" -> {to}"));
+            }
+            if let (Some(files), Some(bytes)) = (c.files, c.bytes) {
+                text.push_str(&format!("  ({files} file(s), {bytes} bytes)"));
+            }
+            if let Some(d) = &c.detail {
+                text.push_str(&format!("  [{d}]"));
+            }
+            text.push('\n');
+        }
+        if self.changes.len() > max_changes {
+            let more = self.changes.len() - max_changes;
+            text.push_str(&format!("  ... and {more} more\n"));
+        }
+        if !self.warnings.is_empty() {
+            text.push_str("Warnings:\n");
+            for w in &self.warnings {
+                text.push_str(&format!("  ! {}\n", w.message));
+            }
+        }
+        text
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -518,6 +554,118 @@ pub struct Revoked {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Done {
     pub ok: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadParams {
+    pub path: String,
+    /// First byte to read.
+    #[serde(default)]
+    pub offset: u64,
+    /// Bytes to read (default and most: 4 MiB).
+    #[serde(default)]
+    pub len: Option<u64>,
+}
+
+/// A byte range of a file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Chunk {
+    pub offset: u64,
+    /// The bytes, base64 (standard alphabet, padded).
+    pub data: String,
+    /// Nothing follows this range.
+    pub eof: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenderParams {
+    pub path: String,
+    /// PDF page, from 0.
+    #[serde(default)]
+    pub page: u32,
+    /// Longest side of an image (PDF: page width), 64..=2048 (default 1024).
+    #[serde(default)]
+    pub max_px: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderKind {
+    /// `text` holds it (code, Markdown, tables as tab-separated rows, documents, hex).
+    Text,
+    /// `png` holds it (images, a PDF page, a video frame).
+    Image,
+    /// Nothing to show; `message` says why (too large, unsupported, a missing helper).
+    None,
+}
+
+/// A preview rendered by the host, exactly as the desktop app's preview panel would.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Rendered {
+    pub kind: RenderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// PNG, base64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// PDF page count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u32>,
+    /// The text was cut short.
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Hex BLAKE3 content id when the library knows it (a cache key for clients).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThumbSize {
+    /// Fits 256 px.
+    #[default]
+    Thumb256,
+    /// Fits 1024 px.
+    Thumb1024,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThumbParams {
+    /// An image or video.
+    pub path: String,
+    #[serde(default)]
+    pub size: ThumbSize,
+}
+
+/// A media thumbnail from the sidecar store (made on first request).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Thumb {
+    /// `image/webp`.
+    pub mime: String,
+    /// The image, base64.
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+}
+
+/// A one-time download link.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FileLink {
+    /// `/file/<token>` on keel-daemon's `--web` address: works once, until `expires_at`.
+    pub url: String,
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub expires_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

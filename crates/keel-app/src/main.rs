@@ -3,9 +3,11 @@
 
 mod anim;
 mod app;
+mod bulk_rename;
 mod clipboard;
 mod clouds;
 mod crash;
+mod devices;
 mod dialogs;
 mod dropzone;
 mod icon_theme;
@@ -33,6 +35,7 @@ mod tab;
 mod term_pane;
 mod theme;
 mod toast;
+mod trash_ui;
 mod view_columns;
 mod view_details;
 mod view_grid;
@@ -64,7 +67,7 @@ fn main() -> eframe::Result<()> {
     // `keel <subcommand>`: no window, output on the shell's console.
     if let Some(cmd) = cli.command.clone() {
         #[cfg(windows)]
-        if cmd != cli::Command::Mcp {
+        if !matches!(cmd, cli::Command::Mcp { .. }) {
             keel_vfs::desktop::attach_parent_console();
         }
         tracing_subscriber::fmt()

@@ -501,3 +501,95 @@ fn move_to_remote_deletes_local_sources_permanently() {
         ["tree", "tree/a.txt", "tree/sub", "tree/sub/b.txt"]
     );
 }
+
+#[test]
+fn same_host_move_renames_on_the_server_and_never_reads() {
+    // Every read fails: only a server-side rename can succeed.
+    let f = fixture(Some(0));
+    fs::create_dir_all(f.a.join("dir/inner")).unwrap();
+    fs::create_dir(f.a.join("dest")).unwrap();
+    fs::write(f.a.join("dir/inner/go.txt"), b"go").unwrap();
+    fs::write(f.a.join("one.txt"), b"one").unwrap();
+    fs::write(f.a.join("dest/one.txt"), b"old").unwrap();
+    let last = RefCell::new(None);
+    transfer(
+        &[remote("a", "dir"), remote("a", "one.txt")],
+        &remote("a", "dest"),
+        true,
+        Conflict::Overwrite,
+        &|p: Progress| *last.borrow_mut() = Some(p),
+        &AtomicBool::new(false),
+        &f.router,
+    )
+    .unwrap();
+    assert_eq!(
+        tree(&f.a),
+        [
+            "dest",
+            "dest/dir",
+            "dest/dir/inner",
+            "dest/dir/inner/go.txt",
+            "dest/one.txt"
+        ]
+    );
+    assert_eq!(fs::read(f.a.join("dest/one.txt")).unwrap(), b"one");
+    let p = last.borrow().clone().unwrap();
+    assert_eq!((p.done_items, p.total_items), (4, 4));
+    assert_eq!((p.done_bytes, p.total_bytes), (5, 5));
+}
+
+#[test]
+fn same_host_move_keeps_conflict_semantics() {
+    let f = fixture(Some(0));
+    fs::create_dir(f.a.join("dest")).unwrap();
+    fs::write(f.a.join("x.txt"), b"new").unwrap();
+    fs::write(f.a.join("dest/x.txt"), b"old").unwrap();
+    run(
+        &f,
+        &[remote("a", "x.txt")],
+        &remote("a", "dest"),
+        true,
+        Conflict::Skip,
+    )
+    .unwrap();
+    assert_eq!(fs::read(f.a.join("x.txt")).unwrap(), b"new");
+    assert_eq!(fs::read(f.a.join("dest/x.txt")).unwrap(), b"old");
+    run(
+        &f,
+        &[remote("a", "x.txt")],
+        &remote("a", "dest"),
+        true,
+        Conflict::RenameNew,
+    )
+    .unwrap();
+    assert!(!f.a.join("x.txt").exists());
+    assert_eq!(fs::read(f.a.join("dest/x (2).txt")).unwrap(), b"new");
+}
+
+#[test]
+fn cross_host_move_still_streams() {
+    let f = fixture(Some(0));
+    fs::write(f.a.join("one.txt"), b"one").unwrap();
+    // Reads fail, so the streaming path surfaces it; the source stays.
+    assert!(run(
+        &f,
+        &[remote("a", "one.txt")],
+        &remote("b", ""),
+        true,
+        Conflict::Skip
+    )
+    .is_err());
+    assert_eq!(tree(&f.a), ["one.txt"]);
+    let f = fixture(None);
+    fs::write(f.a.join("one.txt"), b"one").unwrap();
+    run(
+        &f,
+        &[remote("a", "one.txt")],
+        &remote("b", ""),
+        true,
+        Conflict::Skip,
+    )
+    .unwrap();
+    assert!(tree(&f.a).is_empty());
+    assert_eq!(fs::read(f.b.join("one.txt")).unwrap(), b"one");
+}

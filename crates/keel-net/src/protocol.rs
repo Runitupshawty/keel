@@ -1,6 +1,7 @@
 use crate::{wire, *};
 use anyhow::{bail, ensure, Result};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
+use std::time::Duration;
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +23,7 @@ fn idempotent(req: &Request) -> bool {
             | Request::Stat { .. }
             | Request::Read { .. }
             | Request::Grants
+            | Request::DropStatus { .. }
     )
 }
 
@@ -65,15 +67,21 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         })
     };
     match req {
-        Request::Ping | Request::ListSources | Request::Grants => true,
-        Request::List { source, path }
+        Request::Ping
+        | Request::ListSources
+        | Request::Grants
+        | Request::DropOffer { .. }
+        | Request::DropStatus { .. }
+        | Request::DropCancel { .. } => true,
+        Request::List { source, path, .. }
         | Request::Stat { source, path }
         | Request::Read { source, path, .. } => check(source, path, false),
         Request::Mkdir { source, path } => check(source, path, true),
-        // The granted root itself cannot be replaced, removed or renamed.
-        Request::Write { source, path, .. } | Request::Remove { source, path } => {
-            inside(source, path)
-        }
+        // The granted root itself cannot be replaced, removed or renamed (and so has
+        // no resumable partial write either).
+        Request::Write { source, path, .. }
+        | Request::StatPartial { source, path }
+        | Request::Remove { source, path } => inside(source, path),
         Request::Rename { source, from, to } => inside(source, from) && inside(source, to),
     }
 }
@@ -104,10 +112,10 @@ impl Node {
                         let allowed = {
                             let state = node.state.lock();
                             !state.closed && !cancel.is_cancelled() && state.data.peers.iter().any(|r| r.peer.id == peer)
-                                && permitted(&state.data.grants,peer,&req)
+                                && (permitted(&state.data.grants,peer,&req) || node.drop_permits(peer, &req))
                         };
                         tracing::debug!(peer = %peer.0, what = req.name(), allowed, "net request");
-                        node.emit(NetEvent::Request { peer, what: req.name().into() });
+                        node.emit_request(peer, req.name());
                         if !allowed { wire::send(&mut send, &Response::Denied("grant required".into())).await?; return Ok(()); }
                         node.answer(peer,req,&mut send,recv).await
                     } => result,
@@ -124,14 +132,27 @@ impl Node {
         recv: RecvStream,
     ) -> Result<()> {
         let mut body_started = false;
+        let ctx = RequestCtx {
+            peer,
+            label: self
+                .state
+                .lock()
+                .data
+                .peers
+                .iter()
+                .find(|r| r.peer.id == peer)
+                .map(|r| r.peer.label.clone())
+                .unwrap_or_default(),
+        };
+        let h = &self.handler;
         let response: Result<Response> = async {
             Ok(match req {
                 Request::Ping => Response::Pong {
                     label: self.label(),
-                    storage: self.handler.storage().await,
+                    storage: h.storage(&ctx).await,
                 },
                 Request::ListSources => {
-                    let mut sources = self.handler.sources().await;
+                    let mut sources = h.sources(&ctx).await;
                     let state = self.state.lock();
                     sources.retain(|s| {
                         state
@@ -148,18 +169,33 @@ impl Node {
                         .filter(|g| g.peer == peer)
                         .collect(),
                 ),
-                Request::List { source, path } => {
-                    Response::Entries(self.handler.list(&source, &path).await?)
+                Request::List {
+                    source,
+                    path,
+                    after,
+                    limit,
+                } => {
+                    // ponytail: the Handler lists the whole folder for every page; a
+                    // Handler-side cursor if huge folders over slow links matter.
+                    let mut entries = h.list(&ctx, &source, &path).await?;
+                    entries.sort_by(|a, b| a.name.cmp(&b.name));
+                    if let Some(after) = after {
+                        entries.retain(|e| e.name > after);
+                    }
+                    let limit = limit.clamp(1, PAGE_LIMIT) as usize;
+                    let more = entries.len() > limit;
+                    entries.truncate(limit);
+                    Response::Entries { entries, more }
                 }
                 Request::Stat { source, path } => {
-                    Response::Entry(self.handler.stat(&source, &path).await?)
+                    Response::Entry(h.stat(&ctx, &source, &path).await?)
                 }
                 Request::Read {
                     source,
                     path,
                     range,
                 } => {
-                    let info = self.handler.stat(&source, &path).await?;
+                    let info = h.stat(&ctx, &source, &path).await?;
                     ensure!(!info.is_dir, "cannot read directory");
                     let (offset, length) = range.unwrap_or((0, info.size));
                     ensure!(
@@ -167,10 +203,7 @@ impl Node {
                         "invalid range"
                     );
                     let size = length.min(info.size - offset);
-                    let body = self
-                        .handler
-                        .read(&source, &path, Some((offset, size)))
-                        .await?;
+                    let body = h.read(&ctx, &source, &path, Some((offset, size))).await?;
                     wire::send(send, &Response::Read { size }).await?;
                     body_started = true;
                     let mut body = wire::ExactReader::new(body, size);
@@ -179,30 +212,60 @@ impl Node {
                     wire::copy_idle(&mut body, send, self.options.request_timeout).await?;
                     return Ok(Response::Read { size });
                 }
-                Request::Write { source, path, size } => {
-                    self.handler
-                        .write(
-                            &source,
-                            &path,
-                            Box::new(wire::IdleReader::new(
-                                wire::ExactReader::new(recv, size),
-                                self.options.request_timeout,
-                            )),
-                            size,
-                        )
-                        .await?;
+                Request::DropOffer { id, files } => self.drop_offer(&ctx, &id, files).await?,
+                Request::DropStatus { id } => {
+                    // A short wait, well inside the sender's request timeout.
+                    let wait = (self.options.request_timeout / 4).min(Duration::from_secs(5));
+                    self.drop_status(&ctx, &id, wait).await?
+                }
+                Request::DropCancel { id } => {
+                    self.drop_cancel(&ctx, &id).await;
                     Response::Ok
                 }
+                Request::Write {
+                    source,
+                    path,
+                    offset,
+                    size,
+                    final_,
+                    expect,
+                } => {
+                    ensure!(offset.checked_add(size).is_some(), "invalid range");
+                    let at = WriteAt {
+                        offset,
+                        size,
+                        final_,
+                        expect,
+                    };
+                    let body = Box::new(wire::IdleReader::new(
+                        wire::ExactReader::new(recv, size),
+                        self.options.request_timeout,
+                    ));
+                    match source.strip_prefix(crate::spacedrop::SOURCE) {
+                        Some(id) => self.drop_piece(&ctx, id, &path, body, at).await?,
+                        None => h.write(&ctx, &source, &path, body, at).await?,
+                    }
+                    Response::Ok
+                }
+                Request::StatPartial { source, path } => {
+                    match source.strip_prefix(crate::spacedrop::SOURCE) {
+                        Some(id) => self.drop_partial(peer, id, &path)?,
+                        None => Response::Partial {
+                            len: h.stat_partial(&ctx, &source, &path).await?,
+                            complete: false,
+                        },
+                    }
+                }
                 Request::Mkdir { source, path } => {
-                    self.handler.mkdir(&source, &path).await?;
+                    h.mkdir(&ctx, &source, &path).await?;
                     Response::Ok
                 }
                 Request::Rename { source, from, to } => {
-                    self.handler.rename(&source, &from, &to).await?;
+                    h.rename(&ctx, &source, &from, &to).await?;
                     Response::Ok
                 }
                 Request::Remove { source, path } => {
-                    self.handler.remove(&source, &path).await?;
+                    h.remove(&ctx, &source, &path).await?;
                     Response::Ok
                 }
             })
@@ -320,25 +383,39 @@ impl Node {
         )
         .await?
     }
-    /// Streams exactly `size` bytes. The body must then reach EOF. A denied request
-    /// stops uploading immediately. Hosts must stage writes (see `Handler`).
+    /// Pushes one piece of a file (see `WriteAt`): streams exactly `at.size` bytes of
+    /// `body`, which must then reach EOF. A denied request stops uploading immediately.
+    /// A whole file in one go is `WriteAt { offset: 0, size, final_: true, expect }`.
     pub async fn write_stream(
         &self,
         peer: &PeerId,
         source: &str,
         path: &str,
         body: Box<dyn AsyncRead + Send + Unpin>,
-        size: u64,
+        at: WriteAt,
     ) -> Result<Response> {
         let req = Request::Write {
             source: source.into(),
             path: path.into(),
-            size,
+            offset: at.offset,
+            size: at.size,
+            final_: at.final_,
+            expect: at.expect,
         };
+        self.body_request(peer, &req, body, at.size).await
+    }
+    /// Sends `req` followed by exactly `size` bytes of `body`.
+    pub(crate) async fn body_request(
+        &self,
+        peer: &PeerId,
+        req: &Request,
+        body: Box<dyn AsyncRead + Send + Unpin>,
+        size: u64,
+    ) -> Result<Response> {
         let (_conn, mut send, mut recv) =
             tokio::time::timeout(self.options.request_timeout, async {
                 let (conn, mut send, recv) = self.open_stream(peer).await?;
-                wire::send(&mut send, &req).await?;
+                wire::send(&mut send, req).await?;
                 Ok::<_, anyhow::Error>((conn, send, recv))
             })
             .await??;
@@ -404,7 +481,14 @@ mod tests {
         let write = |path: &str| Request::Write {
             source: "docs".into(),
             path: path.into(),
+            offset: 0,
             size: 0,
+            final_: true,
+            expect: None,
+        };
+        let partial = |path: &str| Request::StatPartial {
+            source: "docs".into(),
+            path: path.into(),
         };
         let rename = |from: &str, to: &str| Request::Rename {
             source: "docs".into(),
@@ -414,10 +498,12 @@ mod tests {
         let shared = [grant("shared")];
         assert!(!permitted(&shared, peer, &remove("shared")));
         assert!(!permitted(&shared, peer, &write("shared")));
+        assert!(!permitted(&shared, peer, &partial("shared")));
         assert!(!permitted(&shared, peer, &rename("shared", "shared/x")));
         assert!(!permitted(&shared, peer, &rename("shared/x", "shared")));
         assert!(permitted(&shared, peer, &remove("shared/x")));
         assert!(permitted(&shared, peer, &write("shared/x")));
+        assert!(permitted(&shared, peer, &partial("shared/x")));
         assert!(permitted(&shared, peer, &rename("shared/x", "shared/y")));
         let whole = [grant("")];
         assert!(!permitted(&whole, peer, &remove("")));

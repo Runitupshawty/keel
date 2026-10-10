@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "keel-search"
 version.workspace = true
 edition.workspace = true
@@ -10,17 +11,16 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+directories.workspace = true
 ignore.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
+notify.workspace = true
 nucleo.workspace = true
-# Regex name patterns for the home-folder walk.
+parking_lot.workspace = true
+# Regex name patterns for the home-folder walk and the persistent name index.
 regex = "1"
+rusqlite.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
-parking_lot.workspace = true
-directories.workspace = true
-notify.workspace = true
-regex.workspace = true
-rusqlite.workspace = true
 windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }

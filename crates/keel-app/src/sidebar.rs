@@ -27,6 +27,10 @@ pub struct Sidebar {
     pub remotes: Vec<crate::sidebar_remotes::RemoteRow>,
     /// Configured cloud accounts, rebuilt each frame by the state.
     pub clouds: Vec<crate::sidebar_remotes::CloudRow>,
+    /// Paired devices (None while devices are not running), rebuilt each frame.
+    pub devices: Option<Vec<crate::devices::DeviceRow>>,
+    /// Why devices are not running.
+    pub devices_note: Option<String>,
 }
 
 impl Default for Sidebar {
@@ -48,6 +52,12 @@ impl Default for Sidebar {
                 }
             }
         }
+        if keel_vfs::trashbin::SUPPORTED {
+            quick.push((
+                keel_vfs::trashbin::label().to_owned(),
+                keel_vfs::trashbin::root(),
+            ));
+        }
         Self {
             quick,
             drives: Vec::new(),
@@ -56,6 +66,8 @@ impl Default for Sidebar {
             drives_stuck: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
+            devices: None,
+            devices_note: None,
         }
     }
 }
@@ -174,6 +186,16 @@ impl Sidebar {
             ui.add_space(8.0);
             section(ui, "Cloud", theme);
             crate::sidebar_remotes::cloud_ui(ui, &self.clouds, current, out);
+            ui.add_space(8.0);
+            section(ui, "Devices", theme);
+            crate::devices::sidebar(
+                ui,
+                self.devices.as_deref(),
+                self.devices_note.as_deref(),
+                current,
+                theme.accent(),
+                out,
+            );
         });
     }
 }

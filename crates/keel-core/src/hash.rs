@@ -199,7 +199,13 @@ pub fn on_battery() -> bool {
 
 /// Returns once the app is idle (and not on battery, unless that is allowed); `battery`
 /// caches the last reading. `Err(Cancelled)` when the job is asked to stop.
-pub(crate) fn wait_until_idle(ctx: &JobCtx, battery: &mut Option<(Instant, bool)>) -> Result<()> {
+/// Waits while the user is active (`on_activity`) or the machine runs on battery (when the
+/// library pauses on battery).
+pub(crate) fn wait_until_idle(
+    ctx: &JobCtx,
+    battery: &mut Option<(Instant, bool)>,
+    on_activity: bool,
+) -> Result<()> {
     loop {
         if ctx.stopping() {
             return Err(Cancelled.into());
@@ -213,7 +219,8 @@ pub(crate) fn wait_until_idle(ctx: &JobCtx, battery: &mut Option<(Instant, bool)
                 v
             }
         };
-        let busy = lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
+        let busy = (on_activity && lib.busy())
+            || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
         if !busy {
             return Ok(());
         }
@@ -277,7 +284,8 @@ impl HashJob {
     }
 
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        wait_until_idle(ctx, &mut self.battery)
+        let on_activity = ctx.lib.hash_on_activity.load(Ordering::SeqCst);
+        wait_until_idle(ctx, &mut self.battery, on_activity)
     }
 
     fn progress(&self) -> f32 {
@@ -653,7 +661,8 @@ impl Library {
         schedule(&self.shared)
     }
 
-    /// Tells hashing the user is busy: it pauses for the next 5 s (call it on input).
+    /// Tells the background jobs the user is busy (call it on every input): sidecar and
+    /// integrity jobs pause for the next 5 s, hashing too unless `set_hash_idle_only(false)`.
     pub fn note_activity(&self) {
         let until = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -663,13 +672,24 @@ impl Library {
         self.shared.busy_until.fetch_max(until, Ordering::SeqCst);
     }
 
+    /// Whether hashing pauses on user activity like the other background jobs (default on;
+    /// off: it runs through input, the "pause on battery" / "always" policies).
+    pub fn set_hash_idle_only(&self, on: bool) {
+        self.shared.hash_on_activity.store(on, Ordering::SeqCst);
+    }
+
+    /// Whether `note_activity` was called within the last 5 s (background jobs pause).
+    pub fn user_active(&self) -> bool {
+        self.shared.busy()
+    }
+
     /// Whether hashing pauses on battery power (default on).
     pub fn set_pause_on_battery(&self, pause: bool) {
         self.shared.pause_on_battery.store(pause, Ordering::SeqCst);
     }
 
     /// Groups of two or more files of at least `min_size` bytes with the same content id,
-    /// across every source; biggest first. Hard links of one file count as one file.
+    /// across every source but device sources; biggest first. Hard links of one file count as one file.
     pub fn duplicates(&self, min_size: u64) -> Result<Vec<DupGroup>> {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         // A private on-disk scratch database (SQLite spills it to a temp file).
@@ -678,12 +698,17 @@ impl Library {
             "CREATE TABLE c(cas BLOB, src INTEGER, id INTEGER, size INTEGER, file TEXT)",
         )?;
         for (i, s) in sources.iter().enumerate() {
+            // A device's claims are not copies (nor files "Keep one" may weigh).
+            if s.is_device() {
+                continue;
+            }
             let path = s.store_dir().join("source.db");
             scratch.execute("ATTACH DATABASE ?1 AS s", [path.to_string_lossy()])?;
             let copied = scratch.execute(
                 "INSERT INTO c SELECT cas_id, ?1, id, size,
                      CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id ELSE ?1 || ':' || id END
-                 FROM s.record WHERE kind = 0 AND cas_id IS NOT NULL AND size >= ?2 ORDER BY id",
+                 FROM s.record WHERE kind = 0 AND cas_id IS NOT NULL AND drift IS NULL
+                     AND size >= ?2 ORDER BY id",
                 params![i as i64, min_size as i64],
             );
             scratch.execute("DETACH DATABASE s", [])?;

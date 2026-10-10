@@ -387,15 +387,7 @@ pub(crate) fn cached_download(
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part.as_bytes());
     }
-    let root = dirs::cache_dir()
-        .context("cache directory unavailable")?
-        // Spec 2.9 cache folder: `Keel` on Windows/macOS, `keel` on Linux.
-        .join(if cfg!(target_os = "linux") {
-            "keel"
-        } else {
-            "Keel"
-        })
-        .join("remote");
+    let root = crate::cache_dir().join("remote");
     let cache = root.join(namespace).join(format!("{:x}", hash.finalize()));
     fs::create_dir_all(&cache)?;
     let target = cache.join(local_name(p.name()));
@@ -452,6 +444,27 @@ pub(crate) fn cached_download(
     Ok(target)
 }
 
+impl SftpProvider {
+    /// A reader starting at byte `offset` (SFTP reads name their offset).
+    fn read_from(&self, p: &VPath, offset: u64) -> Result<Box<dyn Read + Send>> {
+        self.call(p, async |s| {
+            let handle = s
+                .raw
+                .open(&p.path, OpenFlags::READ, FileAttributes::empty())
+                .await
+                .map_err(wire_error)?
+                .handle;
+            Ok(Box::new(RemoteReader {
+                pool: self.conn.clone(),
+                session: s,
+                handle: Some(handle),
+                offset,
+                path: p.clone(),
+            }) as Box<dyn Read + Send>)
+        })
+    }
+}
+
 impl Provider for SftpProvider {
     fn scheme(&self) -> &'static str {
         "sftp"
@@ -497,21 +510,10 @@ impl Provider for SftpProvider {
         })
     }
     fn read(&self, p: &VPath) -> Result<Box<dyn Read + Send>> {
-        self.call(p, async |s| {
-            let handle = s
-                .raw
-                .open(&p.path, OpenFlags::READ, FileAttributes::empty())
-                .await
-                .map_err(wire_error)?
-                .handle;
-            Ok(Box::new(RemoteReader {
-                pool: self.conn.clone(),
-                session: s,
-                handle: Some(handle),
-                offset: 0,
-                path: p.clone(),
-            }) as Box<dyn Read + Send>)
-        })
+        self.read_from(p, 0)
+    }
+    fn read_range(&self, p: &VPath, offset: u64, len: u64) -> Result<Option<Box<dyn Read + Send>>> {
+        Ok(Some(Box::new(self.read_from(p, offset)?.take(len))))
     }
     /// An `SftpUpload`: `flush()` commits it (see `Provider::write`).
     fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {

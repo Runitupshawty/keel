@@ -11,7 +11,7 @@ use crate::pane::Pane;
 use crate::preview_panel::{PreviewKey, PreviewPanel};
 use crate::search_tab::DEBOUNCE;
 use crate::session::Session;
-use crate::settings::Settings;
+use crate::settings::{ArchiveFormat, Settings};
 use crate::sidebar::{Drive, Sidebar, DRIVES_REFRESH, DRIVES_TIMEOUT};
 use crate::tab::{Listing, Tab, TabKind};
 use crate::theme::{Theme, Themes};
@@ -77,6 +77,12 @@ pub enum Msg {
         preview: keel_preview::Preview,
     },
     Toast(String),
+    /// A bulk rename (or its undo) finished.
+    BulkDone {
+        outcome: crate::bulk_rename::Outcome,
+        total: usize,
+        undo: bool,
+    },
     Preview {
         key: PreviewKey,
         preview: keel_preview::Preview,
@@ -148,16 +154,24 @@ pub enum Msg {
         paths: Vec<VPath>,
         info: Result<crate::dialogs::properties::Props, String>,
     },
-    /// Linux "Open with": the applications for `path`.
+    /// Open with…: the applications the system knows for `paths` (local copies).
     OpenWithApps {
-        path: std::path::PathBuf,
+        paths: Vec<std::path::PathBuf>,
         apps: Vec<(String, String)>,
+    },
+    /// Browse… answered: open `paths` with `app`.
+    OpenWithChosen {
+        paths: Vec<std::path::PathBuf>,
+        app: String,
+        remember: bool,
     },
     // --- Task 24 ---
     /// A later `keel` run handed over its command line (single instance).
     External(crate::cli::Request),
     // --- Task 29 ---
     Library(crate::library::LibMsg),
+    // --- Task 36 ---
+    Devices(crate::devices::DevMsg),
 }
 
 /// The folder a watcher was requested for, and the live watcher (held for its `Drop`).
@@ -193,6 +207,8 @@ pub struct AppState {
     /// here or, on Windows, in another app).
     pub archive_clip: Option<ArchiveSrc>,
     pub dialog: Option<Dialog>,
+    /// Steps of the last bulk rename, undone by `UndoBulkRename` until the next operation.
+    pub bulk_undo: Vec<(VPath, VPath)>,
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
@@ -231,6 +247,8 @@ pub struct AppState {
     pub dropzone: crate::dropzone::DropZone,
     /// Task 29: the library (opened by the app, see `library.rs`).
     pub library: crate::library::LibraryUi,
+    /// Task 36: paired devices, shares and Spacedrop (`devices.rs`).
+    pub devices: crate::devices::Devices,
     // --- Task 32 ---
     /// Media view sidecar textures and their workers (`media.rs`).
     pub media: crate::media::Media,
@@ -281,6 +299,7 @@ impl AppState {
         let previewer = worker::spawn_previewer(router.clone(), tx.clone(), ctx.clone());
         let jump = Jump::new(tx.clone(), ctx.clone());
         let library = crate::library::LibraryUi::new(&router, tx.clone(), ctx.clone());
+        let devices = crate::devices::Devices::new(tx.clone(), ctx.clone());
         let mut panes = session
             .panes
             .into_iter()
@@ -325,6 +344,7 @@ impl AppState {
             cut_job: None,
             archive_clip: None,
             dialog: None,
+            bulk_undo: Vec::new(),
             settings,
             settings_open: false,
             remotes,
@@ -348,6 +368,7 @@ impl AppState {
             shown: [None, None],
             dropzone: Default::default(),
             library,
+            devices,
             media,
             viewer: None,
         };
@@ -387,6 +408,7 @@ impl AppState {
             &self.tx,
             self.searcher.as_ref().map(|x| x.name()), // Task 24
             &mut self.library,
+            &self.devices,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -589,6 +611,34 @@ impl AppState {
             }
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
+            Msg::BulkDone {
+                outcome,
+                total,
+                undo,
+            } => {
+                let verb = if undo { "Restored" } else { "Renamed" };
+                let (text, ok) = crate::bulk_rename::summary(&outcome, total, verb);
+                if !undo && outcome.renamed > 0 {
+                    self.bulk_undo = crate::bulk_rename::undo_steps(&outcome.done);
+                }
+                match (ok, undo || outcome.renamed == 0) {
+                    (true, false) => self.toasts.offer(text, "Undo", Action::UndoBulkRename),
+                    (true, true) => self.toasts.info(text),
+                    (false, false) => self
+                        .toasts
+                        .with_action(text, "Undo", Action::UndoBulkRename),
+                    (false, true) => self.toasts.error(text),
+                }
+                let dirs: std::collections::HashSet<VPath> = outcome
+                    .done
+                    .iter()
+                    .flat_map(|(a, b)| [a.parent(), b.parent()])
+                    .flatten()
+                    .collect();
+                for dir in dirs {
+                    self.apply(Msg::Changed { dir });
+                }
+            }
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
             Msg::JobDone { id, result } => {
                 if let Some((job, src)) = self.cut_job.take() {
@@ -736,14 +786,27 @@ impl AppState {
                     }
                 }
             }
-            Msg::OpenWithApps { path, apps } => {
+            Msg::OpenWithApps { paths, apps } => {
                 if self.dialog.is_none() {
-                    self.dialog = Some(Dialog::OpenWith { path, apps });
+                    let ext = ext_of(&paths[0]);
+                    let recent = self.settings.open_with.recent(&ext).to_vec();
+                    self.dialog = Some(Dialog::OpenWith {
+                        paths,
+                        recent,
+                        apps,
+                        remember: true,
+                    });
                 }
             }
+            Msg::OpenWithChosen {
+                paths,
+                app,
+                remember,
+            } => self.open_with_app(paths, app, remember),
             // --- Task 24 ---
             Msg::External(req) => self.external(req),
             Msg::Library(msg) => self.library_msg(msg),
+            Msg::Devices(msg) => self.devices_msg(msg),
         }
     }
 
@@ -1106,6 +1169,7 @@ impl AppState {
         self.media_tick(); // Task 32
         self.remote_tick();
         self.cloud_tick();
+        self.devices_tick();
         let cwd = self.panes[self.active].tab().dir.to_local_path();
         self.terminal
             .follow(cwd, &self.settings, &self.tx, &self.ctx);
@@ -1265,6 +1329,13 @@ impl AppState {
         // Targets come from the visible rows; make sure they match this listing.
         let show_hidden = self.show_hidden;
         self.tab_mut(p).visible(show_hidden);
+        let in_trash = self.tab(p).is_trash();
+        if crate::trash_ui::refuses(&action, in_trash) {
+            return self.toasts.error(format!(
+                "The {} is read-only; restore items to work with them",
+                keel_vfs::trashbin::label()
+            ));
+        }
         if self.writes_into_archive(p, &action) {
             return self.toasts.error(READ_ONLY);
         }
@@ -1280,6 +1351,24 @@ impl AppState {
         let Some(action) = self.library_intercept(p, action) else {
             return;
         };
+        // The undo is only good until the next operation.
+        if matches!(
+            action,
+            Action::Copy
+                | Action::Cut
+                | Action::Paste
+                | Action::Delete
+                | Action::Trash(_)
+                | Action::DeleteRemote(_)
+                | Action::StartTransfer { .. }
+                | Action::Drop { .. }
+                | Action::Create { .. }
+                | Action::RenameTo { .. }
+                | Action::ZipTo { .. }
+                | Action::AddToZip
+        ) {
+            self.bulk_undo.clear();
+        }
         match action {
             Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
@@ -1432,34 +1521,59 @@ impl AppState {
                 });
             }
             Action::OpenWith => {
-                if let Some(e) = self.tab(p).targets().first() {
-                    let path = e.path.clone();
-                    if cfg!(target_os = "linux") {
-                        // No system picker on Linux: list the apps for an in-app one.
-                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                        let router = self.router.clone();
-                        worker::spawn("keel-open-with", move || {
-                            let found = crate::remotes::materialise(&router, &path, &tx, &ctx)
-                                .and_then(|local| {
-                                    let apps = platform::apps_for(&local)?;
-                                    Ok((local, apps))
-                                });
-                            let msg = match found {
-                                Ok((path, apps)) => Msg::OpenWithApps { path, apps },
-                                Err(e) => Msg::Toast(format!("Open with: {e:#}")),
-                            };
-                            worker::send(&tx, &ctx, msg);
-                        });
-                    } else {
-                        self.launch(path, platform::open_with);
-                    }
-                }
+                // Keel's picker: the system's apps for the first file (a worker lists them).
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                self.with_local_targets(p, move |paths| {
+                    let apps = platform::apps_for(&paths[0]).unwrap_or_default();
+                    worker::send(&tx, &ctx, Msg::OpenWithApps { paths, apps });
+                });
             }
-            Action::LaunchWith { id, path } => {
+            Action::OpenWithApp {
+                paths,
+                app,
+                remember,
+            } => self.open_with_app(paths, app, remember),
+            Action::OpenWithBrowse { paths, remember } => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                // The OS dialog blocks: never on the UI thread.
+                worker::spawn("keel-pick", move || {
+                    let mut dialog = rfd::FileDialog::new().set_title("Open with");
+                    if cfg!(windows) {
+                        dialog = dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
+                    } else if cfg!(target_os = "macos") {
+                        dialog = dialog.set_directory("/Applications");
+                    }
+                    if let Some(app) = dialog.pick_file() {
+                        let app = app.to_string_lossy().into_owned();
+                        let msg = Msg::OpenWithChosen {
+                            paths,
+                            app,
+                            remember,
+                        };
+                        worker::send(&tx, &ctx, msg);
+                    }
+                });
+            }
+            #[cfg(windows)]
+            Action::OpenWithSystem(path) => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-launch", move || {
-                    if let Err(e) = platform::launch_with(&id, &path) {
-                        worker::send(&tx, &ctx, Msg::Toast(format!("{id}: {e}")));
+                    if let Err(e) = platform::open_with_chooser(&path) {
+                        worker::send(&tx, &ctx, Msg::Toast(format!("Open with: {e}")));
+                    }
+                });
+            }
+            #[cfg(not(windows))]
+            Action::OpenWithSystem(_) => {}
+            Action::OpenWithRecent(app) => {
+                if let Some(ext) = self.tab(p).targets().first().map(|e| e.ext.clone()) {
+                    self.settings.open_with.remember(&ext, &app);
+                }
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                self.with_local_targets(p, move |paths| {
+                    if let Err(e) = platform::open_with(&app, &paths) {
+                        let label = platform::app_label(&app);
+                        worker::send(&tx, &ctx, Msg::Toast(format!("{label}: {e}")));
                     }
                 });
             }
@@ -1513,8 +1627,98 @@ impl AppState {
                 let Some(dir) = from.parent() else { return };
                 self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
             }
+            Action::BulkRename => {
+                let tab = self.tab(p);
+                let targets = tab.targets();
+                if targets.is_empty() {
+                    return self.toasts.info("Select the items to rename");
+                }
+                let picked: std::collections::HashSet<&VPath> =
+                    targets.iter().map(|e| &e.path).collect();
+                let items: Vec<crate::bulk_rename::Item> = targets
+                    .iter()
+                    .map(|e| crate::bulk_rename::Item {
+                        path: e.path.clone(),
+                        name: e.name.clone(),
+                        is_dir: e.kind == Kind::Dir,
+                        modified: e.modified,
+                    })
+                    .collect();
+                // Untouched siblings a new name could collide with (a search tab lists
+                // many folders; a clash there is caught by the rename itself).
+                let others: Vec<(VPath, String)> = tab
+                    .entries()
+                    .iter()
+                    .filter(|e| !picked.contains(&e.path))
+                    .filter_map(|e| Some((e.path.parent()?, e.name.clone())))
+                    .collect();
+                self.dialog = Some(Dialog::BulkRename(Box::new(
+                    crate::bulk_rename::BulkRename::new(items, others),
+                )));
+            }
+            Action::BulkRenameApply { renames } => {
+                if let Some(why) = renames.iter().find_map(|(_, n)| dialogs::invalid_name(n)) {
+                    return self.toasts.error(why);
+                }
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                let total = renames.len();
+                worker::spawn("keel-bulk-rename", move || {
+                    let rename = |a: &VPath, b: &VPath| {
+                        router
+                            .provider_for(a)
+                            .ok_or_else(|| anyhow::anyhow!("no provider for {}", a.display()))
+                            .and_then(|p| p.rename(a, b))
+                    };
+                    let fold = cfg!(any(windows, target_os = "macos"));
+                    let outcome = crate::bulk_rename::execute(&renames, fold, rename);
+                    worker::send(
+                        &tx,
+                        &ctx,
+                        Msg::BulkDone {
+                            outcome,
+                            total,
+                            undo: false,
+                        },
+                    );
+                });
+            }
+            Action::UndoBulkRename => {
+                let steps = std::mem::take(&mut self.bulk_undo);
+                if steps.is_empty() {
+                    return self.toasts.info("Nothing to undo");
+                }
+                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-bulk-undo", move || {
+                    let total = steps.len();
+                    let outcome = crate::bulk_rename::run_steps(&steps, |a, b| {
+                        router
+                            .provider_for(a)
+                            .ok_or_else(|| anyhow::anyhow!("no provider for {}", a.display()))
+                            .and_then(|p| p.rename(a, b))
+                    });
+                    worker::send(
+                        &tx,
+                        &ctx,
+                        Msg::BulkDone {
+                            outcome,
+                            total,
+                            undo: true,
+                        },
+                    );
+                });
+            }
             Action::Delete => {
                 let paths = self.target_paths(p);
+                if paths
+                    .first()
+                    .is_some_and(|p| p.scheme == keel_vfs::trashbin::SCHEME)
+                {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::trash_ui::delete_text(paths.len()),
+                        on_yes: Action::PurgeTrash(paths),
+                    });
+                    return;
+                }
                 let remote = paths.first().filter(|p| p.scheme == "sftp");
                 let cloud = paths.first().filter(|p| p.scheme == "cloud");
                 let cloud = cloud.map(|p| (p, self.clouds.account(&p.authority)));
@@ -1542,6 +1746,32 @@ impl AppState {
                         on_yes: Action::Trash(paths),
                     });
                 }
+            }
+            Action::RestoreTrash => {
+                let paths = self.target_paths(p);
+                if !paths.is_empty() {
+                    self.jobs
+                        .trash_op(jobs::TrashOp::Restore(paths), self.tx.clone());
+                }
+            }
+            Action::PurgeTrash(paths) => {
+                self.jobs
+                    .trash_op(jobs::TrashOp::Purge(paths), self.tx.clone());
+            }
+            Action::EmptyTrash => {
+                let n = self.tab(p).entries().len();
+                if n == 0 {
+                    self.toasts
+                        .info(format!("The {} is empty", keel_vfs::trashbin::label()));
+                } else {
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::trash_ui::empty_text(n),
+                        on_yes: Action::EmptyTrashNow,
+                    });
+                }
+            }
+            Action::EmptyTrashNow => {
+                self.jobs.trash_op(jobs::TrashOp::Empty, self.tx.clone());
             }
             Action::DeleteRemote(paths) => {
                 self.jobs
@@ -1755,11 +1985,14 @@ impl AppState {
                         },
                     );
                 } else {
+                    let fmt = self.settings.archive.default_format;
                     self.dialog = Some(Dialog::ZipName {
                         dir,
                         src,
-                        text: name,
+                        text: fmt.apply(&name, ArchiveFormat::Zip),
                         focus: true,
+                        format: fmt,
+                        edited: false,
                     });
                 }
             }
@@ -1770,6 +2003,24 @@ impl AppState {
                 }
                 self.jobs.add_to_zip(zip, src, self.tx.clone());
             }
+            Action::CompressTo { zip, src, format } => {
+                self.settings.archive.default_format = format;
+                self.run(p, Action::ZipTo { zip, src });
+            }
+            Action::AddToArchive => {
+                let targets = self.tab(p).targets();
+                let Some((archive, others)) = jobs::add_target(&targets) else {
+                    return self
+                        .toasts
+                        .error("Select one zip, 7z, tar or tar.gz and the items to add beside it");
+                };
+                let (archive, src) = (
+                    archive.path.clone(),
+                    others.iter().map(|e| e.path.clone()).collect(),
+                );
+                self.confirm_add(archive, src);
+            }
+            Action::AddTo { archive, src } => self.confirm_add(archive, src),
             // --- Task 23 ---
             Action::ToggleDropZone
             | Action::StashSelection
@@ -1779,6 +2030,7 @@ impl AppState {
             | Action::ClearStash => crate::dropzone::run(self, p, action),
             // Handled by `library_intercept`.
             Action::Library(cmd) => self.library_cmd(p, cmd),
+            Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;
@@ -1788,11 +2040,33 @@ impl AppState {
         }
     }
 
+    /// Asks before adding `src` to the local archive `archive`; yes runs `ZipTo`.
+    fn confirm_add(&mut self, archive: VPath, src: Vec<VPath>) {
+        let (Some(zip), Some(src)) = (
+            archive.to_local_path(),
+            src.iter()
+                .map(VPath::to_local_path)
+                .collect::<Option<Vec<_>>>(),
+        ) else {
+            return self
+                .toasts
+                .error("Only local files can be added to an archive for now");
+        };
+        if src.is_empty() {
+            return;
+        }
+        self.dialog = Some(Dialog::Confirm {
+            text: format!("Add {} to \"{}\"?", jobs::items(src.len()), archive.name()),
+            on_yes: Action::ZipTo { zip, src },
+        });
+    }
+
     /// Writes refused inside archives (read-only in this version). A drag out of an
     /// archive that ends back in its own folder is not a write.
     fn writes_into_archive(&self, p: usize, action: &Action) -> bool {
         let inside = |dir: &VPath| dir.split_archive().is_some();
         match action {
+            Action::BulkRenameApply { renames } => renames.iter().any(|(f, _)| inside(f)),
             Action::Rename
             | Action::Delete
             | Action::Cut
@@ -1800,6 +2074,7 @@ impl AppState {
             | Action::NewFolder
             | Action::NewFile
             | Action::AddToZip
+            | Action::AddToArchive
             | Action::CompressToZip => inside(&self.tab(p).dir),
             Action::RenameTo { from: dir, .. }
             | Action::Create { dir, .. }
@@ -1944,6 +2219,9 @@ impl AppState {
         // with the OS message). Archives open as folders, in this tab.
         if e.encrypted {
             self.toasts.error(crate::preview_panel::LOCKED);
+        } else if e.kind == Kind::Dir && e.path.scheme == keel_vfs::trashbin::SCHEME {
+            self.toasts
+                .info(format!("Restore {} to open it", e.path.name()));
         } else if e.kind == Kind::Dir {
             self.run(p, Action::Navigate(e.path));
         } else if jobs::is_archive_file(&e) {
@@ -1951,6 +2229,51 @@ impl AppState {
         } else {
             self.launch(e.path, platform::open);
         }
+    }
+
+    /// Runs `f` on a worker with local copies of the selected files (folders are skipped).
+    /// Nothing happens when no file is selected.
+    fn with_local_targets(
+        &self,
+        p: usize,
+        f: impl FnOnce(Vec<std::path::PathBuf>) + Send + 'static,
+    ) {
+        let files: Vec<VPath> = (self.tab(p).targets().iter())
+            .filter(|e| e.kind != Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        if files.is_empty() {
+            return;
+        }
+        let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
+        worker::spawn("keel-open-with", move || {
+            let mut local = Vec::new();
+            for path in &files {
+                match crate::remotes::materialise(&router, path, &tx, &ctx) {
+                    Ok(l) => local.push(l),
+                    Err(e) => {
+                        let msg = Msg::Toast(format!("{}: {e:#}", path.display()));
+                        return worker::send(&tx, &ctx, msg);
+                    }
+                }
+            }
+            f(local);
+        });
+    }
+
+    /// Opens `paths` with `app` on a worker; `remember` files it under their extension.
+    fn open_with_app(&mut self, paths: Vec<std::path::PathBuf>, app: String, remember: bool) {
+        let Some(first) = paths.first() else { return };
+        if remember {
+            self.settings.open_with.remember(&ext_of(first), &app);
+        }
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-launch", move || {
+            if let Err(e) = platform::open_with(&app, &paths) {
+                let label = platform::app_label(&app);
+                worker::send(&tx, &ctx, Msg::Toast(format!("{label}: {e}")));
+            }
+        });
     }
 
     pub(crate) fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
@@ -1962,6 +2285,12 @@ impl AppState {
             f,
         );
     }
+}
+
+/// Lowercase extension without the dot ("" when none), as `Entry::ext`.
+fn ext_of(path: &std::path::Path) -> String {
+    path.extension()
+        .map_or_else(String::new, |e| e.to_string_lossy().to_lowercase())
 }
 
 #[cfg(test)]

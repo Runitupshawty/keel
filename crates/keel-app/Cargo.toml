@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "keel-app"
 version.workspace = true
 edition.workspace = true
@@ -36,12 +37,17 @@ keel-core = { path = "../keel-core" }
 keel-api = { path = "../keel-api" }
 keel-preview = { path = "../keel-preview" }
 keel-term = { path = "../keel-term" }
+keel-net = { path = "../keel-net" }
+# The keel-net node's runtime; pairing QR codes (no image/svg renderers).
+tokio.workspace = true
+qrcode = { version = "0.14", default-features = false }
 vt100.workspace = true
 directories = "5"
 open = "5"
 humansize = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 natord = "1"
+regex.workspace = true
 # No http loader: Markdown previews must not fetch remote images.
 egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
 ignore.workspace = true

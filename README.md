@@ -6,20 +6,21 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.6.0)
+## What works (v0.8.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
 - **Fuzzy folder jump**: Ctrl+P matches against every folder the search index knows (or a walk of your home folder).
 - **Command palette**: Ctrl+Shift+P lists every action by name with its shortcut.
 - **Filter by typing**: start typing in a list to filter it; Esc clears.
-- **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb, ods), Word documents (docx), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
-- **File operations**: copy, move, rename (F2), new folder/file, and delete to the OS trash (never a permanent delete), with progress, cancel, and skip/overwrite/rename prompts on name clashes. Drag and drop between panes and from other apps.
+- **Previews**: F3 shows or hides the preview panel (there is no Ctrl+Shift+V shortcut). Code with syntax highlighting, text, Markdown, images (PNG, JPEG, GIF, WebP, BMP, ICO, SVG), PDF pages (needs the pdfium library next to the binary: included in the release archives, or run `scripts/fetch-deps`), CSV/TSV and spreadsheets (xlsx, xls, xlsb), Word documents (docx, with headings, lists, tables and page breaks), PowerPoint slide text (pptx), OpenDocument text, spreadsheets and presentations (odt, ods, odp), video thumbnails (optional: needs `ffmpeg` on `PATH`), hex for anything else.
+- **File operations**: copy, move, rename (F2; Ctrl+F2 renames many at once), new folder/file, and delete to the OS trash (never a permanent delete), with progress, cancel, and skip/overwrite/rename prompts on name clashes. Drag and drop between panes and from other apps.
 - **System clipboard**: Ctrl+C / Ctrl+X / Ctrl+V exchange files with Explorer (including cut) and Finder / file managers on Linux (copy only for now).
+- **Recycle Bin / Trash**: the sidebar's Recycle Bin (Windows) or Trash (Linux) entry opens your bin as a folder showing where each item came from and when it was deleted. Right-click to Restore, Delete permanently or Empty; both deletes ask first. See [Recycle Bin and Trash](#recycle-bin-and-trash).
 - **Archives as folders**: zip, 7z, tar (gz, bz2, xz, zst) and rar open like directories, nested ones too. See [Archives](#archives).
 - **Embedded terminal**: a shell pane under the file panes that follows the active folder. See [Terminal](#terminal).
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](#remotes-over-ssh).
-- **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets) as folders; sign in with your own OAuth client id; tokens stay in the OS keychain. See [Cloud accounts](#cloud-accounts-bring-your-own-client-id).
+- **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets, WebDAV) as folders; Drive and Dropbox sign in with your own OAuth client id, S3 and WebDAV with keys or a password; all secrets stay in the OS keychain. See [Cloud accounts](#cloud-accounts-bring-your-own-client-id).
 - **Columns view**: Miller columns per pane, plus a **drop zone** strip that carries files across navigation. See [Columns view and drop zone](#columns-view-and-drop-zone).
 - **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](#profiles).
 - **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](#icon-themes).
@@ -27,6 +28,10 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Drag out** of Keel onto other apps (Windows).
 - **Own search index** on Windows, so search works without Everything. See [Search without Everything](#search-without-everything).
 - **Library**: an index of every file across your folders, drives, SSH hosts and cloud accounts that keeps working when a drive is unplugged. Cross-source search, tags, favorites, saved views, a duplicate finder, and a preview before every copy, move or delete. See [Library](#library).
+- **Media view**: a photo and video grid that scrolls 129,000 items smoothly, video scrubbing on hover, date headers, and a full-window viewer with zoom and an info panel. See [Media view](#media-view).
+- **Protection**: how many copies of each file exist and on how many physical disks or accounts, backup state, integrity checks and a drive inventory, with "last copy" warnings before a delete. See [Protection](#protection).
+- **Devices and Spacedrop**: pair your own machines with a short code or QR code, browse their shared folders as `node://` sources and send files with resumable, verified Spacedrop. See [Devices and Spacedrop](#devices-and-spacedrop).
+- **Daemon, CLI and MCP**: `keel-daemon` serves the library over JSON-RPC, `keel search`, `keel plan` and friends work from a terminal, and `keel mcp` lets Claude Code, Codex and other agents use the library with a preview before every change. See [Daemon, CLI and MCP](#daemon-cli-and-mcp).
 - **Open, open with, reveal** in the system file manager, open a terminal in the current folder.
 - **Themes**: dark and light (a TOML file in `<config>/themes/dark.toml` or `light.toml` overrides the built-in colours). One built-in file icon theme.
 - **Settings** (Ctrl+,): theme, hidden files, dual pane, preview panel, maximum preview size. Open tabs are restored on the next start; a local folder that was deleted falls back to your home folder, while a tab on an unreachable network share stays open and shows the error. A `config.toml` or `session.json` that cannot be read is kept as `config.toml.bad` / `session.json.bad`.
@@ -60,10 +65,117 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `size:>1mb`, `size:<10kb` | size comparison |
 | `dm:2026-10` | modified in that month (ranges and `today` work too) |
 | `kind:image` | file kind (`file:`, `folder:`) |
+| `camera:canon` | media: camera starts with the word (`camera:"canon eos"`) |
+| `taken:2024`, `taken:2023-06..2023-08` | media: capture date (same dates as `dm:`; never the modified time) |
+| `w:>4000`, `h:<=1080` | media: width or height in pixels (`size:` comparisons) |
+| `duration:>30s`, `duration:<2m` | media: video length (`ms`, `s`, `m`, `h`) |
+| `has:gps` | media: has a GPS position |
+| `kind:photo` | media: images (not videos) with media metadata |
 | `tag:taxes` | has the tag |
 | `in:photos` | under a path or source |
 
-Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+Words that match no name or path also search camera and photo keywords, ranked below name hits. The media filters need the sidecar job to have run on the source.
+
+Limits: hashing skips remote and cloud sources; the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+
+## Media view
+
+Click **Media** in a pane's toolbar to see a folder as square tiles. S, M and L (or Ctrl+wheel) change the tile size; **Dates** groups tiles under the day each photo was taken (the modified date when a file has no capture time). Videos show a strip of 20 frames: move the pointer across a tile to scrub; until the strip is made the video's thumbnail stands in.
+
+Thumbnails come from sidecars: small WebP files and a `meta.json` (dimensions, orientation, capture time, camera, lens, GPS, duration, rating, keywords) kept by content, so a moved or copied file keeps them. With the library on, the sidecar job makes them for every local source at idle priority (it pauses while you use the app and on battery) under a 10 GiB budget; with it off, the grid makes them on demand in a 2 GiB cache under the cache folder. Video sidecars need `ffmpeg` on `PATH`. A file that cannot be read is shown with its icon and not tried again until it changes; a tool that runs out of time is tried again later.
+
+**Viewer.** Space or Enter opens the selected photo or video full-window: the 1024 px thumbnail at once, then the full image (decoded in the background, at most twice the screen size). Left/Right, Home/End move through the folder's media files; mouse wheel, `+` and `-` zoom (drag to pan), `0` fits and `1` shows 100 %; `I` shows the info panel; `F` toggles Favorite; Esc or Space closes. For a video, Enter or Play opens the system player.
+
+## Protection
+
+With the library on, Keel tells you how safe your files are. Every source sits on a **volume** (a partition, a share, a cloud account, an SSH host) and every volume in a **failure domain**: the physical disk behind it (two partitions of one disk, or the logical volumes of one LVM disk, are one domain), the server of a share, or the cloud account. Two copies in one domain are one failure away from none.
+
+**Overview → Protection** shows how many files are not checked yet (no content hash: whether they have other copies is unknown), have one copy only, have every copy in one failure domain, are not backed up, or changed since their last integrity check, and how many volumes are offline. Hover over a number to see how it is computed. The details view's **Copies** column shows copies and domains per file, with every location on hover.
+
+**Drive inventory.** The volume table lists every volume a source was seen on. Mark a drive **Archived** (on a shelf: its copies still count, flagged offline), **Lost** or **Retired** (its copies no longer count), and tick **Backup** for backup drives: a file is backed up when a copy sits on a backup volume in a second failure domain. The failure domain is editable: give two volumes the same name to make them one domain (a NAS reached by name and by address, a disk the detection splits), or clear the field to go back to the detected one.
+
+**Warnings.** Delete and move previews warn when a file is the last copy of its content (copies seen through a junction, symlink or subst drive are the same file, not another copy), when the copies left would all share one failure domain, when they would all be on offline drives, and when a file is not hashed yet or its bytes drifted.
+
+**Integrity.** Once a week (or **Check integrity now**) Keel re-hashes a sample of hashed files (1 % by default, Settings → Library) and marks *drift*: bytes that changed while size and times did not, as with bit rot or a tool that restores timestamps.
+
+## Devices and Spacedrop
+
+Keel can talk directly to your other computers. There is no account and no server of ours: devices connect peer to peer over an encrypted link ([iroh](https://www.iroh.computer/)), using iroh's public relay servers only when a direct path is not possible. Devices are off until you turn them on in Settings → Devices; that creates this device's identity, kept in the OS keychain. (A configuration saved by an earlier 0.8 build, while Devices were on by default, is switched off once; turn them on again if you want them.) There you also set this device's name, the Spacedrop inbox folder (default `Downloads/Keel Drops`, or `<data dir>/inbox` without a Downloads folder) and which devices may send without asking.
+
+**Pair two devices.**
+
+1. On one device open the sidebar's **Devices** section and choose **Pair a device… → Show code**. Keel shows a short code and a QR code (the QR carries the full ticket).
+2. On the other device choose **Pair a device… → Enter code** and type the short code, or paste the ticket.
+3. Both sides now list each other under Devices with a status dot (direct, relay or offline), the device's name and a storage bar.
+
+A code works for 10 minutes and for one pairing; showing a new code replaces the old one. Treat it like a password until it is used. Pairing grants nothing: a freshly paired device can see only its name until you share something. Each pair of devices keeps one connection, whichever side opened it.
+
+**Share folders (grants).** **Shares…** on a device row (or the Devices menu) lists what you give that device. Add a grant for a whole source or for one folder inside it, as **Read** or **Read-write**. A grant covers the folder and everything under it, and **Revoke** takes effect at once: running transfers from that device are cut off and later requests are refused. Sources that come from another device are never re-shared. Forgetting a device ends its shares and removes its folders from the library.
+
+**Browse a remote source.** **Browse** on a device opens a tab at `node://<device>/<source>/...` (the tab title shows the raw id for now). It behaves like any other folder: listing, preview, copy and drag between panes. Add a device's source as a library source to index it and search it like local files; the content ids it reports are its word only and never count as copies for delete warnings or duplicates. Writes to a device land only in its local sources, are staged and published atomically, and are checked with BLAKE3.
+
+**Spacedrop.** Drag files or folders onto a device in the sidebar, or use **Send with Spacedrop…** in a file's context menu. The receiver sees an accept prompt with the names, count and size (Accept, Decline, or "always accept from this device"). Files travel in resumable 4 MiB pieces and show up as a job in the jobs panel; if the link drops or either app restarts, the transfer continues where it stopped. Pieces are staged in a `.keel-partial-<id>` folder inside the inbox, each file is verified against a BLAKE3 hash of the whole file, and only then moved into the inbox (a name clash becomes `name (1).ext`, never an overwrite). A drop that already arrived is remembered for an hour, so a sender that lost the last reply finishes without asking you again or sending a second copy. Cancel from the jobs panel; a prompt whose sender gave up or stopped asking goes away by itself.
+
+**Security model, in plain words.**
+
+- Only devices you paired can connect; everyone else is rejected before any request is read.
+- Pairing reveals nothing about either device until the other side proves it knows the code, and the code works once.
+- Every request is checked against your current grants, so a revoked or narrowed share applies even on an open connection. Paths that try to escape the shared folder (`..`, symlinks and junctions, Windows device names) are refused.
+- Each peer is limited in connections and in concurrent requests, and a transfer that stalls is dropped after an idle timeout.
+- Only one process may own a device store at a time, so grants cannot be changed behind the owner's back.
+- Spacedrop needs your accept (or a standing auto-accept for that device), and the sender cannot choose where files land. One device can have at most 4 offers waiting (16 from all devices); more are refused as busy.
+- Anyone holding a still-valid code can pair, so show it only to the person in front of you.
+
+Limits: the short code is found through internet discovery, so on a network with no internet use the full ticket (the QR code does); device writes go only to local sources.
+
+Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain, in the window, `keel-daemon` and the `keel` subcommands alike (tests and live checks; the device is new on every run and must pair again).
+
+## Daemon, CLI and MCP
+
+Everything the library can do is also a typed operation (36 of them: search, reading and previewing files, tags, favorites, sources, jobs, duplicates, redundancy, copy, move, delete and rename plans, devices, shares and mounts), reachable three ways: JSON-RPC from `keel-daemon`, `keel` subcommands, and an MCP server. The reference with schemas and examples is [docs/api.md](docs/api.md).
+
+**The preview-first rule.** A command that would change anything only returns a preview with a plan id and an input hash. `execute` applies exactly that plan; it refuses a wrong hash, a plan older than 10 minutes, and a plan whose sources changed in the meantime. Revoking a share (`shares.revoke`) is the only thing done directly; removing a source previews too, with what its index store holds (size, tags, favorites).
+
+**Start the daemon.** `keel daemon start` (or run `keel-daemon`) opens the profile's library in the background, resumes its jobs and listens on a per-user local socket (a named pipe on Windows) that only your user can reach; `keel daemon status` and `keel daemon stop` do what they say, and there is one daemon per profile. `keel-daemon --ws 127.0.0.1:7420` also serves a WebSocket that requires a bearer token from a file in the config folder; `keel daemon rotate-token` replaces it (clients sign in again, sessions with the old token are closed). Devices follow the window's Settings → Devices switch (`[devices] enabled` in the profile's `config.toml`). The read operations never open Keel's configuration folder, and on Windows they open network (UNC) paths only inside your library sources. Without a daemon the subcommands open the library themselves, which works only while the Keel window is closed.
+
+**One-liners.**
+
+```sh
+keel search "invoice ext:pdf" --max 20
+keel tag add receipts ~/Docs/invoice-2026.pdf
+keel plan move ~/Downloads/old.iso --to /mnt/archive | keel execute
+keel plan delete ~/old-photos --json
+keel devices
+keel shares
+keel sources add ~/Photos --label photos
+keel daemon status
+```
+
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
+
+**MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
+
+```sh
+claude mcp add keel --scope user -- keel mcp
+```
+
+or in a project's `.mcp.json`:
+
+```json
+{ "mcpServers": { "keel": { "command": "keel", "args": ["mcp"] } } }
+```
+
+For Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.keel]
+command = "keel"
+args = ["mcp"]
+```
+
+Use the full path to `keel` when it is not on `PATH`. Every mutating tool returns a preview and says to call `execute` with the plan id; tell your agent to show you the preview and run `execute` only after you agree. Read-only tools are marked as such.
+
+Limits: the window does not attach to a running daemon yet (only one of them can hold the library), and the daemon has no live file watching.
 
 ## Columns view and drop zone
 
@@ -85,7 +197,9 @@ Only SVG and PNG icons are used. An SVG that references anything outside itself 
 
 On Windows, when Everything is not running, Keel uses its own index: it reads the NTFS file table and keeps it current from the USN journal, and stores it in the cache folder. Queries are substring, glob (`*.pdf`) or `regex:`, with `folder:` and `in:<path>` filters.
 
-Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out. macOS and Linux keep Spotlight, `locate` and the folder walk.
+Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
+
+On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files…" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
 
 ## Command line
 
@@ -103,13 +217,33 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
 
+## Web client
+
+`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete (preview first, then execute, exactly as in the window), follow jobs, see your devices, and download files.
+
+```sh
+scripts/build-web.sh                # once, or scripts\build-web.ps1: builds crates/keel-web/dist
+cargo build --release -p keel-daemon  # embeds that bundle
+keel-daemon --web                   # http://127.0.0.1:7421/ (or --web 127.0.0.1:PORT)
+```
+
+`build-web` needs `rustup target add wasm32-unknown-unknown` and `wasm-bindgen-cli` of the `wasm-bindgen` version in Cargo.lock (the script prints how to install it). A daemon built without the bundle serves a page saying so.
+
+**The token.** The first visit asks for the token in `daemon.token` in Keel's configuration folder on the daemon's machine (`%APPDATA%\Keel`, `~/Library/Application Support/Keel`, `~/.config/keel`, or `KEEL_CONFIG_DIR`). Tick **Remember on this device** to keep it in that browser's local storage; leave it off on a shared computer (it then lives only in the open tab). **Sign out** forgets it. The page sends the token as its first WebSocket message; it never goes in an address, and an address that carries one is refused and scrubbed from the address bar. Download links (`/file/...`) are one-time and expire after 60 seconds. Every page is served `no-store`, without referrers, under a same-origin content security policy; nothing is loaded from a CDN.
+
+**From another machine.** `--web` binds loopback only. To reach it from your phone or laptop, bind your tailnet address with `--web <tailnet IP>:7421 --ws-allow-remote` (the daemon has no TLS of its own: a tailnet encrypts the link; elsewhere put it behind a TLS reverse proxy). The page answers only to the bound IP; add `--web-host <name>` for each host name you use to reach it (a tailnet name, for example). Anyone who can reach the port still needs the token, and until they sign in a connection is held to small messages and few connections at once. Keep loopback when you do not need it.
+
+**Revoking access.** `keel daemon rotate-token` writes a new token: every browser and client signs in again, and sessions signed in with the old token are closed.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
+| Ctrl+F2 | Bulk rename the selection (pattern, find/replace, case; Undo bulk rename in the palette) |
 | Ctrl+, | Settings |
 | Ctrl+Shift+T | Tag picker (library) |
 | Ctrl+D | Toggle favorite (library) |
+| Ctrl+Shift+O | Open with… (pick an app for the selected files) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
 | Ctrl+Shift+S | Stash the selection in the drop zone |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
@@ -118,9 +252,13 @@ The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd
 
 ## Archives
 
-Press Enter or double-click a `.zip`, `.jar`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst` or `.rar` file to open it as a folder (an archive inside an archive opens too). Up leaves the archive; preview works on the files inside. Right-click for **Extract here**, **Extract to folder**, **Extract to…**, **Add to "name.zip"** and **Compress to zip…**. Extraction asks before overwriting and refuses entries that would land outside the target folder.
+Press Enter or double-click a `.zip`, `.jar`, `.7z`, `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst` or `.rar` file to open it as a folder (an archive inside an archive opens too). Up leaves the archive; preview works on the files inside. Right-click for **Extract here**, **Extract to folder**, **Extract to…**, **Add to "name.zip"** and **Compress to zip…** (pick Zip, 7z, Tar or Tar.gz in the dialog; the last choice is kept as `default_format` under `[archive]` in `config.toml`). Select an existing zip, 7z, tar or tar.gz together with other items from the same folder, or drop files on the archive row, to get **Add to "name"…** (asks first, runs as a cancellable job). Extraction asks before overwriting and refuses entries that would land outside the target folder.
 
-Archives are read-only: you can extract from any of them and add to a zip, but not delete, rename or create anything inside one. RAR is read through libunrar and never written. Password-protected entries are marked with a lock and cannot be previewed.
+Archives are read-only: you can extract from any of them and add files and folders to a zip, 7z, tar or tar.gz (entries of the same name are replaced; a 7z is re-encoded, a tar is streamed, and the old archive stays untouched until the new one is complete), but not delete, rename or create anything inside one. RAR is read through libunrar and never written. Password-protected entries are marked with a lock and cannot be previewed.
+
+## Recycle Bin and Trash
+
+Open **Recycle Bin** (Windows) or **Trash** (Linux, any freedesktop-compliant desktop) in the sidebar. Columns: Name, Original location, Size, Deleted on. **Restore** moves the selected items back to their original folders; if something with the same name is already there Keel stops and says so instead of overwriting it. **Delete permanently** and **Empty Recycle Bin** remove items for good and ask first (Empty shows the item count). The folder is read-only otherwise: nothing can be pasted, created or renamed in it, and a trashed folder cannot be browsed until it is restored. The preview panel shows trashed files where the system keeps them at a normal path (Windows `$R` files, Linux `files/`); otherwise it says there is no preview. macOS is not supported yet.
 
 ## Terminal
 
@@ -184,11 +322,41 @@ What a mount does:
 - **Writes** go to a `.keel-partial-…` staging file next to the target (for remote sources, a local spool uploaded on close) and replace the file atomically when the program closes it, so other programs never see a half-written file and an aborted or interrupted write leaves the old file (or none) in place. If publishing fails, the data is kept (as the staging file, or in `mount-spool` under the data folder) and the daemon log says where.
 - **Deletes** go to the trash for local sources, like Keel's own delete; on SFTP and S3 they are permanent (the `mounts.add` preview says so).
 
-Limits: file times, attributes and permissions are the source's and cannot be changed through the mount; a file being written cannot be renamed until it is closed; staging files and (on Windows) names Windows cannot show (`aux.txt`, `a:b`, names differing only in case on a case-sensitive source) are hidden; the free space shown for the drive is a placeholder; on Windows only the current user, SYSTEM and Administrators can open the drive. keel-daemon reaches local sources (folders, drives, shares) today; SFTP and cloud sources mount the same way once the daemon registers remotes and cloud accounts (keel-mount itself handles them).
+Limits: file times, attributes and permissions are the source's and cannot be changed through the mount; a file being written cannot be renamed until it is closed; staging files and (on Windows) names Windows cannot show (`aux.txt`, `a:b`, names differing only in case on a case-sensitive source) are hidden; the free space shown for the drive is a placeholder; on Windows only the current user, SYSTEM and Administrators can open the drive. SFTP and cloud sources mount the same way, through the profile's remotes and cloud accounts that keel-daemon registers.
 
 ## Install
 
-Download the archive for your system from [Releases](https://github.com/Runitupshawty/keel/releases). The builds are not signed yet.
+The builds are not signed yet. The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS`, and install for your user only (no admin, no root).
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\Keel`, adds a Start menu shortcut and an entry in Settings, Apps (uninstall there). For a Desktop shortcut or `keel` on your `PATH`, or to remove it again:
+
+```powershell
+$i = [scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1))
+& $i -Desktop -AddToPath
+& $i -Uninstall
+```
+
+**macOS and Linux**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.sh | bash
+```
+
+Installs to `~/.local/share/keel` with `keel` in `~/.local/bin`; macOS also gets `~/Applications/Keel.app`, Linux a launcher entry. Remove with `... | bash -s -- --uninstall`.
+
+**Debian and Ubuntu**: download `keel_<version>_amd64.deb` from Releases and `sudo apt install ./keel_*.deb`.
+
+Run the scripts again to update. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`.
+
+### Manual install
+
+Download the archive for your system from Releases.
 
 **Windows** (`keel-<version>-win64.zip`): extract anywhere and run `keel.exe`; keep the DLLs next to it. No Visual C++ redistributable is needed (the runtime is linked statically). SmartScreen may warn about an unknown publisher (More info, Run anyway). Optional: install and start Everything for search.
 
@@ -243,7 +411,7 @@ cargo build --release
 
 ## Cloud accounts: bring your own client id
 
-Google Drive and Dropbox sign-in uses OAuth with PKCE and a loopback redirect (`http://127.0.0.1:<port>/`). Keel ships no OAuth client ids: `assets/cloud-clients.toml` holds placeholders. Register your own free app (a Google Cloud "Desktop app" OAuth client with the Drive API enabled, or a Dropbox scoped app with redirect URI `http://127.0.0.1`) and enter its client id per account, or replace the placeholders in that file before building; the file explains each step. Tokens and S3 keys are kept in the OS keychain, never in `config.toml`.
+Google Drive and Dropbox sign-in uses OAuth with PKCE and a loopback redirect (`http://127.0.0.1:<port>/`). Keel ships no OAuth client ids: `assets/cloud-clients.toml` holds placeholders. Register your own free app (a Google Cloud "Desktop app" OAuth client with the Drive API enabled, or a Dropbox scoped app with redirect URI `http://127.0.0.1`) and enter its client id per account, or replace the placeholders in that file before building; the file explains each step. WebDAV (Nextcloud, ownCloud, Synology, Apache `mod_dav`, any `https://host/path/` collection URL) needs no client id: Settings → Cloud → Add account → WebDAV takes the address (for Nextcloud `https://host/remote.php/dav/files/<user>/`), user name, password (use an app password where the server offers one) and an optional root folder, and **Test connection** lists the root before you save. `https://` is required unless you tick the explicit plain-`http://` box; `webdav://` addresses are refused. Deletes on WebDAV are permanent unless the server has its own trash, and uploads are held in memory (limit 1 GiB per file). Tokens, S3 keys and WebDAV passwords are kept in the OS keychain, never in `config.toml`.
 
 Limits and requirements:
 
@@ -258,17 +426,15 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 6 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library). Planned:
+Phases 1 to 8 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP). In progress:
 
-7. Media and protection: fast photo grid, video scrubbing, EXIF, redundancy and backup state per file.
-8. Devices: pairing and file transfer between your machines, a headless daemon and CLI.
 9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
 
-Known limitations of v0.5.0 are listed in [CHANGELOG.md](CHANGELOG.md).
+Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
-Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Run `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace` before opening a pull request.
+Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Run `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace` before opening a pull request. CI also runs `cargo deny check` (licenses, advisories, banned crates, sources; policy in `deny.toml`; install with `cargo install cargo-deny --locked`). If it fails, first update the offending dependency; if that is not possible, add the minimum `deny.toml` entry (an `ignore` with the advisory id, or a license in `allow`) with a one-line reason and the crate that needs it, and mention it in the pull request.
 
 ## License
 

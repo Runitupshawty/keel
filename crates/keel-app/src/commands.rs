@@ -1,7 +1,7 @@
 //! `keel <subcommand>` (Task 37): the `keel-api` operations from the command line, through
 //! keel-daemon when one runs for the profile, else on the library opened in this process.
-//! `--json` prints the API's JSON; exit codes are 0 (ok), 1 (the operation failed) and 2
-//! (usage). Mutating subcommands show the preview and then confirm it themselves (the
+//! `--json` prints one JSON document per invocation (the API's JSON, or `{"error": …}`);
+//! exit codes are 0 (ok), 1 (the operation failed) and 2 (usage). Mutating subcommands show the preview and then confirm it themselves (the
 //! command line is the confirmation), except `keel plan`, whose plan `keel execute` runs.
 
 use crate::cli::{Command, Conflict, DaemonCmd, PlanCmd, SourcesCmd, TagCmd};
@@ -18,18 +18,35 @@ pub const OK: i32 = 0;
 pub const FAILED: i32 = 1;
 pub const USAGE: i32 = 2;
 
-/// The library in this process (no daemon runs): closed on drop.
-struct Local(Host);
+/// The library in this process (no daemon runs): closed on drop. keel-net comes online
+/// only for the calls that need it (devices and shares, and executing their plans).
+struct Local {
+    host: Host,
+    cfg: HostConfig,
+}
+
+/// Devices and shares need keel-net.
+fn net_op(method: &str) -> bool {
+    method.starts_with("devices.") || method.starts_with("shares.")
+}
 
 impl Backend for Local {
     fn call(&mut self, method: &str, params: Value) -> keel_api::Result<Value> {
-        keel_api::call(&self.0.ctx, method, params)
+        let plan = params["plan_id"].as_str().unwrap_or_default();
+        let executes_net_plan =
+            method == "execute" && self.host.ctx.plans.method(plan).is_some_and(|m| net_op(&m));
+        if net_op(method) || executes_net_plan {
+            self.host
+                .open_net(&self.cfg, NetSetup::system())
+                .map_err(|e| ApiError::failed(format!("{e:#}")))?;
+        }
+        keel_api::call(&self.host.ctx, method, params)
     }
 }
 
 impl Drop for Local {
     fn drop(&mut self) {
-        if !self.0.close() {
+        if !self.host.close() {
             eprintln!("keel: a job was still busy; it resumes the next time the library opens");
         }
     }
@@ -45,8 +62,13 @@ fn connect(cfg: &HostConfig) -> anyhow::Result<Box<dyn Backend>> {
     // Another `keel` command may be finishing with the library: wait a little for it.
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match Host::open(cfg, Some(NetSetup::system()), false) {
-            Ok(host) => return Ok(Box::new(Local(host.with_utc_offset(offset)))),
+        match Host::open(cfg, None, false) {
+            Ok(host) => {
+                return Ok(Box::new(Local {
+                    host: host.with_utc_offset(offset),
+                    cfg: cfg.clone(),
+                }))
+            }
             Err(e) if format!("{e:#}").contains("already open") && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -88,7 +110,7 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     let mut out: Out = Box::new(std::io::stdout());
     match cmd {
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
-        Command::Mcp => return mcp(&cfg),
+        Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),
         _ => {}
     }
     // Read a piped plan before opening the library: `keel plan` (which holds it while it
@@ -113,7 +135,12 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         Err(e) => return report(Fail::Api(e.into()), json, &mut out),
     };
     match command(cmd, &mut *backend, json, &mut out) {
-        Ok(()) => OK,
+        Ok(doc) => {
+            if let (true, Some(doc)) = (json, doc) {
+                print_json(&doc, &mut out);
+            }
+            OK
+        }
         Err(e) => report(e, json, &mut out),
     }
 }
@@ -206,18 +233,17 @@ fn wait_job(b: &mut dyn Backend, job: i64) -> Result<JobInfo, Fail> {
     }
 }
 
-/// Ends with exit 1 unless the job is done.
-fn job_done(info: &JobInfo, json: bool, out: &mut Out) -> Result<(), Fail> {
-    if json {
-        print_json(&serde_json::to_value(info).unwrap_or_default(), out);
-    } else {
+/// The finished job as JSON; exit 1 (the job in the error's `data`) unless it is done.
+fn job_done(info: &JobInfo, json: bool, out: &mut Out) -> Result<Value, Fail> {
+    let v = serde_json::to_value(info).unwrap_or_default();
+    if !json {
         let _ = writeln!(out, "job {} ({}): {}", info.id, info.kind, info.status);
     }
     match info.status.as_str() {
-        "done" => Ok(()),
+        "done" => Ok(v),
         _ => {
             let log = info.log.as_deref().unwrap_or("").trim();
-            Err(Fail::Api(ApiError::failed(format!(
+            let e = ApiError::failed(format!(
                 "job {} {}{}",
                 info.id,
                 info.status,
@@ -226,17 +252,25 @@ fn job_done(info: &JobInfo, json: bool, out: &mut Out) -> Result<(), Fail> {
                 } else {
                     format!(": {log}")
                 }
-            ))))
+            ));
+            Err(Fail::Api(e.with_data(v)))
         }
     }
 }
 
-fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Result<(), Fail> {
-    match cmd {
+/// Runs `cmd`. Text goes to `out` as it comes; with `json` nothing is printed here and the
+/// one document to print is returned.
+fn command(
+    cmd: Command,
+    b: &mut dyn Backend,
+    json: bool,
+    out: &mut Out,
+) -> Result<Option<Value>, Fail> {
+    let doc = match cmd {
         Command::Search { query, max } => {
             let hits = b.call("search", json!({"query": query, "max": max}))?;
             if json {
-                print_json(&hits, out);
+                return Ok(Some(hits));
             } else {
                 for h in parse::<Vec<Hit>>(hits)? {
                     let size = if h.is_dir {
@@ -247,6 +281,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                     let _ = writeln!(out, "{size:>12}  {}", h.path);
                 }
             }
+            None
         }
         Command::Tag(t) => {
             let (method, tag, paths) = match t {
@@ -260,9 +295,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                 json,
                 out,
             )?;
-            if json {
-                print_json(&done, out);
-            }
+            Some(done)
         }
         Command::Plan(p) => {
             let conflict = |c: Option<Conflict>| {
@@ -291,10 +324,10 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
             };
             let preview = b.call("plan", params)?;
             if json {
-                print_json(&preview, out);
-            } else {
-                print_preview(&parse(preview)?, out);
+                return Ok(Some(preview));
             }
+            print_preview(&parse(preview)?, out);
+            None
         }
         Command::Execute {
             plan,
@@ -309,19 +342,23 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
             match done["job"].as_i64() {
                 Some(job) if !no_wait => {
                     let info = wait_job(b, job)?;
-                    job_done(&info, json, out)?;
+                    Some(job_done(&info, json, out)?)
                 }
-                _ if json => print_json(&done, out),
+                _ if json => Some(done),
                 Some(job) => {
                     let _ = writeln!(out, "started job {job}");
+                    None
                 }
-                None => print_json(&done["result"], out),
+                None => {
+                    print_json(&done["result"], out);
+                    None
+                }
             }
         }
         Command::Devices => {
             let d = b.call("devices.list", Value::Null)?;
             if json {
-                print_json(&d, out);
+                return Ok(Some(d));
             } else {
                 let _ = writeln!(
                     out,
@@ -339,11 +376,12 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                     );
                 }
             }
+            None
         }
         Command::Shares => {
             let g = b.call("shares.list", Value::Null)?;
             if json {
-                print_json(&g, out);
+                return Ok(Some(g));
             } else {
                 for g in g.as_array().into_iter().flatten() {
                     let _ = writeln!(
@@ -356,6 +394,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                     );
                 }
             }
+            None
         }
         Command::Sources { action } => sources(action, b, json, out)?,
         Command::Mount {
@@ -371,9 +410,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                 json,
                 out,
             )?;
-            if json {
-                print_json(&info, out);
-            } else {
+            if !json {
                 let _ = writeln!(
                     out,
                     "mounted {} at {}",
@@ -381,6 +418,7 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                     info["target"].as_str().unwrap_or("")
                 );
             }
+            Some(info)
         }
         Command::Unmount { target } => {
             let info = confirm(
@@ -390,32 +428,31 @@ fn command(cmd: Command, b: &mut dyn Backend, json: bool, out: &mut Out) -> Resu
                 json,
                 out,
             )?;
-            if json {
-                print_json(&info, out);
-            } else {
+            if !json {
                 let _ = writeln!(out, "unmounted {}", info["target"].as_str().unwrap_or(""));
             }
+            Some(info)
         }
         Command::Mounts => {
             let list = b.call("mounts.list", Value::Null)?;
             if json {
-                print_json(&list, out);
-            } else {
-                for m in list.as_array().into_iter().flatten() {
-                    let _ = writeln!(
-                        out,
-                        "{:<12} {}  ({}, {})",
-                        m["target"].as_str().unwrap_or(""),
-                        m["root"].as_str().unwrap_or(""),
-                        m["source_label"].as_str().unwrap_or(""),
-                        m["backend"].as_str().unwrap_or("")
-                    );
-                }
+                return Ok(Some(list));
             }
+            for m in list.as_array().into_iter().flatten() {
+                let _ = writeln!(
+                    out,
+                    "{:<12} {}  ({}, {})",
+                    m["target"].as_str().unwrap_or(""),
+                    m["root"].as_str().unwrap_or(""),
+                    m["source_label"].as_str().unwrap_or(""),
+                    m["backend"].as_str().unwrap_or("")
+                );
+            }
+            None
         }
-        Command::Daemon(_) | Command::Mcp => unreachable!("handled by run"),
-    }
-    Ok(())
+        Command::Daemon(_) | Command::Mcp { .. } => unreachable!("handled by run"),
+    };
+    Ok(doc.filter(|_| json))
 }
 
 /// A drive letter as given (`K`, `K:`), anything else made absolute.
@@ -454,18 +491,18 @@ fn sources(
     b: &mut dyn Backend,
     json: bool,
     out: &mut Out,
-) -> Result<(), Fail> {
-    let index = |b: &mut dyn Backend, id: &str, out: &mut Out| -> Result<(), Fail> {
+) -> Result<Option<Value>, Fail> {
+    let index = |b: &mut dyn Backend, id: &str, out: &mut Out| -> Result<Value, Fail> {
         let started = confirm(b, "sources.index", json!({ "id": id }), json, out)?;
         let job = started["job"].as_i64().unwrap_or_default();
         let info = wait_job(b, job)?;
         job_done(&info, json, out)
     };
-    match action {
+    Ok(match action {
         None => {
             let list = b.call("sources.list", Value::Null)?;
             if json {
-                print_json(&list, out);
+                return Ok(Some(list));
             } else {
                 for s in list.as_array().into_iter().flatten() {
                     let _ = writeln!(
@@ -478,6 +515,7 @@ fn sources(
                     );
                 }
             }
+            None
         }
         Some(SourcesCmd::Add {
             path,
@@ -492,22 +530,33 @@ fn sources(
                 out,
             )?;
             let id = added["id"].as_str().unwrap_or_default().to_owned();
-            if json {
-                print_json(&added, out);
-            } else {
+            if !json {
                 let _ = writeln!(out, "source {id}");
             }
+            // One document: the added source, with its index job under `job`.
+            let mut doc = added;
             if !no_index {
-                index(b, &id, out)?;
+                match index(b, &id, out) {
+                    Ok(job) => doc["job"] = job,
+                    Err(Fail::Api(mut e)) => {
+                        doc["job"] = e.data.take().unwrap_or_default();
+                        return Err(Fail::Api(e.with_data(doc)));
+                    }
+                    Err(e) => return Err(e),
+                }
             }
+            Some(doc)
         }
         Some(SourcesCmd::Remove { id, delete_store }) => {
-            let removed = b.call(
+            let removed = confirm(
+                b,
                 "sources.remove",
                 json!({"id": id, "delete_store": delete_store}),
+                json,
+                out,
             )?;
             if json {
-                print_json(&removed, out);
+                return Ok(Some(removed));
             } else {
                 let _ = writeln!(
                     out,
@@ -516,33 +565,14 @@ fn sources(
                     id
                 );
             }
+            None
         }
-        Some(SourcesCmd::Index { id }) => index(b, &id, out)?,
-    }
-    Ok(())
+        Some(SourcesCmd::Index { id }) => Some(index(b, &id, out)?),
+    })
 }
 
 fn print_preview(p: &PlanPreview, out: &mut Out) {
-    let _ = writeln!(out, "{}", p.summary);
-    for c in &p.changes {
-        let mut line = format!("  {:<8} {}", c.action, c.path.as_deref().unwrap_or(""));
-        if let Some(to) = &c.to {
-            line.push_str(&format!(" -> {to}"));
-        }
-        if let (Some(files), Some(bytes)) = (c.files, c.bytes) {
-            line.push_str(&format!("  ({files} file(s), {bytes} bytes)"));
-        }
-        if let Some(d) = &c.detail {
-            line.push_str(&format!("  [{d}]"));
-        }
-        let _ = writeln!(out, "{line}");
-    }
-    if !p.warnings.is_empty() {
-        let _ = writeln!(out, "Warnings:");
-        for w in &p.warnings {
-            let _ = writeln!(out, "  ! {}", w.message);
-        }
-    }
+    let _ = write!(out, "{}", p.describe(usize::MAX));
     let _ = writeln!(out, "plan: {}", p.plan_id);
     let _ = writeln!(out, "hash: {}", p.input_hash);
     let _ = writeln!(
@@ -608,7 +638,7 @@ fn plan_given_differs(text: &str, plan: &str) -> bool {
     piped.is_some_and(|p| p != plan)
 }
 
-fn mcp(cfg: &HostConfig) -> i32 {
+fn mcp(cfg: &HostConfig, allow_execute: bool) -> i32 {
     let mut backend = match connect(cfg) {
         Ok(b) => b,
         Err(e) => {
@@ -617,7 +647,8 @@ fn mcp(cfg: &HostConfig) -> i32 {
         }
     };
     let stdin = std::io::stdin();
-    match keel_api::mcp::serve(&mut *backend, stdin.lock(), std::io::stdout().lock()) {
+    let opts = keel_api::mcp::Options { allow_execute };
+    match keel_api::mcp::serve(&mut *backend, stdin.lock(), std::io::stdout().lock(), opts) {
         Ok(()) => OK,
         Err(e) => {
             eprintln!("keel mcp: {e}");
@@ -649,6 +680,18 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
         }
     };
     match cmd {
+        DaemonCmd::RotateToken => match keel_api::config::new_token(&cfg.token_path()) {
+            Ok(_) => {
+                let path = cfg.token_path().display().to_string();
+                let text = format!("new token in {path}: clients must sign in again");
+                say(out, json!({"rotated": true, "path": path}), text);
+                OK
+            }
+            Err(e) => {
+                eprintln!("keel: {}: {e}", cfg.token_path().display());
+                FAILED
+            }
+        },
         DaemonCmd::Status => match running(cfg) {
             Some(v) => {
                 let text = format!(

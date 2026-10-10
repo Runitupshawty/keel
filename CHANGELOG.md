@@ -2,6 +2,136 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-09
+
+Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
+
+### Added
+
+- Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
+- Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
+- Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
+- Spacedrop: send files and folders to a paired device in resumable 4 MiB chunks, verified with BLAKE3 over the whole file, staged in a `.keel-partial` folder and moved into the receiver's inbox folder only when complete. The receiver gets an accept prompt, with per-device auto-accept. Drops run as durable jobs that survive a dropped link or a restart.
+- App: a Devices sidebar section (status dot, name, storage bar, Browse, Send files, Shares, Forget), a pairing dialog with the code and QR, a shares dialog, "Send with Spacedrop..." in the context menu, and Settings → Devices (enable, device name, inbox, relays, auto-accept list).
+- `keel-api`, a typed operation registry with 29 operations and generated JSON schemas. Mutating operations are preview-first: `plan` returns a preview with a plan id and an input hash, and `execute` applies only that exact input, refusing a wrong hash, a changed source or a plan older than 10 minutes.
+- `keel-daemon`, a headless host for the profile's library that serves the API as JSON-RPC on a per-user local socket, with an optional token-authenticated loopback WebSocket, notifications for job progress, library changes and device events, and a single daemon per profile.
+- Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
+- `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
+- Library search media filters: `camera:`, `taken:`, `w:` / `h:`, `duration:`, `has:gps` and `kind:photo`, from the sidecar media rows. Words that match no name or path also match camera and keywords, ranked below name hits.
+- Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
+- WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
+- Add to 7z, tar and tar.gz archives (not only zip): new entries are written to a staging file beside the archive and renamed over it, so cancel or an error leaves the original untouched. RAR stays read-only.
+- One-line installers: `scripts/install.ps1` (Windows, per user, Start menu shortcut, optional Desktop shortcut and `PATH`, Settings, Apps entry, `-Uninstall`) and `scripts/install.sh` (macOS, Linux, `--uninstall`). Both verify the download against the release's `SHA256SUMS`.
+- Releases now include `SHA256SUMS` and, for Linux, a `.deb` package.
+- CI: `cargo deny` (licenses, advisories, bans, sources; `deny.toml`) is required via the `check` job, and pull requests get GitHub dependency review. The workspace crates are marked `publish = false`.
+- Persistent name index for macOS and Linux (and the last resort on Windows): search works instantly without Spotlight or `locate`. It walks your home folder, keeps names, sizes and dates in SQLite under the cache folder, follows file changes live, and rebuilds weekly; the status bar shows "indexing N files…" while it builds. It also feeds the folder jump (Ctrl+P).
+- Compress dialog: choose Zip, 7z, Tar or Tar.gz (the name's extension follows unless you edited it; the choice is remembered as `archive.default_format`). New **Add to "name"…** context-menu entry when you select one zip, 7z, tar or tar.gz plus items beside it, and dropping files on such an archive row does the same; both ask first and run as a job with progress and cancel.
+- Open with… (Ctrl+Shift+O, context menu): Keel's own picker lists the recent apps for the file's extension, the apps the system knows for it (Linux: MIME associations; macOS: applications in /Applications and ~/Applications), Browse… for any executable or .app, and on Windows the system chooser. "Remember for .ext files" files the app in `open_with.recent` in config.toml. The context menu shows the last 5 apps for that extension in an "Open with" submenu. With several files selected, all of them open with the chosen app (one process per file, or one `open -a` on macOS).
+- Bulk rename (Ctrl+F2, or "Bulk rename…" in the context menu and palette): a pattern with `{name}`, `{ext}`, `{n}` / `{n:3}` (counter with start and step), `{date}` and `{parent}`, find/replace (plain or regex, optionally case-insensitive) and a case transform, with a live old-to-new preview. Duplicate targets, names that collide with other files, invalid names, empty names and reserved Windows names are flagged and block Apply. Renames go through the folder's provider (local, SFTP, cloud), swaps and chains use temporary names, a partial failure lists the items that failed, and "Undo bulk rename" (toast button or palette) reverses it until the next operation.
+- Browser client: `keel-daemon --web` serves the keel-web client (built into the daemon) on `http://127.0.0.1:7421/`: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete through the same previews, follow jobs, see devices, and download files through one-time links. Sign in with the token from `daemon.token` (sent as the first WebSocket message, never in an address; "Remember on this device" is optional). Loopback only unless `--ws-allow-remote`, with `--web-host` for the names a remote bind answers to. See the README "Web client" section and [docs/api.md](docs/api.md).
+- `keel daemon rotate-token`: a new daemon token; clients sign in again and sessions with the old token are closed.
+- **Recycle Bin / Trash as a folder**: a "Recycle Bin" (Windows) or "Trash" (Linux) entry in the sidebar opens the current user's bin as a `trash://` tab with Name, Original location, Size and Deleted on columns. Restore puts items back where they were deleted from and reports a name clash instead of overwriting; Delete permanently and Empty ask first and say how many items go. Previews work for trashed files. Read-only otherwise (no paste, rename or new items). Not available on macOS yet.
+
+### Changed
+
+- Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
+- Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
+- 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
+- `syntect` is built with only what the previews use (bundled syntax and theme dumps, fancy-regex), which drops the unmaintained `yaml-rust` (RUSTSEC-2024-0320). The remaining `cargo deny` advisory ignores now name the crate that pulls each one and why it stays.
+
+### Fixed
+
+- Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
+- A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
+- SFTP: `russh` 0.50 to 0.64 and `russh-sftp` 2.4 to 3.0, fixing unbounded memory allocation driven by a hostile server (RUSTSEC-2026-0154, RUSTSEC-2026-0153). Host key trust, key file, agent and password logins, keepalive and cancellation behave as before; a host certificate offered by a server is refused.
+- Spreadsheet previews: `calamine` 0.26 to 0.36, which moves its XML parser to `quick-xml` 0.41 and fixes a quadratic-time attribute check and a namespace allocation DoS on crafted xlsx/ods files (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
+- 7z: the unmaintained `sevenz-rust` 0.6 is replaced by its maintained fork `sevenz-rust2` 0.23 (RUSTSEC-2026-0246; RUSTSEC-2026-0245 is a path traversal in its own extractor, which Keel never used). A test now proves that 7z, tar and zip entries named `../../evil.txt`, `/evil.txt` or `C:/evil.txt` refuse the whole extraction and nothing is written.
+- Battery detection: `battery` 0.7 is replaced by its maintained fork `starship-battery` 0.12, which drops `nix` 0.19 (out-of-bounds write in `getgrouplist`, RUSTSEC-2021-0119; never called by Keel) and the unmaintained `mach` (RUSTSEC-2020-0168). The `power` feature is unchanged.
+- Devices: a paired device's listing could claim any content id, so a decoy file hid the "last copy" warning for your only copy and showed as its duplicate. A device's ids are now kept apart as claims: listed in the copies hover, never counted as copies, never in Duplicates. A host no longer reports ids for files whose bytes drifted.
+- Spacedrop: an accepted drop id let the sender push a different file list later without asking. An answer now holds for one device, drop id and file list; completed, cancelled or forgotten drops forget it.
+- Spacedrop: unanswered offers held connection slots until answered, and accepting after the sender gave up left a staging folder behind. Offers are answered at once and the sender polls; a cancel withdraws the prompt; staging is created only for a sender still waiting, and stale staging is swept.
+- Spacedrop: transfers are now in the op log on both sides (`net.drop-sent`, `net.drop-received` per file).
+- Spacedrop: receiving many small files rewrote the drop's state after each one (quadratic); 2,000 files took about 38 s and now take about 3 s. Received files never replace an existing file, even when two drops land the same name at once; staging folders are hidden on Windows; an offer too big to send fails at once instead of retrying for ten minutes.
+- API/MCP: `sources.remove` with `delete_store` deleted an index store (tags, favorites, hashes) in one direct call an agent could chain. It now previews like every mutating operation, stating the store's size, tags and favorites, and only `execute` removes; `keel sources remove` confirms it as before.
+- API: the read operations (`read`, `stat`, `list`, `preview.render`, `media.thumb`, `file.get`) could open Keel's configuration folder (`daemon.token`) and UNC paths (sending the user's credentials to another server). They now refuse the configuration folder however the path is written, and UNC and device paths outside the library's sources.
+- API: `read` on SFTP, cloud and device files re-read the file from the start on every call; it now asks the provider for the range. Other locations refuse an offset past 64 MiB.
+- API: file-plan summaries (the string `keel mcp --allow-execute` clients repeat for approval) name the first three paths; `DaemonProvider` runs a plan only when its confirmation callback accepts it, and refuses a plan with warnings without one.
+- CLI: `keel mcp` opened the window when the working folder had an `mcp` folder. `mcp`, `execute`, `daemon` and `search` are now always the subcommand, and without a terminal no name is taken as a folder.
+- Config: `KEEL_NET_SECRET=memory` is honoured by `keel-daemon` and the CLI too; one switch turns devices on (`[devices] enabled`, the window's Settings switch; `[net] enabled` is the fallback); a configuration saved while Devices defaulted on is switched off once. The data folder is created owner-only.
+- Windows: the owner-only check of `api-plans.json`, the token and the socket salt refused files made by an elevated process or an administrator account without UAC (owned by Administrators, or an account SDDL writes as an alias), so plans vanished and tokens were replaced at every start. Owners and access entries are now compared as SIDs.
+- Spacedrop: when the reply to a drop's last piece was lost, the sender asked the user again, sent the last file a second time as `name (1).ext` and left staging behind. A completed drop is now remembered for an hour and answers the sender from that record.
+- Spacedrop: one device could stack unlimited offers (each held in memory with up to 1 MiB of names, each a prompt). At most 4 offers per device and 16 in all wait now (more are refused as busy), and an offer its sender stopped polling is withdrawn with its prompt.
+- Spacedrop: an invalid name or a staging failure on the receiver made the sender retry and re-prompt for ten minutes; it now fails at once with the reason. Names that are Windows short names (`KEEL-P~1`) are refused on Windows, and nothing is published through a folder that leads into a staging folder or out of the inbox.
+- Spacedrop: the received-files marker is synced to disk, files found complete on resume are logged as sent, the op log is written out when the node closes (a failed batch is retried once), withdrawn prompts disappear at once, and the window's device event queue is bounded like the node's.
+- Tests and caches: RAR extraction temp folders and SFTP, cloud and device downloads ignored `KEEL_DATA_DIR` and could land in the real `%LOCALAPPDATA%\Keel`. Every cache and temp root now comes from one resolver (`<KEEL_DATA_DIR>/cache`, else `<KEEL_CONFIG_DIR>/cache`, else a temp folder in tests, else the platform cache folder).
+- `--web`: unauthenticated connections could each send 16 MiB messages and fill all 64 connection slots. Until `auth` a message may be at most 4 KiB, at most 16 connections may wait to sign in and at most 8 come from one remote address; a connection that does not sign in within 10 s gets error -32007 before it is closed (as documented). A remote bind checks the `Host` header against its IP and `--web-host` names.
+- Devices: forgetting a device drops its pending offers and staging and removes its folders from the library; day-old device download folders are swept from the temp folder; devices are off until turned on in Settings (the identity is created then); received files and pairings are no longer lost from the event queue, and an idle window shows them at once; the offer prompt lists file names and cannot overflow its total; without a Downloads folder drops go to `<data dir>/inbox` instead of being declined silently.
+
+### Security
+
+- API plans: the hash covers everything a plan runs (for file operations also the changes and warnings) and is checked again at `execute`; `api-plans.json` is owner-only on every platform, so a plan altered on disk is refused.
+- MCP: `execute` applies a plan only after the user confirmed it through the client (MCP elicitation, showing the summary, changes and warnings); a client that cannot ask is refused unless `keel mcp --allow-execute`, and then each call must repeat the preview's summary. Nothing but `ping` is answered before `initialize`; bad or oversized lines get an error and the session goes on.
+- keel-daemon: the WebSocket handshake (`--ws`, and the request head on `--web`) has a 5 s deadline and at most 64 connections are served per listener; `daemon.token` is owner-only and a token file others can access is replaced; a request on the local socket must arrive within 30 s however slowly it trickles in; the socket name is derived from the user's SID or uid and a per-user random salt; `--profile` is validated.
+- CLI: `--json` prints one JSON document per invocation; a lone argument naming an existing folder opens it even when it matches a subcommand (`keel ./search` always does); the in-process host keeps extracted archives under the data folder, brings keel-net online only for devices and shares, and registers the profile's SFTP hosts and cloud accounts.
+
+### Known limitations
+
+- The window does not yet attach to a running daemon; only one of them can hold the library at a time.
+- Short-code pairing needs internet discovery; on an offline network use the full ticket.
+- The daemon's router has no SFTP or cloud providers and does not watch folders live.
+- Writes from a device land only in local sources.
+- Tabs on `node://` sources show the raw id as their title.
+- Video in the viewer shows stills, not playback.
+
+## [0.7.0] - 2026-10-09
+
+Media and protection release: a fast photo and video grid with a full-window viewer, and a Protection card that shows how many copies each file has and on how many physical disks or accounts.
+
+### Added
+
+- Media view (the pane toolbar's **Media** button; tile sizes S/M/L, Ctrl+wheel): a virtualized square-tile grid drawn from the sidecar thumbnails. Thumbnails are decoded on worker threads and uploaded at most 8 per frame; cached textures are capped at 384 MiB (and 4,000 textures); tiles that scroll away are dropped from the queue. In the perf test 129,000 items (5 % videos, real-size 256 px and 1024 px thumbnails, M and L tiles at 1.5x and 2x) scroll at a mean frame time of 0.5 to 1.5 ms. Videos show their strip and scrub across it on hover, and their thumbnail until the strip is made. EXIF orientation is applied. The **Dates** toggle groups tiles under capture-day headers.
+- Viewer: Space or Enter opens the selected photo or video full-window (the 1024 px thumbnail at once, the full image decoded in the background at up to twice the screen size), Left/Right/Home/End navigate, mouse wheel, `+`/`-`, `0` (fit) and `1` (100 %) zoom and pan, `I` toggles the info panel (dimensions, capture time, camera, lens, GPS, duration, codec), `F` favorites, Esc or Space closes. Videos show still frames from the strip; Enter or Play opens the system player. A file deleted while open closes the viewer.
+- With the library off, thumbnails live in their own cache (2 GiB budget) under the cache folder. With it on, the sidecar job ("Library: media thumbnails") runs for every local source after indexing and the grid reuses its thumbnails.
+- Protection (library on): every fixed, removable, network and cloud volume is listed with its failure domain (physical disk serial, server, or cloud account), state (Online, Offline, Archived, Lost, Retired; the last three set by you in the drive inventory), capacity and last seen. `Redundancy` counts copies and failure domains: two copies on one disk or one account are one domain; hard links count once; copies on Archived volumes count (flagged offline); copies on Lost or Retired volumes and drifted files do not count. "Backed up" means a copy on a volume marked as backup in a second failure domain.
+- The failure domain is editable in the drive inventory: type the same name on two volumes to make them one domain (two names of one server, a disk the detection splits), or another name to split them; clear the field to go back to the detected one.
+- Overview → Protection card: files not checked yet (no content hash), files with one copy, files whose copies share one failure domain, files not backed up, files changed since their last check, offline volumes; each number explains itself on hover.
+- Integrity job ("Library: checking integrity"): re-hashes a sample of files on a schedule and marks a file whose bytes changed while its size and times did not (`drift`); drift clears when the file really changes.
+- Details view: a Copies column with the locations on hover.
+- Delete and move previews warn `SingleDomain` when the remaining copies would all sit in one failure domain, `CopiesOffline` when they would all be on offline or archived drives, and `LastCopy` only counts copies that still exist.
+- Cloud sources (S3, Drive, Dropbox) index through their paged listings and count as their own failure domain; a cut-off listing never deletes records.
+
+### Changed
+
+- Source stores migrate to schema v7 (`record.drift`); `library.db` to v6 (`volume.domain_set`, the failure domain set by hand).
+- Media metadata (`media` table) is read by the grid and the viewer.
+- Sidecar failures are recorded per kind in `meta.json` (`failed`); `error` is the metadata's own error.
+- Hashing set to "pause on battery" no longer pauses on input, but the media and integrity jobs always do.
+
+### Fixed
+
+- Deleting the only copy of a file through a junction, symlink, subst drive or bind mount warned nothing: sources are compared by their resolved roots, a walk refuses a root another source already indexes, and a surviving record of the same file at the same resolved path is no longer taken for a hard link.
+- Deleting a file marked as drifted warned nothing; it is now unverified (or the last copy). Duplicates no longer list drifted files as identical copies.
+- The Protection card read "0 files with one copy only" when nothing was hashed; it now leads with the files not checked yet and marks the other counts as covering checked files only.
+- Linux failure domains: LVM and LUKS volumes resolve to their disks, btrfs subvolumes to the mounted device, and NFS, SMB, sshfs and WebDAV mounts are named by their server and share (stable across remounts) instead of one domain per mount.
+- One failed sidecar (a strip that timed out) no longer blocks a file's other thumbnails; a timeout is retried instead of recorded; a failed thumbnail keeps the file's real metadata.
+- The texture cache is bounded by memory (strips decoded to the tile height), not only by count.
+- Date headers no longer reset after the app sat idle for two seconds.
+- Media and integrity jobs pause on input under every hashing policy.
+- A source whose root is a junction or symlink indexes the folder it leads to (it indexed nothing on Windows).
+- Media work asked for while a sidecar job runs is queued instead of dropped; a just-made sidecar cannot be evicted before it is shown; big TIFFs are not read whole for EXIF; the viewer's full decode no longer stalls the UI with a texture bigger than the screen needs; copies badges and integrity checkpoints do less work per file.
+
+### Known limitations
+
+- Video playback in the viewer shows still frames; press Enter to open the system player.
+- Date headers sort by capture time only when metadata exists; otherwise the modified time is used.
+- Protection counters catch up at the next index, hash or integrity run (live watcher events do not recount).
+- A disk cloned with its volume serial reads as the same disk: its files count as hard links of the original, and a source on the clone whose root has the original's file id is refused as the same folder. Give the clone a new serial.
+- A Windows disk without a serial (a VHDX Dev Drive, some RAID controllers) is named by its disk number, which can change; set its failure domain by hand. A btrfs filesystem spanning several disks is named by its mounted device only.
+- A source aliased in a way neither the resolved paths nor the root's file id reveal (a share of a local folder reached through the network path while the folder is also a source, when the server reports other file ids) still counts its files twice.
+- TIFFs over 64 MiB are shown without their EXIF orientation.
+- Remote thumbnails follow the "remote thumbnails" setting; the viewer always downloads the file you open.
+- A video whose strip times out is retried each session.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

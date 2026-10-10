@@ -16,6 +16,7 @@ fn account(id: &str, kind: CloudKind) -> CloudAccount {
         root: None,
         client_id_override: None,
         s3: None,
+        webdav: None,
     }
 }
 /// A cloud account of `kind` backed by opendal's in-memory service (no native rename or
@@ -1049,6 +1050,20 @@ fn read_write_create_new_and_dropped_uploads() {
 }
 
 #[test]
+fn ranged_reads_start_at_the_offset() {
+    let cloud = memory_cloud("mem");
+    put(&cloud, "cloud://mem/r.txt", b"hello world");
+    let mut got = String::new();
+    cloud
+        .read_range(&vp("cloud://mem/r.txt"), 6, 3)
+        .unwrap()
+        .expect("cloud reads ranges")
+        .read_to_string(&mut got)
+        .unwrap();
+    assert_eq!(got, "wor");
+}
+
+#[test]
 fn local_copy_checks_the_service_not_the_listing_cache() {
     let cloud = memory_cloud("mem");
     put(&cloud, "cloud://mem/doc.txt", b"old");
@@ -1623,4 +1638,116 @@ fn sign_out_forgets_the_keys_before_revoking_with_the_right_token() {
     sign_out(&account("b2", CloudKind::S3), &store).unwrap();
     assert!(store.keys().is_empty());
     sign_out(&drive, &store).unwrap();
+}
+
+// --- WebDAV ---------------------------------------------------------------------------
+
+#[test]
+fn webdav_url_is_normalised_and_checked() {
+    let n = |u: &str, insecure| WebDavConfig::normalize_url(u, insecure);
+    assert_eq!(
+        n(" https://dav.test/remote.php/dav/files/u ", false).unwrap(),
+        "https://dav.test/remote.php/dav/files/u/"
+    );
+    assert_eq!(n("https://dav.test", false).unwrap(), "https://dav.test/");
+    assert_eq!(
+        n("https://dav.test/a/", false).unwrap(),
+        "https://dav.test/a/"
+    );
+    let e = n("webdav://dav.test/a/", false).unwrap_err();
+    assert!(format!("{e}").contains("webdav://"), "{e}");
+    assert!(n("webdavs://dav.test/a/", true).is_err());
+    assert!(n("http://dav.test/a/", false).is_err());
+    assert_eq!(n("http://dav.test/a", true).unwrap(), "http://dav.test/a/");
+    assert!(n("ftp://dav.test/", true).is_err());
+    assert!(n("https://u:p@dav.test/", false).is_err());
+    assert!(n("https://dav.test/a?x=1", false).is_err());
+    assert!(n("not a url", false).is_err());
+}
+
+#[test]
+fn webdav_config_needs_a_user_and_roundtrips_without_secrets() {
+    let cfg = WebDavConfig {
+        url: "https://dav.test/dav/".into(),
+        username: "u".into(),
+        insecure: false,
+    };
+    cfg.validate().unwrap();
+    assert!(WebDavConfig {
+        username: " ".into(),
+        ..cfg.clone()
+    }
+    .validate()
+    .is_err());
+    let mut a = account("dav", CloudKind::WebDav);
+    a.webdav = Some(cfg);
+    let text = toml::to_string(&a).unwrap();
+    assert!(
+        !text.contains("insecure") && !text.contains("password"),
+        "{text}"
+    );
+    assert_eq!(toml::from_str::<CloudAccount>(&text).unwrap(), a);
+    // forget_account removes the password entry.
+    let store = MemoryStore::default();
+    store.set("dav/password", "pw").unwrap();
+    forget_account(&store, "dav");
+    assert!(store.keys().is_empty());
+    // A missing password fails at connect, without a network request.
+    let err = CloudProvider::connect(
+        &a,
+        Arc::new(MemoryStore::default()),
+        crossbeam_channel::unbounded().0,
+    )
+    .err()
+    .expect("no password");
+    assert!(format!("{err:#}").contains("password"), "{err:#}");
+}
+
+#[test]
+fn webdav_account_lists_uploads_moves_and_deletes_permanently() {
+    assert_eq!(CloudKind::WebDav.remove_kind(), RemoveKind::Permanent);
+    let dav = memory_cloud_of("dav", CloudKind::WebDav);
+    assert_eq!(dav.remove_kind(), RemoveKind::Permanent);
+    dav.mkdir(&vp("cloud://dav/docs")).unwrap();
+    put(&dav, "cloud://dav/docs/a.txt", b"a");
+    put(&dav, "cloud://dav/top.txt", b"t");
+    let complete = dav.list_complete(&vp("cloud://dav/")).unwrap();
+    assert_eq!(names(&complete), ["docs", "top.txt"]);
+    dav.rename(&vp("cloud://dav/docs"), &vp("cloud://dav/papers"))
+        .unwrap();
+    assert_eq!(get(&dav, "cloud://dav/papers/a.txt"), b"a");
+    dav.remove(&vp("cloud://dav/top.txt")).unwrap();
+    assert!(is_not_found(
+        &dav.stat(&vp("cloud://dav/top.txt")).unwrap_err()
+    ));
+}
+
+/// Against a real server: set `KEEL_WEBDAV_TEST_URL`, `KEEL_WEBDAV_TEST_USER` and
+/// `KEEL_WEBDAV_TEST_PASS`, then `cargo test -p keel-vfs -- --ignored webdav_live`.
+/// Works in a scratch folder it creates and removes.
+#[test]
+#[ignore = "needs KEEL_WEBDAV_TEST_URL / _USER / _PASS"]
+fn webdav_live_roundtrip() {
+    let var = |n: &str| std::env::var(n).unwrap_or_else(|_| panic!("{n} not set"));
+    let url = var("KEEL_WEBDAV_TEST_URL");
+    let mut a = account("live", CloudKind::WebDav);
+    a.webdav = Some(WebDavConfig {
+        insecure: url.starts_with("http://"),
+        url,
+        username: var("KEEL_WEBDAV_TEST_USER"),
+    });
+    let store = Arc::new(MemoryStore::default());
+    store
+        .set("live/password", &var("KEEL_WEBDAV_TEST_PASS"))
+        .unwrap();
+    let dav = CloudProvider::connect(&a, store, crossbeam_channel::unbounded().0).unwrap();
+    dav.list_complete(&vp("cloud://live/")).unwrap();
+    let dir = format!("cloud://live/keel-test-{}", std::process::id());
+    dav.mkdir(&vp(&dir)).unwrap();
+    put(&dav, &format!("{dir}/a.txt"), b"hello");
+    dav.rename(&vp(&format!("{dir}/a.txt")), &vp(&format!("{dir}/b.txt")))
+        .unwrap();
+    assert_eq!(get(&dav, &format!("{dir}/b.txt")), b"hello");
+    dav.remove(&vp(&dir)).unwrap();
+    assert!(dav.stat(&vp(&dir)).is_err());
 }

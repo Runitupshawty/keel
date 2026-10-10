@@ -7,21 +7,25 @@
 //! and return a [`types::PlanPreview`] (a plan id plus the hash of the exact input);
 //! `execute` with that id and hash applies it, refusing tampered or expired plans. File
 //! operations go through `plan` (keel-core's `validate -> preview -> execute`). Only
-//! `sources.remove` and `shares.revoke` (taking access away) act directly. Mounts
-//! (`mounts.*`) need a host that serves them ([`Ctx::mounts`], set by keel-daemon).
+//! `shares.revoke` (taking access away) acts directly. Mounts (`mounts.*`) need a host
+//! that serves them ([`Ctx::mounts`], set by keel-daemon).
 
 pub mod client;
 pub mod config;
+pub mod daemon_provider;
 pub mod error;
+pub mod files;
 pub mod host;
 pub mod mcp;
 pub mod net;
 mod ops;
 pub mod plans;
+pub mod private;
 pub mod rpc;
 pub mod socket;
 pub mod types;
 
+pub use daemon_provider::DaemonProvider;
 pub use error::{ApiError, Result};
 pub use ops::OPS;
 pub use plans::PlanStore;
@@ -46,6 +50,11 @@ pub struct Ctx {
     pub plans: PlanStore,
     /// Seconds east of UTC, for `dm:` dates in search queries.
     pub utc_offset: i64,
+    /// One-time links made by `file.get`.
+    pub downloads: files::Downloads,
+    /// Keel's configuration folder (the daemon token, keys): never readable through the
+    /// read operations.
+    pub config_dir: Option<std::path::PathBuf>,
 }
 
 impl Ctx {
@@ -60,6 +69,8 @@ impl Ctx {
             mounts: None,
             plans,
             utc_offset: 0,
+            downloads: Default::default(),
+            config_dir: config::config_dir(),
         }
     }
 
@@ -84,7 +95,7 @@ pub type Handler = fn(&Ctx, Value) -> Result<Value>;
 
 /// How an operation runs.
 pub enum Run {
-    /// At once: reads, `plan`, `execute`, and the removals allowed without a preview.
+    /// At once: reads, `plan`, `execute`, and `shares.revoke`.
     Now(Handler),
     /// Called directly it only previews (stored as a plan); `execute` runs `apply`.
     Previewed {

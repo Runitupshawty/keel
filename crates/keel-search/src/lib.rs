@@ -13,6 +13,7 @@ mod locate;
 mod ntfs;
 #[cfg(target_os = "macos")]
 mod spotlight;
+mod walkindex;
 
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
@@ -22,6 +23,7 @@ pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
 };
+pub use walkindex::{home_root, index_dir as walk_index_dir, WalkIndexSearcher};
 
 use std::path::Path;
 use std::time::SystemTime;
@@ -140,7 +142,11 @@ impl Searcher for Unavailable {
 ///
 /// Windows: Everything whenever it is running (checked per query, re-probed every
 /// 30 s while it is down), else Keel's own index ([`NtfsSearcher`]: the saved drive
-/// index, or the user-folder walk when there is none and Keel is not elevated).
+/// index, or the user-folder walk when there is none and Keel is not elevated); with
+/// no index folder, the persistent walk index.
+///
+/// macOS and Linux: Spotlight / `plocate` / `locate` when they answer, else the
+/// persistent walk index of the home folder ([`WalkIndexSearcher`]), else a plain walk.
 pub fn default_searcher() -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
@@ -152,24 +158,49 @@ pub fn default_searcher() -> Box<dyn Searcher> {
             composite::REPROBE,
         )),
         (Err(_), Some(dir)) => Box::new(NtfsSearcher::open(dir)),
-        (Err(error), None) => Box::new(Unavailable::new(format!(
+        (Err(error), None) => walk_index_or(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
     };
     #[cfg(target_os = "macos")]
-    return match spotlight::Spotlight::new() {
-        Some(searcher) => Box::new(searcher),
-        None => Box::new(Unavailable::new("Spotlight (mdfind) is not available")),
-    };
+    if let Some(searcher) = spotlight::Spotlight::new() {
+        return Box::new(searcher);
+    }
     #[cfg(target_os = "linux")]
-    return match locate::Locate::new() {
-        Some(searcher) => Box::new(searcher),
-        None => Box::new(Unavailable::new(
-            "no locate database and no home directory to search",
-        )),
-    };
+    if let Some(searcher) = locate::Locate::new() {
+        return Box::new(searcher);
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    return walk_index_or(Unavailable::new(
+        "no locate database and no home directory to search",
+    ));
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-    Box::new(Unavailable::new("no search backend on this platform"))
+    walk_index_or(Unavailable::new("no search backend on this platform"))
+}
+
+/// The persistent index of the home folder; if it cannot start, a plain walk of home;
+/// `none` when there is no home either.
+fn walk_index_or(none: Unavailable) -> Box<dyn Searcher> {
+    let Some(home) = home_root() else {
+        return Box::new(none);
+    };
+    match walkindex::index_dir().map(|dir| WalkIndexSearcher::open(dir, vec![home.clone()])) {
+        Some(Ok(index)) => Box::new(index),
+        _ => Box::new(HomeWalk(home)),
+    }
+}
+
+/// Last resort: walk the home folder on every query.
+struct HomeWalk(std::path::PathBuf);
+
+impl Searcher for HomeWalk {
+    fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
+        Ok(walk(&self.0, query))
+    }
+
+    fn available(&self) -> bool {
+        true
+    }
 }
 
 /// Builds the display-path list consumed by the folder jump popup.

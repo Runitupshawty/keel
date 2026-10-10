@@ -47,6 +47,7 @@ pub fn ui(
         .max(1);
     let muted = cx.theme.muted();
     let search = tab.is_search();
+    let trash = tab.is_trash();
     let mut renaming = tab.renaming.take();
     let mut rename_done = false;
     let mut sort_click = None;
@@ -74,7 +75,7 @@ pub fn ui(
         .cell_layout(Layout::left_to_right(Align::Center))
         .column(Column::remainder().at_least(120.0).clip(true))
         .column(
-            Column::initial(if search { 180.0 } else { 56.0 })
+            Column::initial(if search || trash { 180.0 } else { 56.0 })
                 .at_least(30.0)
                 .clip(true),
         )
@@ -103,10 +104,19 @@ pub fn ui(
                         ui.strong("Folder");
                         return;
                     }
+                    if trash && key == SortKey::Ext {
+                        ui.strong("Original location");
+                        return;
+                    }
                     let arrow = match sort {
                         (k, true) if k == key => " ⏶",
                         (k, false) if k == key => " ⏷",
                         _ => "",
+                    };
+                    let label = if trash && key == SortKey::Modified {
+                        "Deleted on"
+                    } else {
+                        label
                     };
                     let text = egui::RichText::new(format!("{label}{arrow}")).strong();
                     if ui.add(egui::Button::new(text).frame(false)).clicked() {
@@ -210,6 +220,10 @@ pub fn ui(
                         }
                         ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate())
                             .on_hover_text(folder);
+                    } else if trash {
+                        let from = crate::trash_ui::original_location(e);
+                        ui.add(egui::Label::new(cell(&from, Some(muted))).truncate())
+                            .on_hover_text(from);
                     } else {
                         ui.label(cell(&e.ext, Some(muted)));
                     }

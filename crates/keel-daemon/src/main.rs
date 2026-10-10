@@ -1,14 +1,15 @@
 //! `keel-daemon`: headless Keel. Hosts the profile's library (and keel-net when
-//! `[net] enabled = true` in the profile's config.toml) and serves the `keel-api`
+//! Settings → Devices, `[devices] enabled`, in the profile's config.toml) and serves the `keel-api`
 //! operations as JSON-RPC 2.0 on a per-user local socket, optionally on a WebSocket.
 //! See docs/api.md.
 
 mod server;
+mod web;
 mod ws;
 
 use clap::Parser;
 use keel_api::client::Client;
-use keel_api::config::{HostConfig, DEFAULT_PROFILE};
+use keel_api::config::{valid_profile, HostConfig, DEFAULT_PROFILE, PROFILE_RULE};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -21,18 +22,33 @@ use std::process::ExitCode;
 )]
 struct Args {
     /// Settings profile: <config dir>/profiles/<NAME>.
-    #[arg(long, value_name = "NAME", default_value = DEFAULT_PROFILE)]
+    #[arg(long, value_name = "NAME", default_value = DEFAULT_PROFILE, value_parser = profile_name)]
     profile: String,
     /// Also serve JSON-RPC over a WebSocket on this address (e.g. 127.0.0.1:7420); clients
     /// send `Authorization: Bearer <token>` from <config dir>/daemon.token.
     #[arg(long, value_name = "ADDR")]
     ws: Option<SocketAddr>,
-    /// Allow --ws on a non-loopback address.
-    #[arg(long, requires = "ws")]
+    /// Serve the browser client on this address (default 127.0.0.1:7421): the page asks
+    /// for the token from <config dir>/daemon.token.
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "127.0.0.1:7421")]
+    web: Option<SocketAddr>,
+    /// Allow --ws or --web on a non-loopback address (use TLS or a private network).
+    #[arg(long)]
     ws_allow_remote: bool,
+    /// A host name a remote --web bind answers to (repeatable; its IP always works).
+    #[arg(long = "web-host", value_name = "NAME")]
+    web_host: Vec<String>,
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
     #[arg(long)]
     status: bool,
+}
+
+/// Profile names become a folder name (`keel_api::config::valid_profile`).
+fn profile_name(name: &str) -> Result<String, String> {
+    match valid_profile(name) {
+        true => Ok(name.to_owned()),
+        false => Err(PROFILE_RULE.into()),
+    }
 }
 
 fn main() -> ExitCode {
@@ -54,10 +70,20 @@ fn main() -> ExitCode {
     if args.status {
         return status(&cfg);
     }
+    if args.ws_allow_remote && args.ws.is_none() && args.web.is_none() {
+        eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
+        return ExitCode::FAILURE;
+    }
+    if !args.web_host.is_empty() && args.web.is_none() {
+        eprintln!("keel-daemon: --web-host needs --web");
+        return ExitCode::FAILURE;
+    }
     let daemon = match server::Daemon::start(server::Options {
         cfg: cfg.clone(),
         ws: args.ws,
+        web: args.web,
         ws_allow_remote: args.ws_allow_remote,
+        web_hosts: args.web_host,
         net: None,
     }) {
         Ok(d) => d,
@@ -81,6 +107,10 @@ fn main() -> ExitCode {
             .ws_addr()
             .map(|a| format!(", WebSocket on ws://{a}"))
             .unwrap_or_default()
+            + &daemon
+                .web_addr()
+                .map(|a| format!(", web client on http://{a}/"))
+                .unwrap_or_default()
     );
     crossbeam_channel::select! {
         recv(signals) -> _ => tracing::info!("signal: stopping"),

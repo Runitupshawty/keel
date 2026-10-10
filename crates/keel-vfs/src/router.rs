@@ -43,6 +43,10 @@ impl Router {
         }));
         let archive = crate::archive::ArchiveProvider::new(cache, Arc::downgrade(&registry));
         registry.write().providers.push(Arc::new(archive));
+        registry
+            .write()
+            .providers
+            .push(Arc::new(crate::TrashProvider));
         Self {
             registry,
             remote_events,

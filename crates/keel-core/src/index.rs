@@ -99,14 +99,21 @@ impl Lister {
                 Ok(fsid::list(&local(dir)?).with_context(|| format!("list {}", dir.display()))?)
             }
             // Fresh and complete: a cut-off listing fails (the folder is kept as unreadable).
-            Lister::Remote(p) => Ok(p.list_complete(dir)?.into_iter().map(item_of).collect()),
+            // Device sources: with the content ids their host claims (`remote_cas`).
+            Lister::Remote(p) => Ok(p
+                .list_complete_ids(dir)?
+                .into_iter()
+                .map(|(e, cas)| Item { cas, ..item_of(e) })
+                .collect()),
         }
     }
 
+    /// The source root (only ever called on it): a root that is a junction or symlink is
+    /// followed, so its target is indexed.
     fn stat(&self, p: &VPath) -> Result<Item> {
         match self {
             Lister::Local => {
-                Ok(fsid::stat(&local(p)?).with_context(|| format!("stat {}", p.display()))?)
+                Ok(fsid::stat_root(&local(p)?).with_context(|| format!("stat {}", p.display()))?)
             }
             Lister::Remote(provider) => Ok(item_of(provider.stat(p)?)),
         }
@@ -132,6 +139,7 @@ fn item_of(e: keel_vfs::Entry) -> Item {
         link: e.is_link,
         fs_id: None,
         error: None,
+        cas: None,
         name: e.name,
         kind,
     }
@@ -486,6 +494,17 @@ impl Walk<'_> {
                     &gone,
                     &still,
                 )?;
+                if matches!(self.lister, Lister::Remote(_)) && item.kind == FILE {
+                    // What a device claims (absent: no claim) stays apart from confirmed
+                    // content ids: it never counts as a copy.
+                    let claim = item.cas.map(|c| c.to_vec());
+                    self.conn
+                        .prepare_cached(
+                            "UPDATE record SET remote_cas = ?2, cas_id = NULL
+                             WHERE id = ?1 AND (remote_cas IS NOT ?2 OR cas_id IS NOT NULL)",
+                        )?
+                        .execute(params![id, claim])?;
+                }
                 if item.kind == DIR && !item.link {
                     stack.push(Pending {
                         dir: p.dir.join(&item.name),
@@ -602,6 +621,18 @@ impl Indexer {
                 "{} is not a folder",
                 src.def.root.display()
             );
+            // The same folder reached another way (a junction, a mapped drive, a bind mount)
+            // would count every file in it twice.
+            if let Some(other) = root
+                .fs_id
+                .as_deref()
+                .and_then(|id| src.folder_elsewhere(id))
+            {
+                anyhow::bail!(
+                    "{} is a folder source {other} already indexes, reached another way",
+                    src.def.root.display()
+                );
+            }
             root.name = match src.def.root.name() {
                 "" => src.def.label.clone(),
                 name => name.to_owned(),
@@ -612,7 +643,12 @@ impl Indexer {
             if let (Some(now_id), Some(was), false) =
                 (&root.fs_id, src.store.meta("root_id")?, adopt)
             {
-                if *now_id != was {
+                // A link root indexed before 0.7.0 stored the link's own id.
+                let link_id = || {
+                    (src.def.root.to_local_path())
+                        .is_some_and(|p| crate::fsid::root_ids(&p).contains(&was))
+                };
+                if *now_id != was && !link_id() {
                     return Err(Offline(
                         OfflineReason::RootMismatch,
                         format!(

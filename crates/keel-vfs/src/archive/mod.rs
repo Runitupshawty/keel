@@ -2,13 +2,18 @@
 //! the UI thread. Links and special files inside archives are not listed or extracted.
 pub mod cache;
 #[cfg(feature = "rar")]
-mod rar;
+pub(crate) mod rar;
 #[cfg(feature = "sevenz")]
 mod sevenz;
 #[cfg(feature = "tar")]
 mod tar;
 #[cfg(feature = "zip")]
 mod zip;
+
+#[cfg(feature = "sevenz")]
+pub(crate) use sevenz::rewrite as sevenz_rewrite;
+#[cfg(feature = "tar")]
+pub(crate) use tar::rewrite as tar_rewrite;
 
 use crate::{Caps, Entry, Kind, Provider, VPath};
 use anyhow::{bail, Context, Result};

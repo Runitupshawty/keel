@@ -9,3 +9,4 @@ target/deps/
 *.new.png
 crates/keel-app/tests/snapshots/*.png
 tmp/
+crates/keel-web/dist/

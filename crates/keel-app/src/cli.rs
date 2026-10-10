@@ -1,14 +1,19 @@
 //! Command line (Task 24): `keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY]`,
 //! and the request a later `keel` hands to the running instance (`single_instance`).
 //! Task 37: subcommands (`keel search`, `keel plan`, `keel mcp`, ...; see `commands`) run
-//! without a window.
+//! without a window. Typed at a terminal, a lone argument that names an existing folder
+//! opens it even when it is also a subcommand name (`keel devices` in a folder that has
+//! `devices`), except `mcp`, `execute`, `daemon` and `search`, which are always the
+//! subcommand; without a terminal (an agent starting `keel mcp`, a script) no name is
+//! taken as a folder. `keel ./name` always means the folder.
 
 use crate::keys::Action;
 use crate::state::AppState;
 use crate::tab::TabKind;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use keel_vfs::VPath;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Parser, Debug, PartialEq)]
@@ -90,8 +95,14 @@ pub enum Command {
     /// Start, stop or check keel-daemon for the profile.
     #[command(subcommand)]
     Daemon(DaemonCmd),
-    /// MCP server over stdio (for Claude Code, Codex and other MCP clients).
-    Mcp,
+    /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
+    /// asks the user to confirm each plan through the client (MCP elicitation).
+    Mcp {
+        /// Let clients that cannot ask the user (no elicitation) execute plans: each call
+        /// must then repeat the preview's summary, which the client's approval shows.
+        #[arg(long)]
+        allow_execute: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq)]
@@ -175,6 +186,9 @@ pub enum DaemonCmd {
     Stop,
     /// Whether keel-daemon runs (exit 0) or not (exit 1).
     Status,
+    /// Replace the token of keel-daemon's --ws and --web: clients must sign in again
+    /// (sessions signed in with the old token are closed).
+    RotateToken,
 }
 
 /// What to open: from this process's command line, or handed over by a later `keel`.
@@ -215,11 +229,32 @@ impl Cli {
     /// Parses `std::env::args`; `--help`, `--version` and bad arguments print and exit (a
     /// release build on Windows has no console of its own, so it borrows the shell's).
     pub fn from_env() -> Self {
-        Self::try_parse().unwrap_or_else(|e| {
+        use std::io::IsTerminal;
+        let interactive = std::io::stdin().is_terminal();
+        Self::parse_args(std::env::args_os(), interactive, |p| p.is_dir()).unwrap_or_else(|e| {
             #[cfg(windows)]
             keel_vfs::desktop::attach_parent_console();
             e.exit()
         })
+    }
+
+    /// Parses `args` (the program name first). When `interactive` (stdin is a terminal),
+    /// the only positional argument is the last one, names a subcommand other than
+    /// `ALWAYS_COMMANDS` and `is_dir` says it is a folder, it is the folder (`./<name>`),
+    /// not the subcommand.
+    pub fn parse_args(
+        args: impl IntoIterator<Item = OsString>,
+        interactive: bool,
+        is_dir: impl Fn(&Path) -> bool,
+    ) -> Result<Self, clap::Error> {
+        let mut args: Vec<OsString> = args.into_iter().collect();
+        if let Some(i) = lone_subcommand(&args).filter(|_| interactive) {
+            let always = ALWAYS_COMMANDS.iter().any(|c| args[i] == **c);
+            if !always && is_dir(Path::new(&args[i])) {
+                args[i] = Path::new(".").join(&args[i]).into_os_string();
+            }
+        }
+        Self::try_parse_from(args)
     }
 
     /// The request, with FOLDER made absolute against this process's working folder (the
@@ -234,6 +269,39 @@ impl Cli {
             select: None,
         }
     }
+}
+
+/// Subcommands a lone name always means (never a folder of that name): what agents and
+/// scripts run, and what would surprise as a window.
+const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
+
+/// The index of the only positional argument in `args` when it is the last argument and a
+/// subcommand's name.
+fn lone_subcommand(args: &[OsString]) -> Option<usize> {
+    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service"];
+    let mut positional = None;
+    let mut i = 1;
+    while i < args.len() {
+        let arg = args[i].to_str()?;
+        if arg == "--" {
+            return None;
+        }
+        i += match arg {
+            a if TAKE_VALUE.contains(&a) => 2,
+            a if a.starts_with('-') => 1,
+            _ if positional.is_some() => return None,
+            _ => {
+                positional = Some(i);
+                1
+            }
+        };
+    }
+    let i = positional.filter(|&i| i == args.len() - 1)?;
+    let name = args[i].to_str()?;
+    Cli::command()
+        .get_subcommands()
+        .any(|c| c.get_name() == name)
+        .then_some(i)
 }
 
 /// Profile names become a folder name (`profiles::valid_name`).
@@ -540,7 +608,18 @@ mod tests {
             cmd(&["daemon", "status"]),
             Command::Daemon(DaemonCmd::Status)
         );
-        assert_eq!(cmd(&["mcp"]), Command::Mcp);
+        assert_eq!(
+            cmd(&["mcp"]),
+            Command::Mcp {
+                allow_execute: false
+            }
+        );
+        assert_eq!(
+            cmd(&["mcp", "--allow-execute"]),
+            Command::Mcp {
+                allow_execute: true
+            }
+        );
         assert_eq!(
             cmd(&["mount", "Photos", "K:", "--subtree", "2026"]),
             Command::Mount {
@@ -574,5 +653,67 @@ mod tests {
         let cli = parse(&[r"D:\work"]).unwrap();
         assert_eq!(cli.command, None);
         assert!(cli.folder.is_some());
+    }
+
+    #[test]
+    fn a_folder_named_like_a_subcommand_opens() {
+        let folders = |p: &Path| {
+            ["search", "devices", "mcp"]
+                .iter()
+                .any(|f| p == Path::new(f))
+        };
+        let parse_in = |interactive: bool, args: &[&str]| {
+            let args = std::iter::once("keel").chain(args.iter().copied());
+            Cli::parse_args(args.map(OsString::from), interactive, folders).unwrap()
+        };
+        let parse = |args: &[&str]| parse_in(true, args);
+        let cli = parse(&["devices"]);
+        assert_eq!(cli.command, None);
+        assert_eq!(cli.folder, Some(Path::new(".").join("devices")));
+        assert!(cli.request().folder.unwrap().ends_with("devices"));
+        let cli = parse(&["--profile", "work", "--new-window", "devices"]);
+        assert_eq!((cli.command, cli.profile.as_deref()), (None, Some("work")));
+        // `mcp` (and execute, daemon, search) is always the subcommand, folder or not.
+        assert_eq!(
+            parse(&["mcp"]).command,
+            Some(Command::Mcp {
+                allow_execute: false
+            })
+        );
+        // Without a terminal (an agent, a script) no name opens a folder.
+        let piped = parse_in(false, &["mcp"]);
+        assert_eq!(
+            (piped.command, piped.folder),
+            (
+                Some(Command::Mcp {
+                    allow_execute: false
+                }),
+                None
+            )
+        );
+        assert_eq!(
+            parse_in(false, &["devices"]).command,
+            Some(Command::Devices)
+        );
+        // Not a folder here, or followed by anything: the subcommand.
+        assert_eq!(parse(&["shares"]).command, Some(Command::Shares));
+        assert_eq!(
+            parse(&["devices", "--json"]).command,
+            Some(Command::Devices)
+        );
+        assert!(matches!(
+            parse(&["search", "x"]).command,
+            Some(Command::Search { .. })
+        ));
+        assert!(matches!(
+            parse(&["mcp", "--allow-execute"]).command,
+            Some(Command::Mcp { .. })
+        ));
+        // `./name` is always the folder.
+        let cli = parse(&["./shares"]);
+        assert_eq!(
+            (cli.command, cli.folder),
+            (None, Some(PathBuf::from("./shares")))
+        );
     }
 }

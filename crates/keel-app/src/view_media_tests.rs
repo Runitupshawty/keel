@@ -194,17 +194,20 @@ fn media_view_draws_tiles_and_requests_visible_sidecars() {
         shapes = out.shapes.len();
     }
     assert!(shapes > 3);
-    // a.jpg (thumbnail) and c.mp4 (strip) were asked for, b.txt was not.
-    assert_eq!(media.queued_for_tests(), 2);
+    // a.jpg (thumbnail) and c.mp4 (strip, and its thumbnail until the strip is there)
+    // were asked for, b.txt was not.
+    assert_eq!(media.queued_for_tests(), 3);
     assert!(tab.row_step >= 1 && tab.page_rows >= tab.row_step);
 }
 
 /// Review focus 1, `#[ignore]`, release only:
 /// `cargo test --release -p keel-app media_grid_perf -- --ignored --nocapture`.
-/// 129,000 synthetic sidecars (made once, cached in the temp folder) behind a fake
-/// listing; scrolling 10 screens in a kittest harness (wgpu) must keep the mean frame
-/// under 16 ms and every frame under 50 ms (frame = egui pass + texture uploads +
-/// tessellation, with the frames paced at 60 Hz so the workers run as they would).
+/// 129,000 synthetic sidecars (made once, about 3 GB, kept in `target/keel-media-perf` or
+/// `KEEL_MEDIA_PERF_DIR`) behind a fake listing: real-size thumbnails (256 px, and 1024 px for big HiDPI tiles), 5 % videos with
+/// a 3200 x 90 strip. Scrolling 10 screens in a kittest harness (wgpu) with M and L tiles at
+/// 1.5x and 2x must keep the mean frame under 16 ms and every frame under 50 ms (frame =
+/// egui pass + texture uploads + tessellation, paced at 60 Hz so the workers run as they
+/// would), and the textures within their byte cap.
 #[test]
 #[ignore]
 fn media_grid_perf() {
@@ -216,45 +219,78 @@ fn media_grid_perf() {
         eprintln!("media_grid_perf: run with --release");
         return;
     }
-    let root = std::env::temp_dir().join("keel-media-perf-129k");
+    // Big (about 3 GB): under the workspace's target folder, or KEEL_MEDIA_PERF_DIR.
+    let root = std::env::var_os("KEEL_MEDIA_PERF_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // No `..` in it: the grid's keys hash the path as a normalized VPath gives it.
+            let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap();
+            crates
+                .parent()
+                .unwrap()
+                .join("target")
+                .join("keel-media-perf")
+        })
+        .join("129k-v3");
     let fake = root.join("photos");
     let store_dir = root.join("store");
     let mtime = 1_700_000_000_i64;
-    let entry = |i: usize| keel_vfs::Entry {
-        path: VPath::local(fake.join(format!("img{i:06}.jpg"))),
-        name: format!("img{i:06}.jpg"),
-        kind: Kind::File,
-        size: 1000,
-        modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(mtime as u64)),
-        hidden: false,
-        is_link: false,
-        encrypted: false,
-        ext: "jpg".into(),
+    // Every 20th file is a video.
+    let name = |i: usize| {
+        if i % 20 == 7 {
+            format!("vid{i:06}.mp4")
+        } else {
+            format!("img{i:06}.jpg")
+        }
+    };
+    let entry = |i: usize| {
+        let name = name(i);
+        keel_vfs::Entry {
+            path: VPath::local(fake.join(&name)),
+            ext: name.rsplit('.').next().unwrap().into(),
+            name,
+            kind: Kind::File,
+            size: 1000,
+            modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(mtime as u64)),
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+        }
     };
     if !root.join("ready").exists() {
         let t = Instant::now();
         std::fs::create_dir_all(&store_dir).unwrap();
-        // 64 tiny lossless WebP variants, written under each key's sidecar folder.
-        let webps: Vec<Vec<u8>> = (0..64u8)
-            .map(|c| {
-                let img = image::RgbImage::from_fn(32, 24, |x, y| {
-                    image::Rgb([c * 4, (x * 8) as u8, (y * 10) as u8])
-                });
-                let mut out = std::io::Cursor::new(Vec::new());
-                img.write_to(&mut out, image::ImageFormat::WebP).unwrap();
-                out.into_inner()
-            })
-            .collect();
+        let webp = |w: u32, h: u32, c: u8| {
+            let img = image::RgbImage::from_fn(w, h, |x, y| {
+                image::Rgb([c.wrapping_mul(4), (x * 255 / w) as u8, (y * 255 / h) as u8])
+            });
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::WebP).unwrap();
+            out.into_inner()
+        };
+        // 32 variants of each kind of sidecar, at their real sizes.
+        let thumbs: Vec<Vec<u8>> = (0..32u8).map(|c| webp(256, 192, c)).collect();
+        let bigs: Vec<Vec<u8>> = (0..32u8).map(|c| webp(1024, 768, c)).collect();
+        let strips: Vec<Vec<u8>> = (0..32u8).map(|c| webp(3200, 90, c)).collect();
         std::thread::scope(|s| {
             for part in 0..8 {
-                let (webps, store_dir, fake) = (&webps, &store_dir, &fake);
+                let (thumbs, bigs, strips) = (&thumbs, &bigs, &strips);
+                let (store_dir, fake, name) = (&store_dir, &fake, &name);
                 s.spawn(move || {
                     for i in (part..N).step_by(8) {
-                        let p = fake.join(format!("img{i:06}.jpg"));
-                        let key = SidecarKey::local(&p, mtime, 1000, None);
+                        let p = fake.join(name(i));
+                        // Keyed as the grid keys it: the mtime in nanoseconds.
+                        let key = SidecarKey::local(&p, mtime * 1_000_000_000, 1000, None);
                         let dir = store_dir.join(key.dir_name());
                         std::fs::create_dir_all(&dir).unwrap();
-                        std::fs::write(dir.join("thumb-256.webp"), &webps[i % 64]).unwrap();
+                        std::fs::write(dir.join("thumb-256.webp"), &thumbs[i % 32]).unwrap();
+                        if i % 20 == 7 {
+                            std::fs::write(dir.join("strip.webp"), &strips[i % 32]).unwrap();
+                        } else {
+                            std::fs::write(dir.join("thumb-1024.webp"), &bigs[i % 32]).unwrap();
+                        }
                     }
                 });
             }
@@ -262,7 +298,6 @@ fn media_grid_perf() {
         std::fs::write(root.join("ready"), b"").unwrap();
         println!("made {N} sidecars in {:.1} s", t.elapsed().as_secs_f32());
     }
-    let store = Arc::new(Sidecars::open(&store_dir, 64 << 30).unwrap());
 
     struct Perf {
         tab: Tab,
@@ -271,94 +306,112 @@ fn media_grid_perf() {
         library: crate::library::LibraryUi,
         theme: crate::theme::Theme,
     }
-    let ctx = egui::Context::default();
-    let (tx, _rx) = crossbeam_channel::unbounded();
-    let router = Arc::new(Router::new());
-    let media = Media::new(ctx.clone(), router.clone());
-    media.set_store(store);
-    let mut tab = Tab::new(VPath::local(&fake));
-    tab.set_listing(Listing::new((0..N).map(entry).collect()));
-    let mut media_tile = media;
-    media_tile.tile = TileSize::S;
-    let state = Perf {
-        tab,
-        media: media_tile,
-        thumbs: crate::view_grid::Thumbs::new(tx.clone(), ctx.clone(), router.clone()),
-        library: crate::library::LibraryUi::new(&router, tx, ctx.clone()),
-        theme: crate::theme::Theme::load("dark"),
-    };
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(1600.0, 1000.0))
-        .wgpu()
-        .build_ui_state(
-            |ui, s: &mut Perf| {
-                s.media.upload(ui.ctx());
-                let mut cx = ViewCx {
-                    theme: &s.theme,
-                    show_hidden: false,
-                    thumbs: &mut s.thumbs,
-                    active: false,
-                    banner: None,
-                    preview: None,
-                    column_widths: &mut Vec::new(),
-                    library: &s.library,
-                    drives: &[],
-                    searcher: None,
-                    tags_column: false,
-                    media: &mut s.media,
-                };
-                super::ui(ui, (0, 0), &mut s.tab, &mut cx, &mut Vec::new());
-            },
-            state,
+    let mut failed = Vec::new();
+    for (size, ppp) in [
+        (TileSize::M, 1.5),
+        (TileSize::M, 2.0),
+        (TileSize::L, 1.5),
+        (TileSize::L, 2.0),
+    ] {
+        let store = Arc::new(Sidecars::open(&store_dir, 64 << 30).unwrap());
+        let ctx = egui::Context::default();
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let router = Arc::new(Router::new());
+        let mut media = Media::new(ctx.clone(), router.clone());
+        media.set_store(store);
+        media.tile = size;
+        let mut tab = Tab::new(VPath::local(&fake));
+        tab.set_listing(Listing::new((0..N).map(entry).collect()));
+        let state = Perf {
+            tab,
+            media,
+            thumbs: crate::view_grid::Thumbs::new(tx.clone(), ctx.clone(), router.clone()),
+            library: crate::library::LibraryUi::new(&router, tx, ctx.clone()),
+            theme: crate::theme::Theme::load("dark"),
+        };
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1600.0, 1000.0))
+            .with_pixels_per_point(ppp)
+            .wgpu()
+            .build_ui_state(
+                |ui, s: &mut Perf| {
+                    s.media.upload(ui.ctx());
+                    let mut cx = ViewCx {
+                        theme: &s.theme,
+                        show_hidden: false,
+                        thumbs: &mut s.thumbs,
+                        active: false,
+                        banner: None,
+                        preview: None,
+                        column_widths: &mut Vec::new(),
+                        library: &s.library,
+                        drives: &[],
+                        searcher: None,
+                        tags_column: false,
+                        media: &mut s.media,
+                    };
+                    super::ui(ui, (0, 0), &mut s.tab, &mut cx, &mut Vec::new());
+                },
+                state,
+            );
+        let frame = |h: &mut Harness<Perf>| {
+            let t = Instant::now();
+            h.step();
+            let ppp = h.ctx.pixels_per_point();
+            let shapes = h.output().shapes.clone();
+            let _ = h.ctx.tessellate(shapes, ppp);
+            t.elapsed()
+        };
+        for _ in 0..5 {
+            frame(&mut h);
+        }
+        let (cols, page) = (h.state().tab.row_step, h.state().tab.page_rows);
+        let screens = 10;
+        let steps_per_screen = 6;
+        let rows_per_step = (page / cols).div_ceil(steps_per_screen).max(1);
+        let mut pos = page.saturating_sub(1);
+        let mut times = Vec::new();
+        let (mut ready_seen, mut peak_bytes) = (0usize, 0usize);
+        for _ in 0..screens * steps_per_screen {
+            pos = (pos + rows_per_step * cols).min(N - 1);
+            h.state_mut().tab.scroll_to = Some(pos);
+            let dt = frame(&mut h);
+            times.push(dt);
+            ready_seen += h.state().media.len();
+            peak_bytes = peak_bytes.max(h.state().media.bytes());
+            std::thread::sleep(Duration::from_millis(16).saturating_sub(dt));
+        }
+        // Settle: the last screen's thumbnails all arrive.
+        let settle = Instant::now();
+        for _ in 0..120 {
+            let dt = frame(&mut h);
+            times.push(dt);
+            peak_bytes = peak_bytes.max(h.state().media.bytes());
+            std::thread::sleep(Duration::from_millis(16).saturating_sub(dt));
+        }
+        let ms: Vec<f64> = times.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
+        let mean = ms.iter().sum::<f64>() / ms.len() as f64;
+        let max = ms.iter().cloned().fold(0.0, f64::max);
+        let mut sorted = ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p95 = sorted[sorted.len() * 95 / 100];
+        println!(
+            "media grid perf {size:?} @{ppp}x: {N} items (5 % video), {cols} cols, {} frames: \
+             mean {mean:.2} ms, p95 {p95:.2} ms, max {max:.2} ms; textures {} (avg {} while \
+             scrolling), peak {:.0} MiB, settle {:.1} s",
+            ms.len(),
+            h.state().media.len(),
+            ready_seen / (screens * steps_per_screen),
+            peak_bytes as f64 / (1 << 20) as f64,
+            settle.elapsed().as_secs_f32()
         );
-    let frame = |h: &mut Harness<Perf>| {
-        let t = Instant::now();
-        h.step();
-        let ppp = h.ctx.pixels_per_point();
-        let shapes = h.output().shapes.clone();
-        let _ = h.ctx.tessellate(shapes, ppp);
-        t.elapsed()
-    };
-    for _ in 0..5 {
-        frame(&mut h);
+        // Thumbnails really arrived (a key mismatch would only measure failed tiles).
+        assert!(peak_bytes > 0, "no texture was ever uploaded");
+        if mean >= 16.0 || max >= 50.0 || peak_bytes > crate::media::TEXTURE_BYTES {
+            failed.push(format!("{size:?} @{ppp}x: mean {mean:.2}, max {max:.2} ms"));
+        }
     }
-    let (cols, page) = (h.state().tab.row_step, h.state().tab.page_rows);
-    let screens = 10;
-    let steps_per_screen = 6;
-    let rows_per_step = (page / cols).div_ceil(steps_per_screen).max(1);
-    let mut pos = page.saturating_sub(1);
-    let mut times = Vec::new();
-    let mut ready_seen = 0usize;
-    for _ in 0..screens * steps_per_screen {
-        pos = (pos + rows_per_step * cols).min(N - 1);
-        h.state_mut().tab.scroll_to = Some(pos);
-        let dt = frame(&mut h);
-        times.push(dt);
-        ready_seen += h.state().media.len();
-        std::thread::sleep(Duration::from_millis(16).saturating_sub(dt));
-    }
-    // Settle: the last screen's thumbnails all arrive.
-    let settle = Instant::now();
-    for _ in 0..120 {
-        let dt = frame(&mut h);
-        times.push(dt);
-        std::thread::sleep(Duration::from_millis(16).saturating_sub(dt));
-    }
-    let ms: Vec<f64> = times.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
-    let mean = ms.iter().sum::<f64>() / ms.len() as f64;
-    let max = ms.iter().cloned().fold(0.0, f64::max);
-    let mut sorted = ms.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p95 = sorted[sorted.len() * 95 / 100];
-    println!(
-        "media grid perf: {N} items, {cols} cols, {} frames: mean {mean:.2} ms, p95 {p95:.2} ms, max {max:.2} ms; textures {} (avg {} while scrolling), settle {:.1} s",
-        ms.len(),
-        h.state().media.len(),
-        ready_seen / (screens * steps_per_screen),
-        settle.elapsed().as_secs_f32()
-    );
-    assert!(mean < 16.0, "mean frame {mean:.2} ms");
-    assert!(max < 50.0, "max frame {max:.2} ms");
+    assert!(failed.is_empty(), "{failed:?}");
 }
 
 /// Live check of the real app (release, GPU), `#[ignore]`:

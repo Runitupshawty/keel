@@ -481,6 +481,9 @@ pub fn context_menu(
     entry: Option<&keel_vfs::Entry>,
     out: &mut Vec<Action>,
 ) {
+    if tab.is_trash() {
+        return crate::trash_ui::context_menu(ui, entry, out);
+    }
     let on_item = entry.is_some();
     let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
@@ -492,7 +495,23 @@ pub fn context_menu(
     };
     if on_item {
         item(ui, "Open", "Enter", Action::Enter);
-        item(ui, "Open with…", "", Action::OpenWith);
+        let recent: crate::settings::OpenWith = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("keel-open-with")))
+            .unwrap_or_default();
+        let apps = entry.map_or(&[][..], |e| recent.recent(&e.ext));
+        if apps.is_empty() {
+            item(ui, "Open with…", "Ctrl+Shift+O", Action::OpenWith);
+        } else {
+            ui.menu_button("Open with", |ui| {
+                for app in apps.iter().take(5) {
+                    let label = crate::platform::app_label(app);
+                    item(ui, &label, "", Action::OpenWithRecent(app.clone()));
+                }
+                ui.separator();
+                item(ui, "Choose app…", "Ctrl+Shift+O", Action::OpenWith);
+            });
+        }
         if search {
             item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
         }
@@ -515,11 +534,26 @@ pub fn context_menu(
     if on_item {
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);
+        item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
         item(ui, "Delete", "Del", Action::Delete);
         ui.separator();
+        item(
+            ui,
+            "Send with Spacedrop…",
+            "",
+            Action::Devices(crate::devices::DevCmd::SendSelection),
+        );
         let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
         item(ui, &add, "", Action::AddToZip);
         item(ui, "Compress to zip…", "", Action::CompressToZip);
+        if let Some((archive, _)) = crate::jobs::add_target(&tab.targets()) {
+            item(
+                ui,
+                &format!("Add to \"{}\"…", archive.name),
+                "",
+                Action::AddToArchive,
+            );
+        }
     }
     ui.separator();
     item(ui, "New folder", "Ctrl+Shift+N", Action::NewFolder);
@@ -566,6 +600,21 @@ pub struct DragPayload {
 }
 
 impl DragPayload {
+    /// Dropping this on the archive `archive`: add to it (entries from inside an archive
+    /// are not files on disk, so they extract nowhere and the drop is ignored).
+    pub fn add_action(&self, archive: VPath) -> Action {
+        match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
+            Some(_) => Action::Drop {
+                paths: Vec::new(),
+                from: None,
+                dst: archive,
+            },
+            None => Action::AddTo {
+                archive,
+                src: self.paths.clone(),
+            },
+        }
+    }
     /// Dropping this on `dst`: entries dragged out of an archive extract, others copy/move.
     pub fn action(&self, dst: VPath) -> Action {
         match crate::jobs::ArchiveSrc::picked(&self.dir, &self.paths) {
@@ -599,7 +648,8 @@ pub fn drag_and_drop(
             paths,
         });
     }
-    if entry.kind != keel_vfs::Kind::Dir {
+    let archive = crate::jobs::is_addable_archive(entry);
+    if entry.kind != keel_vfs::Kind::Dir && !archive {
         return;
     }
     if let Some(p) = r.dnd_hover_payload::<DragPayload>() {
@@ -612,7 +662,11 @@ pub fn drag_and_drop(
     }
     if let Some(p) = r.dnd_release_payload::<DragPayload>() {
         if !p.paths.contains(&entry.path) {
-            out.push(p.action(entry.path.clone()));
+            out.push(if archive {
+                p.add_action(entry.path.clone())
+            } else {
+                p.action(entry.path.clone())
+            });
         }
     }
 }

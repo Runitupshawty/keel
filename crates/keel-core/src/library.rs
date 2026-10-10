@@ -139,6 +139,8 @@ pub struct Source {
     held: RwLock<Option<OfflineReason>>,
     /// The volume the root was last seen on (`library.db` `source.volume_id`).
     pub(crate) volume_id: RwLock<Option<String>>,
+    /// The library's sources (this one included), for checks across sources.
+    peers: Weak<RwLock<Vec<Arc<Source>>>>,
     dir: PathBuf,
 }
 
@@ -148,6 +150,7 @@ impl Source {
         id: SourceId,
         def: SourceDef,
         volume_id: Option<String>,
+        peers: Weak<RwLock<Vec<Arc<Source>>>>,
     ) -> Result<Source> {
         let store = Pool::open(&dir.join("source.db"), Store::Source)
             .with_context(|| format!("source store {}", def.label))?;
@@ -177,6 +180,7 @@ impl Source {
             write: Mutex::new(()),
             held: RwLock::new(held),
             volume_id: RwLock::new(volume_id),
+            peers,
             dir,
         })
     }
@@ -188,6 +192,11 @@ impl Source {
     }
 
     /// Local Windows names compare case-insensitively.
+    /// A paired device's folder: its content ids are that device's claims, never copies.
+    pub(crate) fn is_device(&self) -> bool {
+        self.def.kind == SourceKind::Device || self.def.root.scheme == "node"
+    }
+
     pub(crate) fn nocase(&self) -> bool {
         cfg!(windows) && self.def.root.scheme == "file"
     }
@@ -210,6 +219,24 @@ impl Source {
             status: self.status.read().clone(),
             generation: self.generation.load(Ordering::SeqCst),
         }
+    }
+
+    /// Another source of the library holding a folder record with native id `fs_id` (the
+    /// same folder reached through a junction, a symlink, a subst drive or a bind mount):
+    /// its label.
+    pub(crate) fn folder_elsewhere(&self, fs_id: &str) -> Option<String> {
+        if fs_id.starts_with("h:") {
+            return None;
+        }
+        let peers = self.peers.upgrade()?.read().clone();
+        peers.iter().filter(|s| s.id != self.id).find_map(|s| {
+            let c = s.store.get().ok()?;
+            let hit = c
+                .prepare_cached("SELECT 1 FROM record WHERE fs_id = ?1 AND kind = 1 LIMIT 1")
+                .and_then(|mut q| q.exists([fs_id]))
+                .unwrap_or(false);
+            hit.then(|| s.def.label.clone())
+        })
     }
 
     /// Where `source.db` lives (moves with the data).
@@ -258,7 +285,7 @@ impl Source {
             return false;
         };
         let same = match self.store.meta("root_id").ok().flatten() {
-            Some(was) => crate::fsid::stat(&root).ok().and_then(|i| i.fs_id) == Some(was),
+            Some(was) => crate::fsid::root_ids(&root).contains(&was),
             None => true,
         };
         let filled = std::fs::read_dir(&root).is_ok_and(|mut d| d.next().is_some());
@@ -273,12 +300,12 @@ impl Source {
         if self.store.meta("adopt_root").ok().flatten().is_some() {
             return false;
         }
-        match (
-            self.store.meta("root_id").ok().flatten(),
-            crate::fsid::stat(&root).ok().and_then(|i| i.fs_id),
-        ) {
-            (Some(was), Some(now)) => was != now,
-            _ => false,
+        match self.store.meta("root_id").ok().flatten() {
+            Some(was) => {
+                let now = crate::fsid::root_ids(&root);
+                !now.is_empty() && !now.contains(&was)
+            }
+            None => false,
         }
     }
 }
@@ -360,6 +387,29 @@ pub struct LibrarySummary {
     pub sources: usize,
 }
 
+/// A source store's footprint (`Library::store_usage`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreUsage {
+    pub bytes: u64,
+    /// Tags applied to its records (one per record and tag), Favorites not counted.
+    pub tags: u64,
+    pub favorites: u64,
+}
+
+/// Bytes of the files under `dir` (unreadable entries count 0).
+fn walkdir_size(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => walkdir_size(&e.path()),
+            Ok(_) => e.metadata().map_or(0, |m| m.len()),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryStats {
     pub sources: usize,
@@ -385,10 +435,13 @@ fn now_ms() -> u64 {
 /// locked until the last job thread that outlived `close` has ended.
 pub(crate) struct Shared {
     pub(crate) db: Pool,
-    pub(crate) sources: RwLock<Vec<Arc<Source>>>,
+    pub(crate) sources: Arc<RwLock<Vec<Arc<Source>>>>,
     pub(crate) router: RwLock<Arc<Router>>,
     /// Unix ms until which background hashing pauses (`Library::note_activity`).
     pub(crate) busy_until: AtomicU64,
+    /// Whether hashing pauses on activity too (`Library::set_hash_idle_only`); sidecar and
+    /// integrity jobs always do.
+    pub(crate) hash_on_activity: AtomicBool,
     pub(crate) pause_on_battery: AtomicBool,
     /// Whether a completed walk schedules hashing.
     pub(crate) hash_after_walk: AtomicBool,
@@ -587,21 +640,24 @@ impl Library {
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        let mut sources = Vec::new();
+        let sources = Arc::new(RwLock::new(Vec::new()));
         for (id, def, volume) in rows {
             let def: SourceDef = serde_json::from_str(&def)?;
-            sources.push(Arc::new(Source::open(
+            let source = Source::open(
                 dir.join("sources").join(&id),
                 SourceId(id),
                 def,
                 volume,
-            )?));
+                Arc::downgrade(&sources),
+            )?;
+            sources.write().push(Arc::new(source));
         }
         let shared = Arc::new(Shared {
             db,
-            sources: RwLock::new(sources),
+            sources,
             router: RwLock::new(Arc::new(Router::new())),
             busy_until: AtomicU64::new(0),
+            hash_on_activity: AtomicBool::new(true),
             pause_on_battery: AtomicBool::new(true),
             hash_after_walk: AtomicBool::new(true),
             hash_job: Mutex::new(None),
@@ -693,24 +749,60 @@ impl Library {
     }
 
     /// Registers a source; it is indexed by `Indexer::full_walk` (or an index job).
-    /// Sources never overlap: a root inside (or around) another source's root is refused.
+    /// Sources never overlap: a root inside (or around) another source's root is refused,
+    /// also when one of them is reached through a junction, symlink or subst drive (their
+    /// resolved paths are compared too; the walk refuses the aliases this cannot see).
     pub fn add_source(&self, def: SourceDef) -> Result<SourceId> {
+        anyhow::ensure!(
+            (def.kind == SourceKind::Device) == (def.root.scheme == "node"),
+            "a device source is a node:// folder, and a node:// folder is a device source"
+        );
         anyhow::ensure!(
             def.root.split_archive().is_none(),
             "a source cannot be inside an archive: {}",
             def.root.display()
         );
+        // Resolved outside the lock (an unreachable share can take a while to answer).
+        let resolve = |root: &VPath| {
+            root.to_local_path()
+                .and_then(|p| std::fs::canonicalize(p).ok())
+        };
+        let real = resolve(&def.root);
+        let others: Vec<(SourceId, Option<PathBuf>)> = self
+            .shared
+            .sources
+            .read()
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    real.as_ref().and_then(|_| resolve(&s.def.root)),
+                )
+            })
+            .collect();
         let mut sources = self.shared.sources.write();
         for s in sources.iter() {
+            let aliased = match (&real, others.iter().find(|(id, _)| *id == s.id)) {
+                (Some(a), Some((_, Some(b)))) => a.starts_with(b) || b.starts_with(a),
+                _ => false,
+            };
             anyhow::ensure!(
-                s.relative(&def.root).is_none() && relative(&def.root, &s.def.root).is_none(),
+                !aliased
+                    && s.relative(&def.root).is_none()
+                    && relative(&def.root, &s.def.root).is_none(),
                 "{} overlaps source {}",
                 def.root.display(),
                 s.def.label
             );
         }
         let id = SourceId(crate::random_id()?);
-        let source = Source::open(self.root.join("sources").join(&id.0), id.clone(), def, None)?;
+        let source = Source::open(
+            self.root.join("sources").join(&id.0),
+            id.clone(),
+            def,
+            None,
+            Arc::downgrade(&self.shared.sources),
+        )?;
         self.shared.db.get()?.execute(
             "INSERT INTO source(id, def, created) VALUES (?1, ?2, ?3)",
             rusqlite::params![id.0, serde_json::to_string(&source.def)?, crate::now()],
@@ -757,6 +849,23 @@ impl Library {
             }
         }
         Ok(())
+    }
+
+    /// What `remove_source(id, true)` would delete: the store's size on disk, the tags on
+    /// its records (Favorites not counted) and its favorites.
+    pub fn store_usage(&self, id: &SourceId) -> Result<StoreUsage> {
+        let source = self.source(id).with_context(|| format!("no source {id}"))?;
+        let bytes = walkdir_size(&source.dir);
+        let (tags, favorites) = source.store.get()?.query_row(
+            "SELECT coalesce(sum(tag <> ?1), 0), coalesce(sum(tag = ?1), 0) FROM record_tag",
+            [crate::FAVORITES],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
+        )?;
+        Ok(StoreUsage {
+            bytes,
+            tags,
+            favorites,
+        })
     }
 
     pub fn jobs(&self) -> &Jobs {
@@ -828,6 +937,63 @@ impl Library {
     /// The newest `limit` operation log entries (redacted when written), newest first.
     pub fn op_log(&self, limit: usize) -> Result<Vec<crate::OpLogEntry>> {
         crate::oplog::entries(&self.shared, limit)
+    }
+
+    /// Content ids the index holds for `entries` (listed children of folder `dir`, relative
+    /// to the root of source `id`): for files whose size and modification time still match
+    /// their record and whose bytes did not drift, else None. A device source holds no
+    /// confirmed content ids (its host's claims are not passed on).
+    pub fn content_ids(
+        &self,
+        id: &SourceId,
+        dir: &str,
+        entries: &[keel_vfs::Entry],
+    ) -> Result<Vec<Option<[u8; 32]>>> {
+        use rusqlite::OptionalExtension;
+        let src = self.source(id).with_context(|| format!("no source {id}"))?;
+        let c = src.store.get()?;
+        let Some((parent, _)) = crate::index::resolve(&c, dir, src.nocase())? else {
+            return Ok(vec![None; entries.len()]);
+        };
+        let mut stmt = c.prepare_cached(
+            "SELECT size, mtime, cas_id FROM record
+             WHERE parent = ?1 AND name = ?2 AND kind = 0 AND cas_id IS NOT NULL
+                 AND drift IS NULL",
+        )?;
+        entries
+            .iter()
+            .map(|e| {
+                let row: Option<(i64, Option<i64>, Vec<u8>)> = stmt
+                    .query_row(rusqlite::params![parent, e.name], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .optional()?;
+                Ok(row
+                    .filter(|(size, mtime, _)| {
+                        *size as u64 == e.size && *mtime == e.modified.map(crate::fsid::unix_ns)
+                    })
+                    .and_then(|(_, _, cas)| cas.try_into().ok()))
+            })
+            .collect()
+    }
+
+    /// Appends finished operations (redacted like every entry) in one transaction: what a
+    /// busy logger batches (the library database syncs every commit).
+    pub fn log_ops(&self, entries: &[crate::OpDone]) -> Result<()> {
+        crate::oplog::record_done(&self.shared, entries)
+    }
+
+    /// Appends a finished operation (redacted like every entry); returns its id.
+    pub fn log_op(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        result: &str,
+        ok: bool,
+    ) -> Result<i64> {
+        let id = crate::oplog::record(&self.shared, kind, payload, result)?;
+        crate::oplog::set_result(&self.shared, id, result, ok)?;
+        Ok(id)
     }
 
     pub fn sources(&self) -> Vec<SourceSummary> {
@@ -978,6 +1144,21 @@ pub(crate) mod tests {
             poll_secs: None,
             hash_shares: false,
         }
+    }
+
+    #[test]
+    fn device_sources_are_node_folders_and_only_those() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "t").unwrap();
+        let mut local_device = folder("d", root.path());
+        local_device.kind = SourceKind::Device;
+        assert!(lib.add_source(local_device).is_err());
+        let mut node_folder = folder("n", root.path());
+        node_folder.root = VPath::parse("node://peer/source").unwrap();
+        assert!(lib.add_source(node_folder.clone()).is_err());
+        node_folder.kind = SourceKind::Device;
+        assert!(lib.add_source(node_folder).is_ok());
     }
 
     #[test]

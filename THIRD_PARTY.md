@@ -10,19 +10,22 @@ Keel uses the following separately distributed components. Their licenses remain
 | `async-trait` 0.1 | Async network Handler interface | MIT OR Apache-2.0 | Rust proc macro, build dependency |
 | `data-encoding` 2 | Public identity and pairing ticket base32 | MIT | Rust crate, compiled in |
 | `tokio-util` 0.7 | Network cancellation and task tracking | MIT | Rust crate, compiled in |
+| `serde_bytes` 0.11 | Content ids as CBOR byte strings in the network protocol | MIT OR Apache-2.0 | Rust crate, compiled in |
+| `qrcode` 0.14 | Device pairing QR codes (no image renderers) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [Everything SDK](https://www.voidtools.com/support/everything/sdk/) by voidtools | Fast Windows file search | MIT | Downloaded by `scripts/fetch-deps.ps1`; `Everything64.dll` is placed in `target/deps/` and the SDK license text in `target/deps/licenses/everything/` (the `Everything.h` header, which carries the MIT notice, when the SDK zip has no separate license file) |
 | [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) / PDFium | PDF rendering | PDFium: BSD 3-Clause; pdfium-binaries build scripts: MIT | Downloaded (pinned to `chromium/7543`) by `scripts/fetch-deps.ps1` / `fetch-deps.sh`; `pdfium.dll` (Windows), `libpdfium.dylib` (macOS) or `libpdfium.so` (Linux) is placed in `target/deps/`, and its license bundle is preserved in `target/deps/licenses/pdfium/` for releases |
 | [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme) by Material Extensions (repository `main` and npm `material-icon-theme` 5.39.0, fetched 2026-10-08) | Default file and folder icons | MIT | Committed as SVG in `assets/icons/default/` with its license in `assets/icons/default/LICENSE`; embedded in the binary. Files: audio, c, console, cpp, csharp, css, database, document, exe, file, folder-open, folder, font, git, go, html, image, java, javascript, json, lock, log, markdown, pdf, powerpoint, python, rust, settings, svg, table, toml, typescript, video, word, xml, yaml, zip |
 | [libunrar](https://www.rarlab.com/rar_add.htm) via the `unrar_sys` crate 0.5 (crate: MIT OR Apache-2.0) | Read-only RAR listing and extraction (`keel-vfs` feature `rar`, on by default) | UnRAR license (free use; may not be used to re-create the RAR compression algorithm) | Compiled from source by `unrar_sys` and linked statically; never used to create RAR archives |
-| [`sevenz-rust`](https://crates.io/crates/sevenz-rust) 0.6 | 7z reading | Apache-2.0 | Rust crate, compiled in |
-| [`zip`](https://crates.io/crates/zip) 2.4 | zip reading and Add to zip | MIT | Rust crate, compiled in |
-| [`tar`](https://crates.io/crates/tar) 0.4 | tar reading | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`sevenz-rust2`](https://crates.io/crates/sevenz-rust2) 0.23 (replaces the unmaintained `sevenz-rust`; with `lzma-rust2` 0.21) | 7z reading and writing | Apache-2.0 | Rust crate, compiled in |
+| [`zip`](https://crates.io/crates/zip) 2.4 | zip reading, Add to zip and Office/OpenDocument previews | MIT | Rust crate, compiled in |
+| [`tar`](https://crates.io/crates/tar) 0.4 | tar reading and writing | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`lzma-rs`](https://crates.io/crates/lzma-rs) 0.3 | `.tar.xz` decompression | MIT | Rust crate, compiled in |
 | [`ruzstd`](https://crates.io/crates/ruzstd) 0.8 | `.tar.zst` decompression | MIT | Rust crate, compiled in |
 | [`portable-pty`](https://crates.io/crates/portable-pty) 0.9 | Pseudo-terminal for the terminal pane | MIT | Rust crate, compiled in |
 | [`vt100`](https://crates.io/crates/vt100) 0.16 | Terminal escape-sequence parser and screen grid | MIT | Rust crate, compiled in |
-| [`russh`](https://crates.io/crates/russh) 0.50 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
-| [`russh-sftp`](https://crates.io/crates/russh-sftp) 2.4 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
+| [`russh`](https://crates.io/crates/russh) 0.64 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
+| [`ring`](https://crates.io/crates/ring) 0.17 | SSH ciphers and key exchange (russh's crypto backend) | Apache-2.0 AND ISC | Rust crate with C and assembly, compiled in |
+| [`russh-sftp`](https://crates.io/crates/russh-sftp) 3.0 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
 | [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |
@@ -35,15 +38,17 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`blake3`](https://crates.io/crates/blake3) 1 | Content ids for the duplicate finder (pure-Rust build) | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Rust crate, compiled in |
 | [`notify`](https://crates.io/crates/notify) 6 | Live file watching for library sources | CC0-1.0 | Rust crate, compiled in |
 | [`ignore`](https://crates.io/crates/ignore) 0.4 | Directory walking | Unlicense OR MIT | Rust crate, compiled in |
-| [`battery`](https://crates.io/crates/battery) 0.7 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | Apache-2.0 OR MIT | Rust crate, compiled in |
+| [`starship-battery`](https://crates.io/crates/starship-battery) 0.12 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | ISC | Rust crate, compiled in |
 | [`regex`](https://crates.io/crates/regex) 1.13 | Regex search queries | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`encoding_rs`](https://crates.io/crates/encoding_rs) 0.8 | Windows-1252 text decoding | (Apache-2.0 OR MIT) AND BSD-3-Clause | Rust crate, compiled in |
+| [`calamine`](https://crates.io/crates/calamine) 0.36 | Spreadsheet previews (xlsx, xls, xlsb, ods) | MIT | Rust crate, compiled in |
 | [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |
 | [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`zeroize`](https://crates.io/crates/zeroize) 1.9 | Wipes secrets from memory | Apache-2.0 OR MIT | Rust crate, compiled in |
 | [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract; keel-net data-directory lock | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`kamadak-exif`](https://crates.io/crates/kamadak-exif) 0.6 | EXIF metadata for media sidecars | BSD-2-Clause | Rust crate, compiled in |
-| [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars | MIT | Rust crate, compiled in |
+| [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars; pptx and OpenDocument preview text | MIT | Rust crate, compiled in |
+| [`quick-xml`](https://crates.io/crates/quick-xml) 0.41 | WebDAV listings (via `opendal-service-webdav`, cloud feature) | MIT | Rust crate, compiled in |
 | [`wait-timeout`](https://crates.io/crates/wait-timeout) 0.2 | Time limit for `ffmpeg`/`ffprobe` runs (video sidecars; ffmpeg is not shipped, it is used when installed) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`libheif-rs`](https://crates.io/crates/libheif-rs) 2 / libheif | HEIC thumbnails (`keel-core` feature `heic`, off by default) | crate: MIT; libheif: LGPL-3.0 | Not in release builds (feature off); enabling it links libheif |
 | [`winfsp`](https://crates.io/crates/winfsp) 0.13 and `winfsp-sys` 0.12 (winfsp-rs) / [WinFsp](https://winfsp.dev) 2.1 | Mounts on Windows (`keel-mount` / `keel-daemon` feature `winfsp`, off by default) | winfsp-rs: GPL-3.0; WinFsp: GPL-3.0 with a FLOSS exception | Not in release builds (feature off). Enabling it compiles winfsp-rs into `keel-daemon`, which may then only be distributed under the GPL-3.0; the WinFsp DLL is not shipped, it is loaded from the user's WinFsp installation |

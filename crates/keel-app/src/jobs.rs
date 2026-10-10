@@ -201,7 +201,24 @@ impl Jobs {
         let name = zip.file_name().map(|n| n.to_string_lossy().into_owned());
         let title = format!("Adding to {}", name.unwrap_or_default());
         self.spawn(title, tx, move |report, cancel| {
-            keel_vfs::ops::add_to_zip(&zip, &src, "", report, cancel)
+            keel_vfs::ops::add_to_archive(&zip, &src, "", report, cancel)
+        })
+    }
+
+    /// Restores, permanently deletes or empties the Recycle Bin / Trash (a `trash://` tab).
+    pub fn trash_op(&mut self, op: TrashOp, tx: Sender<Msg>) -> u64 {
+        let title = match &op {
+            TrashOp::Restore(p) => format!("Restoring {}", items(p.len())),
+            TrashOp::Purge(p) => format!("Deleting {} permanently", items(p.len())),
+            TrashOp::Empty => format!("Emptying the {}", keel_vfs::trashbin::label()),
+        };
+        self.spawn(title, tx, move |_, _| {
+            let bin = keel_vfs::TrashProvider;
+            match op {
+                TrashOp::Restore(p) => bin.restore_paths(&p),
+                TrashOp::Purge(p) => bin.purge_paths(&p),
+                TrashOp::Empty => bin.empty().map(drop),
+            }
         })
     }
 
@@ -444,6 +461,30 @@ pub fn is_archive_file(e: &keel_vfs::Entry) -> bool {
     e.kind != keel_vfs::Kind::Dir && VPath::is_archive_name(&e.name)
 }
 
+/// A file `add_to_archive` can extend (zip, 7z, tar, tar.gz; not rar).
+pub fn is_addable_archive(e: &keel_vfs::Entry) -> bool {
+    e.kind != keel_vfs::Kind::Dir && crate::settings::ArchiveFormat::of_name(&e.name).is_some()
+}
+
+/// "Add to <archive>…" for a selection: exactly one addable archive plus at least one other
+/// item, all in the archive's folder. Returns the archive and the others.
+pub fn add_target<'a>(
+    targets: &[&'a keel_vfs::Entry],
+) -> Option<(&'a keel_vfs::Entry, Vec<&'a keel_vfs::Entry>)> {
+    let mut archives = targets.iter().copied().filter(|e| is_addable_archive(e));
+    let (Some(archive), None) = (archives.next(), archives.next()) else {
+        return None;
+    };
+    let others: Vec<_> = targets
+        .iter()
+        .copied()
+        .filter(|e| e.path != archive.path)
+        .collect();
+    let dir = archive.path.parent();
+    (!others.is_empty() && others.iter().all(|e| e.path.parent() == dir))
+        .then_some((archive, others))
+}
+
 /// `photos.tar.gz` -> `photos`: the folder Extract to folder creates.
 pub fn archive_stem(name: &str) -> &str {
     let lower = name.to_ascii_lowercase();
@@ -470,6 +511,13 @@ pub fn zip_name(tab: &crate::tab::Tab) -> String {
         },
     };
     format!("{stem}.zip")
+}
+
+/// A Recycle Bin / Trash job (`trash_op`).
+pub enum TrashOp {
+    Restore(Vec<VPath>),
+    Purge(Vec<VPath>),
+    Empty,
 }
 
 pub fn items(n: usize) -> String {
@@ -752,6 +800,50 @@ pub fn plan(source: Source, dst: VPath, router: &Router, tx: &Sender<Msg>, ctx: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn file(dir: &str, name: &str, kind: keel_vfs::Kind) -> keel_vfs::Entry {
+        keel_vfs::Entry {
+            path: VPath::local(PathBuf::from(dir).join(name)),
+            name: name.into(),
+            kind,
+            size: 0,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        }
+    }
+
+    #[test]
+    fn add_to_entry_needs_one_archive_and_siblings() {
+        use keel_vfs::Kind::{Dir, File};
+        let ok = |sel: &[keel_vfs::Entry]| {
+            let r: Vec<&keel_vfs::Entry> = sel.iter().collect();
+            add_target(&r).map(|(a, o)| (a.name.clone(), o.len()))
+        };
+        let zip = file("/d", "a.zip", File);
+        let txt = file("/d", "b.txt", File);
+        let folder = file("/d", "sub", Dir);
+        assert_eq!(
+            ok(&[txt.clone(), zip.clone(), folder]),
+            Some(("a.zip".into(), 2))
+        );
+        for name in ["a.7z", "a.tar", "a.tar.gz", "a.TGZ"] {
+            assert!(
+                ok(&[file("/d", name, File), txt.clone()]).is_some(),
+                "{name}"
+            );
+        }
+        // Nothing else selected, rar, two archives, other folders, a folder named like one.
+        assert_eq!(ok(std::slice::from_ref(&zip)), None);
+        assert_eq!(ok(&[file("/d", "a.rar", File), txt.clone()]), None);
+        assert_eq!(
+            ok(&[zip.clone(), file("/d", "b.7z", File), txt.clone()]),
+            None
+        );
+        assert_eq!(ok(&[zip.clone(), file("/e", "b.txt", File)]), None);
+        assert_eq!(ok(&[file("/d", "x.zip", Dir), txt]), None);
+    }
 
     fn tree(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(name);

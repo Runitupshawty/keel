@@ -54,11 +54,117 @@ pub struct Settings {
     // --- Task 29 ---
     /// `[library]`: the library layer (on by default).
     pub library: crate::library::LibrarySettings,
+    // --- Task 36 ---
+    /// `[devices]`: pairing, shares and Spacedrop (off by default; needs the library).
+    pub devices: crate::devices::DeviceSettings,
     // --- Task 32 ---
     /// Media view tile size.
     pub media_tile: crate::media::TileSize,
     /// Media view: date headers.
     pub media_dates: bool,
+    /// `[archive]`: Compress dialog defaults.
+    pub archive: ArchiveSettings,
+    /// `[open_with.recent]`: apps used with "Open with…", per extension.
+    pub open_with: OpenWith,
+}
+
+/// Open with: most recently used apps per lowercase extension ("" = no extension), newest
+/// first. An app is an executable path, an `.app` path or a desktop id.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct OpenWith {
+    pub recent: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl OpenWith {
+    /// Apps kept per extension.
+    pub const LIMIT: usize = 8;
+
+    /// Puts `app` first for `ext`, dropping an earlier copy and the oldest beyond `LIMIT`.
+    pub fn remember(&mut self, ext: &str, app: &str) {
+        let list = self.recent.entry(ext.to_lowercase()).or_default();
+        list.retain(|a| a != app);
+        list.insert(0, app.to_owned());
+        list.truncate(Self::LIMIT);
+    }
+
+    pub fn recent(&self, ext: &str) -> &[String] {
+        self.recent
+            .get(&ext.to_lowercase())
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Formats the Compress dialog can write (and Add to can extend).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    #[default]
+    #[serde(rename = "zip")]
+    Zip,
+    #[serde(rename = "7z")]
+    SevenZ,
+    #[serde(rename = "tar")]
+    Tar,
+    #[serde(rename = "tar.gz")]
+    TarGz,
+}
+
+impl ArchiveFormat {
+    pub const ALL: [ArchiveFormat; 4] = [Self::Zip, Self::SevenZ, Self::Tar, Self::TarGz];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Zip => ".zip",
+            Self::SevenZ => ".7z",
+            Self::Tar => ".tar",
+            Self::TarGz => ".tar.gz",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Zip => "Zip",
+            Self::SevenZ => "7z",
+            Self::Tar => "Tar",
+            Self::TarGz => "Tar.gz",
+        }
+    }
+
+    /// The format a file name ends in (`.jar` is a zip, `.tgz` a tar.gz); None for
+    /// anything `add_to_archive` cannot write (rar, bz2, ...).
+    pub fn of_name(name: &str) -> Option<Self> {
+        let n = name.to_ascii_lowercase();
+        if n.ends_with(".zip") || n.ends_with(".jar") {
+            Some(Self::Zip)
+        } else if n.ends_with(".7z") {
+            Some(Self::SevenZ)
+        } else if n.ends_with(".tar.gz") || n.ends_with(".tgz") {
+            Some(Self::TarGz)
+        } else if n.ends_with(".tar") {
+            Some(Self::Tar)
+        } else {
+            None
+        }
+    }
+
+    /// `name` with this format's extension: an extension of `from` is swapped, a name
+    /// without one gets this one appended.
+    pub fn apply(self, name: &str, from: Self) -> String {
+        let name = name.trim();
+        let stem = match name.len().checked_sub(from.ext().len()) {
+            Some(i) if name.is_char_boundary(i) && name[i..].eq_ignore_ascii_case(from.ext()) => {
+                &name[..i]
+            }
+            _ => name,
+        };
+        format!("{stem}{}", self.ext())
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ArchiveSettings {
+    pub default_format: ArchiveFormat,
 }
 
 impl Default for Settings {
@@ -86,6 +192,9 @@ impl Default for Settings {
             media_tile: Default::default(),
             media_dates: false,
             library: Default::default(),
+            devices: Default::default(),
+            archive: Default::default(),
+            open_with: Default::default(),
         }
     }
 }
@@ -100,6 +209,9 @@ pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());
     }
+    #[cfg(test)]
+    return Some(test_dir());
+    #[allow(unreachable_code)]
     let base = directories::BaseDirs::new()?;
     Some(base.config_dir().join(app_dir()))
 }
@@ -112,8 +224,27 @@ pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());
     }
+    #[cfg(test)]
+    return Some(test_dir());
+    #[allow(unreachable_code)]
     let base = directories::BaseDirs::new()?;
     Some(base.cache_dir().join(app_dir()))
+}
+
+/// Tests never touch the user's real folders: without `KEEL_CONFIG_DIR` (or
+/// `KEEL_DATA_DIR`) they use one temp folder per test process.
+#[cfg(test)]
+pub fn test_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("keel-test-{}", std::process::id()))
+}
+
+/// keel-core's data folder (`KEEL_DATA_DIR`, else the platform's).
+pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if std::env::var_os("KEEL_DATA_DIR").is_none_or(|d| d.is_empty()) {
+        return Some(test_dir().join("data"));
+    }
+    keel_core::data_dir()
 }
 
 fn app_dir() -> &'static str {
@@ -183,6 +314,7 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
         .map_err(|e: toml::de::Error| e.to_string())?;
     s.clouds = clouds;
     s.remotes = remotes;
+    s.devices.migrate();
     Ok((s, dropped))
 }
 
@@ -271,7 +403,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// What to write, and where: the path is taken when the change is queued, so a profile
 /// switch can never send one profile's settings into another's folder.
 enum Save {
-    Settings(Settings, PathBuf),
+    Settings(Box<Settings>, PathBuf),
     Session(Session, PathBuf),
 }
 
@@ -326,7 +458,7 @@ impl Persist {
                             if settings.as_ref().is_some_and(|(_, old)| *old != p) {
                                 flush(&mut settings, &mut None);
                             }
-                            settings = Some((s, p));
+                            settings = Some((*s, p));
                         }
                         Ok(Save::Session(s, p)) => {
                             if session.as_ref().is_some_and(|(_, old)| *old != p) {
@@ -360,7 +492,7 @@ impl Persist {
         let Some(tx) = &self.tx else { return };
         if *settings != self.last_settings {
             self.last_settings = settings.clone();
-            let _ = tx.send(Save::Settings(settings.clone(), Settings::path()));
+            let _ = tx.send(Save::Settings(Box::new(settings.clone()), Settings::path()));
         }
         if let Some(session) = session.filter(|s| self.last_session.as_ref() != Some(s)) {
             if let Some(path) = Session::path() {
@@ -394,6 +526,7 @@ pub enum Page {
     Profiles,
     Icons,
     Library,
+    Devices,
 }
 
 /// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
@@ -410,6 +543,7 @@ pub fn window(
     tx: &Sender<crate::state::Msg>,
     searcher: Option<&str>, // Task 24: the active search backend's name
     library: &mut crate::library::LibraryUi, // Task 29
+    devices: &crate::devices::Devices, // Task 36
 ) -> bool {
     let mut theme_changed = false;
     egui::Window::new("Settings")
@@ -424,6 +558,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
+                ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -432,6 +567,7 @@ pub fn window(
                     Page::Profiles => profiles.settings_page(ui, s),
                     Page::Icons => icons.settings_page(ui, s),
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
+                    Page::Devices => crate::devices::settings_page(ui, s, devices),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
@@ -504,7 +640,32 @@ pub fn window(
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{ArchiveFormat, ArchiveSettings, OpenWith, Settings};
+
+    #[test]
+    fn open_with_recents_order_cap_and_round_trip() {
+        let mut ow = OpenWith::default();
+        assert!(ow.recent("txt").is_empty());
+        ow.remember("TXT", "a");
+        ow.remember("txt", "b");
+        ow.remember("txt", "a"); // moves to the front, no duplicate
+        assert_eq!(ow.recent("txt"), ["a", "b"]);
+        for i in 0..20 {
+            ow.remember("txt", &format!("app{i}"));
+        }
+        assert_eq!(ow.recent("txt").len(), OpenWith::LIMIT);
+        assert_eq!(ow.recent("txt")[0], "app19");
+        ow.remember("", "noext");
+        let s = Settings {
+            open_with: ow,
+            ..Settings::default()
+        };
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.open_with, s.open_with);
+        // Old files without the table still load.
+        let old: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert!(old.open_with.recent.is_empty());
+    }
 
     #[test]
     fn a_bad_cloud_or_remote_entry_drops_only_itself() {
@@ -529,6 +690,28 @@ label = "nas"
         assert_eq!(dropped, [r#"[[clouds]] "My Box""#, r#"[[remotes]] "nas""#]);
         // Broken TOML is still an error for the whole file.
         assert!(super::parse_lenient("theme = [").is_err());
+    }
+
+    #[test]
+    fn archive_default_format_round_trips() {
+        assert_eq!(
+            toml::from_str::<Settings>("theme = 'dark'")
+                .unwrap()
+                .archive
+                .default_format,
+            ArchiveFormat::Zip
+        );
+        for f in ArchiveFormat::ALL {
+            let s = Settings {
+                archive: ArchiveSettings { default_format: f },
+                ..Settings::default()
+            };
+            let text = toml::to_string(&s).unwrap();
+            assert!(text.contains("[archive]"), "{text}");
+            assert_eq!(toml::from_str::<Settings>(&text).unwrap(), s);
+        }
+        let s: Settings = toml::from_str("[archive]\ndefault_format = \"tar.gz\"").unwrap();
+        assert_eq!(s.archive.default_format, ArchiveFormat::TarGz);
     }
 
     #[test]

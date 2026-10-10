@@ -453,3 +453,189 @@ fn a_rare_filter_finds_its_match_among_too_many_word_matches() {
         .collect();
     assert_eq!(hits, ["photos new.jpg"]);
 }
+
+/// One source with media rows inserted directly: three photos, a video, a photo with GPS and a
+/// plain file.
+fn media_fixture() -> Fixture {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("m");
+    for n in [
+        "alpha.jpg",
+        "bravo.jpg",
+        "charlie.jpg",
+        "delta.mp4",
+        "echo.jpg",
+        "plain.txt",
+    ] {
+        write(&root.join(n), n);
+    }
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "s").unwrap();
+    let a = lib
+        .source(&lib.add_source(folder("M", &root)).unwrap())
+        .unwrap();
+    walk(&a, &lib.router()).unwrap();
+    let day = |y, m, d| days_from_civil(y, m, d) * 86_400 + 3_600;
+    let c = a.store.get().unwrap();
+    // (name, taken, w, h, duration ms, camera, gps, keywords)
+    #[allow(clippy::type_complexity)]
+    let rows: [(&str, i64, i64, i64, Option<i64>, &str, bool, &str); 5] = [
+        (
+            "alpha.jpg",
+            day(2024, 6, 1),
+            6000,
+            4000,
+            None,
+            "Canon EOS R5",
+            false,
+            "",
+        ),
+        (
+            "bravo.jpg",
+            day(2023, 3, 10),
+            4000,
+            3000,
+            None,
+            "Nikon Z6",
+            false,
+            "",
+        ),
+        (
+            "charlie.jpg",
+            day(2022, 1, 5),
+            2000,
+            1500,
+            None,
+            "Canon EOS 5D",
+            false,
+            "",
+        ),
+        (
+            "delta.mp4",
+            day(2024, 7, 4),
+            1920,
+            1080,
+            Some(90_000),
+            "GoPro Hero",
+            false,
+            "",
+        ),
+        (
+            "echo.jpg",
+            day(2021, 8, 8),
+            3000,
+            2000,
+            None,
+            "Sony A7",
+            true,
+            "sunset beach",
+        ),
+    ];
+    for (name, taken, w, h, dur, cam, gps, kw) in rows {
+        let id = id_of(&a, name).unwrap();
+        c.execute(
+            "INSERT INTO media(record, key, pkey, width, height, taken_at, duration_ms, camera,
+                 gps_lat, gps_lon) VALUES (?1, 'k', 'p', ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            rusqlite::params![id, w, h, taken, dur, cam, gps.then_some(1.5)],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO media_fts(rowid, camera, keywords) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, cam, kw],
+        )
+        .unwrap();
+    }
+    drop(c);
+    Fixture {
+        _files: files,
+        _data: data,
+        lib,
+        b: a.clone(),
+        a,
+    }
+}
+
+fn sorted(lib: &Library, q: &str) -> Vec<String> {
+    let mut v = names(lib, q);
+    v.sort();
+    v
+}
+
+#[test]
+fn media_filters_use_the_media_rows() {
+    let f = media_fixture();
+    let l = &f.lib;
+    assert_eq!(sorted(l, "camera:canon"), ["alpha.jpg", "charlie.jpg"]);
+    assert_eq!(sorted(l, "camera:CANON"), ["alpha.jpg", "charlie.jpg"]);
+    assert_eq!(sorted(l, "camera:\"canon eos r\""), ["alpha.jpg"]);
+    assert_eq!(sorted(l, "taken:2024"), ["alpha.jpg", "delta.mp4"]);
+    assert_eq!(sorted(l, "taken:2023-03"), ["bravo.jpg"]);
+    assert_eq!(
+        sorted(l, "taken:2022..2023"),
+        ["bravo.jpg", "charlie.jpg"],
+        "a file with no capture time (plain.txt, whatever its mtime) never matches"
+    );
+    assert_eq!(sorted(l, "w:>3500"), ["alpha.jpg", "bravo.jpg"]);
+    assert_eq!(sorted(l, "w:3000"), ["echo.jpg"]);
+    assert_eq!(sorted(l, "h:<=1500"), ["charlie.jpg", "delta.mp4"]);
+    assert_eq!(sorted(l, "w:1000..2000"), ["charlie.jpg", "delta.mp4"]);
+    assert_eq!(sorted(l, "duration:>30s"), ["delta.mp4"]);
+    assert_eq!(sorted(l, "duration:<2m"), ["delta.mp4"]);
+    assert!(sorted(l, "duration:<1m").is_empty());
+    assert_eq!(sorted(l, "has:gps"), ["echo.jpg"]);
+    assert_eq!(
+        sorted(l, "kind:photo"),
+        ["alpha.jpg", "bravo.jpg", "charlie.jpg", "echo.jpg"]
+    );
+    assert_eq!(sorted(l, "kind:video"), ["delta.mp4"]);
+    assert!(sorted(l, "w:>9000").is_empty());
+}
+
+#[test]
+fn media_filters_combine_with_each_other_and_words() {
+    let f = media_fixture();
+    let l = &f.lib;
+    assert_eq!(sorted(l, "camera:canon taken:2024 w:>3000"), ["alpha.jpg"]);
+    assert!(sorted(l, "camera:canon taken:2023").is_empty());
+    assert_eq!(sorted(l, "alpha kind:photo w:>5000"), ["alpha.jpg"]);
+    assert_eq!(sorted(l, "ext:jpg has:gps"), ["echo.jpg"]);
+    assert!(sorted(l, "alpha has:gps").is_empty());
+}
+
+#[test]
+fn words_fall_back_to_camera_and_keywords_below_name_hits() {
+    let f = media_fixture();
+    let l = &f.lib;
+    assert_eq!(names(l, "sunset"), ["echo.jpg"]);
+    assert_eq!(names(l, "sunset beach"), ["echo.jpg"]);
+    assert_eq!(sorted(l, "sony"), ["echo.jpg"]);
+    assert_eq!(sorted(l, "nikon taken:2023"), ["bravo.jpg"]);
+    assert!(names(l, "sunset taken:2024").is_empty());
+    let hits = l
+        .search(&LibraryQuery::parse("sunset", 0).unwrap())
+        .unwrap();
+    assert!(hits[0].score >= MEDIA_RANK - 1.0, "media hits rank last");
+    // A name hit wins: the record FTS has a hit, so the fallback does not run.
+    assert_eq!(names(l, "alpha"), ["alpha.jpg"]);
+}
+
+#[test]
+fn media_filter_parse_errors() {
+    let q =
+        LibraryQuery::parse_at("camera:canon taken:2024 w:>3000 h:<=1080 has:gps", NOW, 0).unwrap();
+    assert_eq!(q.camera.as_deref(), Some("canon"));
+    assert_eq!(q.width.min, Some(3001));
+    assert_eq!(q.height.max, Some(1080));
+    assert!(q.has_gps);
+    let q = LibraryQuery::parse_at("duration:>30s duration:<2m", NOW, 0).unwrap();
+    assert_eq!(q.duration_ms.max, Some(119_999), "the last filter wins");
+    for bad in [
+        "w:wide",
+        "h:>",
+        "taken:2024-13",
+        "duration:soon",
+        "duration:5y",
+    ] {
+        assert!(LibraryQuery::parse_at(bad, NOW, 0).is_err(), "{bad}");
+    }
+}

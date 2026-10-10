@@ -36,8 +36,11 @@ impl ApiError {
     pub const NET_DISABLED: i64 = -32005;
     /// The request did not finish within the host's per-request timeout.
     pub const TIMEOUT: i64 = -32006;
+    /// A browser connection (keel-daemon `--web`) sent something before `auth`, or a
+    /// wrong token.
+    pub const UNAUTHORIZED: i64 = -32007;
     /// Mounts need keel-daemon built with a mount backend (WinFsp or FUSE).
-    pub const MOUNTS_UNAVAILABLE: i64 = -32007;
+    pub const MOUNTS_UNAVAILABLE: i64 = -32008;
 
     pub fn new(code: i64, message: impl Into<String>) -> Self {
         Self {
