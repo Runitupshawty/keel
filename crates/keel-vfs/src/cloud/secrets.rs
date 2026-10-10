@@ -8,13 +8,14 @@ pub const KEYRING_SERVICE: &str = "Keel Cloud";
 
 /// Secret fields stored per account (`<cloud id>/<field>`). OAuth tokens are one JSON
 /// entry, `tokens`; the three token fields here are what earlier builds wrote.
-pub const FIELDS: [&str; 6] = [
+pub const FIELDS: [&str; 7] = [
     "access_token",
     "refresh_token",
     "expires_at",
     "client_secret",
     "access_key_id",
     "secret_access_key",
+    "password",
 ];
 
 /// Keys are `<cloud id>/<field>`. Implementations block (keychain IPC): worker threads only.

@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

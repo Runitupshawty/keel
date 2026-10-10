@@ -35,6 +35,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`fs4`](https://crates.io/crates/fs4) 0.13 | Free-space checks before copy and extract | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`kamadak-exif`](https://crates.io/crates/kamadak-exif) 0.6 | EXIF metadata for media sidecars | BSD-2-Clause | Rust crate, compiled in |
 | [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars | MIT | Rust crate, compiled in |
+| [`quick-xml`](https://crates.io/crates/quick-xml) 0.41 | WebDAV listings (via `opendal-service-webdav`, cloud feature) | MIT | Rust crate, compiled in |
 | [`wait-timeout`](https://crates.io/crates/wait-timeout) 0.2 | Time limit for `ffmpeg`/`ffprobe` runs (video sidecars; ffmpeg is not shipped, it is used when installed) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`libheif-rs`](https://crates.io/crates/libheif-rs) 2 / libheif | HEIC thumbnails (`keel-core` feature `heic`, off by default) | crate: MIT; libheif: LGPL-3.0 | Not in release builds (feature off); enabling it links libheif |
 
