@@ -748,6 +748,24 @@ mod tests {
         }
     }
 
+    /// The GitHub macOS runner reports NSFileManager trashing as done, but the item never
+    /// shows up in a Trash folder there (a real Mac lists it): those tests skip under CI on
+    /// macOS, the `folder` tests cover the listing on a fake Trash.
+    fn trash_unobservable() -> bool {
+        #[cfg(target_os = "macos")]
+        if std::env::var_os("CI").is_some() {
+            let home = directories::BaseDirs::new()
+                .map(|b| b.home_dir().to_path_buf())
+                .unwrap_or_default();
+            // SAFETY: getuid has no preconditions and cannot fail.
+            let uid = unsafe { libc::getuid() };
+            let roots = folder::roots(&home, std::path::Path::new("/Volumes"), uid);
+            eprintln!("skipped under CI on macOS: the runner's Trash is not observable (looked at {roots:?})");
+            return true;
+        }
+        false
+    }
+
     fn find_ours(name: &str) -> Option<Entry> {
         let all = TrashProvider.list(&root()).unwrap();
         all.into_iter().find(|e| e.path.name() == name)
@@ -756,6 +774,9 @@ mod tests {
     #[test]
     fn list_restore_purge_round_trip() {
         let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
+        if trash_unobservable() {
+            return;
+        }
         let name = unique("round");
         let _clean = Cleanup(name.clone());
         let dir = test_dir();
@@ -799,6 +820,9 @@ mod tests {
     #[test]
     fn restore_reports_an_existing_original() {
         let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
+        if trash_unobservable() {
+            return;
+        }
         let name = unique("clash");
         let _clean = Cleanup(name.clone());
         let dir = test_dir();
