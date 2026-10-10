@@ -26,12 +26,6 @@ pub struct Palette {
     fuzzy: Option<Fuzzy>,
 }
 
-const SEARCH_LABEL: &str = if cfg!(windows) {
-    "Search with Everything"
-} else {
-    "Search files"
-};
-
 /// Actions on the selection (shown first when something is selected).
 fn context_items() -> Vec<Item> {
     use Action::*;
@@ -90,7 +84,8 @@ fn global_items() -> Vec<Item> {
         ),
         ("Filter this folder", "Ctrl+E", FocusFilter),
         ("Edit path", "Ctrl+L", FocusPath),
-        (SEARCH_LABEL, "Ctrl+F", Search),
+        // Not "with Everything": Windows uses Keel's own index when Everything is not running.
+        ("Search files", "Ctrl+F", Search),
         ("Jump to folder", "Ctrl+P", JumpFolder),
         ("Rebuild folder index", "", ReindexFolders),
         ("Select all", "Ctrl+A", SelectAll),
@@ -236,6 +231,16 @@ mod tests {
         p.filter();
         let actions: Vec<&Action> = p.shown.iter().map(|&i| &p.items[i].action).collect();
         assert_eq!(actions.first(), Some(&&Action::ToggleDual));
+    }
+
+    /// QA walkthrough 2026-10-10: on Windows the entry said "Search with Everything", also
+    /// when Everything was not running and Keel's own index answered.
+    #[test]
+    fn search_is_named_for_every_backend() {
+        let mut p = Palette::default();
+        p.show(false);
+        let search = p.items.iter().find(|i| i.action == Action::Search).unwrap();
+        assert_eq!(search.label, "Search files");
     }
 
     #[test]
