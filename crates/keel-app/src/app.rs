@@ -814,6 +814,24 @@ mod tests {
             if width < 1000.0 {
                 // No room for the current folder either: all of it is behind "…".
                 assert!(deepest.is_empty(), "{width}: {deepest:?}");
+                // The menu lists the nearest parts first (a deep path would cut off the
+                // farthest, not the ones the user is after).
+                harness.query_all_by_label("…").next().unwrap().click();
+                harness.run_steps(2);
+                let y = |label: &str| {
+                    let ys: Vec<f64> = (harness.query_all_by_label(label))
+                        .map(|n| n.raw_bounds().unwrap().y0)
+                        .filter(|y| *y > 24.0)
+                        .collect();
+                    assert_eq!(ys.len(), 1, "{label} in the menu: {ys:?}");
+                    ys[0]
+                };
+                let order = [
+                    y("deepest"),
+                    y("another-long-folder-name"),
+                    y("a-rather-long-folder-name"),
+                ];
+                assert!(order[0] < order[1] && order[1] < order[2], "{order:?}");
             } else {
                 assert_eq!(deepest.len(), 2, "{width}");
                 for p in 0..2 {

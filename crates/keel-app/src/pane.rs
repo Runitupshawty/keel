@@ -428,12 +428,16 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             ui.spacing_mut().item_spacing.x = gap;
             if first > 0 {
                 ui.menu_button("…", |ui| {
-                    for (dir, label) in &parts[..first] {
-                        if ui.button(label.as_str()).clicked() {
-                            out.push(Action::Navigate(dir.clone()));
-                            ui.close_menu();
+                    // The nearest parent first; a deep path scrolls (the menu never does).
+                    let max = 0.6 * ui.ctx().screen_rect().height();
+                    egui::ScrollArea::vertical().max_height(max).show(ui, |ui| {
+                        for (dir, label) in parts[..first].iter().rev() {
+                            if ui.button(label.as_str()).clicked() {
+                                out.push(Action::Navigate(dir.clone()));
+                                ui.close_menu();
+                            }
                         }
-                    }
+                    });
                 })
                 .response
                 .on_hover_text("The rest of the path");
@@ -625,9 +629,12 @@ pub fn context_menu(
             "",
             Action::Devices(crate::devices::DevCmd::SendSelection),
         );
-        let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
-        item(ui, &add, "", Action::AddToZip);
-        item(ui, "Compress to zip…", "", Action::CompressToZip);
+        // Zips are made in local folders only (not inside an archive or on a remote).
+        if tab.dir.to_local_path().is_some() {
+            let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
+            item(ui, &add, "", Action::AddToZip);
+            item(ui, "Compress to zip…", "", Action::CompressToZip);
+        }
         if let Some((archive, _)) = crate::jobs::add_target(&tab.targets()) {
             item(
                 ui,
