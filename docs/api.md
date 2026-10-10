@@ -100,7 +100,7 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 ## keel-daemon (JSON-RPC)
 
 ```
-keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT [--ws-allow-remote]]
+keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT [--ws-allow-remote]]   # NAME: letters, digits, . _ -
 keel-daemon --status            # exit 0 when one runs for the profile, 1 when not
 keel daemon start|stop|status   # the same from keel (start runs it in the background)
 ```
@@ -112,12 +112,15 @@ second daemon for the same profile exits with "keel-daemon is already running fo
 profile …". While the Keel window has the library open, neither the daemon nor in-process
 CLI calls can open it (one process holds a library).
 
-**Local socket.** Named `keel-daemon-<hash of user, profile and data folder>`: a named
-pipe on Windows whose DACL admits only the current user (clients refuse impersonation and
+**Local socket.** Named `keel-daemon-<hash of the user's SID or uid, a per-user random
+salt, the profile and the data folder>` (the salt is `<config dir>/socket.salt`, created
+owner-only on first use, so other local users cannot predict the name and take it
+first): a named pipe on Windows whose DACL admits only the current user (clients refuse impersonation and
 check the server runs as the same user), a socket in a 0700 folder
 (`$XDG_RUNTIME_DIR/keel-<uid>/`) on Unix with peer-uid checks on both ends. Framing: one
 JSON-RPC message per line (UTF-8, `\n`), at most 16 MiB; batches allowed. Once a request
-has started it must arrive within 30 s; idle connections may stay open.
+has started all of it must arrive within 30 s (however slowly it trickles in); idle
+connections may stay open.
 
 ```
 → {"jsonrpc":"2.0","id":1,"method":"search","params":{"query":"invoice ext:pdf","max":5}}
@@ -134,8 +137,12 @@ connection), `unsubscribe`, and `daemon.shutdown`.
 
 **WebSocket (optional).** `--ws 127.0.0.1:7420` serves the same JSON-RPC, one message per
 text frame. Every connection must send `Authorization: Bearer <token>`, the token in
-`<config dir>/daemon.token` (created on first use, owner-only on Unix). Browsers cannot
-set that header, so web pages cannot connect. Non-loopback addresses need
+`<config dir>/daemon.token` (created on first use, owner-only: a protected DACL for the
+user alone on Windows, mode 0600 on Unix). A token file anybody else may read or change
+is replaced with a new token at start, since it may have been read or planted. Browsers
+cannot set that header, so web pages cannot connect. The handshake (token check
+included) must be over within 5 s, and at most 64 connections are served at once; more
+are closed at once. Non-loopback addresses need
 `--ws-allow-remote`; there is no TLS, so put a remote bind behind a TLS proxy or a
 private network.
 

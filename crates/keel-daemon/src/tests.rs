@@ -237,3 +237,141 @@ fn websocket_refuses_remote_binds() {
     .unwrap();
     assert!(err.to_string().contains("--ws-allow-remote"), "{err:#}");
 }
+
+#[test]
+fn profile_names_are_validated() {
+    use clap::Parser;
+    for bad in ["../x", "a/b", "a\\b", "..", "", "nul"] {
+        let args = crate::Args::try_parse_from(["keel-daemon", "--profile", bad]);
+        assert!(args.is_err(), "{bad:?}");
+    }
+    let args = crate::Args::try_parse_from(["keel-daemon", "--profile", "work"]).unwrap();
+    assert_eq!(args.profile, "work");
+}
+
+#[test]
+fn a_token_others_may_access_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("daemon.token");
+    let planted = "a".repeat(64);
+    std::fs::write(&path, &planted).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let token = crate::ws::token(&path).unwrap();
+    assert_ne!(token, planted, "a planted token is not used");
+    assert_eq!(token.len(), 64);
+    assert!(
+        keel_api::private::read(&path).unwrap().is_some(),
+        "owner-only"
+    );
+    assert_eq!(
+        crate::ws::token(&path).unwrap(),
+        token,
+        "a private token is kept"
+    );
+}
+
+#[test]
+fn a_dripping_request_runs_out_of_time() {
+    /// One byte per read, never a newline.
+    struct Drip;
+    impl std::io::Read for Drip {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(10));
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(200);
+    let mut reader = std::io::BufReader::with_capacity(1, Drip);
+    let err =
+        keel_api::rpc::read_line(&mut reader, || crate::server::time_left(deadline).map(drop))
+            .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// The server closed the connection (rather than the read timing out).
+fn closed(read: std::io::Result<usize>) -> bool {
+    match read {
+        Ok(n) => n == 0,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+    }
+}
+
+#[test]
+fn websocket_handshakes_have_a_deadline_and_a_cap() {
+    use crate::ws::{HANDSHAKE_WAIT, MAX_CONNECTIONS};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let env = env();
+    let daemon = start(&env, Some("127.0.0.1:0"));
+    let addr = daemon.ws_addr().unwrap();
+    let mut buf = [0u8; 64];
+    // A client that drips a header line every second is cut off at the deadline.
+    let mut drip = TcpStream::connect(addr).unwrap();
+    let mut writer = drip.try_clone().unwrap();
+    std::thread::spawn(move || {
+        let _ = writer.write_all(b"GET / HTTP/1.1\r\n");
+        for i in 0..30 {
+            std::thread::sleep(Duration::from_secs(1));
+            if writer
+                .write_all(format!("X-Drip-{i}: x\r\n").as_bytes())
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let started = Instant::now();
+    drip.set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    assert!(
+        closed(drip.read(&mut buf)),
+        "still open after {:?}",
+        started.elapsed()
+    );
+    assert!(started.elapsed() < HANDSHAKE_WAIT + Duration::from_secs(3));
+    std::thread::sleep(Duration::from_millis(300));
+    // At most MAX_CONNECTIONS at once: one more is closed at once.
+    let idle: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+        .map(|_| TcpStream::connect(addr).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut extra = TcpStream::connect(addr).unwrap();
+    extra
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let started = Instant::now();
+    assert!(closed(extra.read(&mut buf)), "over the cap");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // Their slots come back once they go.
+    drop(idle);
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        use tungstenite::client::IntoClientRequest;
+        let mut req = format!("ws://{addr}/").into_client_request().unwrap();
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        if let Ok((mut ws, _)) = tungstenite::client(req, TcpStream::connect(addr).unwrap()) {
+            ws.send(tungstenite::Message::text(
+                r#"{"jsonrpc":"2.0","id":1,"method":"version"}"#,
+            ))
+            .unwrap();
+            let answer: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(answer["result"]["api"], 1);
+            break;
+        }
+        assert!(Instant::now() < deadline, "no slot came back");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}

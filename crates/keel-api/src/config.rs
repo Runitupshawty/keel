@@ -7,6 +7,27 @@ use std::path::PathBuf;
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_LIBRARY: &str = "james";
 
+/// What [`valid_profile`] accepts (keel-app's profile rule).
+pub const PROFILE_RULE: &str = "use letters, digits, '.', '_' or '-' (at most 64)";
+
+/// Profile names become folder names: ASCII letters, digits, `.`, `_`, `-`; not `.`/`..`,
+/// no trailing dot and no Windows device name (`con`, `nul`, `com1`, …). The same rule as
+/// keel-app's `profiles::valid_name`.
+pub fn valid_profile(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
+    let device = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.ends_with('.')
+        && !device
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// `KEEL_CONFIG_DIR`, else `%APPDATA%\Keel`, `~/Library/Application Support/Keel`,
 /// `~/.config/keel` (as keel-app).
 pub fn config_dir() -> Option<PathBuf> {
@@ -35,8 +56,13 @@ pub struct HostConfig {
 
 impl HostConfig {
     /// From the environment (`KEEL_CONFIG_DIR`, `KEEL_DATA_DIR`) and the profile's
-    /// config.toml; a missing or unreadable file means the defaults.
+    /// config.toml; a missing or unreadable file means the defaults. An invalid profile
+    /// name (`valid_profile`) is refused.
     pub fn load(profile: &str) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            valid_profile(profile),
+            "profile \"{profile}\": {PROFILE_RULE}"
+        );
         let config_dir = config_dir().ok_or_else(|| anyhow::anyhow!("no configuration folder"))?;
         let data_dir = keel_core::data_dir().ok_or_else(|| anyhow::anyhow!("no data folder"))?;
         Ok(Self::read(profile, config_dir, data_dir))
@@ -68,11 +94,13 @@ impl HostConfig {
         }
     }
 
-    /// The daemon's socket name: per user, profile and data folder.
+    /// The daemon's socket name: per user, profile and data folder, salted from the
+    /// config folder (`socket::salted_name`).
     pub fn socket_name(&self) -> String {
-        crate::socket::name(
+        crate::socket::salted_name(
             "keel-daemon",
             &format!("{}\0{}", self.profile, self.data_dir.display()),
+            &self.config_dir,
         )
     }
 
@@ -85,6 +113,20 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names_are_checked() {
+        for bad in [
+            "../x", "a/b", "a\\b", "..", ".", "", "x.", "con", "COM1.txt", "a b",
+        ] {
+            assert!(!valid_profile(bad), "{bad:?}");
+            assert!(HostConfig::load(bad).is_err(), "{bad:?}");
+        }
+        for good in ["default", "work", "my.profile-2_x", "console"] {
+            assert!(valid_profile(good), "{good:?}");
+        }
+        assert!(!valid_profile(&"x".repeat(65)));
+    }
 
     #[test]
     fn reads_library_and_net() {

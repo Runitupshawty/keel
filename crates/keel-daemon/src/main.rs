@@ -8,7 +8,7 @@ mod ws;
 
 use clap::Parser;
 use keel_api::client::Client;
-use keel_api::config::{HostConfig, DEFAULT_PROFILE};
+use keel_api::config::{valid_profile, HostConfig, DEFAULT_PROFILE, PROFILE_RULE};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -21,7 +21,7 @@ use std::process::ExitCode;
 )]
 struct Args {
     /// Settings profile: <config dir>/profiles/<NAME>.
-    #[arg(long, value_name = "NAME", default_value = DEFAULT_PROFILE)]
+    #[arg(long, value_name = "NAME", default_value = DEFAULT_PROFILE, value_parser = profile_name)]
     profile: String,
     /// Also serve JSON-RPC over a WebSocket on this address (e.g. 127.0.0.1:7420); clients
     /// send `Authorization: Bearer <token>` from <config dir>/daemon.token.
@@ -33,6 +33,14 @@ struct Args {
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
     #[arg(long)]
     status: bool,
+}
+
+/// Profile names become a folder name (`keel_api::config::valid_profile`).
+fn profile_name(name: &str) -> Result<String, String> {
+    match valid_profile(name) {
+        true => Ok(name.to_owned()),
+        false => Err(PROFILE_RULE.into()),
+    }
 }
 
 fn main() -> ExitCode {
