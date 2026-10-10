@@ -1,7 +1,16 @@
 use super::*;
 use crate::state::AppState;
-use keel_core::{Change, OnConflict};
+use keel_api::types::Copies;
+use keel_core::{Change, OnConflict, Redundancy};
 use std::path::PathBuf;
+
+/// The in-process plan of a preview dialog.
+fn local(p: &Planned) -> &Plan {
+    match p {
+        Planned::Local(p) => p,
+        Planned::Daemon(p) => panic!("a daemon's plan: {p:?}"),
+    }
+}
 
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("keel-lib-{name}-{}", std::process::id()));
@@ -224,7 +233,7 @@ fn tags_and_favorites_round_trip_through_the_ui_model() {
     // Ctrl+D toggles the favorite star; Favorites lists it.
     s.run(0, Action::Library(LibCmd::ToggleFavorite));
     settle(&mut s, "favorite", true, FAVORITES);
-    let favs = LibSearch(lib.clone())
+    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()))
         .query(&Query {
             text: FAVORITES_QUERY.into(),
             max: 10,
@@ -293,7 +302,7 @@ fn preview_dialog_lists_changes_and_warnings() {
     s.run(0, Action::Delete);
     assert!(s.dialog.is_none(), "no trash confirm: the plan dialog asks");
     pump_until(&mut s, "planned", |s| s.library.plan.is_some());
-    let plan = &s.library.plan.as_ref().unwrap().plan;
+    let plan = local(&s.library.plan.as_ref().unwrap().plan);
     let c = VPath::local(tmp.join("docs").join("c.txt"));
     assert_eq!(
         plan.op,
@@ -419,7 +428,7 @@ fn duplicate_finder_groups_copies_and_keeps_one() {
     assert_eq!(s.library.dup_summary, Some((1, 4)));
     s.run(0, Action::Library(LibCmd::KeepOne { group: 0, keep: 1 }));
     pump_until(&mut s, "keep-one plan", |s| s.library.plan.is_some());
-    let plan = &s.library.plan.as_ref().unwrap().plan;
+    let plan = local(&s.library.plan.as_ref().unwrap().plan);
     assert_eq!(
         plan.op,
         Op::Delete {
@@ -463,9 +472,14 @@ fn first_run_offers_documents_as_a_source() {
     );
     s.library.opening = true;
     s.library_msg(LibMsg::Opened {
-        result: Ok(lib),
+        result: Ok(Opened {
+            events: Some(lib.jobs().subscribe()),
+            backend: LibraryBackend::InProcess(lib),
+            jobs: Vec::new(),
+            spawned: false,
+            note: None,
+        }),
         first_run: true,
-        jobs: Vec::new(),
     });
     assert!(s.library.is_open());
     let offer = s
@@ -673,7 +687,7 @@ fn copies_badge_model() {
         volume: volume(label, state, backup, None),
         claimed: label == "f",
     };
-    let b = badge_of(&Redundancy {
+    let b = badge_of(&Copies::from(Redundancy {
         copies: 2,
         failure_domains: 1,
         backed_up: false,
@@ -682,7 +696,7 @@ fn copies_badge_model() {
             copy("c", VolumeState::Online, false),
             copy("d", VolumeState::Online, false),
         ],
-    });
+    }));
     assert_eq!(b.text, "2× · 1");
     assert!(b.risk, "one domain");
     assert!(
@@ -692,7 +706,7 @@ fn copies_badge_model() {
         b.hover
     );
     assert!(b.hover.contains("x.jpg on C (disk:c)"), "{}", b.hover);
-    let b = badge_of(&Redundancy {
+    let b = badge_of(&Copies::from(Redundancy {
         copies: 3,
         failure_domains: 2,
         backed_up: true,
@@ -701,7 +715,7 @@ fn copies_badge_model() {
             copy("e", VolumeState::Archived, true),
             copy("f", VolumeState::Online, false),
         ],
-    });
+    }));
     assert_eq!(b.text, "3× · 2");
     assert!(!b.risk);
     assert!(b

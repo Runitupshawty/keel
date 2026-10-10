@@ -3,6 +3,7 @@
 
 mod anim;
 mod app;
+mod backend; // the library in-process or in keel-daemon
 mod bulk_rename;
 mod clipboard;
 mod clouds;

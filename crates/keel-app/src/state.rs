@@ -849,9 +849,9 @@ impl AppState {
         // A remote or cloud tab searches names there (remotes.rs); Everything stays local.
         let remote = crate::remotes::is_network(&tab.dir) && !tab.library_search;
         let library = (tab.library_search)
-            .then(|| self.library.lib.clone())
+            .then(|| self.library.backend.clone())
             .flatten()
-            .map(|lib| Arc::new(crate::library::LibSearch(lib)) as Arc<dyn Searcher>);
+            .map(|b| Arc::new(crate::library::LibSearch(b)) as Arc<dyn Searcher>);
         let searcher = match self.searcher.clone() {
             _ if tab.library_search && library.is_none() => {
                 tab.loading = false;

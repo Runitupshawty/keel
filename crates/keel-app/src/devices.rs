@@ -9,11 +9,13 @@
 //! `KEEL_NET_SECRET=memory` keeps it in memory instead (a developer setting for tests and
 //! live checks: the device gets a new identity each run).
 
+use crate::backend::{Remote, Rpc};
 use crate::keys::Action;
 use crate::state::{AppState, Msg};
 use crate::worker;
 use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
+use keel_api::types as api;
 use keel_core::{Library, SourceId, SourceKind, SourceSummary};
 use keel_net::{
     Access, Grant, IncomingDrop, LibraryHandler, Link, NetEvent, Node, NodeOptions, NodeProvider,
@@ -21,6 +23,7 @@ use keel_net::{
 };
 use keel_vfs::{Router, VPath};
 use parking_lot::RwLock;
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -98,20 +101,26 @@ pub fn inbox_in(set: &str, downloads: Option<PathBuf>, data: Option<PathBuf>) ->
 /// The offer prompt: who, how many files and bytes (sums saturate: the sizes come from the
 /// other device), and the first few names.
 pub fn offer_text(from: &str, files: &[(String, u64)]) -> String {
-    const SHOWN: usize = 3;
     let bytes = files
         .iter()
         .fold(0u64, |sum, (_, n)| sum.saturating_add(*n));
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    offer_summary(from, files.len() as u64, bytes, &names)
+}
+
+/// The offer prompt from counts and the first names (an offer waiting in keel-daemon).
+pub fn offer_summary(from: &str, files: u64, bytes: u64, names: &[&str]) -> String {
+    const SHOWN: usize = 3;
     let mut text = format!(
-        "{from} wants to send {} file(s) ({})",
-        files.len(),
+        "{from} wants to send {files} file(s) ({})",
         humansize::format_size(bytes, humansize::DECIMAL)
     );
-    for (name, _) in files.iter().take(SHOWN) {
+    for name in names.iter().take(SHOWN) {
         text += &format!("\n• {name}");
     }
-    if files.len() > SHOWN {
-        text += &format!("\n…and {} more", files.len() - SHOWN);
+    let shown = names.len().min(SHOWN) as u64;
+    if files > shown {
+        text += &format!("\n…and {} more", files - shown);
     }
     text
 }
@@ -382,6 +391,23 @@ pub enum DevMsg {
         peer: PeerId,
         paths: Vec<PathBuf>,
     },
+    /// Attached: the daemon's devices, grants and waiting offers (or why there are none).
+    Remote(Result<RemoteDevices, String>),
+}
+
+/// Paired devices as keel-daemon reports them.
+pub struct RemoteDevices {
+    pub id: String,
+    pub label: String,
+    pub peers: Vec<Peer>,
+    pub grants: Vec<Grant>,
+    pub offers: Vec<keel_api::types::DropOffer>,
+}
+
+/// A Spacedrop offer waiting in keel-daemon.
+pub struct RemoteOffer {
+    pub offer: keel_api::types::DropOffer,
+    pub always: bool,
 }
 
 /// A Spacedrop offer waiting in the prompt.
@@ -413,6 +439,14 @@ pub struct Devices {
     auto_accept: Arc<RwLock<Vec<String>>>,
     inbox: Option<PathBuf>,
     next_ping: Instant,
+    // --- attached to keel-daemon: its node, through the API ---
+    /// The daemon connection whose devices are shown (and whose `node://` is registered).
+    remote: Option<u64>,
+    /// This device as the daemon reports it (id, label); None until read or with devices
+    /// off there (`error` says why).
+    pub remote_self: Option<(String, String)>,
+    pub remote_offers: Vec<RemoteOffer>,
+    next_poll: Instant,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -441,6 +475,10 @@ impl Devices {
             auto_accept: Arc::default(),
             inbox: None,
             next_ping: Instant::now(),
+            remote: None,
+            remote_self: None,
+            remote_offers: Vec::new(),
+            next_poll: Instant::now(),
             tx,
             ctx,
         }
@@ -626,13 +664,24 @@ impl Devices {
 }
 
 impl AppState {
-    /// Every frame: node lifecycle, events, sidebar rows.
+    /// Every frame: node lifecycle, events, sidebar rows. Attached to keel-daemon, the
+    /// daemon's node instead (this window opens none).
     pub fn devices_tick(&mut self) {
         let lib = self.library.lib.clone();
         self.devices
             .sync(lib.as_ref(), &self.settings.devices, &self.router);
         for t in self.devices.tick() {
             self.toasts.info(t);
+        }
+        if let Some(remote) = self.library.remote().cloned() {
+            return self.remote_devices_tick(remote);
+        }
+        if self.devices.remote.take().is_some() {
+            self.devices.peers.clear();
+            self.devices.grants.clear();
+            self.devices.remote_self = None;
+            self.devices.remote_offers.clear();
+            self.devices.error = None;
         }
         self.sidebar.devices = self
             .devices
@@ -646,6 +695,80 @@ impl AppState {
             _ if !self.settings.devices.enabled => Some("Off (Settings → Devices)".into()),
             _ => Some("Needs the library (Settings → Library)".into()),
         };
+    }
+
+    /// Attached: the daemon's devices, grants and offers, read every `REMOTE_POLL`;
+    /// `node://` paths go to the daemon.
+    fn remote_devices_tick(&mut self, remote: Arc<Remote>) {
+        let d = &mut self.devices;
+        if d.remote != Some(remote.id) {
+            d.remote = Some(remote.id);
+            d.remote_self = None;
+            d.error = None;
+            d.next_poll = Instant::now();
+            self.router.register(Arc::new(keel_api::DaemonProvider::new(
+                "node",
+                Rpc(remote.clone()),
+            )));
+        }
+        if Instant::now() >= d.next_poll && !self.library.lost {
+            d.next_poll = Instant::now() + REMOTE_POLL;
+            let (tx, ctx) = (d.tx.clone(), d.ctx.clone());
+            worker::spawn("keel-daemon-devices", move || {
+                let read = || -> anyhow::Result<RemoteDevices> {
+                    let devices: api::Devices = remote.call("devices.list", json!({}))?;
+                    let grants: Vec<api::GrantInfo> = remote.call("shares.list", json!({}))?;
+                    let inbox: api::Inbox = remote.call("spacedrop.inbox", json!({}))?;
+                    Ok(RemoteDevices {
+                        id: devices.id,
+                        label: devices.label,
+                        peers: devices.peers.iter().filter_map(peer_of).collect(),
+                        grants: grants.iter().filter_map(grant_of).collect(),
+                        offers: inbox.pending,
+                    })
+                };
+                let msg = DevMsg::Remote(read().map_err(|e| format!("{e:#}")));
+                worker::send(&tx, &ctx, Msg::Devices(msg));
+            });
+        }
+        if !self.devices.remote_offers.is_empty() {
+            self.ctx.request_repaint_after(REMOTE_POLL);
+        }
+        let d = &self.devices;
+        self.sidebar.devices = d.remote_self.as_ref().map(|_| device_rows(&d.peers));
+        self.sidebar.devices_note = match (&d.remote_self, &d.error) {
+            (Some(_), _) => None,
+            (None, Some(e)) => Some(format!("keel-daemon: {e}")),
+            (None, None) => Some("Asking keel-daemon…".into()),
+        };
+    }
+
+    /// A `net.event` from the attached daemon.
+    pub fn devices_event(&mut self, ev: serde_json::Value) {
+        let label = || ev["label"].as_str().unwrap_or_default().to_owned();
+        match ev["event"].as_str() {
+            Some("paired") => {
+                if let Some(pair) = self.devices.pair.take() {
+                    self.devices.pair = Some(pair.next(PairEvent::PairedWith(label())));
+                }
+            }
+            Some("drop_received") => {
+                let path = ev["path"].as_str().unwrap_or_default();
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let from = (ev["peer"].as_str())
+                    .and_then(|p| p.parse::<keel_net::NodeId>().ok())
+                    .map(|n| label_of(&self.devices.peers, &PeerId(n)))
+                    .unwrap_or_default();
+                self.toasts.info(format!("Received {name} from {from}"));
+            }
+            _ => {}
+        }
+        // Peers, grants and offers follow at once.
+        self.devices.next_poll = Instant::now();
     }
 
     pub fn devices_msg(&mut self, msg: DevMsg) {
@@ -681,6 +804,36 @@ impl AppState {
                 let paths = paths.into_iter().map(VPath::local).collect();
                 self.devices_cmd(0, DevCmd::Send { peer, paths });
             }
+            DevMsg::Remote(_) if self.library.remote().is_none() => {}
+            DevMsg::Remote(Ok(r)) => {
+                d.remote_self = Some((r.id, r.label));
+                d.error = None;
+                d.peers = r.peers;
+                d.grants = r.grants;
+                // Offers still waiting keep their "always" box.
+                let old = std::mem::take(&mut d.remote_offers);
+                d.remote_offers = (r.offers.into_iter())
+                    .map(|offer| RemoteOffer {
+                        always: (old.iter()).any(|o| {
+                            o.always && o.offer.id == offer.id && o.offer.peer == offer.peer
+                        }),
+                        offer,
+                    })
+                    .collect();
+            }
+            DevMsg::Remote(Err(e)) => {
+                d.remote_self = None;
+                d.peers.clear();
+                d.grants.clear();
+                d.remote_offers.clear();
+                d.error = Some(if e.contains("devices are off") {
+                    "devices are off there (turn on Settings → Devices, then restart \
+                     keel-daemon)"
+                        .into()
+                } else {
+                    e
+                });
+            }
         }
     }
 
@@ -688,6 +841,43 @@ impl AppState {
         let d = &mut self.devices;
         let Some(state) = d.pair.take() else { return };
         let next = state.next(ev);
+        if let Some(remote) = self.library.remote().cloned() {
+            let (tx, ctx) = (d.tx.clone(), d.ctx.clone());
+            match &next {
+                Pair::Requesting => {
+                    worker::spawn("keel-pair-code", move || {
+                        let code = (|| -> anyhow::Result<(String, String)> {
+                            let done = remote.apply("devices.pair_code", json!({}))?;
+                            let info: api::PairCodeInfo =
+                                serde_json::from_value(done.result.unwrap_or_default())?;
+                            Ok((info.code, info.ticket))
+                        })()
+                        .map_err(|e| format!("{e:#}"));
+                        worker::send(&tx, &ctx, Msg::Devices(DevMsg::Code(code)));
+                    });
+                }
+                Pair::Joining { text } => {
+                    let text = text.trim().to_owned();
+                    worker::spawn("keel-pair-join", move || {
+                        let joined = (|| -> anyhow::Result<String> {
+                            let done =
+                                remote.apply("devices.pair_with", json!({ "code": text }))?;
+                            let peer: api::PeerInfo =
+                                serde_json::from_value(done.result.unwrap_or_default())?;
+                            Ok(match peer.label.trim() {
+                                "" => peer.id.chars().take(8).collect(),
+                                l => l.to_owned(),
+                            })
+                        })()
+                        .map_err(|e| format!("Pairing failed: {e:#}"));
+                        worker::send(&tx, &ctx, Msg::Devices(DevMsg::Joined(joined)));
+                    });
+                }
+                _ => {}
+            }
+            self.devices.pair = Some(next);
+            return;
+        }
         let (Some(node), Some(rt)) = (d.node.clone(), d.rt.clone()) else {
             d.pair = Some(next);
             return;
@@ -721,6 +911,9 @@ impl AppState {
     }
 
     pub fn devices_cmd(&mut self, p: usize, cmd: DevCmd) {
+        if let Some(remote) = self.library.remote().cloned() {
+            return self.remote_devices_cmd(p, cmd, remote);
+        }
         let Some(node) = self.devices.node.clone() else {
             if !matches!(cmd, DevCmd::Answer { .. }) {
                 self.toasts
@@ -729,33 +922,10 @@ impl AppState {
             return;
         };
         let label = |s: &Self, peer: &PeerId| label_of(&s.devices.peers, peer);
+        let Some(cmd) = self.ui_devices_cmd(p, cmd) else {
+            return;
+        };
         match cmd {
-            DevCmd::Pair => self.devices.pair = Some(Pair::Choose),
-            DevCmd::PairStep(ev) => self.pair_step(ev),
-            DevCmd::Browse(peer) => self.run(p, Action::NewTabAt(root_of(&peer))),
-            DevCmd::SendFiles(peer) => {
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                worker::spawn("keel-drop-pick", move || {
-                    let picked = rfd::FileDialog::new()
-                        .set_title("Send with Spacedrop")
-                        .pick_files();
-                    if let Some(paths) = picked.filter(|p| !p.is_empty()) {
-                        worker::send(&tx, &ctx, Msg::Devices(DevMsg::Picked { peer, paths }));
-                    }
-                });
-            }
-            DevCmd::SendSelection => {
-                let paths: Vec<VPath> = (self.tab(p).targets().iter())
-                    .filter_map(|e| crate::library::real_of(&self.library.sources, &e.path))
-                    .collect();
-                if paths.is_empty() {
-                    self.toasts.error("Nothing selected to send");
-                } else if self.devices.peers.is_empty() {
-                    self.toasts.error("No paired devices (Devices → Pair…)");
-                } else {
-                    self.devices.send_pick = Some(paths);
-                }
-            }
             DevCmd::Send { peer, paths } => {
                 if let Some(bad) = paths.iter().find(|p| p.split_archive().is_some()) {
                     return self.toasts.error(format!(
@@ -767,17 +937,6 @@ impl AppState {
                 self.toasts
                     .info(format!("Sending {n} item(s) to {}", label(self, &peer)));
                 self.library.send_drop(node, peer, paths);
-            }
-            DevCmd::Shares(peer) => {
-                let source = shareable(&self.library.sources)
-                    .first()
-                    .map(|s| s.id.0.clone());
-                self.devices.shares = Some(SharesDialog {
-                    peer,
-                    source,
-                    subtree: String::new(),
-                    access: Access::Read,
-                });
             }
             DevCmd::Grant {
                 peer,
@@ -807,7 +966,6 @@ impl AppState {
                 }
                 self.devices.refresh();
             }
-            DevCmd::Forget(peer) => self.devices.forget = Some(peer),
             DevCmd::ForgetConfirmed(peer) => {
                 let id = peer.0.to_string();
                 self.settings.devices.auto_accept.retain(|a| *a != id);
@@ -831,6 +989,220 @@ impl AppState {
                 }
                 offer.drop.reply.answer(accept);
             }
+            // Handled by `ui_devices_cmd`.
+            _ => {}
+        }
+    }
+
+    /// The device commands that only open dialogs or pickers (the same with this window's
+    /// node or the daemon's); the others come back.
+    fn ui_devices_cmd(&mut self, p: usize, cmd: DevCmd) -> Option<DevCmd> {
+        match cmd {
+            DevCmd::Pair => self.devices.pair = Some(Pair::Choose),
+            DevCmd::PairStep(ev) => self.pair_step(ev),
+            DevCmd::Browse(peer) => self.run(p, Action::NewTabAt(root_of(&peer))),
+            DevCmd::SendFiles(peer) => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-drop-pick", move || {
+                    let picked = rfd::FileDialog::new()
+                        .set_title("Send with Spacedrop")
+                        .pick_files();
+                    if let Some(paths) = picked.filter(|p| !p.is_empty()) {
+                        worker::send(&tx, &ctx, Msg::Devices(DevMsg::Picked { peer, paths }));
+                    }
+                });
+            }
+            DevCmd::SendSelection => {
+                let paths: Vec<VPath> = (self.tab(p).targets().iter())
+                    .filter_map(|e| crate::library::real_of(&self.library.sources, &e.path))
+                    .collect();
+                if paths.is_empty() {
+                    self.toasts.error("Nothing selected to send");
+                } else if self.devices.peers.is_empty() {
+                    self.toasts.error("No paired devices (Devices → Pair…)");
+                } else {
+                    self.devices.send_pick = Some(paths);
+                }
+            }
+            DevCmd::Shares(peer) => {
+                let source = shareable(&self.library.sources)
+                    .first()
+                    .map(|s| s.id.0.clone());
+                self.devices.shares = Some(SharesDialog {
+                    peer,
+                    source,
+                    subtree: String::new(),
+                    access: Access::Read,
+                });
+            }
+            DevCmd::Forget(peer) => self.devices.forget = Some(peer),
+            cmd => return Some(cmd),
+        }
+        None
+    }
+}
+
+/// How often the attached daemon's devices, grants and offers are read.
+const REMOTE_POLL: Duration = Duration::from_secs(3);
+
+/// A daemon's device as the sidebar shows it.
+fn peer_of(p: &api::PeerInfo) -> Option<Peer> {
+    Some(Peer {
+        id: PeerId(p.id.parse().ok()?),
+        label: p.label.clone(),
+        last_seen: p.last_seen,
+        link: match p.link.as_str() {
+            "lan" => Link::Lan,
+            "relay" => Link::Relay,
+            _ => Link::Offline,
+        },
+        storage: p
+            .storage_used
+            .zip(p.storage_total)
+            .map(|(used, total)| keel_net::Storage { used, total }),
+    })
+}
+
+fn grant_of(g: &api::GrantInfo) -> Option<Grant> {
+    Some(Grant {
+        peer: PeerId(g.peer.parse().ok()?),
+        source: g.source.clone(),
+        subtree: g.subtree.clone(),
+        access: match g.access {
+            api::Access::Read => Access::Read,
+            api::Access::ReadWrite => Access::ReadWrite,
+        },
+        created: g.created,
+    })
+}
+
+impl AppState {
+    /// A device command while attached: through the daemon's API, on workers.
+    fn remote_devices_cmd(&mut self, p: usize, cmd: DevCmd, remote: Arc<Remote>) {
+        if self.library.lost {
+            return self.toasts.error(crate::library::LOST);
+        }
+        if self.devices.remote_self.is_none() && !matches!(cmd, DevCmd::Answer { .. }) {
+            return self.toasts.error(match &self.devices.error {
+                Some(e) => format!("keel-daemon: {e}"),
+                None => "Still asking keel-daemon about devices".into(),
+            });
+        }
+        // Runs `f` on a worker; an error is a toast; peers and grants are read again.
+        let run = |s: &mut Self,
+                   what: &'static str,
+                   f: Box<dyn FnOnce() -> anyhow::Result<()> + Send>| {
+            let (tx, ctx) = (s.tx.clone(), s.ctx.clone());
+            worker::spawn("keel-daemon-device", move || {
+                if let Err(e) = f() {
+                    worker::send(&tx, &ctx, Msg::Toast(format!("{what}: {e:#}")));
+                }
+            });
+            s.devices.next_poll = Instant::now() + Duration::from_millis(300);
+        };
+        let Some(cmd) = self.ui_devices_cmd(p, cmd) else {
+            return;
+        };
+        match cmd {
+            DevCmd::Send { peer, paths } => {
+                if let Some(bad) = paths.iter().find(|p| p.split_archive().is_some()) {
+                    return self.toasts.error(format!(
+                        "Extract {} first: Spacedrop sends files and folders",
+                        bad.name()
+                    ));
+                }
+                self.toasts.info(format!(
+                    "Sending {} item(s) to {}",
+                    paths.len(),
+                    label_of(&self.devices.peers, &peer)
+                ));
+                let paths: Vec<String> = paths.iter().map(VPath::display).collect();
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-drop-send", move || {
+                    let sent = remote.apply(
+                        "spacedrop.send",
+                        json!({"peer": peer.0.to_string(), "paths": paths}),
+                    );
+                    let msg = match sent {
+                        Ok(done) => Msg::Library(crate::library::LibMsg::Spawned {
+                            kind: "drop",
+                            id: done.job,
+                        }),
+                        Err(e) => Msg::Toast(format!("Spacedrop: {e:#}")),
+                    };
+                    worker::send(&tx, &ctx, msg);
+                });
+            }
+            DevCmd::Grant {
+                peer,
+                source,
+                subtree,
+                access,
+            } => {
+                let access = match access {
+                    Access::Read => "read",
+                    Access::ReadWrite => "read_write",
+                };
+                let params = json!({"peer": peer.0.to_string(), "source": source,
+                    "subtree": clean_subtree(&subtree), "access": access});
+                run(
+                    self,
+                    "Could not share",
+                    Box::new(move || remote.apply("shares.grant", params).map(drop)),
+                );
+            }
+            DevCmd::Revoke {
+                peer,
+                source,
+                subtree,
+            } => {
+                let params =
+                    json!({"peer": peer.0.to_string(), "source": source, "subtree": subtree});
+                run(
+                    self,
+                    "Could not revoke",
+                    Box::new(move || {
+                        remote
+                            .call::<api::Revoked>("shares.revoke", params)
+                            .map(drop)
+                    }),
+                );
+            }
+            DevCmd::ForgetConfirmed(peer) => {
+                let id = peer.0.to_string();
+                self.settings.devices.auto_accept.retain(|a| *a != id);
+                run(
+                    self,
+                    "Could not forget the device",
+                    Box::new(move || {
+                        remote
+                            .apply("devices.forget", json!({ "peer": id }))
+                            .map(drop)
+                    }),
+                );
+                for id in device_sources_of(&self.library.sources, &peer) {
+                    self.library_cmd(p, crate::library::LibCmd::RemoveConfirmed(id));
+                }
+            }
+            DevCmd::Answer { id, accept, always } => {
+                let Some(i) = (self.devices.remote_offers.iter()).position(|o| o.offer.id == id)
+                else {
+                    return;
+                };
+                let offer = self.devices.remote_offers.remove(i).offer;
+                // keel-daemon reads the list when it starts.
+                if accept && always && !self.settings.devices.auto_accept.contains(&offer.peer) {
+                    self.settings.devices.auto_accept.push(offer.peer.clone());
+                }
+                let params = json!({"peer": offer.peer, "id": offer.id, "accept": accept});
+                run(
+                    self,
+                    "Spacedrop",
+                    Box::new(move || remote.apply("spacedrop.answer", params).map(drop)),
+                );
+            }
+            // Handled by `ui_devices_cmd`.
+            _ => {}
         }
     }
 }
@@ -1164,40 +1536,59 @@ fn pick_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     }
 }
 
-/// Incoming offers, bottom-right above the toasts: Accept / Decline, "always".
+/// Incoming offers, bottom-right above the toasts: Accept / Decline, "always" (this
+/// window's node's, or the attached daemon's).
 fn offers(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let peers = s.devices.peers.clone();
+    let from = |label: &str, peer: Option<PeerId>| match (label.trim(), peer) {
+        ("", Some(peer)) => label_of(&peers, &peer),
+        (label, _) => label.to_owned(),
+    };
     let mut y = -140.0;
     for offer in s.devices.offers.iter_mut() {
         let d = &offer.drop;
-        let from = if d.label.trim().is_empty() {
-            label_of(&peers, &d.peer)
-        } else {
-            d.label.clone()
-        };
-        let shown = egui::Area::new(egui::Id::new(("keel-offer", d.id.as_str())))
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, y])
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width(420.0);
-                    ui.label(offer_text(&from, &d.files));
-                    ui.checkbox(&mut offer.always, "Always accept from this device");
-                    ui.horizontal(|ui| {
-                        for (text, accept) in [("Accept", true), ("Decline", false)] {
-                            if ui.button(text).clicked() {
-                                out.push(dev(DevCmd::Answer {
-                                    id: d.id.clone(),
-                                    accept,
-                                    always: offer.always,
-                                }));
-                            }
+        let text = offer_text(&from(&d.label, Some(d.peer)), &d.files);
+        offer_prompt(ctx, &d.id, &text, &mut offer.always, &mut y, out);
+    }
+    for o in s.devices.remote_offers.iter_mut() {
+        let d = &o.offer;
+        let peer = d.peer.parse().ok().map(PeerId);
+        let names: Vec<&str> = d.names.iter().map(String::as_str).collect();
+        let text = offer_summary(&from(&d.label, peer), d.files, d.bytes, &names);
+        offer_prompt(ctx, &d.id, &text, &mut o.always, &mut y, out);
+    }
+}
+
+fn offer_prompt(
+    ctx: &egui::Context,
+    id: &str,
+    text: &str,
+    always: &mut bool,
+    y: &mut f32,
+    out: &mut Vec<Action>,
+) {
+    let shown = egui::Area::new(egui::Id::new(("keel-offer", id)))
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, *y])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(text);
+                ui.checkbox(always, "Always accept from this device");
+                ui.horizontal(|ui| {
+                    for (text, accept) in [("Accept", true), ("Decline", false)] {
+                        if ui.button(text).clicked() {
+                            out.push(dev(DevCmd::Answer {
+                                id: id.to_owned(),
+                                accept,
+                                always: *always,
+                            }));
                         }
-                    });
+                    }
                 });
             });
-        y -= shown.response.rect.height() + 4.0;
-    }
+        });
+    *y -= shown.response.rect.height() + 4.0;
 }
 
 /// Settings → Devices.
@@ -1215,7 +1606,11 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
             ui.label("This device");
-            let current = d.node.as_ref().map(|n| n.label()).unwrap_or_default();
+            let current = match (&d.node, &d.remote_self) {
+                (Some(n), _) => n.label(),
+                (None, Some((_, label))) => label.clone(),
+                _ => String::new(),
+            };
             ui.add(
                 egui::TextEdit::singleline(&mut ds.label)
                     .hint_text(current)
@@ -1276,6 +1671,12 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
     if let Some(node) = &d.node {
         ui.add_space(6.0);
         ui.weak(format!("Device id: {}", node.id()));
+    } else if let Some((id, _)) = &d.remote_self {
+        ui.add_space(6.0);
+        ui.weak(format!(
+            "Device id: {id} (keel-daemon's; label, inbox, relays and the always-accept \
+             list apply when it starts)"
+        ));
     }
 }
 

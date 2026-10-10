@@ -4669,6 +4669,7 @@ dependencies = [
  "interprocess",
  "keel-api",
  "keel-core",
+ "keel-daemon",
  "keel-net",
  "keel-preview",
  "keel-search",

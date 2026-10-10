@@ -4,15 +4,15 @@
 
 use crate::keys::Action;
 use crate::library::{
-    count, plan_summary, protection_lines, reclaimable, source_rows, state_text, volume_rows,
-    warning_text, Dot, Hashing, LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
+    count, protection_lines, reclaimable, source_rows, state_text, volume_rows, Dot, Hashing,
+    LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
 };
 use crate::pane::ViewCx;
 use crate::state::AppState;
 use crate::theme::Theme;
 use egui::{Color32, RichText};
 use humansize::{format_size, DECIMAL};
-use keel_core::{Action as PlanAction, JobStatus, SourceDef, SourceKind, Tag, VolumeState};
+use keel_core::{JobStatus, SourceDef, SourceKind, Tag, VolumeState};
 use keel_vfs::VPath;
 
 fn lib(cmd: LibCmd) -> Action {
@@ -212,6 +212,26 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                 "The library is off. Turn it on in Settings → Library."
             });
             return;
+        }
+        match l.remote() {
+            Some(r) if l.lost => {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("keel-daemon (pid {}) stopped: read-only", r.version.pid),
+                );
+            }
+            Some(r) => {
+                ui.weak(format!(
+                    "Connected to the daemon (keel-daemon, pid {}, library {}): the command \
+                     line and keel mcp share this library",
+                    r.version.pid, r.version.library
+                ));
+            }
+            None => {
+                if let Some(note) = &l.note {
+                    ui.weak(format!("Open in this window: {note}"));
+                }
+            }
         }
         let st = &l.stats;
         // The cards' closures share one action list.
@@ -515,10 +535,42 @@ pub fn jobs(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
 
 /// The library's windows: add source, plan preview, tag picker, duplicate finder.
 pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
+    lost_banner(ctx, &s.library, out);
     add_source(ctx, s, out);
     plan_dialog(ctx, s, out);
     tag_picker(ctx, s, out);
     dup_finder(ctx, s, out);
+}
+
+/// The attached daemon went away: Reconnect, or open the library in this window (nothing
+/// is written until one is chosen).
+fn lost_banner(ctx: &egui::Context, l: &LibraryUi, out: &mut Vec<Action>) {
+    if !l.lost {
+        return;
+    }
+    egui::Area::new(egui::Id::new("keel-daemon-lost"))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 40.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "keel-daemon stopped: the library is read-only.",
+                    );
+                    if ui
+                        .button("Reconnect")
+                        .on_hover_text("Connect again, starting keel-daemon when it is not running")
+                        .clicked()
+                    {
+                        out.push(lib(LibCmd::Reconnect));
+                    }
+                    if ui.button("Open in this window").clicked() {
+                        out.push(lib(LibCmd::OpenHere));
+                    }
+                });
+            });
+        });
 }
 
 fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
@@ -660,39 +712,21 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 "The sources changed since the preview. Review the new one:",
             );
         }
-        ui.strong(plan_summary(&d.plan));
+        ui.strong(d.plan.summary());
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .max_height(180.0)
             .id_salt("plan-changes")
             .show(ui, |ui| {
-                for c in &d.plan.changes {
-                    let verb = match c.action {
-                        PlanAction::Copy => "Copy",
-                        PlanAction::Move => "Move",
-                        PlanAction::Delete => "Delete",
-                        PlanAction::Rename => "Rename",
-                    };
-                    let to = c.to.as_ref().map(|t| format!(" → {}", t.display()));
-                    ui.add(
-                        egui::Label::new(format!(
-                            "{verb} {}{}  ({}, {})",
-                            c.from.display(),
-                            to.unwrap_or_default(),
-                            crate::jobs::items(c.files as usize),
-                            format_size(c.bytes, DECIMAL)
-                        ))
-                        .truncate(),
-                    );
+                for line in d.plan.changes() {
+                    ui.add(egui::Label::new(line).truncate());
                 }
             });
-        if !d.plan.warnings.is_empty() {
+        let warnings = d.plan.warnings(&sources);
+        if !warnings.is_empty() {
             ui.add_space(6.0);
-            for w in &d.plan.warnings {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("⚠ {}", warning_text(w, &sources)),
-                );
+            for w in warnings {
+                ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {w}"));
             }
         }
         ui.add_space(8.0);
@@ -936,6 +970,44 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             {
                 l.pending.push(LibCmd::RebuildIndex);
             }
+            ui.end_row();
+            ui.label("Background");
+            ui.vertical(|ui| {
+                let attached = l.remote().is_some();
+                if ui
+                    .checkbox(
+                        &mut lib_settings.daemon,
+                        "Run the library in a background daemon",
+                    )
+                    .on_hover_text(
+                        "Keel starts keel-daemon for this profile and works through it, so \
+                         the keel command line, keel mcp and other windows can use the \
+                         library while this window is open. The daemon keeps running when \
+                         the window closes (keel daemon stop ends it). A running daemon is \
+                         always used, whatever this says.",
+                    )
+                    .changed()
+                    && lib_settings.daemon
+                    && l.is_open()
+                    && !attached
+                {
+                    // Hand the library over now: close it here, then attach.
+                    l.pending.push(LibCmd::Restart);
+                }
+                ui.weak(match l.remote() {
+                    Some(r) => format!(
+                        "Connected to keel-daemon (pid {}){}",
+                        r.version.pid,
+                        if l.spawned {
+                            ", started by this window"
+                        } else {
+                            ""
+                        }
+                    ),
+                    None if l.is_open() => "Open in this window".to_owned(),
+                    None => String::new(),
+                });
+            });
             ui.end_row();
         });
     if let Some(dir) = crate::settings::data_dir() {

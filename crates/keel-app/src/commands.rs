@@ -666,6 +666,50 @@ fn daemon_exe() -> Option<std::path::PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Starts `keel-daemon --profile <name>` in the background (no console window, not in
+/// this console's Ctrl-C group: it outlives the caller), its log appended to
+/// `<config dir>/daemon.log`. Returns the child and the log's path.
+pub fn spawn_daemon(
+    cfg: &HostConfig,
+) -> std::io::Result<(std::process::Child, std::path::PathBuf)> {
+    let exe = daemon_exe().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "keel-daemon was not found next to keel",
+        )
+    })?;
+    let log = cfg.config_dir.join("daemon.log");
+    let _ = std::fs::create_dir_all(&cfg.config_dir);
+    let stderr = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        Ok(f) => std::process::Stdio::from(f),
+        Err(_) => std::process::Stdio::null(),
+    };
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["--profile", &cfg.profile])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window; not in this console's Ctrl-C group.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    Ok((command.spawn()?, log))
+}
+
 fn running(cfg: &HostConfig) -> Option<Value> {
     Client::connect(&cfg.socket_name())
         .ok()
@@ -719,40 +763,7 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
                 );
                 return OK;
             }
-            let Some(exe) = daemon_exe() else {
-                eprintln!("keel: keel-daemon was not found next to keel");
-                return FAILED;
-            };
-            let log = cfg.config_dir.join("daemon.log");
-            let _ = std::fs::create_dir_all(&cfg.config_dir);
-            let stderr = match std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log)
-            {
-                Ok(f) => std::process::Stdio::from(f),
-                Err(_) => std::process::Stdio::null(),
-            };
-            let mut command = std::process::Command::new(exe);
-            command
-                .args(["--profile", &cfg.profile])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(stderr);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                // No console window; not in this console's Ctrl-C group.
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-                command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                command.process_group(0);
-            }
-            let mut child = match command.spawn() {
+            let (mut child, log) = match spawn_daemon(cfg) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("keel: starting keel-daemon: {e}");

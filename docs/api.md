@@ -176,8 +176,12 @@ The daemon opens the profile's library (`[library] name` in the profile's config
 default `james`, under `KEEL_DATA_DIR` or the platform data folder), resumes its jobs and
 serves until Ctrl-C, SIGTERM or `daemon.shutdown`. It survives clients disconnecting; a
 second daemon for the same profile exits with "keel-daemon is already running for
-profile …". While the Keel window has the library open, neither the daemon nor in-process
-CLI calls can open it (one process holds a library).
+profile …". One process holds a library: while a Keel window has it open in-process,
+neither the daemon nor in-process CLI calls can open it. A window that finds the
+profile's daemon running when it opens the library attaches to it instead (a client
+like any other, using these operations and `subscribe`), and with Settings → Library →
+"Run the library in a background daemon" it starts the daemon itself; then the window,
+the CLI and MCP all work at once, and closing the window leaves the daemon running.
 
 **Local socket.** Named `keel-daemon-<hash of the user's SID or uid, a per-user random
 salt, the profile and the data folder>` (the salt is `<config dir>/socket.salt`, created
@@ -199,9 +203,9 @@ connections may stay open.
 ```
 
 Besides the operations: `subscribe` (then notifications `job.progress`
-`{id, status, progress}`, `library.changed` `{method}` and `net.event` arrive on that
-connection), `unsubscribe`, `daemon.shutdown`, and `share.claim` `{id}` (the web client's
-share target, below).
+`{id, status, progress}`, `library.changed` `{method}`, `net.event` and, when the daemon
+stops, `daemon.stopping` `{pid}` arrive on that connection), `unsubscribe`,
+`daemon.shutdown`, and `share.claim` `{id}` (the web client's share target, below).
 
 **WebSocket (optional).** `--ws 127.0.0.1:7420` serves the same JSON-RPC, one message per
 text frame. Every connection must send `Authorization: Bearer <token>`, the token in
@@ -370,9 +374,10 @@ command = "keel"
 args = ["mcp"]
 ```
 
-Give the full path to `keel.exe` when it is not on `PATH`. Start `keel daemon start` first
-when the Keel window is closed and several agents share the library, or keep the window
-closed while an agent works without one (one process opens a library at a time). Agents
+Give the full path to `keel.exe` when it is not on `PATH`. Run the daemon (`keel daemon
+start`, or the window's "Run the library in a background daemon" setting) so the window
+and several agents share the library; without one, keep the window closed while an agent
+works (one process opens a library at a time). Agents
 see every mutating tool return a preview. With a client that supports elicitation, each
 `execute` then opens a confirmation showing what the plan does. A client without
 elicitation (check its MCP docs) cannot execute unless you add `--allow-execute`

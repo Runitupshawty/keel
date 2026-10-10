@@ -133,6 +133,21 @@ fn serves_the_api_on_the_local_socket() {
 }
 
 #[test]
+fn subscribers_hear_the_daemon_stop() {
+    let env = env();
+    let daemon = start(&env, None);
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let v = c.call("subscribe", Value::Null).unwrap();
+    assert!(
+        v["subscribed"].to_string().contains("daemon.stopping"),
+        "{v}"
+    );
+    daemon.shutdown();
+    let n = c.next_notification(Duration::from_secs(10)).unwrap();
+    assert_eq!(n["method"], "daemon.stopping", "{n}");
+}
+
+#[test]
 fn second_daemon_for_the_profile_exits() {
     let env = env();
     let _daemon = start(&env, None);

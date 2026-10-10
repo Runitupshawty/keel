@@ -118,7 +118,9 @@ impl App {
         // --- Task 29 ---: the library opens on a worker (not in tests: no persist).
         if persist.is_some() && state.settings.library.enabled {
             let name = state.settings.library.name.clone();
-            state.library.open(&name, state.router.clone());
+            let spawn = state.settings.library.daemon;
+            let via = crate::library::Via::Auto { spawn };
+            state.library.open(&name, state.router.clone(), via);
         }
         // --- end Task 24 ---
         Self {

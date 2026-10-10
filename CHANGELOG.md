@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- The window attaches to keel-daemon: when the profile's daemon runs, the window works through its API instead of opening the library itself, so the `keel` subcommands, `keel mcp` and other windows keep working while it is open (the 0.8.0 known limitation). Sources, `library://` tabs, search, tags, favorites, recents, the jobs panel (live progress through `subscribe`), previews and file operations (confirmed in the window's own preview dialog), duplicates, copies badges, protection, the drive inventory, hashing, integrity and media jobs and Devices (pairing, shares, Spacedrop, `node://` tabs) all go through the daemon; the Overview says "Connected to the daemon". Closing the window leaves the daemon running. Settings → Library → "Run the library in a background daemon" (off by default) starts `keel-daemon --profile <name>` when none runs. If the daemon stops, a banner offers Reconnect or Open in this window, and nothing is written until one is chosen.
+- API operations for it: `tags.tagged`, `views.list`, `recents.note` (acts directly), `redundancy.folder`, `library.stats`, `protection.summary`, `volumes.list`, previewed `volumes.set`, `integrity.check`, `hashing.set` and `media.index`; `sources.index` takes `adopt`, `tags.add` a `color`, and redundancy locations carry their volume's state, backup mark and `claimed` flag (50 operations).
+- keel-daemon keeps every source current (watched like the window does, hashing after each walk), its device serves the library's sources to granted devices and browses paired devices' `node://` paths, and subscribers get `daemon.stopping` when it stops. It is also a library crate, so clients' tests can run a daemon in-process.
+
 ## [0.9.0] - 2026-10-10
 
 ### Added

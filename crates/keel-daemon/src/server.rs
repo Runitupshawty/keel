@@ -116,7 +116,9 @@ impl Shared {
                 if session.sub.is_none() {
                     session.sub = Some(self.hub.subscribe());
                 }
-                Ok(json!({"subscribed": ["job.progress", "library.changed", "net.event"]}))
+                Ok(
+                    json!({"subscribed": ["job.progress", "library.changed", "net.event", "daemon.stopping"]}),
+                )
             }
             "unsubscribe" => {
                 if let Some((id, _)) = session.sub.take() {
@@ -280,6 +282,10 @@ impl Daemon {
         if self.shared.stop.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Subscribers (an attached window) learn it before their connection ends.
+        self.shared
+            .hub
+            .broadcast("daemon.stopping", json!({ "pid": std::process::id() }));
         // Wakes the accept loops, which then see `stop` and let go of the socket.
         let _ = socket::connect(&self.name, Duration::from_millis(500));
         for addr in self.ws_addr.iter().chain(&self.web_addr) {

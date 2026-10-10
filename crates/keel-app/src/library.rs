@@ -1,10 +1,13 @@
 //! The library in the app (spec 2.10, Task 29): opening it off the UI thread, the index
 //! behind the `library://` provider, sidebar data, library job rows, tags, plans
-//! (validate → preview → execute) and the duplicate finder. Every keel-core call that
-//! reads a store runs on a worker; only `sources()`, `note_activity()`, `refresh_status()` and
-//! `Jobs::subscribe` (which return at once) run on the UI thread. Drawing is in
+//! (validate → preview → execute) and the duplicate finder. The library is in this
+//! process or in the profile's keel-daemon (`backend`: the window attaches to a running
+//! daemon); every call that reads a store or the daemon runs on a worker; only
+//! `sources()`, `note_activity()`, `refresh_status()` and `Jobs::subscribe` of an
+//! in-process library (which return at once) run on the UI thread. Drawing is in
 //! `library_ui`.
 
+use crate::backend::{Attach, Event, Executed, LibraryBackend, Planned, Remote, VolumeChange};
 use crate::keys::Action;
 use crate::state::{AppState, Msg};
 use crate::tab::TabKind;
@@ -12,10 +15,10 @@ use crate::worker;
 use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
 use keel_core::{
-    Indexer, JobEvent, JobId, JobInfo, JobStatus, Library, LibraryHit, LibraryStats,
-    LibrarySummary, OfflineReason, OnConflict, Op, Plan, PlanChanged, ProtectionSummary, RecordRef,
-    Redundancy, SourceDef, SourceId, SourceKind, SourceStatus, SourceSummary, Tag, TagId, View,
-    Volume, VolumeKind, VolumeState, Warning, WatchConfig, WatchHandle, FAVORITES,
+    Indexer, JobEvent, JobId, JobStatus, Library, LibraryHit, LibraryStats, LibrarySummary,
+    OfflineReason, OnConflict, Op, Plan, ProtectionSummary, RecordRef, SourceDef, SourceId,
+    SourceKind, SourceStatus, SourceSummary, Tag, TagId, View, Volume, VolumeKind, VolumeState,
+    Warning, WatchConfig, WatchHandle, FAVORITES,
 };
 use keel_search::{Hit, Query, Searcher};
 use keel_vfs::library as vlib;
@@ -39,7 +42,10 @@ const WATCH_RETRY: Duration = Duration::from_secs(300);
 /// Finished library job rows leave the jobs panel after this long (failures stay).
 const ROW_KEPT: Duration = Duration::from_secs(5);
 /// The duplicate finder shows at most this many groups (biggest first).
-const MAX_GROUPS: usize = 500;
+pub(crate) const MAX_GROUPS: usize = 500;
+/// The daemon's sources are read this often (more often while something runs).
+const SOURCES_EVERY: Duration = Duration::from_secs(5);
+const SOURCES_BUSY: Duration = Duration::from_secs(1);
 
 /// The Overview tab's folder (no provider: it is never listed).
 pub fn overview_path() -> VPath {
@@ -89,6 +95,9 @@ pub struct LibrarySettings {
     pub integrity_pct: f64,
     /// Days between integrity checks (0: off).
     pub integrity_days: u32,
+    /// Without a running keel-daemon, start one and attach to it instead of opening the
+    /// library in this window (so the CLI, `keel mcp` and other windows keep working).
+    pub daemon: bool,
 }
 
 impl Default for LibrarySettings {
@@ -101,6 +110,7 @@ impl Default for LibrarySettings {
             tags_column: true,
             integrity_pct: keel_core::DEFAULT_SAMPLE_PCT,
             integrity_days: 7,
+            daemon: false,
         }
     }
 }
@@ -174,15 +184,33 @@ pub enum LibCmd {
     },
     /// Overview → Protection: re-hash a sample now.
     CheckIntegrity,
+    /// The daemon went away: connect again (starting it when it is not running).
+    Reconnect,
+    /// The daemon went away: open the library in this window.
+    OpenHere,
+    /// Close and open again (Settings → Library → background daemon turned on).
+    Restart,
+}
+
+/// How `LibraryUi::open` reaches the library.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Via {
+    /// A running daemon, else (`spawn`) a daemon started now, else this process.
+    Auto { spawn: bool },
+    /// This process only.
+    Here,
 }
 
 /// Answers from library workers (`Msg::Library`).
 pub enum LibMsg {
     Opened {
-        result: Result<Arc<Library>, String>,
+        result: Result<Opened, String>,
         first_run: bool,
-        jobs: Vec<JobInfo>,
     },
+    /// The daemon's sources.
+    Sources(Vec<SourceSummary>),
+    /// From the daemon connection `id`'s subscription.
+    Remote(u64, Event),
     Stats(LibraryStats),
     Meta {
         tags: Vec<Tag>,
@@ -195,9 +223,9 @@ pub enum LibMsg {
         kind: &'static str,
         id: Option<JobId>,
     },
-    Planned(Result<Plan, String>),
+    Planned(Result<Planned, String>),
     /// `Plan::execute` refused: the sources changed; show this fresh plan.
-    Changed(Plan),
+    Changed(Planned),
     Dups(Result<Vec<DupGroup>, String>),
     Libraries(Vec<LibrarySummary>),
     /// The add-source wizard's folder picker answered.
@@ -209,6 +237,17 @@ pub enum LibMsg {
     Protection(ProtectionSummary, Vec<Volume>),
     /// Copies badges of the files in some folders (by real path).
     Badges(HashMap<VPath, Badge>),
+}
+
+/// An opened library: where it is, its running jobs and their events, and why a wanted
+/// daemon is not used.
+pub struct Opened {
+    pub backend: LibraryBackend,
+    pub jobs: Vec<(JobId, JobRow)>,
+    pub events: Option<Receiver<JobEvent>>,
+    /// A daemon was started for this window.
+    pub spawned: bool,
+    pub note: Option<String>,
 }
 
 /// One library job in the jobs panel.
@@ -247,7 +286,6 @@ pub struct DupGroup {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DupRecord {
-    pub record: RecordRef,
     pub path: VPath,
     pub source: String,
     pub offline: bool,
@@ -269,7 +307,6 @@ pub fn load_dups(lib: &Library, min_size: u64) -> anyhow::Result<Vec<DupGroup>> 
         for r in g.records {
             if let Some(hit) = lib.record(&r)? {
                 records.push(DupRecord {
-                    record: r,
                     path: hit.path,
                     source: hit.source_label,
                     offline: matches!(hit.status, SourceStatus::Offline { .. }),
@@ -570,7 +607,7 @@ pub struct DupFinder {
 
 /// The validate → preview dialog.
 pub struct PlanDialog {
-    pub plan: Plan,
+    pub plan: Planned,
     /// The sources changed since the first preview (this is the fresh one).
     pub changed: bool,
     pub running: bool,
@@ -582,10 +619,21 @@ enum Watch {
     Failed(Instant),
 }
 
-type Slot = Arc<RwLock<Option<Arc<Library>>>>;
+type Slot = Arc<RwLock<Option<LibraryBackend>>>;
 
 pub struct LibraryUi {
+    /// Where the open library is (None: closed).
+    pub backend: Option<LibraryBackend>,
+    /// The library when it is open in this process (the node and the media view use it).
     pub lib: Option<Arc<Library>>,
+    /// Attached: the daemon went away; nothing is written until Reconnect or Open in this
+    /// window.
+    pub lost: bool,
+    /// Attached to a daemon this window started.
+    pub spawned: bool,
+    /// Why the daemon the settings asked for is not used.
+    pub note: Option<String>,
+    next_sources: Instant,
     /// Shared with the `library://` provider.
     slot: Slot,
     pub opening: bool,
@@ -645,7 +693,12 @@ impl LibraryUi {
         )));
         let now = Instant::now();
         Self {
+            backend: None,
             lib: None,
+            lost: false,
+            spawned: false,
+            note: None,
+            next_sources: now,
             slot,
             opening: false,
             error: None,
@@ -684,51 +737,47 @@ impl LibraryUi {
     }
 
     pub fn is_open(&self) -> bool {
-        self.lib.is_some()
+        self.backend.is_some()
     }
 
-    /// Opens library `name` on a worker (creating it on first run), sets the router and
-    /// resumes jobs left by the last session.
-    pub fn open(&mut self, name: &str, router: Arc<Router>) {
+    /// The daemon this window is attached to.
+    pub fn remote(&self) -> Option<&Arc<Remote>> {
+        self.backend.as_ref().and_then(LibraryBackend::remote)
+    }
+
+    /// Opens library `name` on a worker: attaches to the profile's daemon (`via`), else
+    /// opens it here (creating it on first run), sets the router and resumes jobs left by
+    /// the last session.
+    pub fn open(&mut self, name: &str, router: Arc<Router>, via: Via) {
         if self.opening {
             return;
         }
         self.opening = true;
         self.error = None;
         let (tx, ctx, name) = (self.tx.clone(), self.ctx.clone(), name.to_owned());
+        let profile = crate::cli::profile();
         worker::spawn("keel-library-open", move || {
-            let opened = (|| -> anyhow::Result<(Library, bool, Vec<JobInfo>)> {
-                let root = crate::settings::data_dir().context("no data folder")?;
-                let first_run = !root.join("library").join(&name).exists();
-                // Owner-only when created here (else it inherits the drive's permissions).
-                keel_api::private::create_dir_all(&root)?;
-                let lib = Library::open(&root, &name)?;
-                lib.set_router(router);
-                keel_net::spacedrop::register(&lib); // Task 36
-                lib.set_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
-                lib.jobs().resume_all()?;
-                let jobs = lib.jobs().list()?;
-                Ok((lib, first_run, jobs))
-            })();
-            let msg = match opened {
-                Ok((lib, first_run, jobs)) => LibMsg::Opened {
-                    result: Ok(Arc::new(lib)),
+            let msg = match open_library(&name, router, &profile, via, &tx, &ctx) {
+                Ok((opened, first_run)) => LibMsg::Opened {
+                    result: Ok(opened),
                     first_run,
-                    jobs,
                 },
                 Err(e) => LibMsg::Opened {
                     result: Err(format!("{e:#}")),
                     first_run: false,
-                    jobs: Vec::new(),
                 },
             };
             worker::send(&tx, &ctx, Msg::Library(msg));
         });
     }
 
-    /// Takes the open library out (watchers stop); for closing or switching.
-    fn take(&mut self) -> Option<(Arc<Library>, Vec<WatchHandle>)> {
-        let lib = self.lib.take()?;
+    /// Takes the open library out (watchers stop); for closing or switching. A daemon's
+    /// library stays open there.
+    fn take(&mut self) -> Option<(Option<Arc<Library>>, Vec<WatchHandle>)> {
+        self.backend.take()?;
+        let lib = self.lib.take();
+        self.lost = false;
+        self.spawned = false;
         *self.slot.write() = None;
         self.events = None;
         self.sources.clear();
@@ -749,40 +798,45 @@ impl LibraryUi {
         Some((lib, handles))
     }
 
-    /// Exit: stops watchers and closes the library, waiting up to `CLOSE_TIMEOUT`.
+    /// Exit: stops watchers and closes the library, waiting up to `CLOSE_TIMEOUT`; a
+    /// daemon keeps running (and its library open).
     pub fn close_now(&mut self) {
         if let Some((lib, handles)) = self.take() {
             drop(handles);
-            if !lib.close(CLOSE_TIMEOUT) {
+            if lib.is_some_and(|lib| !lib.close(CLOSE_TIMEOUT)) {
                 tracing::warn!("library: a job was still busy at exit");
             }
         }
     }
 
-    /// Closes on a worker (switching libraries, turning the library off).
+    /// Closes on a worker (switching libraries, turning the library off); lets go of a
+    /// daemon.
     fn close_later(&mut self) {
         if let Some((lib, handles)) = self.take() {
             let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
             worker::spawn("keel-library-close", move || {
                 drop(handles);
-                lib.close(CLOSE_TIMEOUT);
+                if let Some(lib) = lib {
+                    lib.close(CLOSE_TIMEOUT);
+                }
                 worker::send(&tx, &ctx, Msg::Library(LibMsg::Closed));
             });
         }
     }
 
-    /// Runs `f` with the library on a worker; its message (if any) comes back.
+    /// Runs `f` with the library on a worker; its message (if any) comes back. Nothing
+    /// runs while the daemon is lost.
     fn spawn(
         &self,
         name: &str,
-        f: impl FnOnce(&Library) -> Option<LibMsg> + Send + 'static,
+        f: impl FnOnce(&LibraryBackend) -> Option<LibMsg> + Send + 'static,
     ) -> bool {
-        let Some(lib) = self.lib.clone() else {
+        let Some(backend) = self.backend.clone().filter(|_| !self.lost) else {
             return false;
         };
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         worker::spawn(name, move || {
-            if let Some(msg) = f(&lib) {
+            if let Some(msg) = f(&backend) {
                 worker::send(&tx, &ctx, Msg::Library(msg));
             }
         })
@@ -793,7 +847,7 @@ impl LibraryUi {
         &self,
         name: &str,
         what: &'static str,
-        f: impl FnOnce(&Library) -> anyhow::Result<Option<LibMsg>> + Send + 'static,
+        f: impl FnOnce(&LibraryBackend) -> anyhow::Result<Option<LibMsg>> + Send + 'static,
     ) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         self.spawn(name, move |lib| match f(lib) {
@@ -807,46 +861,53 @@ impl LibraryUi {
 
     pub fn refresh_meta(&mut self) {
         self.next_meta = Instant::now() + META_EVERY;
-        self.spawn("keel-library-meta", |lib| {
-            let tags = lib.tags().unwrap_or_default();
-            let views = lib.views().unwrap_or_default();
-            let mut tagged: HashMap<VPath, Vec<TagId>> = HashMap::new();
-            for tag in tags.iter().map(|t| t.id).chain([FAVORITES]) {
-                for hit in lib.records_with_tag(tag).unwrap_or_default() {
-                    tagged.entry(hit.path).or_default().push(tag);
-                }
-            }
-            Some(LibMsg::Meta {
+        self.spawn("keel-library-meta", |b| match b.meta() {
+            Ok((tags, views, tagged)) => Some(LibMsg::Meta {
                 tags,
                 views,
                 tagged,
-            })
+            }),
+            Err(e) => {
+                tracing::warn!("library tags: {e:#}");
+                None
+            }
         });
     }
 
     fn refresh_stats(&mut self) {
         self.next_stats = Instant::now() + STATS_EVERY;
-        self.spawn("keel-library-stats", |lib| Some(LibMsg::Stats(lib.stats())));
+        self.spawn("keel-library-stats", |b| match b.stats() {
+            Ok(stats) => Some(LibMsg::Stats(stats)),
+            Err(e) => {
+                tracing::warn!("library stats: {e:#}");
+                None
+            }
+        });
         // --- Task 33 ---
-        self.spawn("keel-library-protection", |lib| {
-            match lib
-                .protection_summary()
-                .and_then(|p| Ok((p, lib.volumes()?)))
-            {
-                Ok((p, v)) => Some(LibMsg::Protection(p, v)),
-                Err(e) => {
-                    tracing::warn!("protection: {e:#}");
-                    None
-                }
+        self.spawn("keel-library-protection", |b| match b.protection() {
+            Ok((p, v)) => Some(LibMsg::Protection(p, v)),
+            Err(e) => {
+                tracing::warn!("protection: {e:#}");
+                None
             }
         });
     }
 
     pub fn refresh_dups(&mut self) {
-        self.spawn("keel-library-dups", |lib| {
-            Some(LibMsg::Dups(
-                load_dups(lib, 1).map_err(|e| format!("{e:#}")),
-            ))
+        self.spawn("keel-library-dups", |b| {
+            Some(LibMsg::Dups(b.dups(1).map_err(|e| format!("{e:#}"))))
+        });
+    }
+
+    /// The daemon's sources, on a worker.
+    fn refresh_sources(&mut self) {
+        self.next_sources = Instant::now() + SOURCES_EVERY;
+        self.spawn("keel-library-sources", |b| match b.sources() {
+            Ok(s) => Some(LibMsg::Sources(s)),
+            Err(e) => {
+                tracing::warn!("library sources: {e:#}");
+                None
+            }
         });
     }
 
@@ -859,8 +920,9 @@ impl LibraryUi {
 
     /// Task 36: sends `paths` to `peer` as a Spacedrop job (a row in the jobs panel).
     pub fn send_drop(&self, node: Arc<keel_net::Node>, peer: keel_net::PeerId, paths: Vec<VPath>) {
-        self.spawn("keel-drop-send", move |lib| {
-            let id = keel_net::spacedrop::send(&node, lib, peer, paths)
+        let Some(lib) = self.lib.clone() else { return };
+        self.spawn("keel-drop-send", move |_| {
+            let id = keel_net::spacedrop::send(&node, &lib, peer, paths)
                 .map_err(|e| tracing::warn!("spacedrop: {e:#}"))
                 .ok();
             Some(LibMsg::Spawned { kind: "drop", id })
@@ -869,7 +931,7 @@ impl LibraryUi {
 
     /// Settings → Library → Hashing.
     pub fn apply_hashing(&mut self, policy: Hashing) {
-        if self.lib.is_none() || self.policy == policy {
+        if self.backend.is_none() || self.policy == policy {
             return;
         }
         self.policy = policy;
@@ -877,12 +939,26 @@ impl LibraryUi {
     }
 
     /// Off (by policy or paused by hand) cancels a running hash job and keeps walks from
-    /// starting one; on starts one.
+    /// starting one; on starts one. A daemon gets the policy through `hashing.set`.
     fn sync_hashing(&mut self) {
         let on = self.policy != Hashing::Off && !self.hash_paused;
+        let idle_only = self.policy == Hashing::IdleOnly;
+        if self.remote().is_some() {
+            self.spawn("keel-library-hashing", move |b| {
+                let id = (b.set_hashing(on, idle_only))
+                    .map_err(|e| tracing::warn!("hashing: {e:#}"))
+                    .ok()
+                    .flatten();
+                id.map(|id| LibMsg::Spawned {
+                    kind: "hash",
+                    id: Some(id),
+                })
+            });
+            return;
+        }
         if let Some(lib) = &self.lib {
             lib.set_hash_after_walk(on);
-            lib.set_hash_idle_only(self.policy == Hashing::IdleOnly);
+            lib.set_hash_idle_only(idle_only);
         }
         if on {
             self.start_hashing();
@@ -892,8 +968,8 @@ impl LibraryUi {
                 .map(|(id, _)| *id)
                 .collect();
             for id in running {
-                self.spawn("keel-library-cancel", move |lib| {
-                    let _ = lib.jobs().cancel(id);
+                self.spawn("keel-library-cancel", move |b| {
+                    let _ = b.cancel(id);
                     None
                 });
             }
@@ -908,10 +984,10 @@ impl LibraryUi {
         {
             return;
         }
-        self.spawn("keel-library-hash", |lib| {
+        self.spawn("keel-library-hash", |b| {
             Some(LibMsg::Spawned {
                 kind: "hash",
-                id: lib.hash().ok(),
+                id: b.hash().ok(),
             })
         });
     }
@@ -933,9 +1009,9 @@ impl LibraryUi {
             .map(|s| s.id.clone())
             .collect();
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        self.spawn("keel-library-media", move |lib| {
+        self.spawn("keel-library-media", move |b| {
             for id in ids {
-                let id = lib.media_job(&id).ok();
+                let id = b.media_job(&id).ok();
                 let msg = Msg::Library(LibMsg::Spawned {
                     kind: "sidecar",
                     id,
@@ -946,7 +1022,8 @@ impl LibraryUi {
         });
     }
 
-    /// A watcher per source once no index job runs (both would walk the source).
+    /// A watcher per source once no index job runs (both would walk the source). In this
+    /// process only: keel-daemon watches its sources itself.
     fn sync_watchers(&mut self, rescan: Duration) {
         let Some(lib) = self.lib.clone() else { return };
         let indexing =
@@ -992,36 +1069,94 @@ impl LibraryUi {
     }
 }
 
-/// The `library://` provider's view of the library.
+/// The `library://` provider's view of the library: listings from the index (through
+/// `DaemonProvider` when attached), reads from the real files (the daemon runs on this
+/// machine).
 struct AppIndex(Slot);
 
 impl AppIndex {
-    fn lib(&self) -> anyhow::Result<Arc<Library>> {
+    fn backend(&self) -> anyhow::Result<LibraryBackend> {
         self.0.read().clone().context("the library is not open")
     }
 }
 
 impl vlib::LibraryIndex for AppIndex {
     fn children(&self, source: &str, rel: &str) -> anyhow::Result<Vec<Entry>> {
-        let lib = self.lib()?;
-        let hits = lib.list_children(&SourceId(source.into()), rel)?;
-        Ok(hits.into_iter().map(entry_of).collect())
+        self.backend()?.children(source, rel)
     }
 
     fn resolve(&self, source: &str, rel: &str) -> anyhow::Result<VPath> {
-        let lib = self.lib()?;
-        let src = lib
-            .source(&SourceId(source.into()))
-            .context("this source is no longer in the library")?;
-        let status = src.status.read().clone();
-        if let SourceStatus::Offline { last_seen, reason } = status {
-            anyhow::bail!("{} is {}", src.def.label, offline_text(last_seen, reason));
-        }
-        Ok(src.absolute(rel))
+        self.backend()?.resolve(source, rel)
     }
 }
 
-fn entry_of(h: LibraryHit) -> Entry {
+/// Where `open` finds the library (worker only): the daemon when one runs (or is started
+/// for `via`), else this process. Returns it with whether it was created now.
+fn open_library(
+    name: &str,
+    router: Arc<Router>,
+    profile: &str,
+    via: Via,
+    tx: &Sender<Msg>,
+    ctx: &egui::Context,
+) -> anyhow::Result<(Opened, bool)> {
+    let cfg = crate::backend::host_config(profile)?;
+    let socket = cfg.socket_name();
+    let mut connect = || Remote::connect(&socket).ok();
+    let mut spawn = || crate::backend::spawn_daemon(&cfg);
+    let attach = match via {
+        Via::Here => crate::backend::attach(None, None, crate::backend::SPAWN_WAIT),
+        Via::Auto { spawn: wanted } => crate::backend::attach(
+            Some(&mut connect),
+            wanted.then_some(&mut spawn as &mut dyn FnMut() -> anyhow::Result<()>),
+            crate::backend::SPAWN_WAIT,
+        ),
+    };
+    let note = match attach {
+        Attach::Daemon { remote, spawned } => {
+            let backend = LibraryBackend::Daemon(remote.clone());
+            let (tx, ctx, id) = (tx.clone(), ctx.clone(), remote.id);
+            let events = remote.subscribe(move |ev| match ev {
+                Event::Jobs => ctx.request_repaint(),
+                ev => worker::send(&tx, &ctx, Msg::Library(LibMsg::Remote(id, ev))),
+            })?;
+            remote.sources()?;
+            let jobs = backend.jobs()?.into_iter().filter(|(_, j)| j.active());
+            let opened = Opened {
+                jobs: jobs.collect(),
+                backend,
+                events: Some(events),
+                spawned,
+                note: None,
+            };
+            return Ok((opened, false));
+        }
+        Attach::InProcess { note } => note,
+    };
+    let root = crate::settings::data_dir().context("no data folder")?;
+    let first_run = !root.join("library").join(name).exists();
+    // Owner-only when created here (else it inherits the drive's permissions).
+    keel_api::private::create_dir_all(&root)?;
+    let lib = Library::open(&root, name)?;
+    lib.set_router(router);
+    keel_net::spacedrop::register(&lib); // Task 36
+    lib.set_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
+    lib.jobs().resume_all()?;
+    let lib = Arc::new(lib);
+    let events = lib.jobs().subscribe();
+    let backend = LibraryBackend::InProcess(lib);
+    let jobs = backend.jobs()?.into_iter().filter(|(_, j)| j.active());
+    let opened = Opened {
+        jobs: jobs.collect(),
+        backend,
+        events: Some(events),
+        spawned: false,
+        note,
+    };
+    Ok((opened, first_run))
+}
+
+pub(crate) fn entry_of(h: LibraryHit) -> Entry {
     let modified = h
         .modified
         .filter(|t| *t >= 0)
@@ -1039,16 +1174,20 @@ fn entry_of(h: LibraryHit) -> Entry {
     }
 }
 
-/// The search tab's Library backend: `LibrarySearcher`, plus the sidebar's Favorites and
-/// Recents queries.
-pub struct LibSearch(pub Arc<Library>);
+/// The search tab's Library backend: `LibrarySearcher` (or the daemon's `search`), plus
+/// the sidebar's Favorites and Recents queries.
+pub struct LibSearch(pub LibraryBackend);
 
 impl Searcher for LibSearch {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        let lib = match &self.0 {
+            LibraryBackend::InProcess(lib) => lib,
+            daemon => return daemon.search(q),
+        };
         let hits = match q.text.trim() {
-            FAVORITES_QUERY => self.0.favorites()?,
-            RECENTS_QUERY => self.0.recents(q.max as usize)?,
-            _ => return keel_core::LibrarySearcher(self.0.clone()).query(q),
+            FAVORITES_QUERY => lib.favorites()?,
+            RECENTS_QUERY => lib.recents(q.max as usize)?,
+            _ => return keel_core::LibrarySearcher(lib.clone()).query(q),
         };
         Ok(hits
             .into_iter()
@@ -1066,7 +1205,10 @@ impl Searcher for LibSearch {
     }
 
     fn status(&self) -> Option<String> {
-        keel_core::LibrarySearcher(self.0.clone()).status()
+        match &self.0 {
+            LibraryBackend::InProcess(lib) => keel_core::LibrarySearcher(lib.clone()).status(),
+            LibraryBackend::Daemon(_) => None,
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1074,7 +1216,7 @@ impl Searcher for LibSearch {
     }
 }
 
-fn entry_of_time(t: Option<i64>) -> Option<std::time::SystemTime> {
+pub(crate) fn entry_of_time(t: Option<i64>) -> Option<std::time::SystemTime> {
     t.filter(|t| *t >= 0)
         .map(|t| std::time::UNIX_EPOCH + Duration::from_secs(t as u64))
 }
@@ -1084,32 +1226,32 @@ impl AppState {
     pub fn library_msg(&mut self, msg: LibMsg) {
         let l = &mut self.library;
         match msg {
-            LibMsg::Opened {
-                result,
-                first_run,
-                jobs,
-            } => {
+            LibMsg::Opened { result, first_run } => {
                 l.opening = false;
                 match result {
-                    Ok(lib) => {
-                        *l.slot.write() = Some(lib.clone());
-                        l.events = Some(lib.jobs().subscribe());
-                        l.jobs = jobs
-                            .into_iter()
-                            .filter(|j| matches!(j.status, JobStatus::Queued | JobStatus::Running))
-                            .map(|j| {
-                                (
-                                    j.id,
-                                    JobRow {
-                                        kind: j.kind,
-                                        status: j.status,
-                                        progress: j.progress,
-                                        ended: None,
-                                    },
-                                )
-                            })
-                            .collect();
-                        l.lib = Some(lib);
+                    Ok(opened) => {
+                        if let LibraryBackend::Daemon(r) = &opened.backend {
+                            tracing::info!(
+                                "library: attached to keel-daemon (pid {})",
+                                r.version.pid
+                            );
+                            l.set_sources(r.cached_sources());
+                        }
+                        if let Some(note) = &opened.note {
+                            self.toasts
+                                .error(format!("Library: {note}; opened in this window"));
+                        }
+                        *l.slot.write() = Some(opened.backend.clone());
+                        l.events = opened.events;
+                        l.jobs = opened.jobs.into_iter().collect();
+                        l.lib = match &opened.backend {
+                            LibraryBackend::InProcess(lib) => Some(lib.clone()),
+                            LibraryBackend::Daemon(_) => None,
+                        };
+                        l.backend = Some(opened.backend);
+                        l.spawned = opened.spawned;
+                        l.note = opened.note;
+                        l.lost = false;
                         l.sync_sources();
                         l.refresh_meta();
                         l.refresh_stats();
@@ -1131,6 +1273,31 @@ impl AppState {
                         self.toasts.error(format!("Library: {e}"));
                         l.error = Some(e);
                     }
+                }
+            }
+            LibMsg::Sources(sources) => l.set_sources(sources),
+            LibMsg::Remote(id, ev) => {
+                if l.remote().is_none_or(|r| r.id != id) {
+                    return; // an earlier connection
+                }
+                match ev {
+                    Event::Lost => {
+                        if !l.lost {
+                            l.lost = true;
+                            self.toasts.error(
+                                "keel-daemon stopped: the library is read-only until you \
+                                 reconnect or open it in this window",
+                            );
+                        }
+                    }
+                    Event::Changed => {
+                        l.refresh_sources();
+                        l.refresh_meta_soon();
+                        l.forget_badges();
+                        self.relist_library_tabs();
+                    }
+                    Event::Net(v) => self.devices_event(v),
+                    Event::Jobs => {}
                 }
             }
             LibMsg::Stats(stats) => l.stats = stats,
@@ -1224,7 +1391,8 @@ impl AppState {
             LibMsg::Closed => {
                 if self.settings.library.enabled && !l.is_open() {
                     let name = self.settings.library.name.clone();
-                    l.open(&name, self.router.clone());
+                    let spawn = self.settings.library.daemon;
+                    l.open(&name, self.router.clone(), Via::Auto { spawn });
                 }
             }
         }
@@ -1237,11 +1405,14 @@ impl AppState {
             .input(|i| !i.events.is_empty() || i.pointer.is_moving());
         let rescan = Duration::from_secs(self.settings.library.rescan_minutes.max(1) * 60);
         let l = &mut self.library;
-        let Some(lib) = l.lib.clone() else { return };
+        if l.backend.is_none() || l.lost {
+            return;
+        }
+        let lib = l.lib.clone();
         let now = Instant::now();
         // Media and integrity jobs pause for 5 s after each input; hashing too when idle
-        // only (`sync_hashing`).
-        if busy_input {
+        // only (`sync_hashing`). keel-daemon has no window to watch: always idle.
+        if let Some(lib) = lib.as_ref().filter(|_| busy_input) {
             lib.note_activity();
         }
         let mut ended: Vec<String> = Vec::new();
@@ -1270,11 +1441,8 @@ impl AppState {
         }
         if unknown {
             // Kinds of jobs this app did not start.
-            l.spawn("keel-library-jobs", |lib| {
-                let list = lib.jobs().list().ok()?;
-                Some(LibMsg::Kinds(
-                    list.into_iter().map(|j| (j.id, j.kind)).collect(),
-                ))
+            l.spawn("keel-library-jobs", |b| {
+                Some(LibMsg::Kinds(b.job_kinds().ok()?))
             });
         }
         l.jobs.retain(|_, j| {
@@ -1287,6 +1455,14 @@ impl AppState {
             self.ctx.request_repaint_after(ROW_KEPT);
         }
         l.sync_sources();
+        if l.remote().is_some() && (now >= l.next_sources || !ended.is_empty()) {
+            l.refresh_sources();
+            let busy = l.jobs.values().any(JobRow::active)
+                || (l.sources.iter()).any(|s| matches!(s.status, SourceStatus::Indexing { .. }));
+            if busy {
+                l.next_sources = now + SOURCES_BUSY;
+            }
+        }
         if !ended.is_empty() {
             l.refresh_meta();
             l.refresh_stats();
@@ -1322,16 +1498,18 @@ impl AppState {
         }
         if now >= l.next_status {
             l.next_status = now + STATUS_EVERY;
-            drop(lib.refresh_status());
+            // keel-daemon checks its sources itself.
+            if let Some(lib) = &lib {
+                drop(lib.refresh_status());
+            }
             // --- Task 33 ---
             let (pct, days) = (
                 self.settings.library.integrity_pct,
                 self.settings.library.integrity_days,
             );
             if days > 0 && !l.jobs.values().any(|j| j.kind == "integrity" && j.active()) {
-                let every = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
-                l.spawn("keel-library-integrity", move |lib| {
-                    let id = lib.schedule_integrity(pct, every).ok().flatten()?;
+                l.spawn("keel-library-integrity", move |b| {
+                    let id = b.schedule_integrity(pct, days).ok().flatten()?;
                     Some(LibMsg::Spawned {
                         kind: "integrity",
                         id: Some(id),
@@ -1357,13 +1535,9 @@ impl AppState {
         // Its watcher stops first (both would walk the source).
         let watch = self.library.watchers.remove(&id);
         self.library.starting_index += 1;
-        self.library.spawn("keel-library-index", move |lib| {
+        self.library.spawn("keel-library-index", move |b| {
             drop(watch);
-            let adopted = match lib.source(&id) {
-                Some(src) if adopt => Indexer::adopt_root(&src),
-                _ => Ok(()),
-            };
-            let started = adopted.and_then(|()| lib.index(&id));
+            let started = b.index(&id, adopt);
             if let Err(e) = &started {
                 tracing::warn!("index {}: {e:#}", id.0);
             }
@@ -1415,9 +1589,9 @@ impl AppState {
             return self.toasts.error("Another preview is open");
         }
         self.library
-            .spawn_try("keel-library-plan", "Preview", move |lib| {
+            .spawn_try("keel-library-plan", "Preview", move |b| {
                 Ok(Some(LibMsg::Planned(
-                    keel_core::validate_preview_execute(lib, op).map_err(|e| format!("{e:#}")),
+                    b.plan(op).map_err(|e| format!("{e:#}")),
                 )))
             });
     }
@@ -1432,10 +1606,41 @@ impl AppState {
             return Some(action);
         }
         let in_library = self.tab(p).dir.scheme == vlib::SCHEME;
+        let targets: Vec<VPath> = (self.tab(p).targets().iter())
+            .map(|e| e.path.clone())
+            .collect();
+        let here = self.tab(p).dir.clone();
         let sources = &self.library.sources;
         let all_in_sources = |paths: &[VPath]| {
             !paths.is_empty() && paths.iter().all(|x| locate(sources, x).is_some())
         };
+        // The daemon is gone: nothing in the library is written until the user chooses.
+        if self.library.lost {
+            let touches = in_library
+                || match &action {
+                    Action::Delete | Action::Cut => all_in_sources(&targets),
+                    Action::RenameTo { from, .. } => locate(sources, from).is_some(),
+                    Action::Drop { paths, dst, .. } => {
+                        all_in_sources(paths) || locate(sources, dst).is_some()
+                    }
+                    Action::Paste => self.library.clip.is_some(),
+                    _ => false,
+                };
+            let writes = matches!(
+                action,
+                Action::Delete
+                    | Action::RenameTo { .. }
+                    | Action::Drop { .. }
+                    | Action::Paste
+                    | Action::Cut
+                    | Action::NewFolder
+                    | Action::NewFile
+            );
+            if touches && writes || (writes && locate(sources, &here).is_some()) {
+                self.toasts.error(LOST);
+                return None;
+            }
+        }
         match action {
             Action::Delete => {
                 let paths: Vec<VPath> = self
@@ -1536,11 +1741,10 @@ impl AppState {
                 // Opened files count for Recents.
                 let target = self.tab(p).targets().first().map(|e| (*e).clone());
                 if let Some(e) = target.filter(|e| e.kind != Kind::Dir) {
-                    if let Some((source, rel)) = locate(sources, &e.path) {
-                        self.library.spawn("keel-library-opened", move |lib| {
-                            if let Ok(r) = record_of(lib, &source, &rel) {
-                                let _ = lib.note_open(&r);
-                            }
+                    if locate(sources, &e.path).is_some() {
+                        let sources = sources.clone();
+                        self.library.spawn("keel-library-opened", move |b| {
+                            let _ = b.note_open(&sources, &e.path);
                             None
                         });
                     }
@@ -1564,17 +1768,25 @@ impl AppState {
     }
 
     pub fn library_cmd(&mut self, p: usize, cmd: LibCmd) {
-        if !self.library.is_open()
-            && !matches!(
-                cmd,
-                LibCmd::Switch(_) | LibCmd::Enable(_) | LibCmd::Overview
-            )
-        {
+        let always = matches!(
+            cmd,
+            LibCmd::Switch(_)
+                | LibCmd::Enable(_)
+                | LibCmd::Overview
+                | LibCmd::Reconnect
+                | LibCmd::OpenHere
+                | LibCmd::Restart
+        );
+        if !self.library.is_open() && !always {
             return self.toasts.error(if self.library.opening {
                 "The library is still opening"
             } else {
                 "The library is off (Settings → Library)"
             });
+        }
+        if self.library.lost && !always && !matches!(cmd, LibCmd::OpenSource(_) | LibCmd::Query(_))
+        {
+            return self.toasts.error(LOST);
         }
         match cmd {
             LibCmd::Overview => {
@@ -1605,10 +1817,10 @@ impl AppState {
             LibCmd::RemoveConfirmed(id) => {
                 let watch = self.library.watchers.remove(&id);
                 self.library
-                    .spawn_try("keel-library-remove", "Remove source", move |lib| {
+                    .spawn_try("keel-library-remove", "Remove source", move |b| {
                         drop(watch);
-                        lib.remove_source(&id, true)?;
-                        Ok(None)
+                        b.remove_source(&id)?;
+                        Ok(Some(LibMsg::Sources(b.sources()?)))
                     });
             }
             LibCmd::PauseHashing(on) => {
@@ -1654,9 +1866,14 @@ impl AppState {
                 self.library.starting_index += 1;
                 let label = def.label.clone();
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                self.library.spawn("keel-library-add", move |lib| {
-                    let id = match lib.add_source(def) {
-                        Ok(id) => lib.index(&id).ok(),
+                self.library.spawn("keel-library-add", move |b| {
+                    let id = match b.add_source(def) {
+                        Ok(id) => {
+                            if let (true, Ok(s)) = (b.is_daemon(), b.sources()) {
+                                worker::send(&tx, &ctx, Msg::Library(LibMsg::Sources(s)));
+                            }
+                            Some(id)
+                        }
                         Err(e) => {
                             let text = format!("Add {label}: {e:#}");
                             worker::send(&tx, &ctx, Msg::Toast(text));
@@ -1718,11 +1935,8 @@ impl AppState {
                 let targets = self.library.picker.as_ref().map(|x| x.targets.clone());
                 let sources = self.library.sources.clone();
                 self.library
-                    .spawn_try("keel-library-tag", "New tag", move |lib| {
-                        let tag = lib.create_tag(&name, Some(&color), None)?;
-                        if let Some(targets) = targets {
-                            apply_tag(lib, &sources, &targets, tag, true)?;
-                        }
+                    .spawn_try("keel-library-tag", "New tag", move |b| {
+                        b.create_tag(&sources, &name, &color, targets.as_deref())?;
                         Ok(None)
                     });
                 self.library.refresh_meta_soon();
@@ -1749,34 +1963,24 @@ impl AppState {
                 dialog.running = true;
                 let plan = dialog.plan.clone();
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                self.library.spawn("keel-library-execute", move |lib| {
-                    match plan.execute(lib, true) {
-                        Ok(id) => {
-                            worker::send(
-                                &tx,
-                                &ctx,
-                                Msg::Library(LibMsg::Spawned {
-                                    kind: "op",
-                                    id: Some(id),
-                                }),
-                            );
+                self.library
+                    .spawn("keel-library-execute", move |b| match b.execute(plan) {
+                        Ok(Executed::Job(id)) => Some(LibMsg::Spawned {
+                            kind: "op",
+                            id: Some(id),
+                        }),
+                        Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(fresh)),
+                        Err(e) => {
+                            worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
                             None
                         }
-                        Err(e) => match e.downcast::<PlanChanged>() {
-                            Ok(PlanChanged(fresh)) => Some(LibMsg::Changed(*fresh)),
-                            Err(e) => {
-                                worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
-                                None
-                            }
-                        },
-                    }
-                });
+                    });
                 // The dialog closes; a refused plan comes back as `Changed`.
                 self.library.plan = None;
             }
             LibCmd::CancelJob(id) => {
-                self.library.spawn("keel-library-cancel", move |lib| {
-                    let _ = lib.jobs().cancel(id);
+                self.library.spawn("keel-library-cancel", move |b| {
+                    let _ = b.cancel(id);
                     None
                 });
             }
@@ -1792,46 +1996,37 @@ impl AppState {
                 if name.is_empty() {
                     return;
                 }
+                if let Some(r) = self.library.remote().filter(|r| r.version.library != name) {
+                    return self.toasts.error(format!(
+                        "keel-daemon serves library {}: stop it (keel daemon stop) to switch",
+                        r.version.library
+                    ));
+                }
                 self.settings.library.name = name.clone();
                 self.settings.library.enabled = true;
                 if self.library.is_open() {
                     // Reopened on `Closed`.
                     self.library.close_later();
                 } else {
-                    self.library.open(&name, self.router.clone());
+                    let spawn = self.settings.library.daemon;
+                    self.library
+                        .open(&name, self.router.clone(), Via::Auto { spawn });
                 }
             }
             // --- Task 33 ---
             LibCmd::SetVolumeState { volume, state } => {
-                self.library
-                    .spawn_try("keel-library-volume", "Volume", move |lib| {
-                        lib.set_volume_state(&volume, state)?;
-                        Ok(None)
-                    });
-                self.library.protection_changed();
+                self.set_volume(volume, VolumeChange::State(state))
             }
-            LibCmd::SetBackup { volume, on } => {
-                self.library
-                    .spawn_try("keel-library-volume", "Volume", move |lib| {
-                        lib.set_backup(&volume, on)?;
-                        Ok(None)
-                    });
-                self.library.protection_changed();
-            }
+            LibCmd::SetBackup { volume, on } => self.set_volume(volume, VolumeChange::Backup(on)),
             LibCmd::SetDomain { volume, domain } => {
-                self.library
-                    .spawn_try("keel-library-volume", "Volume", move |lib| {
-                        lib.set_failure_domain(&volume, Some(&domain))?;
-                        Ok(None)
-                    });
-                self.library.protection_changed();
+                self.set_volume(volume, VolumeChange::Domain(domain))
             }
             LibCmd::CheckIntegrity => {
                 let pct = self.settings.library.integrity_pct;
-                self.library.spawn("keel-library-integrity", move |lib| {
+                self.library.spawn("keel-library-integrity", move |b| {
                     Some(LibMsg::Spawned {
                         kind: "integrity",
-                        id: lib.integrity(None, pct).ok(),
+                        id: b.integrity(pct).ok(),
                     })
                 });
             }
@@ -1839,24 +2034,53 @@ impl AppState {
                 self.settings.library.enabled = on;
                 if on && !self.library.is_open() {
                     let name = self.settings.library.name.clone();
-                    self.library.open(&name, self.router.clone());
+                    let spawn = self.settings.library.daemon;
+                    self.library
+                        .open(&name, self.router.clone(), Via::Auto { spawn });
                 } else if !on {
+                    self.library.close_later();
+                }
+            }
+            LibCmd::Reconnect | LibCmd::OpenHere => {
+                // The lost connection goes; the library opens again.
+                drop(self.library.take());
+                let name = self.settings.library.name.clone();
+                let via = match cmd {
+                    LibCmd::Reconnect => Via::Auto { spawn: true },
+                    _ => Via::Here,
+                };
+                self.library.open(&name, self.router.clone(), via);
+            }
+            LibCmd::Restart => {
+                if self.library.is_open() {
                     self.library.close_later();
                 }
             }
         }
     }
 
-    fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
-        let sources = self.library.sources.clone();
+    fn set_volume(&mut self, volume: String, change: VolumeChange) {
         self.library
-            .spawn_try("keel-library-tag", "Tag", move |lib| {
-                apply_tag(lib, &sources, &targets, tag, on)?;
+            .spawn_try("keel-library-volume", "Volume", move |b| {
+                b.set_volume(&volume, change)?;
                 Ok(None)
             });
+        self.library.protection_changed();
+    }
+
+    fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
+        let (sources, tags) = (self.library.sources.clone(), self.library.tags.clone());
+        self.library.spawn_try("keel-library-tag", "Tag", move |b| {
+            b.set_tag(&sources, &tags, &targets, tag, on)?;
+            Ok(None)
+        });
         self.library.refresh_meta_soon();
     }
 }
+
+/// Why nothing is written while an attached daemon is gone.
+pub const LOST: &str =
+    "keel-daemon stopped: reconnect, or open the library in this window, to make changes";
 
 impl LibraryUi {
     /// Tags change on a worker; read them back right after.
@@ -1865,10 +2089,16 @@ impl LibraryUi {
         self.ctx.request_repaint_after(Duration::from_millis(300));
     }
 
-    /// Sources (instant), their labels for titles, and nothing else.
+    /// Sources of an in-process library (instant), their labels for titles, and nothing
+    /// else (a daemon's come from `refresh_sources`).
     fn sync_sources(&mut self) {
         let Some(lib) = &self.lib else { return };
-        self.sources = lib.sources();
+        let sources = lib.sources();
+        self.set_sources(sources);
+    }
+
+    fn set_sources(&mut self, sources: Vec<SourceSummary>) {
+        self.sources = sources;
         // Kept for removed sources too (ids are random; a stale label harms nothing).
         let mut labels = LABELS.write();
         for s in &self.sources {
@@ -1883,15 +2113,31 @@ impl LibraryUi {
     /// Tests: a library opened by the test.
     #[cfg(test)]
     pub fn set_open(&mut self, lib: Arc<Library>) {
-        *self.slot.write() = Some(lib.clone());
+        *self.slot.write() = Some(LibraryBackend::InProcess(lib.clone()));
         self.events = Some(lib.jobs().subscribe());
+        self.backend = Some(LibraryBackend::InProcess(lib.clone()));
         self.lib = Some(lib);
         self.sync_sources();
+    }
+
+    /// Tests: attached to a daemon (as `open` does).
+    #[cfg(test)]
+    pub fn set_attached(&mut self, remote: Arc<Remote>) {
+        let id = remote.id;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let events = remote
+            .subscribe(move |ev| worker::send(&tx, &ctx, Msg::Library(LibMsg::Remote(id, ev))))
+            .unwrap();
+        self.set_sources(remote.sources().unwrap());
+        let backend = LibraryBackend::Daemon(remote);
+        *self.slot.write() = Some(backend.clone());
+        self.events = Some(events);
+        self.backend = Some(backend);
     }
 }
 
 /// Tags `targets` (real or `library://` paths): worker only.
-fn apply_tag(
+pub(crate) fn apply_tag(
     lib: &Library,
     sources: &[SourceSummary],
     targets: &[VPath],
@@ -1949,32 +2195,8 @@ impl LibraryUi {
             return;
         }
         let sources = self.sources.clone();
-        self.spawn("keel-library-badges", move |lib| {
-            let mut out = HashMap::new();
-            for dir in dirs {
-                let Some((source, rel)) = locate(&sources, &dir) else {
-                    continue;
-                };
-                let Ok(children) = lib.list_children(&source, &rel) else {
-                    continue;
-                };
-                let files: Vec<_> = children
-                    .into_iter()
-                    .filter(|h| !h.is_dir)
-                    .take(MAX_BADGES)
-                    .collect();
-                let records: Vec<_> = files.iter().map(|h| h.record.clone()).collect();
-                // The volumes are read once per folder, not once per file.
-                let Ok(all) = lib.redundancies(&records) else {
-                    continue;
-                };
-                for (h, r) in files.into_iter().zip(all) {
-                    if let Some(r) = r {
-                        out.insert(h.path, badge_of(&r));
-                    }
-                }
-            }
-            Some(LibMsg::Badges(out))
+        self.spawn("keel-library-badges", move |b| {
+            Some(LibMsg::Badges(b.badges(&sources, &dirs)))
         });
     }
 
@@ -1993,7 +2215,7 @@ impl LibraryUi {
 }
 
 /// Files per folder that get a copies badge (the rest show none).
-const MAX_BADGES: usize = 5_000;
+pub(crate) const MAX_BADGES: usize = 5_000;
 
 /// The details view's copies badge: copies and failure domains, a risk when one domain
 /// holds them all.
@@ -2006,7 +2228,7 @@ pub struct Badge {
     pub risk: bool,
 }
 
-pub fn badge_of(r: &Redundancy) -> Badge {
+pub fn badge_of(r: &keel_api::types::Copies) -> Badge {
     let plural = |n: u64, one: &str, many: &str| {
         if n == 1 {
             format!("1 {one}")
@@ -2029,10 +2251,11 @@ pub fn badge_of(r: &Redundancy) -> Badge {
     };
     for c in &r.locations {
         let mut flags = String::new();
-        if c.volume.state != VolumeState::Online {
-            flags = format!(" [{}]", state_text(c.volume.state));
+        let state = c.state.map(crate::backend::volume_state);
+        if let Some(state) = state.filter(|s| *s != VolumeState::Online) {
+            flags = format!(" [{}]", state_text(state));
         }
-        if c.volume.backup {
+        if c.backup {
             flags += " [backup]";
         }
         if c.claimed {
@@ -2040,9 +2263,7 @@ pub fn badge_of(r: &Redundancy) -> Badge {
         }
         hover += &format!(
             "\n• {} on {} ({}){flags}",
-            c.path.display(),
-            c.volume.label,
-            c.volume.failure_domain
+            c.path, c.volume, c.failure_domain
         );
     }
     hover += "\nCopies count files with the same content (hard links once) on volumes that are \
