@@ -74,7 +74,7 @@ also act directly: they change no file.
 | `recents` | read | Recently opened files |
 | `recents.note` | direct | Note that an indexed file was opened (it moves to the top of `recents`) |
 | `jobs.list` / `jobs.info` | read | Jobs; one job with its log |
-| `jobs.cancel` | preview | Cancel a job |
+| `jobs.cancel` | preview | Cancel a job. A copy or move uploading to a cloud account stops its request on the wire (within the current 8 MiB chunk); an unfinished S3 multipart upload is aborted, Drive and Dropbox sessions expire on their own |
 | `duplicates` | read | Same-content groups, most wasted bytes first |
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |

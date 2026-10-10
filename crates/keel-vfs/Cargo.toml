@@ -34,6 +34,7 @@ cloud = [
     "dep:getrandom",
     "dep:url",
     "dep:serde_json",
+    "dep:http",
 ]
 
 [dependencies]
@@ -78,6 +79,8 @@ base64 = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# Requests of chunked uploads (signed by reqsign, sent by reqwest).
+http = { version = "1", optional = true }
 toml.workspace = true
 notify = "6"
 notify-debouncer-mini = "0.4"

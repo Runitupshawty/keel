@@ -1,7 +1,7 @@
 //! What opendal does not cover: storage quotas and share links, from each service's own
 //! API (Drive v3, Dropbox v2) with the account's access token, and S3 presigned GETs from
 //! opendal's signer. Errors carry the HTTP status only, never server text or tokens.
-use super::*;
+use super::{upload::http_error, *};
 use crate::{Quota, ShareLink};
 use serde_json::{json, Value};
 
@@ -21,15 +21,14 @@ pub(super) fn api_base(kind: CloudKind) -> &'static str {
         CloudKind::S3 | CloudKind::WebDav => "",
     }
 }
-
-fn http_error(p: &VPath, status: u16) -> anyhow::Error {
-    let kind = match status {
-        401 | 403 => io::ErrorKind::PermissionDenied,
-        404 => io::ErrorKind::NotFound,
-        _ => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, format!("{}: cloud HTTP {status}", p.display())).into()
+/// Where uploads go: Dropbox takes file content on a host of its own.
+pub(super) fn content_base(kind: CloudKind) -> &'static str {
+    match kind {
+        CloudKind::Dropbox => "https://content.dropboxapi.com",
+        kind => api_base(kind),
+    }
 }
+
 /// The body of a 2xx answer.
 fn ok(p: &VPath, (status, body): (u16, Value)) -> Result<Value> {
     match status {
@@ -50,7 +49,7 @@ fn drive_quote(name: &str) -> String {
 
 impl Core {
     /// `p` below the account's root folder, as the service names it: `/a/b`, or `/`.
-    fn service_path(&self, p: &VPath) -> String {
+    pub(super) fn service_path(&self, p: &VPath) -> String {
         let parts: Vec<&str> = (self.account.root.as_deref().unwrap_or("").split('/'))
             .chain(p.path.split('/'))
             .filter(|s| !s.is_empty())
@@ -58,68 +57,28 @@ impl Core {
         format!("/{}", parts.join("/"))
     }
 
-    /// One request to the service's own API with the bearer token: refreshes an expiring
-    /// token first and once on HTTP 401, and retries 429 / 5xx / unanswered requests with
-    /// `backoff`. Returns the status and the JSON body (Null when it is none).
-    fn api(&self, p: &VPath, post: Option<&Value>, path_and_query: &str) -> Result<(u16, Value)> {
-        let oauth = self
-            .oauth
-            .as_ref()
-            .context("this account has no service API")?;
-        self.ensure_signed_in(oauth)?;
-        if Self::expiring(oauth) {
-            self.refresh(None)?;
-        }
-        let http = http_client()?;
+    /// One request to the service's own API (see `exchange`): the status and the JSON
+    /// body (Null when it is none).
+    pub(super) fn api(
+        &self,
+        p: &VPath,
+        cancel: &AtomicBool,
+        post: Option<&Value>,
+        path_and_query: &str,
+    ) -> Result<(u16, Value)> {
+        anyhow::ensure!(self.oauth.is_some(), "this account has no service API");
         let url = format!("{}{path_and_query}", self.api);
-        let (mut attempt, mut refreshed) = (0, false);
-        loop {
-            // The account was removed or replaced: no more requests (a Drive path walk
-            // makes one per folder).
-            if self.stop.load(Ordering::SeqCst) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
-            }
-            let token = oauth.access.lock().clone();
-            let generation = self.generation.load(Ordering::SeqCst);
-            let req = match post {
-                Some(body) => http.post(&url).json(body),
-                None => http.get(&url),
-            }
-            .bearer_auth(token);
-            let answer = crate::sftp::conn::runtime().block_on(async {
-                let reply = req.send().await?;
-                let status = reply.status().as_u16();
-                Ok::<_, reqwest::Error>((status, reply.bytes().await?))
-            });
-            let status = match answer {
-                Ok((401, _)) if !refreshed => {
-                    refreshed = true;
-                    self.refresh(Some(generation))?;
-                    continue;
-                }
-                Ok((s, body)) if s != 429 && !(500..600).contains(&s) => {
-                    return Ok((s, serde_json::from_slice(&body).unwrap_or(Value::Null)));
-                }
-                Ok((s, _)) => Some(s),
-                Err(_) => None,
-            };
-            match backoff(attempt, jitter()) {
-                Some(delay) => {
-                    sleep_unless_cancelled(delay, &self.stop)?;
-                    attempt += 1;
-                }
-                None => {
-                    return Err(match status {
-                        Some(s) => http_error(p, s),
-                        None => io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
-                            format!("{}: cannot reach the cloud service", p.display()),
-                        )
-                        .into(),
-                    })
-                }
-            }
-        }
+        let body = post.map(|b| b.to_string().into_bytes());
+        let a = self.exchange(p, cancel, MAX_TRIES, upload::API_TIMEOUT, &|| match &body {
+            Some(body) => upload::request(
+                http::Method::POST,
+                &url,
+                &[("content-type", "application/json")],
+                body.clone(),
+            ),
+            None => upload::request(http::Method::GET, &url, &[], Vec::new()),
+        })?;
+        Ok((a.status, a.json()))
     }
 
     pub(super) fn quota(&self) -> Result<Quota> {
@@ -132,7 +91,7 @@ impl Core {
             CloudKind::GoogleDrive => {
                 let v = ok(
                     &root,
-                    self.api(&root, None, "/drive/v3/about?fields=storageQuota")?,
+                    self.api(&root, &NEVER, None, "/drive/v3/about?fields=storageQuota")?,
                 )?;
                 // int64 values come as strings.
                 let field = |f: &str| {
@@ -148,7 +107,12 @@ impl Core {
             CloudKind::Dropbox => {
                 let v = ok(
                     &root,
-                    self.api(&root, Some(&Value::Null), "/2/users/get_space_usage")?,
+                    self.api(
+                        &root,
+                        &NEVER,
+                        Some(&Value::Null),
+                        "/2/users/get_space_usage",
+                    )?,
                 )?;
                 let a = &v["allocation"];
                 // A team member may have a limit of their own within the team's space.
@@ -168,7 +132,7 @@ impl Core {
 
     /// Drive's id for `p`, one lookup per folder from the top (the first of two items
     /// with one name, like listings).
-    fn drive_id(&self, p: &VPath) -> Result<String> {
+    pub(super) fn drive_id(&self, p: &VPath, cancel: &AtomicBool) -> Result<String> {
         let mut id = "root".to_owned();
         for name in self.service_path(p).split('/').filter(|s| !s.is_empty()) {
             let q = format!(
@@ -178,7 +142,12 @@ impl Core {
             let q: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
             let v = ok(
                 p,
-                self.api(p, None, &format!("/drive/v3/files?q={q}&fields=files(id)"))?,
+                self.api(
+                    p,
+                    cancel,
+                    None,
+                    &format!("/drive/v3/files?q={q}&fields=files(id)"),
+                )?,
             )?;
             id = v["files"][0]["id"]
                 .as_str()
@@ -206,15 +175,18 @@ impl Core {
         };
         match self.account.kind {
             CloudKind::GoogleDrive => {
-                let id = self.drive_id(p)?;
+                let id = self.drive_id(p, &NEVER)?;
                 let path = format!("/drive/v3/files/{id}?fields=webViewLink");
-                let v = ok(p, self.api(p, None, &path)?)?;
+                let v = ok(p, self.api(p, &NEVER, None, &path)?)?;
                 Ok(ready(https(v["webViewLink"].as_str())?, DRIVE_NOTE))
             }
             CloudKind::Dropbox => {
                 let path = self.service_path(p);
                 let args = json!({ "path": path, "direct_only": true });
-                let v = ok(p, self.api(p, Some(&args), "/2/sharing/list_shared_links")?)?;
+                let v = ok(
+                    p,
+                    self.api(p, &NEVER, Some(&args), "/2/sharing/list_shared_links")?,
+                )?;
                 let existing =
                     (v["links"].as_array().into_iter().flatten()).find_map(|l| l["url"].as_str());
                 if let Some(url) = existing {
@@ -226,6 +198,7 @@ impl Core {
                 let args = json!({ "path": path });
                 let (status, v) = self.api(
                     p,
+                    &NEVER,
                     Some(&args),
                     "/2/sharing/create_shared_link_with_settings",
                 )?;
