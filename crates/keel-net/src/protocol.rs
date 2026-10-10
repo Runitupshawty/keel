@@ -4,18 +4,25 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::io::AsyncRead;
 use tokio_util::sync::CancellationToken;
 
-// A request owns its connection through completion (or the body reader's Drop).
-// A fresh connection avoids racing a locally cached session against a revoke's
-// remote CONNECTION_CLOSE. Mutations are never automatically retried.
-struct RequestConnection(Connection);
-impl Drop for RequestConnection {
-    fn drop(&mut self) {
-        self.0.close(0u8.into(), b"request finished");
-    }
-}
-struct BodyReader {
-    reader: wire::ExactReader<RecvStream>,
-    _connection: RequestConnection,
+/// Concurrent requests served per connection (a node accepts at most
+/// `MAX_CONNECTIONS_PER_PEER` connections per peer). Further streams wait in
+/// QUIC flow control without allocating anything on the host.
+pub(crate) const MAX_STREAMS_PER_CONNECTION: usize = 32;
+
+// Requests share the peer's held connection, one stream each. A request that
+// fails because that connection closed under it (for example a revoke's remote
+// CONNECTION_CLOSE racing the send) is retried once on a fresh connection when
+// it is a read; mutations are retried only if the stream never opened.
+fn idempotent(req: &Request) -> bool {
+    matches!(
+        req,
+        Request::Ping
+            | Request::ListSources
+            | Request::List { .. }
+            | Request::Stat { .. }
+            | Request::Read { .. }
+            | Request::Grants
+    )
 }
 
 async fn upload_response(
@@ -28,19 +35,15 @@ async fn upload_response(
     tokio::pin!(response);
     tokio::select! {
         result = &mut response => result,
-        result = &mut upload => {
-            result?;
-            Ok(tokio::time::timeout(timeout, &mut response).await??)
+        result = &mut upload => match result {
+            Ok(()) => Ok(tokio::time::timeout(timeout, &mut response).await??),
+            // A host that refuses the upload stops reading; its answer (usually
+            // Denied) is still on the way and is more useful than the send error.
+            Err(error) => match tokio::time::timeout(timeout, &mut response).await {
+                Ok(Ok(response)) => Ok(response),
+                _ => Err(error),
+            },
         }
-    }
-}
-impl AsyncRead for BodyReader {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
     }
 }
 
@@ -53,6 +56,14 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
                 && (!write || g.access == Access::ReadWrite)
         })
     };
+    let inside = |source: &str, path: &str| {
+        grants.iter().any(|g| {
+            g.peer == peer
+                && g.source == source
+                && scope::inside(&g.subtree, path)
+                && g.access == Access::ReadWrite
+        })
+    };
     match req {
         Request::Ping
         | Request::ListSources
@@ -62,19 +73,24 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         Request::List { source, path, .. }
         | Request::Stat { source, path }
         | Request::Read { source, path, .. } => check(source, path, false),
+        Request::Mkdir { source, path } => check(source, path, true),
+        // The granted root itself cannot be replaced, removed or renamed (and so has
+        // no resumable partial write either).
         Request::Write { source, path, .. }
         | Request::StatPartial { source, path }
-        | Request::Mkdir { source, path }
-        | Request::Remove { source, path } => check(source, path, true),
-        Request::Rename { source, from, to } => {
-            check(source, from, true) && check(source, to, true)
-        }
+        | Request::Remove { source, path } => inside(source, path),
+        Request::Rename { source, from, to } => inside(source, from) && inside(source, to),
     }
 }
 
 impl Node {
     pub(crate) async fn serve_connection(&self, conn: Connection, cancel: CancellationToken) {
+        let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS_PER_CONNECTION));
         loop {
+            let permit = tokio::select! { biased;
+                _ = cancel.cancelled() => break,
+                permit = permits.clone().acquire_owned() => match permit { Ok(p) => p, Err(_) => break }
+            };
             let (mut send, mut recv) = tokio::select! { biased;
                 _ = cancel.cancelled() => break,
                 streams = conn.accept_bi() => match streams { Ok(s) => s, Err(_) => break }
@@ -83,6 +99,7 @@ impl Node {
             let conn = conn.clone();
             let cancel = cancel.clone();
             self.tasks.spawn(async move {
+                let _permit = permit;
                 let Some(node) = weak.upgrade() else { return };
                 let peer = PeerId(NodeId(*conn.remote_id().as_bytes()));
                 let result = tokio::select! { biased;
@@ -189,7 +206,7 @@ impl Node {
                     let mut body = wire::ExactReader::new(body, size);
                     // An error after this header must reset the stream, never append
                     // an error header to what the reader believes is raw file data.
-                    tokio::io::copy(&mut body, send).await?;
+                    wire::copy_idle(&mut body, send, self.options.request_timeout).await?;
                     return Ok(Response::Read { size });
                 }
                 Request::DropOffer { id, files } => self.drop_offer(&ctx, &id, files).await?,
@@ -212,7 +229,10 @@ impl Node {
                         final_,
                         expect,
                     };
-                    let body = Box::new(wire::ExactReader::new(recv, size));
+                    let body = Box::new(wire::IdleReader::new(
+                        wire::ExactReader::new(recv, size),
+                        self.options.request_timeout,
+                    ));
                     match source.strip_prefix(crate::spacedrop::SOURCE) {
                         Some(id) => self.drop_piece(peer, id, &path, body, at).await?,
                         None => h.write(&ctx, &source, &path, body, at).await?,
@@ -250,28 +270,76 @@ impl Node {
             Err(_) => wire::send(send, &Response::Error("host operation failed".into())).await,
         }
     }
-    async fn start_request(
+    /// Opens a stream on the held connection, dialing if needed. A connection
+    /// found closed before the stream opened (nothing sent yet) is replaced.
+    async fn open_stream(&self, peer: &PeerId) -> Result<(Connection, SendStream, RecvStream)> {
+        let conn = self.connect(peer).await?;
+        if let Ok((send, recv)) = conn.open_bi().await {
+            return Ok((conn, send, recv));
+        }
+        let conn = self.connect(peer).await?;
+        let (send, recv) = conn.open_bi().await?;
+        Ok((conn, send, recv))
+    }
+    /// Sends `req` and runs `exchange`, once more on a fresh connection if that
+    /// failed because the connection closed and `req` is a read.
+    async fn with_retry<T, F: std::future::Future<Output = Result<T>>>(
         &self,
         peer: &PeerId,
         req: &Request,
-    ) -> Result<(RequestConnection, SendStream, RecvStream)> {
-        let conn = RequestConnection(self.connect(peer).await?);
-        let (mut send, recv) = conn.0.open_bi().await?;
-        wire::send(&mut send, req).await?;
-        Ok((conn, send, recv))
+        exchange: impl Fn(SendStream, RecvStream) -> F,
+    ) -> Result<T> {
+        let attempt = || async {
+            let (conn, mut send, recv) = self.open_stream(peer).await?;
+            let result = async {
+                wire::send(&mut send, req).await?;
+                exchange(send, recv).await
+            }
+            .await;
+            Ok::<_, anyhow::Error>((conn, result))
+        };
+        match attempt().await? {
+            (conn, Err(_)) if idempotent(req) && conn.close_reason().is_some() => {
+                attempt().await?.1
+            }
+            (_, result) => result,
+        }
     }
     /// Sends a header-only request. Use `read_stream` to consume a Read body and
     /// `write_stream` for a nonempty Write body. Denials remain `Response::Denied`.
     pub async fn request(&self, peer: &PeerId, req: Request) -> Result<Response> {
         tokio::time::timeout(self.options.request_timeout, async {
-            let (_conn, mut send, mut recv) = self.start_request(peer, &req).await?;
-            send.finish()?;
-            let response: Response = wire::recv(&mut recv).await?;
+            let response = self
+                .with_retry(peer, &req, |mut send, mut recv| async move {
+                    send.finish()?;
+                    wire::recv::<Response>(&mut recv).await
+                })
+                .await?;
             if let Response::Pong { label, storage } = &response {
-                let mut state = self.state.lock();
-                if let Some(r) = state.data.peers.iter_mut().find(|r| &r.peer.id == peer) {
-                    r.peer.label = label.clone();
-                    r.peer.storage = storage.clone();
+                let renamed = {
+                    let mut state = self.state.lock();
+                    state
+                        .data
+                        .peers
+                        .iter_mut()
+                        .find(|r| &r.peer.id == peer)
+                        .is_some_and(|r| {
+                            r.peer.storage = storage.clone();
+                            scope::valid_label(label) && r.peer.label != *label
+                        })
+                };
+                // Invalid labels are ignored; valid changes are persisted.
+                if renamed
+                    && self
+                        .update(|d| {
+                            if let Some(r) = d.peers.iter_mut().find(|r| &r.peer.id == peer) {
+                                r.peer.label = label.clone();
+                            }
+                            Ok(())
+                        })
+                        .is_err()
+                {
+                    tracing::warn!("could not save peer label");
                 }
             }
             Ok(response)
@@ -285,27 +353,26 @@ impl Node {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<impl AsyncRead + Send + Unpin> {
-        tokio::time::timeout(self.options.request_timeout, async {
-            let (conn, mut send, mut recv) = self
-                .start_request(
-                    peer,
-                    &Request::Read {
-                        source: source.into(),
-                        path: path.into(),
-                        range,
-                    },
-                )
-                .await?;
-            send.finish()?;
-            match wire::recv(&mut recv).await? {
-                Response::Read { size } => Ok(BodyReader {
-                    reader: wire::ExactReader::new(recv, size),
-                    _connection: conn,
-                }),
-                Response::Denied(_) => bail!("access denied"),
-                _ => bail!("read failed"),
-            }
-        })
+        let req = Request::Read {
+            source: source.into(),
+            path: path.into(),
+            range,
+        };
+        let idle = self.options.request_timeout;
+        tokio::time::timeout(
+            idle,
+            self.with_retry(peer, &req, |mut send, mut recv| async move {
+                send.finish()?;
+                match wire::recv(&mut recv).await? {
+                    Response::Read { size } => Ok(wire::IdleReader::new(
+                        wire::ExactReader::new(recv, size),
+                        idle,
+                    )),
+                    Response::Denied(_) => bail!("access denied"),
+                    _ => bail!("read failed"),
+                }
+            }),
+        )
         .await?
     }
     /// Pushes one piece of a file (see `WriteAt`): streams exactly `at.size` bytes of
@@ -338,11 +405,15 @@ impl Node {
         size: u64,
     ) -> Result<Response> {
         let (_conn, mut send, mut recv) =
-            tokio::time::timeout(self.options.request_timeout, self.start_request(peer, req))
-                .await??;
+            tokio::time::timeout(self.options.request_timeout, async {
+                let (conn, mut send, recv) = self.open_stream(peer).await?;
+                wire::send(&mut send, req).await?;
+                Ok::<_, anyhow::Error>((conn, send, recv))
+            })
+            .await??;
         let mut body = wire::ExactReader::new(body, size);
         let upload = async {
-            tokio::io::copy(&mut body, &mut send).await?;
+            wire::copy_idle(&mut body, &mut send, self.options.request_timeout).await?;
             send.finish()?;
             Ok::<(), anyhow::Error>(())
         };
@@ -380,6 +451,55 @@ mod tests {
         .unwrap();
         assert_eq!(result, Response::Denied("scope".into()));
         sender.await.unwrap();
+    }
+    #[test]
+    fn mutations_must_stay_strictly_inside_the_subtree() {
+        let peer = PeerId(NodeId(
+            *iroh::SecretKey::from_bytes(&crate::node::random().unwrap())
+                .public()
+                .as_bytes(),
+        ));
+        let grant = |subtree: &str| Grant {
+            peer,
+            source: "docs".into(),
+            subtree: subtree.into(),
+            access: Access::ReadWrite,
+            created: 0,
+        };
+        let remove = |path: &str| Request::Remove {
+            source: "docs".into(),
+            path: path.into(),
+        };
+        let write = |path: &str| Request::Write {
+            source: "docs".into(),
+            path: path.into(),
+            offset: 0,
+            size: 0,
+            final_: true,
+            expect: None,
+        };
+        let partial = |path: &str| Request::StatPartial {
+            source: "docs".into(),
+            path: path.into(),
+        };
+        let rename = |from: &str, to: &str| Request::Rename {
+            source: "docs".into(),
+            from: from.into(),
+            to: to.into(),
+        };
+        let shared = [grant("shared")];
+        assert!(!permitted(&shared, peer, &remove("shared")));
+        assert!(!permitted(&shared, peer, &write("shared")));
+        assert!(!permitted(&shared, peer, &partial("shared")));
+        assert!(!permitted(&shared, peer, &rename("shared", "shared/x")));
+        assert!(!permitted(&shared, peer, &rename("shared/x", "shared")));
+        assert!(permitted(&shared, peer, &remove("shared/x")));
+        assert!(permitted(&shared, peer, &write("shared/x")));
+        assert!(permitted(&shared, peer, &partial("shared/x")));
+        assert!(permitted(&shared, peer, &rename("shared/x", "shared/y")));
+        let whole = [grant("")];
+        assert!(!permitted(&whole, peer, &remove("")));
+        assert!(permitted(&whole, peer, &remove("shared")));
     }
     #[test]
     fn rename_needs_both_scopes_and_write_permission() {

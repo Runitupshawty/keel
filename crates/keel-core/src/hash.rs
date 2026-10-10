@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
@@ -31,8 +30,9 @@ use std::{
 pub const SAMPLE: u64 = 64 * 1024;
 /// Files up to this size are hashed whole: their content id is known at once.
 pub const WHOLE: u64 = 3 * SAMPLE;
-/// Files per checkpoint.
-const CHECKPOINT_EVERY: usize = 1_000;
+/// Files per checkpoint (small under test: the resume test reaches one on a slow CI
+/// runner before its wait runs out, and the logic is the same).
+const CHECKPOINT_EVERY: usize = if cfg!(test) { 100 } else { 1_000 };
 /// How often a paused job looks again.
 const PAUSE_POLL: Duration = Duration::from_millis(200);
 /// How long a battery reading is trusted.
@@ -47,23 +47,6 @@ pub struct DupGroup {
     pub size: u64,
     /// Two or more records, by source then id; hard links of one file appear once.
     pub records: Vec<RecordRef>,
-}
-
-/// A source holding a copy. Volumes (drives, pools, failure domains) come in Phase 7; until
-/// then a copy's location is its source.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Location {
-    pub source: SourceId,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Copies {
-    /// Files holding this content (at least 1: the record itself); hard links of one file
-    /// count once.
-    pub count: u64,
-    /// The distinct sources holding them.
-    pub locations: Vec<Location>,
 }
 
 /// Why a hash job left a source out.
@@ -214,8 +197,32 @@ pub fn on_battery() -> bool {
     false
 }
 
+/// Returns once the app is idle (and not on battery, unless that is allowed); `battery`
+/// caches the last reading. `Err(Cancelled)` when the job is asked to stop.
+pub(crate) fn wait_until_idle(ctx: &JobCtx, battery: &mut Option<(Instant, bool)>) -> Result<()> {
+    loop {
+        if ctx.stopping() {
+            return Err(Cancelled.into());
+        }
+        let lib = &ctx.lib;
+        let mut discharging = || match *battery {
+            Some((at, v)) if at.elapsed() < BATTERY_TTL => v,
+            _ => {
+                let v = on_battery();
+                *battery = Some((Instant::now(), v));
+                v
+            }
+        };
+        let busy = lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
+        if !busy {
+            return Ok(());
+        }
+        std::thread::sleep(PAUSE_POLL);
+    }
+}
+
 /// Why `src` is not hashed now, if it is not.
-fn skip_reason(src: &Source) -> Option<SkipReason> {
+pub(crate) fn skip_reason(src: &Source) -> Option<SkipReason> {
     let Some(root) = src.def.root.to_local_path() else {
         return Some(SkipReason::Remote);
     };
@@ -270,29 +277,7 @@ impl HashJob {
     }
 
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        loop {
-            if ctx.stopping() {
-                return Err(Cancelled.into());
-            }
-            let lib = &ctx.lib;
-            let busy =
-                lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && self.on_battery());
-            if !busy {
-                return Ok(());
-            }
-            std::thread::sleep(PAUSE_POLL);
-        }
-    }
-
-    fn on_battery(&mut self) -> bool {
-        match self.battery {
-            Some((at, v)) if at.elapsed() < BATTERY_TTL => v,
-            _ => {
-                let v = on_battery();
-                self.battery = Some((Instant::now(), v));
-                v
-            }
-        }
+        wait_until_idle(ctx, &mut self.battery)
     }
 
     fn progress(&self) -> f32 {
@@ -576,6 +561,9 @@ impl Job for HashJob {
             if *slot == Some(ctx.id) {
                 *slot = None;
             }
+            // Still running for a while (reconfirm, counts): `schedule` must not count on
+            // it, it no longer looks at `hash_again`.
+            lib.hash_finishing.store(ctx.id, Ordering::SeqCst);
             break;
         }
         self.reconfirm(ctx)?;
@@ -585,6 +573,7 @@ impl Job for HashJob {
         ))?;
         ctx.set_result(serde_json::to_value(self.result())?)?;
         crate::library::count_unique(&lib)?;
+        crate::protect::recount(&lib)?;
         Ok(())
     }
 
@@ -619,7 +608,8 @@ pub(crate) fn schedule(lib: &Arc<Shared>) -> Result<JobId> {
         Some(id) if crate::jobs::is_running(lib, id) => Some(id),
         _ => pending_hash_job(lib)?,
     };
-    let id = match pending {
+    let finishing = lib.hash_finishing.load(Ordering::SeqCst);
+    let id = match pending.filter(|id| *id != finishing) {
         Some(id) if crate::jobs::is_running(lib, id) || crate::jobs::resume(lib, id)? => {
             lib.hash_again.store(true, Ordering::SeqCst);
             id
@@ -653,28 +643,6 @@ pub(crate) fn after_walk(lib: &Arc<Shared>, src: &Source) {
         Ok(false) => {}
         Err(e) => tracing::warn!("hashing after a walk of {}: {e:#}", src.def.label),
     }
-}
-
-/// Per source, a key for each file holding confirmed content `cas` (its native file id, so
-/// hard links of one file share a key; else its record).
-pub(crate) fn copies(lib: &Shared, cas: &[u8]) -> Result<Vec<(Arc<Source>, Vec<String>)>> {
-    let sources: Vec<Arc<Source>> = lib.sources.read().clone();
-    let mut out = Vec::new();
-    for s in sources {
-        let keys: Vec<String> = {
-            let c = s.store.get()?;
-            let mut stmt = c.prepare_cached(
-                "SELECT CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id ELSE 'r' || id END
-                 FROM record WHERE cas_id = ?1 AND kind = 0",
-            )?;
-            let rows = stmt.query_map([cas], |r| r.get(0))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        if !keys.is_empty() {
-            out.push((s, keys));
-        }
-    }
-    Ok(out)
 }
 
 impl Library {
@@ -752,52 +720,9 @@ impl Library {
 
     /// True unless another file is known to hold the same content (also true while the
     /// record has no content id yet: no other copy is known). A hard link of the same file
-    /// is not another copy.
+    /// is not another copy, nor is a copy on a lost or retired volume.
     pub fn last_copy(&self, record: &RecordRef) -> Result<bool> {
-        Ok(self.redundancy(record)?.count <= 1)
-    }
-
-    /// How many files hold this record's content (hard links of one file count once), and
-    /// in which sources.
-    pub fn redundancy(&self, record: &RecordRef) -> Result<Copies> {
-        let src = self
-            .source(&record.source)
-            .with_context(|| format!("no source {}", record.source))?;
-        let cas: Option<Vec<u8>> = src
-            .store
-            .get()?
-            .query_row(
-                "SELECT cas_id FROM record WHERE id = ?1",
-                [record.id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .with_context(|| format!("no record {}", record.id))?;
-        let alone = || Copies {
-            count: 1,
-            locations: vec![Location {
-                source: src.id.clone(),
-                label: src.def.label.clone(),
-            }],
-        };
-        let Some(cas) = cas else {
-            return Ok(alone());
-        };
-        let copies = copies(&self.shared, &cas)?;
-        if copies.is_empty() {
-            return Ok(alone());
-        }
-        let files: HashSet<&String> = copies.iter().flat_map(|(_, keys)| keys).collect();
-        Ok(Copies {
-            count: files.len() as u64,
-            locations: copies
-                .iter()
-                .map(|(s, _)| Location {
-                    source: s.id.clone(),
-                    label: s.def.label.clone(),
-                })
-                .collect(),
-        })
+        Ok(self.redundancy(record)?.copies <= 1)
     }
 }
 

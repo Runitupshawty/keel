@@ -28,7 +28,7 @@ pub(crate) struct Item {
 }
 
 /// Unix nanoseconds (negative before 1970; saturating outside 1678..2262).
-pub(crate) fn unix_ns(t: std::time::SystemTime) -> i64 {
+pub fn unix_ns(t: std::time::SystemTime) -> i64 {
     let ns = |d: std::time::Duration| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX);
     match t.duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => ns(d),

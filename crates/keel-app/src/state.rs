@@ -235,6 +235,11 @@ pub struct AppState {
     pub library: crate::library::LibraryUi,
     /// Task 36: paired devices, shares and Spacedrop (`devices.rs`).
     pub devices: crate::devices::Devices,
+    // --- Task 32 ---
+    /// Media view sidecar textures and their workers (`media.rs`).
+    pub media: crate::media::Media,
+    /// The full-window media viewer, while open.
+    pub viewer: Option<crate::media_viewer::Viewer>,
 }
 
 impl AppState {
@@ -263,6 +268,9 @@ impl AppState {
         let themes = Themes::load(&settings.theme);
         let theme = themes.get(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
+        let mut media = crate::media::Media::new(ctx.clone(), router.clone());
+        media.tile = settings.media_tile;
+        media.dates = settings.media_dates;
         // Remote hosts are registered before the restored tabs list (lazily connecting).
         let mut remotes = crate::remotes::Remotes::new(tx.clone(), ctx.clone());
         remotes.sync(&router, &settings.remotes);
@@ -346,6 +354,8 @@ impl AppState {
             dropzone: Default::default(),
             library,
             devices,
+            media,
+            viewer: None,
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -1101,6 +1111,7 @@ impl AppState {
 
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
+        self.media_tick(); // Task 32
         self.remote_tick();
         self.cloud_tick();
         self.devices_tick();
@@ -1266,6 +1277,10 @@ impl AppState {
         if self.writes_into_archive(p, &action) {
             return self.toasts.error(READ_ONLY);
         }
+        // --- Task 32 ---: Space / Enter on a photo or video in the media view.
+        let Some(action) = crate::media_viewer::intercept(self, p, action) else {
+            return;
+        };
         // --- Task 23 ---: columns view navigation.
         let Some(action) = crate::view_columns::intercept(self, p, action) else {
             return;
@@ -1948,7 +1963,7 @@ impl AppState {
         }
     }
 
-    fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
+    pub(crate) fn launch(&self, path: VPath, f: fn(&std::path::Path) -> std::io::Result<()>) {
         worker::spawn_local(
             self.router.clone(),
             path,
@@ -2781,6 +2796,15 @@ mod tests {
             })
     }
 
+    /// The real watcher on the test folder may still report the files the test just wrote
+    /// (FSEvents delivers late): let those listings happen before counting.
+    fn drain_watcher(s: &mut AppState) {
+        if cfg!(target_os = "macos") {
+            pump(s, Duration::from_millis(2500));
+            pump_until(s, idle);
+        }
+    }
+
     #[test]
     fn a_change_lists_a_folder_once_however_many_columns_show_it() {
         use crate::pane::ViewMode;
@@ -2798,6 +2822,7 @@ mod tests {
         crate::view_columns::restore(&mut s.panes[0].tabs[0], std::slice::from_ref(&a));
         s.run(1, Action::Navigate(a.clone()));
         pump_until(&mut s, idle);
+        drain_watcher(&mut s);
         let before = s.next_req;
         s.apply(Msg::Changed { dir: a.clone() });
         pump(&mut s, Duration::from_millis(1200));
@@ -2820,6 +2845,7 @@ mod tests {
             crate::view_columns::restore(&mut s.panes[p].tabs[0], std::slice::from_ref(&a));
         }
         pump_until(&mut s, idle);
+        drain_watcher(&mut s);
         let before = s.next_req;
         s.apply(Msg::Changed { dir: a.clone() });
         pump(&mut s, Duration::from_millis(1200));

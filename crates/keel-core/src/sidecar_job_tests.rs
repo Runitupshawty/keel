@@ -133,7 +133,8 @@ fn sidecars_follow_a_content_id_that_appears_later() {
 fn a_stopped_job_resumes_from_its_checkpoint() {
     let data = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
-    let n = CHECKPOINT_EVERY + 300;
+    // Plenty past the first checkpoint, so the job is still running when the test sees it.
+    let n = CHECKPOINT_EVERY + 1000;
     for i in 0..n {
         png(&files.path().join(format!("{i:04}.png")), 8, 8);
     }

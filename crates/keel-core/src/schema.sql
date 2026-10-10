@@ -233,3 +233,25 @@ CREATE TRIGGER record_media_ad AFTER DELETE ON record BEGIN
     DELETE FROM media WHERE record = old.id;
     DELETE FROM media_fts WHERE rowid = old.id;
 END;
+
+-- @library 5
+-- Protection (Task 33): volumes (drives, shares, cloud accounts, hosts) and their failure
+-- domains; each source is on one volume. `state` is 'auto' (online/offline follows the
+-- sources) or a state set by hand ('archived', 'lost', 'retired'). Capacity is as last seen.
+CREATE TABLE volume(
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'auto',
+    last_seen INTEGER NOT NULL DEFAULT 0,
+    backup INTEGER NOT NULL DEFAULT 0,
+    used INTEGER,
+    total INTEGER);
+ALTER TABLE source ADD COLUMN volume_id TEXT;
+
+-- @source 7
+-- Integrity (Task 33): when a re-hash found the bytes changed although size, mtime and
+-- change time did not (unix seconds; NULL = never). A real change resets it with the hashes.
+ALTER TABLE record ADD COLUMN drift INTEGER;
+CREATE INDEX record_drift ON record(drift) WHERE drift IS NOT NULL;

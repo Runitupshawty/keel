@@ -17,6 +17,9 @@ pub enum ViewMode {
     // --- Task 23 ---
     /// Miller columns (`view_columns`).
     Columns,
+    // --- Task 32 ---
+    /// Square photo / video tiles from sidecars (`view_media`).
+    Media,
 }
 
 pub struct Pane {
@@ -51,6 +54,8 @@ pub struct ViewCx<'a> {
     pub searcher: Option<&'static str>,
     /// Details view: the Tags column.
     pub tags_column: bool,
+    // --- Task 32 ---
+    pub media: &'a mut crate::media::Media,
 }
 
 impl Pane {
@@ -231,6 +236,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         ViewMode::Details => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Grid => view_grid::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Columns => crate::view_columns::ui(ui, (idx, tab_idx), tab, cx, out),
+        ViewMode::Media => crate::view_media::ui(ui, (idx, tab_idx), tab, cx, out),
     }
 }
 
@@ -310,6 +316,11 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             for (mode, text, tip) in [
+                (
+                    ViewMode::Media,
+                    "Media",
+                    "Photo and video tiles (Space opens the viewer)",
+                ),
                 (ViewMode::Columns, "Columns", "Columns view"),
                 (ViewMode::Grid, "Grid", "Grid view with thumbnails"),
                 (ViewMode::Details, "Details", "Details view"),

@@ -57,6 +57,11 @@ pub struct Settings {
     // --- Task 36 ---
     /// `[devices]`: pairing, shares and Spacedrop (on by default; needs the library).
     pub devices: crate::devices::DeviceSettings,
+    // --- Task 32 ---
+    /// Media view tile size.
+    pub media_tile: crate::media::TileSize,
+    /// Media view: date headers.
+    pub media_dates: bool,
 }
 
 impl Default for Settings {
@@ -81,6 +86,8 @@ impl Default for Settings {
             single_instance: true,
             column_widths: Vec::new(),
             reduce_motion: false,
+            media_tile: Default::default(),
+            media_dates: false,
             library: Default::default(),
             devices: Default::default(),
         }

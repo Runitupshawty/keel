@@ -281,7 +281,9 @@ fn upsert(
              cas_id = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
                  THEN cas_id END,
              sampled_hash = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
-                 THEN sampled_hash END
+                 THEN sampled_hash END,
+             drift = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
+                 THEN drift END
          WHERE id = ?1",
     )?
     .execute(params![
