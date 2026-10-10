@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Copy and move jobs record their progress durably as they go (every 256 files or 4 MiB, in one row of the library's job table plus the files of the running batch, never one write per file): which files were placed, at which name, with their size and modified time, and how far the file in progress got in its `.keel-partial` copy. A copy or move resumed after Keel or keel-daemon closed, or after a crash, continues from there and its log says "resumed at file N of M".
+- keel-vfs: `Provider::write_at` (write a file in place from an offset, for resumable transfers; local folders, SFTP and the test memory provider) and `ops::transfer_resumable` with its `Journal`.
+
+### Fixed
+
+- A folder copy or move resumed after a crash no longer runs again as a merge into the half-written target, which lifts the 0.6.0 known limitation. Files it had placed are skipped without being written again, the file it was writing is continued from its partial copy on local folders and SFTP hosts (started again on cloud targets, or when the partial copy no longer matches the record), a name picked by Rename new is kept instead of a third copy being made, and a placed file that changed in the meantime stops the job ("changed since the preview") instead of being overwritten. A move still deletes each source file only after its copy is complete and verified.
+
+### Known limitations
+
+- After a crash (not a close or a cancel), the files a copy or move placed into a folder that existed before it, since its last record (at most 256 files or 4 MiB), are not known to be its own: they get the conflict choice again (Skip leaves them, Overwrite writes them again, Rename new adds a second copy).
+
 ## [0.12.0] - 2026-10-10
 
 ### Added

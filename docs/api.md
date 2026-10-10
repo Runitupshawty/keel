@@ -42,6 +42,11 @@ It refuses (typed errors below) when the hash is not the previewed one, when the
 expired (10 minutes) or was already executed, and, for file operations, when the sources
 changed since the preview (the error's `data` is the fresh preview to confirm instead).
 File operations run as jobs: `execute` returns `{"job": N}`; follow it with `jobs.info`.
+A copy or move that stopped (the daemon closed, a crash) resumes when the library opens
+again, where it stopped: its log gets `resumed at file N of M`, files it placed are not
+written again, the file it was writing is continued on local and SFTP targets, and a
+placed file changed since makes the job fail (`… changed since the preview …`) rather
+than be overwritten. `jobs.info` keeps its shape.
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it

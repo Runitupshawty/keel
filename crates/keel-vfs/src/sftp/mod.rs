@@ -494,6 +494,51 @@ impl SftpProvider {
             })
         })
     }
+    /// `Provider::write_at`: `p` opened in place (created or emptied at 0, else cut to
+    /// `offset`, which it must reach), written from there.
+    fn direct(&self, p: &VPath, offset: u64) -> Result<SftpDirect> {
+        self.call(p, async |s| {
+            let mut flags = OpenFlags::WRITE;
+            if offset == 0 {
+                flags |= OpenFlags::CREATE | OpenFlags::TRUNCATE;
+            }
+            let handle = s
+                .raw
+                .open(&p.path, flags, FileAttributes::empty())
+                .await
+                .map_err(wire_error)?
+                .handle;
+            if offset > 0 {
+                let len = s
+                    .raw
+                    .fstat(handle.as_str())
+                    .await
+                    .map_err(wire_error)?
+                    .attrs
+                    .size;
+                if len.is_none_or(|len| len < offset) {
+                    let _ = s.raw.close(handle).await;
+                    anyhow::bail!("only {len:?} of {offset} bytes are there");
+                }
+                let cut = FileAttributes {
+                    size: Some(offset),
+                    ..FileAttributes::empty()
+                };
+                s.raw
+                    .fsetstat(handle.as_str(), cut)
+                    .await
+                    .map_err(wire_error)?;
+            }
+            Ok(SftpDirect(RemoteReader {
+                pool: self.conn.clone(),
+                session: s,
+                handle: Some(handle),
+                offset,
+                path: p.clone(),
+            }))
+        })
+        .with_context(|| p.display())
+    }
     /// Materialise with bounded memory. Cache identity includes endpoint, user, path, mtime and size.
     pub fn local_copy_with_progress(
         &self,
@@ -678,6 +723,9 @@ impl Provider for SftpProvider {
     }
     fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
         Ok(Box::new(self.upload(p, true)?))
+    }
+    fn write_at(&self, p: &VPath, offset: u64) -> Result<Option<Box<dyn Write + Send>>> {
+        Ok(Some(Box::new(self.direct(p, offset)?)))
     }
     fn mkdir(&self, p: &VPath) -> Result<()> {
         self.call(p, async |s| {
@@ -1031,20 +1079,17 @@ impl SftpUpload {
         Ok(self.commit()?)
     }
 }
-impl Write for SftpUpload {
+impl RemoteReader {
     /// Pipelined like `read`: up to 1 MiB per call, all chunks acknowledged before returning.
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.committed || self.failed {
-            return Err(io::Error::other("upload finished or failed"));
-        }
+    fn write_at_offset(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let n = bytes.len().min(CHUNK * PIPELINE);
         if n == 0 {
             return Ok(0);
         }
-        let handle = self.stream.handle()?;
-        let (session, offset) = (self.stream.session.clone(), self.stream.offset);
+        let handle = self.handle()?;
+        let (session, offset) = (self.session.clone(), self.offset);
         let chunks: Vec<Vec<u8>> = bytes[..n].chunks(CHUNK).map(<[u8]>::to_vec).collect();
-        let result = self.stream.operation(async move {
+        self.operation(async move {
             let tasks: Vec<_> = chunks
                 .into_iter()
                 .enumerate()
@@ -1058,13 +1103,31 @@ impl Write for SftpUpload {
                 task.await??;
             }
             Ok(())
-        });
-        if let Err(e) = result {
-            self.failed = true;
-            return Err(e);
-        }
-        self.stream.offset += n as u64;
+        })?;
+        self.offset += n as u64;
         Ok(n)
+    }
+}
+/// `Provider::write_at`: writes in place, each acknowledged by the server before `write`
+/// returns; dropping it closes the file.
+struct SftpDirect(RemoteReader);
+impl Write for SftpDirect {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write_at_offset(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+impl Write for SftpUpload {
+    /// Pipelined like `read`: up to 1 MiB per call, all chunks acknowledged before returning.
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.committed || self.failed {
+            return Err(io::Error::other("upload finished or failed"));
+        }
+        self.stream
+            .write_at_offset(bytes)
+            .inspect_err(|_| self.failed = true)
     }
     /// Commits, like `finish()`: closes the staging file, verifies its size, renames it
     /// into place.

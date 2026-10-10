@@ -247,6 +247,10 @@ impl Provider for LocalProvider {
                 .with_context(|| format!("create {}", p.display()))?,
         ))
     }
+    fn write_at(&self, p: &VPath, offset: u64) -> Result<Option<Box<dyn Write + Send>>> {
+        let file = open_at(&local(p)?, offset).with_context(|| format!("write {}", p.display()))?;
+        Ok(Some(Box::new(Durable(file))))
+    }
     fn mkdir(&self, p: &VPath) -> Result<()> {
         fs::create_dir(local(p)?).with_context(|| format!("mkdir {}", p.display()))
     }
@@ -276,6 +280,32 @@ impl Provider for LocalProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         p.to_local_path()
             .ok_or_else(|| anyhow::anyhow!("not a local path: {}", p.display()))
+    }
+}
+
+/// `path` opened for writing at `offset`: created (or emptied) at 0, else cut to `offset`
+/// bytes, which it must have.
+pub(crate) fn open_at(path: &Path, offset: u64) -> Result<fs::File> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(offset == 0)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    anyhow::ensure!(len >= offset, "only {len} of {offset} bytes are there");
+    file.set_len(offset)?;
+    file.seek(SeekFrom::Start(offset))?;
+    Ok(file)
+}
+
+/// A file whose `flush()` syncs its data to disk (`Provider::write_at`).
+struct Durable(fs::File);
+impl Write for Durable {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.sync_data()
     }
 }
 

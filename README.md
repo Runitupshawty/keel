@@ -53,6 +53,8 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 **Preview before you act.** Copy, move, delete and rename started from a library view first show a preview built from the index: what will change, plus warnings for the last copy of a file, a permanent delete on SFTP or S3, content that has not been hashed (unverified), and an offline source. Execution checks the plan again and stops if anything changed since the preview.
 
+**Resuming.** A copy or move that stops before it ends (Keel or keel-daemon closed, the computer restarted, a crash) continues where it stopped the next time the library opens, and its log says "resumed at file N of M". The files it already placed are skipped without being written again, the file it was writing is continued from its partial copy when the target is a local folder or an SFTP host (cloud targets, and a partial copy that changed meanwhile, start that file again), and a placed file that someone changed in the meantime stops the job instead of being overwritten. A move deletes each source file only once its copy is complete and verified. Progress is recorded every 256 files or 4 MiB, so after a crash (rather than a close) files placed into a folder that existed before the copy, since that last record, get the conflict choice again.
+
 **Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview.
 
 **Search syntax.** Several terms must all match; results are ranked.
@@ -82,7 +84,7 @@ Words that match no name or path also search camera and photo keywords, ranked b
 
 While attached: files are read from their real paths (the daemon runs on the same machine). The media view shows the daemon's thumbnails (`media.thumb`, 256 px for tiles, 1024 px for the viewer and big tiles): the daemon makes a missing one on demand, visible tiles first and at most four at a time for the window, and its sidecar jobs fill the rest ahead; both sizes are kept in a small cache under the window's cache folder by content. A file the daemon cannot answer for is decoded in the window, and video strips and photo metadata (date headers, the viewer's info panel) are still made by the window. Your input reaches the daemon (`activity.note`), so *idle only* hashing and integrity checks pause while you work, as in-process, and sidecar jobs for a second after each input. Settings → Devices is written to the daemon as you change it: its device name, inbox (only when you set one: otherwise the daemon's own, `<data dir>/inbox`, so drops land in the same folder whether or not a window is open) and always-accept list change at once; relays only when the daemon starts again (it reads `[devices] relay` then). Switching to another library needs the daemon stopped first.
 
-Limits: hashing skips cloud sources unless Cloud hashing is on, and remote files over the size cap; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+Limits: hashing skips cloud sources unless Cloud hashing is on, and remote files over the size cap; remote and cloud sources are polled rather than watched.
 
 ## Media view
 
@@ -476,7 +478,7 @@ What is next, from the known limitations still open:
 - Archives: deleting, renaming and creating entries inside one, and extracting into a remote folder.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Cloud: resumable uploads instead of the 256 MB (Drive) and 150 MB (Dropbox) single-request limits, and cancelling an upload whose request is already on the wire.
-- Library and protection: live changes for remote and cloud sources instead of polling, a resumed folder copy that is not re-run as a merge, and disks without a serial or cloned with one (their failure domain is set by hand today).
+- Library and protection: live changes for remote and cloud sources instead of polling, and disks without a serial or cloned with one (their failure domain is set by hand today).
 - Devices: short-code pairing without internet discovery (the full ticket already works offline), and device writes into sources that are not local.
 - Mounts: file times and attributes, renaming a file while it is written, and the drive's real free space.
 

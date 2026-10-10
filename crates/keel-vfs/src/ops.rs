@@ -2,7 +2,9 @@ use crate::local::long;
 use crate::sys;
 use anyhow::{Context, Result};
 use std::{
+    collections::HashMap,
     fs, io,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -61,7 +63,7 @@ pub fn copy_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer_local(src, dst_dir, on_conflict, progress, cancel, false)
+    transfer_local(src, dst_dir, on_conflict, progress, cancel, false, None)
 }
 
 /// Same volume: rename. Other volume: per file, copy with progress, then delete that source
@@ -73,7 +75,7 @@ pub fn move_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer_local(src, dst_dir, on_conflict, progress, cancel, true)
+    transfer_local(src, dst_dir, on_conflict, progress, cancel, true, None)
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
@@ -89,6 +91,232 @@ fn canonical_key(path: &Path) -> Result<PathBuf> {
     Ok(p)
 }
 
+/// A resumable transfer records its progress after this many placed files...
+pub const RECORD_FILES: usize = 256;
+/// ...or this many bytes (placed, or written to the file in progress).
+pub const RECORD_BYTES: u64 = 4 << 20;
+
+/// A file's size and modified time (nanoseconds since 1970), as a resumable transfer
+/// records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Stamp {
+    pub size: u64,
+    pub mtime: Option<i64>,
+}
+
+impl Stamp {
+    pub fn new(size: u64, modified: Option<std::time::SystemTime>) -> Stamp {
+        let mtime = modified.and_then(|t| match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => i64::try_from(d.as_nanos()).ok(),
+            Err(e) => i64::try_from(e.duration().as_nanos()).ok().map(|n| -n),
+        });
+        Stamp { size, mtime }
+    }
+    fn of(m: &fs::Metadata) -> Stamp {
+        Stamp::new(m.len(), m.modified().ok())
+    }
+    fn entry(e: &crate::Entry) -> Stamp {
+        Stamp::new(e.size, e.modified)
+    }
+}
+
+/// What a resumable transfer placed for one source path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Placed {
+    pub target: crate::VPath,
+    /// The placed file as it was then. None: a folder the transfer made, so everything in
+    /// it is the transfer's own.
+    pub file: Option<Stamp>,
+}
+
+/// The file a resumable transfer was writing when it last recorded.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Unfinished {
+    pub source: crate::VPath,
+    pub source_stamp: Stamp,
+    pub target: crate::VPath,
+    /// Where the bytes go until the file is placed at `target`.
+    pub staging: crate::VPath,
+    /// Bytes of `staging` written (and flushed) by then, and its modified time then.
+    pub bytes: u64,
+    pub staging_mtime: Option<i64>,
+}
+
+/// Whether `staging` (now `now`) can be continued at `u.bytes`: it holds at least those
+/// bytes and was last written at the record (exactly that long) or after it (what came
+/// after the record is cut off). Anything else is not the file recorded: start over.
+fn continues(u: &Unfinished, now: Stamp) -> bool {
+    match now.size.cmp(&u.bytes) {
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => now.mtime == u.staging_mtime,
+        std::cmp::Ordering::Greater => now.mtime >= u.staging_mtime,
+    }
+}
+
+/// A resumed transfer found a target it had placed (or a file inside a folder it made)
+/// different from what it placed: it never overwrites it.
+#[derive(Debug)]
+pub struct TargetChanged(pub String);
+
+impl std::fmt::Display for TargetChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} changed since the preview (this operation had copied it there before it \
+             stopped): confirm a new preview",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for TargetChanged {}
+
+type Record<'j> =
+    Box<dyn FnMut(Vec<(crate::VPath, Placed)>, Option<&Unfinished>) -> Result<()> + 'j>;
+
+/// A resumable transfer's memory (`transfer_resumable`): what earlier runs placed, the file
+/// they were writing, and where this run records its own progress: after [`RECORD_FILES`]
+/// files or [`RECORD_BYTES`] bytes, before it makes a folder or a renamed file at a new
+/// name, and when it stops.
+pub struct Journal<'j> {
+    /// Placed by earlier runs, by source path.
+    pub placed: HashMap<crate::VPath, Placed>,
+    pub unfinished: Option<Unfinished>,
+    /// Files placed so far, by earlier runs too.
+    pub files: u64,
+    /// For the job log: what became of an unfinished file.
+    pub notes: Vec<String>,
+    record: Record<'j>,
+    fresh: Vec<(crate::VPath, Placed)>,
+    bytes: u64,
+}
+
+impl<'j> Journal<'j> {
+    /// `record` gets what was placed since its last call and the file being written (if
+    /// any), and must make both durable before it returns.
+    pub fn new(
+        placed: HashMap<crate::VPath, Placed>,
+        unfinished: Option<Unfinished>,
+        record: impl FnMut(Vec<(crate::VPath, Placed)>, Option<&Unfinished>) -> Result<()> + 'j,
+    ) -> Journal<'j> {
+        let files = placed.values().filter(|p| p.file.is_some()).count() as u64;
+        Journal {
+            placed,
+            unfinished,
+            files,
+            notes: Vec::new(),
+            record: Box::new(record),
+            fresh: Vec::new(),
+            bytes: 0,
+        }
+    }
+
+    /// Records what is not recorded yet.
+    pub fn flush(&mut self) -> Result<()> {
+        let fresh = std::mem::take(&mut self.fresh);
+        self.bytes = 0;
+        (self.record)(fresh, self.unfinished.as_ref())
+    }
+
+    /// `source` is placed at `placed`; `now`: record it before going on.
+    fn placed(&mut self, source: crate::VPath, placed: Placed, now: bool) -> Result<()> {
+        if let Some(stamp) = placed.file {
+            self.files += 1;
+            self.bytes += stamp.size;
+        }
+        self.fresh.push((source, placed));
+        if now || self.fresh.len() >= RECORD_FILES || self.bytes >= RECORD_BYTES {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// The unfinished record of `source`, taken out.
+    fn take_unfinished(&mut self, source: &crate::VPath) -> Option<Unfinished> {
+        self.unfinished.take_if(|u| u.source == *source)
+    }
+}
+
+/// How a journaled transfer takes one source before its conflict policy.
+enum Settle {
+    /// Placed already, at this target: counted, never written again.
+    Done(crate::VPath),
+    /// Goes to this target, which is the transfer's own (no conflict policy): a folder it
+    /// made, or the target of the file it was writing.
+    Into(crate::VPath),
+    Normal,
+}
+
+/// Placed files are known from the record, and from what is in a folder the transfer made
+/// (`fresh`) or at the target of the file it was writing: an earlier run placed those, so
+/// they must match the source or the transfer stops ([`TargetChanged`]). Any other target
+/// that exists gets the conflict policy, as in a first run. `stat` gives a target's (is a
+/// folder, stamp), None when it is missing. `exact`: targets keep the source's modified
+/// time (local copies), so it is compared too (to the 2 s of FAT); else sizes only.
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    j: &Journal,
+    key: &crate::VPath,
+    source: Stamp,
+    source_dir: bool,
+    proposed: &crate::VPath,
+    fresh: bool,
+    exact: bool,
+    stat: impl Fn(&crate::VPath) -> Result<Option<(bool, Stamp)>>,
+) -> Result<Settle> {
+    match j.placed.get(key) {
+        Some(Placed {
+            target,
+            file: Some(stamp),
+        }) => {
+            return match stat(target)? {
+                Some((false, now)) if now == *stamp => Ok(Settle::Done(target.clone())),
+                _ => Err(TargetChanged(target.display()).into()),
+            }
+        }
+        Some(Placed { target, file: None }) => return Ok(Settle::Into(target.clone())),
+        None => {}
+    }
+    let unfinished = j
+        .unfinished
+        .as_ref()
+        .filter(|u| u.source == *key)
+        .map(|u| u.target.clone());
+    let ours = fresh || unfinished.is_some();
+    let target = unfinished.clone().unwrap_or_else(|| proposed.clone());
+    // FAT keeps modified times to 2 s.
+    let close = |a: Option<i64>, b: Option<i64>| match (a, b) {
+        (Some(a), Some(b)) => a.abs_diff(b) <= 2_000_000_000,
+        (a, b) => a == b,
+    };
+    let same = |now: Stamp| now.size == source.size && (!exact || close(now.mtime, source.mtime));
+    Ok(match stat(&target)? {
+        None if unfinished.is_some() => Settle::Into(target),
+        None => Settle::Normal,
+        Some((true, _)) if source_dir && ours => Settle::Into(target),
+        Some((false, now)) if !source_dir && ours => {
+            anyhow::ensure!(same(now), TargetChanged(target.display()));
+            Settle::Done(target)
+        }
+        Some(_) => Settle::Normal,
+    })
+}
+
+fn local_target(t: &crate::VPath) -> Result<PathBuf> {
+    long(
+        &t.to_local_path()
+            .with_context(|| format!("not a local path: {}", t.display()))?,
+    )
+}
+
+fn local_stat(t: &crate::VPath) -> Result<Option<(bool, Stamp)>> {
+    match fs::symlink_metadata(local_target(t)?) {
+        Ok(m) => Ok(Some((m.is_dir(), Stamp::of(&m)))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn transfer_local(
     src: &[PathBuf],
     dst_dir: &Path,
@@ -96,6 +324,7 @@ fn transfer_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
     moving: bool,
+    journal: Option<&mut Journal>,
 ) -> Result<()> {
     check_cancel(cancel)?;
     let dst = long(dst_dir)?;
@@ -152,16 +381,27 @@ fn transfer_local(
         cancel,
         moving,
         swept: Default::default(),
+        journal,
     };
+    let mut result = Ok(());
     for source in sources {
-        check_cancel(cancel)?;
-        let destination = dst.join(source.file_name().context("source has no name")?);
-        job.node(&source, &destination)?;
+        result = check_cancel(cancel).and_then(|()| {
+            let destination = dst.join(source.file_name().context("source has no name")?);
+            job.node(&source, &destination, false).map(drop)
+        });
+        if result.is_err() {
+            break;
+        }
     }
-    Ok(())
+    if let (Err(_), Some(j)) = (&result, job.journal) {
+        if let Err(e) = j.flush() {
+            tracing::warn!("recording a transfer's progress: {e:#}");
+        }
+    }
+    result
 }
 
-struct Job<'a> {
+struct Job<'a, 'j> {
     state: Progress,
     conflict: Conflict,
     progress: &'a dyn Fn(Progress),
@@ -169,19 +409,46 @@ struct Job<'a> {
     moving: bool,
     /// Folders already swept for stale staging files.
     swept: std::collections::HashSet<PathBuf>,
+    journal: Option<&'a mut Journal<'j>>,
 }
 
-impl Job<'_> {
+impl Job<'_, '_> {
     /// Returns false when something under `source` was skipped (so a move keeps it).
-    fn node(&mut self, source: &Path, proposed: &Path) -> Result<bool> {
+    /// `fresh`: `proposed`'s folder was made by this transfer (journaled runs).
+    fn node(&mut self, source: &Path, proposed: &Path, fresh: bool) -> Result<bool> {
         check_cancel(self.cancel)?;
         let metadata = fs::symlink_metadata(source)?;
         ensure_regular(source, &metadata)?;
         self.state.current = source.to_string_lossy().into_owned();
-        let Some(target) = destination(metadata.is_dir(), proposed, self.conflict)? else {
-            self.state.skipped += 1;
-            (self.progress)(self.state.clone());
-            return Ok(false);
+        let key = crate::VPath::local(source);
+        let settled = match self.journal.as_deref() {
+            Some(j) => settle(
+                j,
+                &key,
+                Stamp::of(&metadata),
+                metadata.is_dir(),
+                &crate::VPath::local(proposed),
+                fresh,
+                true,
+                local_stat,
+            )?,
+            None => Settle::Normal,
+        };
+        let mut ours = fresh;
+        let target = match settled {
+            Settle::Done(target) => return self.already(source, &metadata, key, target),
+            Settle::Into(target) => {
+                ours = true;
+                local_target(&target)?
+            }
+            Settle::Normal => match destination(metadata.is_dir(), proposed, self.conflict)? {
+                Some(target) => target,
+                None => {
+                    self.state.skipped += 1;
+                    (self.progress)(self.state.clone());
+                    return Ok(false);
+                }
+            },
         };
         if let Ok(target_metadata) = fs::symlink_metadata(&target) {
             ensure_regular(&target, &target_metadata)?;
@@ -215,14 +482,23 @@ impl Job<'_> {
         }
         if metadata.is_dir() {
             if !target.try_exists()? {
+                if let Some(j) = self.journal.as_deref_mut().filter(|_| !ours) {
+                    // Recorded before it exists: a resumed run knows the folder is its own.
+                    let placed = Placed {
+                        target: crate::VPath::local(&target),
+                        file: None,
+                    };
+                    j.placed(key, placed, true)?;
+                }
                 fs::create_dir(&target)?;
+                ours = true;
             }
             let mut complete = true;
             // Stable traversal makes progress and cancellation deterministic.
             let mut children = fs::read_dir(source)?.collect::<io::Result<Vec<_>>>()?;
             children.sort_by_key(|e| e.file_name());
             for child in children {
-                complete &= self.node(&child.path(), &target.join(child.file_name()))?;
+                complete &= self.node(&child.path(), &target.join(child.file_name()), ours)?;
             }
             if self.moving && complete {
                 // remove_dir only removes an empty folder: every child has been moved.
@@ -239,11 +515,51 @@ impl Job<'_> {
                 sweep_local(parent);
             }
         }
-        self.copy_file(source, &target, metadata.len())?;
+        let picked = target != proposed;
+        let resumable = self.journal.as_deref().is_some_and(|j| {
+            picked
+                || metadata.len() > RECORD_BYTES
+                || j.unfinished.as_ref().is_some_and(|u| u.source == key)
+        });
+        if resumable {
+            self.copy_resumable(source, &target, &metadata, &key, picked)?;
+        } else {
+            self.copy_file(source, &target, metadata.len())?;
+        }
         if self.moving {
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
+        }
+        if let Some(j) = self.journal.as_deref_mut() {
+            let file = Some(Stamp::of(&fs::symlink_metadata(&target)?));
+            let target = crate::VPath::local(&target);
+            j.placed(key, Placed { target, file }, false)?;
+        }
+        self.state.done_bytes += metadata.len();
+        self.state.done_items += 1;
+        (self.progress)(self.state.clone());
+        Ok(true)
+    }
+
+    /// A file an earlier run placed at `target`: counted, and a move drops its source now.
+    fn already(
+        &mut self,
+        source: &Path,
+        metadata: &fs::Metadata,
+        key: crate::VPath,
+        target: crate::VPath,
+    ) -> Result<bool> {
+        if self.moving {
+            fs::remove_file(source)
+                .with_context(|| format!("remove moved file {}", source.display()))?;
+        }
+        if let Some(j) = self.journal.as_deref_mut() {
+            j.take_unfinished(&key);
+            if !j.placed.contains_key(&key) {
+                let file = local_stat(&target)?.map(|(_, stamp)| stamp);
+                j.placed(key, Placed { target, file }, false)?;
+            }
         }
         self.state.done_bytes += metadata.len();
         self.state.done_items += 1;
@@ -280,28 +596,164 @@ impl Job<'_> {
             "source changed during copy: {}",
             source.display()
         );
-        if self.conflict == Conflict::Overwrite {
-            if let Ok(metadata) = fs::symlink_metadata(target) {
-                anyhow::ensure!(
-                    metadata.is_file() && !same_file::is_same_file(source, target)?,
-                    "unsafe overwrite: {}",
-                    target.display()
-                );
+        place(self.conflict, source, &partial.0, target)
+    }
+
+    /// `copy_file` for a journaled transfer: the staging file is recorded every
+    /// [`RECORD_BYTES`] and kept when the transfer stops, and a later run continues it
+    /// while it still matches the record (else starts over). `force`: record before the
+    /// first byte (the target is a name `RenameNew` picked).
+    fn copy_resumable(
+        &mut self,
+        source: &Path,
+        target: &Path,
+        metadata: &fs::Metadata,
+        key: &crate::VPath,
+        force: bool,
+    ) -> Result<()> {
+        use std::io::{Seek, SeekFrom};
+        let j = self.journal.as_deref_mut().context("not journaled")?;
+        let stamp = Stamp::of(metadata);
+        let name = target.file_name().context("target has no name")?;
+        let mut staging = target.with_file_name(partial_name(&name.to_string_lossy()));
+        let mut offset = 0;
+        if let Some(u) = j.take_unfinished(key) {
+            let at = local_target(&u.staging)?;
+            let now = fs::symlink_metadata(&at)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| Stamp::of(&m));
+            let target_key = crate::VPath::local(target);
+            if u.source_stamp == stamp
+                && u.target == target_key
+                && now.is_some_and(|now| continues(&u, now))
+            {
+                j.notes.push(format!(
+                    "continued {} at {} of {} bytes",
+                    source.display(),
+                    u.bytes,
+                    stamp.size
+                ));
+                (staging, offset) = (at, u.bytes);
+            } else {
+                let _ = fs::remove_file(&at);
+                j.notes.push(format!(
+                    "restarted {}: its partial copy no longer matched",
+                    source.display()
+                ));
             }
-            fs::rename(&partial.0, target)
-        } else {
-            // A file that appeared at `target` during the copy is never replaced.
-            sys::rename_noreplace(&partial.0, target)
         }
-        .with_context(|| format!("place {}", target.display()))
+        let guard = Partial(staging.clone());
+        let mut unfinished = Unfinished {
+            source: key.clone(),
+            source_stamp: stamp,
+            target: crate::VPath::local(target),
+            staging: crate::VPath::local(&staging),
+            bytes: offset,
+            staging_mtime: None,
+        };
+        let result = (|| -> Result<bool> {
+            let mut out = crate::local::open_at(&staging, offset)?;
+            let mut input = fs::File::open(source)?;
+            input.seek(SeekFrom::Start(offset))?;
+            if force {
+                record_local(j, &mut unfinished, &out, offset)?;
+            }
+            let mut buf = vec![0; 1 << 20];
+            let (mut done, mut recorded) = (offset, offset);
+            loop {
+                if self.cancel.load(Ordering::Relaxed) {
+                    // Kept for the next run (or removed by whoever cancelled).
+                    record_local(j, &mut unfinished, &out, done)?;
+                    return Ok(true);
+                }
+                let n = match input.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e).with_context(|| format!("read {}", source.display())),
+                };
+                out.write_all(&buf[..n])?;
+                done += n as u64;
+                let mut state = self.state.clone();
+                state.done_bytes += done;
+                (self.progress)(state);
+                if done - recorded >= RECORD_BYTES {
+                    record_local(j, &mut unfinished, &out, done)?;
+                    recorded = done;
+                }
+            }
+            out.set_modified(metadata.modified()?)?;
+            out.set_permissions(metadata.permissions())?;
+            drop(out);
+            anyhow::ensure!(
+                fs::metadata(&staging)?.len() == metadata.len(),
+                "source changed during copy: {}",
+                source.display()
+            );
+            place(self.conflict, source, &staging, target)?;
+            Ok(false)
+        })();
+        match result {
+            Ok(true) => {
+                guard.keep();
+                anyhow::bail!("operation cancelled")
+            }
+            Ok(false) => {
+                j.unfinished = None;
+                Ok(())
+            }
+            Err(e) => {
+                j.unfinished = None;
+                Err(e)
+            }
+        }
     }
 }
 
-/// This job's own incomplete copy; removed on every exit path (a no-op after the rename).
+/// Syncs a local staging file, then records it as `u` at `bytes`.
+fn record_local(j: &mut Journal, u: &mut Unfinished, out: &fs::File, bytes: u64) -> Result<()> {
+    out.sync_data()?;
+    u.bytes = bytes;
+    u.staging_mtime = Stamp::of(&out.metadata()?).mtime;
+    j.unfinished = Some(u.clone());
+    j.flush()
+}
+
+/// Renames a complete `staging` copy of `source` into place at `target`: over an existing
+/// file with `Overwrite` (never a folder, a link or the source itself), else only while
+/// `target` is free.
+fn place(conflict: Conflict, source: &Path, staging: &Path, target: &Path) -> Result<()> {
+    if conflict == Conflict::Overwrite {
+        if let Ok(metadata) = fs::symlink_metadata(target) {
+            anyhow::ensure!(
+                metadata.is_file() && !same_file::is_same_file(source, target)?,
+                "unsafe overwrite: {}",
+                target.display()
+            );
+        }
+        fs::rename(staging, target)
+    } else {
+        // A file that appeared at `target` during the copy is never replaced.
+        sys::rename_noreplace(staging, target)
+    }
+    .with_context(|| format!("place {}", target.display()))
+}
+
+/// This job's own incomplete copy; removed on every exit path (a no-op after the rename)
+/// unless kept.
 struct Partial(PathBuf);
+impl Partial {
+    /// Leaves the file for a later run.
+    fn keep(mut self) {
+        self.0 = PathBuf::new();
+    }
+}
 impl Drop for Partial {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.0);
+        }
     }
 }
 
@@ -315,17 +767,63 @@ pub fn transfer(
     cancel: &AtomicBool,
     router: &crate::Router,
 ) -> Result<()> {
+    transfer_with(
+        src,
+        dst_dir,
+        mv,
+        on_conflict,
+        progress,
+        cancel,
+        router,
+        None,
+    )
+}
+
+/// `transfer` that records its progress in `journal` and, run again with what an earlier
+/// run recorded there (after a crash or a close), skips the files that run placed, refuses
+/// to overwrite one changed since, and continues the file it was writing where the target
+/// can be written in place (local folders, SFTP), else writes that file again.
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_resumable(
+    src: &[crate::VPath],
+    dst_dir: &crate::VPath,
+    mv: bool,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+    journal: &mut Journal,
+) -> Result<()> {
+    transfer_with(
+        src,
+        dst_dir,
+        mv,
+        on_conflict,
+        progress,
+        cancel,
+        router,
+        Some(journal),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_with(
+    src: &[crate::VPath],
+    dst_dir: &crate::VPath,
+    mv: bool,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+    journal: Option<&mut Journal>,
+) -> Result<()> {
     // Paths inside a local archive are `file:` too, but have no local path of their own.
     let local_paths = src
         .iter()
         .map(crate::VPath::to_local_path)
         .collect::<Option<Vec<_>>>();
     if let (Some(paths), Some(dst)) = (local_paths, dst_dir.to_local_path()) {
-        return if mv {
-            move_local(&paths, &dst, on_conflict, progress, cancel)
-        } else {
-            copy_local(&paths, &dst, on_conflict, progress, cancel)
-        };
+        return transfer_local(&paths, &dst, on_conflict, progress, cancel, mv, journal);
     }
     check_cancel(cancel)?;
     if mv {
@@ -389,11 +887,23 @@ pub fn transfer(
         cancel,
         moving: mv,
         swept: Default::default(),
+        journal,
     };
+    let mut result = Ok(());
     for (source, provider) in src.iter().zip(&sources) {
-        job.node(provider, source, &dst_dir.join(source.name()), 0)?;
+        result = job
+            .node(provider, source, &dst_dir.join(source.name()), 0, false)
+            .map(drop);
+        if result.is_err() {
+            break;
+        }
     }
-    Ok(())
+    if let (Err(_), Some(j)) = (&result, job.journal) {
+        if let Err(e) = j.flush() {
+            tracing::warn!("recording a transfer's progress: {e:#}");
+        }
+    }
+    result
 }
 
 fn routed(
@@ -458,7 +968,7 @@ fn maybe_stat(provider: &dyn crate::Provider, p: &crate::VPath) -> Result<Option
         Err(e) => Err(e),
     }
 }
-struct ProviderJob<'a> {
+struct ProviderJob<'a, 'j> {
     dst: std::sync::Arc<dyn crate::Provider>,
     state: Progress,
     conflict: Conflict,
@@ -467,14 +977,23 @@ struct ProviderJob<'a> {
     moving: bool,
     /// Destination folders already swept for stale staging files.
     swept: std::collections::HashSet<String>,
+    journal: Option<&'a mut Journal<'j>>,
 }
-impl ProviderJob<'_> {
+fn provider_stat(
+    provider: &dyn crate::Provider,
+    p: &crate::VPath,
+) -> Result<Option<(bool, Stamp)>> {
+    Ok(maybe_stat(provider, p)?.map(|e| (e.kind == crate::Kind::Dir, Stamp::entry(&e))))
+}
+impl ProviderJob<'_, '_> {
+    /// `fresh`: `proposed`'s folder was made by this transfer (journaled runs).
     fn node(
         &mut self,
         src: &std::sync::Arc<dyn crate::Provider>,
         source: &crate::VPath,
         proposed: &crate::VPath,
         depth: usize,
+        fresh: bool,
     ) -> Result<bool> {
         use crate::Kind;
         check_cancel(self.cancel)?;
@@ -486,55 +1005,81 @@ impl ProviderJob<'_> {
             "source is a link: {}",
             source.display()
         );
+        let settled = match self.journal.as_deref() {
+            // Targets get a new modified time: only sizes compare.
+            Some(j) => settle(
+                j,
+                source,
+                Stamp::entry(&before),
+                before.kind == Kind::Dir,
+                proposed,
+                fresh,
+                false,
+                |t| provider_stat(&*dst, t),
+            )?,
+            None => Settle::Normal,
+        };
+        let mut ours = fresh;
         let mut target = proposed.clone();
-        let existing = maybe_stat(&*dst, &target)?;
         // What occupies the final target (None once `RenameNew` picked a free name).
-        let mut occupied = existing.clone();
-        if let Some(e) = &existing {
-            let key = src.canonicalize(source)?;
-            let target_key = dst.canonicalize(&target)?;
-            anyhow::ensure!(
-                key != target_key,
-                "cannot copy onto itself: {}",
-                source.display()
-            );
-            if self.conflict == Conflict::Skip
-                && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
-            {
-                self.state.skipped += 1;
-                (self.progress)(self.state.clone());
-                return Ok(false);
+        let mut occupied;
+        match settled {
+            Settle::Done(target) => return self.already(src, source, &before, target),
+            Settle::Into(into) => {
+                ours = true;
+                target = into;
+                occupied = maybe_stat(&*dst, &target)?;
             }
-            if self.conflict == Conflict::RenameNew {
-                let parent = target.parent().context("target has no parent")?;
-                let (stem, ext) = if before.kind == Kind::Dir {
-                    (target.name(), None)
-                } else {
-                    target
-                        .name()
-                        .rsplit_once('.')
-                        .filter(|(s, _)| !s.is_empty())
-                        .map(|(s, e)| (s, Some(e)))
-                        .unwrap_or((target.name(), None))
-                };
-                for n in 2u64.. {
-                    let name = match ext {
-                        Some(ext) => format!("{stem} ({n}).{ext}"),
-                        None => format!("{stem} ({n})"),
-                    };
-                    let candidate = parent.join(&name);
-                    if maybe_stat(&*dst, &candidate)?.is_none() {
-                        target = candidate;
-                        occupied = None;
-                        break;
+            Settle::Normal => {
+                let existing = maybe_stat(&*dst, &target)?;
+                occupied = existing.clone();
+                if let Some(e) = &existing {
+                    let key = src.canonicalize(source)?;
+                    let target_key = dst.canonicalize(&target)?;
+                    anyhow::ensure!(
+                        key != target_key,
+                        "cannot copy onto itself: {}",
+                        source.display()
+                    );
+                    if self.conflict == Conflict::Skip
+                        && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
+                    {
+                        self.state.skipped += 1;
+                        (self.progress)(self.state.clone());
+                        return Ok(false);
+                    }
+                    if self.conflict == Conflict::RenameNew {
+                        let parent = target.parent().context("target has no parent")?;
+                        let (stem, ext) = if before.kind == Kind::Dir {
+                            (target.name(), None)
+                        } else {
+                            target
+                                .name()
+                                .rsplit_once('.')
+                                .filter(|(s, _)| !s.is_empty())
+                                .map(|(s, e)| (s, Some(e)))
+                                .unwrap_or((target.name(), None))
+                        };
+                        for n in 2u64.. {
+                            let name = match ext {
+                                Some(ext) => format!("{stem} ({n}).{ext}"),
+                                None => format!("{stem} ({n})"),
+                            };
+                            let candidate = parent.join(&name);
+                            if maybe_stat(&*dst, &candidate)?.is_none() {
+                                target = candidate;
+                                occupied = None;
+                                break;
+                            }
+                        }
+                    } else {
+                        anyhow::ensure!(
+                            !e.is_link && (e.kind == Kind::Dir) == (before.kind == Kind::Dir),
+                            "unsafe destination: {}",
+                            target.display()
+                        );
                     }
                 }
-            } else {
-                anyhow::ensure!(
-                    !e.is_link && (e.kind == Kind::Dir) == (before.kind == Kind::Dir),
-                    "unsafe destination: {}",
-                    target.display()
-                );
             }
         }
         if self.moving && same_remote(source, &target) {
@@ -547,11 +1092,21 @@ impl ProviderJob<'_> {
         }
         if before.kind == Kind::Dir {
             if maybe_stat(&*dst, &target)?.is_none() {
+                if let Some(j) = self.journal.as_deref_mut().filter(|_| !ours) {
+                    // Recorded before it exists: a resumed run knows the folder is its own.
+                    let placed = Placed {
+                        target: target.clone(),
+                        file: None,
+                    };
+                    j.placed(source.clone(), placed, true)?;
+                }
                 dst.mkdir(&target)?;
+                ours = true;
             }
             let mut complete = true;
             for child in src.list(source)? {
-                complete &= self.node(src, &child.path, &target.join(&child.name), depth + 1)?;
+                let to = target.join(&child.name);
+                complete &= self.node(src, &child.path, &to, depth + 1, ours)?;
             }
             if self.moving && complete {
                 src.remove_empty_dir(source)?;
@@ -564,69 +1119,8 @@ impl ProviderJob<'_> {
         if self.swept.insert(folder.display()) {
             sweep_provider(&*dst, &folder);
         }
-        let partial = folder.join(&partial_name(target.name()));
-        let mut reader = src.read(source)?;
-        let mut writer = dst.create_new_cancellable(&partial, self.cancel)?;
-        let uploading = dst.uploads_on_flush();
-        let mut guard = ProviderPartial {
-            provider: dst.clone(),
-            path: Some(partial.clone()),
-        };
-        let mut buffer = vec![0; 1024 * 1024];
-        let mut copied = 0u64;
-        loop {
-            check_cancel(self.cancel)?;
-            let n = reader.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            writer.write_all(&buffer[..n])?;
-            copied += n as u64;
-            let mut progress = self.state.clone();
-            match uploading {
-                // Only buffered so far: the bytes count once `flush()` has sent them.
-                Some(service) => {
-                    progress.current = format!("Uploading to {service}… {}", source.display())
-                }
-                None => {
-                    progress.done_bytes += copied;
-                    progress.current = source.display();
-                }
-            }
-            (self.progress)(progress);
-        }
-        check_cancel(self.cancel)?;
-        writer.flush()?;
-        drop(writer);
-        let after = src.stat(source)?;
-        anyhow::ensure!(
-            copied == before.size
-                && after.size == before.size
-                && after.modified == before.modified
-                && !after.is_link
-                && dst.stat(&partial)?.size == copied,
-            "source changed or copy size mismatch: {}",
-            source.display()
-        );
-        check_cancel(self.cancel)?;
-        if self.conflict == Conflict::Overwrite {
-            if let Some(e) = maybe_stat(&*dst, &target)? {
-                anyhow::ensure!(
-                    !e.is_link && e.kind == Kind::File,
-                    "unsafe overwrite: {}",
-                    target.display()
-                );
-            }
-            dst.rename_replace(&partial, &target)?;
-        } else {
-            dst.rename_noreplace(&partial, &target)?;
-        }
-        guard.path = None;
-        anyhow::ensure!(
-            dst.stat(&target)?.size == copied,
-            "destination verification failed: {}",
-            target.display()
-        );
+        let picked = target != *proposed;
+        let placed = self.copy(src, source, &before, &target, picked)?;
         if self.moving {
             check_cancel(self.cancel)?;
             // The copy is verified: delete the source permanently, like `move_local` (the
@@ -637,12 +1131,263 @@ impl ProviderJob<'_> {
                 None => src.remove(source)?,
             }
         }
-        self.state.done_bytes += copied;
+        if let Some(j) = self.journal.as_deref_mut() {
+            let file = Some(Stamp::entry(&placed));
+            j.placed(source.clone(), Placed { target, file }, false)?;
+        }
+        self.state.done_bytes += placed.size;
         self.state.done_items += 1;
         self.state.current = source.display();
         (self.progress)(self.state.clone());
         Ok(true)
     }
+
+    /// A file an earlier run placed at `target`: counted, and a move drops its source now.
+    fn already(
+        &mut self,
+        src: &std::sync::Arc<dyn crate::Provider>,
+        source: &crate::VPath,
+        before: &crate::Entry,
+        target: crate::VPath,
+    ) -> Result<bool> {
+        if self.moving {
+            match source.to_local_path() {
+                Some(local) => fs::remove_file(&local)
+                    .with_context(|| format!("remove moved file {}", local.display()))?,
+                None => src.remove(source)?,
+            }
+        }
+        if let Some(j) = self.journal.as_deref_mut() {
+            j.take_unfinished(source);
+            if !j.placed.contains_key(source) {
+                let file = provider_stat(&*self.dst, &target)?.map(|(_, stamp)| stamp);
+                j.placed(source.clone(), Placed { target, file }, false)?;
+            }
+        }
+        self.state.done_bytes += before.size;
+        self.state.done_items += 1;
+        self.state.current = source.display();
+        (self.progress)(self.state.clone());
+        Ok(true)
+    }
+
+    /// Streams `source` into a staging file beside `target`, checks it and places it;
+    /// returns the placed file. Journaled, a file over [`RECORD_BYTES`] (or the one an
+    /// earlier run was writing, or one at a name `RenameNew` picked: `picked`, recorded
+    /// before the first byte) is written in place where the target allows it
+    /// (`Provider::write_at`): recorded every [`RECORD_BYTES`], kept when the transfer
+    /// stops, and continued by a later run while it still matches the record.
+    fn copy(
+        &mut self,
+        src: &std::sync::Arc<dyn crate::Provider>,
+        source: &crate::VPath,
+        before: &crate::Entry,
+        target: &crate::VPath,
+        picked: bool,
+    ) -> Result<crate::Entry> {
+        use crate::Kind;
+        let dst = self.dst.clone();
+        let folder = target.parent().context("missing parent")?;
+        let stamp = Stamp::entry(before);
+        let resumable = self.journal.as_deref().is_some_and(|j| {
+            picked
+                || before.size > RECORD_BYTES
+                || j.unfinished.as_ref().is_some_and(|u| u.source == *source)
+        });
+        // (staging, offset, writer, written in place)
+        let mut start = None;
+        if let Some(j) = self.journal.as_deref_mut() {
+            if let Some(u) = j.take_unfinished(source) {
+                let now = maybe_stat(&*dst, &u.staging)?
+                    .filter(|e| e.kind == Kind::File && !e.is_link)
+                    .map(|e| Stamp::entry(&e));
+                let matches = u.source_stamp == stamp
+                    && u.target == *target
+                    && now.is_some_and(|now| continues(&u, now));
+                let writer = if matches {
+                    dst.write_at(&u.staging, u.bytes)?
+                } else {
+                    None
+                };
+                match writer {
+                    Some(w) => {
+                        j.notes.push(format!(
+                            "continued {} at {} of {} bytes",
+                            source.display(),
+                            u.bytes,
+                            stamp.size
+                        ));
+                        start = Some((u.staging.clone(), u.bytes, w, true));
+                    }
+                    None => {
+                        if now.is_some() {
+                            let _ = dst.remove(&u.staging);
+                        }
+                        j.notes.push(format!(
+                            "restarted {}: its partial copy no longer matched",
+                            source.display()
+                        ));
+                    }
+                }
+            }
+        }
+        let (staging, offset, mut writer, in_place) = match start {
+            Some(start) => start,
+            None => {
+                let staging = folder.join(&partial_name(target.name()));
+                let direct = if resumable {
+                    dst.write_at(&staging, 0)?
+                } else {
+                    None
+                };
+                match direct {
+                    Some(w) => (staging, 0, w, true),
+                    None => {
+                        let w = dst.create_new_cancellable(&staging, self.cancel)?;
+                        (staging, 0, w, false)
+                    }
+                }
+            }
+        };
+        let mut guard = ProviderPartial {
+            provider: dst.clone(),
+            path: Some(staging.clone()),
+        };
+        let mut unfinished = Unfinished {
+            source: source.clone(),
+            source_stamp: stamp,
+            target: target.clone(),
+            staging: staging.clone(),
+            bytes: offset,
+            staging_mtime: None,
+        };
+        let result = (|| -> Result<Option<crate::Entry>> {
+            if picked {
+                if let Some(j) = self.journal.as_deref_mut() {
+                    // A staged upload is never flushed early: that would place it.
+                    let writer = in_place.then_some(&mut *writer);
+                    record_provider(j, &mut unfinished, writer, &*dst, offset)?;
+                }
+            }
+            let mut reader = match offset {
+                0 => src.read(source)?,
+                at => match src.read_range(source, at, before.size - at)? {
+                    Some(r) => r,
+                    None => {
+                        let mut r = src.read(source)?;
+                        io::copy(&mut (&mut r).take(at), &mut io::sink())?;
+                        r
+                    }
+                },
+            };
+            let uploading = dst.uploads_on_flush();
+            let mut buffer = vec![0; 1024 * 1024];
+            let (mut copied, mut recorded) = (offset, offset);
+            loop {
+                if self.cancel.load(Ordering::Relaxed) {
+                    if let Some(j) = self.journal.as_deref_mut().filter(|_| in_place) {
+                        // Kept for the next run (or removed by whoever cancelled).
+                        record_provider(j, &mut unfinished, Some(&mut *writer), &*dst, copied)?;
+                        return Ok(None);
+                    }
+                    check_cancel(self.cancel)?;
+                }
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                writer.write_all(&buffer[..n])?;
+                copied += n as u64;
+                let mut progress = self.state.clone();
+                match uploading {
+                    // Only buffered so far: the bytes count once `flush()` has sent them.
+                    Some(service) => {
+                        progress.current = format!("Uploading to {service}… {}", source.display())
+                    }
+                    None => {
+                        progress.done_bytes += copied;
+                        progress.current = source.display();
+                    }
+                }
+                (self.progress)(progress);
+                if in_place && copied - recorded >= RECORD_BYTES {
+                    if let Some(j) = self.journal.as_deref_mut() {
+                        record_provider(j, &mut unfinished, Some(&mut *writer), &*dst, copied)?;
+                        recorded = copied;
+                    }
+                }
+            }
+            check_cancel(self.cancel)?;
+            writer.flush()?;
+            drop(writer);
+            let after = src.stat(source)?;
+            anyhow::ensure!(
+                copied == before.size
+                    && after.size == before.size
+                    && after.modified == before.modified
+                    && !after.is_link
+                    && dst.stat(&staging)?.size == copied,
+                "source changed or copy size mismatch: {}",
+                source.display()
+            );
+            check_cancel(self.cancel)?;
+            if self.conflict == Conflict::Overwrite {
+                if let Some(e) = maybe_stat(&*dst, target)? {
+                    anyhow::ensure!(
+                        !e.is_link && e.kind == Kind::File,
+                        "unsafe overwrite: {}",
+                        target.display()
+                    );
+                }
+                dst.rename_replace(&staging, target)?;
+            } else {
+                dst.rename_noreplace(&staging, target)?;
+            }
+            guard.path = None;
+            let placed = dst.stat(target)?;
+            anyhow::ensure!(
+                placed.size == copied,
+                "destination verification failed: {}",
+                target.display()
+            );
+            Ok(Some(placed))
+        })();
+        let ours = |u: &Unfinished| u.source == *source;
+        match result {
+            Ok(Some(placed)) => {
+                if let Some(j) = self.journal.as_deref_mut() {
+                    j.unfinished.take_if(|u| ours(u));
+                }
+                Ok(placed)
+            }
+            Ok(None) => {
+                guard.path = None;
+                anyhow::bail!("operation cancelled")
+            }
+            Err(e) => {
+                if let Some(j) = self.journal.as_deref_mut() {
+                    j.unfinished.take_if(|u| ours(u));
+                }
+                Err(e)
+            }
+        }
+    }
+}
+/// Flushes a staging file written in place (`writer`), then records it as `u` at `bytes`.
+fn record_provider(
+    j: &mut Journal,
+    u: &mut Unfinished,
+    writer: Option<&mut (dyn Write + Send + '_)>,
+    dst: &dyn crate::Provider,
+    bytes: u64,
+) -> Result<()> {
+    if let Some(writer) = writer {
+        writer.flush()?;
+        u.staging_mtime = maybe_stat(dst, &u.staging)?.and_then(|e| Stamp::entry(&e).mtime);
+    }
+    u.bytes = bytes;
+    j.unfinished = Some(u.clone());
+    j.flush()
 }
 /// Both paths on the same `sftp://<id>` host (one server, so a rename can move the data).
 fn same_remote(a: &crate::VPath, b: &crate::VPath) -> bool {
@@ -652,7 +1397,7 @@ fn same_remote(a: &crate::VPath, b: &crate::VPath) -> bool {
         && a.split_archive().is_none()
         && b.split_archive().is_none()
 }
-impl ProviderJob<'_> {
+impl ProviderJob<'_, '_> {
     /// Moves `source` to `target` with a server-side rename. `Ok(false)`: the rename was
     /// refused (e.g. across devices) and nothing changed, so the caller streams instead.
     fn rename_on_server(

@@ -267,3 +267,13 @@ ALTER TABLE volume ADD COLUMN domain_set TEXT;
 -- any id an earlier version wrote into `cas_id` here.
 ALTER TABLE record ADD COLUMN remote_cas BLOB;
 CREATE INDEX record_remote_cas ON record(remote_cas) WHERE remote_cas IS NOT NULL;
+
+-- @library 7
+-- Copy and move jobs: what the running batch placed (a file with its size and modified
+-- time, or a folder it made), written every few files or MiB, so a job resumed after a
+-- crash skips them and refuses a target changed since. Cleared when a batch or the job ends.
+CREATE TABLE job_file(
+    job INTEGER NOT NULL,
+    src TEXT NOT NULL,
+    placed TEXT NOT NULL,
+    PRIMARY KEY(job, src)) WITHOUT ROWID;
