@@ -69,37 +69,42 @@ struct Req {
     body: Vec<u8>,
 }
 type Reply = (u16, Vec<(&'static str, String)>, Vec<u8>);
-/// Serves `handle` on a loopback port; returns `http://127.0.0.1:<port>`.
-fn serve(handle: impl Fn(Req) -> Reply + Send + 'static) -> String {
+/// Serves `handle` on a loopback port, each request on a thread of its own (a stalled
+/// answer holds up no other); returns `http://127.0.0.1:<port>`.
+fn serve(handle: impl Fn(Req) -> Reply + Send + Sync + 'static) -> String {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let port = server.server_addr().to_ip().unwrap().port();
+    let handle = Arc::new(handle);
     std::thread::spawn(move || {
         for mut request in server.incoming_requests() {
-            let url = url::Url::parse(&format!("http://x{}", request.url())).unwrap();
-            let mut body = Vec::new();
-            request.as_reader().read_to_end(&mut body).unwrap();
-            let req = Req {
-                method: request.method().as_str().to_owned(),
-                path: url.path().to_owned(),
-                query: url.query_pairs().into_owned().collect(),
-                headers: request
-                    .headers()
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.field.as_str().as_str().to_ascii_lowercase(),
-                            h.value.as_str().to_owned(),
-                        )
-                    })
-                    .collect(),
-                body,
-            };
-            let (status, headers, body) = handle(req);
-            let mut response = tiny_http::Response::from_data(body).with_status_code(status);
-            for (name, value) in headers {
-                response.add_header(tiny_http::Header::from_bytes(name, value).unwrap());
-            }
-            let _ = request.respond(response);
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let url = url::Url::parse(&format!("http://x{}", request.url())).unwrap();
+                let mut body = Vec::new();
+                request.as_reader().read_to_end(&mut body).unwrap();
+                let req = Req {
+                    method: request.method().as_str().to_owned(),
+                    path: url.path().to_owned(),
+                    query: url.query_pairs().into_owned().collect(),
+                    headers: request
+                        .headers()
+                        .iter()
+                        .map(|h| {
+                            (
+                                h.field.as_str().as_str().to_ascii_lowercase(),
+                                h.value.as_str().to_owned(),
+                            )
+                        })
+                        .collect(),
+                    body,
+                };
+                let (status, headers, body) = handle(req);
+                let mut response = tiny_http::Response::from_data(body).with_status_code(status);
+                for (name, value) in headers {
+                    response.add_header(tiny_http::Header::from_bytes(name, value).unwrap());
+                }
+                let _ = request.respond(response);
+            });
         }
     });
     format!("http://127.0.0.1:{port}")
@@ -120,13 +125,28 @@ struct S3Fake {
     fail: Vec<(&'static str, String, u16)>,
     /// Once the first key is deleted, the second appears (another client's upload).
     on_delete: Option<(String, String)>,
+    /// Multipart uploads in progress: id -> (key, part number -> bytes).
+    uploads: BTreeMap<String, (String, BTreeMap<u32, Vec<u8>>)>,
+    /// (part number, status): that part fails once.
+    fail_part: Option<(u32, u16)>,
+    /// (part number, delay): that part is answered late, once.
+    stall_part: Option<(u32, Duration)>,
+    /// "METHOD key?query names" of every request, and the body of each complete.
+    log: Vec<String>,
 }
 const HTTP_DATE: &str = "Fri, 09 Oct 2026 12:00:00 GMT";
 const ISO_DATE: &str = "2026-10-09T12:00:00.000Z";
 fn s3_fake() -> (String, Arc<Mutex<S3Fake>>) {
     let state = Arc::new(Mutex::new(S3Fake::default()));
     let shared = state.clone();
-    let base = serve(move |req| s3_reply(&mut shared.lock(), req));
+    let base = serve(move |req| {
+        let part = req.query.get("partNumber").and_then(|n| n.parse().ok());
+        let stall = shared.lock().stall_part.take_if(|(n, _)| Some(*n) == part);
+        if let Some((_, delay)) = stall {
+            std::thread::sleep(delay);
+        }
+        s3_reply(&mut shared.lock(), req)
+    });
     (base, state)
 }
 fn s3_reply(s: &mut S3Fake, req: Req) -> Reply {
@@ -136,6 +156,13 @@ fn s3_reply(s: &mut S3Fake, req: Req) -> Reply {
         .unwrap_or(&req.path)
         .trim_start_matches('/')
         .to_owned();
+    let mut query: Vec<_> = req.query.keys().map(String::as_str).collect();
+    query.sort();
+    s.log
+        .push(format!("{} {key}?{}", req.method, query.join("&")));
+    if let Some(reply) = s3_multipart(s, &key, &req) {
+        return reply;
+    }
     if let Some(i) = s
         .fail
         .iter()
@@ -251,6 +278,86 @@ fn s3_reply(s: &mut S3Fake, req: Req) -> Reply {
         _ => (501, vec![], vec![]),
     }
 }
+/// CreateMultipartUpload, UploadPart, CompleteMultipartUpload and AbortMultipartUpload;
+/// None for other requests. Every one must be signed.
+fn s3_multipart(s: &mut S3Fake, key: &str, req: &Req) -> Option<Reply> {
+    let id = req.query.get("uploadId").cloned();
+    if !req.query.contains_key("uploads") && id.is_none() {
+        return None;
+    }
+    let signed = req.headers.get("authorization");
+    assert!(
+        signed.is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256 Credential=AKIDFAKE/")),
+        "{signed:?}"
+    );
+    let no_upload = || -> Reply {
+        (
+            404,
+            vec![],
+            b"<Error><Code>NoSuchUpload</Code></Error>".to_vec(),
+        )
+    };
+    Some(match (req.method.as_str(), id) {
+        ("POST", None) => {
+            let id = format!("up{}", s.uploads.len() + 1);
+            s.uploads
+                .insert(id.clone(), (key.to_owned(), BTreeMap::new()));
+            let xml = format!(
+                "<InitiateMultipartUploadResult><Bucket>b</Bucket><Key>{key}</Key>\
+                 <UploadId>{id}</UploadId></InitiateMultipartUploadResult>"
+            );
+            (200, vec![], xml.into_bytes())
+        }
+        ("PUT", Some(id)) => {
+            let n: u32 = req.query["partNumber"].parse().unwrap();
+            if let Some((_, status)) = s.fail_part.take_if(|(part, _)| *part == n) {
+                let xml = b"<Error><Code>SlowDown</Code></Error>".to_vec();
+                return Some((status, vec![], xml));
+            }
+            let Some((_, parts)) = s.uploads.get_mut(&id) else {
+                return Some(no_upload());
+            };
+            parts.insert(n, req.body.clone());
+            (200, vec![("ETag", format!("\"etag-{n}\""))], vec![])
+        }
+        ("POST", Some(id)) => {
+            let body = String::from_utf8(req.body.clone()).unwrap();
+            s.log.push(body.clone());
+            let Some((at, parts)) = s.uploads.remove(&id) else {
+                return Some(no_upload());
+            };
+            assert_eq!(at, key);
+            let mut data = Vec::new();
+            for (i, part) in body.split("<Part>").skip(1).enumerate() {
+                let n = (i + 1) as u32;
+                let number = format!("<PartNumber>{n}</PartNumber>");
+                assert!(part.starts_with(&number), "{part}");
+                assert!(
+                    part.contains(&format!("<ETag>\"etag-{n}\"</ETag>")),
+                    "{part}"
+                );
+                data.extend_from_slice(&parts[&n]);
+            }
+            if req.headers.get("if-none-match").is_some_and(|v| v == "*")
+                && s.objects.contains_key(key)
+            {
+                let xml = b"<Error><Code>PreconditionFailed</Code></Error>".to_vec();
+                return Some((412, vec![], xml));
+            }
+            s.objects.insert(key.to_owned(), data);
+            let xml = format!(
+                "<CompleteMultipartUploadResult><Key>{key}</Key><ETag>\"m\"</ETag>\
+                 </CompleteMultipartUploadResult>"
+            );
+            (200, vec![], xml.into_bytes())
+        }
+        ("DELETE", Some(id)) => match s.uploads.remove(&id) {
+            Some(_) => (204, vec![], vec![]),
+            None => no_upload(),
+        },
+        _ => (501, vec![], vec![]),
+    })
+}
 fn s3_cloud(base: &str) -> CloudProvider {
     let store = Arc::new(MemoryStore::default());
     store.set("fake/access_key_id", "AKIDFAKE").unwrap();
@@ -308,6 +415,16 @@ struct DropboxFake {
     fail: Vec<(&'static str, String, u16, &'static str)>,
     /// (endpoint, path) of every request.
     log: Vec<(String, String)>,
+    /// Upload sessions: id -> bytes so far.
+    sessions: BTreeMap<String, Vec<u8>>,
+    /// (endpoint, cursor offset, bytes) of every session request.
+    chunks: Vec<(String, u64, usize)>,
+    /// The commit mode of every finish.
+    modes: Vec<String>,
+    /// (endpoint, delay): that endpoint is answered late, once.
+    stall: Option<(&'static str, Duration)>,
+    /// The append at this offset is kept but answered 503, once (a lost answer).
+    lose_answer: Option<u64>,
 }
 impl DropboxFake {
     fn meta(&self, path: &str) -> Option<Value> {
@@ -335,7 +452,14 @@ impl DropboxFake {
 fn dropbox_fake() -> (String, Arc<Mutex<DropboxFake>>) {
     let state = Arc::new(Mutex::new(DropboxFake::default()));
     let shared = state.clone();
-    let base = serve(move |req| dropbox_reply(&mut shared.lock(), req));
+    let base = serve(move |req| {
+        let endpoint = req.path.trim_start_matches("/2/files/").to_owned();
+        let stall = shared.lock().stall.take_if(|(e, _)| *e == endpoint);
+        if let Some((_, delay)) = stall {
+            std::thread::sleep(delay);
+        }
+        dropbox_reply(&mut shared.lock(), req)
+    });
     (base, state)
 }
 fn dropbox_reply(s: &mut DropboxFake, req: Req) -> Reply {
@@ -347,6 +471,7 @@ fn dropbox_reply(s: &mut DropboxFake, req: Req) -> Reply {
     let path = arg["path"]
         .as_str()
         .or(arg["from_path"].as_str())
+        .or(arg["commit"]["path"].as_str())
         .unwrap_or_default()
         .to_owned();
     s.log.push((endpoint.clone(), path.clone()));
@@ -359,6 +484,9 @@ fn dropbox_reply(s: &mut DropboxFake, req: Req) -> Reply {
         return json_reply(status, json!({ "error_summary": summary }));
     }
     let not_found = || json_reply(409, json!({"error_summary": "path/not_found/.."}));
+    if let Some(session) = endpoint.strip_prefix("upload_session/") {
+        return dropbox_session(s, session, &arg, &path, req.body);
+    }
     match endpoint.as_str() {
         "get_metadata" => s.meta(&path).map_or_else(not_found, |m| json_reply(200, m)),
         "upload" => {
@@ -412,6 +540,50 @@ fn dropbox_reply(s: &mut DropboxFake, req: Req) -> Reply {
         }
         _ => (501, vec![], vec![]),
     }
+}
+/// upload_session/start, append_v2 and finish (with the commit's mode).
+fn dropbox_session(
+    s: &mut DropboxFake,
+    session: &str,
+    arg: &Value,
+    path: &str,
+    body: Vec<u8>,
+) -> Reply {
+    let id = arg["cursor"]["session_id"].as_str().unwrap_or_default();
+    let offset = arg["cursor"]["offset"].as_u64().unwrap_or_default();
+    s.chunks.push((session.to_owned(), offset, body.len()));
+    if session == "start" {
+        assert_eq!(arg["close"], false);
+        let id = format!("s{}", s.sessions.len() + 1);
+        s.sessions.insert(id.clone(), body);
+        return json_reply(200, json!({ "session_id": id }));
+    }
+    let held = s.sessions[id].len() as u64;
+    if offset != held {
+        let wrong = json!({".tag": "incorrect_offset", "correct_offset": held});
+        let error = match session {
+            "finish" => json!({".tag": "lookup_failed", "lookup_failed": wrong}),
+            _ => wrong,
+        };
+        let summary = "lookup_failed/incorrect_offset/..";
+        return json_reply(409, json!({ "error_summary": summary, "error": error }));
+    }
+    s.sessions.get_mut(id).unwrap().extend_from_slice(&body);
+    if session == "append_v2" {
+        if s.lose_answer.take_if(|at| *at == offset).is_some() {
+            return json_reply(503, json!({}));
+        }
+        return json_reply(200, Value::Null);
+    }
+    let mode = arg["commit"]["mode"].as_str().unwrap().to_owned();
+    assert_eq!(arg["commit"]["autorename"], false);
+    s.modes.push(mode.clone());
+    if mode == "add" && s.files.contains_key(path) {
+        return json_reply(409, json!({"error_summary": "path/conflict/file/.."}));
+    }
+    let data = s.sessions.remove(id).unwrap();
+    s.files.insert(path.to_owned(), data);
+    json_reply(200, s.meta(path).unwrap())
 }
 fn dropbox_op(base: &str, access: &str) -> opendal::Operator {
     opendal::Operator::new(
@@ -1082,11 +1254,11 @@ fn local_copy_checks_the_service_not_the_listing_cache() {
 
 #[test]
 fn single_request_uploads_are_capped_with_a_clear_message() {
-    assert_eq!(
-        CloudKind::GoogleDrive.upload_limit(),
-        Some(256 * 1024 * 1024)
-    );
-    assert_eq!(CloudKind::Dropbox.upload_limit(), Some(150 * 1024 * 1024));
+    assert_eq!(CloudKind::WebDav.upload_limit(), Some(1024 * 1024 * 1024));
+    // Chunked: no cap.
+    for kind in [CloudKind::GoogleDrive, CloudKind::Dropbox, CloudKind::S3] {
+        assert_eq!(kind.upload_limit(), None);
+    }
     let mut drive = memory_cloud_of("drive", CloudKind::GoogleDrive);
     drive.tune(|core| core.upload_limit = Some(1 << 20));
     let mut w = drive.write(&vp("cloud://drive/big.bin")).unwrap();
@@ -1786,7 +1958,7 @@ fn api_cloud(a: CloudAccount, api: &str) -> CloudProvider {
 type ApiLog = Arc<Mutex<Vec<(String, String, String, Value)>>>;
 /// A fake API answering `reply(path, query, body)`; every request must carry "Bearer at-1".
 fn api_fake(
-    reply: impl Fn(&str, &HashMap<String, String>, &Value) -> Reply + Send + 'static,
+    reply: impl Fn(&str, &HashMap<String, String>, &Value) -> Reply + Send + Sync + 'static,
 ) -> (String, ApiLog) {
     let log = ApiLog::default();
     let seen = log.clone();
@@ -2040,4 +2212,433 @@ fn cancel_requests_ends_a_retrying_link_request() {
     }
     let asked = log.lock().len();
     assert!(asked <= 2, "{asked} requests");
+}
+
+// --- Chunked uploads (upload sessions) -------------------------------------------------
+
+/// Chunk size in these tests (Drive wants multiples of 256 KiB).
+const TEST_CHUNK: usize = 256 << 10;
+/// `n` bytes that differ from chunk to chunk.
+fn pattern(n: usize) -> Vec<u8> {
+    (0..n).map(|i| (i / 1000 % 251) as u8).collect()
+}
+fn write_all_to(w: &mut (dyn Write + Send + '_), data: &[u8]) {
+    for piece in data.chunks(100_000) {
+        w.write_all(piece).unwrap();
+    }
+}
+
+/// A Drive folder `/up` (id d1) holding `files` (name -> (id, bytes)), with resumable
+/// upload sessions.
+#[derive(Default)]
+struct DriveFake {
+    files: BTreeMap<String, (String, Vec<u8>)>,
+    /// Session id -> (existing file id, name, bytes so far).
+    sessions: BTreeMap<String, (Option<String>, String, Vec<u8>)>,
+    /// (method, path, Content-Range) of every upload request.
+    log: Vec<(String, String, String)>,
+    /// (first byte of a chunk, bytes kept): that chunk is cut off there and answered 503,
+    /// once (a connection lost mid-chunk).
+    cut: Option<(u64, usize)>,
+}
+fn drive_fake() -> (String, Arc<Mutex<DriveFake>>) {
+    let state = Arc::new(Mutex::new(DriveFake::default()));
+    let shared = state.clone();
+    let base = serve(move |req| {
+        assert_eq!(
+            req.headers.get("authorization").map(String::as_str),
+            Some("Bearer at-1")
+        );
+        drive_reply(&mut shared.lock(), req)
+    });
+    (base, state)
+}
+fn drive_reply(s: &mut DriveFake, req: Req) -> Reply {
+    if req.path == "/drive/v3/files" {
+        let q = &req.query["q"];
+        let id = if q.starts_with("'root' in parents and name = 'up' ") {
+            Some("d1".to_owned())
+        } else {
+            let name = q
+                .strip_prefix("'d1' in parents and name = '")
+                .and_then(|r| r.split('\'').next())
+                .unwrap_or_default();
+            s.files.get(name).map(|(id, _)| id.clone())
+        };
+        let files: Vec<Value> = id.into_iter().map(|id| json!({ "id": id })).collect();
+        return json_reply(200, json!({ "files": files }));
+    }
+    let range = req
+        .headers
+        .get("content-range")
+        .cloned()
+        .unwrap_or_default();
+    s.log
+        .push((req.method.clone(), req.path.clone(), range.clone()));
+    let session = |s: &mut DriveFake, existing: Option<String>, name: String| -> Reply {
+        assert_eq!(req.query["uploadType"], "resumable");
+        let id = format!("u{}", s.sessions.len() + 1);
+        s.sessions.insert(id.clone(), (existing, name, Vec::new()));
+        let host = &req.headers["host"];
+        let url =
+            format!("http://{host}/upload/drive/v3/files?uploadType=resumable&upload_id={id}");
+        (200, vec![("Location", url)], vec![])
+    };
+    match req.method.as_str() {
+        "POST" => {
+            let meta: Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(meta["parents"], json!(["d1"]));
+            session(s, None, meta["name"].as_str().unwrap().to_owned())
+        }
+        "PATCH" => {
+            let id = req.path.rsplit('/').next().unwrap().to_owned();
+            let name = (s.files.iter())
+                .find(|(_, (f, _))| *f == id)
+                .map(|(n, _)| n.clone())
+                .unwrap();
+            session(s, Some(id), name)
+        }
+        "PUT" => {
+            let id = req.query["upload_id"].clone();
+            let (existing, name, held) = s.sessions.get_mut(&id).unwrap();
+            let spec = range.strip_prefix("bytes ").unwrap();
+            let (span, total) = spec.split_once('/').unwrap();
+            if span != "*" {
+                let first: u64 = span.split('-').next().unwrap().parse().unwrap();
+                assert_eq!(first, held.len() as u64, "chunk at the wrong offset");
+                if let Some((_, keep)) = s.cut.take_if(|(at, _)| *at == first) {
+                    held.extend_from_slice(&req.body[..keep]);
+                    return (503, vec![], vec![]);
+                }
+                held.extend_from_slice(&req.body);
+            }
+            if total != "*" && held.len() as u64 == total.parse::<u64>().unwrap() {
+                let data = std::mem::take(held);
+                let file = existing
+                    .clone()
+                    .unwrap_or(format!("f{}", s.files.len() + 1));
+                let name = name.clone();
+                s.sessions.remove(&id);
+                s.files.insert(name, (file.clone(), data));
+                return json_reply(200, json!({ "id": file }));
+            }
+            let mut headers = vec![];
+            if !held.is_empty() {
+                headers.push(("Range", format!("bytes=0-{}", held.len() - 1)));
+            }
+            (308, headers, vec![])
+        }
+        _ => (501, vec![], vec![]),
+    }
+}
+/// A signed-in Drive account over the fake, with `TEST_CHUNK` chunks.
+fn drive_chunked(base: &str) -> CloudProvider {
+    let mut drive = api_cloud(account("drive", CloudKind::GoogleDrive), base);
+    let base = base.to_owned();
+    drive.tune(|c| {
+        c.content = base;
+        c.chunk = TEST_CHUNK;
+    });
+    drive
+}
+/// A signed-in Dropbox account over the fake (files API and upload sessions), with
+/// `TEST_CHUNK` chunks.
+fn dropbox_chunked(base: &str) -> CloudProvider {
+    // Never asked: the token is fresh.
+    let token = "http://127.0.0.1:9/token".to_owned();
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let fake = base.to_owned();
+    let (mut dbx, ..) = oauth_cloud_over(token, far, move |access| dropbox_op(&fake, access));
+    let base = base.to_owned();
+    dbx.tune(|c| {
+        c.content = base;
+        c.chunk = TEST_CHUNK;
+    });
+    dbx
+}
+
+#[test]
+fn chunks_are_8_mib() {
+    assert_eq!(upload::CHUNK, 8 << 20);
+    assert_eq!(
+        upload::CHUNK % (256 << 10),
+        0,
+        "Drive takes multiples of 256 KiB"
+    );
+}
+
+#[test]
+fn drive_uploads_in_resumable_chunks() {
+    let (base, fake) = drive_fake();
+    let drive = drive_chunked(&base);
+    assert_eq!(drive.uploads_on_flush(), None);
+    let data = pattern(3 * TEST_CHUNK + 100);
+    let mut w = drive.write(&vp("cloud://drive/up/big.bin")).unwrap();
+    write_all_to(&mut *w, &data);
+    // Three chunks went up while writing; the rest waits for flush().
+    assert_eq!(fake.lock().log.len(), 4, "{:?}", fake.lock().log);
+    w.flush().unwrap();
+    drop(w);
+    let fake = fake.lock();
+    let c = TEST_CHUNK;
+    let log: Vec<_> = fake
+        .log
+        .iter()
+        .map(|(m, _, r)| (m.as_str(), r.as_str()))
+        .collect();
+    assert_eq!(
+        log,
+        [
+            ("POST", ""),
+            ("PUT", &*format!("bytes 0-{}/*", c - 1)),
+            ("PUT", &*format!("bytes {c}-{}/*", 2 * c - 1)),
+            ("PUT", &*format!("bytes {}-{}/*", 2 * c, 3 * c - 1)),
+            (
+                "PUT",
+                &*format!("bytes {}-{}/{}", 3 * c, 3 * c + 99, 3 * c + 100)
+            ),
+        ]
+    );
+    assert_eq!(fake.files["big.bin"].1, data);
+    assert!(fake.sessions.is_empty());
+}
+
+#[test]
+fn drive_resumes_a_failed_chunk_from_what_the_session_holds() {
+    let (base, fake) = drive_fake();
+    fake.lock()
+        .files
+        .insert("old.bin".into(), ("f9".into(), b"old".to_vec()));
+    let drive = drive_chunked(&base);
+    let c = TEST_CHUNK;
+    // The second chunk is cut off after 1000 bytes.
+    fake.lock().cut = Some((c as u64, 1000));
+    let data = pattern(2 * c + 5);
+    let mut w = drive.write(&vp("cloud://drive/up/old.bin")).unwrap();
+    write_all_to(&mut *w, &data);
+    w.flush().unwrap();
+    drop(w);
+    let fake = fake.lock();
+    let log: Vec<_> = fake
+        .log
+        .iter()
+        .map(|(m, p, r)| (m.as_str(), p.as_str(), r.as_str()))
+        .collect();
+    let session = "/upload/drive/v3/files";
+    assert_eq!(
+        log,
+        [
+            // The file exists: a new version of it, same id.
+            ("PATCH", "/upload/drive/v3/files/f9", ""),
+            ("PUT", session, &*format!("bytes 0-{}/*", c - 1)),
+            ("PUT", session, &*format!("bytes {c}-{}/*", 2 * c - 1)),
+            // How much did it get? Then the rest of that chunk.
+            ("PUT", session, "bytes */*"),
+            (
+                "PUT",
+                session,
+                &*format!("bytes {}-{}/*", c + 1000, 2 * c - 1)
+            ),
+            (
+                "PUT",
+                session,
+                &*format!("bytes {}-{}/{}", 2 * c, 2 * c + 4, 2 * c + 5)
+            ),
+        ]
+    );
+    assert_eq!(fake.files["old.bin"], ("f9".to_owned(), data));
+}
+
+#[test]
+fn dropbox_uploads_big_files_in_a_session_and_small_ones_in_one_request() {
+    let (base, fake) = dropbox_fake();
+    let dbx = dropbox_chunked(&base);
+    assert_eq!(dbx.uploads_on_flush(), None);
+    let c = TEST_CHUNK as u64;
+    let data = pattern(3 * TEST_CHUNK + 7);
+    put(&dbx, "cloud://dbx/big.bin", &data);
+    put(&dbx, "cloud://dbx/small.bin", &pattern(TEST_CHUNK));
+    {
+        let fake = fake.lock();
+        assert_eq!(fake.files["/big.bin"], data);
+        assert_eq!(
+            fake.chunks,
+            [
+                ("start".to_owned(), 0, TEST_CHUNK),
+                ("append_v2".to_owned(), c, TEST_CHUNK),
+                ("append_v2".to_owned(), 2 * c, TEST_CHUNK),
+                ("finish".to_owned(), 3 * c, 7),
+            ]
+        );
+        assert_eq!(fake.modes, ["overwrite"]);
+        // At most one chunk: the single upload request.
+        assert_eq!(fake.calls("upload"), ["/small.bin"]);
+        assert_eq!(fake.files["/small.bin"], pattern(TEST_CHUNK));
+    }
+    // A new file is added, never put over one that appeared meanwhile.
+    let mut w = dbx.create_new(&vp("cloud://dbx/new.bin")).unwrap();
+    write_all_to(&mut *w, &data);
+    fake.lock()
+        .files
+        .insert("/new.bin".into(), b"raced".to_vec());
+    let err = w.flush().unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{err}");
+    drop(w);
+    let fake = fake.lock();
+    assert_eq!(fake.modes, ["overwrite", "add"]);
+    assert_eq!(fake.files["/new.bin"], b"raced");
+}
+
+#[test]
+fn dropbox_carries_on_where_the_session_is_after_a_lost_answer() {
+    let (base, fake) = dropbox_fake();
+    let dbx = dropbox_chunked(&base);
+    let c = TEST_CHUNK as u64;
+    // The third chunk reaches Dropbox but its answer is lost (a 503): the retry is told
+    // the session already holds it.
+    fake.lock().lose_answer = Some(2 * c);
+    let data = pattern(3 * TEST_CHUNK + 1);
+    put(&dbx, "cloud://dbx/r.bin", &data);
+    let fake = fake.lock();
+    assert_eq!(fake.files["/r.bin"], data);
+    let chunks: Vec<_> = (fake.chunks.iter())
+        .map(|(e, o, n)| (e.as_str(), *o, *n))
+        .collect();
+    assert_eq!(
+        chunks,
+        [
+            ("start", 0, TEST_CHUNK),
+            ("append_v2", c, TEST_CHUNK),
+            ("append_v2", 2 * c, TEST_CHUNK),
+            ("append_v2", 2 * c, TEST_CHUNK),
+            ("finish", 3 * c, 1),
+        ]
+    );
+}
+
+#[test]
+fn s3_uploads_big_objects_in_parts_and_small_ones_in_one_request() {
+    let (base, fake) = s3_fake();
+    let mut cloud = s3_cloud(&base);
+    cloud.tune(|c| c.chunk = TEST_CHUNK);
+    assert_eq!(cloud.uploads_on_flush(), None);
+    // Part 2 is refused once (503) and sent again.
+    fake.lock().fail_part = Some((2, 503));
+    let data = pattern(3 * TEST_CHUNK + 9);
+    put(&cloud, "cloud://fake/docs/big.bin", &data);
+    put(&cloud, "cloud://fake/small.bin", b"small");
+    let fake = fake.lock();
+    assert_eq!(fake.objects["docs/big.bin"], data);
+    assert_eq!(fake.objects["small.bin"], b"small");
+    assert!(fake.uploads.is_empty());
+    let complete = "<CompleteMultipartUpload>\
+        <Part><PartNumber>1</PartNumber><ETag>\"etag-1\"</ETag></Part>\
+        <Part><PartNumber>2</PartNumber><ETag>\"etag-2\"</ETag></Part>\
+        <Part><PartNumber>3</PartNumber><ETag>\"etag-3\"</ETag></Part>\
+        <Part><PartNumber>4</PartNumber><ETag>\"etag-4\"</ETag></Part>\
+        </CompleteMultipartUpload>";
+    assert_eq!(
+        fake.log,
+        [
+            "POST docs/big.bin?uploads",
+            "PUT docs/big.bin?partNumber&uploadId",
+            "PUT docs/big.bin?partNumber&uploadId",
+            "PUT docs/big.bin?partNumber&uploadId",
+            "PUT docs/big.bin?partNumber&uploadId",
+            "PUT docs/big.bin?partNumber&uploadId",
+            "POST docs/big.bin?uploadId",
+            complete,
+            "PUT small.bin?",
+        ]
+    );
+}
+
+#[test]
+fn s3_aborts_a_multipart_upload_that_fails_or_is_dropped() {
+    let (base, fake) = s3_fake();
+    let mut cloud = s3_cloud(&base);
+    cloud.tune(|c| c.chunk = TEST_CHUNK);
+    // A part the bucket refuses: the upload is aborted, so no parts are left (and billed).
+    fake.lock().fail_part = Some((2, 403));
+    let mut w = cloud.write(&vp("cloud://fake/a.bin")).unwrap();
+    let mut data = pattern(3 * TEST_CHUNK).into_iter();
+    let err = loop {
+        let piece: Vec<u8> = data.by_ref().take(100_000).collect();
+        if let Err(e) = w.write_all(&piece) {
+            break e;
+        }
+    };
+    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+    assert!(
+        err.to_string()
+            .contains("the unfinished S3 upload was aborted"),
+        "{err}"
+    );
+    assert!(w.flush().is_err());
+    drop(w);
+    {
+        let fake = fake.lock();
+        assert!(fake.uploads.is_empty());
+        assert_eq!(fake.log.last().unwrap(), "DELETE a.bin?uploadId");
+        assert!(!fake.objects.contains_key("a.bin"));
+    }
+    // Dropped without flush() after a part went up: aborted too.
+    let mut w = cloud.write(&vp("cloud://fake/b.bin")).unwrap();
+    write_all_to(&mut *w, &pattern(TEST_CHUNK + 1));
+    drop(w);
+    let fake = fake.lock();
+    assert!(fake.uploads.is_empty());
+    assert_eq!(fake.log.last().unwrap(), "DELETE b.bin?uploadId");
+    assert!(!fake.objects.contains_key("b.bin"));
+}
+
+/// Chunks go up while the transfer reads the source, so the job's byte count moves during
+/// a big upload; each byte is counted once, retried chunks included.
+#[test]
+fn chunked_uploads_count_progress_once_while_they_run() {
+    let (base, fake) = dropbox_fake();
+    let router = Router::new();
+    router.register_cloud_provider("dbx".into(), Arc::new(dropbox_chunked(&base)));
+    fake.lock().fail.push((
+        "upload_session/append_v2",
+        String::new(),
+        503,
+        "too_many_write_operations/",
+    ));
+    let local = tempfile::tempdir().unwrap();
+    let size = 4 * TEST_CHUNK + 3;
+    fs::write(local.path().join("n.bin"), pattern(size)).unwrap();
+    // (bytes reported, bytes the service held then)
+    let seen = Mutex::new(Vec::<(u64, usize)>::new());
+    let report = |p: Progress| {
+        let held = {
+            let fake = fake.lock();
+            fake.sessions.values().map(Vec::len).sum::<usize>()
+                + fake.files.values().map(Vec::len).sum::<usize>()
+        };
+        seen.lock().push((p.done_bytes, held));
+    };
+    ops::transfer(
+        &[VPath::local(local.path().join("n.bin"))],
+        &vp("cloud://dbx/"),
+        false,
+        Conflict::Skip,
+        &report,
+        &AtomicBool::new(false),
+        &router,
+    )
+    .unwrap();
+    assert_eq!(fake.lock().files["/n.bin"], pattern(size));
+    let seen = seen.into_inner();
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "{seen:?}");
+    assert!(
+        seen.iter().all(|(done, _)| *done <= size as u64),
+        "{seen:?}"
+    );
+    assert_eq!(seen.last().unwrap().0, size as u64);
+    assert!(
+        seen.iter()
+            .any(|(done, held)| *held > 0 && *done < size as u64),
+        "chunks were sent while the file was still being read: {seen:?}"
+    );
 }

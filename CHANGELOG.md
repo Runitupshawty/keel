@@ -2,6 +2,22 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Large uploads to Google Drive, Dropbox and S3 go in 8 MiB chunks through each service's upload sessions: Drive resumable uploads, Dropbox upload sessions (`upload_session/start`, `append_v2`, `finish`) and S3 multipart uploads. A file of at most 8 MiB still goes in one request. Each chunk is retried on its own (rate limits, server errors, a lost connection, an expired sign-in), and a Drive or Dropbox upload whose connection dropped mid-chunk carries on from what the service already holds instead of starting over. Copying a large file to the cloud now moves the Jobs panel's byte count while it uploads, and at most one chunk of the file is held in memory.
+
+### Fixed
+
+- Files of any size can be uploaded to Google Drive and Dropbox, which lifts the 0.3.0 known limitation that uploads were single requests capped at 256 MB (Drive) and 150 MB (Dropbox) and held in memory. An S3 upload that fails partway is aborted, so its parts are not left in the bucket (and billed) until a lifecycle rule removes them; a Drive or Dropbox session that is not finished expires on its own.
+
+### Known limitations
+
+- S3 objects can be at most about 78 GiB (10,000 parts of 8 MiB); a bigger upload stops with an error naming the limit.
+- The job's byte count can run up to one chunk (8 MiB) ahead of what the service has received, and a file of at most 8 MiB is counted before its one request is sent.
+- A Drive or Dropbox upload session that is cancelled or fails is not deleted; the service drops it after about a week.
+
 ## [0.12.0] - 2026-10-10
 
 ### Added

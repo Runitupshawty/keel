@@ -6,6 +6,7 @@
 pub mod oauth;
 pub mod secrets;
 mod share;
+mod upload;
 use crate::{Caps, ConnStatus, Entry, Kind, Progress, Provider, RemoteEvent, VPath};
 use anyhow::{Context, Result};
 use crossbeam_channel::Sender;
@@ -24,6 +25,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use upload::{cancelled, CloudUpload, S3Api};
 
 /// Directives to keep in the app's `tracing` filter: the S3 signing library logs its
 /// credential providers at debug level (Keel's prints no key, but a debug filter should
@@ -127,16 +129,11 @@ pub enum CloudError {
     Unavailable(String),
 }
 
-/// Dropbox's single-request upload limit (opendal has no upload sessions yet).
-const DROPBOX_UPLOAD_LIMIT: u64 = 150 * 1024 * 1024;
-/// Drive uploads are one request with the whole file in memory (opendal has no resumable
-/// Drive upload yet), so they are capped.
-const DRIVE_UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
-/// Entries shown per folder. ponytail: a bigger folder is cut off here (and a warning
-/// logged); page it in the UI if anyone keeps that many files in one folder.
 /// WebDAV uploads are one request with the whole file in memory (opendal's WebDAV writer
 /// does not stream), so they are capped. ponytail: chunked upload is server-specific.
 const WEBDAV_UPLOAD_LIMIT: u64 = 1024 * 1024 * 1024;
+/// Entries shown per folder. ponytail: a bigger folder is cut off here (and a warning
+/// logged); page it in the UI if anyone keeps that many files in one folder.
 const LIST_CAP: usize = 50_000;
 
 impl CloudKind {
@@ -155,13 +152,11 @@ impl CloudKind {
             CloudKind::WebDav => "WebDAV",
         }
     }
-    /// Largest file one upload request may carry.
+    /// Largest file an upload may carry (Drive, Dropbox and S3 take bigger ones in chunks).
     fn upload_limit(self) -> Option<u64> {
         match self {
-            CloudKind::GoogleDrive => Some(DRIVE_UPLOAD_LIMIT),
-            CloudKind::Dropbox => Some(DROPBOX_UPLOAD_LIMIT),
-            CloudKind::S3 => None,
             CloudKind::WebDav => Some(WEBDAV_UPLOAD_LIMIT),
+            CloudKind::GoogleDrive | CloudKind::Dropbox | CloudKind::S3 => None,
         }
     }
     /// The app registration shipped in `assets/cloud-clients.toml`, unless it is still a
@@ -508,12 +503,13 @@ fn jitter() -> f64 {
 }
 /// For calls nobody can cancel.
 static NEVER: AtomicBool = AtomicBool::new(false);
-/// Waits `delay` in slices of at most 100 ms; ends early, with an error, on `cancel`.
-fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool) -> Result<()> {
+/// Waits `delay` in slices of at most 100 ms; ends early, with an error, once one of
+/// `cancel` is set.
+fn sleep_unless_cancelled(delay: Duration, cancel: &[&AtomicBool]) -> Result<()> {
     let end = Instant::now() + delay;
     loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
+        if cancel.iter().any(|c| c.load(Ordering::Relaxed)) {
+            return Err(cancelled());
         }
         let left = end.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -638,8 +634,14 @@ struct Core {
     list_cap: usize,
     /// For services that take a file in one request (it is held in memory until then).
     upload_limit: Option<u64>,
+    /// Bytes per upload chunk (`upload::CHUNK`; tests use less).
+    chunk: usize,
     /// The service's own API (quota, share links): scheme and host, no trailing slash.
     api: String,
+    /// Where uploads go (Dropbox has a host for content), like `api`.
+    content: String,
+    /// Multipart uploads to an S3 bucket.
+    s3: Option<S3Api>,
     /// Set by `cancel_requests`: quota and link requests stop retrying.
     stop: AtomicBool,
 }
@@ -757,6 +759,7 @@ impl CloudProvider {
         );
         init()?;
         let key = |field: &str| format!("{}/{field}", account.id);
+        let mut s3 = None;
         let (op, oauth) = match account.kind {
             CloudKind::S3 => {
                 account
@@ -768,6 +771,7 @@ impl CloudProvider {
                 let secret = secrets
                     .get(&key("secret_access_key"))?
                     .ok_or_else(missing)?;
+                s3 = Some(S3Api::new(account, &id, &secret)?);
                 (s3_op(account, &id, &secret)?, None)
             }
             CloudKind::WebDav => {
@@ -793,7 +797,9 @@ impl CloudProvider {
                 (op, Some(oauth))
             }
         };
-        Self::build(account.clone(), op, oauth, secrets, events)
+        let mut provider = Self::build(account.clone(), op, oauth, secrets, events)?;
+        Arc::get_mut(&mut provider.core).context("unshared")?.s3 = s3;
+        Ok(provider)
     }
     /// A provider over any operator (tests use opendal's memory service as a stand-in).
     pub fn with_operator(
@@ -818,7 +824,10 @@ impl CloudProvider {
         Ok(Self {
             core: Arc::new(Core {
                 upload_limit: account.kind.upload_limit(),
+                chunk: upload::CHUNK,
                 api: share::api_base(account.kind).to_owned(),
+                content: share::content_base(account.kind).to_owned(),
+                s3: None,
                 account,
                 op: RwLock::new(blocking_op(op)?),
                 generation: AtomicU64::new(0),
@@ -1020,7 +1029,7 @@ impl Core {
             match backoff(attempt, jitter()).filter(|_| retryable(&e)) {
                 Some(delay) => {
                     tracing::debug!(attempt, ?delay, "cloud request retry");
-                    sleep_unless_cancelled(delay, cancel)?;
+                    sleep_unless_cancelled(delay, &[cancel])?;
                     attempt += 1;
                 }
                 None => return Err(wire(&e, p)),
@@ -1429,168 +1438,6 @@ impl Read for CloudReader {
     }
 }
 
-/// One upload, written straight to the target: no staging name is needed because the
-/// file (or object) only changes once the upload completes. Services that take a file in
-/// one request (Drive, Dropbox) get it from memory on `flush()`, with the usual retries
-/// and token refresh, whose waits end on `cancel`; S3 streams (multipart past the first
-/// part). Dropped without `flush()`: nothing is written.
-struct CloudUpload<'c> {
-    core: Arc<Core>,
-    target: VPath,
-    exclusive: bool,
-    cancel: &'c AtomicBool,
-    sink: Sink,
-    written: u64,
-    done: bool,
-    failed: bool,
-}
-enum Sink {
-    Memory(Vec<u8>),
-    Stream(Option<blocking::Writer>),
-}
-impl<'c> CloudUpload<'c> {
-    fn start(
-        core: Arc<Core>,
-        target: &VPath,
-        exclusive: bool,
-        cancel: &'c AtomicBool,
-    ) -> Result<Self> {
-        core.validate(target)?;
-        anyhow::ensure!(target.parent().is_some(), "cannot write the account root");
-        if exclusive && core.maybe_stat(target)?.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{}: destination exists", target.display()),
-            )
-            .into());
-        }
-        let caps = core.caps();
-        let sink = if caps.write_can_multi {
-            let k = key(target, false);
-            let if_not_exists = exclusive && caps.write_with_if_not_exists;
-            Sink::Stream(Some(core.call_cancellable(target, cancel, |op| {
-                op.writer_options(
-                    &k,
-                    options::WriteOptions {
-                        if_not_exists,
-                        ..Default::default()
-                    },
-                )
-            })?))
-        } else {
-            Sink::Memory(Vec::new())
-        };
-        Ok(Self {
-            core,
-            target: target.clone(),
-            exclusive,
-            cancel,
-            sink,
-            written: 0,
-            done: false,
-            failed: false,
-        })
-    }
-    fn commit(&mut self) -> Result<()> {
-        if self.done {
-            return Ok(());
-        }
-        anyhow::ensure!(!self.failed, "upload failed: {}", self.target.display());
-        if self.cancel.load(Ordering::Relaxed) {
-            self.failed = true;
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled").into());
-        }
-        let result = match &mut self.sink {
-            Sink::Memory(data) => {
-                let data = Buffer::from(std::mem::take(data));
-                let k = key(&self.target, false);
-                let opts = options::WriteOptions {
-                    if_not_exists: self.exclusive && self.core.caps().write_with_if_not_exists,
-                    ..Default::default()
-                };
-                // ponytail: cancel ends the retry waits, not a request already in flight.
-                self.core
-                    .call_cancellable(&self.target, self.cancel, |op| {
-                        op.write_options(&k, data.clone(), opts.clone())
-                    })
-                    .map(drop)
-            }
-            Sink::Stream(writer) => match writer.take() {
-                Some(mut w) => w.close().map(drop).map_err(|e| wire(&e, &self.target)),
-                None => Err(anyhow::anyhow!("upload already closed")),
-            },
-        };
-        self.core.invalidate(&self.target.path);
-        match result {
-            Ok(()) => {
-                self.done = true;
-                Ok(())
-            }
-            Err(e) => {
-                self.failed = true;
-                Err(e)
-            }
-        }
-    }
-}
-impl Write for CloudUpload<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.done || self.failed {
-            return Err(io::Error::other("upload finished or failed"));
-        }
-        let len = bytes.len() as u64;
-        let result = match &mut self.sink {
-            Sink::Memory(data) => match self.core.upload_limit {
-                Some(limit) if self.written + len > limit => Err(io::Error::other(format!(
-                    "{}: files over {} MB cannot be uploaded to {} yet",
-                    self.target.display(),
-                    limit >> 20,
-                    self.core.account.kind.name()
-                ))),
-                _ => {
-                    data.extend_from_slice(bytes);
-                    Ok(())
-                }
-            },
-            Sink::Stream(writer) => match writer.as_mut() {
-                Some(w) => w
-                    .write(Buffer::from(bytes.to_vec()))
-                    .map_err(|e| io::Error::other(format!("{:#}", wire(&e, &self.target)))),
-                None => Err(io::Error::other("upload closed")),
-            },
-        };
-        match result {
-            Ok(()) => {
-                self.written += len;
-                Ok(bytes.len())
-            }
-            Err(e) => {
-                self.failed = true;
-                Err(e)
-            }
-        }
-    }
-    /// Commits the upload (see `Provider::write`).
-    fn flush(&mut self) -> io::Result<()> {
-        self.commit().map_err(|e| {
-            let kind = io_kind(&e).unwrap_or(io::ErrorKind::Other);
-            io::Error::new(kind, format!("{e:#}"))
-        })
-    }
-}
-impl Drop for CloudUpload<'_> {
-    fn drop(&mut self) {
-        if !self.done && !self.failed {
-            tracing::error!(
-                target = %self.target.display(),
-                "cloud upload dropped without flush(); discarding it"
-            );
-        }
-        // ponytail: dropping an S3 writer leaves an unfinished multipart upload to the
-        // bucket's lifecycle rules; opendal's blocking writer has no abort.
-    }
-}
-
 /// What `cached_download` sees: stats straight from the service (so its "source changed"
 /// check compares fresh metadata, not the 60 s listing cache) and retry waits that end on
 /// `cancel`.
@@ -1693,8 +1540,9 @@ impl Provider for CloudProvider {
             cancel,
         )?))
     }
+    /// Accounts without upload sessions (WebDAV) send the whole file on `flush()`.
     fn uploads_on_flush(&self) -> Option<&'static str> {
-        (!self.core.caps().write_can_multi).then(|| self.core.account.kind.name())
+        (!self.core.chunked()).then(|| self.core.account.kind.name())
     }
     fn mkdir(&self, p: &VPath) -> Result<()> {
         self.core.mkdir(p)

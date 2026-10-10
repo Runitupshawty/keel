@@ -49,6 +49,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`kamadak-exif`](https://crates.io/crates/kamadak-exif) 0.6 | EXIF metadata for media sidecars | BSD-2-Clause | Rust crate, compiled in |
 | [`quick-xml`](https://crates.io/crates/quick-xml) 0.42 | XMP metadata for media sidecars; pptx and OpenDocument preview text | MIT | Rust crate, compiled in |
 | [`quick-xml`](https://crates.io/crates/quick-xml) 0.41 | WebDAV listings (via `opendal-service-webdav`, cloud feature) | MIT | Rust crate, compiled in |
+| [`http`](https://crates.io/crates/http) 1 | Requests of chunked cloud uploads (cloud feature; already used by reqwest and opendal) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`cpal`](https://crates.io/crates/cpal) 0.18 | Sound output for video playback in the media viewer (WASAPI on Windows, CoreAudio on macOS) | Apache-2.0 | Rust crate, compiled in; on Linux it uses ALSA through `alsa` (Apache-2.0 OR MIT) and `alsa-sys` (MIT), which links the system's `libasound` (build: `libasound2-dev`) |
 | [`wait-timeout`](https://crates.io/crates/wait-timeout) 0.2 | Time limit for `ffmpeg`/`ffprobe` runs (video sidecars; ffmpeg is not shipped, it is used when installed) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`libheif-rs`](https://crates.io/crates/libheif-rs) 2 / libheif | HEIC thumbnails (`keel-core` feature `heic`, off by default) | crate: MIT; libheif: LGPL-3.0 | Not in release builds (feature off); enabling it links libheif |
