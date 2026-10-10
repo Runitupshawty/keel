@@ -12,7 +12,7 @@ pub const DEFAULT_LIBRARY: &str = "james";
 pub const DEFAULT_INTEGRITY_DAYS: u32 = 7;
 
 /// What [`valid_profile`] accepts (keel-app's profile rule).
-pub const PROFILE_RULE: &str = "use letters, digits, '.', '_' or '-' (at most 64)";
+pub const PROFILE_RULE: &str = "use letters, digits, '.', '_' or '-' (not first; at most 64)";
 
 /// Profile names become folder names: ASCII letters, digits, `.`, `_`, `-`; not `.`/`..`,
 /// no trailing dot and no Windows device name (`con`, `nul`, `com1`, …). The same rule as
@@ -26,6 +26,7 @@ pub fn valid_profile(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && !name.ends_with('.')
+        && !name.starts_with('-')
         && !device
         && name
             .chars()
@@ -197,7 +198,7 @@ mod tests {
     #[test]
     fn profile_names_are_checked() {
         for bad in [
-            "../x", "a/b", "a\\b", "..", ".", "", "x.", "con", "COM1.txt", "a b",
+            "../x", "a/b", "a\\b", "..", ".", "", "x.", "con", "COM1.txt", "a b", "-x",
         ] {
             assert!(!valid_profile(bad), "{bad:?}");
             assert!(HostConfig::load(bad).is_err(), "{bad:?}");

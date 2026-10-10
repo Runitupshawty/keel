@@ -151,5 +151,10 @@ mod tests {
         }
         let args = crate::Args::try_parse_from(["keel-daemon", "--profile", "work"]).unwrap();
         assert_eq!(args.profile, "work");
+        // keel-app starts it with `--profile=<name>`: a leading '-' is no name.
+        let args = crate::Args::try_parse_from(["keel-daemon", "--profile=work"]).unwrap();
+        assert_eq!(args.profile, "work");
+        let dashed = crate::Args::try_parse_from(["keel-daemon", "--profile=-x"]);
+        assert!(dashed.is_err());
     }
 }

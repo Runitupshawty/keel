@@ -30,7 +30,7 @@ pub fn set_current(name: &str) {
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
 }
 
-pub const NAME_RULE: &str = "use letters, digits, '.', '_' or '-' (at most 64)";
+pub const NAME_RULE: &str = "use letters, digits, '.', '_' or '-' (not first; at most 64)";
 
 /// Profile names become folder names: ASCII letters, digits, `.`, `_`, `-`; not `.`/`..`,
 /// no trailing dot and no Windows device name (`con`, `nul`, `com1`, …).
@@ -43,6 +43,7 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && !name.ends_with('.')
+        && !name.starts_with('-')
         && !device
         && name
             .chars()
@@ -442,7 +443,20 @@ mod tests {
             assert!(valid_name(ok), "{ok}");
         }
         for bad in [
-            "", ".", "..", "a/b", "a\\b", "../x", "x.", "con", "NUL.txt", "com1", "a b", "é",
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "../x",
+            "x.",
+            "con",
+            "NUL.txt",
+            "com1",
+            "a b",
+            "é",
+            "-x",
+            "--profile",
         ] {
             assert!(!valid_name(bad), "{bad:?}");
         }

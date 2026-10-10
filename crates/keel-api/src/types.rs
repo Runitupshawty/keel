@@ -690,7 +690,7 @@ pub struct MountParams {
     #[serde(default)]
     pub subtree: String,
     /// A drive letter (`K:`, Windows) or an absolute folder (Windows: one that does not
-    /// exist yet; Linux and macOS: an existing empty folder).
+    /// exist yet; Linux and macOS: an empty folder, made when it is missing).
     pub target: String,
 }
 

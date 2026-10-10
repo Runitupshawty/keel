@@ -241,13 +241,16 @@ pub enum Attach<R> {
     InProcess { note: Option<String> },
 }
 
+/// A started daemon: why it has already ended, if it has (`Spawned::exited`).
+pub type Exited = Box<dyn FnMut() -> Option<String>>;
+
 /// The open-time decision: a running daemon wins; else one is started when `spawn` is
 /// given (Settings → Library → "Run the library in a background daemon", or Reconnect)
-/// and waited for up to `wait`; else the library opens in this process. `connect` None
-/// skips the daemon ("Open in this window").
+/// and waited for up to `wait` (less when it exits first); else the library opens in this
+/// process. `connect` None skips the daemon ("Open in this window").
 pub fn attach<R>(
     connect: Option<&mut dyn FnMut() -> Option<R>>,
-    spawn: Option<&mut dyn FnMut() -> Result<()>>,
+    spawn: Option<&mut dyn FnMut() -> Result<Exited>>,
     wait: Duration,
 ) -> Attach<R> {
     let Some(connect) = connect else {
@@ -262,11 +265,14 @@ pub fn attach<R>(
     let Some(spawn) = spawn else {
         return Attach::InProcess { note: None };
     };
-    if let Err(e) = spawn() {
-        return Attach::InProcess {
-            note: Some(format!("keel-daemon did not start: {e:#}")),
-        };
-    }
+    let mut exited = match spawn() {
+        Ok(exited) => exited,
+        Err(e) => {
+            return Attach::InProcess {
+                note: Some(format!("keel-daemon did not start: {e:#}")),
+            }
+        }
+    };
     let deadline = Instant::now() + wait;
     loop {
         if let Some(remote) = connect() {
@@ -274,6 +280,9 @@ pub fn attach<R>(
                 remote,
                 spawned: true,
             };
+        }
+        if let Some(why) = exited() {
+            return Attach::InProcess { note: Some(why) };
         }
         if Instant::now() >= deadline {
             return Attach::InProcess {
@@ -1036,12 +1045,66 @@ fn plan_params(op: &Op) -> Value {
     }
 }
 
-/// Starts `keel-daemon --profile <name>` detached (it outlives the window), logging to
+/// Starts `keel-daemon --profile=<name>` detached (it outlives the window), logging to
 /// `<config dir>/daemon.log`.
-pub fn spawn_daemon(cfg: &HostConfig) -> Result<()> {
-    crate::commands::spawn_daemon(cfg)
-        .map(drop)
-        .map_err(|e| anyhow::anyhow!("{e}"))
+pub fn spawn_daemon(cfg: &HostConfig) -> Result<Spawned> {
+    let (child, log) = crate::commands::spawn_daemon(cfg).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(Spawned {
+        child: Some(child),
+        log,
+    })
+}
+
+/// A keel-daemon this window started. Dropped while it runs, it is reaped when it ends
+/// (no zombie on Unix).
+pub struct Spawned {
+    child: Option<std::process::Child>,
+    log: std::path::PathBuf,
+}
+
+impl Spawned {
+    /// Why it already ended (its exit status and the end of its log), else None.
+    pub fn exited(&mut self) -> Option<String> {
+        let status = self.child.as_mut()?.try_wait().ok().flatten()?;
+        self.child = None;
+        Some(match log_tail(&self.log) {
+            tail if tail.is_empty() => format!("keel-daemon exited ({status})"),
+            tail => format!("keel-daemon exited ({status}): {tail}"),
+        })
+    }
+}
+
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(mut child) = self.child.take() {
+            let reaper = std::thread::Builder::new().name("keel-daemon-reaper".into());
+            let _ = reaper.spawn(move || child.wait());
+        }
+    }
+}
+
+/// The last two lines of `log` (read from its last 4 KB), at most 300 characters.
+fn log_tail(log: &std::path::Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut text = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(log) {
+        let len = f.metadata().map_or(0, |m| m.len());
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(4096)));
+        let _ = f.read_to_end(&mut text);
+    }
+    let text = String::from_utf8_lossy(&text);
+    let mut lines: Vec<&str> = (text.lines().map(str::trim))
+        .filter(|l| !l.is_empty())
+        .rev()
+        .take(2)
+        .collect();
+    lines.reverse();
+    let tail = lines.join(" | ");
+    match tail.char_indices().nth(300) {
+        Some((i, _)) => format!("{}...", &tail[..i]),
+        None => tail,
+    }
 }
 
 #[cfg(test)]

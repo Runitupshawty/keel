@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 /// Shown whenever no daemon answers.
 pub const NOT_RUNNING: &str = "keel-daemon is not running: start it with `keel daemon start`";
 const START_HINT: &str = "start it with `keel daemon start`";
+/// The library is open in this window (it holds the library: no daemon can serve it).
+pub const IN_PROCESS: &str = "Mounts are served by keel-daemon, and the library is open in \
+    this window: turn on Settings → Library → \"Run the library in a background daemon\"";
 const REFRESH: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,8 +57,8 @@ pub enum MountMsg {
 #[derive(Default)]
 pub struct MountUi {
     pub mounts: Vec<MountInfo>,
-    asked: Option<Instant>,
-    busy: bool,
+    pub(crate) asked: Option<Instant>,
+    pub(crate) busy: bool,
 }
 
 /// A daemon error as the user should read it.
@@ -129,6 +132,8 @@ pub struct MountDialog {
     pub letters: Vec<char>,
     pub letter: Option<char>,
     pub folder: String,
+    /// The library is open in this window: Mount cannot work (`IN_PROCESS`).
+    pub in_process: bool,
 }
 
 impl MountDialog {
@@ -148,11 +153,15 @@ impl MountDialog {
             letter: letters.first().copied(),
             letters,
             folder,
+            in_process: false,
         }
     }
 
     /// The `mounts.add` params, or why the dialog cannot continue.
     pub fn params(&self) -> Result<Value, String> {
+        if self.in_process {
+            return Err(IN_PROCESS.into());
+        }
         let target = if self.windows {
             let c = self.letter.ok_or("No drive letter is free (K: to Z:)")?;
             format!("{c}:")
@@ -204,10 +213,12 @@ pub fn dialog_ui(ui: &mut egui::Ui, d: &mut MountDialog, cancel: &mut bool) -> O
         }
     });
     ui.add_space(4.0);
-    ui.weak(
-        "Needs keel-daemon running with a mount backend (`keel daemon start`); \
-         the mount lasts until the daemon stops.",
-    );
+    if !d.in_process {
+        ui.weak(
+            "Needs keel-daemon running with a mount backend (`keel daemon start`); \
+             the mount lasts until the daemon stops.",
+        );
+    }
     let params = d.params();
     if let Err(why) = &params {
         ui.colored_label(ui.visuals().error_fg_color, why);
@@ -269,11 +280,21 @@ fn published(ctx: &egui::Context) -> Vec<MountInfo> {
         .unwrap_or_default()
 }
 
-/// One call to keel-daemon on a worker thread (never the UI thread): through the window's
-/// daemon connection when attached, else a connection of its own.
-fn call(remote: Option<&Remote>, method: &str, params: Value) -> Result<Value, String> {
-    if let Some(r) = remote {
-        return r.call_raw(method, params).map_err(|e| error_text(&e));
+/// Where mount calls go: the window's daemon connection (attached), a connection of their
+/// own (the library is off here; a daemon may run), or nowhere (the library is open in this
+/// window, so no daemon can serve it).
+pub enum Via {
+    Remote(Arc<Remote>),
+    Own,
+    InProcess,
+}
+
+/// One call to keel-daemon on a worker thread (never the UI thread).
+fn call(via: &Via, method: &str, params: Value) -> Result<Value, String> {
+    match via {
+        Via::Remote(r) => return r.call_raw(method, params).map_err(|e| error_text(&e)),
+        Via::InProcess => return Err(IN_PROCESS.into()),
+        Via::Own => {}
     }
     let cfg = crate::backend::host_config(&crate::cli::profile()).map_err(|e| format!("{e:#}"))?;
     let mut client = Client::connect(&cfg.socket_name()).map_err(|_| NOT_RUNNING.to_string())?;
@@ -281,9 +302,13 @@ fn call(remote: Option<&Remote>, method: &str, params: Value) -> Result<Value, S
 }
 
 impl AppState {
-    /// The window's daemon connection, when attached.
-    fn mount_remote(&self) -> Option<Arc<Remote>> {
-        self.library.remote().cloned()
+    /// Where mount calls go now.
+    fn mount_via(&self) -> Via {
+        match (self.library.remote(), &self.library.lib) {
+            (Some(r), _) => Via::Remote(r.clone()),
+            (None, Some(_)) => Via::InProcess,
+            (None, None) => Via::Own,
+        }
     }
 
     pub fn mount_cmd(&mut self, cmd: MountCmd) {
@@ -302,26 +327,23 @@ impl AppState {
                 let home = directories::UserDirs::new()
                     .map(|u| u.home_dir().to_path_buf())
                     .unwrap_or_default();
-                self.dialog = Some(crate::dialogs::Dialog::Mount(Box::new(MountDialog::new(
+                let mut dialog = MountDialog::new(
                     source,
                     label.clone(),
                     subtree,
                     cfg!(windows),
                     letters,
                     default_folder(&home, &label),
-                ))));
+                );
+                dialog.in_process = matches!(self.mount_via(), Via::InProcess);
+                self.dialog = Some(crate::dialogs::Dialog::Mount(Box::new(dialog)));
             }
             MountCmd::Plan { method, params } => {
-                let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
+                let (tx, ctx, via) = (self.tx.clone(), self.ctx.clone(), self.mount_via());
                 worker::spawn("keel-mount-plan", move || {
                     let msg = (|| {
-                        // Linux and macOS mount on an existing empty folder.
-                        if method == "mounts.add" && !cfg!(windows) {
-                            if let Some(t) = params["target"].as_str() {
-                                std::fs::create_dir_all(t).map_err(|e| format!("{t}: {e}"))?;
-                            }
-                        }
-                        let v = call(remote.as_deref(), &method, params)?;
+                        // A new mount folder is made by the daemon once confirmed.
+                        let v = call(&via, &method, params)?;
                         let plan: PlanPreview =
                             serde_json::from_value(v).map_err(|e| e.to_string())?;
                         Ok::<_, String>(MountMsg::Preview { method, plan })
@@ -334,10 +356,10 @@ impl AppState {
                 plan_id,
                 input_hash,
             } => {
-                let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
+                let (tx, ctx, via) = (self.tx.clone(), self.ctx.clone(), self.mount_via());
                 worker::spawn("keel-mount-run", move || {
                     let params = json!({"plan_id": plan_id, "input_hash": input_hash});
-                    let msg = match call(remote.as_deref(), "execute", params) {
+                    let msg = match call(&via, "execute", params) {
                         Ok(v) => {
                             MountMsg::Done(v["result"]["target"].as_str().unwrap_or("").to_owned())
                         }
@@ -389,7 +411,8 @@ impl AppState {
     }
 
     /// Per frame: the Browse… button, and a refresh of `mounts.list` every few seconds
-    /// while the library is open (a stopped daemon just means no mounts).
+    /// while the library is open through a daemon (a stopped daemon just means no mounts;
+    /// a lost one is not asked until the window reconnects).
     pub fn mount_tick(&mut self) {
         if self
             .ctx
@@ -408,14 +431,16 @@ impl AppState {
             });
         }
         let due = self.mount.asked.is_none_or(|t| t.elapsed() > REFRESH);
-        if !self.library.is_open() || self.mount.busy || !due {
+        let via = self.mount_via();
+        let lost = self.library.lost || matches!(via, Via::InProcess);
+        if !self.library.is_open() || lost || self.mount.busy || !due {
             return;
         }
         self.mount.asked = Some(Instant::now());
         self.mount.busy = true;
-        let (tx, ctx, remote) = (self.tx.clone(), self.ctx.clone(), self.mount_remote());
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         worker::spawn("keel-mount-list", move || {
-            let list = call(remote.as_deref(), "mounts.list", Value::Null)
+            let list = call(&via, "mounts.list", Value::Null)
                 .ok()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
@@ -509,13 +534,13 @@ mod tests {
             net: None,
         })
         .unwrap();
-        let remote = Remote::connect(&name).unwrap();
+        let remote = Via::Remote(Remote::connect(&name).unwrap());
         assert_eq!(
-            call(Some(&remote), "mounts.list", Value::Null).unwrap(),
+            call(&remote, "mounts.list", Value::Null).unwrap(),
             json!([])
         );
         let e = call(
-            Some(&remote),
+            &remote,
             "mounts.add",
             json!({"source": "none", "target": "/nonexistent"}),
         )
@@ -524,6 +549,38 @@ mod tests {
         if e.contains("--features") {
             assert!(e.contains("keel daemon start"), "{e}");
         }
+    }
+
+    /// With the library open in this window no daemon can serve it: the dialog and every
+    /// call point to the background-daemon setting instead of `keel daemon start`.
+    #[test]
+    fn in_process_points_to_the_daemon_setting() {
+        let e = call(&Via::InProcess, "mounts.list", Value::Null).unwrap_err();
+        assert!(e.contains("Run the library in a background daemon"), "{e}");
+        assert!(!e.contains("keel daemon start"), "{e}");
+        let mut d = dialog(true, vec!['K'], "");
+        d.in_process = true;
+        assert_eq!(d.params().unwrap_err(), IN_PROCESS);
+    }
+
+    /// The mount folder is not made before the preview is confirmed (the daemon makes it
+    /// when it mounts).
+    #[test]
+    fn previewing_a_mount_makes_no_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Keel Mounts").join("Photos");
+        let mut st = crate::state::AppState::new(
+            egui::Context::default(),
+            Arc::new(keel_vfs::Router::new()),
+            keel_vfs::VPath::local(dir.path()),
+        );
+        st.mount_cmd(MountCmd::Plan {
+            method: "mounts.add".into(),
+            params: json!({"source": "s", "target": target.display().to_string()}),
+        });
+        let m = st.rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        st.apply(m);
+        assert!(!target.exists() && !target.parent().unwrap().exists());
     }
 
     #[test]

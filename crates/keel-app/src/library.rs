@@ -1149,9 +1149,10 @@ fn open_library(
         _ => Duration::ZERO,
     };
     // A stopping daemon closes the library after it said so: a new one waits for that.
-    let mut spawn = || {
+    let mut spawn = || -> anyhow::Result<crate::backend::Exited> {
         released(&lock_dir, release)?;
-        crate::backend::spawn_daemon(&cfg)
+        let mut started = crate::backend::spawn_daemon(&cfg)?;
+        Ok(Box::new(move || started.exited()))
     };
     let attach = match via {
         Via::Replace { here: true, wait } => {
@@ -1160,12 +1161,12 @@ fn open_library(
         }
         Via::Auto { spawn: wanted } => crate::backend::attach(
             Some(&mut connect),
-            wanted.then_some(&mut spawn as &mut dyn FnMut() -> anyhow::Result<()>),
+            wanted.then_some(&mut spawn as &mut dyn FnMut() -> _),
             crate::backend::SPAWN_WAIT,
         ),
         Via::Replace { here: false, .. } => crate::backend::attach(
             Some(&mut connect),
-            Some(&mut spawn as &mut dyn FnMut() -> anyhow::Result<()>),
+            Some(&mut spawn as &mut dyn FnMut() -> _),
             crate::backend::SPAWN_WAIT,
         ),
     };

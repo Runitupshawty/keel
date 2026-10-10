@@ -666,7 +666,13 @@ fn daemon_exe() -> Option<std::path::PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Starts `keel-daemon --profile <name>` in the background (no console window, not in
+/// `keel-daemon`'s arguments for `profile`: one `--profile=<name>` (a name can never be
+/// read as another option).
+pub fn daemon_args(profile: &str) -> [String; 1] {
+    [format!("--profile={profile}")]
+}
+
+/// Starts `keel-daemon --profile=<name>` in the background (no console window, not in
 /// this console's Ctrl-C group: it outlives the caller), its log appended to
 /// `<config dir>/daemon.log`. Returns the child and the log's path.
 pub fn spawn_daemon(
@@ -690,7 +696,7 @@ pub fn spawn_daemon(
     };
     let mut command = std::process::Command::new(exe);
     command
-        .args(["--profile", &cfg.profile])
+        .args(daemon_args(&cfg.profile))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(stderr);

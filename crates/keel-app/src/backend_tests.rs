@@ -1,12 +1,17 @@
 use super::*;
 
+/// A started daemon that keeps running.
+fn running() -> Result<Exited> {
+    Ok(Box::new(|| None))
+}
+
 #[test]
 fn a_running_daemon_is_used() {
     let mut connect = || Some("daemon");
     let mut spawned = false;
     let mut spawn = || {
         spawned = true;
-        Ok(())
+        running()
     };
     let got = attach(Some(&mut connect), Some(&mut spawn), Duration::ZERO);
     assert_eq!(
@@ -40,7 +45,7 @@ fn the_setting_on_starts_a_daemon_and_waits_for_it() {
     };
     let mut spawn = || {
         started.set(true);
-        Ok(())
+        running()
     };
     let got = attach(Some(&mut connect), Some(&mut spawn), Duration::from_secs(5));
     assert_eq!(
@@ -61,7 +66,7 @@ fn a_daemon_that_fails_to_start_or_answer_falls_back_with_a_note() {
         other => panic!("{other:?}"),
     }
     let mut connect = || None::<&str>;
-    let mut spawn = || Ok(());
+    let mut spawn = running;
     match attach(
         Some(&mut connect),
         Some(&mut spawn),
@@ -70,6 +75,64 @@ fn a_daemon_that_fails_to_start_or_answer_falls_back_with_a_note() {
         Attach::InProcess { note: Some(n) } => assert!(n.contains("did not answer"), "{n}"),
         other => panic!("{other:?}"),
     }
+}
+
+/// A started daemon that exits at once (its library is held, a bad profile, ...) is
+/// noticed at once, with the end of its log, instead of after the whole wait.
+#[test]
+fn a_started_daemon_that_exits_is_noticed_at_once() {
+    let mut connect = || None::<&str>;
+    let mut spawn = || -> Result<Exited> {
+        Ok(Box::new(|| {
+            Some("keel-daemon exited (exit code: 1): library main is already open".into())
+        }))
+    };
+    let t = Instant::now();
+    match attach(Some(&mut connect), Some(&mut spawn), SPAWN_WAIT) {
+        Attach::InProcess { note: Some(n) } => assert!(n.contains("already open"), "{n}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+}
+
+#[test]
+fn a_spawned_process_reports_its_exit_and_the_end_of_its_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("daemon.log");
+    std::fs::write(
+        &log,
+        "earlier run\n\nkeel-daemon: library main is already open\n",
+    )
+    .unwrap();
+    #[cfg(windows)]
+    let child = std::process::Command::new("cmd")
+        .args(["/C", "exit 3"])
+        .spawn();
+    #[cfg(unix)]
+    let child = std::process::Command::new("sh")
+        .args(["-c", "exit 3"])
+        .spawn();
+    let mut s = Spawned {
+        child: Some(child.unwrap()),
+        log,
+    };
+    let end = Instant::now() + Duration::from_secs(10);
+    let why = loop {
+        if let Some(why) = s.exited() {
+            break why;
+        }
+        assert!(Instant::now() < end, "no exit seen");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(why.contains('3') && why.contains("already open"), "{why}");
+    assert!(why.contains("earlier run |"), "two lines: {why}");
+    assert_eq!(s.exited(), None, "reported once");
+}
+
+/// keel-app starts keel-daemon with `--profile=<name>`.
+#[test]
+fn the_daemon_gets_the_profile_as_one_argument() {
+    assert_eq!(crate::commands::daemon_args("work"), ["--profile=work"]);
 }
 
 // --- against a real keel-daemon, started in this process ---
@@ -327,6 +390,10 @@ fn the_window_works_through_the_daemon_and_stops_writing_when_it_goes() {
     st.run(0, Action::Library(LibCmd::TagPicker));
     let texts: Vec<&str> = st.toasts.list.iter().map(|t| t.text.as_str()).collect();
     assert!(texts.contains(&LOST), "{texts:?}");
+    // Nor is the mount list asked for.
+    st.mount.asked = None;
+    st.mount_tick();
+    assert!(!st.mount.busy, "no mounts.list while lost");
     let from = keel_vfs::library::path(&id.0, "docs/renamed.txt");
     let to = "again.txt".to_owned();
     st.run(0, Action::RenameTo { from, to });

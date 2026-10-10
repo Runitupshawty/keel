@@ -110,11 +110,17 @@ fn check_free(target: &str) -> anyhow::Result<()> {
         if !parent.is_dir() {
             bail!("{} is not a folder", parent.display());
         }
-    } else {
-        let mut entries = std::fs::read_dir(path)
-            .with_context(|| format!("{target} must be an existing empty folder"))?;
+    } else if path.exists() {
+        let mut entries =
+            std::fs::read_dir(path).with_context(|| format!("{target} must be an empty folder"))?;
         if entries.next().is_some() {
             bail!("{target} is not empty");
+        }
+    } else {
+        // Made when mounted (`Mounts::add`), after the preview was confirmed.
+        let parent = path.parent().context("no parent folder")?;
+        if !parent.is_dir() {
+            bail!("{} is not a folder", parent.display());
         }
     }
     Ok(())
@@ -232,7 +238,16 @@ impl Mounts {
         target: &str,
     ) -> anyhow::Result<MountInfo> {
         let (target, fs) = self.check(lib, router, source, subtree, target)?;
-        let session = mount_backend(fs.clone(), &target)?;
+        // FUSE mounts on a folder: a new one is made now (and removed if mounting fails).
+        let made = !cfg!(windows) && !Path::new(&target).exists();
+        if made {
+            std::fs::create_dir(&target).with_context(|| format!("creating {target}"))?;
+        }
+        let session = mount_backend(fs.clone(), &target).inspect_err(|_| {
+            if made {
+                let _ = std::fs::remove_dir(&target);
+            }
+        })?;
         let info = MountInfo {
             target,
             source: source.0.clone(),
