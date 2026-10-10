@@ -318,6 +318,9 @@ fn pump(shared: &Arc<Shared>) {
                 Ok(E::Request { peer, what }) => {
                     json!({"event": "request", "peer": peer.0.to_string(), "what": what})
                 }
+                Ok(E::DropReceived { peer, id, path }) => {
+                    json!({"event": "drop_received", "peer": peer.0.to_string(), "drop": id, "path": path.display().to_string()})
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return,
             };
