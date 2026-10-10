@@ -207,7 +207,9 @@ impl Jump {
 
 /// Folder display paths: the searcher's folder index, else a walk of the home folder.
 /// Blocks for seconds: worker threads only.
-pub fn build_index(searcher: &dyn Searcher) -> Vec<String> {
+/// The searcher's folders, else up to `WALK_CAP` folders under `home` (the app's home
+/// folder; a test's fixture).
+pub fn build_index(searcher: &dyn Searcher, home: Option<&Path>) -> Vec<String> {
     // Probe again: Everything may have started after Keel.
     if crate::search_tab::probe(searcher).is_none() {
         match keel_search::folder_index(searcher) {
@@ -216,9 +218,7 @@ pub fn build_index(searcher: &dyn Searcher) -> Vec<String> {
             Err(e) => tracing::warn!("folder index: {e:#}; walking the home folder"),
         }
     }
-    directories::BaseDirs::new()
-        .map(|b| walk_folders(b.home_dir(), WALK_CAP))
-        .unwrap_or_default()
+    home.map(|h| walk_folders(h, WALK_CAP)).unwrap_or_default()
 }
 
 /// Up to `cap` folders under `root` (itself included), skipping hidden and git-ignored ones.
@@ -235,6 +235,23 @@ pub fn walk_folders(root: &Path, cap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA walkthrough 2026-10-10: without a search backend Ctrl+P walked the real home
+    /// folder, also in tests; it walks the app's home (a test's fixture) now.
+    #[test]
+    fn without_a_backend_ctrl_p_walks_the_apps_home() {
+        let root = std::env::temp_dir().join(format!("keel-jump-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("only-here")).unwrap();
+        let none = keel_search::Unavailable::new("no search in tests");
+        let items = build_index(&none, Some(&root));
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert!(items
+            .iter()
+            .all(|i| i.starts_with(&root.display().to_string())));
+        assert!(build_index(&none, None).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn walk_lists_folders_only_and_stops_at_the_cap() {

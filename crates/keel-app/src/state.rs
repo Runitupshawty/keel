@@ -946,8 +946,11 @@ impl AppState {
             self.toasts.info("Indexing folders…");
         }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        // The walk (no search backend) covers the home folder: `home`, which tests set to
+        // their fixture.
+        let home = self.home.to_local_path();
         worker::spawn("keel-index", move || {
-            let items = crate::jump::build_index(searcher.as_ref());
+            let items = crate::jump::build_index(searcher.as_ref(), home.as_deref());
             worker::send(&tx, &ctx, Msg::JumpIndexed(items));
         });
     }
