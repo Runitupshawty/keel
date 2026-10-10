@@ -317,3 +317,129 @@ fn tiles_reuse_the_sidecar_jobs_thumbnails() {
         lib.close(Duration::from_secs(5));
     }
 }
+
+fn image(px: usize) -> Option<ColorImage> {
+    Some(ColorImage::new([px, px], egui::Color32::RED))
+}
+
+/// Review M5: textures are capped by their bytes, not only their count; strips are
+/// decoded to the tile's height.
+#[test]
+fn texture_cache_is_capped_by_bytes() {
+    let (ctx, mut m) = idle_media();
+    m.max_bytes = 1 << 20;
+    // 20 x 64 KiB = 1.25 MiB.
+    for i in 0..20 {
+        m.sh.tx
+            .send(Loaded {
+                key: key(i),
+                image: image(128),
+            })
+            .unwrap();
+        while m.upload(&ctx) > 0 {}
+        // Tile 0 stays on screen.
+        assert!(i == 0 || matches!(m.get(&key(0)), Tex::Ready(..)));
+    }
+    assert!(m.bytes() <= 1 << 20, "{}", m.bytes());
+    assert!(m.len() < 20);
+    assert!(m.has(&key(0)), "drawn every frame: kept");
+    assert!(!m.has(&key(1)), "least recently drawn: evicted");
+    assert!(m.has(&key(19)), "newest kept");
+    let dir = VPath::parse("mem://t/").unwrap();
+    let v = crate::tab::test_entry(&dir, "clip.mp4", Kind::File, 1);
+    assert_eq!(tile_key(&v, true, 96).px, 96);
+}
+
+/// Review M4: a video tile shows its thumbnail until the strip is there, and for good
+/// when the strip cannot be made; the file icon only when neither can.
+#[test]
+fn video_tiles_fall_back_to_their_thumbnail() {
+    let (ctx, mut m) = idle_media();
+    let dir = VPath::parse("mem://t/").unwrap();
+    let v = crate::tab::test_entry(&dir, "clip.mp4", Kind::File, 1);
+    let (strip, thumb) = (tile_key(&v, true, 96), thumb_key(&v, 96));
+    assert_eq!(m.tile_tex(&v, true, 96), (Tex::Missing, false));
+    let send = |m: &mut Media, key: &TexKey, image: Option<ColorImage>| {
+        m.sh.tx
+            .send(Loaded {
+                key: key.clone(),
+                image,
+            })
+            .unwrap();
+        m.upload(&ctx);
+    };
+    // The strip failed (a timeout, a codec ffmpeg cannot seek): still Missing until the
+    // thumbnail answers, then the thumbnail.
+    send(&mut m, &strip, None);
+    assert_eq!(m.tile_tex(&v, true, 96).0, Tex::Missing);
+    send(&mut m, &thumb, image(8));
+    assert!(matches!(m.tile_tex(&v, true, 96), (Tex::Ready(..), false)));
+    // A strip that arrives wins (hover scrubbing).
+    send(&mut m, &strip, image(8));
+    assert!(matches!(m.tile_tex(&v, true, 96), (Tex::Ready(..), true)));
+    // Neither: the file icon.
+    let w = crate::tab::test_entry(&dir, "broken.mp4", Kind::File, 1);
+    send(&mut m, &tile_key(&w, true, 96), None);
+    send(&mut m, &thumb_key(&w, 96), None);
+    assert_eq!(m.tile_tex(&w, true, 96), (Tex::Failed, false));
+}
+
+/// Review M6: the date map of a folder a pane shows survives the app sitting idle (egui
+/// draws no frame for seconds); a folder no pane shows loses its map.
+#[test]
+fn date_maps_live_while_their_folder_is_shown() {
+    let (ctx, mut m) = idle_media();
+    let dir = VPath::parse("mem://t/").unwrap();
+    m.days(&dir, 1, Vec::new);
+    std::thread::sleep(Duration::from_millis(2100));
+    m.keep_days(&[&dir]);
+    m.upload(&ctx);
+    assert!(m.has_days(&dir), "kept across a 2 s idle");
+    m.keep_days(&[]);
+    assert!(!m.has_days(&dir));
+}
+
+/// Review minor 2: a sidecar a maker just made is pinned until it is decoded, so eviction
+/// right between `ensure` and the decode (budget 0) never leaves a tile failed.
+#[test]
+fn made_sidecars_stay_pinned_until_decoded() {
+    let tmp = temp("pinned");
+    let ctx = egui::Context::default();
+    let mut m = Media::new(ctx.clone(), Arc::new(Router::new()));
+    let store = Arc::new(Sidecars::open(&tmp.join("store"), 0).unwrap());
+    m.set_store(store.clone());
+    let evicts = store.clone();
+    *AFTER_ENSURE.lock() = Some(Box::new(move || evicts.evict_to_budget(&|_| false)));
+    let dir = VPath::local(&tmp);
+    let mut keys = Vec::new();
+    let mut list = Vec::new();
+    for i in 0..24 {
+        let name = format!("p{i}.png");
+        image::RgbImage::from_pixel(64, 48, image::Rgb([i as u8 * 10, 0, 0]))
+            .save(tmp.join(&name))
+            .unwrap();
+        let mut e = crate::tab::test_entry(&dir, &name, Kind::File, 1);
+        e.size = std::fs::metadata(tmp.join(&name)).unwrap().len();
+        let k = tile_key(&e, false, 48);
+        list.push((
+            k.clone(),
+            i as u64,
+            Req {
+                real: e.path.clone(),
+                entry: e,
+            },
+        ));
+        keys.push(k);
+    }
+    m.want(0, list);
+    let until = Instant::now() + Duration::from_secs(30);
+    while !keys.iter().all(|k| m.has(k)) {
+        assert!(Instant::now() < until, "tiles never arrived");
+        m.upload(&ctx);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    *AFTER_ENSURE.lock() = None;
+    for k in &keys {
+        assert!(matches!(m.get(k), Tex::Ready(..)), "{}", k.path.display());
+    }
+}

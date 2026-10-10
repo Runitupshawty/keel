@@ -197,7 +197,7 @@ impl Job for IntegrityJob {
             let usable =
                 src.filter(|s| !s.removed.load(Ordering::SeqCst) && skip_reason(s).is_none());
             if let Some(src) = usable {
-                wait_until_idle(ctx, &mut self.battery)?;
+                wait_until_idle(ctx, &mut self.battery, true)?;
                 match check(ctx, &src, id)? {
                     Some(Check::Same) => self.result.checked += 1,
                     Some(Check::Drift) => {

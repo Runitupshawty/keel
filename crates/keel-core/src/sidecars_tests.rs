@@ -141,14 +141,69 @@ fn corrupt_files_record_their_error_once() {
     fs::write(&bad, b"\x89PNG\r\n\x1a\n broken").unwrap();
     let key = key_of(&bad);
     let err = s.ensure(&key, SidecarKind::Thumb256, &bad).unwrap_err();
-    let recorded = s.meta(&key).unwrap().error.unwrap();
-    assert_eq!(recorded, err.to_string());
-    // Meta exists (with the error); thumbnails fail at once without decoding again.
+    let meta = s.meta(&key).unwrap();
+    assert_eq!(
+        meta.failure(SidecarKind::Thumb256),
+        Some(err.to_string().as_str())
+    );
+    // Its metadata could not be read either: recorded as the metadata's own error.
+    assert!(meta.error.is_some());
+    // Meta exists (with the error); the thumbnail fails at once without decoding again.
     s.ensure(&key, SidecarKind::Meta, &bad).unwrap();
     fs::remove_file(&bad).unwrap();
-    let again = s.ensure(&key, SidecarKind::Thumb1024, &bad).unwrap_err();
-    assert_eq!(again.to_string(), recorded);
+    let again = s.ensure(&key, SidecarKind::Thumb256, &bad).unwrap_err();
+    assert_eq!(again.to_string(), err.to_string());
     assert!(s.get(&key, SidecarKind::Thumb256).is_none());
+}
+
+/// Review M4: a failure is recorded per kind; the other kinds are still made.
+#[test]
+fn one_failed_kind_leaves_the_others() {
+    let files = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let s = Sidecars::open(store.path(), DEFAULT_BUDGET).unwrap();
+    let p = files.path().join("a.png");
+    png(&p, 300, 200);
+    let key = key_of(&p);
+    // As if the 1024 px thumbnail had failed (a strip that timed out the same way).
+    let meta_path = s.ensure(&key, SidecarKind::Meta, &p).unwrap();
+    let mut meta = s.meta(&key).unwrap();
+    meta.failed
+        .insert("thumb-1024.webp".into(), "could not decode".into());
+    fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+    assert!(s.ensure(&key, SidecarKind::Thumb256, &p).is_ok());
+    let err = s.ensure(&key, SidecarKind::Thumb1024, &p).unwrap_err();
+    assert_eq!(err.to_string(), "could not decode");
+    assert_eq!(s.meta(&key).unwrap().width, 300);
+    // A tool that ran out of time is not the file's fault: never recorded.
+    assert!(!media::is_corrupt(&anyhow::Error::from(media::TimedOut)));
+}
+
+/// Review M4: a thumbnail that fails before the metadata exists leaves the real metadata
+/// (made first), not an empty stand-in that would never be read again.
+#[test]
+fn a_failed_thumbnail_keeps_the_real_metadata() {
+    let files = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let s = Sidecars::open(store.path(), DEFAULT_BUDGET).unwrap();
+    // A BMP header for 20000 x 20000 (400 MP, over the decode limit) and no pixels.
+    let big = files.path().join("big.bmp");
+    let mut b = b"BM".to_vec();
+    for v in [54u32, 0, 54, 40, 20_000, 20_000] {
+        b.extend(v.to_le_bytes());
+    }
+    b.extend(1u16.to_le_bytes());
+    b.extend(24u16.to_le_bytes());
+    b.extend([0u8; 24]);
+    fs::write(&big, b).unwrap();
+    let key = key_of(&big);
+    let err = s.ensure(&key, SidecarKind::Thumb256, &big).unwrap_err();
+    assert!(err.to_string().contains("MP"), "{err:#}");
+    let meta = s.meta(&key).unwrap();
+    assert_eq!((meta.width, meta.height), (20_000, 20_000));
+    assert_eq!(meta.error, None);
+    assert!(meta.failure(SidecarKind::Thumb256).is_some());
+    assert!(meta.failure(SidecarKind::Thumb1024).is_none());
 }
 
 #[test]

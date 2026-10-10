@@ -22,8 +22,10 @@ use std::time::{Duration, Instant};
 
 /// Texture uploads per frame (review focus 1: no frame pays for a burst of arrivals).
 pub const MAX_UPLOADS: usize = 8;
-/// Textures kept (least recently drawn evicted first).
+/// Textures kept (least recently drawn evicted first)...
 pub const TEXTURE_CACHE: usize = 4000;
+/// ...and their pixel bytes (RGBA): 384 MiB of GPU memory at most.
+pub const TEXTURE_BYTES: usize = 384 << 20;
 /// Threads reading and decoding existing sidecars.
 pub const LOADERS: usize = 2;
 /// Threads making missing sidecars (decode, ffmpeg).
@@ -37,8 +39,6 @@ pub const STRIP_FRAMES: u32 = 20;
 const CACHE_BUDGET: u64 = 2 << 30;
 /// Library record lookups (content ids per folder) are reused this long.
 const RECORDS_TTL: Duration = Duration::from_secs(60);
-/// A date map no view asked for this long is dropped (its worker stops).
-const DAYS_IDLE: Duration = Duration::from_secs(2);
 const DAYS_CHUNK: usize = 2000;
 
 pub const IMAGE_EXTS: &[&str] = &[
@@ -143,10 +143,11 @@ pub struct Req {
 }
 
 /// The sidecar to show in a tile `tile_px` physical pixels wide: the video strip, else
-/// the 256 px thumbnail, or the 1024 px one for big HiDPI tiles; decoded at tile size.
+/// the 256 px thumbnail, or the 1024 px one for big HiDPI tiles; decoded at tile size (a
+/// strip to the tile's height).
 pub fn tile_key(e: &Entry, video: bool, tile_px: u32) -> TexKey {
     if video {
-        TexKey::of(e, SidecarKind::Strip, 0)
+        TexKey::of(e, SidecarKind::Strip, tile_px)
     } else if tile_px > 256 {
         TexKey::of(e, SidecarKind::Thumb1024, tile_px)
     } else {
@@ -555,8 +556,13 @@ fn load_loop(sh: Arc<Shared>) {
                 drop(pin);
                 sh.finish(key, image);
             }
-            // A file that failed before (recorded in its meta.json) is not tried again.
-            None if store.meta(&sk).is_some_and(|m| m.error.is_some()) => sh.finish(key, None),
+            // A kind that failed before (recorded in its meta.json) is not tried again.
+            None if store
+                .meta(&sk)
+                .is_some_and(|m| m.failure(key.kind).is_some()) =>
+            {
+                sh.finish(key, None)
+            }
             None => {
                 sh.queue.promote(&key);
             }
@@ -569,17 +575,27 @@ fn make_loop(sh: Arc<Shared>) {
         let image = (|| {
             let store = sh.store()?;
             let (sk, src) = sh.resolve(&req, false)?;
+            // Pinned from before it is made until it is decoded: eviction cannot delete a
+            // sidecar between `ensure` and the read.
+            let _pin = store.pin(&sk);
             let local = sh.local(src)?;
             let path = store
                 .ensure(&sk, key.kind, &local)
                 .map_err(|e| tracing::debug!("sidecar for {}: {e:#}", req.real.display()))
                 .ok()?;
-            let _pin = store.pin(&sk);
+            #[cfg(test)]
+            if let Some(hook) = &*AFTER_ENSURE.lock() {
+                hook();
+            }
             decode_file(&path, key.px)
         })();
         sh.finish(key, image);
     }
 }
+
+/// Runs between a maker's `ensure` and its decode (tests: eviction right there).
+#[cfg(test)]
+pub(crate) static AFTER_ENSURE: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
 pub fn decode_file(path: &Path, px: u32) -> Option<ColorImage> {
     let bytes = std::fs::read(path).ok()?;
@@ -620,7 +636,6 @@ struct DayMap {
     gen: u64,
     days: HashMap<String, i64>,
     cancel: Arc<AtomicBool>,
-    used: Instant,
 }
 
 type DayChunk = (VPath, u64, Vec<(String, i64)>);
@@ -628,7 +643,11 @@ type DayChunk = (VPath, u64, Vec<(String, i64)>);
 pub struct Media {
     pub(crate) sh: Arc<Shared>,
     rx: crossbeam_channel::Receiver<Loaded>,
-    cache: HashMap<TexKey, (Option<TextureHandle>, u64)>,
+    /// Texture (None: failed), last use, pixel bytes.
+    cache: HashMap<TexKey, (Option<TextureHandle>, u64, usize)>,
+    /// Pixel bytes of the cached textures, and the most kept (`TEXTURE_BYTES`).
+    bytes: usize,
+    pub(crate) max_bytes: usize,
     clock: u64,
     /// Per slot: the signature of the list last handed to `want` (rebuilt on change only).
     pub sig: [u64; SLOTS],
@@ -675,6 +694,8 @@ impl Media {
             sh,
             rx,
             cache: HashMap::new(),
+            bytes: 0,
+            max_bytes: TEXTURE_BYTES,
             clock: 0,
             sig: [0; SLOTS],
             tile: TileSize::default(),
@@ -720,7 +741,7 @@ impl Media {
     pub fn get(&mut self, key: &TexKey) -> Tex {
         self.clock += 1;
         match self.cache.get_mut(key) {
-            Some((tex, used)) => {
+            Some((tex, used, _)) => {
                 *used = self.clock;
                 match tex {
                     Some(t) => Tex::Ready(t.id(), t.size_vec2()),
@@ -733,6 +754,20 @@ impl Media {
 
     pub fn has(&self, key: &TexKey) -> bool {
         self.cache.contains_key(key)
+    }
+
+    /// A media tile's texture: a video shows its strip, and its 256 px thumbnail until the
+    /// strip is there or when the strip cannot be made. Also says whether it is the strip.
+    pub fn tile_tex(&mut self, e: &Entry, video: bool, tile_px: u32) -> (Tex, bool) {
+        let main = self.get(&tile_key(e, video, tile_px));
+        if !video || matches!(main, Tex::Ready(..)) {
+            return (main, video);
+        }
+        let thumb = match self.get(&thumb_key(e, tile_px)) {
+            Tex::Failed if main != Tex::Failed => Tex::Missing,
+            t => t,
+        };
+        (thumb, false)
     }
 
     /// Replaces what `slot` wants loaded: `(key, priority, request)`, lower first.
@@ -748,11 +783,15 @@ impl Media {
             let Ok(loaded) = self.rx.try_recv() else {
                 break;
             };
+            let bytes = loaded.image.as_ref().map_or(0, |i| i.pixels.len() * 4);
             let tex = loaded.image.map(|img| {
                 ctx.load_texture(loaded.key.path.display(), img, egui::TextureOptions::LINEAR)
             });
             self.clock += 1;
-            self.cache.insert(loaded.key, (tex, self.clock));
+            self.bytes += bytes;
+            if let Some((_, _, old)) = self.cache.insert(loaded.key, (tex, self.clock, bytes)) {
+                self.bytes -= old;
+            }
             n += 1;
         }
         if !self.rx.is_empty() {
@@ -763,24 +802,32 @@ impl Media {
         n
     }
 
-    /// Over `TEXTURE_CACHE`: drops the least recently drawn tenth.
+    /// Over `TEXTURE_CACHE` textures or `max_bytes`: drops the least recently drawn until
+    /// 90 % of both.
     fn evict(&mut self) {
-        if self.cache.len() <= TEXTURE_CACHE {
+        if self.cache.len() <= TEXTURE_CACHE && self.bytes <= self.max_bytes {
             return;
         }
-        let drop_n = self.cache.len() - TEXTURE_CACHE + TEXTURE_CACHE / 10;
-        let mut used: Vec<u64> = self.cache.values().map(|(_, u)| *u).collect();
-        used.select_nth_unstable(drop_n - 1);
-        let cutoff = used[drop_n - 1];
+        let mut by_use: Vec<(u64, usize, TexKey)> = (self.cache.iter())
+            .map(|(k, (_, used, bytes))| (*used, *bytes, k.clone()))
+            .collect();
+        by_use.sort_unstable_by_key(|(used, ..)| *used);
+        let (n_cap, bytes_cap) = (TEXTURE_CACHE * 9 / 10, self.max_bytes / 10 * 9);
         let mut gone = Vec::new();
-        self.cache.retain(|k, (_, u)| {
-            let keep = *u > cutoff;
-            if !keep {
-                gone.push(k.clone());
+        for (_, bytes, key) in by_use {
+            if self.cache.len() <= n_cap && self.bytes <= bytes_cap {
+                break;
             }
-            keep
-        });
+            self.cache.remove(&key);
+            self.bytes -= bytes;
+            gone.push(key);
+        }
         self.sh.queue.forget(&gone);
+    }
+
+    #[cfg(test)]
+    pub fn bytes(&self) -> usize {
+        self.bytes
     }
 
     #[cfg(test)]
@@ -833,13 +880,10 @@ impl Media {
                     gen,
                     days: HashMap::new(),
                     cancel,
-                    used: Instant::now(),
                 },
             );
         }
-        let d = self.days.get_mut(dir).expect("inserted above");
-        d.used = Instant::now();
-        &d.days
+        &self.days[dir].days
     }
 
     fn merge_days(&mut self) {
@@ -848,13 +892,23 @@ impl Media {
                 d.days.extend(chunk);
             }
         }
-        self.days.retain(|_, d| {
-            let keep = d.used.elapsed() < DAYS_IDLE;
+    }
+
+    /// Drops the date maps of folders no pane shows with date headers (their workers stop);
+    /// a shown folder keeps its map however long the app sits idle.
+    pub fn keep_days(&mut self, shown: &[&VPath]) {
+        self.days.retain(|dir, d| {
+            let keep = shown.contains(&dir);
             if !keep {
                 d.cancel.store(true, Ordering::Relaxed);
             }
             keep
         });
+    }
+
+    #[cfg(test)]
+    pub fn has_days(&self, dir: &VPath) -> bool {
+        self.days.contains_key(dir)
     }
 }
 
@@ -883,6 +937,11 @@ fn day_of(sh: &Shared, req: &Req) -> i64 {
     day(taken.unwrap_or_else(|| unix(req.entry.modified)))
 }
 
+/// The 256 px thumbnail of a video tile (shown until its strip is there).
+pub fn thumb_key(e: &Entry, tile_px: u32) -> TexKey {
+    TexKey::of(e, SidecarKind::Thumb256, tile_px)
+}
+
 /// Unix seconds to unix days (UTC; EXIF times without an offset read as wall clock).
 pub fn day(secs: i64) -> i64 {
     secs.div_euclid(86_400)
@@ -903,6 +962,7 @@ impl crate::state::AppState {
         m.sync_library(self.library.lib.as_ref());
         self.settings.media_tile = m.tile;
         self.settings.media_dates = m.dates;
+        let mut dated = Vec::new();
         for p in 0..2 {
             let pane = &self.panes[p];
             let shown = (p == 0 || self.dual)
@@ -912,7 +972,11 @@ impl crate::state::AppState {
                 m.sig[p] = 0;
                 m.want(p, Vec::new());
             }
+            if shown && m.dates {
+                dated.push(&pane.tab().dir);
+            }
         }
+        m.keep_days(&dated);
         m.upload(&self.ctx);
     }
 }

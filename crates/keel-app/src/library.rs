@@ -619,6 +619,9 @@ pub struct LibraryUi {
     pub pending: Vec<LibCmd>,
     /// The hashing policy last applied.
     policy: Hashing,
+    /// Media work was asked for while a sidecar job ran: started again when it ends (a
+    /// running job does not see records changed behind its cursor, nor other sources).
+    media_again: bool,
     // --- Task 33 ---
     /// The Overview's protection card and volume table (None until first read).
     pub protection: Option<ProtectionSummary>,
@@ -668,6 +671,7 @@ impl LibraryUi {
             new_name: String::new(),
             pending: Vec::new(),
             policy: Hashing::default(),
+            media_again: false,
             protection: None,
             volumes: Vec::new(),
             badges: HashMap::new(),
@@ -693,7 +697,7 @@ impl LibraryUi {
         let (tx, ctx, name) = (self.tx.clone(), self.ctx.clone(), name.to_owned());
         worker::spawn("keel-library-open", move || {
             let opened = (|| -> anyhow::Result<(Library, bool, Vec<JobInfo>)> {
-                let root = keel_core::data_dir().context("no data folder")?;
+                let root = crate::settings::data_dir().context("no data folder")?;
                 let first_run = !root.join("library").join(&name).exists();
                 let lib = Library::open(&root, &name)?;
                 lib.set_router(router);
@@ -864,6 +868,7 @@ impl LibraryUi {
         let on = self.policy != Hashing::Off && !self.hash_paused;
         if let Some(lib) = &self.lib {
             lib.set_hash_after_walk(on);
+            lib.set_hash_idle_only(self.policy == Hashing::IdleOnly);
         }
         if on {
             self.start_hashing();
@@ -898,15 +903,17 @@ impl LibraryUi {
     }
 
     /// Task 32: thumbnails and metadata for every source's photos and videos (the sidecar
-    /// job, idle priority), unless one is already running.
+    /// job, idle priority); while one runs, again once it has ended.
     fn start_media(&mut self) {
         if self
             .jobs
             .values()
             .any(|j| j.kind == "sidecar" && j.active())
         {
+            self.media_again = true;
             return;
         }
+        self.media_again = false;
         let ids: Vec<SourceId> = (self.sources.iter())
             .filter(|s| s.root.scheme == "file")
             .map(|s| s.id.clone())
@@ -1218,8 +1225,9 @@ impl AppState {
         let l = &mut self.library;
         let Some(lib) = l.lib.clone() else { return };
         let now = Instant::now();
-        // Idle only: hashing pauses for 5 s after each input.
-        if busy_input && l.policy == Hashing::IdleOnly {
+        // Media and integrity jobs pause for 5 s after each input; hashing too when idle
+        // only (`sync_hashing`).
+        if busy_input {
             lib.note_activity();
         }
         let mut ended: Vec<String> = Vec::new();
@@ -1271,6 +1279,8 @@ impl AppState {
             if ended.iter().any(|k| k == "index") {
                 l.start_hashing();
                 l.start_media(); // Task 32
+            } else if l.media_again && ended.iter().any(|k| k == "sidecar") {
+                l.start_media();
             }
             // The Overview's duplicate summary (and an open finder) follow new content ids.
             if ended.iter().any(|k| k == "hash") {

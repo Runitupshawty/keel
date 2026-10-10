@@ -219,17 +219,24 @@ pub fn ui(
                     let Some(kind) = media::media_type(e) else {
                         continue;
                     };
-                    let key = media::tile_key(e, kind == MediaType::Video, tile_px);
-                    if cx.media.has(&key) {
-                        continue;
-                    }
+                    let video = kind == MediaType::Video;
                     let prio = if visible {
                         pos as u64
                     } else {
                         let rows_away = first.abs_diff(r);
                         PREFETCH_PRIO + rows_away as u64 * cols as u64 + (pos - a) as u64
                     };
-                    list.push((key, prio, req_of(e, &sources)));
+                    // A video's thumbnail stands in until its strip is made (or for good
+                    // when the strip cannot be).
+                    let keys = [
+                        Some(media::tile_key(e, video, tile_px)),
+                        video.then(|| media::thumb_key(e, tile_px)),
+                    ];
+                    for key in keys.into_iter().flatten() {
+                        if !cx.media.has(&key) {
+                            list.push((key, prio, req_of(e, &sources)));
+                        }
+                    }
                 }
             }
             cx.media.want(id.0, list);
@@ -278,10 +285,10 @@ pub fn ui(
                         match media::media_type(e) {
                             Some(kind) => {
                                 let video = kind == MediaType::Video;
-                                let key = media::tile_key(e, video, tile_px);
-                                match cx.media.get(&key) {
+                                let (tex, strip) = cx.media.tile_tex(e, video, tile_px);
+                                match tex {
                                     Tex::Ready(tex, size) => {
-                                        let uv = if video {
+                                        let uv = if strip {
                                             let frame = resp
                                                 .hover_pos()
                                                 .map(|p| {

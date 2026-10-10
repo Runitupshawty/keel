@@ -199,7 +199,13 @@ pub fn on_battery() -> bool {
 
 /// Returns once the app is idle (and not on battery, unless that is allowed); `battery`
 /// caches the last reading. `Err(Cancelled)` when the job is asked to stop.
-pub(crate) fn wait_until_idle(ctx: &JobCtx, battery: &mut Option<(Instant, bool)>) -> Result<()> {
+/// Waits while the user is active (`on_activity`) or the machine runs on battery (when the
+/// library pauses on battery).
+pub(crate) fn wait_until_idle(
+    ctx: &JobCtx,
+    battery: &mut Option<(Instant, bool)>,
+    on_activity: bool,
+) -> Result<()> {
     loop {
         if ctx.stopping() {
             return Err(Cancelled.into());
@@ -213,7 +219,8 @@ pub(crate) fn wait_until_idle(ctx: &JobCtx, battery: &mut Option<(Instant, bool)
                 v
             }
         };
-        let busy = lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
+        let busy = (on_activity && lib.busy())
+            || (lib.pause_on_battery.load(Ordering::SeqCst) && discharging());
         if !busy {
             return Ok(());
         }
@@ -277,7 +284,8 @@ impl HashJob {
     }
 
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        wait_until_idle(ctx, &mut self.battery)
+        let on_activity = ctx.lib.hash_on_activity.load(Ordering::SeqCst);
+        wait_until_idle(ctx, &mut self.battery, on_activity)
     }
 
     fn progress(&self) -> f32 {
@@ -653,7 +661,8 @@ impl Library {
         schedule(&self.shared)
     }
 
-    /// Tells hashing the user is busy: it pauses for the next 5 s (call it on input).
+    /// Tells the background jobs the user is busy (call it on every input): sidecar and
+    /// integrity jobs pause for the next 5 s, hashing too unless `set_hash_idle_only(false)`.
     pub fn note_activity(&self) {
         let until = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -661,6 +670,17 @@ impl Library {
                 (d + crate::library::ACTIVITY_PAUSE).as_millis() as u64
             });
         self.shared.busy_until.fetch_max(until, Ordering::SeqCst);
+    }
+
+    /// Whether hashing pauses on user activity like the other background jobs (default on;
+    /// off: it runs through input, the "pause on battery" / "always" policies).
+    pub fn set_hash_idle_only(&self, on: bool) {
+        self.shared.hash_on_activity.store(on, Ordering::SeqCst);
+    }
+
+    /// Whether `note_activity` was called within the last 5 s (background jobs pause).
+    pub fn user_active(&self) -> bool {
+        self.shared.busy()
     }
 
     /// Whether hashing pauses on battery power (default on).

@@ -9,14 +9,14 @@ use crate::jobs::{Job, JobCtx, JobId};
 use crate::library::Source;
 use crate::media::{self, MediaMeta};
 use crate::sidecars::{self, SidecarKey, SidecarKind, Sidecars};
-use crate::{Cancelled, Library, SourceId};
+use crate::{Library, SourceId};
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::atomic::Ordering,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 /// Records per checkpoint.
@@ -24,8 +24,6 @@ use std::{
 const CHECKPOINT_EVERY: usize = if cfg!(test) { 50 } else { 500 };
 /// Errors written to the job log (the rest are only counted).
 const LOGGED_ERRORS: u64 = 20;
-const PAUSE_POLL: Duration = Duration::from_millis(200);
-const BATTERY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SidecarJob {
@@ -72,32 +70,9 @@ impl SidecarJob {
         }
     }
 
-    // ponytail: same pause rule as HashJob::wait_until_idle (private to hash.rs); share it
-    // once hash.rs is free to change.
+    /// Pauses on user activity (always) and on battery like hashing.
     fn wait_until_idle(&mut self, ctx: &JobCtx) -> Result<()> {
-        loop {
-            if ctx.stopping() {
-                return Err(Cancelled.into());
-            }
-            let lib = &ctx.lib;
-            let busy =
-                lib.busy() || (lib.pause_on_battery.load(Ordering::SeqCst) && self.on_battery());
-            if !busy {
-                return Ok(());
-            }
-            std::thread::sleep(PAUSE_POLL);
-        }
-    }
-
-    fn on_battery(&mut self) -> bool {
-        match self.battery {
-            Some((at, v)) if at.elapsed() < BATTERY_TTL => v,
-            _ => {
-                let v = crate::on_battery();
-                self.battery = Some((Instant::now(), v));
-                v
-            }
-        }
+        crate::hash::wait_until_idle(ctx, &mut self.battery, true)
     }
 
     fn progress(&self) -> f32 {
@@ -128,8 +103,10 @@ fn process(sidecars: &Sidecars, src: &Source, root: &Path, rec: &Pending) -> Res
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    // The thumbnail is there, or recorded as impossible.
     let done = |m: &MediaMeta| {
-        m.error.is_some() || sidecars.root().join(&dir).join("thumb-256.webp").is_file()
+        m.failure(SidecarKind::Thumb256).is_some()
+            || sidecars.root().join(&dir).join("thumb-256.webp").is_file()
     };
     if row.as_ref().is_some_and(|(k, _)| *k == dir) && sidecars.meta(&key).is_some_and(|m| done(&m))
     {
@@ -181,7 +158,11 @@ fn process(sidecars: &Sidecars, src: &Source, root: &Path, rec: &Pending) -> Res
             params![rec.id, meta.camera, meta.keywords.join(" ")],
         )?;
     }
-    if let Some(error) = meta.error.as_ref().filter(|_| failed.is_none()) {
+    let recorded = meta
+        .error
+        .as_deref()
+        .or_else(|| meta.failure(SidecarKind::Thumb256));
+    if let Some(error) = recorded.filter(|_| failed.is_none()) {
         // Recorded now or earlier: counted, not retried.
         return Err(media::corrupt(error));
     }

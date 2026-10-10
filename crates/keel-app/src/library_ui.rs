@@ -937,7 +937,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             }
             ui.end_row();
         });
-    if let Some(dir) = keel_core::data_dir() {
+    if let Some(dir) = crate::settings::data_dir() {
         ui.weak(format!("Stored in {}", dir.join("library").display()));
     }
 }

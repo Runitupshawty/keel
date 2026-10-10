@@ -411,6 +411,9 @@ pub(crate) struct Shared {
     pub(crate) router: RwLock<Arc<Router>>,
     /// Unix ms until which background hashing pauses (`Library::note_activity`).
     pub(crate) busy_until: AtomicU64,
+    /// Whether hashing pauses on activity too (`Library::set_hash_idle_only`); sidecar and
+    /// integrity jobs always do.
+    pub(crate) hash_on_activity: AtomicBool,
     pub(crate) pause_on_battery: AtomicBool,
     /// Whether a completed walk schedules hashing.
     pub(crate) hash_after_walk: AtomicBool,
@@ -626,6 +629,7 @@ impl Library {
             sources,
             router: RwLock::new(Arc::new(Router::new())),
             busy_until: AtomicU64::new(0),
+            hash_on_activity: AtomicBool::new(true),
             pause_on_battery: AtomicBool::new(true),
             hash_after_walk: AtomicBool::new(true),
             hash_job: Mutex::new(None),

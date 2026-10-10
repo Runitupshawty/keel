@@ -858,3 +858,26 @@ fn protection_live() {
         println!("session: {}", path.display());
     }
 }
+
+/// Review M7: input pauses the library's background jobs whatever the hashing policy
+/// (hashing itself only pauses when idle-only).
+#[test]
+fn input_notes_activity_whatever_the_hashing_policy() {
+    let (tmp, lib, _) = fixture("activity", false);
+    let mut s = state_with(&lib, &tmp);
+    s.library.policy = Hashing::PauseOnBattery;
+    s.library.sync_hashing();
+    s.library_tick();
+    assert!(!lib.user_active(), "no input yet");
+    let mut input = egui::RawInput::default();
+    input
+        .events
+        .push(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    let _ = s.ctx.run(input, |_| {});
+    s.library_tick();
+    assert!(
+        lib.user_active(),
+        "input pauses the media and integrity jobs"
+    );
+    s.library.close_now();
+}
