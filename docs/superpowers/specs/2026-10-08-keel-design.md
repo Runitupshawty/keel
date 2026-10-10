@@ -191,7 +191,7 @@ interface; nothing OS-specific leaks into `keel-app`.
 | Search backend | Everything SDK over IPC (`Everything64.dll`) | `mdfind` (Spotlight) via `std::process` | `plocate`/`locate` if present, else `fd`-style walk with `ignore` crate; own indexer in Phase 5 covers all three |
 | Delete | Recycle Bin via `trash` crate | Trash via `trash` crate | freedesktop Trash via `trash` crate |
 | Copy with progress | `CopyFileExW` fast path | chunked `std::io::copy` with progress (`fs::copy` fallback, clonefile via `reflink-copy` when available) | same as macOS (`reflink-copy` on btrfs/xfs) |
-| Clipboard files | `CF_HDROP` | NSPasteboard `public.file-url` | `text/uri-list` (GNOME/KDE) via `arboard` + custom MIME |
+| Clipboard files | `CF_HDROP` | NSPasteboard `public.file-url` | `x-special/gnome-copied-files` (cut/copy verb), `text/uri-list` and `application/x-kde-cutselection` as Keel's own X11 selection owner (`x11rb`; XWayland on Wayland), `arboard` without a display |
 | Open / open-with / properties | `ShellExecuteW`, `openas`, `properties` verbs | `open -a`, `open -R`, Get Info via `osascript` | `xdg-open`, `gio open`, "Properties" = in-app dialog |
 | Drives / volumes | `GetLogicalDrives` + volume info | `/Volumes/*` + `statfs` | `/proc/mounts` + `statvfs` (`sysinfo::Disks` wraps all three) |
 | Long paths | `\\?\` prefix, `longPathAware` manifest | n/a | n/a |

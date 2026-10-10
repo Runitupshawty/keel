@@ -12,13 +12,17 @@ use std::{fmt, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 const LIFETIME: Duration = Duration::from_secs(600);
+/// How long a new code waits for a relay before it is shown without one (local
+/// discovery on): the code then works on the same network only, until the relay
+/// connects.
+const OFFLINE_RELAY_WAIT: Duration = Duration::from_secs(5);
 const SHORT: &str = "keel1-";
 const TICKET: &str = "keel-ticket1-";
 
 /// A bearer invitation. Display shows the 128-bit short form; Debug is redacted.
 /// Generated invitations retain a full ticket for offline/QR use. A parsed short
-/// form only knows the rendezvous id and needs public address lookup; its `ticket`
-/// method therefore returns that same short form.
+/// form only knows the rendezvous id and needs address lookup (global, or mDNS on
+/// the same network); its `ticket` method therefore returns that same short form.
 #[derive(Clone)]
 pub struct PairCode(String);
 impl fmt::Debug for PairCode {
@@ -178,13 +182,20 @@ impl Node {
             old.endpoint.close().await;
         }
         let secret = random()?;
-        let endpoint = self.options.builder(key(&secret))?.bind().await?;
+        let endpoint = self.options.bind(key(&secret)).await?;
         if !matches!(self.options.relay_mode, iroh::RelayMode::Disabled) {
+            // With local discovery the code also works on a network without internet,
+            // so an unreachable relay only shortens the wait.
+            let wait = if self.options.local_discovery {
+                self.options.request_timeout.min(OFFLINE_RELAY_WAIT)
+            } else {
+                self.options.request_timeout
+            };
             let online = tokio::select! {
                 _ = self.stop.cancelled() => false,
-                online = tokio::time::timeout(self.options.request_timeout, endpoint.online()) => online.is_ok(),
+                online = tokio::time::timeout(wait, endpoint.online()) => online.is_ok(),
             };
-            if !online {
+            if !online && (self.stop.is_cancelled() || !self.options.local_discovery) {
                 endpoint.close().await;
                 ensure!(!self.stop.is_cancelled(), "node closed");
                 anyhow::bail!("pairing relay unavailable");

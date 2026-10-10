@@ -6,11 +6,13 @@ Keel uses the following separately distributed components. Their licenses remain
 | --- | --- | --- | --- |
 | `iroh`, `iroh-base`, `iroh-relay`, `iroh-dns` 1.3 | Encrypted device transport, relay fallback and public address lookup | MIT OR Apache-2.0 | Rust crates, compiled in |
 | `noq`, `noq-proto`, `noq-udp` 1.3 | iroh's QUIC implementation | MIT OR Apache-2.0 | Rust crates, compiled in |
+| `iroh-mdns-address-lookup` 0.6 (with `swarm-discovery` 0.6, `acto` 0.8, `hickory-proto` 0.26, `smol_str` 0.1, `critical-section` 1.2) | Local-network device discovery (mDNS) for pairing by short code without internet | MIT OR Apache-2.0; `swarm-discovery`: Apache-2.0 | Rust crates, compiled in |
 | `ciborium` 0.2 | Network protocol CBOR headers | Apache-2.0 | Rust crate, compiled in |
 | `async-trait` 0.1 | Async network Handler interface | MIT OR Apache-2.0 | Rust proc macro, build dependency |
 | `data-encoding` 2 | Public identity and pairing ticket base32 | MIT | Rust crate, compiled in |
 | `tokio-util` 0.7 | Network cancellation and task tracking | MIT | Rust crate, compiled in |
 | `serde_bytes` 0.11 | Content ids as CBOR byte strings in the network protocol | MIT OR Apache-2.0 | Rust crate, compiled in |
+| `x11rb` 0.13 (already used by `arboard` and `winit`) | Linux file clipboard with the cut flag (X11 selection owner) | MIT OR Apache-2.0 | Rust crate, compiled in (Linux only) |
 | `qrcode` 0.14 | Device pairing QR codes (no image renderers) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [Everything SDK](https://www.voidtools.com/support/everything/sdk/) by voidtools | Fast Windows file search | MIT | Downloaded by `scripts/fetch-deps.ps1`; `Everything64.dll` is placed in `target/deps/` and the SDK license text in `target/deps/licenses/everything/` (the `Everything.h` header, which carries the MIT notice, when the SDK zip has no separate license file) |
 | [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) / PDFium | PDF rendering | PDFium: BSD 3-Clause; pdfium-binaries build scripts: MIT | Downloaded (pinned to `chromium/7543`) by `scripts/fetch-deps.ps1` / `fetch-deps.sh`; `pdfium.dll` (Windows), `libpdfium.dylib` (macOS) or `libpdfium.so` (Linux) is placed in `target/deps/`, and its license bundle is preserved in `target/deps/licenses/pdfium/` for releases |

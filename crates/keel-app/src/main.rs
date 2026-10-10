@@ -44,6 +44,8 @@ mod view_details;
 mod view_grid;
 mod view_media;
 mod worker;
+#[cfg(any(target_os = "linux", test))]
+mod x11_clipboard;
 // --- Task 24 ---
 mod cli;
 mod commands; // Task 37

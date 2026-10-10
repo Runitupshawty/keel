@@ -1,9 +1,12 @@
 //! `trash://`: the current user's Recycle Bin / Trash as a read-only folder. The root lists
 //! every trashed item (`trash://<key>/<name>`, `key` = a hash of the OS item id); `remove`
 //! deletes an item for good and [`TrashProvider::restore_paths`] puts it back where it was.
-//! Windows and freedesktop Linux only (`trash::os_limited`); elsewhere every call says so.
-//! The files themselves are reachable for previews only when the OS keeps them at a real
-//! path (Windows `$R...` files, Linux `files/<name>`).
+//! Windows and freedesktop Linux go through `trash::os_limited`. macOS has no listing API:
+//! its Trash is read as plain folders (`~/.Trash`, `/Volumes/<x>/.Trashes/<uid>`), which do
+//! not say where an item came from, so items are restored to a folder the user picks
+//! ([`TrashProvider::restore_to`]). The files themselves are reachable for previews only
+//! when the OS keeps them at a real path (Windows `$R...` files, Linux `files/<name>`, every
+//! macOS item).
 
 use crate::{Caps, Entry, Kind, Provider, RemoveKind, VPath};
 use ::trash::TrashItem;
@@ -18,7 +21,10 @@ use std::{
 
 pub const SCHEME: &str = "trash";
 /// Whether this platform can list its trash at all.
-pub const SUPPORTED: bool = cfg!(any(windows, all(unix, not(target_os = "macos"))));
+pub const SUPPORTED: bool = cfg!(any(windows, unix));
+/// Whether the trash records where each item came from, so Restore can put it back there.
+/// False on macOS: restore with [`TrashProvider::restore_to`] instead.
+pub const KNOWS_ORIGIN: bool = !cfg!(target_os = "macos");
 /// Size lookups cost a shell call per item on Windows; items past this many show no size.
 const META_CAP: usize = 5000;
 
@@ -46,8 +52,6 @@ pub struct TrashInfo {
     /// The full path it was deleted from.
     pub original: PathBuf,
     pub deleted: Option<SystemTime>,
-    // macOS: no listing API, so `payload` never reads it.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     id: std::ffi::OsString,
 }
 
@@ -70,9 +74,10 @@ impl TrashInfo {
                 .join(info.file_stem()?);
             p.symlink_metadata().ok().map(|_| p)
         }
-        #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+        #[cfg(target_os = "macos")]
         {
-            None
+            let p = PathBuf::from(&self.id);
+            p.symlink_metadata().ok().map(|_| p)
         }
     }
 }
@@ -212,6 +217,13 @@ impl TrashProvider {
     /// Windows, when one of the original paths exists already.
     pub fn restore_paths(&self, paths: &[VPath]) -> Result<()> {
         sys::restore(find(paths)?)
+    }
+
+    /// Moves the items into `dest` under their own names (macOS, where the Trash does not
+    /// record their original folders). Stops before moving anything when a name exists in
+    /// `dest`.
+    pub fn restore_to(&self, paths: &[VPath], dest: &Path) -> Result<()> {
+        sys::restore_to(find(paths)?, dest)
     }
 
     /// Deletes the items for good.
@@ -366,6 +378,9 @@ mod sys {
             other => Ok(other?),
         }
     }
+    pub fn restore_to(_: Vec<TrashItem>, _: &Path) -> Result<()> {
+        anyhow::bail!("the {} restores items to where they came from", label())
+    }
     pub fn meta(item: &TrashItem) -> Option<(Kind, u64)> {
         match ::trash::os_limited::metadata(item).ok()?.size {
             ::trash::TrashItemSize::Bytes(b) => Some((Kind::File, b)),
@@ -374,24 +389,164 @@ mod sys {
     }
 }
 
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+/// macOS: the Trash as plain folders; see [`folder`].
+#[cfg(target_os = "macos")]
 mod sys {
     use super::*;
 
-    fn unsupported<T>() -> Result<T> {
-        anyhow::bail!("Browsing the Trash is not supported on this system")
-    }
     pub fn list() -> Result<Vec<TrashItem>> {
-        unsupported()
+        let home = directories::BaseDirs::new()
+            .context("no home folder")?
+            .home_dir()
+            .to_path_buf();
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        folder::list(&folder::roots(&home, Path::new("/Volumes"), uid)).map_err(|e| {
+            let denied = e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+            if denied {
+                anyhow::anyhow!(
+                    "macOS shows the Trash only to apps with Full Disk Access \
+                     (System Settings > Privacy & Security > Full Disk Access)"
+                )
+            } else {
+                e
+            }
+        })
     }
-    pub fn purge(_: &[TrashItem]) -> Result<()> {
-        unsupported()
+    pub fn purge(items: &[TrashItem]) -> Result<()> {
+        folder::purge(items)
     }
-    pub fn restore(_: Vec<TrashItem>) -> Result<()> {
-        unsupported()
+    pub fn restore(items: Vec<TrashItem>) -> Result<()> {
+        let name = items.first().map(|i| i.name.to_string_lossy().into_owned());
+        anyhow::bail!(
+            "the Trash does not record where {} came from: use Restore to... and pick a folder",
+            name.unwrap_or_default()
+        )
     }
-    pub fn meta(_: &TrashItem) -> Option<(Kind, u64)> {
-        None
+    pub fn restore_to(items: Vec<TrashItem>, dest: &Path) -> Result<()> {
+        folder::restore_to(&items, dest)
+    }
+    pub fn meta(item: &TrashItem) -> Option<(Kind, u64)> {
+        folder::meta(item)
+    }
+}
+
+/// A trash that is only folders of trashed items (macOS): an item's id is its full path, its
+/// original folder is unknown (`original_parent` empty) and its deletion time is the time it
+/// was moved in (the change time).
+#[cfg(any(target_os = "macos", test))]
+mod folder {
+    use super::*;
+
+    /// `<home>/.Trash`, then `<volumes>/<x>/.Trashes/<uid>` of each mounted volume that has one.
+    pub fn roots(home: &Path, volumes: &Path, uid: u32) -> Vec<PathBuf> {
+        let mut out = vec![home.join(".Trash")];
+        if let Ok(dir) = std::fs::read_dir(volumes) {
+            let mut more: Vec<_> = dir
+                .flatten()
+                .map(|v| v.path().join(".Trashes").join(uid.to_string()))
+                .filter(|t| t.is_dir())
+                .collect();
+            more.sort();
+            out.extend(more);
+        }
+        out
+    }
+
+    /// Every item in `roots`. A missing root is empty; any other error fails the listing.
+    pub fn list(roots: &[PathBuf]) -> Result<Vec<TrashItem>> {
+        let mut out = Vec::new();
+        for root in roots {
+            let dir = match std::fs::read_dir(root) {
+                Ok(d) => d,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(anyhow::Error::new(e).context(root.display().to_string())),
+            };
+            for entry in dir {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name == ".DS_Store" {
+                    continue;
+                }
+                let changed = entry.metadata().ok().map_or(0, |m| changed(&m));
+                out.push(TrashItem {
+                    id: entry.path().into_os_string(),
+                    name,
+                    original_parent: PathBuf::new(),
+                    time_deleted: changed,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    #[cfg(unix)]
+    fn changed(m: &std::fs::Metadata) -> i64 {
+        std::os::unix::fs::MetadataExt::ctime(m)
+    }
+    #[cfg(not(unix))]
+    fn changed(m: &std::fs::Metadata) -> i64 {
+        m.modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs() as i64)
+    }
+
+    pub fn meta(item: &TrashItem) -> Option<(Kind, u64)> {
+        let m = Path::new(&item.id).symlink_metadata().ok()?;
+        Some(if m.is_dir() {
+            (Kind::Dir, 0)
+        } else {
+            (Kind::File, m.len())
+        })
+    }
+
+    /// Removes the items for good (a link, never what it points to).
+    pub fn purge(items: &[TrashItem]) -> Result<()> {
+        for item in items {
+            let p = Path::new(&item.id);
+            let is_dir = p.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
+            let removed = if is_dir {
+                std::fs::remove_dir_all(p)
+            } else {
+                std::fs::remove_file(p)
+            };
+            removed.with_context(|| format!("delete {}", item.name.to_string_lossy()))?;
+        }
+        Ok(())
+    }
+
+    /// Moves the items into `dest`, checking every name first so nothing moves when one
+    /// would land on an existing file.
+    // ponytail: a plain rename, so an item on another volume than `dest` fails with a message;
+    // copy-then-delete would lift that.
+    pub fn restore_to(items: &[TrashItem], dest: &Path) -> Result<()> {
+        let mut names = HashSet::new();
+        for item in items {
+            let to = dest.join(&item.name);
+            anyhow::ensure!(
+                to.symlink_metadata().is_err(),
+                "{} already exists; move or rename it, then restore again",
+                to.display()
+            );
+            anyhow::ensure!(
+                names.insert(item.name.clone()),
+                "two items would both restore to {}; restore them one at a time",
+                to.display()
+            );
+        }
+        for item in items {
+            std::fs::rename(&item.id, dest.join(&item.name)).with_context(|| {
+                format!(
+                    "move {} to {} (pick a folder on the same drive)",
+                    item.name.to_string_lossy(),
+                    dest.display()
+                )
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -424,6 +579,70 @@ mod tests {
         assert_eq!(root().parent(), None);
         assert_eq!(numbered("a.txt", 2), "a (2).txt");
         assert_eq!(numbered(".bashrc", 2), ".bashrc (2)");
+    }
+
+    #[test]
+    fn a_folder_trash_lists_restores_and_purges() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, volumes) = (dir.path().join("home"), dir.path().join("Volumes"));
+        let trash = home.join(".Trash");
+        let usb = volumes.join("USB").join(".Trashes").join("501");
+        let other_user = volumes.join("Other").join(".Trashes").join("502");
+        for d in [&trash, &usb, &other_user] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::create_dir_all(volumes.join("Plain")).unwrap();
+        let roots = folder::roots(&home, &volumes, 501);
+        assert_eq!(
+            roots,
+            [trash.clone(), usb.clone()],
+            "own uid only, home first"
+        );
+        let none = dir.path().join("none");
+        assert_eq!(folder::roots(&none, &none, 501), [none.join(".Trash")]);
+        assert!(folder::list(&[none.join(".Trash")]).unwrap().is_empty());
+
+        std::fs::write(trash.join("a.txt"), "hello").unwrap();
+        std::fs::write(trash.join(".DS_Store"), "x").unwrap();
+        std::fs::create_dir_all(trash.join("folder").join("inner")).unwrap();
+        std::fs::write(usb.join("a.txt"), "usb").unwrap();
+        let items = folder::list(&roots).unwrap();
+        let names: Vec<_> = items.iter().map(|i| i.name.to_string_lossy()).collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(!names.iter().any(|n| n == ".DS_Store"));
+        let by_path = |p: PathBuf| items.iter().find(|i| Path::new(&i.id) == p).unwrap();
+        let a = by_path(trash.join("a.txt"));
+        assert_eq!(folder::meta(a), Some((Kind::File, 5)));
+        assert!(a.time_deleted > 0);
+        assert_eq!(a.original_path(), PathBuf::from("a.txt"), "no known origin");
+        let f = by_path(trash.join("folder"));
+        assert_eq!(folder::meta(f), Some((Kind::Dir, 0)));
+        let b = by_path(usb.join("a.txt"));
+        assert_ne!(key_of_item(a), key_of_item(b), "same name, different items");
+
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let err = folder::restore_to(&[a.clone(), b.clone()], &dest).unwrap_err();
+        assert!(err.to_string().contains("one at a time"), "{err}");
+        assert!(trash.join("a.txt").exists(), "nothing moved");
+        std::fs::write(dest.join("a.txt"), "mine").unwrap();
+        let err = folder::restore_to(std::slice::from_ref(a), &dest).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "mine");
+        std::fs::remove_file(dest.join("a.txt")).unwrap();
+        folder::restore_to(std::slice::from_ref(a), &dest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert!(!trash.join("a.txt").exists());
+
+        folder::purge(&[f.clone(), b.clone()]).unwrap();
+        assert!(folder::list(&roots).unwrap().is_empty());
+        assert!(
+            folder::purge(std::slice::from_ref(b)).is_err(),
+            "already gone"
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -480,12 +699,34 @@ mod tests {
         }
         let file = dir.join(name);
         std::fs::write(&file, "hello").unwrap();
-        if let Err(e) = ::trash::delete(&file) {
+        #[allow(unused_mut)]
+        let mut bin = ::trash::TrashContext::default();
+        // Finder would need the Automation permission (and a session that may ask).
+        #[cfg(target_os = "macos")]
+        ::trash::macos::TrashContextExtMacos::set_delete_method(
+            &mut bin,
+            ::trash::macos::DeleteMethod::NsFileManager,
+        );
+        if let Err(e) = bin.delete(&file) {
             eprintln!("skipped: cannot trash a file here: {e}");
             let _ = std::fs::remove_file(&file);
             return None;
         }
         Some(file)
+    }
+
+    /// Restore as the app does: to the original folder, or on macOS to the folder picked
+    /// (here the one it was deleted from).
+    fn restore(p: &VPath, picked: &Path) -> Result<()> {
+        if KNOWS_ORIGIN {
+            TrashProvider.restore_paths(std::slice::from_ref(p))
+        } else {
+            let err = TrashProvider
+                .restore_paths(std::slice::from_ref(p))
+                .unwrap_err();
+            assert!(err.to_string().contains("Restore to"), "{err}");
+            TrashProvider.restore_to(std::slice::from_ref(p), picked)
+        }
     }
 
     fn find_ours(name: &str) -> Option<Entry> {
@@ -522,9 +763,7 @@ mod tests {
             assert_eq!(s, "hello");
         }
 
-        TrashProvider
-            .restore_paths(std::slice::from_ref(&e.path))
-            .unwrap();
+        restore(&e.path, dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
         assert!(find_ours(&name).is_none(), "restored items leave the bin");
 
@@ -549,7 +788,7 @@ mod tests {
         };
         std::fs::write(&file, "new").unwrap();
         let e = find_ours(&name).expect("listed");
-        let err = TrashProvider.restore_paths(&[e.path]).unwrap_err();
+        let err = restore(&e.path, dir.path()).unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
         assert!(find_ours(&name).is_some(), "still in the bin");

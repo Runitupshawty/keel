@@ -1,6 +1,8 @@
 //! File clipboard: the system one (so Explorer / Finder / Nautilus paste works) with an
-//! in-app copy as fallback. Windows: CF_HDROP via keel-vfs; macOS: NSPasteboard
-//! `public.file-url` and Linux: `text/uri-list`, both via arboard.
+//! in-app copy as fallback. Windows: CF_HDROP via keel-vfs; Linux with an X display (or
+//! XWayland): `x-special/gnome-copied-files`, `text/uri-list` and the KDE cut flag via
+//! `x11_clipboard`; macOS (and Linux without a display): NSPasteboard `public.file-url` or
+//! `text/uri-list` via arboard.
 
 use crate::state::Msg;
 use crossbeam_channel::Sender;
@@ -30,9 +32,13 @@ mod sys {
 #[cfg(not(windows))]
 mod sys {
     use super::*;
-    // ponytail: arboard has no custom MIME types, so no `x-special/gnome-copied-files` cut
-    // verb on Linux (and Finder has no cut); a cut made here is honoured in-app only.
-    pub fn write_files(paths: &[PathBuf], _cut: bool) -> anyhow::Result<()> {
+    pub fn write_files(paths: &[PathBuf], cut: bool) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        if crate::x11_clipboard::available() {
+            return crate::x11_clipboard::write(paths, cut);
+        }
+        // Finder has no cut on the pasteboard: a cut made here is honoured in-app only.
+        let _ = cut;
         let mut cb = arboard::Clipboard::new()?;
         if paths.is_empty() {
             cb.clear()?;
@@ -42,6 +48,13 @@ mod sys {
         Ok(())
     }
     pub fn read_files() -> Option<(Vec<PathBuf>, bool)> {
+        #[cfg(target_os = "linux")]
+        if crate::x11_clipboard::available() {
+            return crate::x11_clipboard::read()
+                .map_err(|e| tracing::warn!("read clipboard: {e:#}"))
+                .ok()
+                .flatten();
+        }
         let paths = arboard::Clipboard::new().ok()?.get().file_list().ok()?;
         (!paths.is_empty()).then_some((paths, false))
     }
@@ -51,6 +64,10 @@ mod sys {
 }
 
 pub use sys::{read_files, write_files};
+
+/// Tests that use the real system clipboard take this, so they do not overwrite each other.
+#[cfg(test)]
+pub(crate) static SYSTEM_CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Where our last system clipboard write stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -303,6 +320,7 @@ mod tests {
     #[test]
     #[ignore]
     fn round_trip_two_paths() {
+        let _only = SYSTEM_CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
         if cfg!(target_os = "linux")
             && std::env::var_os("DISPLAY").is_none()
             && std::env::var_os("WAYLAND_DISPLAY").is_none()
@@ -335,7 +353,7 @@ mod tests {
             let _ = write_files(&paths, cut);
         }
         assert_eq!(got, paths);
-        assert_eq!(cut, cfg!(windows), "only Windows carries the cut flag");
+        assert_eq!(cut, !cfg!(target_os = "macos"), "macOS has no cut flag");
         assert_eq!(cleared, None);
     }
 }

@@ -95,7 +95,7 @@ also act directly: they change no file.
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `library.sync` | direct | Pull tag, favorite and content-id changes now from `peer` (a paired device id), or from every device library sync is on with; answers `[{peer, label, applied, error?}]` (`applied`: changes newer than this library's, applied; `error`: the device is offline, or its switch for this device is off). Refused for a `peer` sync is off with here. Reads from the other device and writes only the library's tags and favorites |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline); each device's `sync` (library sync is on with it here) and `last_sync` (unix seconds of the last completed pull from it, absent before the first) |
-| `devices.pair_code` | preview | One-time pairing code (10 minutes) |
+| `devices.pair_code` | preview | One-time pairing code (10 minutes); the short code is found through internet discovery or, on the same network, mDNS |
 | `devices.pair_with` | preview | Pair with a device's code (grants nothing) |
 | `devices.forget` | preview | Forget a device and its grants |
 | `devices.settings` | read | This device's `label`, Spacedrop `inbox`, `auto_accept` device ids, `relay` (as the node started) and `sync` (the device ids library sync is on with) |

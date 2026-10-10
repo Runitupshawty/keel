@@ -745,3 +745,58 @@ async fn invitation_endpoint_closes_once_used() {
     a.close().await;
     b.close().await;
 }
+
+/// Short-code pairing with global discovery and relays off: the code's device is found
+/// by mDNS on this machine's network. CI runners may not loop multicast back, so there
+/// it runs only with `KEEL_NET_MDNS_TEST=1`.
+#[tokio::test]
+async fn short_code_pairs_on_the_local_network_without_internet() {
+    if std::env::var_os("CI").is_some() && std::env::var("KEEL_NET_MDNS_TEST").as_deref() != Ok("1")
+    {
+        return;
+    }
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let options = NodeOptions {
+        local_discovery: true,
+        ..NodeOptions::offline()
+    };
+    assert!(!options.discovery && matches!(options.relay_mode, iroh::RelayMode::Disabled));
+    let mut nodes = Vec::new();
+    for dir in [&da, &db] {
+        let secrets = Arc::new(MemoryStore::default());
+        let node = Node::open_with_options(secrets, dir.path(), Files::fixture(), options.clone());
+        nodes.push(node.await.unwrap());
+    }
+    let (a, b) = (nodes[0].clone(), nodes[1].clone());
+    let code = a.pair_code().await.unwrap();
+    let short: PairCode = code.to_string().parse().unwrap();
+    assert!(short.ticket().starts_with("keel1-"));
+    let started = std::time::Instant::now();
+    let peer = b.pair_with(&short).await.unwrap();
+    eprintln!("short-code pairing over mDNS took {:?}", started.elapsed());
+    assert_eq!(peer.id, PeerId(a.id()));
+    assert!(matches!(
+        b.request(&peer.id, Request::Ping).await.unwrap(),
+        Response::Pong { .. }
+    ));
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn node_works_when_local_discovery_cannot_start() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = open(&da, Arc::default()).await;
+    let b = open(&db, Arc::default()).await;
+    let blocked = || -> Result<iroh::address_lookup::MemoryLookup> { bail!("multicast blocked") };
+    crate::node::add_local_discovery(&a.endpoint, blocked());
+    assert!(crate::node::MDNS_WARNED.load(std::sync::atomic::Ordering::Relaxed));
+    crate::node::add_local_discovery(&a.endpoint, blocked());
+    let (aid, _) = pair(&a, &b).await;
+    assert!(matches!(
+        b.request(&aid, Request::Ping).await.unwrap(),
+        Response::Pong { .. }
+    ));
+    a.close().await;
+    b.close().await;
+}

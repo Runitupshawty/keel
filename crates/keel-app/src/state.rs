@@ -121,6 +121,8 @@ pub enum Msg {
     },
     /// Sources of a failed cut-move that still exist: the cut to put back.
     RestoreCut(Vec<VPath>),
+    /// Trash items to move into the folder picked for them (macOS Restore to...).
+    RestoreTrashTo(Vec<VPath>, std::path::PathBuf),
     /// Stashed items a Move here job moved away: they leave the drop zone.
     StashMoved(Vec<VPath>),
     /// `name` was created or renamed in `dir`: relist and put the cursor on it.
@@ -726,6 +728,10 @@ impl AppState {
                 }
             }
             Msg::StashMoved(paths) => self.dropzone.remove_all(&paths),
+            Msg::RestoreTrashTo(paths, dst) => {
+                self.jobs
+                    .trash_op(jobs::TrashOp::RestoreTo(paths, dst), self.tx.clone());
+            }
             Msg::RestoreCut(paths) => {
                 // Only when nothing was copied since, here or in another app.
                 if !paths.is_empty()
@@ -1788,6 +1794,24 @@ impl AppState {
                     self.dialog = Some(Dialog::Confirm {
                         text: format!("Move {} to the trash?", jobs::items(paths.len())),
                         on_yes: Action::Trash(paths),
+                    });
+                }
+            }
+            Action::RestoreTrash if !keel_vfs::trashbin::KNOWS_ORIGIN => {
+                let paths = self.target_paths(p);
+                if !paths.is_empty() {
+                    // The Trash does not say where items came from: ask. The OS dialog
+                    // blocks, so never on the UI thread.
+                    let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                    let home = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf());
+                    worker::spawn("keel-pick", move || {
+                        let mut dialog = rfd::FileDialog::new().set_title("Restore to");
+                        if let Some(home) = &home {
+                            dialog = dialog.set_directory(home);
+                        }
+                        if let Some(dst) = dialog.pick_folder() {
+                            worker::send(&tx, &ctx, Msg::RestoreTrashTo(paths, dst));
+                        }
                     });
                 }
             }
