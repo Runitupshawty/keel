@@ -104,7 +104,7 @@ Keel opens on your home folder in both panes.
 - **Sidebar** (left): the **Library** section (Overview, ★ Favorites, Recents, your sources, tags and saved views), then **Quick access** (Home, Desktop, Documents, Downloads, Pictures and the Recycle Bin or Trash), **Drives** with a bar showing how full each one is, **Open archives** while you browse inside one, **Remotes**, **Cloud** and **Devices**. A click opens the folder in the active pane, a middle-click opens it in a new tab.
 - **Two panes**: click a pane, or press F6, to make it the active one. Ctrl+Shift+D switches between one and two panes.
 - **Tabs**: Ctrl+T opens a tab, Ctrl+W closes it, drag tabs to reorder them. Your tabs are restored the next time Keel starts.
-- **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start), or press Ctrl+L to type a path. Backspace goes to the parent folder.
+- **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start, nearest parent first), or press Ctrl+L to type a path. Backspace goes to the parent folder.
 - **Views**: the buttons at the right of each pane's header switch between **Details**, **Grid** (thumbnails), **Columns** and **Media** (photo and video tiles).
 - **Filter**: start typing in a list to show only the names that match; Esc clears the filter.
 - **Preview panel**: F3 shows or hides it. It previews code with syntax highlighting, text, Markdown, images, PDF pages, CSV and spreadsheets, Word, PowerPoint and OpenDocument files, video frames, and anything else as hex.

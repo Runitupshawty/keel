@@ -17,7 +17,7 @@ One desktop PC, release build, 2026-10-10 (0.15.0 plus the changes listed under 
 | Watcher burst (`perf_watcher_burst_10k`) | 10,000 new files in a watched source | all indexed 3.5 s after the first write (1.1 s of it writing the files, 0.5 s the debounce) | 5 s |
 | Hash small files (`ten_thousand_small_files_hash_fast`) | 10,000 files of a few bytes | 1.1-1.4 s | 5 s |
 | Hash 1 MiB files (`perf_hash_10k_files_of_1mib`) | 10,000 files of 1 MiB, 1,000 of them copies (hashed whole) | 2.6-2.8 s warm (3,600 files/s); 44-83 s cold (reading the 10 GiB once at normal priority took 31 s) | 20 s (warm) |
-| `library.search` (`perf_search_200k`), p50 / p95 of 50 runs | 200,000 records, 2,000 tagged `work` | `w4242` 0.13 / 0.16 ms; `invoice budget` 6.1 / 7.4 ms; `contract w42` 1.7 / 2.6 ms; `tag:work` 1.3 / 1.4 ms; `tag:work invoice` 9.1 / 9.3 ms; `tag:work ext:pdf` 2.2 / 2.5 ms | p95 25 ms |
+| `library.search` (`perf_search_200k`), p50 / p95 of 50 runs | 200,000 records, 2,000 tagged `work` | `w4242` 0.13 / 0.13 ms; `invoice budget` 5.9 / 6.2 ms; `contract w42` 1.7 / 1.7 ms; `tag:work` 1.3 / 1.3 ms; `tag:work invoice` 6.3 / 6.4 ms; `tag:work ext:pdf` 2.2 / 2.4 ms | p95 25 ms |
 | `library.search` (`two_million_row_search_is_fast`) | 2,002,001 records, 13 queries (words, phrases, prefixes, filters only) | 0.2-25.9 ms | 50 ms |
 | Duplicates (`perf_duplicates_and_recount_200k`) | 200,000 hashed records, 50,000 contents | 0.38 s | 5 s |
 | Protection recount (same test; `recount_100k`) | 200,000 records; 100,000 records in two sources | 0.27 s; 0.11 s (library stats 2.3 ms) | 5 s |

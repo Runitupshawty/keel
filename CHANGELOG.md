@@ -4,20 +4,21 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
-
 ### Changed
 
 - Hashing is much faster on Windows: it runs in background mode, whose very low I/O priority made each library write wait about 2 ms, and now leaves it while it writes to the library (files are still read at background priority); the sidecar job and integrity checks do the same. 10,000 small files hash in 1.1-1.4 s instead of 27.6 s on the test PC.
 - Indexing a tree of many small folders is faster: a walk lists several folders before writing them in one transaction, instead of one transaction per folder. 200,000 files in 20,200 folders index in 9.1 s instead of 14.9 s (17.3 s from a cold disk cache); the same tree generated, without the disk, in 5.1 s instead of 12.0 s.
-- A watched source takes in a burst of changes faster: they are applied 1,000 at a time instead of one per transaction. 10,000 new files are all indexed 3.5 s after the first is written, instead of 5.5 s.
-- A library search for words with a `tag:` starts from the tag's records when the tag holds at most 20,000: `tag:work invoice` over 200,000 records answers in 9 ms instead of 34 ms.
+- A watched source takes in a burst of changes faster: they are applied 1,000 at a time instead of one per transaction, and a new folder tree is walked once from its top. 10,000 new files are all indexed 3.5 s after the first is written, instead of 5.5 s.
+- A library search for words with a `tag:` starts from the tag's records when the tag holds at most 20,000, ranked as before: `tag:work invoice` over 200,000 records answers in 6 ms instead of 34 ms.
 - [docs/performance.md](docs/performance.md): measured speed on realistic data (indexing, search, hashing, duplicates, sidecars, zips, Spacedrop, the daemon, the web client's size, startup), what grows with what, and `scripts/perf.sh`, which runs every release-mode measurement and prints a table.
 
 ### Fixed
 
+- Inside an archive or a remote folder the context menu no longer offers Add to zip and Compress to zip, which could only fail there ("Zips can only be made in local folders").
+
 Found by a QA walkthrough of the window ([docs/qa/2026-10-10-walkthrough.md](docs/qa/2026-10-10-walkthrough.md)).
 - F2 selects the name before its extension, so typing a new name replaces it; it used to put the caret after the name and append what you typed ("todo.txtchores"). A folder's whole name is selected.
-- The path bar shows whole parts, as many as fit, with the rest in a **…** menu at its start. In a narrow pane it used to run under the view buttons, cut its first visible part (or the current folder itself) in half, and draw a scroll bar over the path on hover.
+- The path bar shows whole parts, as many as fit, with the rest in a **…** menu at its start, the nearest parent first (a long list scrolls). In a narrow pane it used to run under the view buttons, cut its first visible part (or the current folder itself) in half, and draw a scroll bar over the path on hover.
 - With a modal open (Settings → Remotes → Add host…, the cloud account wizard, an icon theme's license), keys no longer reach the file list behind it: a typed letter opened the list's filter, which took the focus from the field being typed in, and Del asked to trash the selected file.
 - The Recycle Bin (Trash) opened in a folder tab, as the sidebar does, has its wide Original location column; it used to keep the folder's narrow Ext width. Its path bar says "Recycle Bin" (or "Trash") instead of `trash:///`.
 - A video's preview says its picture size and codec under the duration ("320×240 · mpeg4"); it used to repeat the raw duration.
