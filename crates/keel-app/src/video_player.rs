@@ -3,9 +3,12 @@
 //! queue of at most [`FRAME_QUEUE`] frames), the other decodes interleaved f32 PCM that a
 //! `cpal` output stream plays. The sound card is the master clock: a frame is shown once its
 //! timestamp is due and frames that are already late are dropped. Without sound (no audio
-//! stream, no output device, audio ended first) a wall clock stands in. A seek, a file
-//! change or closing the viewer kills both processes and waits for them. Nothing here
-//! decodes on the UI thread; it only uploads the due frame into one reused texture.
+//! stream, no output device, audio ended first) a wall clock stands in; the output stream
+//! is paused with playback (the device is not held running). A seek, a file change or
+//! closing the viewer kills both processes (reaped on a thread: the UI never waits for a
+//! process stuck in I/O) and cancels a download that is still running; a remote file is
+//! downloaded once per player, seeks before it is there wait for it. Nothing here decodes
+//! on the UI thread; it only uploads the due frame into one reused texture.
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use egui::{ColorImage, TextureHandle, TextureOptions, Vec2};
@@ -14,26 +17,35 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Longest side decoded (rawvideo bandwidth: 1920 x 1080 RGBA at 60 fps is 500 MB/s).
 pub const MAX_SIDE: u32 = 1920;
 /// Decoded frames waiting to be shown...
 pub const FRAME_QUEUE: usize = 3;
-/// ...and the most bytes of frames in flight (the queue plus one being read and one
-/// waiting on the UI side).
+/// ...and the most bytes of frames in flight: the queue plus three outside it (the read
+/// buffer, the frame made from it, and the one waiting on the UI side).
 pub const FRAME_BYTES: usize = 64 << 20;
+/// Frames in flight outside the queue.
+const OUTSIDE_QUEUE: usize = 3;
 /// Decoded frame rate cap (240 fps slow motion plays at 60).
 const MAX_FPS: f64 = 60.0;
 /// PCM chunks between the decoder and the output callback (about 0.7 s at 48 kHz).
 const AUDIO_CHUNKS: usize = 16;
 const AUDIO_CHUNK_FRAMES: usize = 2048;
+/// The most output latency taken off the sound clock (a bogus device timestamp).
+const MAX_LATENCY: Duration = Duration::from_millis(500);
+/// Download progress reaches the UI at most this often.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Opens the file's bytes: its local path, or a local copy of a remote file (blocking,
-/// called on a worker).
-pub type Resolve = Arc<dyn Fn() -> anyhow::Result<PathBuf> + Send + Sync>;
+/// called on a worker, at most once per player). The download stops when the flag is set
+/// (the player stopped) and reports bytes done and the size (0: unknown); `(0, 0)` first
+/// says a download starts.
+pub type Resolve =
+    Arc<dyn Fn(&AtomicBool, &dyn Fn(u64, u64)) -> anyhow::Result<PathBuf> + Send + Sync>;
 
 // ---------------------------------------------------------------- pure parts
 
@@ -64,9 +76,33 @@ pub fn probe_of(v: &serde_json::Value) -> Probe {
         })
         .unwrap_or(30.0)
         .min(MAX_FPS);
+    // Non-square pixels: the display size stretches the coded width (the height once a
+    // quarter turn swapped them).
+    let (mut width, mut height) = (meta.width, meta.height);
+    let sar = video
+        .and_then(|s| s["sample_aspect_ratio"].as_str())
+        .and_then(|r| {
+            let (n, d) = r.split_once(':')?;
+            let r = n.parse::<f64>().ok()? / d.parse::<f64>().ok()?;
+            (r.is_finite() && r > 0.0).then_some(r)
+        })
+        .unwrap_or(1.0);
+    if sar != 1.0 {
+        let coded = video.map_or([0, 0], |s| {
+            [s["width"].as_u64(), s["height"].as_u64()].map(|v| v.unwrap_or(0) as u32)
+        });
+        // ponytail: a square coded frame turned a quarter is stretched along the wrong axis.
+        let turned = coded[0] != coded[1] && [width, height] == [coded[1], coded[0]];
+        let stretch = |v: u32| ((f64::from(v) * sar).round() as u32).max(1);
+        if turned {
+            height = stretch(height);
+        } else {
+            width = stretch(width);
+        }
+    }
     Probe {
-        width: meta.width,
-        height: meta.height,
+        width,
+        height,
         // Rounded as passed to ffmpeg's fps filter, so timestamps match its output.
         fps: (fps * 1000.0).round() / 1000.0,
         duration: meta.duration_ms.map_or(0.0, |d| d as f64 / 1000.0),
@@ -94,10 +130,10 @@ pub fn decode_size(src: [u32; 2], area: [f32; 2]) -> [u32; 2] {
 }
 
 /// Frames the queue may hold for frames of `frame_bytes`: [`FRAME_QUEUE`], fewer when they
-/// and the two frames outside the queue would pass [`FRAME_BYTES`]; at least one.
+/// and the three frames outside the queue would pass [`FRAME_BYTES`]; at least one.
 pub fn queue_len(frame_bytes: usize) -> usize {
     (FRAME_BYTES / frame_bytes.max(1))
-        .saturating_sub(2)
+        .saturating_sub(OUTSIDE_QUEUE)
         .clamp(1, FRAME_QUEUE)
 }
 
@@ -259,8 +295,10 @@ impl Transport {
 /// Shared with the audio thread and the output callback.
 #[derive(Default)]
 pub struct Audio {
-    /// Frames (samples per channel) played since the session's start.
+    /// Frames (samples per channel) handed to the device since the session's start.
     played: AtomicU64,
+    /// Of those, still in the device's buffer (microseconds, the last callback's).
+    latency_us: AtomicU64,
     /// The output rate (0 until the device is open).
     rate: AtomicU32,
     /// No more sound comes (ended, none, or failed): the clock goes on without it.
@@ -268,6 +306,23 @@ pub struct Audio {
     paused: AtomicBool,
     /// f32 bits.
     gain: AtomicU32,
+    /// The output stream runs (tests).
+    #[cfg(test)]
+    stream_on: AtomicBool,
+}
+
+/// Sets `done` when dropped: the sound's end, however its thread ends (a panic too).
+struct DoneOnDrop(Arc<Audio>);
+
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::Release);
+    }
+}
+
+/// Seconds heard: `played` frames at `rate` Hz less what is still in the device's buffer.
+fn heard(played: u64, rate: u32, latency_us: u64) -> f64 {
+    (played as f64 / f64::from(rate.max(1)) - latency_us as f64 / 1e6).max(0.0)
 }
 
 /// The session's clock (seconds since its start): the sound played while there is sound,
@@ -296,7 +351,8 @@ impl Clock {
             let done = self.audio.done.load(Ordering::Acquire);
             let rate = self.audio.rate.load(Ordering::Acquire);
             if rate > 0 {
-                self.base = self.audio.played.load(Ordering::Acquire) as f64 / f64::from(rate);
+                let played = self.audio.played.load(Ordering::Acquire);
+                self.base = heard(played, rate, self.audio.latency_us.load(Ordering::Acquire));
             }
             if self.since.is_some() {
                 self.since = Some(Instant::now());
@@ -318,23 +374,57 @@ impl Clock {
 
 // ---------------------------------------------------------------- processes
 
-/// One session's processes: killed and waited for when it stops (no orphans, no zombies),
-/// as is one a worker starts after that.
+/// A started process as [`Procs`] keeps it (tests stand in a hung one).
+trait Proc: Send {
+    fn kill(&mut self);
+    /// Waits for it to exit; true once it is reaped.
+    fn wait(&mut self) -> bool;
+}
+
+impl Proc for Child {
+    fn kill(&mut self) {
+        let _ = Child::kill(self);
+    }
+
+    fn wait(&mut self) -> bool {
+        Child::wait(self).is_ok()
+    }
+}
+
+/// One session's processes: killed when it stops and reaped on a thread (no orphans, no
+/// zombies, no wait on the stopping thread), as is one a worker starts after that; one
+/// whose output ended is reaped by its worker. Stopping also cancels the session's
+/// download.
 #[derive(Default)]
 pub struct Procs {
     inner: Mutex<ProcState>,
+    /// Set (under `inner`) by `stop`; the download's cancel flag.
+    cancel: AtomicBool,
+    reaped: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
 struct ProcState {
-    stopped: bool,
-    children: Vec<Child>,
-    reaped: usize,
+    /// Running ones, by start number.
+    children: Vec<(usize, Box<dyn Proc>)>,
+    started: usize,
 }
+
+impl ProcState {
+    fn keep(&mut self, p: Box<dyn Proc>) -> usize {
+        let id = self.started;
+        self.started += 1;
+        self.children.push((id, p));
+        id
+    }
+}
+
+/// A started process: its number (for [`Procs::reap`]) and output.
+type Started = (usize, ChildStdout, ChildStderr);
 
 impl Procs {
     /// Starts `cmd` with piped output and no console window; None once stopped.
-    fn spawn(&self, mut cmd: Command) -> std::io::Result<Option<(ChildStdout, ChildStderr)>> {
+    fn spawn(&self, mut cmd: Command) -> std::io::Result<Option<Started>> {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -346,30 +436,61 @@ impl Procs {
         }
         // Spawned under the lock: `stop` cannot slip in between spawning and keeping it.
         let mut s = self.inner.lock();
-        if s.stopped {
+        if self.stopped() {
             return Ok(None);
         }
         let mut child = cmd.spawn()?;
         let pipes = child.stdout.take().zip(child.stderr.take());
-        s.children.push(child);
-        Ok(pipes)
+        let id = s.keep(Box::new(child));
+        Ok(pipes.map(|(out, err)| (id, out, err)))
     }
 
     pub fn stopped(&self) -> bool {
-        self.inner.lock().stopped
+        self.cancel.load(Ordering::SeqCst)
     }
 
-    /// Kills every process and waits for it.
+    /// Kills every process now and reaps them on a thread (a process stuck in I/O, such
+    /// as a read of a hung network file, can take long to exit after the kill).
     // ponytail: kills the process started; an ffmpeg behind a `.cmd`/`.bat` shim (which
     // `find_tool` accepts) would outlive its killed cmd.exe. Kill the process tree (a job
     // object on Windows) if shims show up in practice.
     pub fn stop(&self) {
-        let mut s = self.inner.lock();
-        s.stopped = true;
-        for mut c in std::mem::take(&mut s.children) {
-            let _ = c.kill();
-            if c.wait().is_ok() {
-                s.reaped += 1;
+        let children = {
+            let mut s = self.inner.lock();
+            self.cancel.store(true, Ordering::SeqCst);
+            std::mem::take(&mut s.children)
+        };
+        if children.is_empty() {
+            return;
+        }
+        let mut children: Vec<Box<dyn Proc>> = children.into_iter().map(|(_, c)| c).collect();
+        for c in &mut children {
+            c.kill();
+        }
+        let reaped = self.reaped.clone();
+        // ponytail: should the OS refuse the thread, the killed processes stay unreaped
+        // (zombies on Unix) until the app exits.
+        crate::worker::spawn("keel-video-reap", move || {
+            for mut c in children {
+                if c.wait() {
+                    reaped.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+    }
+
+    /// Process `id`, whose output ended (it is exiting by itself): killed and reaped here
+    /// (a worker), not left until the session stops.
+    fn reap(&self, id: usize) {
+        let child = {
+            let mut s = self.inner.lock();
+            let at = s.children.iter().position(|(i, _)| *i == id);
+            at.map(|at| s.children.swap_remove(at).1)
+        };
+        if let Some(mut c) = child {
+            c.kill();
+            if c.wait() {
+                self.reaped.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
@@ -377,8 +498,14 @@ impl Procs {
     /// Processes started, and how many of them were waited for.
     #[cfg(test)]
     pub fn counts(&self) -> (usize, usize) {
-        let s = self.inner.lock();
-        (s.children.len() + s.reaped, s.reaped)
+        let started = self.inner.lock().started;
+        (started, self.reaped.load(Ordering::SeqCst))
+    }
+
+    /// Keeps `p` as if started here (tests).
+    #[cfg(test)]
+    fn adopt(&self, p: Box<dyn Proc>) {
+        self.inner.lock().keep(p);
     }
 }
 
@@ -408,7 +535,10 @@ pub struct Frame {
 }
 
 enum Msg {
-    Ready(Known),
+    /// The file is resolved and probed (in the player's `known`).
+    Ready,
+    /// Downloading: bytes done and the size (0: unknown).
+    Download(u64, u64),
     Frames(Receiver<Frame>),
     Failed(String),
 }
@@ -432,7 +562,7 @@ impl Drop for Session {
 
 struct Job {
     resolve: Resolve,
-    known: Option<Known>,
+    known: Arc<OnceLock<Known>>,
     start: f64,
     area: [f32; 2],
     audio: Arc<Audio>,
@@ -463,24 +593,38 @@ impl Session {
     }
 }
 
-/// Probes (first session only), starts the sound, then reads frames into the queue until
-/// the end, a full queue whose reader is gone, or a kill.
+/// Resolves and probes (first session only), starts the sound, then reads frames into the
+/// queue until the end, a full queue whose reader is gone, or a kill.
 fn video_worker(job: Job) {
     let fail = |e: String| {
         job.audio.done.store(true, Ordering::Release);
         let _ = job.msgs.send(Msg::Failed(e));
         job.ctx.request_repaint();
     };
-    let known = match job.known.clone() {
-        Some(k) => k,
+    let known = match job.known.get() {
+        Some(k) => k.clone(),
         None => {
-            let probed = (job.resolve)().and_then(|path| {
+            // The last report sent: when, and the size it gave.
+            let last = std::cell::Cell::new(None::<(Instant, u64)>);
+            let progress = |done: u64, total: u64| {
+                let soon = last
+                    .get()
+                    .is_some_and(|(t, size)| t.elapsed() < PROGRESS_EVERY && size == total);
+                if soon && done < total {
+                    return;
+                }
+                last.set(Some((Instant::now(), total)));
+                let _ = job.msgs.send(Msg::Download(done, total));
+                job.ctx.request_repaint();
+            };
+            let probed = (job.resolve)(&job.procs.cancel, &progress).and_then(|path| {
                 let probe = probe_of(&keel_core::ffprobe_json(&path)?);
                 Ok(Known { path, probe })
             });
             match probed {
                 Ok(k) => {
-                    let _ = job.msgs.send(Msg::Ready(k.clone()));
+                    let k = job.known.get_or_init(|| k).clone();
+                    let _ = job.msgs.send(Msg::Ready);
                     k
                 }
                 Err(e) => return fail(format!("{e:#}")),
@@ -497,23 +641,22 @@ fn video_worker(job: Job) {
     if p.audio {
         let (path, ffmpeg, start) = (known.path.clone(), ffmpeg.clone(), job.start);
         let (audio, procs) = (job.audio.clone(), job.procs.clone());
-        let audio2 = audio.clone();
-        if !crate::worker::spawn("keel-audio", move || {
+        // Dropped with the closure if the thread cannot start.
+        let done = DoneOnDrop(audio.clone());
+        crate::worker::spawn("keel-audio", move || {
+            let _done = done;
             if let Err(e) = audio_worker(&path, &ffmpeg, start, &audio, &procs) {
                 tracing::info!("video sound off: {e:#}");
             }
-            audio.done.store(true, Ordering::Release);
-        }) {
-            audio2.done.store(true, Ordering::Release);
-        }
+        });
     } else {
         job.audio.done.store(true, Ordering::Release);
     }
     let [w, h] = decode_size([p.width, p.height], job.area);
     let mut cmd = Command::new(&ffmpeg);
     cmd.args(video_args(&known.path, job.start, [w, h], p.fps));
-    let (mut out, err) = match job.procs.spawn(cmd) {
-        Ok(Some(pipes)) => pipes,
+    let (id, mut out, err) = match job.procs.spawn(cmd) {
+        Ok(Some(started)) => started,
         Ok(None) => return,
         Err(e) => return fail(format!("cannot start ffmpeg: {e}")),
     };
@@ -536,6 +679,7 @@ fn video_worker(job: Job) {
     }
     drop(out);
     let err = err.join().unwrap_or_default();
+    job.procs.reap(id);
     // Nothing at the very start is a failure; past the end it is just the end.
     if n == 0 && job.start <= 0.0 && !job.procs.stopped() {
         fail(if err.is_empty() {
@@ -545,6 +689,26 @@ fn video_worker(job: Job) {
         });
     }
     job.ctx.request_repaint();
+}
+
+/// Runs the output stream while the player plays and pauses it while it does not (a
+/// paused stream does not keep the device running).
+fn follow(stream: &cpal::Stream, audio: &Audio, on: &mut bool) -> anyhow::Result<()> {
+    use cpal::traits::StreamTrait;
+    let want = !audio.paused.load(Ordering::Relaxed);
+    if want == *on {
+        return Ok(());
+    }
+    if want {
+        stream.play()?;
+    } else if let Err(e) = stream.pause() {
+        // The callback plays silence while paused.
+        tracing::debug!("sound output pause: {e}");
+    }
+    *on = want;
+    #[cfg(test)]
+    audio.stream_on.store(want, Ordering::Release);
+    Ok(())
 }
 
 /// Opens the default output device, starts the PCM decoder and feeds the device until the
@@ -557,13 +721,12 @@ fn audio_worker(
     audio: &Arc<Audio>,
     procs: &Procs,
 ) -> anyhow::Result<()> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::traits::{DeviceTrait, HostTrait};
     let device = cpal::default_host()
         .default_output_device()
         .ok_or_else(|| anyhow::anyhow!("no output device"))?;
     // ponytail: f32 output only (WASAPI and CoreAudio mix in f32; ALSA's default device
-    // converts); an i16-only device plays silently on the wall clock. The device's own
-    // latency is not subtracted from the clock (lip sync off by its buffer, ~10-40 ms).
+    // converts); an i16-only device plays silently on the wall clock.
     let config = device.default_output_config()?.config();
     let (rate, channels) = (config.sample_rate, config.channels);
     let (tx, rx) = bounded::<Vec<f32>>(AUDIO_CHUNKS);
@@ -571,8 +734,12 @@ fn audio_worker(
     let (mut cur, mut pos) = (Vec::<f32>::new(), 0usize);
     let stream = device.build_output_stream::<f32, _, _>(
         config,
-        move |out: &mut [f32], _| {
+        move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
             let a = &shared;
+            let ts = info.timestamp();
+            let latency = ts.playback.duration_since(ts.callback).min(MAX_LATENCY);
+            a.latency_us
+                .store(latency.as_micros() as u64, Ordering::Release);
             if a.paused.load(Ordering::Relaxed) || a.done.load(Ordering::Relaxed) {
                 out.fill(0.0);
                 return;
@@ -614,10 +781,11 @@ fn audio_worker(
         None,
     )?;
     audio.rate.store(rate, Ordering::Release);
-    stream.play()?;
+    let mut on = false;
+    follow(&stream, audio, &mut on)?;
     let mut cmd = Command::new(ffmpeg);
     cmd.args(audio_args(path, start, rate, channels));
-    let Some((mut out, err)) = procs.spawn(cmd)? else {
+    let Some((id, mut out, err)) = procs.spawn(cmd)? else {
         return Ok(());
     };
     drop(stderr_tail(err));
@@ -626,6 +794,7 @@ fn audio_worker(
     let mut buf = vec![0u8; chunk_bytes];
     let mut have = 0;
     loop {
+        follow(&stream, audio, &mut on)?;
         let n = match out.read(&mut buf[have..]) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
@@ -645,15 +814,19 @@ fn audio_worker(
             match tx.send_timeout(chunk, Duration::from_millis(50)) {
                 Ok(()) => break,
                 Err(crossbeam_channel::SendTimeoutError::Timeout(c)) if !procs.stopped() => {
+                    follow(&stream, audio, &mut on)?;
                     chunk = c
                 }
                 Err(_) => return Ok(()),
             }
         }
     }
+    drop(out);
+    procs.reap(id);
     drop(tx);
     // Keep the stream until the callback has played what is queued.
     while !audio.done.load(Ordering::Acquire) && !procs.stopped() {
+        follow(&stream, audio, &mut on)?;
         std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
@@ -664,7 +837,13 @@ fn audio_worker(
 /// Playback of one file in the viewer.
 pub struct VideoPlayer {
     resolve: Resolve,
-    known: Option<Known>,
+    /// The file and its probe once the first session resolved it (the sessions share it:
+    /// a restart never resolves, that is downloads, again).
+    known: Arc<OnceLock<Known>>,
+    /// Where to restart once the first session has resolved the file (a seek before).
+    pending: Option<f64>,
+    /// While the file downloads: bytes done and its size (0: unknown).
+    pub download: Option<(u64, u64)>,
     pub transport: Transport,
     session: Option<Session>,
     tex: Option<TextureHandle>,
@@ -688,7 +867,9 @@ impl VideoPlayer {
     ) -> Self {
         let mut p = Self {
             resolve,
-            known: None,
+            known: Arc::default(),
+            pending: None,
+            download: None,
             transport: Transport {
                 playing: false,
                 ended: false,
@@ -719,8 +900,14 @@ impl VideoPlayer {
         }
     }
 
-    /// Kills the running decoders and starts new ones at `at` seconds.
+    /// Kills the running decoders and starts new ones at `at` seconds; while the first
+    /// session still resolves the file (downloads it), only once that is done.
     fn restart(&mut self, at: f64) {
+        if self.session.is_some() && self.known.get().is_none() && self.error.is_none() {
+            self.pending = Some(at);
+            return;
+        }
+        self.pending = None;
         self.session = None;
         let (resolve, known, area, ctx) = (
             self.resolve.clone(),
@@ -748,13 +935,27 @@ impl VideoPlayer {
     /// Seconds (once probed).
     pub fn duration(&self) -> Option<f64> {
         self.known
-            .as_ref()
+            .get()
             .map(|k| k.probe.duration)
             .filter(|d| *d > 0.0)
     }
 
-    /// The playing position in seconds.
+    /// "Downloading…", with the progress when the provider reports it, while the file
+    /// downloads.
+    pub fn download_text(&self) -> Option<String> {
+        let (done, total) = self.download?;
+        let size = crate::view_details::size_text_of;
+        Some(match total {
+            0 => "Downloading…".into(),
+            _ => format!("Downloading… {} of {}", size(done), size(total)),
+        })
+    }
+
+    /// The playing position in seconds (a seek waiting for the download: its target).
     pub fn position(&mut self) -> f64 {
+        if let Some(at) = self.pending {
+            return at;
+        }
         let at = self
             .session
             .as_mut()
@@ -766,15 +967,27 @@ impl VideoPlayer {
     /// texture), handles the end. Returns the texture and its size.
     pub fn frame(&mut self, area: [f32; 2]) -> Option<(egui::TextureId, Vec2)> {
         self.area = area;
-        let mut ended = false;
+        let mut ready = false;
         if let Some(s) = &mut self.session {
             while let Ok(m) = s.msgs.try_recv() {
                 match m {
-                    Msg::Ready(k) => self.known = Some(k),
+                    Msg::Ready => ready = true,
+                    Msg::Download(done, total) => self.download = Some((done, total)),
                     Msg::Frames(rx) => s.frames = Some(rx),
                     Msg::Failed(e) => self.error = Some(e),
                 }
             }
+        }
+        if ready || self.error.is_some() {
+            self.download = None;
+        }
+        if ready {
+            if let Some(at) = self.pending.take() {
+                self.restart(at);
+            }
+        }
+        let mut ended = false;
+        if let Some(s) = &mut self.session {
             let t = s.clock.now();
             let mut gone = false;
             let due = match &s.frames {
@@ -831,6 +1044,11 @@ impl VideoPlayer {
     #[cfg(test)]
     pub fn procs(&self) -> Arc<Procs> {
         self.session.as_ref().unwrap().procs.clone()
+    }
+
+    #[cfg(test)]
+    fn audio(&self) -> Arc<Audio> {
+        self.session.as_ref().unwrap().audio.clone()
     }
 }
 

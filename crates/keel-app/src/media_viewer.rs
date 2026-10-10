@@ -665,7 +665,8 @@ impl AppState {
                         dim,
                     );
                 }
-                if let Some(note) = &v.note {
+                let download = v.player.as_ref().and_then(VideoPlayer::download_text);
+                if let Some(note) = v.note.as_ref().or(download.as_ref()) {
                     ui.painter().text(
                         body.left_bottom() + vec2(10.0, -8.0),
                         egui::Align2::LEFT_BOTTOM,
@@ -750,13 +751,16 @@ impl AppState {
             return;
         }
         let (real, router) = (req.real.clone(), self.media.sh.router.clone());
-        let resolve: crate::video_player::Resolve = std::sync::Arc::new(move || {
-            real.to_local_path().map(Ok).unwrap_or_else(|| {
-                router
-                    .provider_for(&real)
-                    .ok_or_else(|| anyhow::anyhow!("no provider"))
-                    .and_then(|p| p.local_copy(&real))
-            })
+        let resolve: crate::video_player::Resolve = std::sync::Arc::new(move |cancel, progress| {
+            if let Some(local) = real.to_local_path() {
+                return Ok(local);
+            }
+            let provider = router
+                .provider_for(&real)
+                .ok_or_else(|| anyhow::anyhow!("no provider"))?;
+            progress(0, 0);
+            let report = |p: keel_vfs::Progress| progress(p.done_bytes, p.total_bytes);
+            provider.local_copy_cancellable(&real, &report, cancel)
         });
         let mut p = VideoPlayer::new(ctx.clone(), resolve, &v.prefs, at, v.area_px);
         if c == Cmd::Toggle {
