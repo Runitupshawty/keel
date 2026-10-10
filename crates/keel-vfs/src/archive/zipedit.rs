@@ -9,7 +9,7 @@
 //! or the entry count needs them. New files are deflated.
 
 use super::safe_name;
-use crate::ops::{partial_name, Conflict, Progress};
+use crate::ops::{partial_name, Conflict, Journal, Placed, Progress, Stamp};
 use crate::VPath;
 use anyhow::{bail, ensure, Context, Result};
 use std::{
@@ -1274,10 +1274,81 @@ fn merge_file(taken: &Taken, target: &str, conflict: Conflict) -> Result<Option<
     })
 }
 
+/// A run before this one (`journal`) recorded what its rewrite of `zip` placed, with the
+/// archive as it was then (`Placed::archive`): where the archive changed since and holds
+/// the entry, the rewrite went through. Moved files and folders still at their source
+/// (the run stopped before deleting them) are deleted now (folders only when empty), and
+/// the recorded sources are returned: they are done.
+fn rewritten(
+    journal: &Journal,
+    zip: &Path,
+    now: Stamp,
+    mv: bool,
+    router: &crate::Router,
+) -> Result<HashSet<VPath>> {
+    let recorded: Vec<(&VPath, &Placed)> = (journal.placed.iter())
+        .filter(|(_, p)| p.archive.is_some_and(|was| was != now))
+        .collect();
+    if recorded.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let names = Names::read(zip)?;
+    let held = |p: &Placed| {
+        (p.target.split_archive())
+            .and_then(|(_, inner)| safe_name(&inner).ok())
+            .is_some_and(|inner| names.exists(&inner))
+    };
+    let mut done = HashSet::new();
+    let mut dirs = Vec::new();
+    for (source, placed) in recorded {
+        if !held(placed) {
+            continue;
+        }
+        done.insert(source.clone());
+        if !mv {
+            continue;
+        }
+        if placed.file.is_none() {
+            dirs.push(source);
+            continue;
+        }
+        let gone = match source.to_local_path() {
+            Some(local) => match fs::remove_file(&local) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+                _ => Ok(()),
+            },
+            None => {
+                let provider = (router.provider_for(source))
+                    .with_context(|| format!("no provider: {}", source.display()))?;
+                match provider.stat(source) {
+                    Ok(_) => provider.remove(source),
+                    Err(_) => Ok(()),
+                }
+            }
+        };
+        gone.with_context(|| format!("remove moved file {}", source.display()))?;
+    }
+    // Deepest first; a folder holding anything else stays.
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.path.len()));
+    for dir in dirs {
+        let _ = match dir.to_local_path() {
+            Some(local) => fs::remove_dir(&local).map_err(anyhow::Error::from),
+            None => (router.provider_for(dir))
+                .context("no provider")
+                .and_then(|p| p.remove_empty_dir(dir)),
+        };
+    }
+    Ok(done)
+}
+
 /// Copies or moves `src` (from anywhere, or from inside this same zip) into the folder
 /// `dst_dir` inside a zip on this computer: one rewrite of the archive. Clashes follow
 /// `conflict` as in `transfer` (folders merge; Keep both renames the top-level item).
-/// Moved sources from elsewhere are deleted once the new archive is in place.
+/// Moved sources from elsewhere are deleted once the new archive is in place. With a
+/// `journal`, what the rewrite places is recorded before it runs (a copy's top-level
+/// items, a move's files and folders from elsewhere); run again after a stop, sources
+/// the earlier rewrite placed are done, and a move deletes what of them is left.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn transfer_into(
     src: &[VPath],
     dst_dir: &VPath,
@@ -1286,10 +1357,24 @@ pub(crate) fn transfer_into(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
     router: &crate::Router,
+    journal: Option<&mut Journal>,
 ) -> Result<()> {
     check(cancel)?;
     let (zip, base) = editable(dst_dir)?;
     let outer = dst_dir.split_archive().context("not inside an archive")?.0;
+    let before = Stamp::of(&fs::metadata(&zip)?);
+    let done = match journal.as_deref() {
+        Some(j) => rewritten(j, &zip, before, mv, router)?,
+        None => HashSet::new(),
+    };
+    let src: Vec<&VPath> = src.iter().filter(|s| !done.contains(*s)).collect();
+    // Recorded before the rewrite (see `Placed::archive`).
+    let record = |inner: &str, file: Option<Stamp>| Placed {
+        target: VPath::join_archive(&outer, inner),
+        file,
+        archive: Some(before),
+    };
+    let mut records: Vec<(VPath, Placed)> = Vec::new();
     let names = Names::read(&zip)?;
     ensure!(
         base.is_empty() || names.dirs.contains(&base),
@@ -1302,7 +1387,7 @@ pub(crate) fn transfer_into(
     };
     let mut edits: Vec<Edit> = Vec::new();
     let mut skipped = 0usize;
-    type Moved = Vec<(std::sync::Arc<dyn crate::Provider>, VPath)>;
+    type Moved = Vec<(std::sync::Arc<dyn crate::Provider>, VPath, Placed)>;
     // Moved sources from elsewhere, deleted after the commit: files, then folders deepest
     // first (only folders whose every file moved).
     let (mut moved_files, mut moved_dirs): (Moved, Moved) = (Vec::new(), Vec::new());
@@ -1341,6 +1426,9 @@ pub(crate) fn transfer_into(
                         edits.push(Edit::Delete(to.clone()));
                     }
                     edits.push(to_entry(&inner, &to));
+                    if !mv {
+                        records.push((s.clone(), record(&to, None)));
+                    }
                     names
                         .under(&inner)
                         .map(|(n, d)| (format!("{to}{}", &n[inner.len()..]), *d))
@@ -1348,6 +1436,9 @@ pub(crate) fn transfer_into(
                         .collect()
                 }
                 Landing::Merge => {
+                    if !mv {
+                        records.push((s.clone(), record(&top, None)));
+                    }
                     let mut landed = Vec::new();
                     for (name, node_dir) in names.under(&inner) {
                         let target = format!("{top}{}", &name[inner.len()..]);
@@ -1412,6 +1503,9 @@ pub(crate) fn transfer_into(
             Landing::Whole(to, _) => (to, false),
             Landing::Merge => (top, true),
         };
+        if !mv {
+            records.push(((*s).clone(), record(&top, None)));
+        }
         let mut left_behind: Vec<VPath> = Vec::new();
         let first_dir = moved_dirs.len();
         for node in nodes {
@@ -1420,7 +1514,7 @@ pub(crate) fn transfer_into(
                 edits.push(Edit::Mkdir(target.clone()));
                 taken.add(&target, true);
                 if mv {
-                    moved_dirs.push((provider.clone(), node.path));
+                    moved_dirs.push((provider.clone(), node.path, record(&target, None)));
                 }
                 continue;
             }
@@ -1430,6 +1524,8 @@ pub(crate) fn transfer_into(
                 continue;
             }
             taken.add(&target, false);
+            let stamp = Stamp::new(node.size, node.modified);
+            let placed = record(&target, Some(stamp));
             let (reader, path) = (provider.clone(), node.path.clone());
             edits.push(Edit::Add {
                 name: target,
@@ -1438,7 +1534,7 @@ pub(crate) fn transfer_into(
                 open: Box::new(move || reader.read(&path)),
             });
             if mv {
-                moved_files.push((provider.clone(), node.path));
+                moved_files.push((provider.clone(), node.path, placed));
             }
         }
         // Folders still holding skipped files stay.
@@ -1460,8 +1556,18 @@ pub(crate) fn transfer_into(
         report(Progress::default());
         return Ok(());
     }
+    if let Some(j) = journal {
+        let moved = moved_files.iter().chain(&moved_dirs);
+        for (source, placed) in records
+            .into_iter()
+            .chain(moved.map(|(_, path, placed)| (path.clone(), placed.clone())))
+        {
+            j.placed(source, placed, false)?;
+        }
+        j.flush()?;
+    }
     edit(&zip, edits, &report, cancel)?;
-    for (provider, file) in moved_files {
+    for (provider, file, _) in moved_files {
         match file.to_local_path() {
             // In place in the archive: the source goes for good, as for any move.
             Some(local) => fs::remove_file(&local)
@@ -1469,7 +1575,7 @@ pub(crate) fn transfer_into(
             None => provider.remove(&file)?,
         }
     }
-    for (provider, dir) in moved_dirs.into_iter().rev() {
+    for (provider, dir, _) in moved_dirs.into_iter().rev() {
         match dir.to_local_path() {
             Some(local) => fs::remove_dir(&local)
                 .with_context(|| format!("remove moved folder {}", local.display()))?,

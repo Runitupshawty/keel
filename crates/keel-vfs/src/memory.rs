@@ -1,8 +1,9 @@
 //! An in-memory provider for tests (the `test-util` feature): files by path, folders
 //! implied by them or made with `mkdir`, plus switches that take it offline, make it
 //! read-only, fail the reads of chosen paths or slow every read down. A writer's file is
-//! placed whole on `flush()` (`write_at` puts each write in place). `put` and `remove`
-//! feed `changes` (its cursor is a position in the change log), which can be switched off
+//! placed whole on `flush()` (`write_at`, and every writer while `write_through` is set,
+//! put each write in place). Every change (`put`, `remove`, a placed writer, a rename)
+//! feeds `changes` (its cursor is a position in the change log), which can be switched off
 //! or made to refuse its cursor once; `folder_times` gives folders a modified time that
 //! moves when an entry is added or removed, as on an SFTP server.
 
@@ -10,7 +11,7 @@ use crate::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, Entry, FeedError, Kind, Provider,
     RemoveKind, VPath,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use parking_lot::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -45,8 +46,11 @@ pub struct MemoryProvider {
     /// Called with the path at the start of every `read`.
     #[allow(clippy::type_complexity)]
     pub on_read: Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>>,
-    /// Every change `put` and `remove` made (and `push_change` added), oldest first.
-    log: Mutex<Vec<ChangedPath>>,
+    /// Writers put each write in place at once, so a file being written is there (and
+    /// listed) the whole time, as on a server; otherwise it is placed on `flush()`.
+    pub write_through: AtomicBool,
+    /// The change log and folder times, shared with writers.
+    book: Arc<Book>,
     /// `changes` answers `FeedError::Unsupported`.
     pub no_feed: AtomicBool,
     /// The next `changes` with a cursor answers `FeedError::CursorRejected`.
@@ -56,38 +60,20 @@ pub struct MemoryProvider {
     /// Folders report a modified time that moves when an entry is added to or removed from
     /// them, and `folder_times_track_entries` says so.
     pub folder_times: AtomicBool,
+}
+
+/// What changed, for `changes` and `folder_times`.
+#[derive(Default)]
+struct Book {
+    /// Every change made (and `push_change` added), oldest first.
+    log: Mutex<Vec<ChangedPath>>,
     /// Folder path (`/dir`, `/` for the root) -> its time (see `folder_times`).
     dir_times: Mutex<BTreeMap<String, SystemTime>>,
     clock: AtomicU64,
 }
 
-impl MemoryProvider {
-    pub fn new() -> MemoryProvider {
-        MemoryProvider::default()
-    }
-
-    /// Adds or replaces the file at `path` (a `VPath::path`), with a fixed mtime.
-    pub fn put(&self, path: &str, data: impl Into<Vec<u8>>) {
-        self.put_at(path, data, 1_700_000_000);
-    }
-
-    /// `put` with the mtime `secs` after the epoch.
-    pub fn put_at(&self, path: &str, data: impl Into<Vec<u8>>, secs: u64) {
-        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-        let mut files = self.files.lock();
-        let kind = if files.contains_key(path) {
-            ChangeKind::Modified
-        } else {
-            self.touch_dirs(path, &files);
-            ChangeKind::Created
-        };
-        files.insert(path.into(), (data.into(), mtime));
-        drop(files);
-        self.push_change(path, kind);
-    }
-
-    /// Adds a change to the feed (an `Unknown` folder, say) without touching any file.
-    pub fn push_change(&self, path: &str, kind: ChangeKind) {
+impl Book {
+    fn push(&self, path: &str, kind: ChangeKind) {
         self.log.lock().push(ChangedPath {
             path: VPath {
                 scheme: "memory".into(),
@@ -117,6 +103,42 @@ impl MemoryProvider {
         }
     }
 
+    /// Puts `file` at `path` in `files`, logged as created or modified.
+    fn place(&self, files: &Files, path: &str, file: (Vec<u8>, SystemTime)) {
+        let mut files = files.lock();
+        let kind = if files.contains_key(path) {
+            ChangeKind::Modified
+        } else {
+            self.touch_dirs(path, &files);
+            ChangeKind::Created
+        };
+        files.insert(path.to_owned(), file);
+        drop(files);
+        self.push(path, kind);
+    }
+}
+
+impl MemoryProvider {
+    pub fn new() -> MemoryProvider {
+        MemoryProvider::default()
+    }
+
+    /// Adds or replaces the file at `path` (a `VPath::path`), with a fixed mtime.
+    pub fn put(&self, path: &str, data: impl Into<Vec<u8>>) {
+        self.put_at(path, data, 1_700_000_000);
+    }
+
+    /// `put` with the mtime `secs` after the epoch.
+    pub fn put_at(&self, path: &str, data: impl Into<Vec<u8>>, secs: u64) {
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        self.book.place(&self.files, path, (data.into(), mtime));
+    }
+
+    /// Adds a change to the feed (an `Unknown` folder, say) without touching any file.
+    pub fn push_change(&self, path: &str, kind: ChangeKind) {
+        self.book.push(path, kind);
+    }
+
     fn dir_time(&self, dir: &str) -> Option<SystemTime> {
         if !self.folder_times.load(Ordering::SeqCst) {
             return None;
@@ -126,7 +148,14 @@ impl MemoryProvider {
             d => d,
         };
         let epoch = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        Some(self.dir_times.lock().get(dir).copied().unwrap_or(epoch))
+        Some(
+            self.book
+                .dir_times
+                .lock()
+                .get(dir)
+                .copied()
+                .unwrap_or(epoch),
+        )
     }
 
     /// The file at `path`, if there is one.
@@ -212,8 +241,16 @@ impl MemoryProvider {
         if self.is_dir(&p.path) {
             bail!("{} is a folder", p.display());
         }
+        let mode = match mode {
+            Mode::New | Mode::Replace if self.write_through.load(Ordering::SeqCst) => {
+                (self.book).place(&self.files, &p.path, (Vec::new(), SystemTime::now()));
+                Mode::Direct
+            }
+            mode => mode,
+        };
         Ok(Box::new(MemoryWrite {
             files: self.files.clone(),
+            book: self.book.clone(),
             path: p.path.clone(),
             buf: Vec::new(),
             mode,
@@ -234,7 +271,10 @@ impl MemoryProvider {
             }
             let mut files = self.files.lock();
             files.remove(&from.path);
-            files.insert(to.path.clone(), file);
+            self.book.touch_dirs(&from.path, &files);
+            drop(files);
+            self.book.push(&from.path, ChangeKind::Removed);
+            self.book.place(&self.files, &to.path, file);
             return Ok(());
         }
         if self.exists(&to.path) {
@@ -242,6 +282,7 @@ impl MemoryProvider {
         }
         let (old, new) = (prefix(from), prefix(to));
         let mut files = self.files.lock();
+        self.book.touch_dirs(&to.path, &files);
         let moved: Vec<String> = files
             .keys()
             .filter(|k| k.starts_with(&old))
@@ -262,6 +303,11 @@ impl MemoryProvider {
             dirs.remove(&d);
             dirs.insert(format!("{}{}", to.path, &d[from.path.len()..]));
         }
+        drop(dirs);
+        self.book.touch_dirs(&from.path, &files);
+        drop(files);
+        self.book.push(&from.path, ChangeKind::Removed);
+        self.book.push(&to.path, ChangeKind::Created);
         Ok(())
     }
 }
@@ -278,6 +324,7 @@ enum Mode {
 
 struct MemoryWrite {
     files: Files,
+    book: Arc<Book>,
     path: String,
     buf: Vec<u8>,
     mode: Mode,
@@ -301,12 +348,11 @@ impl Write for MemoryWrite {
         if self.mode == Mode::Direct {
             return Ok(());
         }
-        let mut files = self.files.lock();
-        if self.mode == Mode::New && files.contains_key(&self.path) {
+        if self.mode == Mode::New && self.files.lock().contains_key(&self.path) {
             return Err(std::io::ErrorKind::AlreadyExists.into());
         }
         let data = std::mem::take(&mut self.buf);
-        files.insert(self.path.clone(), (data, SystemTime::now()));
+        (self.book).place(&self.files, &self.path, (data, SystemTime::now()));
         // Placed: later writes go straight in.
         self.mode = Mode::Direct;
         Ok(())
@@ -400,11 +446,13 @@ impl Provider for MemoryProvider {
     }
     fn write_at(&self, p: &VPath, offset: u64) -> Result<Option<Box<dyn Write + Send>>> {
         self.writable(p)?;
+        if !self.files.lock().contains_key(&p.path) {
+            anyhow::ensure!(offset == 0, "only 0 of {offset} bytes are there");
+            (self.book).place(&self.files, &p.path, (Vec::new(), SystemTime::now()));
+        }
         {
             let mut files = self.files.lock();
-            let file = files
-                .entry(p.path.clone())
-                .or_insert_with(|| (Vec::new(), SystemTime::now()));
+            let file = (files.get_mut(&p.path)).context("file removed while written")?;
             if (file.0.len() as u64) < offset {
                 bail!("only {} of {offset} bytes are there", file.0.len());
             }
@@ -456,9 +504,9 @@ impl Provider for MemoryProvider {
         let removed = files.len() != before || dirs.len() != dirs_before;
         drop(dirs);
         if removed {
-            self.touch_dirs(&p.path, &files);
+            self.book.touch_dirs(&p.path, &files);
             drop(files);
-            self.push_change(&p.path, ChangeKind::Removed);
+            self.book.push(&p.path, ChangeKind::Removed);
         }
         Ok(())
     }
@@ -477,7 +525,7 @@ impl Provider for MemoryProvider {
         if self.no_feed.load(Ordering::SeqCst) {
             return Err(FeedError::Unsupported.into());
         }
-        let log = self.log.lock();
+        let log = self.book.log.lock();
         let from = match cursor {
             None => log.len(),
             Some(_) if self.reject_cursor.swap(false, Ordering::SeqCst) => {

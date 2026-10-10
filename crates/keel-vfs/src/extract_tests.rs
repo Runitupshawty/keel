@@ -148,6 +148,10 @@ fn a_cancel_mid_way_leaves_no_partial_file() {
     let big = vec![7u8; 4 << 20];
     std::fs::write(&zip, zip_bytes(&[("first.txt", b"1"), ("big.bin", &big)])).unwrap();
     let (router, mem, dest) = setup(tmp.path());
+    // The partial file is there while it is written, as on a server: only its removal
+    // keeps it out of the listing below.
+    mem.write_through.store(true, Ordering::SeqCst);
+    let partial_seen = AtomicBool::new(false);
     let cancel = AtomicBool::new(false);
     let result = extract_to(
         &VPath::local(&zip),
@@ -157,6 +161,9 @@ fn a_cancel_mid_way_leaves_no_partial_file() {
         Conflict::Skip,
         &|p| {
             if p.done_bytes > 1 << 20 {
+                if mem.paths().iter().any(|n| n.contains("big.bin")) {
+                    partial_seen.store(true, Ordering::Relaxed);
+                }
                 cancel.store(true, Ordering::Relaxed);
             }
         },
@@ -166,4 +173,43 @@ fn a_cancel_mid_way_leaves_no_partial_file() {
     assert!(format!("{:#}", result.unwrap_err()).contains("cancelled"));
     let names: Vec<String> = mem.files().into_iter().map(|(p, _)| p).collect();
     assert_eq!(names, ["/dest/first.txt"], "the finished file only");
+    assert!(
+        partial_seen.load(Ordering::Relaxed),
+        "the partial file was there"
+    );
+}
+
+/// The test provider's change log and folder times see files placed by a writer and by a
+/// rename, as they see `put` and `remove`.
+#[test]
+fn memory_writes_and_renames_are_in_the_change_log() {
+    use crate::ChangeKind::*;
+    let mem = MemoryProvider::new();
+    mem.folder_times.store(true, Ordering::SeqCst);
+    let no = AtomicBool::new(false);
+    let dir = VPath::parse("memory://box/d").unwrap();
+    mem.put("/d/other.txt", "o");
+    let start = mem.changes(None, &no).unwrap().cursor;
+    let time = || mem.stat(&dir).unwrap().modified;
+    let before = time();
+    let mut w = mem.create_new(&dir.join("a.txt")).unwrap();
+    w.write_all(b"a").unwrap();
+    w.flush().unwrap();
+    drop(w);
+    let written = time();
+    assert_ne!(written, before);
+    mem.rename(&dir.join("a.txt"), &dir.join("b.txt")).unwrap();
+    assert_ne!(time(), written);
+    let page = mem.changes(Some(start), &no).unwrap();
+    let seen: Vec<(String, crate::ChangeKind)> = (page.changes.iter())
+        .map(|c| (c.path.path.clone(), c.kind))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("/d/a.txt".to_owned(), Created),
+            ("/d/a.txt".to_owned(), Removed),
+            ("/d/b.txt".to_owned(), Created),
+        ]
+    );
 }

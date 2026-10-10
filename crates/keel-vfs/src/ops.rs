@@ -112,7 +112,7 @@ impl Stamp {
         });
         Stamp { size, mtime }
     }
-    fn of(m: &fs::Metadata) -> Stamp {
+    pub(crate) fn of(m: &fs::Metadata) -> Stamp {
         Stamp::new(m.len(), m.modified().ok())
     }
     fn entry(e: &crate::Entry) -> Stamp {
@@ -127,6 +127,10 @@ pub struct Placed {
     /// The placed file as it was then. None: a folder the transfer made, so everything in
     /// it is the transfer's own.
     pub file: Option<Stamp>,
+    /// Into a zip: recorded before the archive's one rewrite, with the archive as it was
+    /// then. Placed once the archive changed and holds `target`; until then, not at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<Stamp>,
 }
 
 /// The file a resumable transfer was writing when it last recorded.
@@ -219,7 +223,7 @@ impl<'j> Journal<'j> {
     }
 
     /// `source` is placed at `placed`; `now`: record it before going on.
-    fn placed(&mut self, source: crate::VPath, placed: Placed, now: bool) -> Result<()> {
+    pub(crate) fn placed(&mut self, source: crate::VPath, placed: Placed, now: bool) -> Result<()> {
         if let Some(stamp) = placed.file {
             self.files += 1;
             self.bytes += stamp.size;
@@ -268,13 +272,16 @@ fn settle(
         Some(Placed {
             target,
             file: Some(stamp),
+            ..
         }) => {
             return match stat(target)? {
                 Some((false, now)) if now == *stamp => Ok(Settle::Done(target.clone())),
                 _ => Err(TargetChanged(target.display()).into()),
             }
         }
-        Some(Placed { target, file: None }) => return Ok(Settle::Into(target.clone())),
+        Some(Placed {
+            target, file: None, ..
+        }) => return Ok(Settle::Into(target.clone())),
         None => {}
     }
     let unfinished = j
@@ -487,6 +494,7 @@ impl Job<'_, '_> {
                     let placed = Placed {
                         target: crate::VPath::local(&target),
                         file: None,
+                        archive: None,
                     };
                     j.placed(key, placed, true)?;
                 }
@@ -534,7 +542,15 @@ impl Job<'_, '_> {
         if let Some(j) = self.journal.as_deref_mut() {
             let file = Some(Stamp::of(&fs::symlink_metadata(&target)?));
             let target = crate::VPath::local(&target);
-            j.placed(key, Placed { target, file }, false)?;
+            j.placed(
+                key,
+                Placed {
+                    target,
+                    file,
+                    archive: None,
+                },
+                false,
+            )?;
         }
         self.state.done_bytes += metadata.len();
         self.state.done_items += 1;
@@ -558,7 +574,15 @@ impl Job<'_, '_> {
             j.take_unfinished(&key);
             if !j.placed.contains_key(&key) {
                 let file = local_stat(&target)?.map(|(_, stamp)| stamp);
-                j.placed(key, Placed { target, file }, false)?;
+                j.placed(
+                    key,
+                    Placed {
+                        target,
+                        file,
+                        archive: None,
+                    },
+                    false,
+                )?;
             }
         }
         self.state.done_bytes += metadata.len();
@@ -817,8 +841,8 @@ fn transfer_with(
     router: &crate::Router,
     journal: Option<&mut Journal>,
 ) -> Result<()> {
-    // Into a folder inside a zip: one rewrite of the archive (atomic, so nothing for a
-    // journal to record).
+    // Into a folder inside a zip: one rewrite of the archive (atomic; the journal gets
+    // what it places before it runs).
     #[cfg(feature = "zip")]
     if dst_dir.split_archive().is_some() {
         return crate::archive::zipedit::transfer_into(
@@ -829,6 +853,7 @@ fn transfer_with(
             progress,
             cancel,
             router,
+            journal,
         );
     }
     // Paths inside a local archive are `file:` too, but have no local path of their own.
@@ -1111,6 +1136,7 @@ impl ProviderJob<'_, '_> {
                     let placed = Placed {
                         target: target.clone(),
                         file: None,
+                        archive: None,
                     };
                     j.placed(source.clone(), placed, true)?;
                 }
@@ -1147,7 +1173,15 @@ impl ProviderJob<'_, '_> {
         }
         if let Some(j) = self.journal.as_deref_mut() {
             let file = Some(Stamp::entry(&placed));
-            j.placed(source.clone(), Placed { target, file }, false)?;
+            j.placed(
+                source.clone(),
+                Placed {
+                    target,
+                    file,
+                    archive: None,
+                },
+                false,
+            )?;
         }
         self.state.done_bytes += placed.size;
         self.state.done_items += 1;
@@ -1175,7 +1209,15 @@ impl ProviderJob<'_, '_> {
             j.take_unfinished(source);
             if !j.placed.contains_key(source) {
                 let file = provider_stat(&*self.dst, &target)?.map(|(_, stamp)| stamp);
-                j.placed(source.clone(), Placed { target, file }, false)?;
+                j.placed(
+                    source.clone(),
+                    Placed {
+                        target,
+                        file,
+                        archive: None,
+                    },
+                    false,
+                )?;
             }
         }
         self.state.done_bytes += before.size;
@@ -1900,11 +1942,12 @@ impl RemoteExtract {
             sweep_provider(&*self.dst, &folder);
         }
         let partial = folder.join(&partial_name(target.name()));
-        let mut writer = self.dst.create_new_cancellable(&partial, cancel)?;
+        // Declared before the writer, so it drops (and removes the partial) after it.
         let mut guard = ProviderPartial {
             provider: self.dst.clone(),
             path: Some(partial.clone()),
         };
+        let mut writer = self.dst.create_new_cancellable(&partial, cancel)?;
         let copied = copy_archive_bytes(input, &mut writer, state, progress, cancel)?;
         anyhow::ensure!(copied == size, "archive entry is truncated: {name}");
         check_cancel(cancel)?;

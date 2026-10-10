@@ -957,9 +957,11 @@ impl ExecJob {
                 };
                 let file = None;
                 let target = target.clone();
-                placed
-                    .entry(key)
-                    .or_insert(keel_vfs::ops::Placed { target, file });
+                placed.entry(key).or_insert(keel_vfs::ops::Placed {
+                    target,
+                    file,
+                    archive: None,
+                });
             }
         }
         let mut journal =

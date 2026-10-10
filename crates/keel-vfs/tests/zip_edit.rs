@@ -465,3 +465,74 @@ fn other_formats_and_nested_zips_stay_read_only() {
         format!("{:#}", zipedit::editable(&remote).unwrap_err()).contains("not on this computer")
     );
 }
+
+/// A job stopped after the archive's rewrite but before it recorded the batch (or, for a
+/// move, before it deleted the sources) runs the batch again: what the rewrite placed was
+/// recorded before it ran, so Keep both adds no second copy and a move only deletes what
+/// is left of its sources. Recorded against an archive that did not change (stopped
+/// before the rewrite), the batch runs as the first time.
+#[test]
+fn a_transfer_into_a_zip_resumed_after_its_rewrite_adds_nothing_twice() {
+    use keel_vfs::ops::{transfer_resumable, Journal, Placed};
+    use std::collections::HashMap;
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = tmp.path().join("a.zip");
+    zip_file(&zip, &[("old.txt", b"old"), ("dir/keep.txt", b"keep")]);
+    let src = tmp.path().join("src");
+    fs::create_dir_all(src.join("dir/sub")).unwrap();
+    fs::write(src.join("old.txt"), b"new body").unwrap();
+    fs::write(src.join("dir/one.txt"), b"one").unwrap();
+    fs::write(src.join("dir/sub/two.txt"), b"two").unwrap();
+    let router = router(tmp.path());
+    let cancel = no_cancel();
+    let run = |names: &[&str], mv: bool, placed: HashMap<VPath, Placed>, fail: bool| {
+        let from: Vec<VPath> = names.iter().map(|n| VPath::local(src.join(n))).collect();
+        let recorded = std::cell::RefCell::new(placed.clone());
+        let mut journal = Journal::new(placed, None, |fresh, _| {
+            recorded.borrow_mut().extend(fresh);
+            anyhow::ensure!(!fail, "stopped before the rewrite");
+            Ok(())
+        });
+        let result = transfer_resumable(
+            &from,
+            &at(&zip, ""),
+            mv,
+            Conflict::RenameNew,
+            &|_| {},
+            &cancel,
+            &router,
+            &mut journal,
+        );
+        drop(journal);
+        (result, recorded.into_inner())
+    };
+    // A copy with Keep both: "old (2).txt", and run again from its record, nothing more.
+    let (result, placed) = run(&["old.txt"], false, HashMap::new(), false);
+    result.unwrap();
+    let once = tree(&zip);
+    assert_eq!(once["old (2).txt"], b"new body");
+    run(&["old.txt"], false, placed, false).0.unwrap();
+    assert_eq!(tree(&zip), once, "no \"old (3).txt\"");
+    // A move of a folder into "dir (2)", stopped before its sources were deleted (put back
+    // here as they were): run again, it deletes them and adds nothing.
+    let (result, placed) = run(&["dir"], true, HashMap::new(), false);
+    result.unwrap();
+    let moved = tree(&zip);
+    assert_eq!(moved["dir (2)/sub/two.txt"], b"two");
+    assert!(!src.join("dir").exists());
+    fs::create_dir_all(src.join("dir/sub")).unwrap();
+    fs::write(src.join("dir/one.txt"), b"one").unwrap();
+    fs::write(src.join("dir/sub/two.txt"), b"two").unwrap();
+    run(&["dir"], true, placed, false).0.unwrap();
+    assert_eq!(tree(&zip), moved, "no \"dir (3)\"");
+    assert!(!src.join("dir").exists(), "the sources left are deleted");
+    // Stopped after recording but before the rewrite: the record does not count.
+    fs::write(src.join("late.txt"), b"late").unwrap();
+    let (result, placed) = run(&["late.txt"], true, HashMap::new(), true);
+    assert!(result.is_err());
+    assert!(!tree(&zip).contains_key("late.txt"));
+    assert!(placed.values().all(|p| p.archive.is_some()));
+    run(&["late.txt"], true, placed, false).0.unwrap();
+    assert_eq!(tree(&zip)["late.txt"], b"late");
+    assert!(!src.join("late.txt").exists());
+}
