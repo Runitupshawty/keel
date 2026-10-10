@@ -2,10 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] - 2026-10-09
+
+Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
 
 ### Added
 
+- Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
+- Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
+- Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
+- Spacedrop: send files and folders to a paired device in resumable 4 MiB chunks, verified with BLAKE3 over the whole file, staged in a `.keel-partial` folder and moved into the receiver's inbox folder only when complete. The receiver gets an accept prompt, with per-device auto-accept. Drops run as durable jobs that survive a dropped link or a restart.
+- App: a Devices sidebar section (status dot, name, storage bar, Browse, Send files, Shares, Forget), a pairing dialog with the code and QR, a shares dialog, "Send with Spacedrop..." in the context menu, and Settings → Devices (enable, device name, inbox, relays, auto-accept list).
+- `keel-api`, a typed operation registry with 29 operations and generated JSON schemas. Mutating operations are preview-first: `plan` returns a preview with a plan id and an input hash, and `execute` applies only that exact input, refusing a wrong hash, a changed source or a plan older than 10 minutes.
+- `keel-daemon`, a headless host for the profile's library that serves the API as JSON-RPC on a per-user local socket, with an optional token-authenticated loopback WebSocket, notifications for job progress, library changes and device events, and a single daemon per profile.
+- Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
+- `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
 - Library search media filters: `camera:`, `taken:`, `w:` / `h:`, `duration:`, `has:gps` and `kind:photo`, from the sidecar media rows. Words that match no name or path also match camera and keywords, ranked below name hits.
 - Previews for PowerPoint (`.pptx`, text per slide) and OpenDocument (`.odt`, `.ods` with sheets by name, `.odp`) files. Word previews now keep bullet and numbered lists and page breaks. Previews stop at 200 slides or about 500 pages of paragraphs, read at most 64 MiB of decompressed content (a zip bomb gives an error), and report malformed or non-zip files as an error. `.ods` files are now shown as a document with one table per sheet instead of the spreadsheet grid.
 - WebDAV cloud accounts (Nextcloud, ownCloud, Synology, Apache `mod_dav`): add one in Settings → Cloud with the collection URL, user name and password (kept in the OS keychain), test the connection first, then browse, upload, rename (MOVE), make folders (MKCOL) and delete like any other cloud account. No client id is needed; plain `http://` needs an explicit opt-in.
@@ -23,11 +34,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Changed
 
+- Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
+- Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
 - 7z support moved from the unmaintained `sevenz-rust` to `sevenz-rust2`.
 - `syntect` is built with only what the previews use (bundled syntax and theme dumps, fancy-regex), which drops the unmaintained `yaml-rust` (RUSTSEC-2024-0320). The remaining `cargo deny` advisory ignores now name the crate that pulls each one and why it stays.
 
 ### Fixed
 
+- Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
 - A move of a file or folder within one SFTP host now renames on the server (OpenSSH `posix-rename` when replacing, else the plain SFTP rename) instead of downloading and re-uploading it; folders move in one step. If the server refuses the rename (for example across devices) the move falls back to copy and delete. Conflict handling (skip, overwrite, keep both) is unchanged. This lifts the 0.6.0 known limitation about same-host SFTP moves; copies between hosts still stream through this PC.
 - SFTP: `russh` 0.50 to 0.64 and `russh-sftp` 2.4 to 3.0, fixing unbounded memory allocation driven by a hostile server (RUSTSEC-2026-0154, RUSTSEC-2026-0153). Host key trust, key file, agent and password logins, keepalive and cancellation behave as before; a host certificate offered by a server is refused.
 - Spreadsheet previews: `calamine` 0.26 to 0.36, which moves its XML parser to `quick-xml` 0.41 and fixes a quadratic-time attribute check and a namespace allocation DoS on crafted xlsx/ods files (RUSTSEC-2026-0194, RUSTSEC-2026-0195).
@@ -52,31 +66,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Tests and caches: RAR extraction temp folders and SFTP, cloud and device downloads ignored `KEEL_DATA_DIR` and could land in the real `%LOCALAPPDATA%\Keel`. Every cache and temp root now comes from one resolver (`<KEEL_DATA_DIR>/cache`, else `<KEEL_CONFIG_DIR>/cache`, else a temp folder in tests, else the platform cache folder).
 - `--web`: unauthenticated connections could each send 16 MiB messages and fill all 64 connection slots. Until `auth` a message may be at most 4 KiB, at most 16 connections may wait to sign in and at most 8 come from one remote address; a connection that does not sign in within 10 s gets error -32007 before it is closed (as documented). A remote bind checks the `Host` header against its IP and `--web-host` names.
 - Devices: forgetting a device drops its pending offers and staging and removes its folders from the library; day-old device download folders are swept from the temp folder; devices are off until turned on in Settings (the identity is created then); received files and pairings are no longer lost from the event queue, and an idle window shows them at once; the offer prompt lists file names and cannot overflow its total; without a Downloads folder drops go to `<data dir>/inbox` instead of being declined silently.
-
-## [0.8.0] - 2026-10-09
-
-Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.
-
-### Added
-
-- Devices and pairing: pair two devices with a short code or a QR ticket. Codes last 10 minutes and work once, there is no account and no server beyond iroh's public relays, and each pair of devices keeps one connection.
-- Remote sources: a paired device's sources open as `node://<device>/<source>/...` folders that list, preview and copy like any other, and can be added as indexed library sources.
-- Grants: share a source or a subtree with a device as read or read-write; a revoke or downgrade takes effect immediately and cuts off running transfers.
-- Spacedrop: send files and folders to a paired device in resumable 4 MiB chunks, verified with BLAKE3 over the whole file, staged in a `.keel-partial` folder and moved into the receiver's inbox folder only when complete. The receiver gets an accept prompt, with per-device auto-accept. Drops run as durable jobs that survive a dropped link or a restart.
-- App: a Devices sidebar section (status dot, name, storage bar, Browse, Send files, Shares, Forget), a pairing dialog with the code and QR, a shares dialog, "Send with Spacedrop..." in the context menu, and Settings → Devices (enable, device name, inbox, relays, auto-accept list).
-- `keel-api`, a typed operation registry with 29 operations and generated JSON schemas. Mutating operations are preview-first: `plan` returns a preview with a plan id and an input hash, and `execute` applies only that exact input, refusing a wrong hash, a changed source or a plan older than 10 minutes.
-- `keel-daemon`, a headless host for the profile's library that serves the API as JSON-RPC on a per-user local socket, with an optional token-authenticated loopback WebSocket, notifications for job progress, library changes and device events, and a single daemon per profile.
-- Command line subcommands: `keel search`, `keel tag`, `keel plan ... | keel execute`, `keel devices`, `keel shares`, `keel sources` and `keel daemon start|stop|status`, all with `--json`.
-- `keel mcp`, an MCP server over stdio with one tool per operation, so Claude Code, Codex and other agents can use the library; every mutating tool returns a preview first. See [docs/api.md](docs/api.md).
-
-### Changed
-
-- Roadmap: Phases 6 to 8 are released and Phase 9 is in progress.
-- Subcommands talk to the daemon when it runs for the profile and otherwise open the library in the same process.
-
-### Fixed
-
-- Review fixes in `keel-net`: a device store is opened under an exclusive lock so a second process cannot change grants; pairing reveals nothing about either device before the other side proves it knows the code; names, labels and paths are validated on both sides; each peer has connection and request limits; stalled transfers are dropped after an idle timeout; and a request that fails because a connection closed under it is retried once.
 
 ### Security
 
