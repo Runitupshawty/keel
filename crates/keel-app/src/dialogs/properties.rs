@@ -141,6 +141,15 @@ fn date(t: Option<SystemTime>) -> String {
     .unwrap_or_else(|| "—".into())
 }
 
+/// "2 files, 1 folder": the Contains row.
+fn contains(files: u64, folders: u64) -> String {
+    let n = |n: u64, one: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
+    };
+    format!("{}, {}", n(files, "file"), n(folders, "folder"))
+}
+
 /// The dialog body; `info` is None while the worker is still counting.
 pub fn ui(
     ui: &mut egui::Ui,
@@ -183,7 +192,7 @@ pub fn ui(
             if p.folders > 0 || p.kind == "Folder" || paths.len() > 1 {
                 row(
                     "Contains",
-                    format!("{more}{} files, {} folders", p.files, p.folders),
+                    format!("{more}{}", contains(p.files, p.folders)),
                 );
             }
             if paths.len() == 1 {
@@ -217,6 +226,13 @@ pub fn ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_row_counts_in_the_singular_too() {
+        assert_eq!(contains(2, 1), "2 files, 1 folder");
+        assert_eq!(contains(1, 0), "1 file, 0 folders");
+        assert_eq!(contains(0, 3), "0 files, 3 folders");
+    }
 
     #[test]
     fn folder_totals_count_files_and_subfolders() {
