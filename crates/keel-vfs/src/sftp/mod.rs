@@ -59,6 +59,9 @@ pub struct Endpoint {
     pub identity_files: Vec<PathBuf>,
     pub identities_only: bool,
     pub keepalive: Option<Duration>,
+    /// A jump host of a password remote: the SSH agent's keys are offered before the key
+    /// files.
+    pub agent_first: bool,
 }
 impl Endpoint {
     pub fn address(&self) -> String {
@@ -90,6 +93,7 @@ pub fn plan(host: &RemoteHost, config: Option<&Path>) -> Result<Plan> {
         identity_files: Vec::new(),
         identities_only: false,
         keepalive: Some(KEEPALIVE),
+        agent_first: false,
     };
     let resolver = host
         .use_ssh_config
@@ -115,8 +119,11 @@ pub fn plan(host: &RemoteHost, config: Option<&Path>) -> Result<Plan> {
             Some(s) => Some(Duration::from_secs(s)),
             None => Some(KEEPALIVE),
         },
+        agent_first: false,
     };
-    // Jump hosts sign in like the target, but never with its password.
+    // Jump hosts sign in like the target, but never with its password: a password remote's
+    // jump hosts use the agent, then the key files.
+    let password = host.auth == RemoteAuth::PasswordInKeyring;
     let jump_auth = match &host.auth {
         RemoteAuth::PasswordInKeyring => RemoteAuth::KeyFile {
             path: PathBuf::new(),
@@ -127,7 +134,10 @@ pub fn plan(host: &RemoteHost, config: Option<&Path>) -> Result<Plan> {
     let mut hops: Vec<Endpoint> = r
         .jumps
         .iter()
-        .map(|j| endpoint(j, jump_auth.clone()))
+        .map(|j| Endpoint {
+            agent_first: password,
+            ..endpoint(j, jump_auth.clone())
+        })
         .collect();
     let mut target = endpoint(&r, host.auth.clone());
     if host.port != 22 {
@@ -1235,6 +1245,7 @@ mod tests {
         assert!(
             matches!(&hop.auth, RemoteAuth::KeyFile { path, passphrase_in_keyring: false } if path.as_os_str().is_empty())
         );
+        assert!(hop.agent_first && !target.agent_first, "agent, then keys");
 
         let key = RemoteAuth::KeyFile {
             path: "explicit_key".into(),
@@ -1250,6 +1261,7 @@ mod tests {
         assert_eq!(plan.hops[1].address(), "nas.example.invalid:2222");
         assert_eq!(plan.hops[1].user, "me");
         assert_eq!(plan.hops[0].auth, key);
+        assert!(!plan.hops[0].agent_first);
 
         let off = RemoteHost {
             use_ssh_config: false,

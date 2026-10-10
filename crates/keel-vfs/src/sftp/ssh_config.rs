@@ -5,7 +5,10 @@
 //! `keyword value` and `keyword=value`, quoted values, comments, and first-obtained-value
 //! wins as in OpenSSH (`IdentityFile` accumulates). Honoured keywords: `HostName`, `User`,
 //! `Port`, `IdentityFile`, `IdentitiesOnly`, `ProxyJump`, `ServerAliveInterval`. `Match`
-//! blocks are skipped with a note, `ProxyCommand` is refused, everything else is ignored.
+//! blocks are skipped with a note, `ProxyCommand` is refused, the rest of OpenSSH's keywords
+//! are ignored. As in OpenSSH, a keyword it does not know (a typo) is an error unless
+//! `IgnoreUnknown` lists it, so a misspelt `Host` never turns its block into a default. A
+//! leading byte-order mark is skipped; files over 1 MiB are refused.
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
@@ -13,6 +16,48 @@ use std::path::{Path, PathBuf};
 
 /// Include files nest at most this deep; a ProxyJump route has at most this many hops.
 pub const MAX_DEPTH: usize = 8;
+/// Aliases resolved for one connection at most (each hop's own route is followed for the
+/// first hop only, so a valid route needs far fewer).
+const MAX_RESOLVES: usize = 64;
+/// Configuration and key files are refused above this size.
+pub const MAX_FILE: u64 = 1 << 20;
+
+/// Every keyword OpenSSH's client accepts (including deprecated ones it still parses, and
+/// the common vendor additions), lower case. Anything else is a "Bad configuration option".
+#[rustfmt::skip]
+const KNOWN: &[&str] = &[
+    "addkeystoagent", "addressfamily", "afstokenpassing", "batchmode", "bindaddress",
+    "bindinterface", "canonicaldomains", "canonicalizefallbacklocal", "canonicalizehostname",
+    "canonicalizemaxdots", "canonicalizepermittedcnames", "casignaturealgorithms",
+    "certificatefile", "challengeresponseauthentication", "channeltimeout", "checkhostip",
+    "cipher", "ciphers", "clearallforwardings", "compression", "compressionlevel",
+    "connectionattempts", "connecttimeout", "controlmaster", "controlpath", "controlpersist",
+    "dsaauthentication", "dynamicforward", "enableescapecommandline", "enablesshkeysign",
+    "escapechar", "exitonforwardfailure", "fallbacktorsh", "fingerprinthash",
+    "forkafterauthentication", "forwardagent", "forwardx11", "forwardx11timeout",
+    "forwardx11trusted", "gatewayports", "globalknownhostsfile", "gssapiauthentication",
+    "gssapiclientidentity", "gssapidelegatecredentials", "gssapikexalgorithms",
+    "gssapikeyexchange", "gssapirenewalforcesrekey", "gssapiserveridentity", "gssapitrustdns",
+    "hashknownhosts", "host", "hostbasedacceptedalgorithms", "hostbasedauthentication",
+    "hostbasedkeytypes", "hostkeyalgorithms", "hostkeyalias", "hostname", "identitiesonly",
+    "identityagent", "identityfile", "ignoreunknown", "include", "ipqos",
+    "kbdinteractiveauthentication", "kbdinteractivedevices", "keepalive", "kerberosauthentication",
+    "kerberostgtpassing", "kexalgorithms", "knownhostscommand", "localcommand", "localforward",
+    "loglevel", "logverbose", "macs", "match", "nohostauthenticationforlocalhost",
+    "numberofpasswordprompts", "obscurekeystroketiming", "passwordauthentication",
+    "permitlocalcommand", "permitremoteopen", "pkcs11provider", "port",
+    "preferredauthentications", "protocol", "proxycommand", "proxyjump", "proxyusefdpass",
+    "pubkeyacceptedalgorithms", "pubkeyacceptedkeytypes", "pubkeyauthentication",
+    "refuseconnection", "rekeylimit", "remotecommand", "remoteforward", "requesttty",
+    "requiredrsasize", "revokedhostkeys", "rhostsauthentication", "rhostsrsaauthentication",
+    "rsaauthentication", "securitykeyprovider", "sendenv", "serveralivecountmax",
+    "serveraliveinterval", "sessiontype", "setenv", "skeyauthentication", "smartcarddevice",
+    "stdinnull", "streamlocalbindmask", "streamlocalbindunlink", "stricthostkeychecking",
+    "syslogfacility", "tag", "tcpkeepalive", "tisauthentication", "tunnel", "tunneldevice",
+    "updatehostkeys", "usekeychain", "useprivilegedport", "user", "userknownhostsfile",
+    "useroaming", "usersh", "verifyhostkeydns", "versionaddendum", "visualhostkey",
+    "warnweakcrypto", "xauthlocation",
+];
 
 /// What one alias resolves to. `jumps` is the full ordered ProxyJump route (first hop
 /// first); each hop's own `jumps` is empty.
@@ -55,6 +100,34 @@ struct Found {
     values: HashMap<&'static str, Located>,
     identity_files: Vec<String>,
     notes: Vec<String>,
+    /// `IgnoreUnknown` patterns (first obtained value).
+    ignore_unknown: Option<String>,
+}
+
+/// The text of a configuration or key file of at most [`MAX_FILE`] bytes; None when it does
+/// not exist. Anything but a regular file (a folder, a pipe, a device) is refused before it
+/// is opened, so a read can neither block nor run out of memory.
+pub fn read_small(path: &Path) -> Result<Option<String>> {
+    use std::io::Read;
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
+    };
+    anyhow::ensure!(meta.is_file(), "{} is not a regular file", path.display());
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_FILE + 1).read_to_end(&mut bytes))
+        .with_context(|| format!("could not read {}", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_FILE,
+        "{} is larger than {} KiB",
+        path.display(),
+        MAX_FILE >> 10
+    );
+    let text =
+        String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))?;
+    Ok(Some(text))
 }
 
 impl Resolver {
@@ -76,10 +149,23 @@ impl Resolver {
     }
 
     pub fn resolve(&self, alias: &str) -> Result<Resolved> {
-        self.resolve_depth(alias, 0)
+        self.resolve_depth(alias, 0, true, &mut 0)
     }
 
-    fn resolve_depth(&self, alias: &str, depth: usize) -> Result<Resolved> {
+    /// `route`: follow the alias's own ProxyJump (only the target and first hops need it).
+    /// `resolves` counts the aliases resolved so far for this connection.
+    fn resolve_depth(
+        &self,
+        alias: &str,
+        depth: usize,
+        route: bool,
+        resolves: &mut usize,
+    ) -> Result<Resolved> {
+        *resolves += 1;
+        anyhow::ensure!(
+            *resolves <= MAX_RESOLVES,
+            "{alias}: the ProxyJump routes name more than {MAX_RESOLVES} hosts"
+        );
         let mut found = Found::default();
         self.read(&self.path, alias, true, 0, &mut found)?;
         let value = |key| found.values.get(key);
@@ -135,20 +221,21 @@ impl Resolver {
             server_alive_interval,
             notes: found.notes.clone(),
         };
-        let Some((route, at)) = value("proxyjump") else {
+        let Some((jumps, at)) = value("proxyjump").filter(|_| route) else {
             return Ok(resolved);
         };
-        if route.eq_ignore_ascii_case("none") {
+        if jumps.eq_ignore_ascii_case("none") {
             return Ok(resolved);
         }
         anyhow::ensure!(
-            depth < MAX_DEPTH,
+            depth < MAX_DEPTH && jumps.split(',').count() <= MAX_DEPTH,
             "{alias}: {at}: ProxyJump route is cyclic or longer than {MAX_DEPTH} hops"
         );
-        for (i, spec) in route.split(',').enumerate() {
+        for (i, spec) in jumps.split(',').enumerate() {
             let (user, host, port) = parse_hop(spec)
                 .with_context(|| format!("{alias}: {at}: bad ProxyJump hop {spec:?}"))?;
-            let mut hop = self.resolve_depth(host, depth + 1)?;
+            // Later hops are reached through the chain: their own routes are never followed.
+            let mut hop = self.resolve_depth(host, depth + 1, i == 0, resolves)?;
             // As OpenSSH: only the first hop's own route applies (`ssh -J a,b` reaches b
             // through a); later hops are reached through the chain.
             if i == 0 {
@@ -182,14 +269,11 @@ impl Resolver {
         depth: usize,
         found: &mut Found,
     ) -> Result<()> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("{alias}: could not read {}", path.display()))
-            }
+        let Some(text) = read_small(path).with_context(|| alias.to_owned())? else {
+            return Ok(());
         };
+        // Windows PowerShell and older Notepad start UTF-8 files with a byte-order mark.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         for (no, line) in text.lines().enumerate() {
             let at = format!("{}:{}", path.display(), no + 1);
             let Some((key, args)) = split_line(line).with_context(|| format!("{alias}: {at}"))?
@@ -197,6 +281,19 @@ impl Resolver {
                 continue;
             };
             let first = args.first().cloned();
+            // As OpenSSH, in every block: a typo must not pass for an ignored keyword.
+            let ignored = |list: &str| {
+                list.split(',')
+                    .any(|p| super::hostkeys::glob(&p.trim().to_ascii_lowercase(), &key))
+            };
+            if !KNOWN.contains(&key.as_str())
+                && !found.ignore_unknown.as_deref().is_some_and(ignored)
+            {
+                bail!(
+                    "{alias}: {at}: bad configuration option {key:?} (check the spelling, or \
+                     list it under IgnoreUnknown)"
+                );
+            }
             match key.as_str() {
                 "host" => active = host_matches(&args, alias),
                 "match" => {
@@ -233,6 +330,11 @@ impl Resolver {
                     let file = first
                         .with_context(|| format!("{alias}: {at}: IdentityFile needs a value"))?;
                     found.identity_files.push(file);
+                }
+                "ignoreunknown" => {
+                    if found.ignore_unknown.is_none() {
+                        found.ignore_unknown = Some(args.join(","));
+                    }
                 }
                 k => {
                     // Everything else (UserKnownHostsFile included) is ignored.
@@ -504,6 +606,59 @@ Host hop
         assert!(r.resolve("alias").is_err());
         let (_dir, r) = fixture("Include config\n");
         assert!(r.resolve("alias").is_err());
+    }
+
+    /// Review M1: OpenSSH refuses both, so neither may make the first block a default.
+    #[test]
+    fn a_byte_order_mark_is_skipped_and_a_misspelt_keyword_is_refused() {
+        let blocks =
+            "Host bastion\n HostName bastion.example.invalid\n User admin\nHost nas\n HostName nas.example.invalid\n";
+        let (_dir, r) = fixture(&format!("\u{feff}{blocks}"));
+        let got = r.resolve("nas").unwrap();
+        assert_eq!(
+            (got.host_name.as_str(), got.user.as_str()),
+            ("nas.example.invalid", "local")
+        );
+        let (_dir, r) = fixture(&blocks.replacen("Host", "Hots", 1));
+        let err = r.resolve("nas").unwrap_err().to_string();
+        assert!(
+            err.contains("nas") && err.contains(":1") && err.contains("hots"),
+            "{err}"
+        );
+        // Unknown keywords are refused in inactive blocks too, unless IgnoreUnknown lists them.
+        let (_dir, r) = fixture("Host other\n Bogus 1\n");
+        assert!(r.resolve("alias").is_err());
+        let (_dir, r) = fixture("IgnoreUnknown bog*,x\nHost other\n Bogus 1\nHost *\n Port 2200\n");
+        assert_eq!(r.resolve("alias").unwrap().port, 2200);
+        let (_dir, r) = fixture("UseKeychain yes\nhostname=%h.internal\n");
+        assert_eq!(r.resolve("a").unwrap().host_name, "a.internal");
+    }
+
+    /// Review minor 2: later hops' own routes are not followed (no exponential resolve), and
+    /// files are read through a size limit.
+    #[test]
+    fn nested_routes_resolve_fast_and_huge_files_are_refused() {
+        let mut text = String::new();
+        for level in 0..8 {
+            let next = level + 1;
+            text += &format!("Host l{level}\n ProxyJump z,l{next},l{next},l{next}\n");
+        }
+        let (dir, r) = fixture(&text);
+        let started = std::time::Instant::now();
+        let got = r.resolve("l0").unwrap();
+        let took = started.elapsed();
+        assert_eq!(got.jumps.len(), 4);
+        if std::env::var_os("CI").is_none() {
+            assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        }
+        let huge = dir.path().join(".ssh/huge");
+        std::fs::write(&huge, "#".repeat(MAX_FILE as usize + 1)).unwrap();
+        std::fs::write(dir.path().join(".ssh/config"), "Include huge\n").unwrap();
+        let err = format!("{:#}", r.resolve("alias").unwrap_err());
+        assert!(err.contains("larger than"), "{err}");
+        std::fs::write(dir.path().join(".ssh/config"), "Include .\n").unwrap();
+        let err = format!("{:#}", r.resolve("alias").unwrap_err());
+        assert!(err.contains("not a regular file"), "{err}");
     }
 
     #[test]
