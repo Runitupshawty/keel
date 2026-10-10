@@ -1899,6 +1899,10 @@ fn mounts(ctx: &Ctx) -> Result<&Arc<keel_mount::Mounts>> {
             keel_mount::NO_BACKEND,
         ));
     }
+    // Built in, but its driver (WinFsp, fuse3, macFUSE) is not installed.
+    if let Some(why) = keel_mount::driver_missing() {
+        return Err(ApiError::new(ApiError::MOUNTS_UNAVAILABLE, why));
+    }
     Ok(m)
 }
 

@@ -284,17 +284,13 @@ fn mkdir_rename_and_rmdir() {
     m.mkdir(&mp("empty")).unwrap();
     m.remove_dir(&mp("empty")).unwrap();
     assert!(!f.files.path().join("empty").exists());
-    // A file being written cannot be renamed yet.
+    // A file being written can be renamed (see the rename-while-written tests below).
     let (w, _) = m.create(&mp("docs/w.txt")).unwrap();
-    assert_eq!(
-        m.rename(&mp("docs/w.txt"), &mp("docs/w2.txt"), false)
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::ResourceBusy
-    );
-    m.release(w).unwrap();
     m.rename(&mp("docs/w.txt"), &mp("docs/w2.txt"), false)
         .unwrap();
+    m.release(w).unwrap();
+    assert!(f.files.path().join("docs/w2.txt").is_file());
+    assert!(!f.files.path().join("docs/w.txt").exists());
 }
 
 #[test]
@@ -720,4 +716,328 @@ fn a_write_stays_pending_until_its_publish_returns() {
     closer.join().unwrap().unwrap();
     assert_eq!(rx.recv_timeout(SOON).unwrap().unwrap(), b"ABCdefghij");
     assert_eq!(m.pending_writes(), 0);
+}
+
+// --- Attributes, free space and renames while written -------------------------------------
+
+#[test]
+fn file_times_are_the_sources_and_a_write_shows_its_staged_copy() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let a = f.files.path().join("docs/a.txt");
+    let disk = fs::metadata(&a).unwrap().modified().unwrap();
+    let attr = m.stat(&mp("docs/a.txt")).unwrap();
+    assert_eq!(attr.modified, Some(disk));
+    assert!(!attr.readonly);
+    let listed = m.list(&mp("docs")).unwrap();
+    let e = listed.iter().find(|e| e.name == "a.txt").unwrap();
+    assert_eq!(e.attr.modified, Some(disk), "listings carry the same time");
+    let root = m.stat(&MountPath::root()).unwrap();
+    assert_eq!(
+        root.modified,
+        Some(fs::metadata(f.files.path()).unwrap().modified().unwrap()),
+        "the root has the shown folder's time"
+    );
+
+    // An edit: the OS's view of the file (FUSE lookups and getattr) is the staged copy,
+    // its length and its last write, while listings and stat show the published file.
+    let (w, _) = m.open(&mp("docs/a.txt"), true, false).unwrap();
+    assert_eq!(
+        m.attr(&mp("docs/a.txt")).unwrap().1,
+        attr,
+        "nothing written yet"
+    );
+    m.write(w, 10, b"+more").unwrap();
+    let (path, staged) = m.attr(&mp("docs/a.txt")).unwrap();
+    assert_eq!(path, mp("docs/a.txt"));
+    assert_eq!(staged.size, 15);
+    assert_eq!(m.handle_attr(w).unwrap(), staged);
+    assert_eq!(
+        m.handle_attr(w).unwrap().modified,
+        staged.modified,
+        "the staged time is its last write, not the time of asking"
+    );
+    assert_eq!(m.stat(&mp("docs/a.txt")).unwrap().size, 10);
+    m.release(w).unwrap();
+    let after = m.stat(&mp("docs/a.txt")).unwrap();
+    assert_eq!(after.size, 15);
+    assert_eq!(
+        after.modified,
+        Some(fs::metadata(&a).unwrap().modified().unwrap())
+    );
+
+    // A file being created: busy to look up by name, but the OS sees its staged size.
+    let (c, _) = m.create(&mp("docs/new.txt")).unwrap();
+    m.write(c, 0, b"abc").unwrap();
+    assert_eq!(
+        m.stat(&mp("docs/new.txt")).unwrap_err().kind(),
+        io::ErrorKind::ResourceBusy
+    );
+    assert_eq!(m.attr(&mp("docs/new.txt")).unwrap().1.size, 3);
+    m.release(c).unwrap();
+    assert_eq!(m.attr(&mp("docs/new.txt")).unwrap().1.size, 3);
+}
+
+/// A source on an in-memory server (`sftp://box/srv`).
+fn memory_source(f: &Fixture) -> (SourceId, Arc<keel_vfs::memory::MemoryProvider>) {
+    let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
+    mem.put("/srv/docs/a.txt", "0123456789");
+    f.router.register_remote_provider("box".into(), mem.clone());
+    let id = add(
+        f,
+        VPath::parse("sftp://box/srv").unwrap(),
+        SourceKind::Share,
+    );
+    (id, mem)
+}
+
+#[test]
+fn a_read_only_source_shows_read_only_files_and_refuses_changes() {
+    let f = fixture();
+    let (id, mem) = memory_source(&f);
+    let m = mount_fs(&f, &id, "", false);
+    assert!(!m.stat(&mp("docs/a.txt")).unwrap().readonly);
+    mem.read_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let a = m.stat(&mp("docs/a.txt")).unwrap();
+    assert!(a.readonly);
+    assert_eq!(
+        a.modified,
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+    );
+    assert!(m.list(&mp("docs")).unwrap()[0].attr.readonly);
+    assert!(m.stat(&mp("docs")).unwrap().readonly);
+    assert!(m.stat(&MountPath::root()).unwrap().readonly);
+    let rofs = io::ErrorKind::ReadOnlyFilesystem;
+    assert_eq!(
+        m.open(&mp("docs/a.txt"), true, false).unwrap_err().kind(),
+        rofs
+    );
+    assert_eq!(m.create(&mp("docs/b.txt")).unwrap_err().kind(), rofs);
+    assert_eq!(m.mkdir(&mp("more")).unwrap_err().kind(), rofs);
+    assert_eq!(m.remove_file(&mp("docs/a.txt")).unwrap_err().kind(), rofs);
+    assert_eq!(
+        m.rename(&mp("docs/a.txt"), &mp("docs/b.txt"), false)
+            .unwrap_err()
+            .kind(),
+        rofs
+    );
+    // Reading still works.
+    let (h, _) = m.open(&mp("docs/a.txt"), false, false).unwrap();
+    let mut buf = [0; 4];
+    assert_eq!(m.read(h, 2, &mut buf).unwrap(), 4);
+    assert_eq!(&buf, b"2345");
+    m.release(h).unwrap();
+}
+
+#[test]
+fn free_space_comes_from_the_provider_and_is_cached() {
+    let f = fixture();
+    let (id, mem) = memory_source(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let space = keel_vfs::Space {
+        free: 3 << 30,
+        total: 8 << 30,
+    };
+    *mem.space.lock() = Some(space);
+    assert_eq!(m.space(), Some(space));
+    *mem.space.lock() = None;
+    assert_eq!(
+        m.space(),
+        Some(space),
+        "asked again only after a few seconds"
+    );
+    // Unknown: None (the backends show 0 / 0, or a placeholder on Windows).
+    let other = mount_fs(&f, &id, "docs", false);
+    assert_eq!(other.space(), None);
+    // A local source: the volume of its folder.
+    let id = indexed(&f);
+    let local = mount_fs(&f, &id, "", false).space().unwrap();
+    assert!(local.total > 0 && local.free <= local.total, "{local:?}");
+}
+
+fn partials(dir: &Path) -> Vec<String> {
+    on_disk(dir)
+        .into_iter()
+        .filter(|n| keel_vfs::ops::is_partial(n) && n != "b.bin.keel-partial-9-9")
+        .collect()
+}
+
+#[test]
+fn a_file_being_created_can_be_renamed_and_lands_under_the_new_name() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let docs = f.files.path().join("docs");
+    let (h, _) = m.create(&mp("docs/draft.txt")).unwrap();
+    m.write(h, 0, b"first ").unwrap();
+    m.rename(&mp("docs/draft.txt"), &mp("docs/final.txt"), false)
+        .unwrap();
+    assert_eq!(m.handle_path(h).unwrap(), mp("docs/final.txt"));
+    assert_eq!(m.attr(&mp("docs/final.txt")).unwrap().1.size, 6);
+    assert!(
+        m.attr(&mp("docs/draft.txt")).is_err(),
+        "the old name is gone"
+    );
+    m.write(h, 6, b"second").unwrap();
+    assert_eq!(m.pending_writes(), 1);
+    assert_eq!(partials(&docs).len(), 1, "the spool is beside the new name");
+    m.release(h).unwrap();
+    assert_eq!(fs::read(docs.join("final.txt")).unwrap(), b"first second");
+    assert!(!docs.join("draft.txt").exists());
+    assert!(partials(&docs).is_empty());
+    assert_eq!(m.pending_writes(), 0);
+    // The renamed write left the table: the name can be written again.
+    let (h, _) = m.open(&mp("docs/final.txt"), true, true).unwrap();
+    m.write(h, 0, b"again").unwrap();
+    m.release(h).unwrap();
+    assert_eq!(fs::read(docs.join("final.txt")).unwrap(), b"again");
+}
+
+#[test]
+fn an_edit_renamed_across_folders_publishes_at_the_new_place() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    m.mkdir(&mp("other")).unwrap();
+    let (w, _) = m.open(&mp("docs/a.txt"), true, false).unwrap();
+    m.write(w, 0, b"AB").unwrap();
+    m.rename(&mp("docs/a.txt"), &mp("other/moved.txt"), false)
+        .unwrap();
+    let other = f.files.path().join("other");
+    // The published file moves at once; the write lands on it when closed.
+    assert_eq!(fs::read(other.join("moved.txt")).unwrap(), b"0123456789");
+    assert!(!f.files.path().join("docs/a.txt").exists());
+    assert_eq!(m.stat(&mp("other/moved.txt")).unwrap().size, 10);
+    assert_eq!(
+        m.open(&mp("other/moved.txt"), false, false)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::ResourceBusy,
+        "still being written"
+    );
+    m.release(w).unwrap();
+    assert_eq!(fs::read(other.join("moved.txt")).unwrap(), b"AB23456789");
+    assert!(partials(&other).is_empty());
+    assert!(partials(&f.files.path().join("docs")).is_empty());
+}
+
+#[test]
+fn a_folder_holding_a_write_can_be_renamed() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let (h, _) = m.create(&mp("docs/new.txt")).unwrap();
+    m.write(h, 0, b"inside").unwrap();
+    match m.rename(&mp("docs"), &mp("papers"), false) {
+        Ok(()) => {
+            assert_eq!(m.handle_path(h).unwrap(), mp("papers/new.txt"));
+            m.write(h, 6, b"!").unwrap();
+            m.release(h).unwrap();
+            let papers = f.files.path().join("papers");
+            assert_eq!(fs::read(papers.join("new.txt")).unwrap(), b"inside!");
+            assert_eq!(fs::read(papers.join("a.txt")).unwrap(), b"0123456789");
+            assert!(partials(&papers).is_empty());
+        }
+        // Windows refuses to rename a folder holding an open file (the staging file).
+        Err(e) => {
+            if !cfg!(windows) {
+                panic!("{e}");
+            }
+            m.release(h).unwrap();
+            assert_eq!(
+                fs::read(f.files.path().join("docs/new.txt")).unwrap(),
+                b"inside"
+            );
+        }
+    }
+}
+
+#[test]
+fn renames_never_replace_a_write_in_progress() {
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let docs = f.files.path().join("docs");
+    let (w, _) = m.open(&mp("docs/b.bin"), true, false).unwrap();
+    m.write(w, 0, b"B").unwrap();
+    assert_eq!(
+        m.rename(&mp("docs/a.txt"), &mp("docs/b.bin"), true)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::ResourceBusy
+    );
+    m.release(w).unwrap();
+    // A file being created over an existing name: refused unless replacing, and then the
+    // existing file is replaced when the new one is published.
+    let (c, _) = m.create(&mp("docs/c.txt")).unwrap();
+    m.write(c, 0, b"new").unwrap();
+    assert_eq!(
+        m.rename(&mp("docs/c.txt"), &mp("docs/a.txt"), false)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    m.rename(&mp("docs/c.txt"), &mp("docs/a.txt"), true)
+        .unwrap();
+    assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"0123456789");
+    m.release(c).unwrap();
+    assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"new");
+    assert!(!docs.join("c.txt").exists());
+    assert!(partials(&docs).is_empty());
+}
+
+#[test]
+fn a_remote_write_renamed_while_written_uploads_under_the_new_name() {
+    let f = fixture();
+    let (id, mem) = memory_source(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let (h, _) = m.create(&mp("docs/up.txt")).unwrap();
+    m.write(h, 0, b"remote").unwrap();
+    m.rename(&mp("docs/up.txt"), &mp("up2.txt"), false).unwrap();
+    m.release(h).unwrap();
+    let got = |p: &str| {
+        let mut out = Vec::new();
+        use keel_vfs::Provider;
+        mem.read(&VPath::parse(p).unwrap())
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    };
+    assert_eq!(got("sftp://box/srv/up2.txt"), b"remote");
+    assert!(m.stat(&mp("docs/up.txt")).is_err());
+    assert_eq!(fs::read_dir(f.spool.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_flush_before_any_write_publishes_nothing() {
+    // `dd of=`, a shell's `>`: open, dup2, close the first descriptor (a flush), then write.
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let docs = f.files.path().join("docs");
+    let (h, _) = m.create(&mp("docs/out.txt")).unwrap();
+    m.flush(h).unwrap();
+    assert!(!docs.join("out.txt").exists(), "no empty file published");
+    m.write(h, 0, b"data").unwrap();
+    assert!(!docs.join("out.txt").exists());
+    m.flush(h).unwrap();
+    assert_eq!(fs::read(docs.join("out.txt")).unwrap(), b"data");
+    m.release(h).unwrap();
+    // A truncating open keeps the old content until something is written or it closes.
+    let (t, _) = m.open(&mp("docs/a.txt"), true, true).unwrap();
+    m.flush(t).unwrap();
+    assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"0123456789");
+    m.write(t, 0, b"new").unwrap();
+    m.flush(t).unwrap();
+    m.release(t).unwrap();
+    assert_eq!(fs::read(docs.join("a.txt")).unwrap(), b"new");
+    // Created and closed without a write (`touch`): published on release.
+    let (e, _) = m.create(&mp("docs/empty.txt")).unwrap();
+    m.flush(e).unwrap();
+    m.release(e).unwrap();
+    assert_eq!(fs::read(docs.join("empty.txt")).unwrap(), b"");
+    assert!(partials(&docs).is_empty());
 }

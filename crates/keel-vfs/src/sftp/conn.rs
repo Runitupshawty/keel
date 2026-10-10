@@ -121,6 +121,8 @@ pub(super) struct Session {
     /// The ProxyJump sessions the target runs over, first hop first.
     pub jumps: Vec<client::Handle<Client>>,
     pub posix_rename: bool,
+    /// The server answers `statvfs@openssh.com` (free space).
+    pub statvfs: bool,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -344,6 +346,7 @@ impl ConnPool {
                 ssh,
                 jumps: handles,
                 posix_rename: version.extensions.contains_key("posix-rename@openssh.com"),
+                statvfs: version.extensions.contains_key("statvfs@openssh.com"),
             }))
         })
         .await

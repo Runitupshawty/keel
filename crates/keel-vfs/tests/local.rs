@@ -85,6 +85,13 @@ fn long_path_with_trailing_dot_can_list_rename_and_trash() {
 }
 
 #[test]
+fn space_is_the_volume_of_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = LocalProvider.space(&VPath::local(dir.path())).unwrap();
+    assert!(s.total > 0 && s.free <= s.total, "{s:?}");
+}
+
+#[test]
 fn remove_recycles_a_file() {
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().join("recycle-me.txt");

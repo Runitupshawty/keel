@@ -25,6 +25,14 @@ pub struct Quota {
     pub total: Option<u64>,
 }
 
+/// The free and total bytes of the volume holding a path (`Provider::space`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Space {
+    /// What an unprivileged user can still write.
+    pub free: u64,
+    pub total: u64,
+}
+
 /// `Provider::share_link`'s answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareLink {
@@ -203,6 +211,18 @@ pub trait Provider: Send + Sync {
     /// failed).
     fn quota(&self) -> Option<Quota> {
         None
+    }
+    /// The free and total space of the volume holding `p` (a mount's `df`): the volume of
+    /// a local folder, the server's filesystem over SFTP (`statvfs@openssh.com`), an
+    /// account's quota when it has a limit. Blocks: workers only. None: unknown.
+    fn space(&self, p: &VPath) -> Option<Space> {
+        let _ = p;
+        let q = self.quota()?;
+        let total = q.total?;
+        Some(Space {
+            free: total.saturating_sub(q.used),
+            total,
+        })
     }
     /// A link to `p` for other people (cloud accounts). `create`: the user agreed to make
     /// one after a `ShareLink::Confirm`. Blocks on the network: workers only.

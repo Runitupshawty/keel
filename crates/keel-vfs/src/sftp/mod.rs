@@ -746,6 +746,27 @@ impl Provider for SftpProvider {
     fn rename_replace(&self, from: &VPath, to: &VPath) -> Result<()> {
         self.rename_with(from, to, true)
     }
+    /// The server's `statvfs@openssh.com` answer for `p`'s filesystem; None when the
+    /// server lacks the extension or the request fails.
+    fn space(&self, p: &VPath) -> Option<crate::Space> {
+        self.call(p, async |s| {
+            if !s.statvfs {
+                return Ok(None);
+            }
+            let v = s.raw.statvfs(&p.path).await.map_err(wire_error)?;
+            let unit = if v.fragment_size > 0 {
+                v.fragment_size
+            } else {
+                v.block_size
+            };
+            Ok(Some(crate::Space {
+                free: v.blocks_avail.saturating_mul(unit),
+                total: v.blocks.saturating_mul(unit),
+            }))
+        })
+        .ok()
+        .flatten()
+    }
     fn canonicalize(&self, p: &VPath) -> Result<VPath> {
         self.call(p, async |s| {
             let result = s.raw.realpath(&p.path).await.map_err(wire_error)?;

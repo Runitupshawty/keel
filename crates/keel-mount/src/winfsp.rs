@@ -17,6 +17,7 @@ use winfsp::{FspError, U16CStr};
 const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
 const FILE_WRITE_DATA: u32 = 0x0002;
 const FILE_APPEND_DATA: u32 = 0x0004;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x01;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 /// `FspCleanupDelete`.
@@ -33,6 +34,7 @@ const STATUS_FILE_IS_A_DIRECTORY: u32 = 0xC000_00BA;
 const STATUS_DIRECTORY_NOT_EMPTY: u32 = 0xC000_0101;
 const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
 const STATUS_FILE_CLOSED: u32 = 0xC000_0128;
+const STATUS_MEDIA_WRITE_PROTECTED: u32 = 0xC000_00A2;
 
 fn status(code: u32) -> FspError {
     FspError::NTSTATUS(code as i32)
@@ -55,6 +57,7 @@ fn nt(e: io::Error) -> FspError {
         K::ResourceBusy => STATUS_SHARING_VIOLATION,
         K::NotConnected => STATUS_DEVICE_NOT_CONNECTED,
         K::BrokenPipe => STATUS_FILE_CLOSED,
+        K::ReadOnlyFilesystem => STATUS_MEDIA_WRITE_PROTECTED,
         _ => return e.into(),
     })
 }
@@ -72,11 +75,13 @@ fn filetime(t: Option<SystemTime>) -> u64 {
         })
 }
 
+/// Folders are plain folders (on Windows the read-only bit of a folder means something
+/// else); files of a read-only source are read-only.
 fn attributes(a: &Attr) -> u32 {
-    if a.is_dir {
-        FILE_ATTRIBUTE_DIRECTORY
-    } else {
-        FILE_ATTRIBUTE_ARCHIVE
+    match (a.is_dir, a.readonly) {
+        (true, _) => FILE_ATTRIBUTE_DIRECTORY,
+        (false, false) => FILE_ATTRIBUTE_ARCHIVE,
+        (false, true) => FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_READONLY,
     }
 }
 
@@ -263,6 +268,7 @@ impl FileSystemContext for Fs {
                     is_dir: true,
                     size: 0,
                     modified: None,
+                    readonly: false,
                 };
                 for name in [".", ".."] {
                     entries.push(crate::DirEntry {
@@ -370,19 +376,33 @@ impl FileSystemContext for Fs {
     }
 
     fn get_volume_info(&self, out: &mut VolumeInfo) -> winfsp::Result<()> {
-        // The source's size is not known here: report a large, empty-looking volume.
-        out.total_size = 1 << 40;
-        out.free_size = 1 << 40;
+        // The source volume's space; unknown is a large, empty-looking volume, since
+        // Explorer refuses to copy onto a drive that reports no free space.
+        let (free, total) = self
+            .fs
+            .space()
+            .map_or((1 << 40, 1 << 40), |s| (s.free, s.total));
+        out.total_size = total;
+        out.free_size = free;
         out.set_volume_label(self.fs.label());
         Ok(())
     }
 }
 
-/// `<WinFsp InstallDir>bin\winfsp-<arch>.dll`, loaded so winfsp's delay-loaded imports
-/// resolve (the installer does not put it on PATH).
-fn load_dll() -> anyhow::Result<()> {
-    use windows::core::{w, HSTRING};
-    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+/// What to say when WinFsp is not installed.
+const NO_WINFSP: &str = "WinFsp is not installed: install it (https://winfsp.dev) to mount";
+
+/// Why WinFsp cannot be loaded (not installed, or its DLL is gone), if it cannot.
+pub(crate) fn driver_missing() -> Option<String> {
+    match dll_path() {
+        Some(dll) if std::path::Path::new(&dll).is_file() => None,
+        _ => Some(NO_WINFSP.into()),
+    }
+}
+
+/// `<WinFsp InstallDir>bin\winfsp-<arch>.dll`, from the registry.
+fn dll_path() -> Option<String> {
+    use windows::core::w;
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let mut buf = [0u16; 520];
     let mut size = (buf.len() * 2) as u32;
@@ -406,10 +426,9 @@ fn load_dll() -> anyhow::Result<()> {
             break;
         }
     }
-    anyhow::ensure!(
-        found,
-        "WinFsp is not installed (https://winfsp.dev); mounts need it on Windows"
-    );
+    if !found {
+        return None;
+    }
     let len = (size as usize / 2).saturating_sub(1);
     let mut dir = String::from_utf16_lossy(&buf[..len]);
     if !dir.ends_with('\\') {
@@ -420,7 +439,15 @@ fn load_dll() -> anyhow::Result<()> {
         "aarch64" => "a64",
         _ => "x64",
     };
-    let dll = HSTRING::from(format!("{dir}bin\\winfsp-{arch}.dll"));
+    Some(format!("{dir}bin\\winfsp-{arch}.dll"))
+}
+
+/// Loads WinFsp's DLL ([`dll_path`]) so winfsp's delay-loaded imports resolve (the
+/// installer does not put it on PATH).
+fn load_dll() -> anyhow::Result<()> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+    let dll = HSTRING::from(dll_path().ok_or_else(|| anyhow::anyhow!(NO_WINFSP))?);
     // SAFETY: loads a library by full path; it stays loaded for the process.
     unsafe { LoadLibraryW(&dll) }.map_err(|e| anyhow::anyhow!("loading {dll}: {e}"))?;
     winfsp::winfsp_init().map_err(|e| anyhow::anyhow!("WinFsp: {e:?}"))?;
