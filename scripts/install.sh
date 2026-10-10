@@ -106,5 +106,6 @@ PLIST
     ;;
 esac
 
+case "$plat" in linux-*) ldconfig -p 2>/dev/null | grep -q "libxkbcommon-x11.so.0" || echo "Note: libxkbcommon-x11 is not installed; the window needs it on an X11 session (Debian/Ubuntu: sudo apt install libxkbcommon-x11-0)." ;; esac
 echo "Keel $tag installed to $share."
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Add \$HOME/.local/bin to your PATH to run 'keel' from a terminal." ;; esac

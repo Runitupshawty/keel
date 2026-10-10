@@ -386,7 +386,7 @@ curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/ins
 
 Installs to `~/.local/share/keel` with `keel` in `~/.local/bin`; macOS also gets `~/Applications/Keel.app`, Linux a launcher entry. Remove with `... | bash -s -- --uninstall`.
 
-**Debian and Ubuntu**: download `keel_<version>_amd64.deb` from Releases and `sudo apt install ./keel_*.deb`.
+**Debian and Ubuntu**: download `keel_<version>_amd64.deb` from Releases and `sudo apt install ./keel_*.deb`. The tarball needs the same libraries the package depends on: GTK 3, libxkbcommon and libxkbcommon-x11 (X11 sessions), libwayland-client and ALSA (`sudo apt install libgtk-3-0 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libasound2`; on 24.04 the `t64` names).
 
 Run the scripts again to update. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`.
 
