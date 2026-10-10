@@ -117,6 +117,9 @@ pub(crate) struct Invitation {
 }
 /// Unauthenticated pairing handshakes in progress at once; more are refused.
 const MAX_PAIRING_ATTEMPTS: usize = 4;
+/// How long a joiner has to connect, and then to prove it knows the code, before its
+/// handshake slot goes to the next one (a device on the network cannot keep them busy).
+pub(crate) const PROOF_WAIT: Duration = Duration::from_secs(2);
 #[derive(Clone, Serialize, Deserialize)]
 struct Identity {
     addr: EndpointAddr,
@@ -244,7 +247,7 @@ impl Node {
                 node.tasks.spawn(async move {
                     let _permit = permit;
                     let exchange = async {
-                        let conn = incoming.await?;
+                        let conn = tokio::time::timeout(PROOF_WAIT, incoming).await??;
                         let result = if let Some(node) = weak.upgrade() { node.accept_pair(&conn,secret,expires,deadline,consumed).await } else { anyhow::bail!("node closed") };
                         if result.is_err() { conn.close(1u8.into(),b"pairing failed"); }
                         result
@@ -271,28 +274,34 @@ impl Node {
         deadline: tokio::time::Instant,
         consumed: Arc<tokio::sync::Mutex<bool>>,
     ) -> Result<()> {
-        let (mut send, mut recv) = conn.accept_bi().await?;
-        let joiner: Identity = wire::recv(&mut recv).await?;
-        ensure!(
-            joiner.addr.id == conn.remote_id()
-                && joiner.addr.addrs.len() <= 32
-                && valid_label(&joiner.label),
-            "invalid peer identity"
-        );
-        ensure!(
-            !*consumed.lock().await && tokio::time::Instant::now() < deadline,
-            "invitation unavailable"
-        );
-        let offer: [u8; 32] = random()?;
-        wire::send(
-            &mut send,
-            &Offer {
-                nonce: offer,
-                expires,
-            },
-        )
-        .await?;
-        let tag: [u8; 32] = wire::recv(&mut recv).await?;
+        // Up to the joiner's proof the slot is bounded by `PROOF_WAIT`.
+        let (mut send, _recv, joiner, offer, tag) = tokio::time::timeout(PROOF_WAIT, async {
+            let (mut send, mut recv) = conn.accept_bi().await?;
+            let joiner: Identity = wire::recv(&mut recv).await?;
+            ensure!(
+                joiner.addr.id == conn.remote_id()
+                    && joiner.addr.addrs.len() <= 32
+                    && valid_label(&joiner.label),
+                "invalid peer identity"
+            );
+            ensure!(
+                !*consumed.lock().await && tokio::time::Instant::now() < deadline,
+                "invitation unavailable"
+            );
+            let offer: [u8; 32] = random()?;
+            wire::send(
+                &mut send,
+                &Offer {
+                    nonce: offer,
+                    expires,
+                },
+            )
+            .await?;
+            let tag: [u8; 32] = wire::recv(&mut recv).await?;
+            anyhow::Ok((send, recv, joiner, offer, tag))
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("the joiner's proof came too late"))??;
         let mut transcript = Transcript {
             joiner: &joiner,
             offer: &offer,

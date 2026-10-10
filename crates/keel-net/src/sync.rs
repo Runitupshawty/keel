@@ -6,8 +6,10 @@
 //! it syncs with, and answers `Request::SyncPull` only for them (`Response::Denied`
 //! otherwise). The puller names the entries' device itself (the connection proves it),
 //! applies at most `NodeOptions::sync_rate` entries per device and minute (the rest wait
-//! for the next minute), and stops when the switch goes off or the device is forgotten;
-//! what was received stays in the library.
+//! for the next minute; a page counts as at least one), reads at most `MAX_PAGES` pages
+//! per pull, ends a pull at a page that brings nothing or does not move on, and stops
+//! when the switch goes off or the device is forgotten; what was received stays in the
+//! library.
 
 use crate::*;
 use anyhow::{bail, ensure, Result};
@@ -24,6 +26,8 @@ pub const SYNC_RATE: usize = 10_000;
 const MINUTE: Duration = Duration::from_secs(60);
 /// Devices named in one `SyncPull` (only the host's own entry is read).
 const MAX_SINCE: usize = 64;
+/// Pages read in one pull; the rest waits for the next.
+pub(crate) const MAX_PAGES: usize = 100;
 
 #[derive(Default)]
 pub(crate) struct SyncState {
@@ -203,7 +207,10 @@ impl Node {
     async fn pull(&self, peer: &PeerId, applied: &mut usize) -> Result<()> {
         let device = peer.0.to_string();
         // Turned off or forgotten meanwhile: stop.
-        while self.syncs_with(peer) {
+        for _ in 0..MAX_PAGES {
+            if !self.syncs_with(peer) {
+                break;
+            }
             let (h, p) = (self.handler.clone(), *peer);
             let since = tokio::task::spawn_blocking(move || h.sync_since(&p)).await??;
             let pull = Request::SyncPull {
@@ -227,8 +234,13 @@ impl Node {
                     && entries.iter().all(|e| e.seq > since && e.seq <= upto),
                 "malformed sync page"
             );
-            let n = self.take_budget(peer, entries.len());
-            let limited = n < entries.len();
+            // A page that brings nothing, or does not move on, ends the pull (the next
+            // one starts from where it got to).
+            let stalled = entries.is_empty() || upto == since;
+            // Every page costs at least one entry of the budget.
+            let cost = entries.len().max(1);
+            let n = self.take_budget(peer, cost);
+            let limited = n < cost;
             if limited {
                 entries.truncate(n);
                 upto = entries.last().map_or(since, |e| e.seq);
@@ -253,7 +265,7 @@ impl Node {
             if limited {
                 tracing::debug!(peer = %peer.0, "library sync: rate limit reached; the rest waits");
             }
-            if !more || limited {
+            if !more || limited || stalled {
                 break;
             }
         }

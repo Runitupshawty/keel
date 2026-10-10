@@ -747,12 +747,12 @@ async fn invitation_endpoint_closes_once_used() {
 }
 
 /// Short-code pairing with global discovery and relays off: the code's device is found
-/// by mDNS on this machine's network. CI runners may not loop multicast back, so there
-/// it runs only with `KEEL_NET_MDNS_TEST=1`.
+/// by mDNS on this machine's network. It announces on the developer's network and CI
+/// runners may not loop multicast back, so it runs only with `KEEL_NET_MDNS_TEST=1`.
 #[tokio::test]
 async fn short_code_pairs_on_the_local_network_without_internet() {
-    if std::env::var_os("CI").is_some() && std::env::var("KEEL_NET_MDNS_TEST").as_deref() != Ok("1")
-    {
+    if std::env::var("KEEL_NET_MDNS_TEST").as_deref() != Ok("1") {
+        eprintln!("skipped: it broadcasts on the local network; set KEEL_NET_MDNS_TEST=1");
         return;
     }
     let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -799,4 +799,187 @@ async fn node_works_when_local_discovery_cannot_start() {
     ));
     a.close().await;
     b.close().await;
+}
+
+/// A device that answers every library sync pull with `more` pages: empty ones that do
+/// not move on (`step` 0), or one entry each (`step` 1), for ever.
+struct Endless {
+    step: u64,
+    pages: std::sync::atomic::AtomicUsize,
+    upto: std::sync::atomic::AtomicU64,
+}
+impl Endless {
+    fn new(step: u64) -> Arc<Self> {
+        Arc::new(Self {
+            step,
+            pages: Default::default(),
+            upto: Default::default(),
+        })
+    }
+}
+#[async_trait::async_trait]
+impl Handler for Endless {
+    async fn sources(&self, _: &RequestCtx) -> Vec<SourceInfo> {
+        Vec::new()
+    }
+    async fn list(&self, _: &RequestCtx, _: &str, _: &str) -> Result<Vec<EntryInfo>> {
+        bail!("no")
+    }
+    async fn stat(&self, _: &RequestCtx, _: &str, _: &str) -> Result<EntryInfo> {
+        bail!("no")
+    }
+    async fn read(
+        &self,
+        _: &RequestCtx,
+        _: &str,
+        _: &str,
+        _: Option<(u64, u64)>,
+    ) -> Result<Box<dyn AsyncRead + Send + Unpin>> {
+        bail!("no")
+    }
+    async fn write(
+        &self,
+        _: &RequestCtx,
+        _: &str,
+        _: &str,
+        _: Box<dyn AsyncRead + Send + Unpin>,
+        _: WriteAt,
+    ) -> Result<()> {
+        bail!("no")
+    }
+    async fn stat_partial(&self, _: &RequestCtx, _: &str, _: &str) -> Result<u64> {
+        bail!("no")
+    }
+    async fn mkdir(&self, _: &RequestCtx, _: &str, _: &str) -> Result<()> {
+        bail!("no")
+    }
+    async fn rename(&self, _: &RequestCtx, _: &str, _: &str, _: &str) -> Result<()> {
+        bail!("no")
+    }
+    async fn remove(&self, _: &RequestCtx, _: &str, _: &str) -> Result<()> {
+        bail!("no")
+    }
+    async fn storage(&self, _: &RequestCtx) -> Option<Storage> {
+        None
+    }
+    fn sync_page(&self, since: u64, _: usize) -> Result<keel_core::SyncPage> {
+        let entries = (since + 1..=since + self.step)
+            .map(|seq| keel_core::SyncEntry {
+                seq,
+                device: String::new(),
+                lamport: seq,
+                op: keel_core::SyncOp::TagDeleted {
+                    uid: "0123456789abcdef".into(),
+                },
+            })
+            .collect();
+        Ok(keel_core::SyncPage {
+            entries,
+            more: true,
+            upto: since + self.step,
+            epoch: String::new(),
+        })
+    }
+    fn sync_since(&self, _: &PeerId) -> Result<u64> {
+        Ok(self.upto.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    fn sync_apply(&self, _: &PeerId, page: &keel_core::SyncPage) -> Result<keel_core::SyncApplied> {
+        self.pages
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.upto
+            .store(page.upto, std::sync::atomic::Ordering::Relaxed);
+        Ok(keel_core::SyncApplied::default())
+    }
+}
+
+/// Two paired devices on `Endless` handlers with sync on both ways; `b`'s pull of `a`.
+async fn endless_pull(step: u64) -> (bool, usize) {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let opts = NodeOptions {
+        sync_every: Duration::ZERO,
+        ..NodeOptions::offline()
+    };
+    let (ha, hb) = (Endless::new(step), Endless::new(step));
+    let a = Node::open_with_options(
+        Arc::new(MemoryStore::default()),
+        da.path(),
+        ha,
+        opts.clone(),
+    )
+    .await
+    .unwrap();
+    let b = Node::open_with_options(
+        Arc::new(MemoryStore::default()),
+        db.path(),
+        hb.clone(),
+        opts,
+    )
+    .await
+    .unwrap();
+    let (pa, pb) = pair(&a, &b).await;
+    a.set_sync_peers([pb]);
+    b.set_sync_peers([pa]);
+    let ended = tokio::time::timeout(Duration::from_secs(30), b.sync_now(&pa))
+        .await
+        .is_ok();
+    a.close().await;
+    b.close().await;
+    (ended, hb.pages.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_pages_that_ask_for_more_end_the_pull() {
+    let (ended, pages) = endless_pull(0).await;
+    assert!(ended, "the pull never ended: {pages} empty pages");
+    assert_eq!(pages, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pull_reads_at_most_max_pages() {
+    let (ended, pages) = endless_pull(1).await;
+    assert!(ended);
+    assert_eq!(pages, crate::sync::MAX_PAGES);
+}
+
+/// Devices on the network that connect to a pairing code's endpoint and then say nothing
+/// hold its handshake slots only for `PROOF_WAIT`, so the real joiner gets in after.
+#[tokio::test]
+async fn silent_joiners_give_their_pairing_slots_back() {
+    if std::env::var_os("CI").is_some() {
+        eprintln!("skipped under CI: timing-based");
+        return;
+    }
+    let dirs = [(); 3].map(|_| tempfile::tempdir().unwrap());
+    let host = Node::open_with_options(
+        Arc::new(MemoryStore::default()),
+        dirs[0].path(),
+        Files::fixture(),
+        NodeOptions {
+            request_timeout: Duration::from_secs(30),
+            ..NodeOptions::offline()
+        },
+    )
+    .await
+    .unwrap();
+    let staller = open(&dirs[1], Arc::default()).await;
+    let joiner = open(&dirs[2], Arc::default()).await;
+    let code = host.pair_code().await.unwrap();
+    let addr = code.decode().unwrap().addr;
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        held.push(
+            staller
+                .endpoint
+                .connect(addr.clone(), crate::ALPN)
+                .await
+                .unwrap(),
+        );
+    }
+    tokio::time::sleep(crate::pairing::PROOF_WAIT + Duration::from_millis(500)).await;
+    let peer = joiner.pair_with(&code).await.unwrap();
+    assert_eq!(peer.id, PeerId(host.id()));
+    drop(held);
+    for node in [host, staller, joiner] {
+        node.close().await;
+    }
 }
