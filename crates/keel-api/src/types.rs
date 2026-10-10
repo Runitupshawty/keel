@@ -390,7 +390,7 @@ pub struct Change {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Warning {
     /// `last_copy`, `single_domain`, `copies_offline`, `offline_source`, `not_indexed`, `exists`,
-    /// `permanent`, `content_unverified`, `creates_tag`, `secret`…
+    /// `permanent`, `content_unverified`, `rewrites_archive`, `creates_tag`, `secret`…
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,

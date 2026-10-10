@@ -616,6 +616,11 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             files(*n, "has its", "have their"),
             path.name()
         ),
+        Warning::RewritesArchive { path, bytes } => format!(
+            "Rewrites the {} archive {}: it is written again beside itself, then replaces itself",
+            crate::view_details::size_text_of(*bytes),
+            path.name()
+        ),
     }
 }
 

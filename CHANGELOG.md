@@ -2,6 +2,19 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Editing inside zip and jar archives: Delete, Rename (F2), Cut and Paste, drag and drop, New folder and New file work in a folder inside a `.zip` or `.jar` on this computer, and files and folders from anywhere (a local folder, an SFTP host, a cloud account, another archive) can be pasted or dropped into one. Each operation rewrites the archive once: the new archive is written beside it (`<name>.keel-partial-<pid>-<n>`), synced to disk and renamed over the old one, so a cancel, an error or a crash leaves the original as it was. Entries that stay are copied byte for byte, never decompressed: stored entries stay stored, password-protected entries are never decrypted (and keep working with their password), extra fields, comments and zip64 records are kept, and archives with more than 65,535 entries or over 4 GiB are written with zip64 records. A copy or move inside one archive copies the compressed bytes; new files are deflated. Deleted entries go for good (the confirmation says so) and their folder stays, even when it ends up empty. The job shows the progress of the rewrite by bytes, and name clashes ask Skip / Overwrite / Keep both as for other folders.
+- Library operations on archive entries: `plan` previews deletes, renames and copies or moves into a zip with a `rewrites_archive` warning naming the archive and its size ("rewrites the 1.2 GB archive …"), counts the files and bytes under a folder inside the archive, and refuses writes into archives that cannot be changed and moves out of an archive in the preview. A delete of several entries of one zip is one rewrite.
+- keel-vfs: `archive::zipedit` (the rewriter, `editable`, `remove_entries`, `rename_entry`, `mkdir_entry`), `ops::remove_entries`, and `archive::editable`, which names why an archive is read-only.
+
+### Fixed
+
+- The 0.2.0 known limitation that nothing can be deleted, renamed or created inside an archive is lifted for zip and jar archives on this computer. 7z, tar (all compressions) and RAR archives, archives inside archives and archives on SFTP hosts or cloud accounts stay read-only; a write there is refused with a message naming the format (or saying that the archive is inside another one or not on this computer). Add to "name"… still writes 7z, tar and tar.gz archives as before.
+- **New file** on an SFTP host or a cloud account now creates the file. The empty upload was never committed, so the file was discarded.
+
 ## [0.12.0] - 2026-10-10
 
 ### Added

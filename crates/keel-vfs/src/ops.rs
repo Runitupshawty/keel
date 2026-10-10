@@ -315,6 +315,19 @@ pub fn transfer(
     cancel: &AtomicBool,
     router: &crate::Router,
 ) -> Result<()> {
+    // Into a folder inside a zip: one rewrite of the archive.
+    #[cfg(feature = "zip")]
+    if dst_dir.split_archive().is_some() {
+        return crate::archive::zipedit::transfer_into(
+            src,
+            dst_dir,
+            mv,
+            on_conflict,
+            progress,
+            cancel,
+            router,
+        );
+    }
     // Paths inside a local archive are `file:` too, but have no local path of their own.
     let local_paths = src
         .iter()
@@ -733,7 +746,7 @@ fn stale(modified: Option<std::time::SystemTime>) -> bool {
         .is_some_and(|age| age > STALE_PARTIAL)
 }
 /// Deletes day-old staging files (never links) from the local folder `dir`. Best effort.
-fn sweep_local(dir: &Path) {
+pub(crate) fn sweep_local(dir: &Path) {
     for item in fs::read_dir(dir).into_iter().flatten().flatten() {
         // `DirEntry::metadata` does not follow links.
         let Ok(meta) = item.metadata() else { continue };
@@ -812,6 +825,25 @@ fn destination(is_dir: bool, proposed: &Path, conflict: Conflict) -> Result<Opti
             }
             unreachable!()
         }
+    }
+}
+
+/// Deletes entries or folders inside zips on this computer, rewriting each archive once
+/// (`archive::editable` says which can be changed). The folders holding them stay.
+pub fn remove_entries(
+    paths: &[crate::VPath],
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+) -> Result<()> {
+    #[cfg(feature = "zip")]
+    return crate::archive::zipedit::remove_entries(paths, progress, cancel);
+    #[cfg(not(feature = "zip"))]
+    {
+        let _ = (progress, cancel);
+        anyhow::bail!(
+            "archives are read-only in this build: {}",
+            paths.first().map(crate::VPath::display).unwrap_or_default()
+        )
     }
 }
 

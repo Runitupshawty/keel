@@ -1448,12 +1448,38 @@ fn file_warning(w: &keel_core::Warning) -> Warning {
                 path.display()
             ),
         ),
+        W::RewritesArchive { path, bytes } => (
+            "rewrites_archive",
+            Some(path),
+            None,
+            format!(
+                "rewrites the {} archive {}: entries that stay are copied as they are, then the new archive replaces the old one",
+                size_text(*bytes),
+                path.display()
+            ),
+        ),
     };
     Warning {
         kind: kind.into(),
         path: path.map(VPath::display),
         files,
         message,
+    }
+}
+
+/// `1.2 GB` (decimal units, as the file lists show sizes).
+fn size_text(bytes: u64) -> String {
+    let units = ["bytes", "kB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < units.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{value:.1} {}", units[unit])
     }
 }
 

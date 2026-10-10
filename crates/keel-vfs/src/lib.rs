@@ -12,7 +12,7 @@ pub mod drag_out;
 // --- end Task 24 ---
 pub mod library;
 /// In-memory provider for tests.
-#[cfg(feature = "test-util")]
+#[cfg(any(test, feature = "test-util"))]
 pub mod memory;
 pub mod path;
 /// Per-user named pipe security (single instance, Windows).

@@ -1,5 +1,7 @@
-//! Archives as read-only folders (`x.zip!/dir/a.txt`). Everything here blocks: call it off
-//! the UI thread. Links and special files inside archives are not listed or extracted.
+//! Archives as folders (`x.zip!/dir/a.txt`): read-only, except that entries of zips on this
+//! computer can be deleted, renamed, moved and added (`zipedit`). Everything here blocks:
+//! call it off the UI thread. Links and special files inside archives are not listed or
+//! extracted.
 pub mod cache;
 #[cfg(feature = "rar")]
 pub(crate) mod rar;
@@ -9,6 +11,8 @@ mod sevenz;
 mod tar;
 #[cfg(feature = "zip")]
 mod zip;
+#[cfg(feature = "zip")]
+pub mod zipedit;
 
 #[cfg(feature = "sevenz")]
 pub(crate) use sevenz::rewrite as sevenz_rewrite;
@@ -28,6 +32,17 @@ use std::{
     sync::{atomic::AtomicBool, mpsc, Arc, Weak},
     time::SystemTime,
 };
+
+/// The zip on this computer holding `path` and `path`'s normalised name in it (empty for
+/// its root), or why nothing there can be changed: 7z, tar and RAR archives, archives
+/// inside archives and archives on other providers are read-only. Decided by name; the
+/// archive itself is read when it is rewritten.
+pub fn editable(path: &VPath) -> Result<(PathBuf, String)> {
+    #[cfg(feature = "zip")]
+    return zipedit::editable(path);
+    #[cfg(not(feature = "zip"))]
+    bail!("archives are read-only in this build: {}", path.display())
+}
 
 /// Receives download progress for archives fetched from another provider.
 pub type ProgressSink = Arc<dyn Fn(crate::Progress) + Send + Sync>;
@@ -433,7 +448,9 @@ fn entry(
         ext,
     }
 }
-const READ_ONLY: &str = "archives are read-only in this version";
+/// Without the zip writer, nothing inside an archive changes.
+#[cfg(not(feature = "zip"))]
+const READ_ONLY: &str = "archives are read-only in this build";
 impl Provider for ArchiveProvider {
     fn scheme(&self) -> &'static str {
         "archive"
@@ -524,17 +541,41 @@ impl Provider for ArchiveProvider {
         }
         Ok(self.materialise(path)?.path().to_path_buf())
     }
-    fn write(&self, _: &VPath) -> Result<Box<dyn Write + Send>> {
-        bail!(READ_ONLY)
+    /// Zips on this computer: the archive is rewritten when the writer is flushed (see
+    /// `zipedit`). Everything else is read-only.
+    fn write(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        #[cfg(feature = "zip")]
+        return zipedit::spool(p, true);
+        #[cfg(not(feature = "zip"))]
+        bail!("{READ_ONLY}: {}", p.display())
     }
-    fn mkdir(&self, _: &VPath) -> Result<()> {
-        bail!(READ_ONLY)
+    fn create_new(&self, p: &VPath) -> Result<Box<dyn Write + Send>> {
+        #[cfg(feature = "zip")]
+        return zipedit::spool(p, false);
+        #[cfg(not(feature = "zip"))]
+        bail!("{READ_ONLY}: {}", p.display())
     }
-    fn rename(&self, _: &VPath, _: &VPath) -> Result<()> {
-        bail!(READ_ONLY)
+    fn mkdir(&self, p: &VPath) -> Result<()> {
+        #[cfg(feature = "zip")]
+        return zipedit::mkdir_entry(p);
+        #[cfg(not(feature = "zip"))]
+        bail!("{READ_ONLY}: {}", p.display())
     }
-    fn remove(&self, _: &VPath) -> Result<()> {
-        bail!(READ_ONLY)
+    fn rename(&self, from: &VPath, to: &VPath) -> Result<()> {
+        #[cfg(feature = "zip")]
+        return zipedit::rename_entry(from, to);
+        #[cfg(not(feature = "zip"))]
+        bail!("{READ_ONLY}: {} -> {}", from.display(), to.display())
+    }
+    fn rename_noreplace(&self, from: &VPath, to: &VPath) -> Result<()> {
+        self.rename(from, to)
+    }
+    /// Deletes for good (one rewrite of the archive); the folder holding it stays.
+    fn remove(&self, p: &VPath) -> Result<()> {
+        #[cfg(feature = "zip")]
+        return zipedit::remove_entries(std::slice::from_ref(p), &|_| {}, &AtomicBool::new(false));
+        #[cfg(not(feature = "zip"))]
+        bail!("{READ_ONLY}: {}", p.display())
     }
     /// The whole entry table is read; nothing is cut off.
     fn list_complete(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
