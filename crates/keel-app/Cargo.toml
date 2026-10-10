@@ -58,6 +58,8 @@ image.workspace = true
 rusqlite.workspace = true
 # Attached: `media.thumb` answers carry the WebP as base64.
 base64.workspace = true
+# Video playback in the viewer: sound output (ffmpeg decodes; it is not shipped).
+cpal.workspace = true
 # VS Code icon themes: .vsix packages (zip, sometimes gzip-wrapped by the Marketplace).
 zip.workspace = true
 flate2.workspace = true

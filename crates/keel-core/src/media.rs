@@ -398,6 +398,11 @@ pub(crate) fn parse_xmp(xml: &str) -> Option<Xmp> {
 }
 
 fn video_meta(path: &Path) -> Result<MediaMeta> {
+    Ok(parse_probe(&ffprobe_json(path)?))
+}
+
+/// `ffprobe -show_format -show_streams` of `path` as JSON (10 s limit). Blocking.
+pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value> {
     let ffprobe = find_tool("ffprobe").context("ffprobe not found (install ffmpeg)")?;
     let mut command = Command::new(ffprobe);
     command
@@ -417,12 +422,11 @@ fn video_meta(path: &Path) -> Result<MediaMeta> {
             String::from_utf8_lossy(&stderr).trim()
         )));
     }
-    let v: serde_json::Value = serde_json::from_slice(&stdout).map_err(corrupt)?;
-    Ok(parse_probe(&v))
+    serde_json::from_slice(&stdout).map_err(corrupt)
 }
 
 /// MediaMeta from `ffprobe -print_format json -show_format -show_streams`.
-pub(crate) fn parse_probe(v: &serde_json::Value) -> MediaMeta {
+pub fn parse_probe(v: &serde_json::Value) -> MediaMeta {
     let str_of = |v: &serde_json::Value| v.as_str().map(str::to_owned);
     let format = &v["format"];
     let tags = &format["tags"];
@@ -668,7 +672,7 @@ pub fn ffmpeg_available() -> bool {
 
 /// First `name` on PATH, then in FALLBACK_DIRS. On Windows `.cmd`/`.bat` count too (shims).
 /// Same lookup as keel-preview's video renderer.
-fn find_tool(name: &str) -> Option<PathBuf> {
+pub fn find_tool(name: &str) -> Option<PathBuf> {
     let extensions: &[&str] = if cfg!(windows) {
         &["exe", "cmd", "bat"]
     } else {

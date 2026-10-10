@@ -42,7 +42,9 @@ pub use library::{
     Library, LibraryId, LibraryStats, LibrarySummary, OfflineReason, RecordRef, Source, SourceDef,
     SourceId, SourceKind, SourceStatus, SourceSummary, StoreUsage,
 };
-pub use media::{ffmpeg_available, read_meta, MediaMeta, MAX_PIXELS};
+pub use media::{
+    ffmpeg_available, ffprobe_json, find_tool, parse_probe, read_meta, MediaMeta, MAX_PIXELS,
+};
 pub use oplog::{OpDone, OpLogEntry};
 pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
