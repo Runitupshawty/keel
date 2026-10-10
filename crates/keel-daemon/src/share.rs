@@ -685,17 +685,19 @@ mod tests {
         up.claim(&id).unwrap();
         drop(up);
         let mark = dir.path().join(&id).join(CLAIMED_MARK);
-        let almost = SystemTime::now() - CLAIMED_KEEP + Duration::from_millis(300);
+        // A minute left (a slow runner opens it well within that); the sweep's clock is
+        // then moved two minutes on.
+        let almost = SystemTime::now() - CLAIMED_KEEP + Duration::from_secs(60);
         std::fs::File::options()
             .write(true)
             .open(&mark)
             .unwrap()
             .set_modified(almost)
             .unwrap();
-        let up = Uploads::open(dir.path().into());
+        let mut up = Uploads::open(dir.path().into());
         assert!(dir.path().join(&id).exists(), "still within CLAIMED_KEEP");
         assert!(up.claim(&id).is_err(), "opened already");
-        std::thread::sleep(Duration::from_millis(500));
+        fake_clock(&mut up).store(120_000, Ordering::Release);
         up.sweep();
         assert!(!dir.path().join(&id).exists(), "swept while running");
     }
@@ -705,7 +707,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ct = "multipart/form-data; boundary=B";
         let one = body("B", &[("files", Some("n.txt"), b"note")]);
-        let up = Uploads::with_limits(dir.path().into(), 1 << 20, Duration::from_millis(300));
+        let mut up = Uploads::with_limits(dir.path().into(), 1 << 20, Duration::from_millis(300));
+        // A fake clock: the waiting uploads cannot expire while a slow disk creates them.
+        let ms = fake_clock(&mut up);
         let too_big = up.receive(&one[..], 2 << 20, ct).unwrap_err();
         assert_eq!(too_big.0, "413 Payload Too Large");
         assert_eq!(
@@ -740,7 +744,7 @@ mod tests {
             up.receive(&one[..], one.len() as u64, ct).unwrap_err().0,
             "429 Too Many Requests"
         );
-        std::thread::sleep(Duration::from_millis(400));
+        ms.store(400, Ordering::Release);
         up.sweep();
         for id in &waiting {
             assert!(!dir.path().join(id).exists(), "unclaimed upload deleted");
