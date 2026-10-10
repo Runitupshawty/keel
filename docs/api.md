@@ -12,7 +12,7 @@ operations (`keel_api::OPS`, crate `keel-api`). The same list serves three front
 Every operation has a stable name, JSON schemas for its parameters and result (generated
 from the Rust types with `schemars`), and an example. Paths are strings: an absolute local
 path (`D:\Photos\a.jpg`, `/home/me/a.jpg`, `D:\x.zip!/inside.txt`) or a VPath URI
-(`library://<source id>/<path>`, `sftp://host/path`). Relative paths are refused: the
+(`library://<source id>/<path>`, `sftp://<host id>/<path>`, `cloud://<account id>/<path>`). Relative paths are refused: the
 daemon's working folder is not the caller's.
 
 ## Preview first
@@ -74,8 +74,17 @@ return what they removed.
 | `shares.revoke` | direct | Revoke a grant at once |
 
 Devices and shares need keel-net: `[net] enabled = true` in the profile's
-`config.toml` (`<config dir>/profiles/<profile>/config.toml`), and keel-daemon running
-(it owns the profile's one node); otherwise they fail with `NET_DISABLED`. Serving
+`config.toml` (`<config dir>/profiles/<profile>/config.toml`); otherwise they fail with
+`NET_DISABLED`. keel-daemon owns the profile's one node while it runs; without it, a CLI
+or MCP session brings the node online itself, only for its first device or share call.
+
+Both hosts (the daemon and the in-process CLI) register the profile's SFTP hosts
+(`[[remotes]]`) and cloud accounts (`[[clouds]]`) from that `config.toml`, with their
+secrets from the OS keychain, so `sftp://<host id>/…` and `cloud://<account id>/…`
+paths work and Share / Cloud sources can be listed and indexed. A host key that is not
+trusted yet is refused (there is no one to ask): connect once from the Keel window to
+trust it. Files extracted from archives go to `<data dir>/archives` (never the app's own
+cache). Serving
 sources to peers arrives with the remote-source work (Task 36): until then a grant is
 recorded but the node offers no sources.
 
@@ -160,8 +169,13 @@ keel daemon start|stop|status
 keel mcp [--allow-execute]
 ```
 
-All take `--profile NAME` and `--json`. Exit codes: 0 ok, 1 the operation failed, 2
-usage. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
+All take `--profile NAME` and `--json`; `--json` prints exactly one JSON document per
+invocation (`sources add` returns the source with its index job under `job`; a failure
+is `{"error": {"code", "message", "data"?}}`). Exit codes: 0 ok, 1 the operation failed,
+2 usage. A lone argument that names an existing folder opens that folder in the window
+even when it is a subcommand name (`keel search` where `search` is a folder); write
+`keel ./search` for the folder, and run a subcommand with any further argument or from
+another folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
 job. Other mutating subcommands (`tag`, `sources add|index`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the

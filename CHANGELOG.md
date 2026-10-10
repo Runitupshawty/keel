@@ -2,6 +2,15 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- API plans: the hash covers everything a plan runs (for file operations also the changes and warnings) and is checked again at `execute`; `api-plans.json` is owner-only on every platform, so a plan altered on disk is refused.
+- MCP: `execute` applies a plan only after the user confirmed it through the client (MCP elicitation, showing the summary, changes and warnings); a client that cannot ask is refused unless `keel mcp --allow-execute`, and then each call must repeat the preview's summary. Nothing but `ping` is answered before `initialize`; bad or oversized lines get an error and the session goes on.
+- keel-daemon: the WebSocket handshake has a 5 s deadline and at most 64 connections are served; `daemon.token` is owner-only and a token file others can access is replaced; a request on the local socket must arrive within 30 s however slowly it trickles in; the socket name is derived from the user's SID or uid and a per-user random salt; `--profile` is validated.
+- CLI: `--json` prints one JSON document per invocation; a lone argument naming an existing folder opens it even when it matches a subcommand (`keel ./search` always does); the in-process host keeps extracted archives under the data folder, brings keel-net online only for devices and shares, and registers the profile's SFTP hosts and cloud accounts.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

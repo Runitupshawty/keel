@@ -99,6 +99,47 @@ fn search_against_a_fixture_library() {
 }
 
 #[test]
+fn json_output_is_one_document() {
+    let env = env();
+    let doc = |args: &[&str]| -> Value {
+        let out = env.run(args);
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "keel {args:?}: not one JSON document ({e}):\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        })
+    };
+    // The added source with its index job.
+    let added = doc(&["sources", "add", &s(env.files.path()), "--json"]);
+    assert!(added["id"].is_string(), "{added}");
+    assert_eq!(added["job"]["status"], "done", "{added}");
+    let tagged = doc(&["tag", "add", "receipts", &env.file("notes.txt"), "--json"]);
+    assert_eq!(tagged["records"], 1, "{tagged}");
+    let dst = tempfile::tempdir().unwrap();
+    let preview = doc(&[
+        "plan",
+        "copy",
+        &env.file("notes.txt"),
+        "--to",
+        &s(dst.path()),
+        "--json",
+    ]);
+    let id = preview["plan_id"].as_str().unwrap();
+    let hash = preview["input_hash"].as_str().unwrap();
+    let done = doc(&["execute", id, "--hash", hash, "--json"]);
+    assert_eq!(done["status"], "done", "{done}");
+    // A failure is one `{"error": ...}` document too.
+    let failed = doc(&["devices", "--json"]);
+    assert!(failed["error"]["code"].is_i64(), "{failed}");
+    let failed = doc(&["execute", id, "--hash", hash, "--json"]);
+    assert!(
+        failed["error"]["code"].is_i64(),
+        "already executed: {failed}"
+    );
+}
+
+#[test]
 fn plan_piped_into_execute() {
     let env = env();
     let dst = tempfile::tempdir().unwrap();

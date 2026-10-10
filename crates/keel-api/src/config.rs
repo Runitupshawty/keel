@@ -1,6 +1,7 @@
-//! What a host (daemon or in-process CLI) reads from Keel's settings: the library name
-//! and whether keel-net is on, from `<config dir>/profiles/<profile>/config.toml`
-//! (`[library] name`, `[net] enabled`); the daemon's socket name and WebSocket token.
+//! What a host (daemon or in-process CLI) reads from Keel's settings: the library name,
+//! whether keel-net is on and the SFTP hosts and cloud accounts, from
+//! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `[net] enabled`,
+//! `[[remotes]]`, `[[clouds]]`); the daemon's socket name and WebSocket token.
 
 use std::path::PathBuf;
 
@@ -52,6 +53,26 @@ pub struct HostConfig {
     pub data_dir: PathBuf,
     pub library: String,
     pub net: bool,
+    /// `[[remotes]]`: SFTP hosts (secrets stay in the OS keychain).
+    pub remotes: Vec<keel_vfs::RemoteHost>,
+    /// `[[clouds]]`: cloud accounts (non-secret fields only).
+    pub clouds: Vec<keel_vfs::CloudAccount>,
+}
+
+/// The entries of the array `key` that parse as `T` (a broken one is skipped).
+fn entries<T: serde::de::DeserializeOwned>(table: &toml::Table, key: &str) -> Vec<T> {
+    let items = table.get(key).and_then(toml::Value::as_array);
+    items
+        .into_iter()
+        .flatten()
+        .filter_map(|v| match v.clone().try_into() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::warn!("config.toml [[{key}]]: {e}");
+                None
+            }
+        })
+        .collect()
 }
 
 impl HostConfig {
@@ -91,6 +112,8 @@ impl HostConfig {
             data_dir,
             library,
             net,
+            remotes: entries(&table, "remotes"),
+            clouds: entries(&table, "clouds"),
         }
     }
 
