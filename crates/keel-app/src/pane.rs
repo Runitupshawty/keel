@@ -515,6 +515,7 @@ pub fn context_menu(
     if on_item {
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);
+        item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
         item(ui, "Delete", "Del", Action::Delete);
         ui.separator();
         let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));

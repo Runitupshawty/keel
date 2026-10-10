@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Bulk rename (Ctrl+F2, or "Bulk rename…" in the context menu and palette): a pattern with `{name}`, `{ext}`, `{n}` / `{n:3}` (counter with start and step), `{date}` and `{parent}`, find/replace (plain or regex, optionally case-insensitive) and a case transform, with a live old-to-new preview. Duplicate targets, names that collide with other files, invalid names, empty names and reserved Windows names are flagged and block Apply. Renames go through the folder's provider (local, SFTP, cloud), swaps and chains use temporary names, a partial failure lists the items that failed, and "Undo bulk rename" (toast button or palette) reverses it until the next operation.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

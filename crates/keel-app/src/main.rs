@@ -3,6 +3,7 @@
 
 mod anim;
 mod app;
+mod bulk_rename;
 mod clipboard;
 mod clouds;
 mod crash;

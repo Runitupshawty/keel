@@ -38,6 +38,8 @@ pub enum Dialog {
         paths: Vec<VPath>,
         info: Option<Result<properties::Props, String>>,
     },
+    /// Bulk rename (Ctrl+F2).
+    BulkRename(Box<crate::bulk_rename::BulkRename>),
     /// Linux "Open with": `(name, desktop id)` of the applications for `path`.
     OpenWith {
         path: PathBuf,
@@ -172,6 +174,11 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.add_space(8.0);
                 cancel |= ui.button("Close").clicked();
             }
+            Dialog::BulkRename(m) => {
+                if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
+                    out = Some(Action::BulkRenameApply { renames });
+                }
+            }
             Dialog::OpenWith { path, apps } => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 ui.label(format!("Open \"{name}\" with"));
@@ -209,7 +216,7 @@ pub fn invalid_name(name: &str) -> Option<String> {
     invalid_name_for(name, cfg!(windows))
 }
 
-fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
+pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return Some(format!("\"{name}\" is not a valid name"));
     }
