@@ -77,11 +77,41 @@ impl KindFilter {
     }
 }
 
+/// Inclusive bounds on a media number (`w:>4000`, `duration:<2m`); None = open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+}
+
+impl Span {
+    fn is_open(&self) -> bool {
+        self.min.is_none() && self.max.is_none()
+    }
+
+    fn empty(&self) -> bool {
+        self.min.zip(self.max).is_some_and(|(a, b)| a > b)
+    }
+
+    /// ` AND <col> >= ? AND <col> <= ?` for the bounds set.
+    fn sql(&self, col: &str, sql: &mut String, args: &mut Vec<Value>) {
+        for (bound, op) in [(self.min, ">="), (self.max, "<=")] {
+            if let Some(b) = bound {
+                sql.push_str(&format!(" AND {col} {op} ?"));
+                args.push(Value::Integer(b));
+            }
+        }
+    }
+}
+
 /// A parsed library query. `LibraryQuery::parse` reads an Everything-like string:
 /// words (prefix match on name or path words), `"exact phrase"`, `ext:pdf;docx`,
 /// `size:>1mb` / `size:<=10kb` / `size:1mb..5mb`, `dm:2026-10` / `dm:>=2026-01-15` /
 /// `dm:2026-01..2026-03` / `dm:today`, `kind:image` (also `file:` and `folder:`),
-/// `tag:work`, `in:"source label"`. Dates are local days for the UTC offset passed to
+/// `tag:work`, `in:"source label"`. Media filters (from the sidecar `media` rows):
+/// `camera:canon`, `taken:2024` (same dates as `dm:`; no capture time, no match),
+/// `w:>4000` / `h:<=1080` (pixels, `size:` comparisons), `duration:>30s` / `duration:<2m`
+/// (videos), `has:gps`, `kind:photo`. Dates are local days for the UTC offset passed to
 /// `parse`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryQuery {
@@ -100,6 +130,23 @@ pub struct LibraryQuery {
     pub sources: Vec<String>,
     /// Tag names (a tag also matches its nested tags); all of them.
     pub tags: Vec<String>,
+    /// Camera text, prefix match on its words (case-insensitive).
+    #[serde(default)]
+    pub camera: Option<String>,
+    /// Unix seconds, `taken_at` (never the modified time).
+    #[serde(default)]
+    pub taken: Span,
+    #[serde(default)]
+    pub width: Span,
+    #[serde(default)]
+    pub height: Span,
+    #[serde(default)]
+    pub duration_ms: Span,
+    #[serde(default)]
+    pub has_gps: bool,
+    /// `kind:photo`: images with a media row and no duration.
+    #[serde(default)]
+    pub photo: bool,
     pub max: usize,
 }
 
@@ -116,6 +163,13 @@ impl Default for LibraryQuery {
             modified_before: None,
             sources: Vec::new(),
             tags: Vec::new(),
+            camera: None,
+            taken: Span::default(),
+            width: Span::default(),
+            height: Span::default(),
+            duration_ms: Span::default(),
+            has_gps: false,
+            photo: false,
             max: DEFAULT_MAX,
         }
     }
@@ -233,6 +287,35 @@ fn range_filter(
     Some((Some(start), Some(end)))
 }
 
+/// `30s`, `2m`, `1.5h`, `500ms`; a bare number is seconds. Milliseconds.
+fn millis(s: &str) -> Option<i64> {
+    let s = s.trim().to_ascii_lowercase();
+    let split = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let mult = match unit {
+        "ms" => 1.0,
+        "" | "s" | "sec" => 1e3,
+        "m" | "min" => 6e4,
+        "h" | "hr" => 3.6e6,
+        _ => return None,
+    };
+    Some((num.parse::<f64>().ok()? * mult) as i64)
+}
+
+/// An integer comparison (`>4000`, `a..b`) as inclusive bounds, like `size:`.
+fn span(v: &str, num: impl Fn(&str) -> Option<i64>) -> Option<Span> {
+    let (from, before) = range_filter(v, |x| {
+        let n = num(x)?;
+        Some((n, n + 1))
+    })?;
+    Some(Span {
+        min: from,
+        max: before.map(|b| b - 1),
+    })
+}
+
 impl LibraryQuery {
     /// `utc_offset`: seconds east of UTC of the user's local time, for `dm:` dates.
     pub fn parse(s: &str, utc_offset: i64) -> Result<LibraryQuery> {
@@ -279,6 +362,34 @@ impl LibraryQuery {
                         .with_context(|| format!("bad date: {value}"))?;
                     q.modified_from = from;
                     q.modified_before = before;
+                }
+                "camera" if !value.is_empty() => q.camera = Some(value),
+                "taken" => {
+                    let (from, before) = range_filter(&value, |x| date_range(x, now, utc_offset))
+                        .with_context(|| format!("bad date: {value}"))?;
+                    q.taken = Span {
+                        min: from,
+                        max: before.map(|b| b - 1),
+                    };
+                }
+                "w" | "width" | "h" | "height" => {
+                    let sp = span(&value, |x| x.trim().parse().ok())
+                        .with_context(|| format!("bad pixel count: {value}"))?;
+                    if key.starts_with('w') {
+                        q.width = sp;
+                    } else {
+                        q.height = sp;
+                    }
+                }
+                "duration" | "length" => {
+                    q.duration_ms =
+                        span(&value, millis).with_context(|| format!("bad duration: {value}"))?;
+                }
+                "has" if value.eq_ignore_ascii_case("gps") => q.has_gps = true,
+                "kind" | "type"
+                    if matches!(value.to_ascii_lowercase().as_str(), "photo" | "photos") =>
+                {
+                    q.photo = true;
                 }
                 "kind" | "type" => {
                     q.kind = Some(
@@ -358,6 +469,44 @@ impl LibraryQuery {
             || self.modified_from.is_some()
             || self.modified_before.is_some()
             || !self.tags.is_empty()
+            || self.has_media_filters()
+    }
+
+    fn has_media_filters(&self) -> bool {
+        self.camera.is_some()
+            || !(self.taken.is_open() && self.width.is_open() && self.height.is_open())
+            || !self.duration_ms.is_open()
+            || self.has_gps
+            || self.photo
+    }
+
+    /// Conditions on `media m` (each starting with " AND "); None when none can match.
+    /// The camera is a word-prefix match in `media_fts` (case-insensitive).
+    fn media_conds(&self) -> Option<(String, Vec<Value>)> {
+        let (mut sql, mut args) = (String::new(), Vec::new());
+        let spans = [
+            (&self.taken, "m.taken_at"),
+            (&self.width, "m.width"),
+            (&self.height, "m.height"),
+            (&self.duration_ms, "m.duration_ms"),
+        ];
+        for (sp, col) in spans {
+            if sp.empty() {
+                return None;
+            }
+            sp.sql(col, &mut sql, &mut args);
+        }
+        if self.has_gps {
+            sql.push_str(" AND m.gps_lat IS NOT NULL AND m.gps_lon IS NOT NULL");
+        }
+        if self.photo {
+            sql.push_str(" AND m.duration_ms IS NULL");
+        }
+        if let Some(c) = &self.camera {
+            sql.push_str(" AND m.record IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)");
+            args.push(Value::Text(format!("camera : {}*", quote(c))));
+        }
+        Some((sql, args))
     }
 
     /// SQL conditions on `record r` (each starting with " AND ") and their arguments; None
@@ -397,6 +546,13 @@ impl LibraryQuery {
                 sql.push_str(&format!(" AND r.mtime {op} ?"));
                 args.push(Value::Integer(t.saturating_mul(NS)));
             }
+        }
+        if self.has_media_filters() {
+            let (m, margs) = self.media_conds()?;
+            sql.push_str(&format!(
+                " AND r.id IN (SELECT m.record FROM media m WHERE 1{m})"
+            ));
+            args.extend(margs);
         }
         // Tag names resolve through the store's copy of the library's tags (nested included).
         for tag in &self.tags {
@@ -556,6 +712,26 @@ fn search_filters(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Librar
             ],
         ));
     }
+    if q.has_media_filters() {
+        // The media table is small next to the records: its taken index when dated, else a
+        // scan (ponytail: no index on width/height/duration; a rare one costs ~50 ns a
+        // media row, add an index in the next schema migration if that ever shows).
+        let Some((m, margs)) = q.media_conds() else {
+            return Ok(Vec::new());
+        };
+        let by = if q.taken.is_open() {
+            ""
+        } else {
+            " INDEXED BY media_taken"
+        };
+        narrow.insert(
+            0,
+            (
+                format!("SELECT m.record AS id, 0.0 AS rank FROM media m{by} WHERE 1{m}"),
+                margs,
+            ),
+        );
+    }
     for (sql, args) in narrow {
         if count_upto(src, &sql, &args, NARROW_CAP)? <= NARROW_CAP {
             return run(src, q, now, &sql, args, &[]);
@@ -580,18 +756,26 @@ fn search_filters(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Librar
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-// Not yet: `media_fts` (camera, XMP keywords; rowid = record, filled by `SidecarJob`). Words
-// would have to match across `record_fts` and `media_fts` (a word in the name AND one in the
-// keywords) and be ranked together, so it waits for the media view's query design.
+/// Rank of a media-only (camera or keyword) hit: worse than any name or path hit.
+const MEDIA_RANK: f64 = 10.0;
+
 fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
     let parts = q.text_parts(false);
     if parts.is_empty() {
         return search_filters(src, q, now);
     }
-    let hits = search_text(src, q, now, parts)?;
+    let mut hits = search_text(src, q, now, parts)?;
     if hits.is_empty() && q.terms.len() > 1 {
         // Nothing with whole earlier words: every word as a prefix.
-        return search_text(src, q, now, q.text_parts(true));
+        hits = search_text(src, q, now, q.text_parts(true))?;
+    }
+    if hits.is_empty() {
+        // No name or path hit: the words may be a camera or XMP keywords (`media_fts`).
+        let m = q.text_parts(true).join(" AND ");
+        let cand = format!(
+            "SELECT rowid AS id, {MEDIA_RANK} AS rank FROM media_fts WHERE media_fts MATCH ?"
+        );
+        return run(src, q, now, &cand, vec![Value::Text(m)], &[]);
     }
     Ok(hits)
 }

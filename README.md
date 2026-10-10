@@ -60,8 +60,16 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `size:>1mb`, `size:<10kb` | size comparison |
 | `dm:2026-10` | modified in that month (ranges and `today` work too) |
 | `kind:image` | file kind (`file:`, `folder:`) |
+| `camera:canon` | media: camera starts with the word (`camera:"canon eos"`) |
+| `taken:2024`, `taken:2023-06..2023-08` | media: capture date (same dates as `dm:`; never the modified time) |
+| `w:>4000`, `h:<=1080` | media: width or height in pixels (`size:` comparisons) |
+| `duration:>30s`, `duration:<2m` | media: video length (`ms`, `s`, `m`, `h`) |
+| `has:gps` | media: has a GPS position |
+| `kind:photo` | media: images (not videos) with media metadata |
 | `tag:taxes` | has the tag |
 | `in:photos` | under a path or source |
+
+Words that match no name or path also search camera and photo keywords, ranked below name hits. The media filters need the sidecar job to have run on the source.
 
 Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
 
