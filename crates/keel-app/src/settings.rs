@@ -91,6 +91,7 @@ impl OpenWith {
             .map_or(&[], Vec::as_slice)
     }
 }
+
 /// Formats the Compress dialog can write (and Add to can extend).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -161,6 +162,7 @@ impl ArchiveFormat {
 #[serde(default)]
 pub struct ArchiveSettings {
     pub default_format: ArchiveFormat,
+}
 
 impl Default for Settings {
     fn default() -> Self {
