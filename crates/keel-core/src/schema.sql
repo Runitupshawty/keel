@@ -277,3 +277,39 @@ CREATE TABLE job_file(
     src TEXT NOT NULL,
     placed TEXT NOT NULL,
     PRIMARY KEY(job, src)) WITHOUT ROWID;
+
+-- @library 8
+-- Library sync (tags, favorites, content ids) between paired devices. Every tag gets a
+-- stable id (`uid`, random; Favorites is 'favorites' everywhere) that devices agree on.
+-- `sync_log`: this device's own changes, in order (`seq`), each with its Lamport time and
+-- what changed (`op`, JSON); a peer pulls the entries after the last seq it has.
+-- `sync_key`: the winning change per key (last writer wins by Lamport time, then device
+-- id; '' = this device), tombstones included. `sync_peer`: how far each device's log was
+-- read, and when. `tag_alias`: another device's tag merged into a local one by name.
+ALTER TABLE tag ADD COLUMN uid TEXT;
+UPDATE tag SET uid = CASE WHEN id = 1 THEN 'favorites' ELSE lower(hex(randomblob(16))) END;
+CREATE UNIQUE INDEX tag_uid ON tag(uid);
+CREATE TRIGGER tag_uid_ai AFTER INSERT ON tag WHEN new.uid IS NULL BEGIN
+    UPDATE tag SET uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
+CREATE TABLE sync_log(
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    lamport INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    op TEXT NOT NULL,
+    live INTEGER NOT NULL,
+    ts INTEGER NOT NULL);
+CREATE INDEX sync_log_key ON sync_log(key);
+CREATE TABLE sync_key(
+    key TEXT PRIMARY KEY,
+    lamport INTEGER NOT NULL,
+    device TEXT NOT NULL,
+    op TEXT NOT NULL,
+    live INTEGER NOT NULL,
+    ts INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE sync_peer(
+    device TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL DEFAULT 0,
+    last_sync INTEGER,
+    received INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE tag_alias(uid TEXT PRIMARY KEY, tag INTEGER NOT NULL);

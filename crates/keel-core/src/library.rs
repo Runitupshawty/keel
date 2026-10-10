@@ -486,6 +486,10 @@ pub(crate) struct Shared {
     pub(crate) recount_pending: Mutex<crate::protect::PendingRecount>,
     /// Completed recounts (`Library::protection_revision`).
     pub(crate) protection_revision: AtomicU64,
+    /// The protection revision at the last `sync_reapply` and the last content-id note
+    /// (`sync.rs`; `u64::MAX`: never).
+    pub(crate) sync_reapplied: AtomicU64,
+    pub(crate) sync_noted: AtomicU64,
     /// Seconds east of UTC for `dm:` dates (`Library::set_utc_offset`).
     pub(crate) utc_offset: AtomicI64,
     /// Seconds between remote change polls of watched sources (`Library::set_remote_poll`).
@@ -715,6 +719,8 @@ impl Library {
             recounting: Mutex::new(()),
             recount_pending: Mutex::default(),
             protection_revision: AtomicU64::new(0),
+            sync_reapplied: AtomicU64::new(u64::MAX),
+            sync_noted: AtomicU64::new(u64::MAX),
             utc_offset: AtomicI64::new(0),
             remote_poll: AtomicU64::new(crate::POLL_INTERVAL.as_secs()),
             job_events: Mutex::new(Vec::new()),
@@ -747,6 +753,9 @@ impl Library {
         );
         // Stores that came back with tags this library does not know.
         lib.reconcile_tags()?;
+        // Library sync: what existed before it, once; old tombstones go.
+        lib.sync_seed()?;
+        lib.sync_prune()?;
         Ok(lib)
     }
 

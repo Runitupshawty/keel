@@ -26,6 +26,7 @@ mod protect;
 mod search;
 mod sidecar_job;
 mod sidecars;
+mod sync;
 mod tags;
 
 pub use fsid::unix_ns;
@@ -57,6 +58,10 @@ pub use sidecar_job::SidecarJob;
 pub use sidecars::{
     strip_retry_due, Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars, StripWaits,
     DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET, STRIP_RETRY,
+};
+pub use sync::{
+    valid_device, valid_tag_name, SyncApplied, SyncEntry, SyncOp, SyncPage, SyncPeer, SyncTarget,
+    FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
 };
 pub use tags::{Tag, TagId, View, FAVORITES};
 

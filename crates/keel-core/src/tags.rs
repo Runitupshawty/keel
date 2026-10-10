@@ -222,7 +222,7 @@ impl Library {
         self.mirror_all()
     }
 
-    fn mirror_all(&self) -> Result<()> {
+    pub(crate) fn mirror_all(&self) -> Result<()> {
         let tags = self.tag_rows()?;
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         for s in &sources {
@@ -247,7 +247,7 @@ impl Library {
     }
 
     /// `id` and every tag nested below it.
-    fn tag_tree(&self, id: TagId) -> Result<Vec<TagId>> {
+    pub(crate) fn tag_tree(&self, id: TagId) -> Result<Vec<TagId>> {
         let c = self.shared.db.get()?;
         let mut stmt = c.prepare(
             "WITH RECURSIVE t(id) AS (
@@ -286,6 +286,7 @@ impl Library {
             c.last_insert_rowid()
         };
         self.mirror_all()?;
+        self.log_sync(vec![self.tag_change(id)?])?;
         Ok(id)
     }
 
@@ -297,7 +298,8 @@ impl Library {
             .get()?
             .execute("UPDATE tag SET name = ?2 WHERE id = ?1", params![id, name])
             .with_context(|| format!("tag {name:?} already exists"))?;
-        self.mirror_all()
+        self.mirror_all()?;
+        self.log_sync(vec![self.tag_change(id)?])
     }
 
     pub fn recolor_tag(&self, id: TagId, color: Option<&str>) -> Result<()> {
@@ -306,7 +308,8 @@ impl Library {
             "UPDATE tag SET color = ?2 WHERE id = ?1",
             params![id, color],
         )?;
-        self.mirror_all()
+        self.mirror_all()?;
+        self.log_sync(vec![self.tag_change(id)?])
     }
 
     /// Moves a tag under `parent` (None: top level); a tag cannot go below itself.
@@ -327,7 +330,8 @@ impl Library {
                 params![id, parent],
             )
             .context("a sibling tag already has that name")?;
-        self.mirror_all()
+        self.mirror_all()?;
+        self.log_sync(vec![self.tag_change(id)?])
     }
 
     /// Deletes a tag and its record links; its nested tags move up to its parent. The links
@@ -335,6 +339,24 @@ impl Library {
     /// deleted again, never links without their tag.
     pub fn delete_tag(&self, id: TagId) -> Result<()> {
         self.editable(id)?;
+        let uid = self.tag_uid(id)?;
+        let children: Vec<TagId> = self
+            .tag_rows()?
+            .into_iter()
+            .filter(|t| t.parent == Some(id))
+            .map(|t| t.id)
+            .collect();
+        self.delete_tag_rows(id)?;
+        let mut changes = vec![self.tag_deleted(uid.clone())];
+        for child in children {
+            changes.push(self.tag_change(child)?);
+        }
+        self.log_sync(changes)?;
+        self.forget_assignments(&uid)
+    }
+
+    /// `delete_tag` without the sync log (a deletion another device made).
+    pub(crate) fn delete_tag_rows(&self, id: TagId) -> Result<()> {
         {
             // Checked before anything goes: the nested tags must fit one level up.
             let c = self.shared.db.get()?;
@@ -384,6 +406,23 @@ impl Library {
     /// Applies (`on`) or removes a tag on records, one transaction per source. Records that
     /// no longer exist are skipped.
     pub fn set_tag(&self, tag: TagId, records: &[RecordRef], on: bool) -> Result<()> {
+        let changed = self.set_tag_rows(tag, records, on)?;
+        let uid = self.tag_uid(tag)?;
+        let mut changes = Vec::new();
+        for (src, ids) in changed {
+            changes.extend(self.assign_changes(&uid, &src, &ids, on)?);
+        }
+        self.log_sync(changes)
+    }
+
+    /// `set_tag` without the sync log (a change another device made): the records whose
+    /// tags changed, by source.
+    pub(crate) fn set_tag_rows(
+        &self,
+        tag: TagId,
+        records: &[RecordRef],
+        on: bool,
+    ) -> Result<Vec<(Arc<Source>, Vec<i64>)>> {
         self.tag_exists(tag)?;
         let tags = self.tag_rows()?;
         let mut by_source: Vec<(Arc<Source>, Vec<i64>)> = Vec::new();
@@ -398,12 +437,14 @@ impl Library {
                 }
             }
         }
+        let mut changed = Vec::new();
         for (src, ids) in by_source {
             if on {
                 self.mirror_tags(&src, &tags)?;
             }
             let mut c = src.store.get()?;
             let tx = c.transaction()?;
+            let mut done = Vec::new();
             {
                 let mut stmt = tx.prepare(if on {
                     "INSERT OR IGNORE INTO record_tag(record, tag)
@@ -412,12 +453,18 @@ impl Library {
                     "DELETE FROM record_tag WHERE record = ?1 AND tag = ?2"
                 })?;
                 for id in ids {
-                    stmt.execute(params![id, tag])?;
+                    if stmt.execute(params![id, tag])? > 0 {
+                        done.push(id);
+                    }
                 }
             }
             tx.commit()?;
+            drop(c);
+            if !done.is_empty() {
+                changed.push((src, done));
+            }
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// The tags on a record (Favorites included).
