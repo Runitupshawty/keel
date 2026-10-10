@@ -52,9 +52,9 @@ exceptions = [
     { name = "ws_stream_wasm", allow = ["Unlicense"] },
     { name = "async_io_stream", allow = ["Unlicense"] },
     { name = "pharos", allow = ["Unlicense"] },
-    # winfsp-rs (keel-mount / keel-daemon feature `winfsp`, off by default): GPL-3.0. On in the Windows
-    # release build of keel-daemon, which is distributed under the GPL-3.0 (keel is built without it);
-    # see THIRD_PARTY.md.
+    # winfsp-rs (keel-mount / keel-daemon feature `winfsp`, off by default): GPL-3.0. In no release
+    # build; a keel-daemon built from source with it is distributed under the GPL-3.0 (keel never
+    # links it); see THIRD_PARTY.md.
     { name = "winfsp", allow = ["GPL-3.0"] },
     { name = "winfsp-sys", allow = ["GPL-3.0"] },
 ]
