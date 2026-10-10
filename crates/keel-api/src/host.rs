@@ -88,6 +88,7 @@ impl Host {
         let lib = Arc::new(lib);
         let mut ctx = Ctx::new(lib.clone(), router);
         ctx.config_dir = Some(cfg.config_dir.clone());
+        ctx.data_dir = Some(cfg.data_dir.clone());
         let mut host = Host {
             ctx: Arc::new(ctx),
             rt: None,

@@ -80,30 +80,46 @@ pub fn register(lib: &Library) {
 }
 
 /// Sends `paths` (files or folders, any provider) to `peer` as a durable job; its
-/// progress comes through `lib.jobs().subscribe()`, cancel with `jobs().cancel`.
+/// progress comes through `lib.jobs().subscribe()`, cancel with `jobs().cancel`. Folders
+/// are walked when the job starts.
 pub fn send(node: &Node, lib: &Library, peer: PeerId, paths: Vec<VPath>) -> Result<JobId> {
     ensure!(!paths.is_empty(), "nothing to send");
+    spawn(node, lib, peer, paths, None)
+}
+
+/// [`send`] of exactly `files` (from [`files`], checked and previewed by the caller): the
+/// job sends that list and does not walk the folders again.
+pub fn send_files(node: &Node, lib: &Library, peer: PeerId, files: Vec<DropFile>) -> Result<JobId> {
+    ensure!(!files.is_empty(), "nothing to send");
+    let paths = files.iter().map(|f| f.src.clone()).collect();
+    spawn(node, lib, peer, paths, Some(files))
+}
+
+fn spawn(
+    node: &Node,
+    lib: &Library,
+    peer: PeerId,
+    paths: Vec<VPath>,
+    files: Option<Vec<DropFile>>,
+) -> Result<JobId> {
     let id = data_encoding::HEXLOWER.encode(&crate::node::random::<16>()?);
     lib.jobs().spawn(Box::new(DropJob {
         id,
         from: node.id(),
         peer,
         paths,
-        files: None,
+        files,
         next: 0,
         sent: 0,
         errors: (0, 0),
     }))
 }
 
-/// What `send` would offer for `paths`: each file's relative name and size, with the same
-/// checks the job makes (portable names, no two items sharing a name, at least one file).
-/// For previews; the job expands again when it starts.
-pub fn files(router: &Router, paths: &[VPath]) -> Result<Vec<(String, u64)>> {
-    Ok(expand(router, paths)?
-        .into_iter()
-        .map(|f| (f.rel, f.size))
-        .collect())
+/// What `send` would offer for `paths`: each file with its relative name and size, with
+/// the same checks the job makes (portable names, no two items sharing a name, at least one
+/// file). Links inside folders are skipped; a link given itself is followed.
+pub fn files(router: &Router, paths: &[VPath]) -> Result<Vec<DropFile>> {
+    expand(router, paths)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -807,11 +823,12 @@ fn permanent(msg: impl Into<String>) -> anyhow::Error {
     Permanent(msg.into()).into()
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct DropFile {
-    src: VPath,
-    rel: String,
-    size: u64,
+/// One file of a drop: where it is read from, its name on the device, its size.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DropFile {
+    pub src: VPath,
+    pub rel: String,
+    pub size: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -832,7 +849,16 @@ struct DropJob {
     errors: (usize, u32),
 }
 
-fn walk(p: &dyn Provider, e: &Entry, rel: String, out: &mut Vec<DropFile>) -> Result<()> {
+/// Adds `e` (a file, or a folder's files) to `out`. Links are never followed inside a
+/// folder (one could point at the daemon's token or keys); `top`: `e` was given itself,
+/// and a link to a file is sent as that file.
+fn walk(
+    p: &dyn Provider,
+    e: &Entry,
+    rel: String,
+    top: bool,
+    out: &mut Vec<DropFile>,
+) -> Result<()> {
     ensure!(
         out.len() < MAX_FILES,
         permanent("too many files for one drop")
@@ -841,10 +867,10 @@ fn walk(p: &dyn Provider, e: &Entry, rel: String, out: &mut Vec<DropFile>) -> Re
         Kind::Dir if !e.is_link => {
             for child in p.list_complete(&e.path)? {
                 let rel = format!("{rel}/{}", child.name);
-                walk(p, &child, rel, out)?;
+                walk(p, &child, rel, false, out)?;
             }
         }
-        Kind::File => {
+        Kind::File if top || !e.is_link => {
             ensure!(
                 valid_rel(&rel),
                 permanent(format!("cannot send {rel}: the name is not portable"))
@@ -855,7 +881,7 @@ fn walk(p: &dyn Provider, e: &Entry, rel: String, out: &mut Vec<DropFile>) -> Re
                 size: e.size,
             });
         }
-        // Links to folders and dangling links are not followed.
+        // Links to folders, links inside folders and dangling links are not followed.
         _ => {}
     }
     Ok(())
@@ -868,7 +894,7 @@ fn expand(router: &Router, paths: &[VPath]) -> Result<Vec<DropFile>> {
             .provider_for(path)
             .with_context(|| format!("no provider for {}", path.display()))?;
         let e = p.stat(path)?;
-        walk(p.as_ref(), &e, e.name.clone(), &mut out)?;
+        walk(p.as_ref(), &e, e.name.clone(), true, &mut out)?;
     }
     let names: HashSet<&str> = out.iter().map(|f| f.rel.as_str()).collect();
     ensure!(

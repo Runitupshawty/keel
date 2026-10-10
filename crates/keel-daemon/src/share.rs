@@ -7,13 +7,19 @@
 //! claims the id with `share.claim`, once, within `CLAIM_WAIT`; then the user picks a
 //! device and sends the files with `spacedrop.send` (previewed). An upload not claimed in
 //! time is deleted; a claimed one after `CLAIMED_KEEP` (the drop job reads the files until
-//! it is done). At start every unclaimed upload left by an earlier run is deleted.
+//! it is done). At start every unclaimed upload left by an earlier run is deleted and the
+//! claimed ones are kept on the same clock. The body must keep arriving: under
+//! `MIN_RATE` bytes a second over any `RATE_WINDOW` the upload is cut off (so it takes at
+//! most about `len / MIN_RATE`), and an upload that makes no progress for `CLAIM_WAIT` is
+//! dropped by the sweep, so slow posts cannot hold the waiting places.
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Most bytes one share may post (the whole request body).
@@ -27,10 +33,15 @@ pub(crate) const CLAIM_WAIT: Duration = Duration::from_secs(5 * 60);
 /// How long a claimed upload is kept (its drop reads the files).
 pub(crate) const CLAIMED_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 /// Written into a claimed upload's folder: a restarted daemon keeps it until
-/// `CLAIMED_KEEP`, and deletes folders without it.
-const CLAIMED_MARK: &str = ".claimed";
+/// `CLAIMED_KEEP`, and deletes folders without it; `spacedrop.send` may send from it.
+const CLAIMED_MARK: &str = keel_api::SHARE_CLAIMED;
 /// Longest part header block.
 const PART_HEAD_MAX: usize = 8 << 10;
+/// Slowest a share body may arrive, in bytes a second, measured over `RATE_WINDOW`.
+const MIN_RATE: u64 = 64 << 10;
+const RATE_WINDOW: Duration = Duration::from_secs(30);
+/// `Upload::seen` of an upload the sweep dropped: its reader stops.
+const DROPPED: u64 = u64::MAX;
 
 struct Upload {
     /// Received (or claimed) at.
@@ -38,6 +49,66 @@ struct Upload {
     done: bool,
     claimed: bool,
     files: Vec<(String, u64)>,
+    /// While receiving: milliseconds after `Uploads::epoch` the last bytes came in.
+    seen: Arc<AtomicU64>,
+}
+
+impl Upload {
+    fn new(at: Instant, done: bool, claimed: bool, files: Vec<(String, u64)>) -> Self {
+        Self {
+            at,
+            done,
+            claimed,
+            files,
+            seen: Arc::default(),
+        }
+    }
+}
+
+/// The share body: cut off when it arrives slower than `min_rate` over a `window`, when it
+/// runs past `deadline`, or when the sweep dropped the upload.
+struct Paced<R> {
+    inner: R,
+    window: Duration,
+    min_rate: u64,
+    started: Instant,
+    deadline: Instant,
+    got: u64,
+    epoch: Instant,
+    seen: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for Paced<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let slow = |why: &str| io::Error::new(io::ErrorKind::TimedOut, why.to_owned());
+        if self.seen.load(Ordering::Acquire) == DROPPED {
+            return Err(slow("the share stalled and was dropped"));
+        }
+        let n = self.inner.read(buf)?;
+        let now = Instant::now();
+        self.got += n as u64;
+        let since = now.duration_since(self.started);
+        if since >= self.window {
+            let need = self.min_rate.saturating_mul(since.as_millis() as u64) / 1000;
+            if self.got < need {
+                return Err(slow("the share arrived too slowly"));
+            }
+            self.started = now;
+            self.got = 0;
+        }
+        if now > self.deadline {
+            return Err(slow("the share took too long"));
+        }
+        let ms = now.duration_since(self.epoch).as_millis() as u64;
+        // Only the sweep writes anything else (DROPPED), and that must stick.
+        let seen = self.seen.load(Ordering::Acquire);
+        if seen != DROPPED {
+            let _ = self
+                .seen
+                .compare_exchange(seen, ms, Ordering::AcqRel, Ordering::Acquire);
+        }
+        Ok(n)
+    }
 }
 
 /// Why a share was refused (an HTTP status and a reason).
@@ -48,6 +119,9 @@ pub(crate) struct Uploads {
     dir: PathBuf,
     max: u64,
     claim_wait: Duration,
+    /// The throughput floor's window (tests shorten it).
+    window: Duration,
+    epoch: Instant,
     uploads: Mutex<HashMap<String, Upload>>,
 }
 
@@ -58,15 +132,24 @@ impl Uploads {
     }
 
     pub(crate) fn with_limits(dir: PathBuf, max: u64, claim_wait: Duration) -> Self {
+        let mut kept = HashMap::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for e in entries.flatten() {
                 let mark = std::fs::metadata(e.path().join(CLAIMED_MARK)).ok();
-                let fresh = mark
+                let age = mark
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| SystemTime::now().duration_since(t).ok())
-                    .is_some_and(|age| age < CLAIMED_KEEP);
-                if !fresh {
-                    let _ = std::fs::remove_dir_all(e.path());
+                    .filter(|age| *age < CLAIMED_KEEP);
+                let id = e.file_name().to_string_lossy().into_owned();
+                match age {
+                    // Swept on the same clock as one claimed in this run.
+                    Some(age) => {
+                        let at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+                        kept.insert(id, Upload::new(at, true, true, Vec::new()));
+                    }
+                    None => {
+                        let _ = std::fs::remove_dir_all(e.path());
+                    }
                 }
             }
         }
@@ -74,18 +157,33 @@ impl Uploads {
             dir,
             max,
             claim_wait,
-            uploads: Mutex::default(),
+            window: RATE_WINDOW,
+            epoch: Instant::now(),
+            uploads: Mutex::new(kept),
         }
     }
 
-    /// Deletes uploads not claimed within the wait, and claimed ones past `CLAIMED_KEEP`.
+    /// Deletes uploads not claimed within the wait, claimed ones past `CLAIMED_KEEP`, and
+    /// uploads still arriving that made no progress for the wait (their reader stops).
     pub(crate) fn sweep(&self) {
+        let now = self.epoch.elapsed().as_millis() as u64;
+        let wait = self.claim_wait.as_millis() as u64;
         let mut uploads = self.uploads.lock();
         uploads.retain(|id, u| {
-            let keep = !u.done
-                || (u.claimed && u.at.elapsed() < CLAIMED_KEEP)
-                || (!u.claimed && u.at.elapsed() < self.claim_wait);
+            let keep = if u.done {
+                let limit = if u.claimed {
+                    CLAIMED_KEEP
+                } else {
+                    self.claim_wait
+                };
+                u.at.elapsed() < limit
+            } else {
+                let seen = u.seen.load(Ordering::Acquire);
+                let started = u.at.duration_since(self.epoch).as_millis() as u64;
+                now.saturating_sub(seen.max(started)) < wait
+            };
             if !keep {
+                u.seen.store(DROPPED, Ordering::Release);
                 let _ = std::fs::remove_dir_all(self.dir.join(id));
             }
             keep
@@ -113,7 +211,7 @@ impl Uploads {
             )
         })?;
         self.sweep();
-        let id = {
+        let (id, seen) = {
             let mut uploads = self.uploads.lock();
             if uploads.values().filter(|u| !u.claimed).count() >= MAX_WAITING {
                 return Err(Refused(
@@ -127,41 +225,43 @@ impl Uploads {
             // 24 hex digits: under the client's "looks like a secret" address rule, and the
             // id grants nothing without the token anyway.
             let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            uploads.insert(
-                id.clone(),
-                Upload {
-                    at: Instant::now(),
-                    done: false,
-                    claimed: false,
-                    files: Vec::new(),
-                },
-            );
-            id
+            let u = Upload::new(Instant::now(), false, false, Vec::new());
+            let seen = u.seen.clone();
+            uploads.insert(id.clone(), u);
+            (id, seen)
         };
         let folder = self.dir.join(&id);
+        let started = Instant::now();
+        let body = Paced {
+            inner: body.take(len),
+            window: self.window,
+            min_rate: MIN_RATE,
+            started,
+            // The floor bounds it already; this caps a body that meets it unevenly.
+            deadline: started + 2 * self.window + Duration::from_secs(len / MIN_RATE),
+            got: 0,
+            epoch: self.epoch,
+            seen,
+        };
         let got = keel_api::private::create_dir_all(&folder)
             .map_err(|e| e.to_string())
-            .and_then(|()| parse(body.take(len), &boundary, &folder));
+            .and_then(|()| parse(body, &boundary, &folder));
         let mut uploads = self.uploads.lock();
         match got {
-            Ok(files) if !files.is_empty() => {
-                if let Some(u) = uploads.get_mut(&id) {
-                    *u = Upload {
-                        at: Instant::now(),
-                        done: true,
-                        claimed: false,
-                        files,
-                    };
-                }
+            // Not dropped by the sweep meanwhile.
+            Ok(files) if !files.is_empty() && uploads.contains_key(&id) => {
+                uploads.insert(id.clone(), Upload::new(Instant::now(), true, false, files));
                 Ok(id)
             }
             failed => {
                 uploads.remove(&id);
                 let _ = std::fs::remove_dir_all(&folder);
-                Err(Refused(
-                    "400 Bad Request",
-                    failed.err().unwrap_or_else(|| "no files shared".into()),
-                ))
+                let why = match failed {
+                    Err(e) => e,
+                    Ok(files) if files.is_empty() => "no files shared".into(),
+                    Ok(_) => "the share stalled and was dropped".into(),
+                };
+                Err(Refused("400 Bad Request", why))
             }
         }
     }
@@ -207,28 +307,11 @@ fn boundary(content_type: &str) -> Option<String> {
     (1..=70).contains(&b.len()).then_some(b)
 }
 
-/// A shared file's name as a plain file name in the upload folder (None: skip the part).
+/// A shared file's name as a plain file name in the upload folder (None: skip the part):
+/// keel-mount's portable-name rules, and never a staging name or the claim mark.
 fn safe_name(raw: &str) -> Option<String> {
-    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
-    let name: String = base
-        .chars()
-        .map(|c| match c {
-            c if c.is_control() => '_',
-            '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
-            c => c,
-        })
-        .take(200)
-        .collect();
-    let name = name.trim().trim_end_matches(['.', ' ']).to_owned();
-    if name.is_empty() || name.starts_with(".keel-partial-") || name == CLAIMED_MARK {
-        return None;
-    }
-    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
-    let device = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
-        || (stem.len() == 4
-            && (stem.starts_with("com") || stem.starts_with("lpt"))
-            && stem.as_bytes()[3].is_ascii_digit());
-    Some(if device { format!("_{name}") } else { name })
+    keel_mount::path::safe_name(raw)
+        .filter(|n| !n.starts_with(".keel-partial-") && n != CLAIMED_MARK)
 }
 
 /// `name`, or `name (1).ext`, … : the first that is not in `dir` yet.
@@ -448,6 +531,114 @@ mod tests {
             .as_deref(),
             Some("f")
         );
+    }
+
+    /// Sends `data` a byte per `gap`.
+    struct Slow<'a>(&'a [u8], Duration);
+    impl Read for Slow<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(self.1);
+            Drip(self.0).read(buf).inspect(|&n| self.0 = &self.0[n..])
+        }
+    }
+
+    /// Hands over what the test sends; ends when the sender is dropped.
+    struct Fed(std::sync::mpsc::Receiver<Vec<u8>>, Vec<u8>);
+    impl Read for Fed {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.1.is_empty() {
+                match self.0.recv() {
+                    Ok(b) => self.1 = b,
+                    Err(_) => return Ok(0),
+                }
+            }
+            let n = buf.len().min(self.1.len());
+            buf[..n].copy_from_slice(&self.1[..n]);
+            self.1.drain(..n);
+            Ok(n)
+        }
+    }
+
+    const CT: &str = "multipart/form-data; boundary=B";
+
+    fn fill_waiting(up: &Uploads) {
+        let one = body("B", &[("files", Some("n.txt"), b"note")]);
+        for _ in 0..MAX_WAITING {
+            up.receive(&one[..], one.len() as u64, CT).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_dripping_upload_is_cut_off_and_frees_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut up = Uploads::with_limits(dir.path().into(), 1 << 30, Duration::from_secs(300));
+        up.window = Duration::from_millis(100);
+        let b = body("B", &[("files", Some("big.bin"), &[7u8; 4096])]);
+        let r = up.receive(Slow(&b, Duration::from_millis(20)), 400 << 20, CT);
+        let e = r.unwrap_err();
+        assert_eq!(e.0, "400 Bad Request");
+        assert!(e.1.contains("too slowly"), "{e:?}");
+        assert!(up.uploads.lock().is_empty(), "its waiting place is free");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        fill_waiting(&up);
+    }
+
+    #[test]
+    fn a_stalled_upload_is_swept_after_the_claim_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = std::sync::Arc::new(Uploads::with_limits(
+            dir.path().into(),
+            1 << 30,
+            Duration::from_millis(300),
+        ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let receiving = {
+            let up = up.clone();
+            std::thread::spawn(move || up.receive(Fed(rx, Vec::new()), 1 << 20, CT))
+        };
+        tx.send(
+            b"--B\r\nContent-Disposition: form-data; name=\"f\"; filename=\"s.txt\"\r\n\r\nabc"
+                .to_vec(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        up.sweep();
+        assert_eq!(up.uploads.lock().len(), 1, "still within the wait");
+        std::thread::sleep(Duration::from_millis(450));
+        up.sweep();
+        assert!(up.uploads.lock().is_empty(), "no progress for the wait");
+        fill_waiting(&up);
+        drop(tx);
+        assert!(receiving.join().unwrap().is_err());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            MAX_WAITING,
+            "the stalled upload's folder is gone"
+        );
+    }
+
+    #[test]
+    fn claimed_shares_from_an_earlier_run_are_swept_on_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = body("B", &[("files", Some("n.txt"), b"note")]);
+        let up = Uploads::open(dir.path().into());
+        let id = up.receive(&one[..], one.len() as u64, CT).unwrap();
+        up.claim(&id).unwrap();
+        drop(up);
+        let mark = dir.path().join(&id).join(CLAIMED_MARK);
+        let almost = SystemTime::now() - CLAIMED_KEEP + Duration::from_millis(300);
+        std::fs::File::options()
+            .write(true)
+            .open(&mark)
+            .unwrap()
+            .set_modified(almost)
+            .unwrap();
+        let up = Uploads::open(dir.path().into());
+        assert!(dir.path().join(&id).exists(), "still within CLAIMED_KEEP");
+        assert!(up.claim(&id).is_err(), "opened already");
+        std::thread::sleep(Duration::from_millis(500));
+        up.sweep();
+        assert!(!dir.path().join(&id).exists(), "swept while running");
     }
 
     #[test]

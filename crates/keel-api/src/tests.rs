@@ -145,6 +145,7 @@ fn fixture(plans: Option<PlanStore>) -> Fixture {
     let mut ctx = Ctx::new(Arc::new(lib), router);
     let cfg = tempfile::tempdir().unwrap();
     ctx.config_dir = Some(cfg.path().to_owned());
+    ctx.data_dir = Some(data.path().to_owned());
     if let Some(plans) = plans {
         ctx = ctx.with_plans(plans);
     }
@@ -946,6 +947,30 @@ fn spacedrop_send_inbox_and_answer() {
     let code = apply(&a.ctx, "devices.pair_code", json!({}));
     apply(&b.ctx, "devices.pair_with", json!({"code": code["ticket"]}));
     let to_b = b_node.id().to_string();
+    // Drops send from library sources.
+    a.ctx
+        .lib
+        .add_source(keel_core::SourceDef {
+            label: "Files".into(),
+            root: keel_vfs::VPath::local(a.files.path()),
+            kind: keel_core::SourceKind::Folder,
+            include_hidden: true,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })
+        .unwrap();
+    // A link in a sent folder to the daemon token is never followed.
+    let token = a.cfg.path().join("daemon.token");
+    std::fs::write(&token, b"secret").unwrap();
+    let link = a.files.path().join("docs").join("token.txt");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&token, &link).is_ok();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&token, &link).is_ok();
+    if !linked {
+        eprintln!("no symlink permission: the link case is not exercised");
+    }
 
     let docs = s(&a.files.path().join("docs"));
     let params = json!({"peer": to_b, "paths": [docs]});
@@ -980,6 +1005,60 @@ fn spacedrop_send_inbox_and_answer() {
     assert!(call(&a.ctx, "spacedrop.send", held).is_err());
     let stranger = json!({"peer": "a".repeat(52), "paths": [docs]});
     assert!(call(&a.ctx, "spacedrop.send", stranger).is_err());
+    let send = |path: &std::path::Path| {
+        call(
+            &a.ctx,
+            "spacedrop.send",
+            json!({"peer": to_b, "paths": [s(path)]}),
+        )
+    };
+    if linked {
+        let e = send(&link).unwrap_err();
+        assert!(e.message.contains("configuration"), "{e}");
+    }
+    // Only library sources, the inbox and opened shares; never the data folder.
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("x.txt"), b"x").unwrap();
+    let e = send(elsewhere.path()).unwrap_err();
+    assert!(e.message.contains("library source"), "{e}");
+    let data = a.ctx.data_dir.clone().unwrap();
+    std::fs::write(data.join("secret.bin"), b"k").unwrap();
+    let e = send(&data.join("secret.bin")).unwrap_err();
+    assert!(e.message.contains("data folder"), "{e}");
+    assert!(send(&data).is_err());
+    let share = data.join("shares").join("0123456789abcdef01234567");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::write(share.join("photo.jpg"), b"jpg").unwrap();
+    let e = send(&share.join("photo.jpg")).unwrap_err();
+    assert!(e.message.contains("data folder"), "not opened yet: {e}");
+    std::fs::write(share.join(crate::SHARE_CLAIMED), b"").unwrap();
+    let opened = send(&share.join("photo.jpg")).unwrap();
+    assert!(
+        opened["summary"]
+            .as_str()
+            .unwrap()
+            .contains("1 file(s), 3 bytes"),
+        "{opened}"
+    );
+    // Execute sends what the preview listed, or refuses with a fresh preview.
+    let extra = a.files.path().join("extra");
+    std::fs::create_dir(&extra).unwrap();
+    std::fs::write(extra.join("a.txt"), b"a").unwrap();
+    let before: PlanPreview = serde_json::from_value(send(&extra).unwrap()).unwrap();
+    std::fs::write(extra.join("b.txt"), b"b").unwrap();
+    let e = call(
+        &a.ctx,
+        "execute",
+        json!({"plan_id": before.plan_id, "input_hash": before.input_hash}),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, ApiError::PLAN_CHANGED, "{e}");
+    let fresh = e.data.unwrap();
+    assert!(
+        fresh["summary"].as_str().unwrap().contains("2 file(s)"),
+        "{fresh}"
+    );
+    assert!(a.ctx.lib.jobs().list().unwrap().is_empty(), "nothing sent");
 
     let done = call(
         &a.ctx,

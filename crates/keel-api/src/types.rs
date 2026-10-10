@@ -710,6 +710,10 @@ pub struct SpacedropSendParams {
     pub peer: String,
     /// Files or folders on this machine (folders are sent with their contents).
     pub paths: Vec<String>,
+    /// Set by the preview (the hash of the files it listed), never by a caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub pinned: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

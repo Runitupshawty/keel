@@ -91,28 +91,27 @@ pub(crate) fn readable(ctx: &Ctx, p: &VPath) -> Result<()> {
 
 /// `p` is `dir` or inside it, after resolving links, `..` and (Windows, macOS) case.
 pub(crate) fn inside(p: &std::path::Path, dir: &std::path::Path) -> bool {
-    let resolve = |p: &std::path::Path| -> Option<std::path::PathBuf> {
-        if let Ok(c) = std::fs::canonicalize(p) {
-            return Some(c);
-        }
-        // Not there (yet): its folder resolved, plus its name.
-        match (p.parent(), p.file_name()) {
+    match (resolved(p), resolved(dir)) {
+        (Some(p), Some(dir)) => p.starts_with(dir),
+        _ => false,
+    }
+}
+
+/// `p` with links and `..` resolved and (Windows, macOS) case folded, for comparing with
+/// `starts_with`; a missing `p` is its folder resolved plus its name.
+pub(crate) fn resolved(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    let real = std::fs::canonicalize(p)
+        .ok()
+        .or_else(|| match (p.parent(), p.file_name()) {
             (Some(parent), Some(name)) => std::fs::canonicalize(parent).ok().map(|c| c.join(name)),
             _ => None,
-        }
-        .or_else(|| std::path::absolute(p).ok())
-    };
-    let (Some(p), Some(dir)) = (resolve(p), resolve(dir)) else {
-        return false;
-    };
-    let fold = |p: std::path::PathBuf| -> std::path::PathBuf {
-        if cfg!(any(windows, target_os = "macos")) {
-            p.to_string_lossy().to_lowercase().into()
-        } else {
-            p
-        }
-    };
-    fold(p).starts_with(fold(dir))
+        })
+        .or_else(|| std::path::absolute(p).ok())?;
+    Some(if cfg!(any(windows, target_os = "macos")) {
+        real.to_string_lossy().to_lowercase().into()
+    } else {
+        real
+    })
 }
 
 fn provider(ctx: &Ctx, p: &VPath) -> Result<Arc<dyn Provider>> {

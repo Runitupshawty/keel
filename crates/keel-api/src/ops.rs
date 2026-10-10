@@ -381,6 +381,7 @@ fn sources_add_preview(ctx: &Ctx, p: &AddSourceParams) -> Result<Preview> {
         )));
     }
     Ok(Preview {
+        pin: None,
         summary: format!("Add source {} at {}", def.label, def.root.display()),
         changes: vec![change(
             "source.add",
@@ -423,6 +424,7 @@ fn sources_remove_preview(ctx: &Ctx, p: &RemoveSourceParams) -> Result<Preview> 
         )
     };
     Ok(Preview {
+        pin: None,
         summary,
         changes: vec![Change {
             action: "source.remove".into(),
@@ -449,6 +451,7 @@ fn sources_remove(ctx: &Ctx, p: RemoveSourceParams) -> Result<RemovedSource> {
 fn sources_index_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
     let s = find_source(ctx, &p.id)?;
     Ok(Preview {
+        pin: None,
         summary: format!("Index {} ({})", s.label, s.root.display()),
         changes: vec![change(
             "source.index",
@@ -638,6 +641,7 @@ fn tags_add_preview(ctx: &Ctx, p: &TagParams) -> Result<Preview> {
         ));
     }
     Ok(Preview {
+        pin: None,
         summary: format!("Tag {} item(s) with {}", hits.len(), p.tag.trim()),
         changes: tag_changes("tag.add", &hits, p.tag.trim()),
         warnings,
@@ -661,6 +665,7 @@ fn tags_remove_preview(ctx: &Ctx, p: &TagParams) -> Result<Preview> {
     let tag = existing_tag(ctx, &p.tag)?;
     let hits = records(ctx, &p.paths)?;
     Ok(Preview {
+        pin: None,
         summary: format!("Remove tag {} from {} item(s)", tag.name, hits.len()),
         changes: tag_changes("tag.remove", &hits, &tag.name),
         warnings: Vec::new(),
@@ -698,6 +703,7 @@ fn tags_set_preview(ctx: &Ctx, p: &TagsSetParams) -> Result<Preview> {
         .collect::<Vec<_>>()
         .join(", ");
     Ok(Preview {
+        pin: None,
         summary: format!("Set the tags of {} item(s) to [{names}]", hits.len()),
         changes: tag_changes("tags.set", &hits, &names),
         warnings,
@@ -738,6 +744,7 @@ fn favorites_set_preview(ctx: &Ctx, p: &FavoritesSetParams) -> Result<Preview> {
         false => ("favorite.remove", "Remove"),
     };
     Ok(Preview {
+        pin: None,
         summary: format!(
             "{verb} {} item(s) {} Favorites",
             hits.len(),
@@ -807,6 +814,7 @@ fn jobs_cancel_preview(ctx: &Ctx, p: &JobParams) -> Result<Preview> {
         ));
     }
     Ok(Preview {
+        pin: None,
         summary: format!("Cancel job {} ({}, {})", j.id, j.kind, j.status),
         changes: vec![change("job.cancel", None, Some(j.kind.clone()))],
         warnings,
@@ -1137,6 +1145,7 @@ fn devices_list(ctx: &Ctx, _: NoParams) -> Result<Devices> {
 fn pair_code_preview(ctx: &Ctx, _: &NoParams) -> Result<Preview> {
     node(ctx)?;
     Ok(Preview {
+        pin: None,
         summary: "Create a one-time pairing code, valid 10 minutes".into(),
         changes: vec![change("device.pair_code", None, None)],
         warnings: vec![warning(
@@ -1171,6 +1180,7 @@ fn pair_with_preview(ctx: &Ctx, p: &PairWithParams) -> Result<Preview> {
         .parse::<keel_net::PairCode>()
         .map_err(|e| ApiError::invalid_params(format!("bad pairing code: {e:#}")))?;
     Ok(Preview {
+        pin: None,
         summary: "Pair with the device that showed this code (no access is granted)".into(),
         changes: vec![change("device.pair", None, None)],
         warnings: Vec::new(),
@@ -1192,6 +1202,7 @@ fn forget_preview(ctx: &Ctx, p: &PeerParams) -> Result<Preview> {
     let (node, _) = node(ctx)?;
     let grants = node.grants().iter().filter(|g| g.peer == peer.id).count();
     Ok(Preview {
+        pin: None,
         summary: format!("Forget device {} and its {grants} grant(s)", peer.label),
         changes: vec![change(
             "device.forget",
@@ -1248,6 +1259,7 @@ fn grant_preview(ctx: &Ctx, p: &GrantParams) -> Result<Preview> {
         ));
     }
     Ok(Preview {
+        pin: None,
         summary: format!("Give {} {access} access to {what}", peer.label),
         changes: vec![Change {
             action: "share.grant".into(),
@@ -1376,6 +1388,7 @@ fn mounts_add_preview(ctx: &Ctx, p: &MountParams) -> Result<Preview> {
         sub => format!("{}/{sub}", s.label),
     };
     Ok(Preview {
+        pin: None,
         summary: format!("Mount {what} at {target}"),
         changes: vec![change("mount.add", Some(root), Some(target))],
         warnings,
@@ -1419,6 +1432,7 @@ fn mounts_remove_preview(ctx: &Ctx, p: &UnmountParams) -> Result<Preview> {
         ));
     }
     Ok(Preview {
+        pin: None,
         summary: format!("Unmount {} ({})", info.target, info.root),
         changes: vec![change("mount.remove", Some(info.root), Some(info.target))],
         warnings,
@@ -1437,28 +1451,103 @@ const DROP_LISTED: usize = 500;
 /// Entries `spacedrop.inbox` returns.
 const INBOX_MAX: usize = 500;
 
-/// The paths to send, refused when one is, holds or sits in Keel's configuration folder
-/// (a drop must never carry the daemon token or keys to another device).
-fn drop_paths(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Vec<VPath>> {
+/// Where a drop may read (a drop must never carry the daemon token, device keys or the
+/// library database to another device): never Keel's configuration folder, never its data
+/// folder except the Spacedrop inbox and share uploads the signed-in client opened
+/// (`share.claim`), and otherwise only what a library source holds. Folders resolved once.
+struct DropScope {
+    config: Option<std::path::PathBuf>,
+    data: Option<std::path::PathBuf>,
+    /// The inbox and the opened shares.
+    open: Vec<std::path::PathBuf>,
+}
+
+impl DropScope {
+    fn new(ctx: &Ctx) -> Self {
+        use crate::files::resolved;
+        let mut open: Vec<_> = ctx
+            .drops
+            .iter()
+            .filter_map(|d| resolved(&d.inbox))
+            .collect();
+        if let Some(data) = &ctx.data_dir {
+            let shares = std::fs::read_dir(data.join("shares")).into_iter().flatten();
+            open.extend(
+                shares
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|d| d.join(crate::SHARE_CLAIMED).is_file())
+                    .filter_map(|d| resolved(&d)),
+            );
+        }
+        Self {
+            config: ctx.config_dir.as_deref().and_then(resolved),
+            data: ctx.data_dir.as_deref().and_then(resolved),
+            open,
+        }
+    }
+
+    /// Checks one path given or reached. `top`: given (it must not hold a closed folder).
+    fn check(&self, ctx: &Ctx, path: &VPath, top: bool) -> Result<()> {
+        let refuse = |why: &str| Err(ApiError::failed(format!("{}: {why}", path.display())));
+        if let Some(real) = path
+            .to_local_path()
+            .and_then(|l| crate::files::resolved(&l))
+        {
+            let closed = [&self.config, &self.data];
+            if top
+                && closed
+                    .iter()
+                    .any(|c| c.as_ref().is_some_and(|c| c.starts_with(&real)))
+            {
+                return refuse("holds Keel's configuration or data folder, which is never sent");
+            }
+            if self.config.as_ref().is_some_and(|c| real.starts_with(c)) {
+                return refuse("Keel's configuration folder is never sent");
+            }
+            if self.open.iter().any(|o| real.starts_with(o)) {
+                return Ok(());
+            }
+            if self.data.as_ref().is_some_and(|d| real.starts_with(d)) {
+                return refuse("Keel's data folder is never sent");
+            }
+        }
+        if ctx.lib.source_for(path).is_none() {
+            return refuse(
+                "only files in a library source, the Spacedrop inbox or an opened share can be sent",
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The files `p` sends, every one checked against [`DropScope`] (links inside folders are
+/// skipped by the walk), and the hash a preview pins.
+fn drop_files(
+    ctx: &Ctx,
+    p: &SpacedropSendParams,
+) -> Result<(Vec<keel_net::spacedrop::DropFile>, String)> {
     if p.paths.is_empty() {
         return Err(ApiError::invalid_params("nothing to send"));
     }
-    p.paths
+    let scope = DropScope::new(ctx);
+    let paths = p
+        .paths
         .iter()
         .map(|s| {
             let path = crate::files::real(ctx, &vpath(s)?)?;
             crate::files::readable(ctx, &path)?;
-            if let (Some(cfg), Some(local)) = (&ctx.config_dir, path.to_local_path()) {
-                if crate::files::inside(cfg, &local) {
-                    return Err(ApiError::failed(format!(
-                        "{}: holds Keel's configuration folder, which is never sent",
-                        path.display()
-                    )));
-                }
-            }
+            scope.check(ctx, &path, true)?;
             Ok(path)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let files = keel_net::spacedrop::files(&ctx.router, &paths)?;
+    for f in &files {
+        scope.check(ctx, &f.src, false)?;
+    }
+    let bytes = serde_json::to_vec(&files).map_err(|e| ApiError::failed(e.to_string()))?;
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    Ok((files, hash))
 }
 
 fn sum(files: &[(String, u64)]) -> u64 {
@@ -1467,17 +1556,17 @@ fn sum(files: &[(String, u64)]) -> u64 {
 
 fn drop_send_preview(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Preview> {
     let peer = paired(ctx, &p.peer)?;
-    let files = keel_net::spacedrop::files(&ctx.router, &drop_paths(ctx, p)?)?;
+    let (files, hash) = drop_files(ctx, p)?;
     let mut changes: Vec<Change> = files
         .iter()
         .take(DROP_LISTED)
-        .map(|(rel, size)| Change {
+        .map(|f| Change {
             action: "drop.send".into(),
-            path: Some(rel.clone()),
+            path: Some(f.rel.clone()),
             to: Some(peer.label.clone()),
             detail: None,
             files: Some(1),
-            bytes: Some(*size),
+            bytes: Some(f.size),
         })
         .collect();
     if files.len() > DROP_LISTED {
@@ -1498,11 +1587,12 @@ fn drop_send_preview(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Preview> {
             ),
         ));
     }
+    let bytes = files.iter().fold(0u64, |n, f| n.saturating_add(f.size));
     Ok(Preview {
+        pin: Some(json!(hash)),
         summary: format!(
-            "Send {} file(s), {} bytes, to {}",
+            "Send {} file(s), {bytes} bytes, to {}",
             files.len(),
-            sum(&files),
             peer.label
         ),
         changes,
@@ -1510,11 +1600,26 @@ fn drop_send_preview(ctx: &Ctx, p: &SpacedropSendParams) -> Result<Preview> {
     })
 }
 
+/// Sends exactly the files the preview listed: the folders are walked again and a
+/// different list (a file added, removed or resized since) is refused with PLAN_CHANGED
+/// and a fresh preview.
 fn drop_send(ctx: &Ctx, p: SpacedropSendParams) -> Result<JobStarted> {
     let peer = paired(ctx, &p.peer)?;
-    let paths = drop_paths(ctx, &p)?;
+    let (files, hash) = drop_files(ctx, &p)?;
+    if p.pinned.as_deref() != Some(hash.as_str()) {
+        let fresh = crate::call(
+            ctx,
+            "spacedrop.send",
+            json!({"peer": p.peer, "paths": p.paths}),
+        )?;
+        return Err(ApiError::new(
+            ApiError::PLAN_CHANGED,
+            "the files changed since the preview: confirm the new preview",
+        )
+        .with_data(fresh));
+    }
     let (node, _) = node(ctx)?;
-    let job = keel_net::spacedrop::send(node, &ctx.lib, peer.id, paths)?;
+    let job = keel_net::spacedrop::send_files(node, &ctx.lib, peer.id, files)?;
     Ok(JobStarted { job })
 }
 
@@ -1590,6 +1695,7 @@ fn drop_answer_preview(ctx: &Ctx, p: &SpacedropAnswerParams) -> Result<Preview> 
         false => ("Decline", String::new(), "drop.decline"),
     };
     Ok(Preview {
+        pin: None,
         summary: format!(
             "{verb} {} file(s), {} bytes, from {label}{into}",
             files.len(),

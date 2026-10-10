@@ -57,7 +57,15 @@ pub struct Ctx {
     pub config_dir: Option<std::path::PathBuf>,
     /// The Spacedrop inbox and waiting offers (set with `node` by a host).
     pub drops: Option<Arc<net::Drops>>,
+    /// Keel's data folder (the library database, device keys, share uploads, the mount
+    /// spool): never sent with `spacedrop.send`, except the inbox and opened shares.
+    pub data_dir: Option<std::path::PathBuf>,
 }
+
+/// `<data dir>/shares/<id>/` holds a Web Share Target upload; this file in it marks one the
+/// signed-in client opened (keel-daemon writes it on `share.claim`), which
+/// `spacedrop.send` may then send.
+pub const SHARE_CLAIMED: &str = ".claimed";
 
 impl Ctx {
     /// Plans are kept in `<library dir>/api-plans.json`.
@@ -74,6 +82,7 @@ impl Ctx {
             downloads: Default::default(),
             config_dir: config::config_dir(),
             drops: None,
+            data_dir: None,
         }
     }
 
@@ -116,6 +125,9 @@ pub struct Preview {
     pub summary: String,
     pub changes: Vec<types::Change>,
     pub warnings: Vec<types::Warning>,
+    /// Stored in the plan's params as `pinned` (what the preview showed, e.g. the hash of
+    /// the files a drop sends): `apply` compares it and refuses with PLAN_CHANGED.
+    pub pin: Option<Value>,
 }
 
 pub struct Operation {
@@ -161,8 +173,11 @@ pub fn call(ctx: &Ctx, method: &str, params: Value) -> Result<Value> {
         Run::Previewed {
             preview, secret, ..
         } => {
-            let params = (op.check)(params)?;
+            let mut params = (op.check)(params)?;
             let p = preview(ctx, &params)?;
+            if let (Some(pin), Some(obj)) = (p.pin, params.as_object_mut()) {
+                obj.insert("pinned".into(), pin);
+            }
             let input = plans::Input::Call {
                 method: op.name.to_owned(),
                 params,

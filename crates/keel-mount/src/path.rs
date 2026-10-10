@@ -45,6 +45,52 @@ pub fn windows_name(name: &str) -> bool {
     !device
 }
 
+/// A bidirectional-text control: it can make `photo\u{202E}gpj.exe` read as `photoexe.jpg`.
+pub fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Longest name [`safe_name`] returns, in bytes: room under the usual 255 for a ` (n)`
+/// suffix and a `_` prefix.
+pub const SAFE_NAME_MAX: usize = 240;
+
+/// A file name from elsewhere (an upload, a share) made storable on every OS: its last
+/// component, bidi controls dropped, control characters and `<>:"|?*` as `_`, no
+/// surrounding spaces or trailing dots, at most [`SAFE_NAME_MAX`] bytes (the extension
+/// kept), and a Windows device name (`con.txt`, `COM¹`, `CONIN$`, `nul .txt`) prefixed with
+/// `_`. None when nothing is left.
+pub fn safe_name(raw: &str) -> Option<String> {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let mapped: String = base
+        .chars()
+        .filter(|&c| !bidi_control(c))
+        .map(|c| match c {
+            c if c.is_control() || "<>:\"|?*".contains(c) => '_',
+            c => c,
+        })
+        .collect();
+    let mut name = mapped.trim().trim_end_matches(['.', ' ']).to_owned();
+    if name.len() > SAFE_NAME_MAX {
+        let ext = match name.rfind('.') {
+            Some(i) if i > 0 && name.len() - i <= 16 => name[i..].to_owned(),
+            _ => String::new(),
+        };
+        let mut cut = SAFE_NAME_MAX - ext.len();
+        while !name.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        name = format!("{}{ext}", name[..cut].trim_end_matches(['.', ' ']));
+    }
+    if !plain_name(&name) {
+        return None;
+    }
+    Some(if windows_name(&name) {
+        name
+    } else {
+        format!("_{name}")
+    })
+}
+
 impl MountPath {
     pub fn root() -> Self {
         Self::default()
@@ -261,6 +307,34 @@ mod tests {
         ] {
             assert!(windows_name(ok), "{ok:?} should be allowed");
         }
+    }
+
+    #[test]
+    fn safe_names_from_elsewhere() {
+        let cases = [
+            ("..\\..\\evil:name?.txt", Some("evil_name_.txt")),
+            ("dir/con.txt", Some("_con.txt")),
+            ("COM\u{b9}.log", Some("_COM\u{b9}.log")),
+            ("lpt\u{b3}", Some("_lpt\u{b3}")),
+            ("CONIN$", Some("_CONIN$")),
+            ("conout$.txt", Some("_conout$.txt")),
+            ("nul .txt", Some("_nul .txt")),
+            ("photo\u{202E}gpj.exe", Some("photogpj.exe")),
+            ("\u{2067}a\u{2069}.txt\u{200F}", Some("a.txt")),
+            ("  trailing.  ", Some("trailing")),
+            ("tab\there", Some("tab_here")),
+            ("..", None),
+            ("\u{202E}", None),
+            ("", None),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(safe_name(raw).as_deref(), want, "{raw:?}");
+        }
+        let long = format!("{}.jpeg", "\u{e9}".repeat(200));
+        let cut = safe_name(&long).unwrap();
+        assert!(cut.len() <= SAFE_NAME_MAX, "{} bytes", cut.len());
+        assert!(cut.ends_with("\u{e9}.jpeg"), "{cut}");
+        assert!(safe_name(&"x".repeat(400)).unwrap().len() <= SAFE_NAME_MAX);
     }
 
     #[test]
