@@ -459,6 +459,10 @@ fn paths_map_between_library_and_real() {
     let sibling = VPath::local(format!("{}2", root.display()));
     assert_eq!(locate(&srcs, &sibling), None, "whole components only");
     assert_eq!(count(1_234_567), "1,234,567");
+    // QA walkthrough 2026-10-10: the Overview said "1 sources" and "1 groups".
+    assert_eq!(counted(1, "source"), "1 source");
+    assert_eq!(counted(0, "group"), "0 groups");
+    assert_eq!(counted(1_234, "group"), "1,234 groups");
     assert_eq!(label_for(r"D:\Photos\"), "Photos");
 }
 

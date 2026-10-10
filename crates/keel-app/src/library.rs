@@ -470,6 +470,14 @@ pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
 }
 
 /// `1234567` -> `1,234,567`.
+/// "1 source", "1,234 sources": `count` with the noun in the singular for one.
+pub fn counted(n: u64, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        n => format!("{} {noun}s", count(n)),
+    }
+}
+
 pub fn count(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();

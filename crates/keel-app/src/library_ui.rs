@@ -281,8 +281,8 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                             }
                             Some((n, bytes)) => {
                                 ui.label(format!(
-                                    "{} groups, {} reclaimable",
-                                    count(n as u64),
+                                    "{}, {} reclaimable",
+                                    crate::library::counted(n as u64, "group"),
                                     format_size(bytes, DECIMAL)
                                 ));
                             }
@@ -299,8 +299,9 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                     "Sources",
                     Box::new(|ui: &mut egui::Ui| {
                         ui.label(format!(
-                            "{} sources, {} offline",
-                            st.sources, st.offline_sources
+                            "{}, {} offline",
+                            crate::library::counted(st.sources as u64, "source"),
+                            st.offline_sources
                         ));
                         for s in source_rows(&l.sources) {
                             ui.horizontal(|ui| {
@@ -884,8 +885,8 @@ fn dup_finder(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             }
             Some(Ok(groups)) => {
                 ui.strong(format!(
-                    "{} groups, {} reclaimable",
-                    count(groups.len() as u64),
+                    "{}, {} reclaimable",
+                    crate::library::counted(groups.len() as u64, "group"),
                     format_size(reclaimable(groups), DECIMAL)
                 ));
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -946,7 +947,8 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                 .selected_text(lib_settings.name.as_str())
                 .show_ui(ui, |ui| {
                     for summary in &l.libraries {
-                        let label = format!("{} ({} sources)", summary.name, summary.sources);
+                        let sources = crate::library::counted(summary.sources as u64, "source");
+                        let label = format!("{} ({sources})", summary.name);
                         if ui
                             .selectable_label(summary.name == lib_settings.name, label)
                             .clicked()
