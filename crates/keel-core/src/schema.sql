@@ -256,6 +256,10 @@ ALTER TABLE source ADD COLUMN volume_id TEXT;
 ALTER TABLE record ADD COLUMN drift INTEGER;
 CREATE INDEX record_drift ON record(drift) WHERE drift IS NOT NULL;
 
+-- @library 6
+-- A failure domain set by hand in the drive inventory (NULL: the detected `domain`).
+ALTER TABLE volume ADD COLUMN domain_set TEXT;
+
 -- @source 8
 -- Devices (Task 36): the content id a paired device claims for a file of a device source.
 -- It is that device's word, never checked here: it may show where a content is said to be,

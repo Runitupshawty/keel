@@ -209,6 +209,9 @@ pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());
     }
+    #[cfg(test)]
+    return Some(test_dir());
+    #[allow(unreachable_code)]
     let base = directories::BaseDirs::new()?;
     Some(base.config_dir().join(app_dir()))
 }
@@ -221,8 +224,27 @@ pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());
     }
+    #[cfg(test)]
+    return Some(test_dir());
+    #[allow(unreachable_code)]
     let base = directories::BaseDirs::new()?;
     Some(base.cache_dir().join(app_dir()))
+}
+
+/// Tests never touch the user's real folders: without `KEEL_CONFIG_DIR` (or
+/// `KEEL_DATA_DIR`) they use one temp folder per test process.
+#[cfg(test)]
+pub fn test_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("keel-test-{}", std::process::id()))
+}
+
+/// keel-core's data folder (`KEEL_DATA_DIR`, else the platform's).
+pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if std::env::var_os("KEEL_DATA_DIR").is_none_or(|d| d.is_empty()) {
+        return Some(test_dir().join("data"));
+    }
+    keel_core::data_dir()
 }
 
 fn app_dir() -> &'static str {

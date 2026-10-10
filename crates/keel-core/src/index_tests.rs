@@ -131,6 +131,27 @@ pub(crate) fn fts(src: &Source, q: &str) -> i64 {
         .unwrap()
 }
 
+/// Makes `link` lead to the folder `target`: a directory junction on Windows (no privilege
+/// needed), a symlink elsewhere. False when the platform refuses (the caller skips).
+pub(crate) fn dir_link(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(not(any(windows, unix)))]
+    let made = false;
+    if !made {
+        eprintln!("skipped: cannot make a junction or symlink here");
+    }
+    made
+}
+
 pub(crate) fn write(path: &Path, data: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, data).unwrap();
@@ -1271,4 +1292,36 @@ fn library_watchers_arm_when_the_root_comes_back() {
     write(&root.join("b.txt"), "b");
     eventually("watched", || id_of(&src, "b.txt").is_some());
     lib.unwatch(&src.id);
+}
+
+/// Phase 6 review: a source whose root is itself a junction (symlink on Unix) indexes the
+/// folder it leads to; the root is not taken for a link, and later walks and the status
+/// poll recognise it as the same root.
+#[test]
+fn a_source_rooted_at_a_junction_indexes_its_target() {
+    let files = tempfile::tempdir().unwrap();
+    let (real, alias) = (files.path().join("real"), files.path().join("alias"));
+    write(&real.join("a.txt"), "a");
+    write(&real.join("sub/b.txt"), "b");
+    if !dir_link(&real, &alias) {
+        return;
+    }
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "j").unwrap();
+    lib.set_hash_after_walk(false);
+    let id = lib.add_source(folder("alias", &alias)).unwrap();
+    let src = lib.source(&id).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    let recs = records(&src);
+    let paths: Vec<&str> = recs.iter().map(|(_, p, _)| p.as_str()).collect();
+    assert_eq!(paths, ["", "a.txt", "sub", "sub/b.txt"]);
+    assert_eq!(recs[0].2 & LINK, 0, "the root is not a link record");
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(records(&src).len(), 4);
+    lib.refresh_status().join().unwrap();
+    assert!(
+        matches!(*src.status.read(), SourceStatus::Online { .. }),
+        "{:?}",
+        src.status.read()
+    );
 }

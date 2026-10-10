@@ -79,6 +79,55 @@ Devices release: pair your own machines, browse and share folders between them, 
 - Tabs on `node://` sources show the raw id as their title.
 - Video in the viewer shows stills, not playback.
 
+## [0.7.0] - 2026-10-09
+
+Media and protection release: a fast photo and video grid with a full-window viewer, and a Protection card that shows how many copies each file has and on how many physical disks or accounts.
+
+### Added
+
+- Media view (the pane toolbar's **Media** button; tile sizes S/M/L, Ctrl+wheel): a virtualized square-tile grid drawn from the sidecar thumbnails. Thumbnails are decoded on worker threads and uploaded at most 8 per frame; cached textures are capped at 384 MiB (and 4,000 textures); tiles that scroll away are dropped from the queue. In the perf test 129,000 items (5 % videos, real-size 256 px and 1024 px thumbnails, M and L tiles at 1.5x and 2x) scroll at a mean frame time of 0.5 to 1.5 ms. Videos show their strip and scrub across it on hover, and their thumbnail until the strip is made. EXIF orientation is applied. The **Dates** toggle groups tiles under capture-day headers.
+- Viewer: Space or Enter opens the selected photo or video full-window (the 1024 px thumbnail at once, the full image decoded in the background at up to twice the screen size), Left/Right/Home/End navigate, mouse wheel, `+`/`-`, `0` (fit) and `1` (100 %) zoom and pan, `I` toggles the info panel (dimensions, capture time, camera, lens, GPS, duration, codec), `F` favorites, Esc or Space closes. Videos show still frames from the strip; Enter or Play opens the system player. A file deleted while open closes the viewer.
+- With the library off, thumbnails live in their own cache (2 GiB budget) under the cache folder. With it on, the sidecar job ("Library: media thumbnails") runs for every local source after indexing and the grid reuses its thumbnails.
+- Protection (library on): every fixed, removable, network and cloud volume is listed with its failure domain (physical disk serial, server, or cloud account), state (Online, Offline, Archived, Lost, Retired; the last three set by you in the drive inventory), capacity and last seen. `Redundancy` counts copies and failure domains: two copies on one disk or one account are one domain; hard links count once; copies on Archived volumes count (flagged offline); copies on Lost or Retired volumes and drifted files do not count. "Backed up" means a copy on a volume marked as backup in a second failure domain.
+- The failure domain is editable in the drive inventory: type the same name on two volumes to make them one domain (two names of one server, a disk the detection splits), or another name to split them; clear the field to go back to the detected one.
+- Overview → Protection card: files not checked yet (no content hash), files with one copy, files whose copies share one failure domain, files not backed up, files changed since their last check, offline volumes; each number explains itself on hover.
+- Integrity job ("Library: checking integrity"): re-hashes a sample of files on a schedule and marks a file whose bytes changed while its size and times did not (`drift`); drift clears when the file really changes.
+- Details view: a Copies column with the locations on hover.
+- Delete and move previews warn `SingleDomain` when the remaining copies would all sit in one failure domain, `CopiesOffline` when they would all be on offline or archived drives, and `LastCopy` only counts copies that still exist.
+- Cloud sources (S3, Drive, Dropbox) index through their paged listings and count as their own failure domain; a cut-off listing never deletes records.
+
+### Changed
+
+- Source stores migrate to schema v7 (`record.drift`); `library.db` to v6 (`volume.domain_set`, the failure domain set by hand).
+- Media metadata (`media` table) is read by the grid and the viewer.
+- Sidecar failures are recorded per kind in `meta.json` (`failed`); `error` is the metadata's own error.
+- Hashing set to "pause on battery" no longer pauses on input, but the media and integrity jobs always do.
+
+### Fixed
+
+- Deleting the only copy of a file through a junction, symlink, subst drive or bind mount warned nothing: sources are compared by their resolved roots, a walk refuses a root another source already indexes, and a surviving record of the same file at the same resolved path is no longer taken for a hard link.
+- Deleting a file marked as drifted warned nothing; it is now unverified (or the last copy). Duplicates no longer list drifted files as identical copies.
+- The Protection card read "0 files with one copy only" when nothing was hashed; it now leads with the files not checked yet and marks the other counts as covering checked files only.
+- Linux failure domains: LVM and LUKS volumes resolve to their disks, btrfs subvolumes to the mounted device, and NFS, SMB, sshfs and WebDAV mounts are named by their server and share (stable across remounts) instead of one domain per mount.
+- One failed sidecar (a strip that timed out) no longer blocks a file's other thumbnails; a timeout is retried instead of recorded; a failed thumbnail keeps the file's real metadata.
+- The texture cache is bounded by memory (strips decoded to the tile height), not only by count.
+- Date headers no longer reset after the app sat idle for two seconds.
+- Media and integrity jobs pause on input under every hashing policy.
+- A source whose root is a junction or symlink indexes the folder it leads to (it indexed nothing on Windows).
+- Media work asked for while a sidecar job runs is queued instead of dropped; a just-made sidecar cannot be evicted before it is shown; big TIFFs are not read whole for EXIF; the viewer's full decode no longer stalls the UI with a texture bigger than the screen needs; copies badges and integrity checkpoints do less work per file.
+
+### Known limitations
+
+- Video playback in the viewer shows still frames; press Enter to open the system player.
+- Date headers sort by capture time only when metadata exists; otherwise the modified time is used.
+- Protection counters catch up at the next index, hash or integrity run (live watcher events do not recount).
+- A disk cloned with its volume serial reads as the same disk: its files count as hard links of the original, and a source on the clone whose root has the original's file id is refused as the same folder. Give the clone a new serial.
+- A Windows disk without a serial (a VHDX Dev Drive, some RAID controllers) is named by its disk number, which can change; set its failure domain by hand. A btrfs filesystem spanning several disks is named by its mounted device only.
+- A source aliased in a way neither the resolved paths nor the root's file id reveal (a share of a local folder reached through the network path while the folder is also a source, when the server reports other file ids) still counts its files twice.
+- TIFFs over 64 MiB are shown without their EXIF orientation.
+- Remote thumbnails follow the "remote thumbnails" setting; the viewer always downloads the file you open.
+- A video whose strip times out is retried each session.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.

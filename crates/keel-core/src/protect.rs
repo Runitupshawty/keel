@@ -96,8 +96,11 @@ pub struct Volume {
     pub label: String,
     pub kind: VolumeKind,
     /// Copies sharing it are one copy as far as failures go: `disk:<serial>` (the physical
-    /// disk), `net:<server>`, the cloud account or host id, else the volume id.
+    /// disk; `disk:<a>+disk:<b>` for a volume spanning disks), `net:<server>`, the cloud
+    /// account or host id, else the volume id. The one set by hand when `domain_set`.
     pub failure_domain: String,
+    /// The failure domain was set by hand (`Library::set_failure_domain`), not detected.
+    pub domain_set: bool,
     pub state: VolumeState,
     /// Unix seconds a source on it was last reachable (0: never).
     pub last_seen: i64,
@@ -148,6 +151,9 @@ pub struct ProtectionSummary {
     pub unbacked: u64,
     /// Files whose bytes changed while size, mtime and change time did not.
     pub drifted: u64,
+    /// Files not hashed yet (hashing off, paused or still running; shares and cloud sources
+    /// not hashed): in none of the counts above, their copies are unknown.
+    pub unchecked: u64,
     pub offline_volumes: u64,
     /// (volume, used, total) for volumes whose capacity is known.
     pub capacity: Vec<(Volume, u64, u64)>,
@@ -160,6 +166,8 @@ struct Counters {
     single_domain: u64,
     unbacked: u64,
     drifted: u64,
+    #[serde(default)]
+    unchecked: u64,
 }
 
 const COUNTERS: &str = "protection";
@@ -284,7 +292,9 @@ impl Volumes {
         }
         let c = lib.db.get()?;
         let mut stmt = c.prepare(
-            "SELECT id, label, kind, domain, state, last_seen, backup, used, total FROM volume",
+            "SELECT id, label, kind, coalesce(domain_set, domain), state, last_seen, backup, used,
+                 total, domain_set IS NOT NULL
+             FROM volume",
         )?;
         let rows = stmt.query_map([], |r| {
             let id: String = r.get(0)?;
@@ -302,6 +312,7 @@ impl Volumes {
                 label: r.get(1)?,
                 kind: VolumeKind::parse(&r.get::<_, String>(2)?),
                 failure_domain: r.get(3)?,
+                domain_set: r.get(9)?,
                 last_seen: r.get(5)?,
                 backup: r.get(6)?,
                 capacity: used.zip(total).map(|(u, t)| (u as u64, t as u64)),
@@ -338,6 +349,7 @@ impl Volumes {
                 SourceKind::Folder | SourceKind::Drive => VolumeKind::Fixed,
             },
             failure_domain: id.clone(),
+            domain_set: false,
             id,
             state,
             last_seen: last_seen.unwrap_or(0),
@@ -443,26 +455,63 @@ fn copies_of(lib: &Shared, vols: &Volumes, cas: &[u8]) -> Result<Vec<(String, Co
         .collect())
 }
 
-/// For `plan`: per deleted content, whether no counted copy survives, and whether the
-/// surviving ones fall from two or more failure domains to one. `deleted`: the records
-/// being deleted, by (source, id).
+/// What a delete leaves of a content (`after_delete`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Left {
+    /// No counted copy survives.
+    pub none: bool,
+    /// The surviving copies fall from two or more failure domains to one.
+    pub one_domain: bool,
+    /// Copies survive, all of them on offline or archived volumes.
+    pub offline: bool,
+}
+
+/// The resolved path of a local copy (None: remote, or not reachable now).
+fn canonical(p: &VPath) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(p.to_local_path()?).ok()
+}
+
+/// For `plan`: per deleted content, what survives. `deleted`: the records being deleted,
+/// by (source, id). A surviving record with the file key of a deleted one is a hard link
+/// only when it resolves to another path: the same path is the same file seen through an
+/// alias (a junction, symlink or subst drive), deleted with it.
 pub(crate) fn after_delete(
     lib: &Shared,
     vols: &Volumes,
     cas: &[u8],
     deleted: &HashSet<(String, i64)>,
-) -> Result<(bool, bool)> {
+) -> Result<Left> {
     let mut all = copies_of(lib, vols, cas)?;
+    // A device's claims are not copies.
     all.retain(|(_, c)| !c.claimed);
-    let kept =
-        |c: &&(String, CopyAt)| !deleted.contains(&(c.1.record.source.0.clone(), c.1.record.id));
+    let gone = |c: &CopyAt| deleted.contains(&(c.record.source.0.clone(), c.record.id));
+    // The deleted files' resolved paths, by file key.
+    let mut gone_at: HashMap<&str, Vec<Option<std::path::PathBuf>>> = HashMap::new();
+    for (f, c) in all.iter().filter(|(_, c)| gone(c)) {
+        gone_at
+            .entry(f.as_str())
+            .or_default()
+            .push(canonical(&c.path));
+    }
+    let kept = |(f, c): &&(String, CopyAt)| {
+        !gone(c)
+            && gone_at.get(f.as_str()).is_none_or(|at| {
+                // Only a path known on both sides and different is another file.
+                canonical(&c.path)
+                    .is_some_and(|p| at.iter().all(|a| a.as_ref().is_some_and(|a| *a != p)))
+            })
+    };
     let (_, before, ..) = tally(all.iter().map(|(f, c)| (f.as_str(), &c.volume)));
-    let (left, after, ..) = tally(
+    let (left, after, _, offline) = tally(
         all.iter()
             .filter(kept)
             .map(|(f, c)| (f.as_str(), &c.volume)),
     );
-    Ok((left == 0, left > 0 && after == 1 && before >= 2))
+    Ok(Left {
+        none: left == 0,
+        one_domain: left > 0 && after == 1 && before >= 2,
+        offline: left > 0 && offline == left,
+    })
 }
 
 /// Recomputes the protection counters over every store (a scan; at walk, hash and
@@ -474,7 +523,7 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
     // A private scratch database (SQLite spills it to a temp file).
     let scratch = Connection::open("")?;
     scratch.execute_batch("CREATE TABLE c(content, file TEXT, domain TEXT, backup INTEGER)")?;
-    let mut drifted = 0u64;
+    let (mut drifted, mut unchecked) = (0u64, 0u64);
     for s in &sources {
         let v = vols.of(s);
         // A device's claims are not copies.
@@ -496,13 +545,18 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
             )
             .and_then(|_| {
                 scratch.query_row(
-                    "SELECT count(*) FROM s.record WHERE drift IS NOT NULL",
+                    "SELECT count(*) FILTER (WHERE drift IS NOT NULL),
+                         count(*) FILTER (WHERE kind = 0 AND drift IS NULL AND cas_id IS NULL
+                             AND sampled_hash IS NULL)
+                     FROM s.record",
                     [],
-                    |r| r.get::<_, i64>(0),
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
                 )
             });
         scratch.execute("DETACH DATABASE s", [])?;
-        drifted += copied? as u64;
+        let (d, u) = copied?;
+        drifted += d as u64;
+        unchecked += u as u64;
     }
     let (single_copy, single_domain, unbacked) = scratch.query_row(
         "SELECT coalesce(sum(files = 1), 0), coalesce(sum(files > 1 AND domains = 1), 0),
@@ -523,6 +577,7 @@ pub(crate) fn recount(lib: &Shared) -> Result<()> {
         single_domain,
         unbacked,
         drifted,
+        unchecked,
     };
     lib.db
         .set_meta(COUNTERS, &serde_json::to_string(&counters)?)
@@ -552,6 +607,19 @@ impl Library {
         let n = self.shared.db.get()?.execute(
             "UPDATE volume SET backup = ?2 WHERE id = ?1",
             params![volume, backup],
+        )?;
+        anyhow::ensure!(n == 1, "no volume {volume}");
+        recount(&self.shared)
+    }
+
+    /// Sets the failure domain of a volume by hand (two names of one server, a disk the OS
+    /// cannot tell apart, LVM or pools the detection splits); None or blank goes back to the
+    /// detected one. Recounts the protection counters.
+    pub fn set_failure_domain(&self, volume: &str, domain: Option<&str>) -> Result<()> {
+        let domain = domain.map(str::trim).filter(|d| !d.is_empty());
+        let n = self.shared.db.get()?.execute(
+            "UPDATE volume SET domain_set = ?2 WHERE id = ?1",
+            params![volume, domain],
         )?;
         anyhow::ensure!(n == 1, "no volume {volume}");
         recount(&self.shared)
@@ -597,6 +665,21 @@ impl Library {
     /// retired volumes not counted), in how many failure domains, whether it is backed
     /// up, and where.
     pub fn redundancy(&self, record: &RecordRef) -> Result<Redundancy> {
+        let vols = Volumes::load(&self.shared)?;
+        self.redundancy_with(&vols, record)
+    }
+
+    /// `redundancy` of many records (a folder's badges), reading the volumes once; None for a
+    /// record that could not be read.
+    pub fn redundancies(&self, records: &[RecordRef]) -> Result<Vec<Option<Redundancy>>> {
+        let vols = Volumes::load(&self.shared)?;
+        Ok(records
+            .iter()
+            .map(|r| self.redundancy_with(&vols, r).ok())
+            .collect())
+    }
+
+    fn redundancy_with(&self, vols: &Volumes, record: &RecordRef) -> Result<Redundancy> {
         let src = self
             .source(&record.source)
             .with_context(|| format!("no source {}", record.source))?;
@@ -610,9 +693,8 @@ impl Library {
             )
             .optional()?
             .with_context(|| format!("no record {}", record.id))?;
-        let vols = Volumes::load(&self.shared)?;
         let copies = match &cas {
-            Some(cas) => copies_of(&self.shared, &vols, cas)?,
+            Some(cas) => copies_of(&self.shared, vols, cas)?,
             None => Vec::new(),
         };
         if copies.iter().all(|(_, c)| c.claimed) {
@@ -664,6 +746,7 @@ impl Library {
             single_domain: counters.single_domain,
             unbacked: counters.unbacked,
             drifted: counters.drifted,
+            unchecked: counters.unchecked,
             offline_volumes: volumes
                 .iter()
                 .filter(|v| v.state == VolumeState::Offline)

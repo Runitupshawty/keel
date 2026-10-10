@@ -412,4 +412,74 @@ mod tests {
             .unwrap();
         assert_eq!(counts, (2, 1), "counters follow");
     }
+
+    /// Stores written by v0.7.0 (library v6, source v7; migrations never change once released)
+    /// reach the newest versions with their rows intact.
+    #[test]
+    fn v0_7_0_stores_migrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = |store: Store, upto: u32, rows: &str| {
+            let path = dir.path().join(format!("{}.db", store.tag()));
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(store).into_iter().filter(|(v, _)| *v <= upto) {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(rows).unwrap();
+            path
+        };
+        let lib = old(
+            Store::Library,
+            6,
+            "INSERT INTO source(id, def, created, volume_id) VALUES ('s1', '{}', 0, 'v1');
+             INSERT INTO volume(id, label, kind, domain, domain_set, backup)
+                 VALUES ('v1', 'C:', 'fixed', 'disk:a', 'disk:mine', 1);",
+        );
+        let src = old(
+            Store::Source,
+            7,
+            "INSERT INTO record(id, parent, name, path, kind, size, fs_id, gen, cas_id, drift)
+                 VALUES (1, NULL, 'r', '', 1, 0, 'r', 1, NULL, NULL),
+                        (2, 1, 'a.txt', 'a.txt', 0, 5, 'f', 1, x'aa', 1700000000);",
+        );
+        let pool = Pool::open(&lib, Store::Library).unwrap();
+        let newest = migrations(Store::Library).last().unwrap().0;
+        let version: u32 = pool
+            .get()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, newest);
+        let row: (String, String, bool) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT s.volume_id, v.domain_set, v.backup FROM source s JOIN volume v
+                     ON v.id = s.volume_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("v1".into(), "disk:mine".into(), true));
+
+        let pool = Pool::open(&src, Store::Source).unwrap();
+        let newest = migrations(Store::Source).last().unwrap().0;
+        assert!(newest >= 8);
+        let version: u32 = pool
+            .get()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, newest);
+        let row: (Vec<u8>, i64, Option<Vec<u8>>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT cas_id, drift, remote_cas FROM record WHERE id = 2",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (vec![0xaa], 1_700_000_000, None));
+    }
 }

@@ -193,8 +193,10 @@ mod imp {
                 if usb {
                     kind = VolumeType::Removable;
                 }
-                // ponytail: a disk without a serial is named by its number, which can change
-                // when disks are added; serials cover every SATA/NVMe/USB-bridge disk seen.
+                // ponytail: a disk without a serial (a VHDX such as a Dev Drive, some RAID
+                // controllers) is named by its number, which can change when disks are added;
+                // serials cover every SATA/NVMe/USB-bridge disk seen. The drive inventory's
+                // failure-domain field overrides it (`Library::set_failure_domain`).
                 serial.map_or_else(|| format!("disk:#{n}"), |s| format!("disk:{s}"))
             })
         };
@@ -244,12 +246,35 @@ mod imp {
             used,
             total,
         };
-        details(&c, dev as u64, &mut v);
+        details(&c, dev, path, &mut v);
         Some(v)
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn details(c: &std::ffi::CStr, dev: u64, v: &mut VolumeInfo) {
+    fn details(c: &std::ffi::CStr, dev: u64, path: &Path, v: &mut VolumeInfo) {
+        use super::linux::{disks, mount_of, net_server, parse_mountinfo, SysFs};
+        let mounts = std::fs::read_to_string("/proc/self/mountinfo")
+            .map(|t| parse_mountinfo(&t))
+            .unwrap_or_default();
+        let at = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mount = mount_of(
+            &mounts,
+            (
+                libc::major(dev as libc::dev_t),
+                libc::minor(dev as libc::dev_t),
+            ),
+            &at,
+        );
+        // A share is named by what is mounted (stable across remounts); its server is the
+        // failure domain.
+        if let Some(m) = mount {
+            if let Some(server) = net_server(&m.fstype, &m.source) {
+                v.kind = VolumeType::Network;
+                v.id = format!("share:{}", m.source);
+                v.disk = Some(format!("net:{server}"));
+                return;
+            }
+        }
         // NFS, SMB/CIFS (old and new) superblock magics.
         const NETWORK: &[i64] = &[0x6969, 0x517B, 0xFF53_4D42, 0xFE53_4D42];
         // SAFETY: zeroed is a valid statfs; `c` is NUL-terminated.
@@ -260,44 +285,65 @@ mod imp {
             v.kind = VolumeType::Network;
             return;
         }
-        let (major, minor) = (libc::major(dev as _), libc::minor(dev as _));
+        // An anonymous device (a btrfs subvolume, …) stands for the mounted block device.
+        let block = if libc::major(dev as libc::dev_t) == 0 {
+            mount
+                .filter(|m| m.source.starts_with("/dev/"))
+                .and_then(|m| std::fs::metadata(&m.source).ok())
+                .map(|md| md.rdev())
+        } else {
+            Some(dev)
+        };
+        let Some(block) = block else { return };
         // The filesystem UUID: the /dev/disk/by-uuid link to this device.
         if let Ok(links) = std::fs::read_dir("/dev/disk/by-uuid") {
             for l in links.flatten() {
-                if std::fs::metadata(l.path()).is_ok_and(|m| m.rdev() == dev) {
+                if std::fs::metadata(l.path()).is_ok_and(|m| m.rdev() == block) {
                     v.id = format!("uuid:{}", l.file_name().to_string_lossy());
                     break;
                 }
             }
         }
-        // The disk: /sys/dev/block/M:m is the partition (or the whole disk).
-        let Ok(block) = std::fs::canonicalize(format!("/sys/dev/block/{major}:{minor}")) else {
-            return;
-        };
-        let disk = if block.join("partition").exists() {
-            block.parent().map(Path::to_path_buf)
-        } else {
-            Some(block)
-        };
-        let Some(disk) = disk else { return };
-        let read = |f: &str| {
-            std::fs::read_to_string(disk.join(f))
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-        };
-        if read("removable").as_deref() == Some("1") {
+        struct Real;
+        impl SysFs for Real {
+            fn canonical(&self, p: &str) -> Option<String> {
+                Some(
+                    std::fs::canonicalize(p)
+                        .ok()?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
+            fn read(&self, p: &str) -> Option<String> {
+                std::fs::read_to_string(p).ok()
+            }
+            fn list(&self, p: &str) -> Vec<String> {
+                std::fs::read_dir(p).map_or_else(
+                    |_| Vec::new(),
+                    |d| {
+                        d.flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect()
+                    },
+                )
+            }
+        }
+        let found = disks(
+            &Real,
+            libc::major(block as libc::dev_t),
+            libc::minor(block as libc::dev_t),
+        );
+        if found.iter().any(|d| d.removable) {
             v.kind = VolumeType::Removable;
         }
-        let name = disk.file_name().map(|n| n.to_string_lossy().into_owned());
-        v.disk = read("device/serial")
-            .or_else(|| read("device/wwid"))
-            .or(name)
-            .map(|s| format!("disk:{s}"));
+        if !found.is_empty() {
+            let ids: Vec<String> = found.into_iter().map(|d| d.id).collect();
+            v.disk = Some(ids.join("+"));
+        }
     }
 
     #[cfg(target_os = "macos")]
-    fn details(c: &std::ffi::CStr, _dev: u64, v: &mut VolumeInfo) {
+    fn details(c: &std::ffi::CStr, _dev: u64, _path: &Path, v: &mut VolumeInfo) {
         // SAFETY: zeroed is a valid statfs; `c` is NUL-terminated.
         let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
         if unsafe { libc::statfs(c.as_ptr(), &mut fs) } != 0 {
@@ -338,7 +384,163 @@ mod imp {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
-    fn details(_: &std::ffi::CStr, _: u64, _: &mut VolumeInfo) {}
+    fn details(_: &std::ffi::CStr, _: u64, _: &Path, _: &mut VolumeInfo) {}
+}
+
+/// Linux mount and disk lookups as pure functions over the text of `/proc/self/mountinfo`
+/// and a view of `/sys` (tested on every platform with fixtures).
+#[cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
+pub(crate) mod linux {
+    use std::path::Path;
+
+    /// One line of `/proc/self/mountinfo`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct Mount {
+        /// major:minor of the mounted filesystem (0:N for anonymous devices: btrfs
+        /// subvolumes, network filesystems).
+        pub dev: (u32, u32),
+        pub point: String,
+        pub fstype: String,
+        /// What is mounted: `/dev/sda2`, `server:/export`, `//server/share`.
+        pub source: String,
+    }
+
+    /// Undoes the octal escapes mountinfo uses for space, tab, newline and backslash.
+    fn unescape(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            let code = (b[i] == b'\\' && i + 4 <= b.len())
+                .then(|| u8::from_str_radix(s.get(i + 1..i + 4)?, 8).ok())
+                .flatten();
+            match code {
+                Some(c) => {
+                    out.push(c);
+                    i += 4;
+                }
+                None => {
+                    out.push(b[i]);
+                    i += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// `ID PARENT MAJ:MIN ROOT POINT OPTIONS [OPTIONAL…] - FSTYPE SOURCE SUPER-OPTIONS`.
+    pub(crate) fn parse_mountinfo(text: &str) -> Vec<Mount> {
+        text.lines()
+            .filter_map(|line| {
+                let (head, tail) = line.split_once(" - ")?;
+                let head: Vec<&str> = head.split(' ').collect();
+                let mut tail = tail.split(' ');
+                let (major, minor) = head.get(2)?.split_once(':')?;
+                Some(Mount {
+                    dev: (major.parse().ok()?, minor.parse().ok()?),
+                    point: unescape(head.get(4)?),
+                    fstype: tail.next()?.to_owned(),
+                    source: unescape(tail.next()?),
+                })
+            })
+            .collect()
+    }
+
+    /// The mount `path` (resolved) is under on device `dev`: the deepest such mount point.
+    pub(crate) fn mount_of<'a>(
+        mounts: &'a [Mount],
+        dev: (u32, u32),
+        path: &Path,
+    ) -> Option<&'a Mount> {
+        mounts
+            .iter()
+            .filter(|m| m.dev == dev && path.starts_with(&m.point))
+            .max_by_key(|m| m.point.len())
+    }
+
+    /// The server of a network filesystem's mount source, lowercased; None for local ones.
+    pub(crate) fn net_server(fstype: &str, source: &str) -> Option<String> {
+        let host = match fstype {
+            // server:/export, [v6]:/export
+            "nfs" | "nfs4" => match source.strip_prefix('[') {
+                Some(v6) => v6.split_once(']')?.0,
+                None => source.split_once(':')?.0,
+            },
+            // //server/share
+            "cifs" | "smb3" | "smbfs" => source.trim_start_matches('/').split('/').next()?,
+            // user@host:/path
+            "sshfs" | "fuse.sshfs" => source.split_once(':')?.0.rsplit('@').next()?,
+            // https://host/path
+            "davfs" | "fuse.davfs" | "davfs2" => source
+                .split_once("://")?
+                .1
+                .split('/')
+                .next()?
+                .rsplit('@')
+                .next()?,
+            _ => return None,
+        };
+        (!host.is_empty()).then(|| host.to_lowercase())
+    }
+
+    /// The parts of `/sys` the disk lookup reads (paths as text).
+    pub(crate) trait SysFs {
+        /// The resolved path (sysfs entries are symlinks into `/sys/devices`).
+        fn canonical(&self, p: &str) -> Option<String>;
+        fn read(&self, p: &str) -> Option<String>;
+        /// Entry names in a folder (empty when missing).
+        fn list(&self, p: &str) -> Vec<String>;
+    }
+
+    /// A physical disk behind a block device.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct Disk {
+        /// `disk:<serial>`, else `disk:<wwid>`, else `disk:<kernel name>`.
+        pub id: String,
+        pub removable: bool,
+    }
+
+    /// The physical disks behind block device `major:minor`, sorted: a partition's disk;
+    /// the disks under a device-mapper (LVM, LUKS) or md device, through `slaves/`; else
+    /// the device itself.
+    pub(crate) fn disks(sys: &dyn SysFs, major: u32, minor: u32) -> Vec<Disk> {
+        fn walk(sys: &dyn SysFs, dev: &str, depth: u8, out: &mut Vec<Disk>) {
+            let slaves = sys.list(&format!("{dev}/slaves"));
+            if !slaves.is_empty() && depth < 8 {
+                for s in slaves {
+                    if let Some(d) = sys.canonical(&format!("{dev}/slaves/{s}")) {
+                        walk(sys, &d, depth + 1, out);
+                    }
+                }
+                return;
+            }
+            let read = |p: String| {
+                sys.read(&p)
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            };
+            let disk = match read(format!("{dev}/partition")) {
+                Some(_) => dev.rsplit_once('/').map_or(dev, |(parent, _)| parent),
+                None => dev,
+            };
+            let name = disk.rsplit('/').next().unwrap_or(disk).to_owned();
+            let id = read(format!("{disk}/device/serial"))
+                .or_else(|| read(format!("{disk}/device/wwid")))
+                .or_else(|| read(format!("{disk}/wwid")))
+                .unwrap_or(name);
+            out.push(Disk {
+                id: format!("disk:{id}"),
+                removable: read(format!("{disk}/removable")).as_deref() == Some("1"),
+            });
+        }
+        let mut out = Vec::new();
+        if let Some(dev) = sys.canonical(&format!("/sys/dev/block/{major}:{minor}")) {
+            walk(sys, &dev, 0, &mut out);
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out.dedup_by(|a, b| a.id == b.id);
+        out
+    }
 }
 
 #[cfg(not(any(windows, unix)))]
@@ -366,5 +568,150 @@ mod tests {
         assert!(v.disk.is_some(), "a fixed disk is found: {v:?}");
         eprintln!("{v:?}");
         assert_eq!(volume_info(Path::new("/no/such/keel/path")), None);
+    }
+
+    use super::linux::{disks, mount_of, net_server, parse_mountinfo, Disk, SysFs};
+    use std::collections::HashMap;
+
+    const MOUNTINFO: &str = "\
+22 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw
+25 22 253:1 / /home rw,relatime shared:2 - ext4 /dev/mapper/vg-home rw
+26 22 0:41 /@data /data rw,relatime shared:3 - btrfs /dev/nvme0n1p3 rw,subvol=/@data
+27 22 0:42 /@media /srv/my\\040media rw,relatime shared:4 - btrfs /dev/nvme0n1p3 rw
+30 22 0:51 / /mnt/nas rw,relatime shared:5 - nfs4 Server.Example:/export/photos rw,addr=x
+31 22 0:52 / /mnt/smb rw,relatime shared:6 master:1 - cifs //server.example/share rw
+32 22 0:53 / /mnt/v6 rw - nfs [2001:db8::1]:/x rw
+33 22 0:54 / /mnt/ssh rw - fuse.sshfs user@host.example:/home rw
+";
+
+    #[test]
+    fn mountinfo_names_mounts_and_servers() {
+        let m = parse_mountinfo(MOUNTINFO);
+        assert_eq!(m.len(), 8);
+        assert_eq!(
+            (m[2].dev, m[2].fstype.as_str(), m[2].source.as_str()),
+            ((0, 41), "btrfs", "/dev/nvme0n1p3")
+        );
+        // Escaped spaces are decoded.
+        assert_eq!(m[3].point, "/srv/my media");
+        // The deepest mount of the device the path is on.
+        let at = |dev, p: &str| mount_of(&m, dev, Path::new(p)).map(|m| m.point.clone());
+        assert_eq!(at((0, 41), "/data/photos/a.jpg").as_deref(), Some("/data"));
+        assert_eq!(at((8, 2), "/etc").as_deref(), Some("/"));
+        assert_eq!(at((0, 99), "/data"), None);
+        let servers: Vec<_> = m.iter().map(|m| net_server(&m.fstype, &m.source)).collect();
+        assert_eq!(
+            servers,
+            [
+                None,
+                None,
+                None,
+                None,
+                Some("server.example".into()),
+                Some("server.example".into()),
+                Some("2001:db8::1".into()),
+                Some("host.example".into()),
+            ]
+        );
+    }
+
+    /// A /sys made of links (resolved paths), files and folders.
+    #[derive(Default)]
+    struct Fake {
+        links: HashMap<String, String>,
+        files: HashMap<String, String>,
+    }
+
+    impl SysFs for Fake {
+        fn canonical(&self, p: &str) -> Option<String> {
+            self.links.get(p).cloned()
+        }
+        fn read(&self, p: &str) -> Option<String> {
+            self.files.get(p).cloned()
+        }
+        fn list(&self, p: &str) -> Vec<String> {
+            let prefix = format!("{p}/");
+            let mut out: Vec<String> = self
+                .links
+                .keys()
+                .filter_map(|k| k.strip_prefix(&prefix))
+                .filter(|rest| !rest.contains('/'))
+                .map(str::to_owned)
+                .collect();
+            out.sort();
+            out
+        }
+    }
+
+    #[test]
+    fn sys_block_resolves_partitions_lvm_and_spans_to_disks() {
+        let sata = "/sys/devices/pci0/ata1/block/sda";
+        let nvme = "/sys/devices/pci0/nvme/nvme0/nvme0n1";
+        let usb = "/sys/devices/pci0/usb1/block/sdb";
+        let mut sys = Fake::default();
+        let mut link = |from: &str, to: String| sys.links.insert(from.into(), to);
+        link("/sys/dev/block/8:2", format!("{sata}/sda2"));
+        link("/sys/dev/block/259:3", format!("{nvme}/nvme0n1p3"));
+        link("/sys/dev/block/8:17", format!("{usb}/sdb1"));
+        // LVM: dm-1 on sda2; dm-2 spans sda2 and nvme0n1p3; dm-3 (LUKS) on dm-1.
+        link(
+            "/sys/dev/block/253:1",
+            "/sys/devices/virtual/block/dm-1".into(),
+        );
+        link(
+            "/sys/dev/block/253:2",
+            "/sys/devices/virtual/block/dm-2".into(),
+        );
+        link(
+            "/sys/dev/block/253:3",
+            "/sys/devices/virtual/block/dm-3".into(),
+        );
+        link(
+            "/sys/devices/virtual/block/dm-1/slaves/sda2",
+            format!("{sata}/sda2"),
+        );
+        link(
+            "/sys/devices/virtual/block/dm-2/slaves/sda2",
+            format!("{sata}/sda2"),
+        );
+        link(
+            "/sys/devices/virtual/block/dm-2/slaves/nvme0n1p3",
+            format!("{nvme}/nvme0n1p3"),
+        );
+        link(
+            "/sys/devices/virtual/block/dm-3/slaves/dm-1",
+            "/sys/devices/virtual/block/dm-1".into(),
+        );
+        let mut file = |p: String, v: &str| sys.files.insert(p, format!("{v}\n"));
+        file(format!("{sata}/sda2/partition"), "2");
+        file(format!("{sata}/device/serial"), "WD-123");
+        file(format!("{sata}/removable"), "0");
+        file(format!("{nvme}/nvme0n1p3/partition"), "3");
+        // NVMe: no device/serial on the namespace, a wwid.
+        file(format!("{nvme}/wwid"), "eui.0025");
+        file(format!("{usb}/sdb1/partition"), "1");
+        file(format!("{usb}/removable"), "1");
+        let ids = |major, minor| -> Vec<String> {
+            disks(&sys, major, minor)
+                .into_iter()
+                .map(|d| d.id)
+                .collect()
+        };
+        assert_eq!(ids(8, 2), ["disk:WD-123"]);
+        assert_eq!(ids(259, 3), ["disk:eui.0025"]);
+        // Every logical volume on one disk is that disk, also under LUKS.
+        assert_eq!(ids(253, 1), ["disk:WD-123"]);
+        assert_eq!(ids(253, 3), ["disk:WD-123"]);
+        // A volume spanning two disks names both.
+        assert_eq!(ids(253, 2), ["disk:WD-123", "disk:eui.0025"]);
+        // No serial: the kernel name; removable flag read from the disk.
+        assert_eq!(
+            disks(&sys, 8, 17),
+            [Disk {
+                id: "disk:sdb".into(),
+                removable: true
+            }]
+        );
+        assert!(disks(&sys, 9, 9).is_empty());
     }
 }

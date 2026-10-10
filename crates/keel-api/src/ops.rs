@@ -920,6 +920,15 @@ fn file_warning(w: &keel_core::Warning) -> Warning {
                 path.display()
             ),
         ),
+        W::CopiesOffline { path, files } => (
+            "copies_offline",
+            Some(path),
+            Some(*files),
+            format!(
+                "{files} file(s) in {} would leave their other copies only on offline or archived drives",
+                path.display()
+            ),
+        ),
         W::OfflineSource { label, .. } => (
             "offline_source",
             None,
