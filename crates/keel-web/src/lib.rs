@@ -5,13 +5,14 @@
 //! `localStorage` only when "remember on this device" is ticked.
 //!
 //! The connection state machine, the address guard, the layout breakpoint, the gestures,
-//! the share-sheet flow and the display helpers build and are tested on every target; the
-//! UI and the browser glue only on wasm32.
+//! the share-sheet flow, what a library change reads again and the display helpers build
+//! and are tested on every target; the UI and the browser glue only on wasm32.
 
 pub mod conn;
 pub mod gesture;
 pub mod guard;
 pub mod layout;
+pub mod refresh;
 pub mod share;
 /// keel-api's parameter and result types, shared by path: keel-api itself (keel-core,
 /// SQLite, tokio's network stack) does not build for wasm32.

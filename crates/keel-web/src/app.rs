@@ -10,6 +10,7 @@
 use crate::conn::{Conn, Reply, State};
 use crate::gesture::{self, Pull};
 use crate::layout::{Screen, Tab as PhoneTab};
+use crate::refresh::Refresh;
 use crate::share::{self, SharedFile};
 use crate::types::*;
 use crate::util::{human, parent};
@@ -122,6 +123,8 @@ pub struct WebApp {
     inbox: Result<Inbox, String>,
     jobs: Vec<JobInfo>,
     jobs_asked: f64,
+    /// `library.changed` notes waiting to be read again together.
+    changes: crate::refresh::Coalesce,
     /// When a running plan's job was last asked about.
     polled: f64,
     // browsing
@@ -229,6 +232,7 @@ impl WebApp {
             inbox: Err(String::new()),
             jobs: Vec::new(),
             jobs_asked: 0.0,
+            changes: Default::default(),
             polled: 0.0,
             tab: Tab::Browse,
             panes: Default::default(),
@@ -301,13 +305,36 @@ impl WebApp {
     }
 
     fn refresh(&mut self) {
-        if let Some(path) = self.selected.as_ref().map(|e| e.path.clone()) {
+        let all = Refresh {
+            devices: false,
+            ..Refresh::ALL
+        };
+        self.refresh_only(all);
+    }
+
+    /// Reads again what a change touched.
+    fn refresh_only(&mut self, r: Refresh) {
+        if let Some(path) = self
+            .selected
+            .as_ref()
+            .map(|e| e.path.clone())
+            .filter(|_| r.stat)
+        {
             self.call("stat", json!({ "path": path }), Want::Stat(path));
         }
-        self.call("sources.list", json!({}), Want::Sources);
-        self.call("jobs.list", json!({}), Want::Jobs);
-        self.call("spacedrop.inbox", json!({}), Want::Inbox);
-        for pane in 0..2 {
+        if r.sources {
+            self.call("sources.list", json!({}), Want::Sources);
+        }
+        if r.jobs {
+            self.call("jobs.list", json!({}), Want::Jobs);
+        }
+        if r.inbox {
+            self.call("spacedrop.inbox", json!({}), Want::Inbox);
+        }
+        if r.devices {
+            self.call("devices.list", json!({}), Want::Devices);
+        }
+        for pane in (0..2).filter(|_| r.listing) {
             let path = self.panes[pane].path.clone();
             if !path.is_empty() {
                 self.open(pane, path);
@@ -538,7 +565,7 @@ impl WebApp {
 
     fn on_note(&mut self, method: &str, params: &Value) {
         match method {
-            "library.changed" => self.refresh(),
+            "library.changed" => self.changes.add(crate::refresh::of(params), web::now()),
             "job.progress" => {
                 let now = web::now();
                 if now - self.jobs_asked > 1.0 {
@@ -596,6 +623,13 @@ impl WebApp {
         }
         for (method, params) in self.conn.take_notes() {
             self.on_note(&method, &params);
+        }
+        if let Some(r) = self.changes.due(now) {
+            self.refresh_only(r);
+        }
+        if let Some(wait) = self.changes.wait(now) {
+            self.ctx
+                .request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
         if let State::Retrying { at } = self.conn.state {
             if now >= at {
