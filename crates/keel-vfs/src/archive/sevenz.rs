@@ -6,18 +6,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 7zAES coder id: entries in such a folder need a password.
-const AES: [u8; 4] = [0x06, 0xf1, 0x07, 0x01];
-
 pub(super) struct Reader {
     path: PathBuf,
-    archive: sevenz_rust::Archive,
+    archive: sevenz_rust2::Archive,
 }
 impl Reader {
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             path: path.into(),
-            archive: sevenz_rust::Archive::open(path)?,
+            archive: sevenz_rust2::Archive::open(path)?,
         })
     }
 }
@@ -32,16 +29,16 @@ impl ArchiveReader for Reader {
             .map(|(i, file)| {
                 let encrypted = archive
                     .stream_map
-                    .file_folder_index
+                    .file_block_index
                     .get(i)
                     .copied()
                     .flatten()
-                    .and_then(|folder| archive.folders.get(folder))
-                    .is_some_and(|folder| {
-                        folder
-                            .coders
-                            .iter()
-                            .any(|c| c.decompression_method_id() == AES)
+                    .and_then(|block| archive.blocks.get(block))
+                    // 7zAES: entries in such a block need a password.
+                    .is_some_and(|block| {
+                        block.coders.iter().any(|c| {
+                            c.encoder_method_id() == sevenz_rust2::EncoderMethod::ID_AES256_SHA256
+                        })
                     });
                 ArchiveEntry {
                     inner: file.name.clone(),
@@ -66,13 +63,15 @@ impl ArchiveReader for Reader {
         want: &dyn Fn(&str) -> bool,
         each: &mut dyn FnMut(&str, u64, &mut dyn Read) -> Result<()>,
     ) -> Result<()> {
-        let wanted = |file: &sevenz_rust::SevenZArchiveEntry| {
+        let wanted = |file: &sevenz_rust2::ArchiveEntry| {
             !file.is_directory() && !file.is_anti_item() && want(&file.name)
         };
         let mut source = File::open(&self.path)?;
         let mut failure = None;
-        for folder in 0..self.archive.folders.len() {
-            let block = sevenz_rust::BlockDecoder::new(folder, &self.archive, &[], &mut source);
+        let password = sevenz_rust2::Password::empty();
+        for index in 0..self.archive.blocks.len() {
+            let block =
+                sevenz_rust2::BlockDecoder::new(1, index, &self.archive, &password, &mut source);
             if !block.entries().iter().any(wanted) {
                 continue;
             }
@@ -83,7 +82,7 @@ impl ArchiveReader for Reader {
                         return Ok(false);
                     }
                 }
-                io::copy(input, &mut io::sink()).map_err(sevenz_rust::Error::io)?;
+                io::copy(input, &mut io::sink())?;
                 Ok(true)
             })?;
             if !finished {
@@ -95,7 +94,7 @@ impl ArchiveReader for Reader {
         }
         // Empty files belong to no block.
         for (i, file) in self.archive.files.iter().enumerate() {
-            if self.archive.stream_map.file_folder_index[i].is_none() && wanted(file) {
+            if self.archive.stream_map.file_block_index[i].is_none() && wanted(file) {
                 each(&file.name, 0, &mut io::empty())?;
             }
         }

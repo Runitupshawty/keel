@@ -42,7 +42,8 @@ hmac = "0.12"
 sha1 = "0.10"
 # Archive codecs are pure Rust (cross-checks need no C toolchain); only unrar builds C++.
 zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "time"] }
-sevenz-rust = "0.6"
+# Reader only; the writer (`compress`, `util`) is enabled for tests in keel-vfs.
+sevenz-rust2 = { version = "0.23", default-features = false }
 tar = "0.4"
 flate2 = "1"
 bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"] }

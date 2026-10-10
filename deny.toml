@@ -13,7 +13,6 @@ yanked = "warn"
 # 0.20 reports them as errors and has no per-severity warn setting.
 ignore = [
     # Vulnerabilities in the current tree. Each needs a dependency bump upstream; revisit when the parent crate updates.
-    { id = "RUSTSEC-2026-0245", reason = "sevenz-rust path traversal in decompress_impl; Keel extracts through its own path-checked writer, not decompress_impl. Move to sevenz-rust2 when feasible." },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 quadratic attribute check, now only via zbus_xml 4 <- zbus-lockstep 0.4 <- atspi-common 0.6 <- accesskit_unix (eframe 0.31, Linux). zbus-lockstep parses atspi's bundled D-Bus XML in a proc macro at build time and in atspi's own tests; Keel never runs it. Drops with the eframe/accesskit upgrade (zbus_xml 5)." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 namespace allocation DoS; same build-time-only zbus_xml path as RUSTSEC-2026-0194." },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, no fix released; reachable only through russh key handling over a network timing channel." },
@@ -23,7 +22,6 @@ ignore = [
     { id = "RUSTSEC-2020-0168", reason = "mach unmaintained, pulled by battery on macOS." },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, pulled by accesskit, metal, pulp." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained, pulled by the SVG/text stack." },
-    { id = "RUSTSEC-2026-0246", reason = "sevenz-rust unmaintained; same migration as RUSTSEC-2026-0245." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by the font/SVG stack." },
     { id = "RUSTSEC-2024-0320", reason = "yaml-rust unmaintained, pulled by syntect." },
 ]
