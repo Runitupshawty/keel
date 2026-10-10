@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 pub const DEFAULT_PROFILE: &str = "default";
-pub const DEFAULT_LIBRARY: &str = "james";
+pub const DEFAULT_LIBRARY: &str = "main";
 /// Days between scheduled integrity checks (keel-app's default).
 pub const DEFAULT_INTEGRITY_DAYS: u32 = 7;
 
@@ -114,7 +114,7 @@ impl HostConfig {
         let library = get("library", "name")
             .and_then(|v| v.as_str().map(str::to_owned))
             .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_LIBRARY.to_owned());
+            .unwrap_or_else(|| default_library(&data_dir));
         // One switch with the app: `[devices] enabled`, counted once it is the user's
         // (`explicit`, which the Settings switch writes; a value saved while Devices
         // defaulted on is not). `[net] enabled` (0.8 previews) is read when it is not.
@@ -176,6 +176,28 @@ impl HostConfig {
     }
 }
 
+/// The library of a profile without `[library] name`: `main`; while there is no `main`
+/// but exactly one library from before (a profile that used an earlier default name),
+/// that one, with a log line.
+pub fn default_library(data_dir: &std::path::Path) -> String {
+    let root = data_dir.join("library");
+    if root.join(DEFAULT_LIBRARY).is_dir() {
+        return DEFAULT_LIBRARY.to_owned();
+    }
+    let mut found = (std::fs::read_dir(&root).into_iter().flatten().flatten())
+        .filter(|e| e.path().join("library.db").is_file())
+        .filter_map(|e| e.file_name().into_string().ok());
+    match (found.next(), found.next()) {
+        (Some(only), None) => {
+            tracing::info!(
+                "library: no library {DEFAULT_LIBRARY} yet; opening the existing library {only}"
+            );
+            only
+        }
+        _ => DEFAULT_LIBRARY.to_owned(),
+    }
+}
+
 /// Writes a new daemon token (32 random bytes, hex) to `path`, owner-only, replacing any
 /// old one: `keel daemon rotate-token`, and keel-daemon when it finds none (or one others
 /// may read). A running daemon reads the file for each connection and closes sessions
@@ -207,6 +229,27 @@ mod tests {
             assert!(valid_profile(good), "{good:?}");
         }
         assert!(!valid_profile(&"x".repeat(65)));
+    }
+
+    #[test]
+    fn the_default_library_is_main_or_the_one_there_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = |name: &str| {
+            let d = dir.path().join("library").join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("library.db"), b"").unwrap();
+        };
+        assert_eq!(default_library(dir.path()), "main");
+        // A library under an earlier default name, and no main: that one is opened.
+        lib("earlier");
+        assert_eq!(default_library(dir.path()), "earlier");
+        let cfg = HostConfig::read("work", dir.path().into(), dir.path().into());
+        assert_eq!(cfg.library, "earlier");
+        // Which of several is unclear: main (it is created).
+        lib("other");
+        assert_eq!(default_library(dir.path()), "main");
+        lib("main");
+        assert_eq!(default_library(dir.path()), "main");
     }
 
     #[test]

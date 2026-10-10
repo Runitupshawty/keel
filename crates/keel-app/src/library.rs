@@ -104,7 +104,7 @@ impl Default for LibrarySettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            name: "james".into(),
+            name: keel_api::config::DEFAULT_LIBRARY.into(),
             hashing: Hashing::default(),
             rescan_minutes: 15,
             tags_column: true,

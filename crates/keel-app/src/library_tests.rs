@@ -511,7 +511,7 @@ fn library_live() {
     ) else {
         return;
     };
-    let lib = Arc::new(Library::open(&data, "james").unwrap());
+    let lib = Arc::new(Library::open(&data, "main").unwrap());
     let mut h = Harness::builder()
         .with_size(egui::vec2(1400.0, 860.0))
         .wgpu()
@@ -819,7 +819,7 @@ fn protection_live() {
     ) else {
         return;
     };
-    let lib = Arc::new(Library::open(&data, "james").unwrap());
+    let lib = Arc::new(Library::open(&data, "main").unwrap());
     let mut h = Harness::builder()
         .with_size(egui::vec2(1400.0, 900.0))
         .wgpu()

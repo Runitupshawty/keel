@@ -1166,13 +1166,13 @@ pub(crate) mod tests {
         let data = tempfile::tempdir().unwrap();
         let files = tempfile::tempdir().unwrap();
         let (a, b) = (files.path().join("a"), files.path().join("b"));
-        let lib = Library::open(data.path(), "james").unwrap();
+        let lib = Library::open(data.path(), "main").unwrap();
         let id = lib.add_source(folder("A", &a)).unwrap();
         lib.add_source(folder("B", &b)).unwrap();
         let lib_id = lib.id.clone();
         drop(lib);
 
-        let lib = Library::open(data.path(), "james").unwrap();
+        let lib = Library::open(data.path(), "main").unwrap();
         assert_eq!(lib.id, lib_id, "id is stable across opens");
         let labels: Vec<_> = lib.sources().into_iter().map(|s| s.label).collect();
         assert_eq!(labels, ["A", "B"]);
@@ -1182,7 +1182,7 @@ pub(crate) mod tests {
         );
         let listed = Library::list_in(data.path());
         assert_eq!(listed.len(), 1);
-        assert_eq!((listed[0].name.as_str(), listed[0].sources), ("james", 2));
+        assert_eq!((listed[0].name.as_str(), listed[0].sources), ("main", 2));
 
         let store = lib.source(&id).unwrap().store_dir().to_owned();
         assert!(store.join("source.db").is_file());
@@ -1192,7 +1192,7 @@ pub(crate) mod tests {
         assert!(lib.remove_source(&id, false).is_err());
         drop(lib);
         assert_eq!(
-            Library::open(data.path(), "james").unwrap().sources().len(),
+            Library::open(data.path(), "main").unwrap().sources().len(),
             1
         );
     }

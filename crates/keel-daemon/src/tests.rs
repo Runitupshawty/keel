@@ -86,7 +86,7 @@ fn serves_the_api_on_the_local_socket() {
     let daemon = start(&env, None);
     let mut c = Client::connect(daemon.name()).unwrap();
     let v = c.call("version", Value::Null).unwrap();
-    assert_eq!(v["library"], "james");
+    assert_eq!(v["library"], "main");
     assert_eq!(v["pid"], std::process::id());
     assert_eq!(v["net"], false);
     c.call("subscribe", Value::Null).unwrap();
@@ -179,7 +179,7 @@ fn reattach_keeps_the_library_open() {
     let sources = c.call("sources.list", Value::Null).unwrap();
     assert_eq!(sources[0]["id"], id);
     // Still held by the daemon.
-    assert!(keel_core::Library::open(env.data.path(), "james").is_err());
+    assert!(keel_core::Library::open(env.data.path(), "main").is_err());
     // Shutdown on request releases it.
     c.call("daemon.shutdown", Value::Null).unwrap();
     drop(c);
@@ -190,7 +190,7 @@ fn reattach_keeps_the_library_open() {
     daemon.shutdown();
     drop(daemon);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while keel_core::Library::open(env.data.path(), "james").is_err() {
+    while keel_core::Library::open(env.data.path(), "main").is_err() {
         assert!(Instant::now() < deadline, "library still locked");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -252,7 +252,7 @@ fn websocket_needs_the_token() {
     ))
     .unwrap();
     let answer: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
-    assert_eq!(answer["result"]["library"], "james");
+    assert_eq!(answer["result"]["library"], "main");
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn web_serves_the_client_and_rpc_with_in_band_auth() {
     let auth = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": token}});
     assert_eq!(send(&mut ws, auth)["result"]["ok"], true);
     let v = send(&mut ws, json!({"jsonrpc":"2.0","id":2,"method":"version"}));
-    assert_eq!(v["result"]["library"], "james", "{v}");
+    assert_eq!(v["result"]["library"], "main", "{v}");
 
     // A one-time download link.
     let notes = env.files.path().join("notes.txt").display().to_string();

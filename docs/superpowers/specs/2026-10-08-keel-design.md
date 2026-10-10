@@ -212,7 +212,7 @@ browser keeps working with the library off.
 **Core (`keel-core`, in-process first; `keel-daemon` later)**
 
 - **Library**: one SQLite database per library (`rusqlite`, bundled, WAL, FTS5). Default library
-  `james`. Multiple libraries supported; never merged automatically.
+  `main`. Multiple libraries supported; never merged automatically.
 - **Sources**: a folder, a whole drive, a NAS share, a cloud bucket, a paired device's source, or an
   adapter (Gmail attachments, Obsidian vault, GitHub repos). Each source has its own portable store
   (`source.db`) that can travel with the data ("provider exit": leave a cloud and keep the

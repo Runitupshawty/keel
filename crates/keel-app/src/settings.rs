@@ -271,6 +271,19 @@ impl Settings {
     }
 
     pub fn load_from(path: &Path) -> (Settings, Option<String>) {
+        let (mut s, notice) = Self::read_from(path);
+        // No library named: `main`, or the one library the profile had before (an earlier
+        // default name); saved from now on.
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if library_name(&text).is_none() {
+            if let Some(data) = data_dir() {
+                s.library.name = keel_api::config::default_library(&data);
+            }
+        }
+        (s, notice)
+    }
+
+    fn read_from(path: &Path) -> (Settings, Option<String>) {
         match read_config(path, parse_lenient) {
             Ok(None) => (Settings::default(), None),
             Ok(Some((s, dropped))) if dropped.is_empty() => (s, None),
@@ -300,6 +313,13 @@ impl Settings {
             .clamp(1, keel_preview::MAX_PREVIEW_BYTES / MB)
             * MB
     }
+}
+
+/// `[library] name` as config.toml has it (not empty).
+fn library_name(text: &str) -> Option<String> {
+    let table: toml::Table = toml::from_str(text).ok()?;
+    let name = table.get("library")?.get("name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// Parses config.toml with each `[[clouds]]` / `[[remotes]]` entry on its own: an invalid
@@ -741,9 +761,12 @@ label = "nas"
             Settings::path(),
             dir.join("profiles").join("default").join("config.toml")
         );
+        // The library: `main`, or the one library already in the data folder.
+        let mut defaults = Settings::default();
+        defaults.library.name = keel_api::config::default_library(&super::data_dir().unwrap());
         assert_eq!(
             Settings::load(),
-            (Settings::default(), None),
+            (defaults.clone(), None),
             "missing file = defaults"
         );
         let s = Settings {
@@ -766,7 +789,7 @@ label = "nas"
         // A broken file is set aside before anything can overwrite it.
         std::fs::write(&path, "theme = [").unwrap();
         let (loaded, notice) = Settings::load();
-        assert_eq!(loaded, Settings::default());
+        assert_eq!(loaded, defaults);
         assert!(notice.unwrap().contains("config.toml.bad"));
         assert!(!path.exists());
         assert_eq!(

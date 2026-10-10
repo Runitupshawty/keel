@@ -173,7 +173,7 @@ keel daemon rotate-token        # a new token: clients sign in again
 ```
 
 The daemon opens the profile's library (`[library] name` in the profile's config.toml,
-default `james`, under `KEEL_DATA_DIR` or the platform data folder), resumes its jobs and
+default `main`, under `KEEL_DATA_DIR` or the platform data folder), resumes its jobs and
 serves until Ctrl-C, SIGTERM or `daemon.shutdown`. It survives clients disconnecting; a
 second daemon for the same profile exits with "keel-daemon is already running for
 profile …". One process holds a library: while a Keel window has it open in-process,
