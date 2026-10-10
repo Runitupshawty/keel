@@ -6,7 +6,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.9.0)
+## What works (v0.10.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
@@ -448,9 +448,9 @@ Limits and requirements:
 
 Phases 1 to 9 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients: the web client and phone app, mounts, Share → Keel). In progress, as follow-ups to Phase 9:
 
-- The desktop app attaching to a running keel-daemon instead of opening the library itself (built, unreleased: see CHANGELOG).
-- A Mount… action in the sidebar (built, unreleased: see CHANGELOG).
-- A Playwright run of the web client in CI (built, unreleased: see CHANGELOG).
+- The desktop app attaching to a running keel-daemon instead of opening the library itself.
+- A Mount… action in the sidebar.
+- A Playwright run of the web client in CI.
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 

@@ -4614,7 +4614,7 @@ dependencies = [
 
 [[package]]
 name = "keel-api"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4646,7 +4646,7 @@ dependencies = [
 
 [[package]]
 name = "keel-app"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4700,7 +4700,7 @@ dependencies = [
 
 [[package]]
 name = "keel-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4731,7 +4731,7 @@ dependencies = [
 
 [[package]]
 name = "keel-daemon"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4756,7 +4756,7 @@ dependencies = [
 
 [[package]]
 name = "keel-mount"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4774,7 +4774,7 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4805,7 +4805,7 @@ dependencies = [
 
 [[package]]
 name = "keel-preview"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "calamine",
  "csv",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "keel-search"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -4843,7 +4843,7 @@ dependencies = [
 
 [[package]]
 name = "keel-term"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -4854,7 +4854,7 @@ dependencies = [
 
 [[package]]
 name = "keel-vfs"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4915,7 +4915,7 @@ dependencies = [
 
 [[package]]
 name = "keel-web"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "eframe",
