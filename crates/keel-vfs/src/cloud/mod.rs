@@ -3,6 +3,7 @@
 //! worker thread. Tokens and keys live in a `SecretStore` (the OS keychain in the app),
 //! never in config, logs or error messages: errors carry only the opendal error kind and
 //! the HTTP status, never server text or URLs.
+mod changes;
 pub mod oauth;
 pub mod secrets;
 mod share;
@@ -642,6 +643,8 @@ struct Core {
     api: String,
     /// Set by `cancel_requests`: quota and link requests stop retrying.
     stop: AtomicBool,
+    /// Drive: every item by id once the change feed started (None before).
+    drive_ids: Mutex<Option<changes::DriveIds>>,
 }
 
 /// One cloud account. Cheap to share: the router holds it as `Arc<dyn Provider>`.
@@ -829,6 +832,7 @@ impl CloudProvider {
                 ttl: Duration::from_secs(60),
                 list_cap: LIST_CAP,
                 stop: AtomicBool::new(false),
+                drive_ids: Mutex::new(None),
             }),
         })
     }
@@ -1733,6 +1737,11 @@ impl Provider for CloudProvider {
     /// made after a yes. S3: a presigned GET for `S3_LINK_TTL`, after a yes.
     fn share_link(&self, p: &VPath, create: bool) -> Result<crate::ShareLink> {
         self.core.share_link(p, create)
+    }
+    /// Drive: `changes.list`; Dropbox: `list_folder/continue`; S3: whether a bucket of at
+    /// most 1,000 objects changed at all; WebDAV: none.
+    fn changes(&self, cursor: Option<crate::ChangeCursor>) -> Result<crate::ChangeFeed> {
+        self.core.changes(cursor)
     }
     /// Through the same download cache as SFTP (`<cache>/remote/cloud-<id>/`), with fresh
     /// stats (not the listing cache) for its "source changed" check.

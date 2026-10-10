@@ -35,6 +35,49 @@ pub enum ShareLink {
     Confirm { question: String },
 }
 
+/// A position in a provider's change feed (`Provider::changes`), opaque to the caller:
+/// keep it and pass it back to get what changed since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeCursor(pub String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+    Created,
+    Modified,
+    Removed,
+    /// Something below this folder changed in a way the feed cannot name: list it again
+    /// (the account's root: everything).
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangedPath {
+    pub path: VPath,
+    pub kind: ChangeKind,
+}
+
+/// One page of `Provider::changes`, oldest change first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeFeed {
+    pub changes: Vec<ChangedPath>,
+    /// Where the next call continues.
+    pub cursor: ChangeCursor,
+    /// More pages are ready now: call again with `cursor`.
+    pub more: bool,
+}
+
+/// `Provider::changes` refused (find it with `anyhow::Error::downcast_ref`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FeedError {
+    /// No change feed here: walk the tree to find changes.
+    #[error("this location has no change feed")]
+    Unsupported,
+    /// The service no longer accepts the cursor (too old, or reset): walk the tree, then
+    /// start again with a new cursor.
+    #[error("the change cursor is no longer valid")]
+    CursorRejected,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
     pub write: bool,
@@ -130,6 +173,21 @@ pub trait Provider: Send + Sync {
     /// wrapper must forward it, or a trash-backed provider reads as permanent.
     fn remove_kind(&self) -> RemoveKind;
     fn local_copy(&self, p: &VPath) -> Result<PathBuf>;
+    /// What changed in the account since `cursor` (paths anywhere in it; the caller keeps
+    /// what is under its folder). `None`: no changes, only a cursor for "now", to pass
+    /// back later. Blocks on the network: workers only. Fails with `FeedError` when there
+    /// is no feed or the cursor was refused; other errors are worth a retry with the same
+    /// cursor.
+    fn changes(&self, cursor: Option<ChangeCursor>) -> Result<ChangeFeed> {
+        let _ = cursor;
+        Err(FeedError::Unsupported.into())
+    }
+    /// A folder's modified time changes whenever an entry is added to it, removed from it
+    /// or renamed in it (POSIX servers over SFTP), so an indexer can list only the folders
+    /// whose time moved. Changes inside a file do not move its folder's time.
+    fn folder_times_track_entries(&self) -> bool {
+        false
+    }
     /// The account's storage use, where the service reports it (cloud accounts). Blocks
     /// on the network: workers only. None: unknown (no such thing here, or the request
     /// failed).

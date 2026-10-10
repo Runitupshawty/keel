@@ -22,7 +22,7 @@ pub(super) fn api_base(kind: CloudKind) -> &'static str {
     }
 }
 
-fn http_error(p: &VPath, status: u16) -> anyhow::Error {
+pub(super) fn http_error(p: &VPath, status: u16) -> anyhow::Error {
     let kind = match status {
         401 | 403 => io::ErrorKind::PermissionDenied,
         404 => io::ErrorKind::NotFound,
@@ -31,7 +31,7 @@ fn http_error(p: &VPath, status: u16) -> anyhow::Error {
     io::Error::new(kind, format!("{}: cloud HTTP {status}", p.display())).into()
 }
 /// The body of a 2xx answer.
-fn ok(p: &VPath, (status, body): (u16, Value)) -> Result<Value> {
+pub(super) fn ok(p: &VPath, (status, body): (u16, Value)) -> Result<Value> {
     match status {
         200..=299 => Ok(body),
         s => Err(http_error(p, s)),
@@ -50,7 +50,7 @@ fn drive_quote(name: &str) -> String {
 
 impl Core {
     /// `p` below the account's root folder, as the service names it: `/a/b`, or `/`.
-    fn service_path(&self, p: &VPath) -> String {
+    pub(super) fn service_path(&self, p: &VPath) -> String {
         let parts: Vec<&str> = (self.account.root.as_deref().unwrap_or("").split('/'))
             .chain(p.path.split('/'))
             .filter(|s| !s.is_empty())
@@ -61,7 +61,12 @@ impl Core {
     /// One request to the service's own API with the bearer token: refreshes an expiring
     /// token first and once on HTTP 401, and retries 429 / 5xx / unanswered requests with
     /// `backoff`. Returns the status and the JSON body (Null when it is none).
-    fn api(&self, p: &VPath, post: Option<&Value>, path_and_query: &str) -> Result<(u16, Value)> {
+    pub(super) fn api(
+        &self,
+        p: &VPath,
+        post: Option<&Value>,
+        path_and_query: &str,
+    ) -> Result<(u16, Value)> {
         let oauth = self
             .oauth
             .as_ref()
@@ -168,7 +173,7 @@ impl Core {
 
     /// Drive's id for `p`, one lookup per folder from the top (the first of two items
     /// with one name, like listings).
-    fn drive_id(&self, p: &VPath) -> Result<String> {
+    pub(super) fn drive_id(&self, p: &VPath) -> Result<String> {
         let mut id = "root".to_owned();
         for name in self.service_path(p).split('/').filter(|s| !s.is_empty()) {
             let q = format!(
