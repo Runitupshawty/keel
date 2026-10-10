@@ -1,135 +1,147 @@
-//! Crash log (`<cache dir>/crash.log`) and the "Keel hit a bug" dialog shown when a
-//! frame panics (the app catches it in `App::update` and keeps running).
+//! The crash report dialog. Reports are written by `keel_api::crash` (a panic on any thread
+//! writes `<data dir>/crashes/<time>.txt`, scrubbed of user paths and names). The dialog
+//! comes up at start for a crash file not offered yet, and when a frame panicked (the app
+//! catches it in `App::update`, resets the panes and keeps running).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
 
-/// Panics logged in full per run; the next one leaves a single "suppressed" line.
-const MAX_LOGGED: usize = 5;
-/// At startup a larger crash.log is cut to its newest MiB.
-const MAX_LOG_BYTES: usize = 1024 * 1024;
+/// GitHub's new-issue page; the dialog fills in the title, a template and the version.
+const NEW_ISSUE: &str = "https://github.com/Runitupshawty/keel/issues/new";
 
-/// Serialises appends: entries from panicking threads never interleave.
-static WRITE: Mutex<()> = Mutex::new(());
-/// The newest entry (for the dialog's Copy button; no file read on the UI thread).
-static LAST: Mutex<String> = Mutex::new(String::new());
-static PANICS: AtomicUsize = AtomicUsize::new(0);
-
-pub fn log_path() -> Option<PathBuf> {
-    crate::settings::cache_dir().map(|d| d.join("crash.log"))
+/// Installs the crash report hook. Called once from `main` before the window opens.
+pub fn install_panic_hook() {
+    keel_api::crash::install_panic_hook("keel", crate::profiles::current, dir());
 }
 
-/// Trims an oversized crash.log, then appends every panic (UI or worker thread) to it and
-/// runs the default hook. Called once from `main` before the window opens.
-pub fn install_panic_hook() {
-    let path = log_path();
-    if let Some(p) = &path {
-        if let Err(e) = trim(p, MAX_LOG_BYTES) {
-            tracing::warn!("trim {}: {e}", p.display());
+/// `<data dir>/crashes` (`KEEL_DATA_DIR` moves it; a temp folder in tests).
+pub fn dir() -> Option<PathBuf> {
+    crate::settings::data_dir().map(|d| d.join("crashes"))
+}
+
+/// What the dialog shows.
+#[derive(Debug, PartialEq)]
+pub struct Prompt {
+    pub title: &'static str,
+    /// None when the report could not be written.
+    pub file: Option<PathBuf>,
+    /// The scrubbed report.
+    pub text: String,
+}
+
+impl Prompt {
+    /// The newest crash file in `dir` when it was not offered before (each file once), and
+    /// `ask` ("Don't ask again" was not chosen).
+    pub fn at_start(dir: &Path, ask: bool) -> Option<Self> {
+        let file = keel_api::crash::unseen(dir).filter(|_| ask)?;
+        keel_api::crash::mark_seen(dir, &file);
+        let text = std::fs::read_to_string(&file)
+            .map_err(|e| tracing::warn!("{}: {e}", file.display()))
+            .ok()?;
+        Some(Self {
+            title: "Keel crashed last time",
+            file: Some(file),
+            text,
+        })
+    }
+
+    /// After a frame panicked: this run's report (offered now, so not again at start).
+    pub fn this_run() -> Self {
+        let (file, text) = keel_api::crash::last()
+            .unwrap_or_else(|| (None, "No crash report could be written.".to_owned()));
+        if let Some((file, dir)) = file.as_deref().and_then(|f| Some((f, f.parent()?))) {
+            keel_api::crash::mark_seen(dir, file);
+        }
+        Self {
+            title: "Keel hit a bug and reset the panes",
+            file,
+            text,
         }
     }
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let entry = entry(info);
-        *LAST.lock().unwrap_or_else(PoisonError::into_inner) = entry.clone();
-        let n = PANICS.fetch_add(1, Ordering::Relaxed);
-        let text = match n {
-            n if n < MAX_LOGGED => entry,
-            MAX_LOGGED => format!("=== {} further panics this run are not logged\n\n", now()),
-            _ => return,
-        };
-        if let Some(path) = &path {
-            if let Err(e) = append(path, &text) {
-                eprintln!("could not write {}: {e}", path.display());
-            }
-        }
-        default(info);
-    }));
 }
 
-fn now() -> String {
-    chrono::Local::now()
-        .format("%Y-%m-%d %H:%M:%S%.3f %z")
-        .to_string()
-}
-
-/// One log entry. Release builds are stripped, so the backtrace has no symbols there:
-/// the panic location goes on the first line.
-fn entry(info: &std::panic::PanicHookInfo) -> String {
-    let location = info
-        .location()
-        .map_or_else(|| "unknown location".to_owned(), ToString::to_string);
-    let message = info
-        .payload()
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("(no message)");
+/// The new-issue page with a title, the bug template and `version` filled in: nothing
+/// from the report (the user pastes it after reading it).
+pub fn issue_url(version: &str) -> String {
+    let body = format!(
+        "## What happened\n\n\n## Steps to reproduce\n\n1.\n\n## Keel version\n\n{version}\n\n\
+         ## Crash report\n\n<!-- Paste the report from \"Copy for a bug report\" here. -->\n"
+    );
     format!(
-        "=== {} Keel {} panic at {location} on thread '{}'\n{message}\n{}\n\n",
-        now(),
-        env!("CARGO_PKG_VERSION"),
-        std::thread::current().name().unwrap_or("unnamed"),
-        std::backtrace::Backtrace::force_capture(),
+        "{NEW_ISSUE}?labels=bug&title={}&body={}",
+        encode("[Crash] "),
+        encode(&body)
     )
 }
 
-/// Appends `text` with one write under a process-wide lock.
-fn append(path: &Path, text: &str) -> std::io::Result<()> {
-    let _guard = WRITE.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?
-        .write_all(text.as_bytes())
+/// Percent-encodes everything but RFC 3986's unreserved characters.
+fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
-/// Keeps the newest `max` bytes of the log, starting at an entry boundary.
-fn trim(path: &Path, max: usize) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > max as u64 => {}
-        _ => return Ok(()),
+fn open(target: impl AsRef<std::ffi::OsStr>) {
+    if let Err(e) = open::that_detached(target.as_ref()) {
+        tracing::warn!("open {}: {e}", target.as_ref().to_string_lossy());
     }
-    let bytes = std::fs::read(path)?;
-    let tail = &bytes[bytes.len().saturating_sub(max)..];
-    let start = tail
-        .windows(4)
-        .position(|w| w == b"\n===")
-        .map_or(0, |i| i + 1);
-    crate::settings::write_atomic(path, &tail[start..]).map_err(std::io::Error::other)
 }
 
-/// The modal shown after a frame panicked. `open` goes false when dismissed.
-pub fn modal(ctx: &egui::Context, open: &mut bool) {
-    let path = log_path().map_or_else(|| "crash.log".to_owned(), |p| p.display().to_string());
+/// The dialog while `prompt` is Some; it goes None when closed. "Don't ask again" clears
+/// `ask` (Settings → General → Crash reports turns it back on).
+pub fn modal(ctx: &egui::Context, prompt: &mut Option<Prompt>, ask: &mut bool) {
+    let Some(p) = prompt.as_ref() else {
+        return;
+    };
+    let mut close = false;
     let r = egui::Modal::new(egui::Id::new("keel-crash")).show(ctx, |ui| {
-        ui.set_max_width(460.0);
-        ui.label(format!(
-            "Keel hit a bug and reset the panes. Details were written to {path}."
-        ));
+        ui.set_max_width(480.0);
+        ui.heading(p.title);
+        ui.label(
+            "A report was saved on this computer. It has the Keel version, the system, where \
+             the error happened and the last log lines, without your user name or the \
+             folders in your home folder. Nothing is sent unless you send it.",
+        );
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            if let Some(file) = &p.file {
+                if ui
+                    .button("Show report")
+                    .on_hover_text(file.display().to_string())
+                    .clicked()
+                {
+                    open(file);
+                }
+            }
+            if ui.button("Copy for a bug report").clicked() {
+                ui.ctx().copy_text(p.text.clone());
+            }
             if ui
-                .button("Copy")
-                .on_hover_text("Copy the crash report")
+                .button("Open an issue")
+                .on_hover_text("GitHub's new-issue page with the Keel version filled in")
                 .clicked()
             {
-                let last = LAST.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                ui.ctx()
-                    .copy_text(if last.is_empty() { path.clone() } else { last });
+                open(issue_url(env!("CARGO_PKG_VERSION")));
             }
-            if ui.button("OK").clicked() {
-                *open = false;
+            if ui
+                .button("Don't ask again")
+                .on_hover_text("No dialog at start for later crashes")
+                .clicked()
+            {
+                *ask = false;
+                close = true;
+            }
+            if ui.button("Close").clicked() {
+                close = true;
             }
         });
     });
-    if r.should_close() {
-        *open = false;
+    if close || r.should_close() {
+        *prompt = None;
     }
 }
 
@@ -137,57 +149,33 @@ pub fn modal(ctx: &egui::Context, open: &mut bool) {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("keel-{name}-{}.log", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        path
+    #[test]
+    fn the_start_dialog_offers_each_crash_file_once() {
+        let dir = std::env::temp_dir().join(format!("keel-crash-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(Prompt::at_start(&dir, true), None, "no crashes");
+        let file = keel_api::crash::write(&dir, "report one").unwrap();
+        assert_eq!(Prompt::at_start(&dir, false), None, "don't ask again");
+        let p = Prompt::at_start(&dir, true).expect("a new crash file");
+        assert_eq!(p.file.as_deref(), Some(file.as_path()));
+        assert_eq!(p.text, "report one");
+        assert_eq!(Prompt::at_start(&dir, true), None, "once per file");
+        keel_api::crash::write(&dir, "report two").unwrap();
+        assert_eq!(Prompt::at_start(&dir, true).unwrap().text, "report two");
+        assert_eq!(Prompt::at_start(&dir, true), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn concurrent_appends_never_interleave() {
-        let path = tmp("crash-append");
-        let threads: Vec<_> = (0..8)
-            .map(|t| {
-                let path = path.clone();
-                std::thread::spawn(move || {
-                    for i in 0..50 {
-                        let body = format!("{t:02}{i:02}|").repeat(200);
-                        append(&path, &format!("=== start\n{body}\nend\n")).unwrap();
-                    }
-                })
-            })
-            .collect();
-        for t in threads {
-            t.join().unwrap();
+    fn the_issue_url_has_the_version_and_no_path() {
+        let url = issue_url("0.16.0");
+        assert!(url.starts_with("https://github.com/Runitupshawty/keel/issues/new?"));
+        assert!(url.contains("0.16.0"), "{url}");
+        assert!(url.contains("title=%5BCrash%5D%20"), "{url}");
+        let query = &url[url.find('?').unwrap()..];
+        for bad in ["/", "\\", "%2F", "%5C", "~", "Users", "home"] {
+            assert!(!query.contains(bad), "{bad} in {query}");
         }
-        let log = std::fs::read_to_string(&path).unwrap();
-        let entries: Vec<&str> = log.split("=== start\n").skip(1).collect();
-        assert_eq!(entries.len(), 400);
-        for e in entries {
-            let body = e.strip_suffix("\nend\n").expect("whole entry");
-            assert_eq!(body, body[..5].repeat(200), "interleaved entry");
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn trim_keeps_the_newest_whole_entries() {
-        let path = tmp("crash-trim");
-        let log: String = (0..100)
-            .map(|i| format!("=== entry {i}\nxxxxxxxxxx\n"))
-            .collect();
-        std::fs::write(&path, &log).unwrap();
-        trim(&path, 200).unwrap();
-        let kept = std::fs::read_to_string(&path).unwrap();
-        assert!(kept.len() <= 200);
-        assert!(kept.starts_with("=== entry"), "{kept}");
-        assert!(log.ends_with(&kept));
-        trim(&path, 10_000).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            kept,
-            "small log untouched"
-        );
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(encode("a b/ü"), "a%20b%2F%C3%BC");
     }
 }

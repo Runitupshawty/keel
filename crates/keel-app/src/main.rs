@@ -40,6 +40,7 @@ mod term_pane;
 mod theme;
 mod toast;
 mod trash_ui;
+mod update;
 mod video_player;
 mod view_columns;
 mod view_details;
@@ -86,8 +87,14 @@ fn main() -> eframe::Result<()> {
         std::process::exit(commands::run(cmd, &cli::profile(), cli.json));
     }
     // --- end Task 37 ---
+    if cli.check_update {
+        #[cfg(windows)]
+        keel_vfs::desktop::attach_parent_console();
+        std::process::exit(update::cli());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
+        .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();
     // --- Task 24 ---

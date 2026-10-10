@@ -30,6 +30,9 @@ keel-mount = { path = "../keel-mount" }
 schemars = "1.2"
 async-trait = "0.1"
 interprocess = "2.4.4"
+# Crash reports (`crash`): scrubbing patterns, file time stamps (both already in the tree).
+regex.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # The daemon socket: the user's uid for the socket folder and peer checks.
 [target.'cfg(unix)'.dependencies]

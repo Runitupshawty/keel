@@ -259,10 +259,10 @@ Everything the library can do is also a typed operation that `keel-daemon` serve
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
 | Settings (`config.toml` per profile), themes, icon themes, daemon token | `%APPDATA%\Keel` | `~/Library/Application Support/Keel` | `~/.config/keel` |
-| Open tabs (`session.json`), `crash.log`, search index, thumbnails | `%LOCALAPPDATA%\Keel` | `~/Library/Caches/Keel` | `~/.cache/keel` |
-| Library (`library/<name>/`), paired devices and shares | `%LOCALAPPDATA%\Keel` | `~/Library/Application Support/Keel` | `~/.local/share/keel` |
+| Open tabs (`session.json`), search index, thumbnails | `%LOCALAPPDATA%\Keel` | `~/Library/Caches/Keel` | `~/.cache/keel` |
+| Library (`library/<name>/`), paired devices and shares, crash reports (`crashes/`) | `%LOCALAPPDATA%\Keel` | `~/Library/Application Support/Keel` | `~/.local/share/keel` |
 
-A profile's settings are in `profiles/<name>/config.toml` inside the settings folder. `KEEL_CONFIG_DIR` puts settings, open tabs and `crash.log` in another folder, `KEEL_DATA_DIR` the library. Passwords, key passphrases, cloud tokens and the device identity are kept in the system keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in these folders. The window's size and position are saved by the windowing library in its own `app.ron`.
+A profile's settings are in `profiles/<name>/config.toml` inside the settings folder. `KEEL_CONFIG_DIR` puts settings and open tabs in another folder, `KEEL_DATA_DIR` the library and crash reports. Passwords, key passphrases, cloud tokens and the device identity are kept in the system keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in these folders. The window's size and position are saved by the windowing library in its own `app.ron`.
 
 **Starting over.** Close Keel and stop the daemon (`keel daemon stop`) first. Deleting or renaming the settings folder resets all settings, remotes and cloud accounts (their secrets stay in the keychain until you remove them there); deleting the cache folder forgets open tabs, thumbnails and the search index, which are rebuilt. Deleting the library folder removes the index, tags and favorites, never your files. A `config.toml` or `session.json` that Keel cannot read is set aside as `config.toml.bad` or `session.json.bad` and Keel starts with defaults.
 
@@ -282,8 +282,12 @@ A profile's settings are in `profiles/<name>/config.toml` inside the settings fo
 
 **PDFs show no preview.** pdfium must sit next to the `keel` program; it is in every release archive. When you build from source run `scripts/fetch-deps` first.
 
-**Something else.** A bug inside the window is written to `crash.log` in the cache folder and Keel keeps running; attach that file to a bug report. Known limitations of each release are listed in [CHANGELOG.md](../CHANGELOG.md).
+**Is there a newer Keel?** Run `keel --check-update`, or turn on Settings → General → **Check for updates** for a daily check (one request to GitHub that sends only the Keel version; see [Updates](../README.md#updates)). To update, run the install command again; on Windows the banner's **Install** does that for you. Nothing shows up while you are offline or GitHub limits requests; Keel tries again the next day.
+
+**Keel crashed, or said "Keel hit a bug".** The report is in `crashes/` in the data folder (table above), one file per crash, the newest ten kept; keel-daemon writes there too and logs the file. At the next start Keel offers a new report once: **Show report** opens the file, **Copy for a bug report** copies it, **Open an issue** opens a new GitHub issue with the Keel version filled in (paste the report there), **Don't ask again** stops the offer (Settings → General → **Crash reports** brings it back). The report has the Keel version, the system, the panic message and where it happened, a backtrace and the last 50 log lines; your home folder is shown as `~`, user names, remote host names and network servers are replaced, and nothing is sent unless you send it. Read it before you post it.
+
+**Something else.** Known limitations of each release are listed in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Getting help and contributing
 
-Questions and bug reports go to the [issue tracker](https://github.com/Runitupshawty/keel/issues); include your system, the Keel version (`keel --version`) and, for a crash, `crash.log`. Pull requests are welcome: [CONTRIBUTING.md](../CONTRIBUTING.md) explains the checks to run, and how to rebuild the screenshots in this guide.
+Questions and bug reports go to the [issue tracker](https://github.com/Runitupshawty/keel/issues); include your system, the Keel version (`keel --version`) and, for a crash, the report from `crashes/` (**Copy for a bug report** in the dialog copies it). Pull requests are welcome: [CONTRIBUTING.md](../CONTRIBUTING.md) explains the checks to run, and how to rebuild the screenshots in this guide.

@@ -437,7 +437,6 @@ pub fn https_get(
     max: u64,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<Vec<u8>> {
-    use std::io::Read;
     anyhow::ensure!(url.starts_with("https://"), "not an HTTPS address: {url}");
     init()?;
     let client = reqwest::blocking::Client::builder()
@@ -447,7 +446,41 @@ pub fn https_get(
         .user_agent(concat!("Keel/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("HTTP client unavailable")?;
-    let mut resp = client.get(url).send()?.error_for_status()?;
+    let resp = client.get(url).send()?.error_for_status()?;
+    read_capped(resp, max, progress)
+}
+
+/// GET `url` sending no request headers beyond `User-Agent: <agent>` and reqwest's
+/// `Accept: */*` (no cookies, no credentials); the body of a 2xx answer, at most `max`
+/// bytes. For the update check. HTTPS only, except plain HTTP to `127.0.0.1` (tests' local
+/// servers). Blocking: call it on a worker thread.
+pub fn get_small(url: &str, agent: &str, max: u64) -> Result<Vec<u8>> {
+    let loopback = url.starts_with("http://127.0.0.1:");
+    anyhow::ensure!(
+        loopback || url.starts_with("https://"),
+        "not an HTTPS address: {url}"
+    );
+    init()?;
+    let mut client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .https_only(!loopback)
+        .user_agent(agent);
+    if loopback {
+        client = client.no_proxy();
+    }
+    let client = client.build().context("HTTP client unavailable")?;
+    let resp = client.get(url).send()?.error_for_status()?;
+    read_capped(resp, max, &mut |_, _| {})
+}
+
+/// The body of `resp`, failing once it passes `max` bytes.
+fn read_capped(
+    mut resp: reqwest::blocking::Response,
+    max: u64,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Vec<u8>> {
+    use std::io::Read;
     let total = resp.content_length();
     let too_big = || anyhow::anyhow!("the download is larger than {} MB", max >> 20);
     if total.is_some_and(|t| t > max) {

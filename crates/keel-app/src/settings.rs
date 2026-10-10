@@ -66,6 +66,10 @@ pub struct Settings {
     pub archive: ArchiveSettings,
     /// `[open_with.recent]`: apps used with "Open with…", per extension.
     pub open_with: OpenWith,
+    /// `[updates]`: the opt-in update check (`update`).
+    pub updates: crate::update::UpdateSettings,
+    /// Offer a new crash report at start (`crash`; off after "Don't ask again").
+    pub crash_prompt: bool,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -195,6 +199,8 @@ impl Default for Settings {
             devices: Default::default(),
             archive: Default::default(),
             open_with: Default::default(),
+            updates: Default::default(),
+            crash_prompt: true,
         }
     }
 }
@@ -216,7 +222,7 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(base.config_dir().join(app_dir()))
 }
 
-/// Where session.json and crash.log live: `KEEL_CONFIG_DIR` too when set (one folder for a
+/// Where session.json lives: `KEEL_CONFIG_DIR` too when set (one folder for a
 /// portable or test setup), else `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel`,
 /// `~/.cache/keel` (spec 2.9). eframe keeps its own window state (`app.ron`) in its
 /// storage folder; `KEEL_CONFIG_DIR` does not move that.
@@ -646,6 +652,18 @@ pub fn window(
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
                     ui.end_row();
+                    ui.label("Updates");
+                    ui.checkbox(&mut s.updates.check, "Check for updates")
+                        .on_hover_text(
+                            "Once a day, ask GitHub for the latest release (sends only the Keel version)",
+                        );
+                    ui.end_row();
+                    ui.label("Crash reports");
+                    ui.checkbox(&mut s.crash_prompt, "Offer at start")
+                        .on_hover_text(
+                            "After a crash, show the saved report the next time Keel starts",
+                        );
+                    ui.end_row();
                     if cfg!(windows) {
                         ui.label("Search index");
                         crate::index_ui::full_index_button(ui, searcher, tx);
@@ -806,7 +824,7 @@ label = "nas"
         assert_eq!(loaded.theme, "light");
         assert!(notice.unwrap().contains("\"Old\""));
         assert!(path.with_file_name("config.toml.bad").exists());
-        // session.json and crash.log follow KEEL_CONFIG_DIR.
+        // session.json follows KEEL_CONFIG_DIR.
         assert_eq!(super::cache_dir(), Some(dir.clone()));
         std::env::remove_var("KEEL_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);

@@ -66,6 +66,8 @@ pub struct App {
     persist: Option<Persist>,
     /// A frame panicked: the crash dialog is up.
     pub crashed: bool,
+    /// The crash report dialog (`crash`), while up.
+    report: Option<crate::crash::Prompt>,
     /// False after a crash reset the panes: the saved session keeps the tabs from before.
     pub save_session: bool,
     /// The session (without its stash) and stash version handed to `persist` last.
@@ -76,6 +78,8 @@ pub struct App {
     drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
     hotkey: Option<crate::hotkey::Hotkey>,
+    /// The opt-in update check and its banner (off in tests: no persist).
+    updates: Option<crate::update::Updates>,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -130,17 +134,35 @@ impl App {
             state.library.open(&name, state.router.clone(), via);
         }
         // --- end Task 24 ---
+        // Not in tests either: the question changes a setting, the check goes online.
+        let updates = persist.is_some().then(|| {
+            if crate::update::ask_once(&mut state.settings.updates) {
+                state.toasts.ask(
+                    "Check for Keel updates once a day? Only the Keel version is sent, to GitHub.",
+                    "Turn on",
+                    Action::EnableUpdateCheck,
+                    "Not now",
+                );
+            }
+            crate::update::Updates::default()
+        });
+        // A crash file from an earlier run (not in tests).
+        let report = crate::crash::dir()
+            .filter(|_| persist.is_some())
+            .and_then(|d| crate::crash::Prompt::at_start(&d, state.settings.crash_prompt));
         Self {
             state,
             split: 0.5,
             pending_drop: None,
             persist,
             crashed: false,
+            report,
             save_session: true,
             seen_session: None,
             seen_widths: (None, None),
             drag_out: Default::default(),
             hotkey,
+            updates,
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -170,7 +192,7 @@ impl App {
         })
     }
 
-    /// A frame panicked (the hook wrote crash.log): drop popups, reset both panes to one
+    /// A frame panicked (the hook wrote a crash report): drop popups, reset both panes to one
     /// home tab and clear the preview, once. While the dialog is up a panic that repeats
     /// every frame changes nothing more. The reset tabs are never saved as the session.
     fn recover(&mut self) {
@@ -178,6 +200,7 @@ impl App {
             return;
         }
         self.crashed = true;
+        self.report = Some(crate::crash::Prompt::this_run());
         self.save_session = false;
         self.pending_drop = None;
         let s = &mut self.state;
@@ -223,6 +246,10 @@ impl App {
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
+        if let Some(updates) = &mut self.updates {
+            updates.tick(&mut s.settings.updates, ctx);
+            updates.banner(ctx, &mut s.settings.updates);
+        }
         // --- Task 23 ---
         if let Some(action) = crate::dropzone::panel(ctx, s) {
             out.push((s.active, action));
@@ -470,8 +497,9 @@ impl eframe::App for App {
         if frame.is_err() {
             self.recover();
         }
-        if self.crashed {
-            crate::crash::modal(ctx, &mut self.crashed);
+        crate::crash::modal(ctx, &mut self.report, &mut self.state.settings.crash_prompt);
+        if self.report.is_none() {
+            self.crashed = false;
         }
         if self.persist.is_some() {
             let session = self.changed_session();
@@ -971,9 +999,11 @@ mod tests {
         harness.state_mut().panic_next_frame = true;
         harness.step();
         assert_eq!(harness.state().state.panes[0].tabs.len(), 2);
-        // Later frames run normally; OK dismisses the dialog.
+        // Later frames run normally; Close dismisses the dialog.
         harness.run_steps(3);
-        egui_kittest::kittest::Queryable::get_by_label(&harness, "OK").click();
+        let report = harness.state().report.as_ref().expect("report dialog");
+        assert_eq!(report.title, "Keel hit a bug and reset the panes");
+        egui_kittest::kittest::Queryable::get_by_label(&harness, "Close").click();
         harness.run_steps(2);
         assert!(!harness.state().crashed);
 

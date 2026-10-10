@@ -1724,6 +1724,11 @@ impl AppState {
                     );
                 });
             }
+            Action::EnableUpdateCheck => {
+                self.settings.updates.check = true;
+                self.toasts
+                    .info("Keel checks for updates once a day (Settings → General)");
+            }
             Action::UndoBulkRename => {
                 let steps = std::mem::take(&mut self.bulk_undo);
                 if steps.is_empty() {
