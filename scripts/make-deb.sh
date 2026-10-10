@@ -10,9 +10,10 @@ ver="${tag#v}"; ver="${ver/-/'~'}"
 root="$(mktemp -d)"; trap 'rm -rf "$root"' EXIT
 install -d "$root/DEBIAN" "$root/usr/lib/keel" "$root/usr/bin" "$root/usr/share/applications" \
   "$root/usr/share/icons/hicolor/256x256/apps" "$root/usr/share/doc/keel"
-install -m 755 "$src/keel" "$src/libpdfium.so" "$root/usr/lib/keel/"
+install -m 755 "$src/keel" "$src/keel-daemon" "$src/libpdfium.so" "$root/usr/lib/keel/"
 cp -R "$src/licenses" "$root/usr/lib/keel/licenses"
 printf '#!/bin/sh\nexec /usr/lib/keel/keel "$@"\n' > "$root/usr/bin/keel"; chmod 755 "$root/usr/bin/keel"
+printf '#!/bin/sh\nexec /usr/lib/keel/keel-daemon "$@"\n' > "$root/usr/bin/keel-daemon"; chmod 755 "$root/usr/bin/keel-daemon"
 install -m 644 "$src/keel.desktop" "$root/usr/share/applications/keel.desktop"
 install -m 644 "$src/keel.png" "$root/usr/share/icons/hicolor/256x256/apps/keel.png"
 install -m 644 "$src/LICENSE-MIT" "$src/LICENSE-APACHE" "$src/THIRD_PARTY.md" "$src/CHANGELOG.md" "$root/usr/share/doc/keel/"

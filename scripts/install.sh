@@ -9,6 +9,7 @@ set -euo pipefail
 REPO=Runitupshawty/keel
 share="$HOME/.local/share/keel"
 bin="$HOME/.local/bin/keel"
+dbin="$HOME/.local/bin/keel-daemon"
 desktop="$HOME/.local/share/applications/keel.desktop"
 icon="$HOME/.local/share/icons/hicolor/256x256/apps/keel.png"
 app="$HOME/Applications/Keel.app"
@@ -24,7 +25,7 @@ done
 
 if [ "$uninstall" = 1 ]; then
   pkill -f "$share/keel" 2>/dev/null || true
-  rm -rf "$share" "$app" "$bin" "$desktop" "$icon"
+  rm -rf "$share" "$app" "$bin" "$dbin" "$desktop" "$icon"
   echo "Keel removed. Your settings and library index are kept."
   exit 0
 fi
@@ -70,11 +71,13 @@ fi
 mkdir "$tmp/x" && tar xzf "$tmp/$name" -C "$tmp/x"
 src="$(find "$tmp/x" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 [ -f "$src/keel" ] || { echo "the archive does not contain keel" >&2; exit 1; }
+[ -f "$src/keel-daemon" ] || { echo "the archive does not contain keel-daemon" >&2; exit 1; }
 
 rm -rf "$share"; mkdir -p "$share" "$(dirname "$bin")"
 cp -R "$src/." "$share/"
-chmod +x "$share/keel"
+chmod +x "$share/keel" "$share/keel-daemon"
 ln -sf "$share/keel" "$bin"
+ln -sf "$share/keel-daemon" "$dbin"
 
 case "$plat" in
   linux-*)

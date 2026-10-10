@@ -659,7 +659,10 @@ fn mcp(cfg: &HostConfig, allow_execute: bool) -> i32 {
 }
 
 fn daemon_exe() -> Option<std::path::PathBuf> {
+    // The installers link ~/.local/bin/keel to the install folder: resolve the link so the
+    // daemon is looked for next to the real binary.
     let exe = std::env::current_exe().ok()?;
+    let exe = exe.canonicalize().unwrap_or(exe);
     let path = exe
         .parent()?
         .join(format!("keel-daemon{}", std::env::consts::EXE_SUFFIX));

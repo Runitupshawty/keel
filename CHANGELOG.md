@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-10-10
+
+### Fixed
+
+- The release packages (the Windows zip, the macOS and Linux tarballs and the .deb) now include `keel-daemon` next to `keel`, and the installers link or stop it like `keel`. Since 0.8.0 they shipped only `keel`, so from an installed build `keel daemon start`, Settings → Library → *Run the library in a background daemon*, mounts, the web client and phones failed with "keel-daemon was not found next to keel" unless Keel was built from source. `keel` also resolves its own path through the installer's symlink before looking for the daemon next to it.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added

@@ -37,7 +37,7 @@ $Lnk = Join-Path ([Environment]::GetFolderPath('Programs')) "$lnkName.lnk"
 $DesktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$lnkName.lnk"
 
 function Stop-Keel {
-  Get-Process keel -ErrorAction SilentlyContinue |
+  Get-Process keel, keel-daemon -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
     Stop-Process -Force
   Start-Sleep -Milliseconds 300
@@ -109,6 +109,7 @@ try {
   Expand-Archive $zipPath -DestinationPath (Join-Path $work 'x')
   $src = Get-ChildItem (Join-Path $work 'x') -Directory | Select-Object -First 1
   if (-not $src -or -not (Test-Path (Join-Path $src.FullName 'keel.exe'))) { throw 'The archive does not contain keel.exe.' }
+  if (-not (Test-Path (Join-Path $src.FullName 'keel-daemon.exe'))) { throw 'The archive does not contain keel-daemon.exe.' }
 
   Stop-Keel
   New-Item -ItemType Directory -Force $InstallDir | Out-Null

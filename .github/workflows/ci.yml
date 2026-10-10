@@ -155,7 +155,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -168,26 +168,34 @@ jobs:
         env:
           KEEL_PDFIUM_ASSET: ${{ matrix.pdfium }}
         run: bash scripts/fetch-deps.sh
+      # keel-daemon embeds the web client, so the bundle is built first (the wasm job's steps).
+      - name: wasm-bindgen-cli
+        shell: bash
+        run: cargo install --locked wasm-bindgen-cli --version "$(cargo pkgid wasm-bindgen | sed 's/.*@//')"
+      - name: Web client bundle
+        shell: bash
+        run: bash scripts/build-web.sh
       - name: Build release
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release --locked -p keel-app --target ${{ matrix.target }}
+        run: cargo build --release --locked -p keel-app -p keel-daemon --target ${{ matrix.target }}
       - name: Package release
         shell: bash
         run: |
           set -euo pipefail
           name="keel-${GITHUB_REF_NAME}-${{ matrix.name }}"
           bin="target/${{ matrix.target }}/release"
-          exe=keel; [ "$RUNNER_OS" = Windows ] && exe=keel.exe
+          exe=keel; daemon=keel-daemon
+          if [ "$RUNNER_OS" = Windows ]; then exe=keel.exe; daemon=keel-daemon.exe; fi
           mkdir -p "dist/$name"
-          # Every runtime library and its license notices must be present: fail otherwise.
-          for f in "$bin/$exe" $(printf 'target/deps/%s ' ${{ matrix.libs }}) target/deps/licenses/pdfium/LICENSE; do
+          # Both binaries, every runtime library and its license notices must be present: fail otherwise.
+          for f in "$bin/$exe" "$bin/$daemon" $(printf 'target/deps/%s ' ${{ matrix.libs }}) target/deps/licenses/pdfium/LICENSE; do
             [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
           done
           if [ "$RUNNER_OS" = Windows ] && [ -z "$(ls -A target/deps/licenses/everything 2>/dev/null)" ]; then
             echo "::error::missing Everything SDK license notice"; exit 1
           fi
-          cp "$bin/$exe" "dist/$name/"
+          cp "$bin/$exe" "$bin/$daemon" "dist/$name/"
           for lib in ${{ matrix.libs }}; do cp "target/deps/$lib" "dist/$name/"; done
           cp -R target/deps/licenses "dist/$name/licenses"
           cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md README.md CHANGELOG.md "dist/$name/"
