@@ -51,6 +51,8 @@ pub enum Dialog {
         apps: Vec<(String, String)>,
         remember: bool,
     },
+    /// Mount… on a library source (`mount_ui.rs`).
+    Mount(Box<crate::mount_ui::MountDialog>),
 }
 
 /// Shows the open dialog; closes it on an answer, Esc or a click outside.
@@ -74,6 +76,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         Action::ZipTo { .. } => "Add",
                         Action::PurgeTrash(_) => "Delete permanently",
                         Action::EmptyTrashNow => "Empty",
+                        Action::Mount(_) => "OK",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");
@@ -192,6 +195,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.add_space(8.0);
                 cancel |= ui.button("Close").clicked();
             }
+            Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::BulkRename(m) => {
                 if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
                     out = Some(Action::BulkRenameApply { renames });

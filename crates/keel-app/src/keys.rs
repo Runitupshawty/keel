@@ -194,6 +194,8 @@ pub enum Action {
     // --- Task 36 ---
     /// Devices sidebar, pair / shares dialogs, Spacedrop (`devices.rs`).
     Devices(crate::devices::DevCmd),
+    /// Mount… on a library source (`mount_ui.rs`).
+    Mount(crate::mount_ui::MountCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;

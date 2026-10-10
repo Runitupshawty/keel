@@ -530,6 +530,13 @@ pub fn context_menu(
         item(ui, "Cut", "Ctrl+X", Action::Cut);
     }
     item(ui, "Paste", "Ctrl+V", Action::Paste);
+    let folder = entry.map_or_else(
+        || Some(tab.dir.clone()),
+        |e| (e.kind == keel_vfs::Kind::Dir).then(|| e.path.clone()),
+    );
+    if let Some(a) = folder.and_then(|d| crate::mount_ui::folder_action(&d)) {
+        item(ui, "Mount this folder…", "", a);
+    }
     item(ui, "Copy path", "", Action::CopyPath);
     if on_item {
         ui.separator();

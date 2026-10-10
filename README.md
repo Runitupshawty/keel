@@ -444,15 +444,19 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 8 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP). In progress:
+Phases 1 to 9 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients: the web client and phone app, mounts, Share → Keel). In progress, as follow-ups to Phase 9:
 
-9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
+- The desktop app attaching to a running keel-daemon instead of opening the library itself (built, unreleased: see CHANGELOG).
+- A Mount… action in the sidebar (built, unreleased: see CHANGELOG).
+- A Playwright run of the web client in CI (built, unreleased: see CHANGELOG).
 
 Known limitations of each release are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
 Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Run `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace` before opening a pull request. CI also runs `cargo deny check` (licenses, advisories, banned crates, sources; policy in `deny.toml`; install with `cargo install cargo-deny --locked`). If it fails, first update the offending dependency; if that is not possible, add the minimum `deny.toml` entry (an `ignore` with the advisory id, or a license in `allow`) with a one-line reason and the crate that needs it, and mention it in the pull request.
+
+The web client also has a browser test (CI job `web-e2e`, not part of the required check): `tests/web-e2e` starts `keel-daemon --web` on a fixture library in a temp folder and drives the page with Playwright (Chromium only). To run it locally you need Node 22 or newer: `bash scripts/build-web.sh && cargo build -p keel-daemon`, then once `cd tests/web-e2e && npm install && npx playwright install chromium`, then `bash tests/web-e2e/run.sh` (`DAEMON=path` picks another keel-daemon). It uses a throwaway profile and port 7421, never your own Keel configuration; screenshots of each step land in `tests/web-e2e/out/`.
 
 ## License
 

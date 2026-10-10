@@ -20,6 +20,7 @@ mod library;
 mod library_ui;
 mod media;
 mod media_viewer;
+mod mount_ui;
 mod palette;
 mod pane;
 mod platform;
