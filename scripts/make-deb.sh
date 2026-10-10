@@ -27,7 +27,7 @@ Section: utils
 Priority: optional
 Installed-Size: $size
 Depends: libc6 (>= 2.35), libgtk-3-0, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libasound2 | libasound2t64
-Recommends: mesa-vulkan-drivers | libvulkan1, ffmpeg
+Recommends: mesa-vulkan-drivers | libvulkan1, ffmpeg, fuse3
 Homepage: https://github.com/Runitupshawty/keel
 Description: Fast cross-platform file manager
  Keel browses and manages local, remote and cloud files, with a library index,

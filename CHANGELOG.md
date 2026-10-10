@@ -2,6 +2,31 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- The Windows and Linux release builds of `keel-daemon` include a mount backend: WinFsp on Windows and FUSE on Linux (the zip, the tarball and the .deb, which now recommends `fuse3`). Install the driver ([WinFsp](https://winfsp.dev), or `sudo apt install fuse3`) and `keel mount`, Mount… in the sidebar and `mounts.add` work without building Keel yourself. The macOS builds still have none: macFUSE cannot be installed on the build machines, so build `keel-daemon` with `--features fuse` there. The Windows `keel-daemon.exe` links winfsp-rs and is distributed under the GPL-3.0 (license text in `licenses/winfsp-rs/COPYING`); `keel.exe` is built without it.
+- Mounts show the source's modified time on every file and folder (as the access and change time too; S3 folders and other entries without one take the library index's), the read-only attribute on the files of a read-only source (changes there fail with "read-only file system", `EROFS`), and while a file is being written its written length and the time of its last write.
+- `df` and the drive's properties show the free and total space of a mount's source: the local disk, the SFTP server's filesystem (through the `statvfs@openssh.com` extension OpenSSH has), or the cloud account's quota. keel-vfs: `Provider::space` and `Space` (by default from `Provider::quota`), and `MemoryProvider::space` for tests.
+- A file being written through a mount can be renamed or moved to another folder, and the folder holding it renamed: the write follows and is published under the new name when the program closes the file. A rename never replaces a file that is being written.
+- CI: a `mount` job builds `keel-daemon` with `fuse` (Linux) and `winfsp` (Windows) on every push, lints keel-mount with the backend, and on Linux runs its round trip through a real FUSE mount (`KEEL_FUSE_TEST=1`). The round trip now also checks times, sizes, free space, appends and renames while a file is written, and runs whenever `KEEL_MOUNT_TEST` or `KEEL_FUSE_TEST` is set (it was `#[ignore]`d).
+
+### Fixed
+
+- Release builds include a mount backend on Windows and Linux, which lifts the limitation, since mounts arrived in 0.9.0, that mounting needed a `keel-daemon` built from source (the roadmap's "release builds that include a mount backend"). A daemon with a backend but without its driver installed fails `mounts.add` (and its preview) with error -32008 and says what to install, instead of a generic error when mounting.
+- Mounts show the real modified times of the root folder and of files being written (the root showed 1970 and a file being written the time it was asked about), the read-only bit of read-only sources and the source volume's real free space, which lifts the mount limit listed since 0.9.0 that the free space shown for the drive was a placeholder, and the roadmap item on mount file times and attributes.
+- Renaming a file while it is written through a mount (an editor's save-as, `mv` of a file a download is still writing) no longer fails with "resource busy", which lifts the mount limit listed since 0.9.0 that a file being written could not be renamed until it was closed.
+- Mounts: a file written by a shell's `>` or by `dd of=` (which open the file, duplicate the descriptor and close the first one before writing) is no longer published empty at that first close, where other programs and listings saw an empty file until the writer finished: a close publishes only once something was written, and a file closed without any write is published when its last handle is released. Found on the first run of the FUSE backend on real Linux hardware.
+- Mounts (FUSE): the size the system caches for a file being written is its written length, so a second program's `stat` or `ls -l` can no longer reset it to the saved size and make the writer's next append (`>>`, `O_APPEND`) overwrite what it wrote last.
+
+### Known limitations
+
+- On Windows a folder holding a file being written through the mount cannot be renamed on a local source (Windows refuses to rename a folder with an open file in it); renaming the file itself works.
+- Renaming a file that is being created over an existing file replaces that file only when the new one is published; until then the existing file keeps its old content.
+- Where the free space cannot be told (a paired device, an SFTP server without `statvfs@openssh.com`, a cloud account without a quota), Linux and macOS show 0 and Windows a large placeholder; it is read at most every 10 seconds.
+- macOS release builds have no mount backend (build `keel-daemon` with `--features fuse` after installing macFUSE).
+
 ## [0.13.0] - 2026-10-10
 
 ### Added

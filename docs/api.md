@@ -171,8 +171,9 @@ unknown host key on any hop fails the connection. `ProxyCommand` is refused, nev
 Paths stay `sftp://<host id>/...`; no operation changed.
 
 Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
-command exits) and need a daemon built with a mount backend (`--features winfsp` on
-Windows, `--features fuse` on Linux and macOS; see the README's Mounts section);
+command exits) and need a daemon built with a mount backend (the Windows and Linux release
+builds have one; `--features winfsp` on Windows, `--features fuse` on Linux and macOS when
+building from source; see the README's Mounts section) and its driver installed;
 otherwise `mounts.add` fails with `MOUNTS_UNAVAILABLE` (-32008). The `mounts.add` preview checks the
 target is free and the source or subtree can be listed, and warns when the source is
 offline (`source_offline`: the mount then lists it from the index and cannot read or change files)
@@ -183,8 +184,12 @@ that does not exist yet (its parent must) is made when the mount runs, after the
 was confirmed, and removed again if mounting fails. While a file is written through a
 mount, only its writer sees the new content (other opens are busy, listings show the saved
 file); it is published when the writer closes it, and a failed publish keeps the data as
-`<name> (unsaved <date>).<ext>`. Mounts are unmounted when the daemon stops (writes still
-open are dropped).
+`<name> (unsaved <date>).<ext>`. A file being written can be renamed or moved, as can the
+folder holding it: the write is published under the new name. Files show the source's
+modified time and, on a read-only source, the read-only bit (writes fail with `EROFS`);
+the drive's free and total space are the source volume's where it can be told (local
+folders, SFTP servers with `statvfs@openssh.com`, cloud accounts with a quota). Mounts are
+unmounted when the daemon stops (writes still open are dropped).
 
 The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 `.result()` in Rust.
