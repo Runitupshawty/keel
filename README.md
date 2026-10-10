@@ -65,6 +65,12 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
 
+## Devices
+
+Pair your machines, share sources with them (read or read-write, revocable) and send files with Spacedrop. Devices are off until you turn them on in Settings → Devices; that creates this device's identity, kept in the OS keychain. An incoming drop asks first (names, count and size) unless you chose "Always accept from this device", and lands in `Downloads/Keel Drops` (`<data dir>/inbox` without a Downloads folder; Settings → Devices can change it). A device's folder added as a library source can be browsed and searched, but the content ids it reports are its word only: they never count as copies for delete warnings or duplicates. Forgetting a device ends its shares and removes its folders from the library.
+
+Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory instead of the keychain (tests and live checks; the device is new on every run and must pair again).
+
 ## Columns view and drop zone
 
 Switch a pane to **Columns** from the view buttons in the pane header. Column 0 is the tab's folder; selecting a folder lists it in the next column, and selecting a file shows its preview in the last one. Left/Right move between columns, Enter opens a folder, Up or Backspace step back one column, and the column dividers can be dragged (widths are saved). All file actions work on the column you are in.

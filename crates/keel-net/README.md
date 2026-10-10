@@ -124,9 +124,12 @@ Consequently a grant cannot be revoked (or resurrected) by a second process: all
 grant changes go through the one node that owns the directory, normally the
 daemon. Disk writes never hold the lock that request checks use.
 
-`events()` returns a new crossbeam subscription each time, capacity 256. Slow
-subscribers may lose events and should refresh `peers()` / `grants()`. Cloning a
-receiver shares its queue, as with any crossbeam receiver. `peers()[i].link`
+`events()` returns a new crossbeam subscription each time. `Paired` and
+`DropReceived` always arrive (the queue is unbounded for them); the other events
+describe state, are dropped while 256 events wait unread, and a slow subscriber
+should refresh `peers()` / `grants()`. `Request` is coalesced: the first request of
+each second per device. Cloning a receiver shares its queue, as with any crossbeam
+receiver. `peers()[i].link`
 reflects the held connection: `Lan` means a direct IP path (not necessarily the
 same LAN), `Relay` a relayed one. `PeerOnline` is emitted only when the link
 changes (Offline to online, or Relay/Lan switches) and `PeerOffline` only when
@@ -156,39 +159,66 @@ The requested Task 35 API is preserved, with these documented additions/details:
 `NodeProvider` is the `keel_vfs::Provider` for `node://<peer id>/<source id>/<path>`;
 register it with the router (`router.register`). It lives here, not in keel-vfs,
 because keel-net already depends on keel-vfs. A device's root lists the sources it
-granted; listings walk every page; writes buffer to an anonymous temp file and are
-pushed on `flush()` as one verified final piece; `caps` follow the grants devices
-reported; `remove` is permanent from the client's view (a library host trashes).
-Its calls block on the node's runtime, so call them off async tasks.
+granted; listings walk every page; writes buffer to an anonymous temp file (the OS
+deletes it with the handle; a big upload sits in the temp folder until `flush()`)
+and are pushed on `flush()` as one verified final piece; `local_copy` downloads into
+a `keel-node-*` temp folder, and folders a day old are swept when a provider is
+created; `caps` follow the grants devices reported; `remove` is permanent from the
+client's view (a library host trashes). Its calls block on the node's runtime, so
+call them off async tasks.
+
+A library source browsing a device (kind `Device`, root `node://`; `add_source`
+refuses either without the other) keeps the content ids its host lists apart, as
+claims (`remote_cas`): they show in a redundancy hover list flagged `claimed` but
+never count as copies for the LastCopy warning, the protection counters or the
+duplicate finder. A host lists only ids it confirmed and whose bytes did not drift.
 
 `LibraryHandler` serves a `keel_core::Library`: its non-device sources, lists and
 stats from the live provider, reads/writes/mkdir/rename/remove through the router.
-Each path must canonicalize to exactly `<canonical root>/<path>`, so a symlink or
-junction anywhere on the way is refused; writes re-check before publishing. Device
-writes go to local sources only. Every served request is appended to the library's
-op log as `net.<op>` with the peer id and label.
+Each path must canonicalize to exactly `<canonical root>/<path>` (compared exactly,
+so a link or junction anywhere on the way, a short name or a case variant of an
+existing name is refused; a listing shows the real names); writes re-check before
+publishing. A device source or a `node://` root is never served. Device writes go to
+local sources only. Every served request is appended to the library's op log as
+`net.<op>` with the peer id and label; a logger thread writes the entries in batches
+(the library database syncs every commit).
 
 ## Spacedrop
 
 `spacedrop::send(node, lib, peer, paths)` starts a durable keel-core job (kind
 `drop`; call `spacedrop::register(lib)` before `resume_all`). It walks folders, offers
 the file list (`Request::DropOffer`), and pushes each file in 4 MiB `Write` pieces to
-source `drop:<id>`. Before each file it asks `StatPartial` and resumes from the staged
-length, re-hashing the bytes it skips, so the final piece always carries the whole
-file's BLAKE3. A dropped link, or a closed and reopened sender node, is retried with
-backoff until nothing has moved for ten minutes; a decline, a changed source file or an
-unsendable name fails the job; cancelling it sends `DropCancel`.
+source `drop:<id>`. The offer is answered at once: `Ok`, `Denied`, or `Pending` while
+the receiving user decides; the job then polls `Request::DropStatus` (the receiver waits
+up to a quarter of its request timeout, at most 5 s, for the answer, one waiter per
+offer) and fails after ten minutes without one. Before each file it asks `StatPartial`
+and resumes from the staged length, re-hashing the bytes it skips, so the final piece
+always carries the whole file's BLAKE3; each sent file is logged as `net.drop-sent`
+(`JobCtx::log_op`). A dropped link, or a closed and reopened sender node, is retried
+with backoff until nothing has moved for ten minutes; a decline, a changed source file,
+an unsendable name or an offer too big for one request header (about 1 MiB of names)
+fails the job; cancelling it, or failing, sends `DropCancel`.
 
-The receiving node asks `Handler::drop_offer` (default: decline;
-`LibraryHandler::on_drop(inbox, ask)` asks once per drop id and answers re-offers
-from that decision). Only the accepted device may send pieces of that drop; grants
-are not involved. Offered names must pass the receiving host's path rules above
+The receiving node registers the offer, then hands it to `Handler::drop_offer`, which
+must not wait: it passes `IncomingDrop::reply` to whoever decides and names the inbox
+(default: decline; `LibraryHandler::on_drop(inbox, ask)`). An answer holds for that
+device, drop id and file list only: the same id with another list is asked again, and
+a completed, cancelled or forgotten drop forgets its answer. `DropCancel` withdraws a
+prompt still waiting (`DropReply::withdrawn`); staging is set up only when the sender
+polls an accepted offer, so an answer given after the sender left stages nothing.
+Only the accepted device may send pieces of that drop; grants are not involved. Offered names must pass the receiving host's path rules above
 (so a Windows receiver declines `CON.txt` or `a:b`), and every piece and status
-request rides the peer's one held connection. Pieces stage in `<inbox>/.keel-partial-<id>/` with a `meta.json`,
-so a restarted receiver resumes when the sender re-offers. Each file is verified and
-renamed into the inbox only when complete (`name (1).ext` instead of overwriting),
-emitting `NetEvent::DropReceived`; the staging folder goes when the drop is complete
-or cancelled.
+request rides the peer's one held connection. Pieces stage in
+`<inbox>/.keel-partial-<key>/` (`<key>` from the device and drop id; hidden on Windows
+too) with a `meta.json` written once on accept and a line per published file in
+`published`, so a restarted receiver resumes when the sender re-offers the same files.
+Each file is verified and moved into the inbox only when complete, with a no-replace
+rename (`name (1).ext` when the name is taken, also when two drops land one name at
+once), emitting `NetEvent::DropReceived` and logging `net.drop-received` (drop id,
+path, name saved as, size, BLAKE3) through `Handler::log`; the staging folder goes
+when the drop is complete or cancelled, or the device is forgotten. Staging that an
+earlier session left untouched for `spacedrop::STALE` (7 days) is swept when
+`on_drop` sets the inbox.
 
 iroh uses an explicit ring CryptoProvider, without touching the process default.
 This coexists with keel-vfs's graviola provider. The offline regression test

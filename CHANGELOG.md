@@ -2,6 +2,17 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Devices: a paired device's listing could claim any content id, so a decoy file hid the "last copy" warning for your only copy and showed as its duplicate. A device's ids are now kept apart as claims: listed in the copies hover, never counted as copies, never in Duplicates. A host no longer reports ids for files whose bytes drifted.
+- Spacedrop: an accepted drop id let the sender push a different file list later without asking. An answer now holds for one device, drop id and file list; completed, cancelled or forgotten drops forget it.
+- Spacedrop: unanswered offers held connection slots until answered, and accepting after the sender gave up left a staging folder behind. Offers are answered at once and the sender polls; a cancel withdraws the prompt; staging is created only for a sender still waiting, and stale staging is swept.
+- Spacedrop: transfers are now in the op log on both sides (`net.drop-sent`, `net.drop-received` per file).
+- Spacedrop: receiving many small files rewrote the drop's state after each one (quadratic); 2,000 files took about 38 s and now take about 3 s. Received files never replace an existing file, even when two drops land the same name at once; staging folders are hidden on Windows; an offer too big to send fails at once instead of retrying for ten minutes.
+- Devices: forgetting a device drops its pending offers and staging and removes its folders from the library; day-old device download folders are swept from the temp folder; devices are off until turned on in Settings (the identity is created then); received files and pairings are no longer lost from the event queue, and an idle window shows them at once; the offer prompt lists file names and cannot overflow its total; without a Downloads folder drops go to `<data dir>/inbox` instead of being declined silently.
+
 ## [0.6.0] - 2026-10-09
 
 Library release: Keel now keeps an index of every file across your sources, works offline from it, finds duplicates, and previews every copy, move and delete before it runs.
