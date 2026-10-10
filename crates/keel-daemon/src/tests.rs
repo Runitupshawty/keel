@@ -1141,3 +1141,29 @@ fn a_watched_change_announces_the_protection_recount() {
         }
     }
 }
+
+/// The daemon answering `list` 1,000 times over the local socket (one client, one request at
+/// a time): `cargo test -p keel-daemon --release perf_list -- --ignored --nocapture`.
+#[test]
+#[ignore = "release measurement: 1,000 list requests over the local socket"]
+fn perf_list_1000_requests() {
+    let env = env();
+    for i in 0..100 {
+        std::fs::write(env.files.path().join(format!("file {i:03}.txt")), b"x").unwrap();
+    }
+    let daemon = start(&env, None);
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let path = env.files.path().display().to_string();
+    let list = |c: &mut Client| c.call("list", json!({ "path": path })).unwrap();
+    assert_eq!(list(&mut c)["entries"].as_array().unwrap().len(), 102);
+    let start = Instant::now();
+    for _ in 0..1_000 {
+        list(&mut c);
+    }
+    let took = start.elapsed();
+    eprintln!(
+        "PERF daemon_list_1000: {took:?} ({:.0} requests/s, 102 entries each)",
+        1_000.0 / took.as_secs_f64()
+    );
+    assert!(took < Duration::from_secs(10), "{took:?}");
+}

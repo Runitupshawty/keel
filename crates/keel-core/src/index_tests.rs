@@ -995,7 +995,7 @@ fn watch_polls_remote_sources() {
 }
 
 /// Peak resident memory of this process, where the platform reports it.
-fn peak_rss() -> Option<u64> {
+pub(crate) fn peak_rss() -> Option<u64> {
     #[cfg(windows)]
     {
         use windows::Win32::System::ProcessStatus::{

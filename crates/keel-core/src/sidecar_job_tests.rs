@@ -225,6 +225,40 @@ fn sidecar_perf_1000_images() {
     assert!(took < Duration::from_secs(10), "{took:?}");
 }
 
+/// 5,000 synthetic 1024x768 JPEG photos (kept under `target/perf-photos-5k`) -> Thumb256 +
+/// Meta: `cargo test -p keel-core --release -- --ignored perf_sidecar_5k --nocapture`
+#[test]
+#[ignore = "release measurement: 5,000 JPEGs under target/"]
+fn perf_sidecar_5k_jpegs() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/perf-photos-5k");
+    let done = dir.with_extension("complete");
+    if !done.exists() {
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..5_000u32 {
+            let img = image::RgbImage::from_fn(1024, 768, |x, y| {
+                image::Rgb([
+                    (x / 4) as u8,
+                    (y / 3) as u8,
+                    (i % 256) as u8 ^ ((x ^ y) & 31) as u8,
+                ])
+            });
+            img.save(dir.join(format!("IMG_{i:04}.jpg"))).unwrap();
+        }
+        std::fs::write(&done, b"").unwrap();
+    }
+    let data = tempfile::tempdir().unwrap();
+    let (lib, id) = library(data.path(), &dir);
+    let start = Instant::now();
+    run(&lib, &id);
+    let took = start.elapsed();
+    eprintln!(
+        "PERF sidecar_5k: 5,000 1024x768 JPEGs -> Thumb256 + Meta in {took:?} ({:.0} photos/s)",
+        5_000.0 / took.as_secs_f64()
+    );
+    assert_eq!(media_rows(&lib, &id), 5_000);
+    assert!(took < Duration::from_secs(120), "{took:?}");
+}
+
 /// Review M7: input pauses the media and integrity jobs whatever the hashing policy;
 /// hashing pauses on it only when idle-only.
 #[test]

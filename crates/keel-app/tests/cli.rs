@@ -422,3 +422,29 @@ fn mcp_without_elicitation() {
     drop(mcp.child.stdin.take());
     assert!(mcp.child.wait().unwrap().success());
 }
+
+/// Process start to exit of `keel --version` (median of 20): `cargo test -p keel-app
+/// --release --test cli -- --ignored --nocapture perf_version`.
+#[test]
+#[ignore = "release measurement: process startup"]
+fn perf_version_startup() {
+    let mut runs: Vec<std::time::Duration> = (0..20)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            let out = Command::new(env!("CARGO_BIN_EXE_keel"))
+                .arg("--version")
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            t.elapsed()
+        })
+        .collect();
+    runs.sort();
+    let median = runs[runs.len() / 2];
+    eprintln!(
+        "PERF version_startup: median {median:?}, max {:?}",
+        runs[runs.len() - 1]
+    );
+    assert!(median < std::time::Duration::from_millis(500), "{median:?}");
+}
