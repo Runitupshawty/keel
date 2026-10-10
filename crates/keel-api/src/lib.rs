@@ -7,7 +7,8 @@
 //! and return a [`types::PlanPreview`] (a plan id plus the hash of the exact input);
 //! `execute` with that id and hash applies it, refusing tampered or expired plans. File
 //! operations go through `plan` (keel-core's `validate -> preview -> execute`). Only
-//! `shares.revoke` (taking access away) acts directly.
+//! `shares.revoke` (taking access away) acts directly. Mounts (`mounts.*`) need a host
+//! that serves them ([`Ctx::mounts`], set by keel-daemon).
 
 pub mod client;
 pub mod config;
@@ -36,14 +37,16 @@ use std::sync::Arc;
 /// API revision reported by `version`.
 pub const API_VERSION: u32 = 1;
 
-/// What every handler gets: the open library, the VFS router, keel-net when enabled, and
-/// the plans waiting for `execute`.
+/// What every handler gets: the open library, the VFS router, keel-net when enabled, the
+/// mounts when this host serves them, and the plans waiting for `execute`.
 pub struct Ctx {
     pub lib: Arc<keel_core::Library>,
     pub router: Arc<keel_vfs::Router>,
     pub node: Option<Arc<keel_net::Node>>,
     /// Runs the node's async calls (set with `node`).
     pub rt: Option<tokio::runtime::Handle>,
+    /// Sources mounted as drives; only a long-lived host (keel-daemon) serves them.
+    pub mounts: Option<Arc<keel_mount::Mounts>>,
     pub plans: PlanStore,
     /// Seconds east of UTC, for `dm:` dates in search queries.
     pub utc_offset: i64,
@@ -63,6 +66,7 @@ impl Ctx {
             router,
             node: None,
             rt: None,
+            mounts: None,
             plans,
             utc_offset: 0,
             downloads: Default::default(),
@@ -73,6 +77,11 @@ impl Ctx {
     pub fn with_net(mut self, node: Arc<keel_net::Node>, rt: tokio::runtime::Handle) -> Self {
         self.node = Some(node);
         self.rt = Some(rt);
+        self
+    }
+
+    pub fn with_mounts(mut self, mounts: Arc<keel_mount::Mounts>) -> Self {
+        self.mounts = Some(mounts);
         self
     }
 

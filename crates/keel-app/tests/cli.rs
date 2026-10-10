@@ -139,6 +139,39 @@ fn json_output_is_one_document() {
     );
 }
 
+/// Mounts belong to keel-daemon: without one, `keel mounts` lists none and `keel mount`
+/// fails (exit 1, one JSON error document) with what to do.
+#[test]
+fn mounts_need_the_daemon() {
+    let env = env();
+    env.ok(&["sources", "add", &s(env.files.path()), "--label", "Files"]);
+    assert_eq!(env.ok(&["mounts", "--json"]).trim(), "[]");
+    let target = if cfg!(windows) {
+        "Q:"
+    } else {
+        "/nonexistent-keel-mount"
+    };
+    for args in [
+        &["mount", "Files", target, "--json"][..],
+        &["mount", "files", target, "--subtree", "docs", "--json"],
+        &["mount", "no-such-source", target, "--json"],
+        &["unmount", target, "--json"],
+    ] {
+        let out = env.run(args);
+        assert_eq!(out.status.code(), Some(1), "keel {args:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(doc["error"]["code"].is_i64(), "keel {args:?}: {doc}");
+        if args[0] == "mount" {
+            assert_eq!(doc["error"]["code"], -32008, "keel {args:?}: {doc}");
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("keel daemon start"),
+                "keel {args:?}"
+            );
+        }
+    }
+    assert_eq!(env.run(&["mount", "Files"]).status.code(), Some(2));
+}
+
 #[test]
 fn plan_piped_into_execute() {
     let env = env();

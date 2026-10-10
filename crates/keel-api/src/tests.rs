@@ -113,6 +113,9 @@ fn registry_is_preview_first() {
         "shares.list",
         "shares.grant",
         "shares.revoke",
+        "mounts.list",
+        "mounts.add",
+        "mounts.remove",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -851,4 +854,54 @@ fn file_plan_summaries_name_the_files() {
     }
     assert!(!preview.summary.contains(names[4].as_str()));
     assert!(preview.summary.contains("2 more"), "{}", preview.summary);
+}
+
+#[test]
+fn mounts_need_the_daemon_and_a_backend() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let target = if cfg!(windows) {
+        "Q:"
+    } else {
+        "/nonexistent-keel-mount"
+    };
+    // In-process (the CLI without a daemon): nothing is mounted and nothing can be.
+    assert_eq!(call(&f.ctx, "mounts.list", Value::Null).unwrap(), json!([]));
+    let e = call(
+        &f.ctx,
+        "mounts.add",
+        json!({"source": id, "target": target}),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, ApiError::MOUNTS_UNAVAILABLE, "{e}");
+    assert!(e.message.contains("keel-daemon"), "{e}");
+    let e = call(&f.ctx, "mounts.remove", json!({"target": target})).unwrap_err();
+    assert_eq!(e.code, ApiError::NOT_FOUND, "{e}");
+
+    // A host that serves mounts: refused without a backend, else checked before the preview.
+    let spool = tempfile::tempdir().unwrap();
+    let ctx = Ctx::new(f.ctx.lib.clone(), f.ctx.router.clone())
+        .with_mounts(Arc::new(keel_mount::Mounts::new(spool.path().to_owned())));
+    let r = call(
+        &ctx,
+        "mounts.add",
+        json!({"source": id, "subtree": "docs", "target": target}),
+    );
+    // With a backend this only previews (keel-mount's ignored round trip mounts for real).
+    if keel_mount::backend().is_none() {
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ApiError::MOUNTS_UNAVAILABLE, "{e}");
+        assert!(e.message.contains("--features"), "{e}");
+    }
+    let e = call(
+        &ctx,
+        "mounts.add",
+        json!({"source": "nope", "target": target}),
+    )
+    .unwrap_err();
+    assert!(
+        [ApiError::MOUNTS_UNAVAILABLE, ApiError::NOT_FOUND].contains(&e.code),
+        "{e}"
+    );
+    assert_eq!(call(&ctx, "mounts.list", Value::Null).unwrap(), json!([]));
 }

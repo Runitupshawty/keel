@@ -77,6 +77,21 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<SourcesCmd>,
     },
+    /// Mount a library source (or a folder in it) as a drive letter or folder; keel-daemon
+    /// serves it until `keel unmount` or until the daemon stops.
+    Mount {
+        /// Source id or label (see `keel sources`).
+        source: String,
+        /// A drive letter (`K:`) or a folder to mount on.
+        target: String,
+        /// Mount only this folder of the source (relative to its root).
+        #[arg(long, value_name = "PATH")]
+        subtree: Option<String>,
+    },
+    /// Unmount a Keel mount (writes still in progress there are discarded).
+    Unmount { target: String },
+    /// Active Keel mounts.
+    Mounts,
     /// Start, stop or check keel-daemon for the profile.
     #[command(subcommand)]
     Daemon(DaemonCmd),
@@ -605,6 +620,21 @@ mod tests {
                 allow_execute: true
             }
         );
+        assert_eq!(
+            cmd(&["mount", "Photos", "K:", "--subtree", "2026"]),
+            Command::Mount {
+                source: "Photos".into(),
+                target: "K:".into(),
+                subtree: Some("2026".into())
+            }
+        );
+        assert_eq!(
+            cmd(&["unmount", "K:"]),
+            Command::Unmount {
+                target: "K:".into()
+            }
+        );
+        assert_eq!(cmd(&["mounts"]), Command::Mounts);
         // Usage errors (exit code 2).
         for bad in [
             &["plan", "copy", "a"][..],
@@ -612,6 +642,8 @@ mod tests {
             &["tag", "add", "t"],
             &["search"],
             &["daemon"],
+            &["mount", "Photos"],
+            &["unmount"],
             &["plan", "copy", "a", "--to", "d", "--on-conflict", "maybe"],
         ] {
             let err = parse(bad).unwrap_err();

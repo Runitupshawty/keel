@@ -26,6 +26,7 @@ keel-net = { path = "../keel-net" }
 keel-preview = { path = "../keel-preview" }
 image.workspace = true
 base64.workspace = true
+keel-mount = { path = "../keel-mount" }
 schemars = "1.2"
 async-trait = "0.1"
 interprocess = "2.4.4"

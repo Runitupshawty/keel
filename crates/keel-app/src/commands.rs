@@ -397,9 +397,94 @@ fn command(
             None
         }
         Command::Sources { action } => sources(action, b, json, out)?,
+        Command::Mount {
+            source,
+            target,
+            subtree,
+        } => {
+            let source = source_id(b, &source)?;
+            let info = confirm(
+                b,
+                "mounts.add",
+                json!({"source": source, "subtree": subtree.unwrap_or_default(), "target": mount_target(&target)}),
+                json,
+                out,
+            )?;
+            if !json {
+                let _ = writeln!(
+                    out,
+                    "mounted {} at {}",
+                    info["root"].as_str().unwrap_or(""),
+                    info["target"].as_str().unwrap_or("")
+                );
+            }
+            Some(info)
+        }
+        Command::Unmount { target } => {
+            let info = confirm(
+                b,
+                "mounts.remove",
+                json!({ "target": mount_target(&target) }),
+                json,
+                out,
+            )?;
+            if !json {
+                let _ = writeln!(out, "unmounted {}", info["target"].as_str().unwrap_or(""));
+            }
+            Some(info)
+        }
+        Command::Mounts => {
+            let list = b.call("mounts.list", Value::Null)?;
+            if json {
+                return Ok(Some(list));
+            }
+            for m in list.as_array().into_iter().flatten() {
+                let _ = writeln!(
+                    out,
+                    "{:<12} {}  ({}, {})",
+                    m["target"].as_str().unwrap_or(""),
+                    m["root"].as_str().unwrap_or(""),
+                    m["source_label"].as_str().unwrap_or(""),
+                    m["backend"].as_str().unwrap_or("")
+                );
+            }
+            None
+        }
         Command::Daemon(_) | Command::Mcp { .. } => unreachable!("handled by run"),
     };
     Ok(doc.filter(|_| json))
+}
+
+/// A drive letter as given (`K`, `K:`), anything else made absolute.
+fn mount_target(t: &str) -> String {
+    let letter = t.trim_end_matches(['\\', '/']).trim_end_matches(':');
+    if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic()) {
+        return t.to_owned();
+    }
+    abs(t)
+}
+
+/// The id of the one source with this label (case-insensitive), else `given` as an id.
+fn source_id(b: &mut dyn Backend, given: &str) -> Result<String, Fail> {
+    let list = b.call("sources.list", Value::Null)?;
+    let sources = list.as_array().cloned().unwrap_or_default();
+    if sources.iter().any(|s| s["id"] == given) {
+        return Ok(given.to_owned());
+    }
+    let labelled: Vec<_> = sources
+        .iter()
+        .filter(|s| {
+            s["label"]
+                .as_str()
+                .is_some_and(|l| l.eq_ignore_ascii_case(given))
+        })
+        .collect();
+    match labelled.as_slice() {
+        [one] => Ok(one["id"].as_str().unwrap_or_default().to_owned()),
+        // Not a label: the operation reports the unknown id.
+        [] => Ok(given.to_owned()),
+        _ => Err(Usage(format!("several sources are labelled {given}: give the id")).into()),
+    }
 }
 
 fn sources(

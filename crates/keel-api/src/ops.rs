@@ -120,6 +120,12 @@ pub static OPS: &[Operation] = &[
         GrantParams => GrantInfo, grant_preview, grant, json!({"peer": "a".repeat(52), "source": "0123456789abcdef0123456789abcdef", "subtree": "Photos/2026", "access": "read"})),
     now!("shares.revoke", "Revokes a grant at once (the device's next request is refused) and returns what it revoked.",
         true, RevokeParams => Revoked, revoke, json!({"peer": "a".repeat(52), "source": "0123456789abcdef0123456789abcdef", "subtree": "Photos/2026"})),
+    now!("mounts.list", "Sources keel-daemon serves as drives or mount folders.",
+        NoParams => Vec<MountInfo>, mounts_list, json!({})),
+    previewed!("mounts.add", "Mounts a source, or a subtree of it, as a drive letter or folder: listings from the index while the source is offline, reads on demand, writes published when the file closes. keel-daemon only; unmounted when it stops.",
+        MountParams => MountInfo, mounts_add_preview, mounts_add, json!({"source": "0123456789abcdef0123456789abcdef", "subtree": "Photos/2026", "target": example_mount()})),
+    previewed!("mounts.remove", "Unmounts a mount; writes still in progress there are discarded (those files stay as they were).",
+        UnmountParams => MountInfo, mounts_remove_preview, mounts_remove, json!({"target": example_mount()})),
 ];
 
 fn example_dir() -> &'static str {
@@ -127,6 +133,14 @@ fn example_dir() -> &'static str {
         r"C:\Users\me\Pictures"
     } else {
         "/home/me/Pictures"
+    }
+}
+
+fn example_mount() -> &'static str {
+    if cfg!(windows) {
+        "K:"
+    } else {
+        "/home/me/Keel"
     }
 }
 
@@ -1271,4 +1285,139 @@ fn revoke(ctx: &Ctx, p: RevokeParams) -> Result<Revoked> {
         subtree,
         existed,
     })
+}
+
+// --- mounts ---
+
+fn mount_info(m: keel_mount::MountInfo) -> MountInfo {
+    MountInfo {
+        target: m.target,
+        source: m.source,
+        source_label: m.label,
+        subtree: m.subtree,
+        root: m.root,
+        backend: m.backend.to_owned(),
+    }
+}
+
+/// The host's mounts, when it serves them and was built with a backend.
+fn mounts(ctx: &Ctx) -> Result<&Arc<keel_mount::Mounts>> {
+    let m = ctx.mounts.as_ref().ok_or_else(|| {
+        ApiError::new(
+            ApiError::MOUNTS_UNAVAILABLE,
+            "mounts are served by keel-daemon: start it with `keel daemon start`",
+        )
+    })?;
+    if keel_mount::backend().is_none() {
+        return Err(ApiError::new(
+            ApiError::MOUNTS_UNAVAILABLE,
+            keel_mount::NO_BACKEND,
+        ));
+    }
+    Ok(m)
+}
+
+fn mounts_list(ctx: &Ctx, _: NoParams) -> Result<Vec<MountInfo>> {
+    Ok(ctx
+        .mounts
+        .as_ref()
+        .map(|m| m.list())
+        .unwrap_or_default()
+        .into_iter()
+        .map(mount_info)
+        .collect())
+}
+
+fn mounts_add_preview(ctx: &Ctx, p: &MountParams) -> Result<Preview> {
+    let m = mounts(ctx)?;
+    let s = find_source(ctx, &p.source)?;
+    let (target, fs) = m
+        .check(
+            &ctx.lib,
+            &ctx.router,
+            &SourceId(p.source.clone()),
+            &p.subtree,
+            &p.target,
+        )
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    let root = fs.map().root.display();
+    let mut warnings = Vec::new();
+    if matches!(s.status, SourceStatus::Offline { .. }) {
+        warnings.push(warning(
+            "source_offline",
+            Some(root.clone()),
+            format!(
+                "{} is offline: the mount lists it from the library index and cannot open or change files until it is back",
+                s.label
+            ),
+        ));
+    }
+    if ctx
+        .router
+        .provider_for(&fs.map().root)
+        .is_some_and(|p| p.remove_kind() == keel_vfs::RemoveKind::Permanent)
+    {
+        warnings.push(warning(
+            "deletes_permanent",
+            Some(root.clone()),
+            "files deleted through the mount are deleted permanently on this source".into(),
+        ));
+    }
+    let what = match fs.map().subtree.as_str() {
+        "" => s.label.clone(),
+        sub => format!("{}/{sub}", s.label),
+    };
+    Ok(Preview {
+        summary: format!("Mount {what} at {target}"),
+        changes: vec![change("mount.add", Some(root), Some(target))],
+        warnings,
+    })
+}
+
+fn mounts_add(ctx: &Ctx, p: MountParams) -> Result<MountInfo> {
+    let m = mounts(ctx)?;
+    find_source(ctx, &p.source)?;
+    Ok(mount_info(m.add(
+        &ctx.lib,
+        &ctx.router,
+        &SourceId(p.source),
+        &p.subtree,
+        &p.target,
+    )?))
+}
+
+fn mounted(ctx: &Ctx, target: &str) -> Result<(Arc<keel_mount::Mounts>, keel_mount::MountInfo)> {
+    let m = ctx
+        .mounts
+        .clone()
+        .ok_or_else(|| ApiError::not_found(format!("{target} is not a Keel mount")))?;
+    let info = m
+        .get(target)
+        .ok_or_else(|| ApiError::not_found(format!("{target} is not a Keel mount")))?;
+    Ok((m, info))
+}
+
+fn mounts_remove_preview(ctx: &Ctx, p: &UnmountParams) -> Result<Preview> {
+    let (m, info) = mounted(ctx, &p.target)?;
+    let mut warnings = Vec::new();
+    let pending = m.pending_writes(&info.target);
+    if pending > 0 {
+        warnings.push(warning(
+            "discards_writes",
+            Some(info.target.clone()),
+            format!(
+                "{pending} file(s) are being written through the mount: unmounting discards those unsaved changes (the files stay as they were)"
+            ),
+        ));
+    }
+    Ok(Preview {
+        summary: format!("Unmount {} ({})", info.target, info.root),
+        changes: vec![change("mount.remove", Some(info.root), Some(info.target))],
+        warnings,
+    })
+}
+
+fn mounts_remove(ctx: &Ctx, p: UnmountParams) -> Result<MountInfo> {
+    let (m, info) = mounted(ctx, &p.target)?;
+    Ok(mount_info(m.remove(&info.target)?))
 }

@@ -186,7 +186,8 @@ impl Daemon {
             }
         };
         let host = Host::open(&cfg, opts.net.or_else(|| Some(NetSetup::system())), true)?
-            .with_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
+            .with_utc_offset(chrono::Local::now().offset().local_minus_utc().into())
+            .with_mounts(&cfg.data_dir);
         host.ctx.lib.poll_status(Duration::from_secs(60))?;
         let (shutdown, requests) = crossbeam_channel::bounded(1);
         let shared = Arc::new(Shared {
@@ -262,7 +263,8 @@ impl Daemon {
         &self.requests
     }
 
-    /// Stops accepting, closes keel-net and the library (jobs resume on the next start).
+    /// Stops accepting, unmounts, closes keel-net and the library (jobs resume on the next
+    /// start).
     pub fn shutdown(&self) {
         if self.shared.stop.swap(true, Ordering::AcqRel) {
             return;

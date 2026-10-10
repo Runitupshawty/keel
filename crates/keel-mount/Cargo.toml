@@ -1,0 +1,37 @@
+[package]
+publish = false
+name = "keel-mount"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Keel sources as drives: a backend-agnostic mount filesystem with WinFsp and FUSE backends"
+
+[features]
+# Each backend needs its driver at run time and is off by default (CI runners lack them).
+# `winfsp` (Windows) links winfsp-rs, which is GPL-3.0: see THIRD_PARTY.md. Building it needs
+# libclang (bindgen); the WinFsp headers and import library ship inside winfsp-sys.
+winfsp = ["dep:winfsp", "dep:windows"]
+# `fuse` (Linux pure-Rust mount through fusermount3; macOS needs macFUSE and pkg-config).
+fuse = ["dep:fuser", "dep:libc"]
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+keel-core = { path = "../keel-core" }
+keel-vfs = { path = "../keel-vfs", default-features = false }
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+winfsp = { version = "0.13", default-features = false, optional = true }
+windows = { workspace = true, optional = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_LibraryLoader"] }
+
+[target.'cfg(unix)'.dependencies]
+fuser = { version = "0.18", optional = true }
+libc = { workspace = true, optional = true }
+
+[dev-dependencies]
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud"] }
+opendal = { workspace = true, features = ["services-memory"] }
+crossbeam-channel.workspace = true

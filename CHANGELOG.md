@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Mounts: keel-daemon serves a library source, or a folder in it, as a drive letter or mount folder (`keel mount <source> <K:|folder> [--subtree P]`, `keel unmount`, `keel mounts`; API `mounts.list`, previewed `mounts.add` and `mounts.remove`). Listings come from the index while the source is offline, reads are on-demand range reads, and writes are staged and replace the file atomically when it closes. Mounts are unmounted when the daemon stops. The backends (`winfsp` on Windows, `fuse` on Linux and macOS) are off by default: build `keel-daemon` with the feature and install the driver; without one, `mounts.add` fails with error -32008. The `winfsp` feature links GPL-3.0 code (see THIRD_PARTY.md).
+
 ## [0.8.0] - 2026-10-09
 
 Devices release: pair your own machines, browse and share folders between them, send files with Spacedrop, and drive the library from a daemon, a command line and an MCP server.

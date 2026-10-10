@@ -82,6 +82,9 @@ revoked.
 | `shares.list` | read | Grants to paired devices |
 | `shares.grant` | preview | Give a device read or read-write access to a source or subtree |
 | `shares.revoke` | direct | Revoke a grant at once |
+| `mounts.list` | read | Sources keel-daemon serves as drives or mount folders |
+| `mounts.add` | preview | Mount a source or a subtree (`source`, `subtree`, `target`: `K:` or a folder) |
+| `mounts.remove` | preview | Unmount (`target`); writes still in progress there are discarded |
 
 Devices and shares need keel-net: the window's Settings → Devices switch, written as
 `[devices] enabled = true` with `explicit = true` in the profile's `config.toml`
@@ -104,6 +107,16 @@ folder is created owner-only when the host creates it. Serving
 sources to peers arrives with the remote-source work (Task 36): until then a grant is
 recorded but the node offers no sources.
 
+Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
+command exits) and need a daemon built with a mount backend (`--features winfsp` on
+Windows, `--features fuse` on Linux and macOS; see the README's Mounts section);
+otherwise `mounts.add` fails with `MOUNTS_UNAVAILABLE` (-32008). The `mounts.add` preview checks the
+target is free and the source or subtree can be listed, and warns when the source is
+offline (`source_offline`: the mount then lists it from the index and cannot read or change files)
+or deletes are permanent there (`deletes_permanent`: SFTP, S3). The `mounts.remove`
+preview warns when files are still being written through the mount (`discards_writes`).
+Mounts are unmounted when the daemon stops.
+
 The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 `.result()` in Rust.
 
@@ -122,6 +135,7 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32005 | devices are off (keel-net disabled) |
 | -32006 | the request timed out (the daemon answers within 120 s) |
 | -32007 | `--web`: a message before `auth`, a wrong token or no `auth` within 10 s; `--ws`/`--web`: the token was rotated (the connection closes) |
+| -32008 | mounts unavailable: not served by this host (no daemon) or no mount backend built in |
 
 ## keel-daemon (JSON-RPC)
 
@@ -222,6 +236,9 @@ keel plan delete <paths…> [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel devices | keel shares
+keel mount <source id or label> <K:|folder> [--subtree PATH]
+keel unmount <K:|folder>
+keel mounts
 keel daemon start|stop|status|rotate-token
 keel mcp [--allow-execute]
 ```
@@ -235,7 +252,7 @@ a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
 subcommand; without a terminal (an agent starting `keel mcp`, a script) a name is never
 taken as a folder. `keel ./name` always means the folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
-job. Other mutating subcommands (`tag`, `sources add|remove|index`) print the preview and
+job. Other mutating subcommands (`tag`, `sources add|remove|index`, `mount`, `unmount`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the
 library folder (`api-plans.json`, owner-only; on Windows a file owned by the user, the
 token's default owner or Administrators, with a protected DACL naming only them and
