@@ -3790,7 +3790,7 @@ dependencies = [
 
 [[package]]
 name = "keel-app"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "keel-core"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "battery",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "keel-preview"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "calamine",
  "csv",
@@ -3888,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "keel-search"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "keel-term"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -3916,7 +3916,7 @@ dependencies = [
 
 [[package]]
 name = "keel-vfs"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

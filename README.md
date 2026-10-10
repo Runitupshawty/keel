@@ -6,7 +6,7 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 
 ![PDF preview next to the file list](docs/screenshots/2026-10-09-task7-pdf-preview.png)
 
-## What works (v0.6.0)
+## What works (v0.7.0)
 
 - **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
@@ -27,6 +27,8 @@ Keel is an open-source, cross-platform file manager written in Rust (egui + wgpu
 - **Drag out** of Keel onto other apps (Windows).
 - **Own search index** on Windows, so search works without Everything. See [Search without Everything](#search-without-everything).
 - **Library**: an index of every file across your folders, drives, SSH hosts and cloud accounts that keeps working when a drive is unplugged. Cross-source search, tags, favorites, saved views, a duplicate finder, and a preview before every copy, move or delete. See [Library](#library).
+- **Media view**: a photo and video grid that scrolls 129,000 items smoothly, video scrubbing on hover, date headers, and a full-window viewer with zoom and an info panel. See [Media view](#media-view).
+- **Protection**: how many copies of each file exist and on how many physical disks or accounts, backup state, integrity checks and a drive inventory, with "last copy" warnings before a delete. See [Protection](#protection).
 - **Open, open with, reveal** in the system file manager, open a terminal in the current folder.
 - **Themes**: dark and light (a TOML file in `<config>/themes/dark.toml` or `light.toml` overrides the built-in colours). One built-in file icon theme.
 - **Settings** (Ctrl+,): theme, hidden files, dual pane, preview panel, maximum preview size. Open tabs are restored on the next start; a local folder that was deleted falls back to your home folder, while a tab on an unreachable network share stays open and shows the error. A `config.toml` or `session.json` that cannot be read is kept as `config.toml.bad` / `session.json.bad`.
@@ -63,7 +65,27 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `tag:taxes` | has the tag |
 | `in:photos` | under a path or source |
 
-Limits: hashing skips remote and cloud sources; two sources on one disk count as two locations (failure domains come later); the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+Limits: hashing skips remote and cloud sources; the Overview has no per-source counts; remote and cloud sources are polled rather than watched; a folder copy resumed after a crash re-runs as a merge.
+
+## Media view
+
+Click **Media** in a pane's toolbar to see a folder as square tiles. S, M and L (or Ctrl+wheel) change the tile size; **Dates** groups tiles under the day each photo was taken (the modified date when a file has no capture time). Videos show a strip of 20 frames: move the pointer across a tile to scrub; until the strip is made the video's thumbnail stands in.
+
+Thumbnails come from sidecars: small WebP files and a `meta.json` (dimensions, orientation, capture time, camera, lens, GPS, duration, rating, keywords) kept by content, so a moved or copied file keeps them. With the library on, the sidecar job makes them for every local source at idle priority (it pauses while you use the app and on battery) under a 10 GiB budget; with it off, the grid makes them on demand in a 2 GiB cache under the cache folder. Video sidecars need `ffmpeg` on `PATH`. A file that cannot be read is shown with its icon and not tried again until it changes; a tool that runs out of time is tried again later.
+
+**Viewer.** Space or Enter opens the selected photo or video full-window: the 1024 px thumbnail at once, then the full image (decoded in the background, at most twice the screen size). Left/Right, Home/End move through the folder's media files; mouse wheel, `+` and `-` zoom (drag to pan), `0` fits and `1` shows 100 %; `I` shows the info panel; `F` toggles Favorite; Esc or Space closes. For a video, Enter or Play opens the system player.
+
+## Protection
+
+With the library on, Keel tells you how safe your files are. Every source sits on a **volume** (a partition, a share, a cloud account, an SSH host) and every volume in a **failure domain**: the physical disk behind it (two partitions of one disk, or the logical volumes of one LVM disk, are one domain), the server of a share, or the cloud account. Two copies in one domain are one failure away from none.
+
+**Overview → Protection** shows how many files are not checked yet (no content hash: whether they have other copies is unknown), have one copy only, have every copy in one failure domain, are not backed up, or changed since their last integrity check, and how many volumes are offline. Hover over a number to see how it is computed. The details view's **Copies** column shows copies and domains per file, with every location on hover.
+
+**Drive inventory.** The volume table lists every volume a source was seen on. Mark a drive **Archived** (on a shelf: its copies still count, flagged offline), **Lost** or **Retired** (its copies no longer count), and tick **Backup** for backup drives: a file is backed up when a copy sits on a backup volume in a second failure domain. The failure domain is editable: give two volumes the same name to make them one domain (a NAS reached by name and by address, a disk the detection splits), or clear the field to go back to the detected one.
+
+**Warnings.** Delete and move previews warn when a file is the last copy of its content (copies seen through a junction, symlink or subst drive are the same file, not another copy), when the copies left would all share one failure domain, when they would all be on offline drives, and when a file is not hashed yet or its bytes drifted.
+
+**Integrity.** Once a week (or **Check integrity now**) Keel re-hashes a sample of hashed files (1 % by default, Settings → Library) and marks *drift*: bytes that changed while size and times did not, as with bit rot or a tool that restores timestamps.
 
 ## Columns view and drop zone
 
@@ -226,13 +248,12 @@ Limits and requirements:
 
 ## Roadmap
 
-Phases 1 to 6 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library). Planned:
+Phases 1 to 7 are released (the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection). In progress and planned:
 
-7. Media and protection: fast photo grid, video scrubbing, EXIF, redundancy and backup state per file.
-8. Devices: pairing and file transfer between your machines, a headless daemon and CLI.
+8. Devices (in progress): pairing and file transfer between your machines, a headless daemon and CLI.
 9. Clients and extensions: adapters (mail attachments, notes, repositories), web and mobile clients.
 
-Known limitations of v0.5.0 are listed in [CHANGELOG.md](CHANGELOG.md).
+Known limitations of v0.7.0 are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
