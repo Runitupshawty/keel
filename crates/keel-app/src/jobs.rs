@@ -437,7 +437,7 @@ fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
                         }
                         Some(_) if job.clears() => {}
                         Some(_) => {
-                            if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
+                            if ui.small_button("×").on_hover_text("Dismiss").clicked() {
                                 *dismiss = Some(job.id);
                             }
                         }

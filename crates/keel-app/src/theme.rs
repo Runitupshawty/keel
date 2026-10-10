@@ -103,9 +103,115 @@ impl Themes {
     }
 }
 
+/// egui's built-in fonts, with Hack (already built in, the monospace font) as the last
+/// fallback of proportional text too: Ubuntu Light has no arrows ("Settings \u{2192}
+/// Library", "Copy A \u{2192} B") and no "\u{22ef}".
+pub fn fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("Hack".into());
+    fonts
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Theme, Themes};
+
+    /// Every non-ASCII character in a string or char literal of keel-app's non-test code
+    /// (test modules, `*_tests.rs` and the screenshot harness are skipped), with a file
+    /// it is in.
+    fn ui_symbols() -> std::collections::BTreeMap<char, String> {
+        let mut found = std::collections::BTreeMap::new();
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy();
+                if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "screenshots.rs"
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("\r\n", "\n");
+                let code = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+                let s: Vec<char> = code.chars().collect();
+                let mut add = |c: char| {
+                    found.entry(c).or_insert_with(|| path.display().to_string());
+                };
+                let mut i = 0;
+                while i < s.len() {
+                    match s[i] {
+                        '/' if s.get(i + 1) == Some(&'/') => {
+                            while i < s.len() && s[i] != '\n' {
+                                i += 1;
+                            }
+                        }
+                        '"' => {
+                            i += 1;
+                            while i < s.len() && s[i] != '"' {
+                                if !s[i].is_ascii() {
+                                    add(s[i]);
+                                }
+                                i += if s[i] == '\\' { 2 } else { 1 };
+                            }
+                        }
+                        // Char literals ('"' must not open a string); lifetimes pass.
+                        '\'' if s.get(i + 1) == Some(&'\\') => {
+                            i += 3;
+                            while i < s.len() && s[i] != '\'' {
+                                i += 1;
+                            }
+                        }
+                        '\'' if s.get(i + 2) == Some(&'\'') => {
+                            if !s[i + 1].is_ascii() {
+                                add(s[i + 1]);
+                            }
+                            i += 2;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+        }
+        found
+    }
+
+    /// Found making the screenshots: the arrow drew as a box. Every symbol the UI's
+    /// strings use has a glyph in the proportional and the monospace fonts.
+    #[test]
+    fn every_ui_symbol_has_a_glyph() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::fonts());
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let symbols = ui_symbols();
+        for c in ['\u{2192}', '\u{2026}', '\u{d7}', '\u{2022}', '\u{22ef}'] {
+            assert!(
+                symbols.contains_key(&c),
+                "{c} not found: the scan is broken"
+            );
+        }
+        for (c, file) in symbols {
+            for font in [
+                egui::FontId::proportional(14.0),
+                egui::FontId::monospace(14.0),
+            ] {
+                assert!(
+                    ctx.fonts(|f| f.has_glyph(&font, c)),
+                    "{c:?} (U+{:04X}, {file}) has no glyph in {font:?}",
+                    c as u32
+                );
+            }
+        }
+    }
 
     #[test]
     fn themes_are_cached_once() {

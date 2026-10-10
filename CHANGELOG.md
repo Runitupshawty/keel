@@ -11,6 +11,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Media view: with **Dates** on, a photo or video without a capture date was put under its own "Unknown date" heading instead of the day it was last modified, so a folder of such files showed one heading per row. They now share one heading per day. Found while making the screenshots.
+- The arrow in texts such as the copy preview's "Copy A → B" and "Off (Settings → Library)", and the media viewer's "⋯" menu, drew as an empty box; they now render (no new font: the built-in monospace font fills in the symbols the interface font lacks). The dismiss buttons of finished jobs and of remote bookmark rows show "×" like the other close buttons. Found while making the screenshots.
 
 ## [0.14.0] - 2026-10-10
 

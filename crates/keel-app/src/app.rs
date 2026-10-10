@@ -77,6 +77,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, boot: Boot) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        cc.egui_ctx.set_fonts(crate::theme::fonts());
         // Another Keel is the single instance (and holds the global hotkey).
         let not_server = boot.settings.single_instance && boot.server.is_none();
         let persist = boot

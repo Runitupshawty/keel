@@ -640,7 +640,7 @@ impl Editor {
                             .hint_text("/remote/path")
                             .desired_width(250.0),
                     );
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("×").clicked() {
                         drop_row = Some(i);
                     }
                 });
