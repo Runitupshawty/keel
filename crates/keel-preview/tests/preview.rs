@@ -257,10 +257,17 @@ fn csv_stops_at_row_cap() {
 
 #[test]
 fn xlsx_has_data_rows() {
-    let Preview::Table { rows, .. } = preview(&request("sample.xlsx")) else {
+    let Preview::Table {
+        headers,
+        rows,
+        truncated,
+    } = preview(&request("sample.xlsx"))
+    else {
         panic!("expected table preview");
     };
-    assert!(!rows.is_empty());
+    assert_eq!(headers, ["name", "value"]);
+    assert_eq!(rows, [["alpha", "1"]]);
+    assert!(!truncated);
 }
 
 #[test]

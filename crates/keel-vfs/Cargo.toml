@@ -12,7 +12,7 @@ path = "src/lib.rs"
 [features]
 default = ["zip", "sevenz", "tar", "rar", "cloud"]
 zip = ["dep:zip", "dep:chrono"]
-sevenz = ["dep:sevenz-rust2"]
+sevenz = ["dep:sevenz-rust2", "sevenz-rust2/compress", "sevenz-rust2/util"]
 tar = ["dep:tar", "dep:flate2", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
 # libunrar is C++ built with `cc`; cross-target checks from Windows build without it.
 rar = ["dep:unrar_sys"]
@@ -114,6 +114,10 @@ libc.workspace = true
 reflink-copy = "0.1"
 
 [dev-dependencies]
+# Host keys for the in-process SSH server in the SFTP tests (same rand as russh).
+rand = "0.10"
+# Builds 7z fixtures in the archive tests.
+sevenz-rust2 = { workspace = true, features = ["compress", "util", "aes256"] }
 opendal = { workspace = true, features = ["services-memory"] }
 # Fake HTTP services in the cloud tests.
 http = "1"

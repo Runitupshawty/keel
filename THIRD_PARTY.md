@@ -11,12 +11,16 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`sevenz-rust2`](https://crates.io/crates/sevenz-rust2) 0.23 (replaces the unmaintained `sevenz-rust`) | 7z reading and writing | Apache-2.0 | Rust crate, compiled in |
 | [`zip`](https://crates.io/crates/zip) 2.4 | zip reading, Add to zip and Office/OpenDocument previews | MIT | Rust crate, compiled in |
 | [`tar`](https://crates.io/crates/tar) 0.4 | tar reading and writing | MIT OR Apache-2.0 | Rust crate, compiled in |
+| [`sevenz-rust2`](https://crates.io/crates/sevenz-rust2) 0.23 (with `lzma-rust2` 0.21) | 7z reading | Apache-2.0 | Rust crate, compiled in |
+| [`zip`](https://crates.io/crates/zip) 2.4 | zip reading and Add to zip | MIT | Rust crate, compiled in |
+| [`tar`](https://crates.io/crates/tar) 0.4 | tar reading | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`lzma-rs`](https://crates.io/crates/lzma-rs) 0.3 | `.tar.xz` decompression | MIT | Rust crate, compiled in |
 | [`ruzstd`](https://crates.io/crates/ruzstd) 0.8 | `.tar.zst` decompression | MIT | Rust crate, compiled in |
 | [`portable-pty`](https://crates.io/crates/portable-pty) 0.9 | Pseudo-terminal for the terminal pane | MIT | Rust crate, compiled in |
 | [`vt100`](https://crates.io/crates/vt100) 0.16 | Terminal escape-sequence parser and screen grid | MIT | Rust crate, compiled in |
-| [`russh`](https://crates.io/crates/russh) 0.50 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
-| [`russh-sftp`](https://crates.io/crates/russh-sftp) 2.4 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
+| [`russh`](https://crates.io/crates/russh) 0.64 | SSH client for SFTP remotes | Apache-2.0 | Rust crate, compiled in |
+| [`ring`](https://crates.io/crates/ring) 0.17 | SSH ciphers and key exchange (russh's crypto backend) | Apache-2.0 AND ISC | Rust crate with C and assembly, compiled in |
+| [`russh-sftp`](https://crates.io/crates/russh-sftp) 3.0 | SFTP protocol for remotes | Apache-2.0 | Rust crate, compiled in |
 | [`keyring`](https://crates.io/crates/keyring) 3.6 | Passwords and passphrases in the OS keychain | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`rfd`](https://crates.io/crates/rfd) 0.15 | Native folder and file pickers | MIT | Rust crate, compiled in |
 | [`clap`](https://crates.io/crates/clap) 4.6 | Command-line parsing | MIT OR Apache-2.0 | Rust crate, compiled in |
@@ -26,9 +30,10 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`blake3`](https://crates.io/crates/blake3) 1 | Content ids for the duplicate finder (pure-Rust build) | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Rust crate, compiled in |
 | [`notify`](https://crates.io/crates/notify) 6 | Live file watching for library sources | CC0-1.0 | Rust crate, compiled in |
 | [`ignore`](https://crates.io/crates/ignore) 0.4 | Directory walking | Unlicense OR MIT | Rust crate, compiled in |
-| [`battery`](https://crates.io/crates/battery) 0.7 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | Apache-2.0 OR MIT | Rust crate, compiled in |
+| [`starship-battery`](https://crates.io/crates/starship-battery) 0.12 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | ISC | Rust crate, compiled in |
 | [`regex`](https://crates.io/crates/regex) 1.13 | Regex search queries | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`encoding_rs`](https://crates.io/crates/encoding_rs) 0.8 | Windows-1252 text decoding | (Apache-2.0 OR MIT) AND BSD-3-Clause | Rust crate, compiled in |
+| [`calamine`](https://crates.io/crates/calamine) 0.36 | Spreadsheet previews (xlsx, xls, xlsb, ods) | MIT | Rust crate, compiled in |
 | [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |
 | [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`zeroize`](https://crates.io/crates/zeroize) 1.9 | Wipes secrets from memory | Apache-2.0 OR MIT | Rust crate, compiled in |

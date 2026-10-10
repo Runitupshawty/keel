@@ -6,9 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 7zAES coder id: entries in such a folder need a password.
-const AES: [u8; 4] = [0x06, 0xf1, 0x07, 0x01];
-
 pub(super) struct Reader {
     path: PathBuf,
     archive: sevenz_rust2::Archive,
@@ -37,7 +34,12 @@ impl ArchiveReader for Reader {
                     .copied()
                     .flatten()
                     .and_then(|block| archive.blocks.get(block))
-                    .is_some_and(|block| block.coders.iter().any(|c| c.encoder_method_id() == AES));
+                    // 7zAES: entries in such a block need a password.
+                    .is_some_and(|block| {
+                        block.coders.iter().any(|c| {
+                            c.encoder_method_id() == sevenz_rust2::EncoderMethod::ID_AES256_SHA256
+                        })
+                    });
                 ArchiveEntry {
                     inner: file.name.clone(),
                     is_dir: file.is_directory,
@@ -65,11 +67,11 @@ impl ArchiveReader for Reader {
             !file.is_directory() && !file.is_anti_item() && want(&file.name)
         };
         let mut source = File::open(&self.path)?;
-        let password = sevenz_rust2::Password::empty();
         let mut failure = None;
-        for folder in 0..self.archive.blocks.len() {
+        let password = sevenz_rust2::Password::empty();
+        for index in 0..self.archive.blocks.len() {
             let block =
-                sevenz_rust2::BlockDecoder::new(1, folder, &self.archive, &password, &mut source);
+                sevenz_rust2::BlockDecoder::new(1, index, &self.archive, &password, &mut source);
             if !block.entries().iter().any(wanted) {
                 continue;
             }
