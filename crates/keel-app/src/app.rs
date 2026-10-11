@@ -302,7 +302,18 @@ impl App {
         self.seen_widths.0 = Some(w);
         // --- Task 23 ---: the columns view previews inline while the panel is closed.
         let inline = !s.preview.open && crate::view_columns::wants_preview(&s.panes[s.active]);
-        if s.preview.open || inline {
+        let inspecting = s.preview.open && s.preview.tab == crate::inspector::PanelTab::Inspector;
+        if inspecting {
+            // Task 59: the inspector follows the selection instead of the preview.
+            s.preview.stop_sound();
+            let target = s.preview_target();
+            if let Some((path, req, max)) = s.preview.inspector.follow(ctx, target.as_ref()) {
+                if !s.library.inspect(path, req, max) {
+                    let off = crate::inspector::LIBRARY_OFF.to_owned();
+                    s.preview.inspector.answered(req, Err(off));
+                }
+            }
+        } else if s.preview.open || inline {
             let target = s.preview_target();
             if s.preview.follow(ctx, target.as_ref()) {
                 s.toasts.error(crate::preview_panel::LOCKED);
@@ -317,7 +328,30 @@ impl App {
             .width_range(200.0..=1000.0)
             .show_animated(ctx, s.preview.open, |ui| {
                 s.preview.width_px = (ui.available_width() * ctx.pixels_per_point()).round() as u32;
-                s.preview.ui(ui, s.theme.muted());
+                // Task 59: Preview | Inspector.
+                use crate::inspector::PanelTab;
+                ui.horizontal(|ui| {
+                    for (tab, label) in [
+                        (PanelTab::Preview, "Preview"),
+                        (PanelTab::Inspector, "Inspector"),
+                    ] {
+                        ui.selectable_value(&mut s.preview.tab, tab, label);
+                    }
+                });
+                ui.separator();
+                match s.preview.tab {
+                    PanelTab::Preview => s.preview.ui(ui, s.theme.muted()),
+                    PanelTab::Inspector => {
+                        let mut acts = Vec::new();
+                        crate::inspector::ui(
+                            ui,
+                            &mut s.preview.inspector,
+                            s.theme.muted(),
+                            &mut acts,
+                        );
+                        out.extend(acts.into_iter().map(|a| (s.active, a)));
+                    }
+                }
             });
         if let Some(panel) = panel {
             let w = panel.response.rect.width().round();

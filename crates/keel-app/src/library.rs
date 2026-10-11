@@ -1039,6 +1039,20 @@ impl LibraryUi {
         })
     }
 
+    /// Task 59: `library.inspect` of `path` on a worker, answered as `Msg::Inspected`; false
+    /// when there is no library to ask (off, or the daemon is lost).
+    pub fn inspect(&self, path: VPath, req: u64, max: usize) -> bool {
+        let Some(backend) = self.backend.clone().filter(|_| !self.lost) else {
+            return false;
+        };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        worker::spawn("keel-inspect", move || {
+            let result = backend.inspect(&path, max).map_err(|e| format!("{e:#}"));
+            let result = Box::new(result);
+            worker::send(&tx, &ctx, Msg::Inspected { req, result });
+        })
+    }
+
     /// Like `spawn`, but an error becomes a toast.
     fn spawn_try(
         &self,
@@ -1585,6 +1599,9 @@ impl AppState {
             } => {
                 l.tags = tags;
                 l.views = views;
+                if l.tagged != tagged {
+                    self.preview.inspector.refresh();
+                }
                 l.tagged = tagged;
             }
             LibMsg::Watching(id, handle) => {

@@ -87,6 +87,7 @@ fn global_items() -> Vec<Item> {
         ("Toggle dual pane", "Ctrl+Shift+D", ToggleDual),
         ("Switch pane", "F6", SwitchPane),
         ("Toggle preview panel", "F3", TogglePreview),
+        ("Show inspector", "Ctrl+I", ToggleInspector),
         ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
         (
             "Stash selection in the drop zone",

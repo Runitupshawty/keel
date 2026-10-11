@@ -20,6 +20,7 @@ mod fonts; // also the web client's (keel-web includes it by path)
 mod fuzz_tests;
 mod icon_theme;
 mod icons;
+mod inspector;
 mod jobs;
 mod jump;
 mod keys;

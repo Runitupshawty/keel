@@ -1307,7 +1307,7 @@ fn fingerprint(s: &AppState) -> String {
             s.active,
             s.dual,
             s.show_hidden,
-            s.preview.open,
+            (s.preview.open, s.preview.tab),
             s.dialog.is_some(),
             s.settings_open,
             s.jump.open,
@@ -2320,6 +2320,86 @@ fn library_favorites_and_tags() {
     let only_notes = |s: &AppState| !s.tab(0).loading && names(s, 0) == ["notes.md"];
     assert!(wait(&mut h, 20, &only_notes));
     shot(&mut h, "library-tag");
+    close_library(&mut h);
+}
+
+/// Task 59: Ctrl+I shows the inspector; a file's Copies row opens the copy (its folder,
+/// the copy selected); a folder shows its totals.
+#[test]
+#[ignore]
+fn inspector_copies_and_folder_totals() {
+    let dir = scratch("inspector");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::copy(a.join("todo.txt"), b.join("todo copy.txt")).unwrap();
+    let (mut h, _base, lib) = with_library("inspector-lib", &a, &b);
+    add_source(&mut h, &a);
+    add_source(&mut h, &b);
+    // Both hashed: the library knows the copy.
+    let todo = VPath::local(a.join("todo.txt"));
+    let copy = VPath::local(b.join("todo copy.txt"));
+    let known = |s: &AppState| {
+        !s.library.jobs.values().any(|j| j.active())
+            && lib.inspect(&todo, 50).unwrap().is_some_and(|i| {
+                i.redundancy
+                    .is_some_and(|r| r.locations.iter().any(|l| l.path == copy))
+            })
+    };
+    assert!(wait(&mut h, 120, &known), "hashed");
+    sm(&mut h).run(0, Action::Navigate(VPath::local(&a)));
+    assert!(wait(&mut h, 10, &listed));
+    click_row(&mut h, "todo.txt", 0, NONE);
+    key(&mut h, CMD, Key::I);
+    let inspector = crate::inspector::PanelTab::Inspector;
+    assert!(s(&h).preview.open && s(&h).preview.tab == inspector);
+    let answered =
+        |s: &AppState| matches!(&s.preview.inspector.answer, Some(Ok(i)) if i.library.is_some());
+    assert!(wait(&mut h, 30, &answered), "inspected");
+    for label in ["Overview", "Library", "Copies", "History", "Tags", "Tags…"] {
+        assert!(has(&h, label), "{label}");
+    }
+    assert!(
+        has(&h, "2 copies in 1 failure domain"),
+        "{}",
+        dump(&h, "cop")
+    );
+    shot(&mut h, "inspector-file");
+    click(&mut h, &copy.display());
+    let opened = |s: &AppState| {
+        dir_is(s, 0, &b) && !s.tab(0).loading && s.tab(0).cursor.as_deref() == Some("todo copy.txt")
+    };
+    assert!(
+        wait(&mut h, 20, &opened),
+        "the copy is selected in its folder"
+    );
+    // A folder: its totals.
+    sm(&mut h).run(0, Action::Navigate(VPath::local(&dir)));
+    assert!(wait(&mut h, 10, &listed));
+    click_row(&mut h, "a", 0, NONE);
+    let totals = |s: &AppState| match &s.preview.inspector.answer {
+        Some(Ok(i)) => {
+            i.entry.name == "a" && i.library.as_ref().is_some_and(|l| l.folder.is_some())
+        }
+        _ => false,
+    };
+    assert!(wait(&mut h, 30, &totals), "folder inspected");
+    let lib_part = s(&h)
+        .preview
+        .inspector
+        .answer
+        .clone()
+        .unwrap()
+        .unwrap()
+        .library
+        .unwrap();
+    let folder = lib_part.folder.unwrap();
+    assert_eq!((folder.files, folder.folders), (Some(5), 0));
+    assert!(has(&h, "Folders") && has(&h, "Biggest"));
+    shot(&mut h, "inspector-folder");
+    // Ctrl+I again hides the panel; F3 shows the preview tab.
+    key(&mut h, CMD, Key::I);
+    assert!(!s(&h).preview.open);
+    key(&mut h, NONE, Key::F3);
+    assert!(s(&h).preview.open && s(&h).preview.tab == crate::inspector::PanelTab::Preview);
     close_library(&mut h);
 }
 
