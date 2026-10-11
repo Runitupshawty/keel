@@ -247,14 +247,16 @@ pub fn slot(ui: &mut egui::Ui, base: egui::ImageSource<'static>, style: Option<&
     }
 }
 
-/// The Details view's dot after a colored folder's name.
+/// The Details view's dot after a colored folder's name, outlined in the text color so
+/// light colors (Yellow on a light theme is 1.5:1) still stand out from the background.
 pub fn dot(ui: &mut egui::Ui, style: Option<&FolderStyle>) {
     let Some([r, g, b]) = style.and_then(FolderStyle::rgb) else {
         return;
     };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    let outline = egui::Stroke::new(1.0_f32, ui.visuals().text_color());
     ui.painter()
-        .circle_filled(rect.center(), 4.0, Color32::from_rgb(r, g, b));
+        .circle(rect.center(), 4.0, Color32::from_rgb(r, g, b), outline);
     let color = FolderStyle {
         color: style.and_then(|s| s.color.clone()),
         icon: None,
