@@ -91,9 +91,9 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Copy, move, delete, rename with previews | described | [SD-OPS] | **Has** |
 | Batch rename | described (`files.rename_batch`) | [SD-OPS] | **Has**: Ctrl+F2 with a live preview |
 | Undo | described (`files.undo`) | [SD-OPS] | **Part**: undo bulk rename only; deletes can be restored from the Recycle Bin or Trash by hand |
-| Folder merge, organize, flatten | described; merge landed | [SD-OPS], [SD-STATUS] | **Lacks** as named operations |
+| Folder merge, organize, flatten | described; merge landed | [SD-OPS], [SD-STATUS] | **Has** (unreleased): previewed plans with undo ([files.md](files.md#folder-operations)) |
 | Create and extract archives | described | [SD-OPS] | **Has**, plus archives open as folders ([files.md](files.md#archives)) |
-| Set attributes, create links | described | [SD-OPS] | **Lacks** |
+| Set attributes, create links | described | [SD-OPS] | **Has** (unreleased): hidden, read-only, Unix mode; symbolic links, junctions, hard links ([files.md](files.md#folder-operations)) |
 | Trash list and empty | described | [SD-OPS] | **Has** ([files.md](files.md#recycle-bin-and-trash)) |
 | Durable jobs: progress, cancel, restart recovery, logs | described; ETA in v1 (0.4.0), live copy speed in alpha.2 | [SD-README], [SD-REL] | **Has**: resume after restart ([library.md](library.md#library)); time left is not documented |
 | File sync relationships: copy, mirror, two-way, archive, on-demand cache | described (no status) | [SD-SYNC] | **Lacks** |
@@ -224,7 +224,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
 | 25 | Agent skill, `keel op <name>`, generated SDK | Spacedrive | — | S |
-| 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | — | S each |
+| 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** (unreleased, [files.md](files.md#folder-operations)) | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |
 
