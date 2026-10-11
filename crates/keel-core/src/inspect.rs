@@ -93,14 +93,70 @@ fn same(a: &VPath, b: &VPath) -> bool {
 /// there were more. A move or rename to a known path makes its origin known too, so the
 /// history follows an item back through its renames and moves (not through copies: a
 /// copy's origin is another file).
+#[cfg(test)]
 pub(crate) fn history_of(
     entries: impl IntoIterator<Item = OpLogEntry>,
     path: &VPath,
     max: usize,
 ) -> (Vec<History>, bool) {
-    let mut known = vec![path.clone()];
-    let mut out = Vec::new();
+    let mut f = Follow::new(path, max);
     for e in entries {
+        if f.feed(e) {
+            break;
+        }
+    }
+    (f.out, f.more)
+}
+
+/// `history_of` one entry at a time, so a scan of the log can stop at `max` and skip the
+/// entries that cannot name the item without parsing them.
+struct Follow {
+    known: Vec<VPath>,
+    /// The known paths' names as they appear in an entry's JSON (lowercase on Windows).
+    names: Vec<String>,
+    out: Vec<History>,
+    more: bool,
+    max: usize,
+}
+
+impl Follow {
+    fn new(path: &VPath, max: usize) -> Self {
+        let mut f = Follow {
+            known: Vec::new(),
+            names: Vec::new(),
+            out: Vec::new(),
+            more: false,
+            max,
+        };
+        f.know(path.clone());
+        f
+    }
+
+    fn know(&mut self, p: VPath) {
+        let json = serde_json::to_string(p.name()).unwrap_or_default();
+        let name = (json.strip_prefix('"').and_then(|j| j.strip_suffix('"'))).unwrap_or("");
+        self.names.push(match cfg!(windows) {
+            true => name.to_lowercase(),
+            false => name.to_owned(),
+        });
+        self.known.push(p);
+    }
+
+    /// The raw JSON of an entry's payload may name a known path.
+    fn may_name(&self, payload: &str) -> bool {
+        let lower;
+        let payload = match cfg!(windows) {
+            true => {
+                lower = payload.to_lowercase();
+                lower.as_str()
+            }
+            false => payload,
+        };
+        self.names.iter().any(|n| payload.contains(n.as_str()))
+    }
+
+    /// Takes the next (older) entry; true once `max` are found and there are more.
+    fn feed(&mut self, e: OpLogEntry) -> bool {
         let str_of = |k: &str| e.payload.get(k).and_then(Value::as_str).and_then(vpath_of);
         let list = |k: &str| -> Vec<VPath> {
             (e.payload
@@ -133,14 +189,15 @@ pub(crate) fn history_of(
             }
             _ => list("paths").into_iter().map(|p| (p, None)).collect(),
         };
-        let is_known = |p: &VPath| known.iter().any(|k| same(k, p));
+        let is_known = |p: &VPath| self.known.iter().any(|k| same(k, p));
         let mut hit = None;
+        let mut origin = None;
         for (from, to) in items {
             match to {
                 Some(to) if is_known(&to) => {
                     hit = Some((Some(from.display()), None));
                     if e.kind != "copy" {
-                        known.push(from);
+                        origin = Some(from);
                     }
                     break;
                 }
@@ -155,11 +212,15 @@ pub(crate) fn history_of(
                 _ => {}
             }
         }
-        let Some((from, to)) = hit else { continue };
-        if out.len() == max {
-            return (out, true);
+        if let Some(from) = origin {
+            self.know(from);
         }
-        out.push(History {
+        let Some((from, to)) = hit else { return false };
+        if self.out.len() == self.max {
+            self.more = true;
+            return true;
+        }
+        self.out.push(History {
             id: e.id,
             ts: e.ts,
             tag: e
@@ -172,8 +233,8 @@ pub(crate) fn history_of(
             from,
             to,
         });
+        false
     }
-    (out, false)
 }
 
 /// Folders below folder record `id` (itself and folder links not counted).
@@ -257,10 +318,7 @@ impl Library {
         let (redundancy, more_copies) = if kind == DIR {
             (None, false)
         } else {
-            let mut r = self.redundancy(&record)?;
-            r.locations.retain(|l| l.record != record);
-            let more = r.locations.len() > max;
-            r.locations.truncate(max);
+            let (r, more) = self.redundancy_bounded(&record, max)?;
             (Some(r), more)
         };
         let (history, more_history) = self.history(&real, max)?;
@@ -284,17 +342,28 @@ impl Library {
         }))
     }
 
-    /// The operation log entries that touched `path`, newest first (`history_of`).
+    /// The operation log entries that touched `path`, newest first (`history_of`): the
+    /// scan stops once `max` are found, and parses only the entries whose text names the
+    /// item (or a path it had).
     fn history(&self, path: &VPath, max: usize) -> Result<(Vec<History>, bool)> {
         let c = self.shared.db.get()?;
         let mut stmt = c.prepare(&format!(
             "SELECT id, ts, kind, payload, result, ok FROM op_log WHERE kind IN ({KINDS})
              ORDER BY id DESC"
         ))?;
-        // ponytail: scans the file operations and tag changes newest first until `max` are
-        // found; an index of paths per entry if a log ever grows past a quick scan.
-        let rows = stmt.query_map([], crate::oplog::row)?;
-        Ok(history_of(rows.map_while(Result::ok), path, max))
+        // ponytail: still reads every entry's text when an item has fewer than `max`; an
+        // index of names per entry if a log ever grows past a quick scan.
+        let mut rows = stmt.query([])?;
+        let mut f = Follow::new(path, max);
+        while let Some(r) = rows.next()? {
+            if !f.may_name(r.get_ref(3)?.as_str()?) {
+                continue;
+            }
+            if f.feed(crate::oplog::row(r)?) {
+                break;
+            }
+        }
+        Ok((f.out, f.more))
     }
 }
 
@@ -361,6 +430,22 @@ mod tests {
         assert_eq!(h[2].from, Some(p("b/old.txt")));
         assert_eq!(h[3].from, Some(p("a/old.txt")));
         assert_eq!(h[4].from, Some(p("orig/old.txt")));
+    }
+
+    /// Only entries whose text names the item, or a path it had, are parsed; on Windows
+    /// regardless of case.
+    #[test]
+    fn the_scan_parses_only_entries_naming_a_known_path() {
+        let mut f = Follow::new(&VPath::local(p("b/New \"one\".txt")), 50);
+        let named = json!({"paths": [p("b/New \"one\".txt")]}).to_string();
+        assert!(f.may_name(&named));
+        assert_eq!(f.may_name(&named.to_uppercase()), cfg!(windows));
+        let other = json!({"paths": [p("b/old.txt")]}).to_string();
+        assert!(!f.may_name(&other));
+        // A rename into it makes the old name one to look for.
+        let renamed = json!({"path": p("b/old.txt"), "new_name": "New \"one\".txt"});
+        assert!(!f.feed(entry(2, "rename", renamed)));
+        assert!(f.may_name(&other));
     }
 
     #[test]

@@ -88,6 +88,27 @@ fn tally_counts_files_and_domains_once() {
     assert_eq!(tally([("a", &c), ("y", &archived)]), (2, 2, false, 1));
 }
 
+/// The inspector's bounded `redundancy` counts as `redundancy` does and lists the first
+/// `max` other copies, saying whether there are more.
+fn bounded_matches(lib: &Library, record: &RecordRef) {
+    let full = lib.redundancy(record).unwrap();
+    let others: Vec<CopyAt> = (full.locations.iter())
+        .filter(|l| l.record != *record)
+        .cloned()
+        .collect();
+    for max in [0, 1, 50] {
+        let (b, more) = lib.redundancy_bounded(record, max).unwrap();
+        let counts = |r: &Redundancy| (r.copies, r.failure_domains, r.backed_up, r.offline_copies);
+        assert_eq!(counts(&b), counts(&full), "max {max}");
+        assert_eq!(
+            b.locations[..],
+            others[..others.len().min(max)],
+            "max {max}"
+        );
+        assert_eq!(more, others.len() > max, "max {max}");
+    }
+}
+
 #[test]
 fn redundancy_by_failure_domain_offline_and_backup() {
     let files = tempfile::tempdir().unwrap();
@@ -100,6 +121,8 @@ fn redundancy_by_failure_domain_offline_and_backup() {
     let (lib, s) = library(data.path(), &[&a, &b]);
 
     // Both folders really are on one volume: three files, one domain.
+    bounded_matches(&lib, &rec(&s[0], "x.txt"));
+    bounded_matches(&lib, &rec(&s[0], "solo.txt"));
     let r = lib.redundancy(&rec(&s[0], "x.txt")).unwrap();
     assert_eq!((r.copies, r.failure_domains, r.offline_copies), (3, 1, 0));
     assert_eq!(r.locations.len(), 3);
@@ -120,6 +143,7 @@ fn redundancy_by_failure_domain_offline_and_backup() {
     lib.refresh_status().join().unwrap();
     let r = lib.redundancy(&rec(&s[0], "x.txt")).unwrap();
     assert_eq!((r.copies, r.failure_domains, r.offline_copies), (3, 2, 1));
+    bounded_matches(&lib, &rec(&s[0], "x2.txt"));
     let vb = lib
         .volumes()
         .unwrap()
@@ -131,6 +155,7 @@ fn redundancy_by_failure_domain_offline_and_backup() {
     // Backup: a copy on a backup volume in another domain.
     lib.set_backup("vol-b", true).unwrap();
     assert!(lib.redundancy(&rec(&s[0], "x.txt")).unwrap().backed_up);
+    bounded_matches(&lib, &rec(&s[0], "x.txt"));
     assert!(!lib.redundancy(&rec(&s[0], "solo.txt")).unwrap().backed_up);
     // Archived: still counted and offline; lost: gone.
     lib.set_volume_state("vol-b", VolumeState::Archived)
@@ -141,6 +166,7 @@ fn redundancy_by_failure_domain_offline_and_backup() {
     let r = lib.redundancy(&rec(&s[0], "x.txt")).unwrap();
     assert_eq!((r.copies, r.failure_domains, r.backed_up), (2, 1, false));
     assert_eq!(r.locations.len(), 3, "listed, not counted");
+    bounded_matches(&lib, &rec(&s[0], "x.txt"));
     // Online hands it back to its sources' status.
     lib.set_volume_state("vol-b", VolumeState::Online).unwrap();
     let vb = lib

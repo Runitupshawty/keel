@@ -808,6 +808,117 @@ impl Library {
         self.redundancy_with(&vols, record)
     }
 
+    /// `redundancy` for the inspector, bounded: the counts from one aggregate per source,
+    /// and at most `max` of the OTHER copies (device claims last), with whether there are
+    /// more. Nothing per copy is read beyond those.
+    /// ponytail: a file seen through two sources (an alias) counts once per source here
+    /// where `redundancy` counts it once; carry the file keys across if that ever shows.
+    pub(crate) fn redundancy_bounded(
+        &self,
+        record: &RecordRef,
+        max: usize,
+    ) -> Result<(Redundancy, bool)> {
+        let vols = Volumes::load(&self.shared)?;
+        let src = self
+            .source(&record.source)
+            .with_context(|| format!("no source {}", record.source))?;
+        let cas: Option<Vec<u8>> = src
+            .store
+            .get()?
+            .query_row(
+                "SELECT cas_id FROM record WHERE id = ?1",
+                [record.id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("no record {}", record.id))?;
+        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        let (mut held, mut files, mut offline, mut backup) = (0, 0, 0, false);
+        let mut domains = HashSet::new();
+        let mut locations = Vec::new();
+        if let Some(cas) = &cas {
+            // Real copies first, then the devices' claims (as `holders` orders them).
+            let (real, claims): (Vec<_>, Vec<_>) = sources.iter().partition(|s| !s.is_device());
+            for s in real.into_iter().chain(claims) {
+                let claimed = s.is_device();
+                let filter = if claimed {
+                    "remote_cas = ?1 AND kind = 0"
+                } else {
+                    "cas_id = ?1 AND kind = 0 AND drift IS NULL"
+                };
+                let c = s.store.get()?;
+                if !claimed {
+                    let n: u64 = c.query_row(
+                        &format!(
+                            "SELECT count(DISTINCT CASE WHEN substr(fs_id, 1, 2) <> 'h:' \
+                             THEN fs_id ELSE ':' || id END) FROM record WHERE {filter}"
+                        ),
+                        [cas],
+                        |r| r.get(0),
+                    )?;
+                    let v = vols.of(s);
+                    held += n;
+                    if n > 0 && v.state.counts() {
+                        files += n;
+                        offline += if v.state.offline() { n } else { 0 };
+                        backup |= v.backup;
+                        domains.insert(v.failure_domain.clone());
+                    }
+                }
+                // One more than room, for the record itself and to know there are more.
+                let room = (max + 2).saturating_sub(locations.len());
+                if room == 1 {
+                    continue;
+                }
+                let mut stmt = c.prepare(&format!(
+                    "SELECT id, path FROM record WHERE {filter} ORDER BY id LIMIT ?2"
+                ))?;
+                let rows = stmt.query_map(params![cas, room as i64], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?;
+                let volume = vols.of(s);
+                for row in rows {
+                    let (id, path) = row?;
+                    if s.id == record.source && id == record.id {
+                        continue;
+                    }
+                    locations.push(CopyAt {
+                        record: RecordRef {
+                            source: s.id.clone(),
+                            id,
+                        },
+                        path: s.absolute(&path),
+                        source_label: s.def.label.clone(),
+                        volume: volume.clone(),
+                        claimed,
+                    });
+                }
+            }
+        }
+        let more = locations.len() > max;
+        locations.truncate(max);
+        let r = if held == 0 {
+            // No content id yet (or only drifted copies or claims): the record itself.
+            Redundancy {
+                copies: 1,
+                failure_domains: 1,
+                backed_up: false,
+                offline_copies: u64::from(vols.of(&src).state.offline()),
+                locations,
+            }
+        } else {
+            let d = domains.len() as u64;
+            Redundancy {
+                copies: files,
+                failure_domains: d,
+                backed_up: backup && d >= 2,
+                offline_copies: offline,
+                locations,
+            }
+        };
+        Ok((r, more))
+    }
+
     /// `redundancy` of many records (a folder's badges), reading the volumes once; None for a
     /// record that could not be read.
     pub fn redundancies(&self, records: &[RecordRef]) -> Result<Vec<Option<Redundancy>>> {
