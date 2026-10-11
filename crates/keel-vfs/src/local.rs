@@ -604,9 +604,48 @@ mod delete_tests {
             std::os::windows::fs::symlink_dir(&keep, dir.path().join("l")).unwrap();
             delete_permanently(&VPath::local(dir.path().join("l"))).unwrap();
             assert!(!dir.path().join("l").exists() && keep.join("b.txt").exists());
+        } else {
+            eprintln!("symbolic link part skipped: creating one needs Developer Mode or admin");
         }
         delete_permanently(&VPath::local(keep.join("b.txt"))).unwrap();
         assert!(!keep.join("b.txt").exists());
         assert!(delete_permanently(&VPath::local(dir.path().join("none"))).is_err());
+    }
+
+    /// A junction (made without Developer Mode) goes like a link: inside a deleted folder
+    /// or on its own, what it points to stays.
+    #[cfg(windows)]
+    #[test]
+    fn deletes_junctions_never_their_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let (keep, gone) = (dir.path().join("keep"), dir.path().join("gone"));
+        std::fs::create_dir_all(keep.join("sub")).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        std::fs::write(keep.join("sub").join("b.txt"), b"b").unwrap();
+        let junction = |at: &std::path::Path| {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(at)
+                .arg(&keep)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "mklink /J: {made:?}");
+            assert!(at.join("sub").join("b.txt").exists());
+        };
+        junction(&gone.join("j"));
+        delete_permanently(&VPath::local(&gone)).unwrap();
+        assert!(!gone.exists());
+        assert!(
+            keep.join("sub").join("b.txt").exists(),
+            "a junction's target stays"
+        );
+        let alone = dir.path().join("j");
+        junction(&alone);
+        delete_permanently(&VPath::local(&alone)).unwrap();
+        assert!(!alone.exists());
+        assert!(
+            keep.join("sub").join("b.txt").exists(),
+            "a junction's target stays"
+        );
     }
 }
