@@ -346,6 +346,7 @@ impl AppState {
         // --- Task 23 ---
         crate::view_columns::restore_session(&mut panes, &session.views, &session.columns);
         let mut preview = PreviewPanel::new(previewer);
+        preview.router = Some(router.clone());
         preview.open = settings.preview_open;
         preview.max_bytes = settings.max_preview_bytes();
         let mut state = Self {

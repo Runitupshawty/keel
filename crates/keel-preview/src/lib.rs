@@ -1,5 +1,6 @@
 //! File preview dispatch and rendering types for Keel.
 
+mod audio;
 mod docx;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -61,6 +62,19 @@ pub enum Preview {
         duration_s: f64,
         meta: String,
     },
+    /// An audio file (ffprobe and ffmpeg); the app plays it.
+    Audio {
+        /// The embedded cover art.
+        cover: Option<Rgba>,
+        /// The waveform, when it could be drawn (files up to 20 minutes).
+        wave: Option<Rgba>,
+        /// 0 when unknown.
+        duration_s: f64,
+        /// (label, value) for title, artist and album, those the file has.
+        tags: Vec<(String, String)>,
+        /// "flac · 44.1 kHz · stereo · 912 kb/s".
+        meta: String,
+    },
     Hex {
         head: Vec<u8>,
         size: u64,
@@ -84,10 +98,16 @@ pub struct Request {
 }
 
 /// Formats whose renderer reads only what it needs (a PDF page, one video frame, a RAW
-/// file's embedded preview), so the `MAX_PREVIEW_BYTES` cap does not apply to them.
+/// file's embedded preview, an audio file's tags), so the `MAX_PREVIEW_BYTES` cap does not
+/// apply to them.
 pub fn streams(ext: &str) -> bool {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();
-    pdf::accepts(&ext) || video::accepts(&ext) || image::is_raw(&ext)
+    pdf::accepts(&ext) || video::accepts(&ext) || image::is_raw(&ext) || audio::accepts(&ext)
+}
+
+/// Audio files: the app offers playback for their previews.
+pub fn is_audio(ext: &str) -> bool {
+    audio::accepts(&ext.trim_start_matches('.').to_ascii_lowercase())
 }
 
 pub fn accepts(ext: &str) -> bool {
@@ -100,6 +120,7 @@ pub fn accepts(ext: &str) -> bool {
         || pptx::accepts(&ext)
         || odf::accepts(&ext)
         || video::accepts(&ext)
+        || audio::accepts(&ext)
 }
 
 pub fn init_pdfium(dll_dir: &Path) {
@@ -167,6 +188,9 @@ pub(crate) fn preview_inner(req: &Request) -> Preview {
     if video::accepts(&ext) {
         return video::render(req);
     }
+    if audio::accepts(&ext) {
+        return audio::render(req);
+    }
     hex::render(req, size)
 }
 
@@ -200,8 +224,10 @@ mod tests {
     }
 
     #[test]
-    fn only_pdf_video_and_raw_skip_the_size_cap() {
-        for ext in ["pdf", "PDF", "mp4", ".mkv", "dng", "NEF", "cr3"] {
+    fn only_pdf_video_raw_and_audio_skip_the_size_cap() {
+        for ext in [
+            "pdf", "PDF", "mp4", ".mkv", "dng", "NEF", "cr3", "flac", "WAV",
+        ] {
             assert!(streams(ext), "{ext}");
         }
         for ext in ["txt", "png", "csv", "docx", ""] {

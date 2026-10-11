@@ -117,7 +117,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
 type Output = (ExitStatus, Vec<u8>, Vec<u8>);
 
 /// Runs with piped output and a hard TOOL_TIMEOUT; a hung tool is killed, never waited on.
-fn run(mut command: Command) -> Result<Output, String> {
+pub(crate) fn run(mut command: Command) -> Result<Output, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

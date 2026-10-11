@@ -4958,6 +4958,7 @@ dependencies = [
  "pulldown-cmark",
  "quick-xml 0.42.0",
  "resvg 0.44.0",
+ "serde_json",
  "syntect",
  "tempfile",
  "two-face",

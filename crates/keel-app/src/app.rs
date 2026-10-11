@@ -303,6 +303,8 @@ impl App {
             if s.preview.follow(ctx, target.as_ref()) {
                 s.toasts.error(crate::preview_panel::LOCKED);
             }
+        } else {
+            s.preview.stop_sound();
         }
         // Slides open and shut (Task 23); the width is the user's once fully open.
         let panel = egui::SidePanel::right("preview")

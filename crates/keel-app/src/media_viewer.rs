@@ -766,18 +766,8 @@ impl AppState {
             }
             return;
         }
-        let (real, router) = (req.real.clone(), self.media.sh.router.clone());
-        let resolve: crate::video_player::Resolve = std::sync::Arc::new(move |cancel, progress| {
-            if let Some(local) = real.to_local_path() {
-                return Ok(local);
-            }
-            let provider = router
-                .provider_for(&real)
-                .ok_or_else(|| anyhow::anyhow!("no provider"))?;
-            progress(0, 0);
-            let report = |p: keel_vfs::Progress| progress(p.done_bytes, p.total_bytes);
-            provider.local_copy_cancellable(&real, &report, cancel)
-        });
+        let resolve =
+            crate::video_player::resolve(Some(self.media.sh.router.clone()), req.real.clone());
         let mut p = VideoPlayer::new(ctx.clone(), resolve, &v.prefs, at, v.area_px);
         if c == Cmd::Toggle {
             p.command(Cmd::Toggle);

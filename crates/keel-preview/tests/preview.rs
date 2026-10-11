@@ -783,3 +783,83 @@ fn raw_files_preview_their_embedded_jpeg() {
         Preview::Error(_)
     ));
 }
+
+/// A 1 s 440 Hz tone with tags and a 64 x 48 cover, made by ffmpeg (None when this
+/// ffmpeg cannot encode `codec`).
+fn tone(dir: &Path, name: &str, codec: &str) -> Option<PathBuf> {
+    let cover = dir.join("cover.png");
+    image::RgbImage::from_pixel(64, 48, image::Rgb([200, 40, 40]))
+        .save(&cover)
+        .unwrap();
+    let out = dir.join(name);
+    let ok = std::process::Command::new(keel_core::find_tool("ffmpeg")?)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:duration=1")
+        .arg("-i")
+        .arg(&cover)
+        .args(["-map", "0:a", "-map", "1:v", "-c:a", codec, "-c:v", "png"])
+        .args(["-id3v2_version", "3", "-disposition:v", "attached_pic"])
+        .args(["-metadata", "title=Test Tone", "-metadata", "artist=Keel"])
+        .args(["-metadata", "album=Fixtures"])
+        .arg(&out)
+        .status()
+        .unwrap()
+        .success();
+    ok.then_some(out)
+}
+
+/// FLAC and MP3 tones show their tags, format, cover and waveform.
+#[test]
+fn audio_files_show_tags_cover_and_waveform() {
+    if !has_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let flac = tone(dir.path(), "tone.flac", "flac").expect("ffmpeg encodes FLAC");
+    let mp3 = tone(dir.path(), "tone.mp3", "libmp3lame");
+    if mp3.is_none() {
+        eprintln!("this ffmpeg has no MP3 encoder: MP3 skipped");
+    }
+    for (path, codec) in [(Some(flac), "flac"), (mp3, "mp3")] {
+        let Some(path) = path else { continue };
+        let result = preview(&temp_request(&path, codec, 320));
+        let Preview::Audio {
+            cover,
+            wave,
+            duration_s,
+            tags,
+            meta,
+        } = result
+        else {
+            panic!("{codec}: expected an audio preview, got {result:?}");
+        };
+        let tags: Vec<(&str, &str)> = tags.iter().map(|(k, v)| (&**k, &**v)).collect();
+        assert_eq!(
+            tags,
+            [
+                ("Title", "Test Tone"),
+                ("Artist", "Keel"),
+                ("Album", "Fixtures")
+            ],
+            "{codec}"
+        );
+        assert!((0.9..1.2).contains(&duration_s), "{codec}: {duration_s}");
+        assert!(meta.starts_with(codec), "{codec}: {meta}");
+        assert!(meta.contains("kHz") && meta.contains("kb/s"), "{meta}");
+        let cover = cover.expect("the cover");
+        assert_eq!((cover.w, cover.h), (64, 48), "{codec}: never enlarged");
+        let wave = wave.expect("the waveform");
+        assert_eq!((wave.w, wave.h), (320, 64), "{codec}");
+        assert!(
+            wave.data.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+            "something is drawn"
+        );
+    }
+    // Not audio at all: an error, not a crash.
+    let bad = dir.path().join("bad.mp3");
+    std::fs::write(&bad, b"not audio").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "mp3", 64)),
+        Preview::Error(_)
+    ));
+}

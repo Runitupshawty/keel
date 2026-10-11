@@ -28,6 +28,8 @@ quick-xml.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
 # HEIC, HEIF and AVIF through ffmpeg (keel-core's media module decodes them).
 keel-core = { path = "../keel-core", default-features = false }
+# ffprobe's JSON (audio files).
+serde_json.workspace = true
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 wait-timeout = "0.2"
 # Legacy (Windows-1252) text files.

@@ -1,6 +1,9 @@
 //! Preview panel (right side, F3): follows the active pane's cursor,
-//! renders on `worker::spawn_previewer` and keeps the last 64 previews.
+//! renders on `worker::spawn_previewer` and keeps the last 64 previews. Audio files play
+//! here (the video player's sound path), stopped when the selection moves or the panel
+//! closes.
 
+use crate::video_player::{clock_text, Cmd, Transport, VideoPlayer};
 use crate::view_details::{date_text, size_text};
 use crate::worker::PreviewJob;
 use crossbeam_channel::Sender;
@@ -9,8 +12,9 @@ use egui::{Color32, RichText, TextureHandle};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use keel_preview::{DocBlock, Preview, Rgba};
-use keel_vfs::{Entry, Kind, VPath};
+use keel_vfs::{Entry, Kind, Router, VPath};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub const CACHE: usize = 64;
 /// The cache also stays under this many bytes of decoded previews.
@@ -66,6 +70,7 @@ fn weight(p: &Preview) -> usize {
         Preview::Image(r) | Preview::Pdf { image: r, .. } | Preview::Video { thumb: r, .. } => {
             rgba(r)
         }
+        Preview::Audio { cover, wave, .. } => cover.iter().chain(wave).map(rgba).sum(),
         Preview::Text { lines, .. } => lines
             .iter()
             .flat_map(|l| l.iter().map(|(_, s)| s.len() + 8))
@@ -101,7 +106,12 @@ pub struct PreviewPanel {
     /// Larger files show "too large" without being read (Settings, max preview size).
     pub max_bytes: u64,
     entry: Option<Entry>,
+    /// The images of a Doc preview, or an audio file's waveform.
     doc_tex: Vec<TextureHandle>,
+    /// Plays the shown audio file (after Play or a click on its waveform).
+    player: Option<VideoPlayer>,
+    /// Downloads a remote audio file to play it.
+    pub router: Option<Arc<Router>>,
     /// Preview, last use, weight.
     cache: HashMap<PreviewKey, (Preview, u64, usize)>,
     cache_bytes: usize,
@@ -118,8 +128,14 @@ impl PreviewPanel {
         self.tex = None;
         self.entry = None;
         self.doc_tex.clear();
+        self.player = None;
         self.cache.clear();
         self.cache_bytes = 0;
+    }
+
+    /// Stops the sound (the panel closed).
+    pub fn stop_sound(&mut self) {
+        self.player = None;
     }
 
     pub fn new(jobs: Sender<PreviewJob>) -> Self {
@@ -134,6 +150,8 @@ impl PreviewPanel {
             max_bytes: keel_preview::MAX_PREVIEW_BYTES,
             entry: None,
             doc_tex: Vec::new(),
+            player: None,
+            router: None,
             cache: HashMap::new(),
             cache_bytes: 0,
             clock: 0,
@@ -160,6 +178,7 @@ impl PreviewPanel {
         }
         self.key = Some(key.clone());
         self.entry = Some(e.clone());
+        self.player = None;
         self.set(ctx, None);
         if e.kind == Kind::Dir {
             return false;
@@ -234,9 +253,11 @@ impl PreviewPanel {
             Some(
                 Preview::Image(r) | Preview::Pdf { image: r, .. } | Preview::Video { thumb: r, .. },
             ) => load(0, r),
+            Some(Preview::Audio { cover: Some(r), .. }) => load(0, r),
             _ => None,
         };
         self.doc_tex = match &preview {
+            Some(Preview::Audio { wave: Some(r), .. }) => load(1, r).into_iter().collect(),
             Some(Preview::Doc { blocks }) => blocks
                 .iter()
                 .filter_map(|b| match b {
@@ -334,6 +355,32 @@ impl PreviewPanel {
                     ui.weak(meta);
                 });
             }
+            Preview::Audio {
+                duration_s,
+                tags,
+                meta,
+                ..
+            } => {
+                let path = entry.path.clone();
+                let router = self.router.clone();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(t) = &self.tex {
+                        fit(ui, t);
+                    }
+                    egui::Grid::new("audio-tags").show(ui, |ui| {
+                        for (label, value) in tags {
+                            ui.weak(label);
+                            ui.add(egui::Label::new(value).wrap());
+                            ui.end_row();
+                        }
+                    });
+                    ui.weak(meta);
+                    ui.add_space(6.0);
+                    let resolve = || crate::video_player::resolve(router, path);
+                    let wave = self.doc_tex.first();
+                    audio_controls(ui, &mut self.player, resolve, wave, *duration_s);
+                });
+            }
             Preview::Table {
                 headers,
                 rows,
@@ -356,6 +403,103 @@ impl PreviewPanel {
             Preview::Unsupported => centered(ui, "No preview for this file", muted),
             Preview::Missing(why) => centered(ui, why, muted),
             Preview::Error(e) => centered(ui, &format!("Preview failed: {e}"), muted),
+        }
+    }
+}
+
+/// Play / Pause, the time, and the waveform (or a bar) to click to seek. The first Play or
+/// click starts a player.
+fn audio_controls(
+    ui: &mut egui::Ui,
+    player: &mut Option<VideoPlayer>,
+    resolve: impl FnOnce() -> crate::video_player::Resolve,
+    wave: Option<&TextureHandle>,
+    duration: f64,
+) {
+    let pos = match player {
+        Some(p) => {
+            p.frame([1.0, 1.0]);
+            p.position()
+        }
+        None => 0.0,
+    };
+    let dur = player
+        .as_ref()
+        .and_then(VideoPlayer::duration)
+        .unwrap_or(duration);
+    let playing = player.as_ref().is_some_and(|p| p.transport.playing);
+    let mut cmd = None;
+    ui.horizontal(|ui| {
+        let (label, tip) = if playing {
+            ("Pause", "Pause")
+        } else {
+            ("▶ Play", "Play")
+        };
+        if ui.button(label).on_hover_text(tip).clicked() {
+            cmd = Some(Cmd::Toggle);
+        }
+        ui.label(format!("{} / {}", clock_text(pos), clock_text(dur)));
+    });
+    let ppp = ui.ctx().pixels_per_point();
+    let h = wave.map_or(10.0, |t| (t.size_vec2().y / ppp).clamp(24.0, 96.0));
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let resp = resp.on_hover_text("Click to play from there");
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals();
+    match wave {
+        Some(t) => {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            painter.image(t.id(), rect, uv, Color32::WHITE);
+        }
+        None => {
+            painter.rect_filled(rect, 3.0, visuals.extreme_bg_color);
+        }
+    }
+    if dur > 0.0 {
+        let x = rect.left() + rect.width() * (pos / dur).clamp(0.0, 1.0) as f32;
+        let played = egui::Rect::from_min_max(rect.min, egui::pos2(x, rect.bottom()));
+        painter.rect_filled(played, 0.0, visuals.selection.bg_fill.gamma_multiply(0.35));
+        painter.vline(x, rect.y_range(), visuals.selection.stroke);
+        if resp.clicked() {
+            if let Some(at) = resp.interact_pointer_pos() {
+                let t = f64::from((at.x - rect.left()) / rect.width().max(1.0)) * dur;
+                cmd = Some(Cmd::Seek(t));
+            }
+        }
+    }
+    if let Some(p) = player.as_ref() {
+        if let Some(text) = p.download_text() {
+            ui.weak(text);
+        }
+        if let Some(e) = &p.error {
+            ui.weak(format!("Playback failed: {e}"));
+        }
+    }
+    let Some(cmd) = cmd else {
+        return;
+    };
+    match player {
+        Some(p) => {
+            p.command(cmd);
+            if matches!(cmd, Cmd::Seek(_)) && !p.transport.playing {
+                p.command(Cmd::Toggle);
+            }
+        }
+        None => {
+            let at = match cmd {
+                Cmd::Seek(t) => t,
+                _ => 0.0,
+            };
+            let mut p = VideoPlayer::new(
+                ui.ctx().clone(),
+                resolve(),
+                &Transport::default(),
+                at,
+                [1.0, 1.0],
+            );
+            p.command(Cmd::Toggle);
+            *player = Some(p);
         }
     }
 }
@@ -621,6 +765,28 @@ mod tests {
                 },
                 duration_s: 2.0,
                 meta: "h264".into(),
+            },
+            Preview::Audio {
+                cover: Some(Rgba {
+                    w: 2,
+                    h: 2,
+                    data: vec![200; 16],
+                }),
+                wave: Some(Rgba {
+                    w: 4,
+                    h: 1,
+                    data: vec![90; 16],
+                }),
+                duration_s: 61.5,
+                tags: vec![("Title".into(), "Tone".into())],
+                meta: "flac · 44.1 kHz".into(),
+            },
+            Preview::Audio {
+                cover: None,
+                wave: None,
+                duration_s: 0.0,
+                tags: vec![],
+                meta: String::new(),
             },
             Preview::Hex {
                 head: (0..40).collect(),

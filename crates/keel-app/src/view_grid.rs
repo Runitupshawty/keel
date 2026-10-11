@@ -104,9 +104,10 @@ impl Thumbs {
     pub fn insert(&mut self, ctx: &egui::Context, key: PreviewKey, preview: Preview) {
         self.pending.remove(&key);
         let rgba = match preview {
-            Preview::Image(r) | Preview::Pdf { image: r, .. } | Preview::Video { thumb: r, .. } => {
-                Some(r)
-            }
+            Preview::Image(r)
+            | Preview::Pdf { image: r, .. }
+            | Preview::Video { thumb: r, .. }
+            | Preview::Audio { cover: Some(r), .. } => Some(r),
             _ => None,
         };
         let tex = rgba
