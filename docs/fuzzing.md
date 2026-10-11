@@ -41,9 +41,10 @@ crate's `fuzzing` feature.
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images) |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
-`x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks
-and .vsix packages) run only in `cargo test` (`crates/keel-app/src/fuzz_tests.rs`, targets
-`clipboard`, `desktop_entry`, `icon_svg`, `vsix`). PDF and video previews hand the file to
+`x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,
+.vsix packages and VS Code color theme JSON) run only in `cargo test`
+(`crates/keel-app/src/fuzz_tests.rs`, targets `clipboard`, `desktop_entry`, `icon_svg`,
+`vsix`, `color_theme`). PDF and video previews hand the file to
 pdfium and ffmpeg and are not fuzzed here.
 
 ## Running libFuzzer

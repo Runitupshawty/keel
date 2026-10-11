@@ -16,7 +16,7 @@ Keel is an open-source file manager for Windows, macOS and Linux, written in Rus
 - **A media view** for photos and videos, with a full-window viewer and video playback.
 - **Devices**: pair your own computers, share folders, send files with Spacedrop and keep tags in sync.
 - **Daemon, CLI and MCP**: the library from a terminal, over JSON-RPC, in a browser or on a phone, and for AI agents, always preview first.
-- **Profiles, dark and light themes, and VS Code icon themes.**
+- **Profiles, six color themes, and VS Code color and icon themes.**
 
 The complete list is in [docs/features.md](docs/features.md).
 
@@ -73,7 +73,7 @@ The guide covers everyday use; these pages hold the details.
 | Topic | Page |
 | --- | --- |
 | Every feature in one list, where settings are kept | [docs/features.md](docs/features.md) |
-| Keyboard shortcuts, columns view and drop zone, archives, Recycle Bin and Trash, terminal, search without Everything, command line, profiles, icon themes | [docs/files.md](docs/files.md) |
+| Keyboard shortcuts, columns view and drop zone, folder sizes, archives, Recycle Bin and Trash, terminal, search without Everything, command line, profiles, color and icon themes | [docs/files.md](docs/files.md) |
 | Library (sources, search syntax, hashing, resuming, the daemon), media view, protection | [docs/library.md](docs/library.md) |
 | Remotes over SSH, `~/.ssh/config` and jump hosts | [docs/remotes.md](docs/remotes.md) |
 | Devices and Spacedrop, library sync, web client, phones | [docs/devices.md](docs/devices.md) |

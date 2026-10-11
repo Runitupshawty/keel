@@ -264,7 +264,7 @@ Everything the library can do is also a typed operation that `keel-daemon` serve
 
 **Profiles** are separate sets of settings and open tabs. Settings → **Profiles** creates one (a copy of the current settings), renames, deletes and switches; the command palette has **Switch profile: <name>**, and `keel --profile <name>` starts in a profile. Each profile has its own `keel-daemon`.
 
-**Themes**: Keel has a dark and a light theme; switch in Settings → **General** → **Theme** or with **Theme** in the status bar. To change colours, put a `dark.toml` or `light.toml` in the `themes` folder of the configuration folder (see below); it overrides the built-in colours.
+**Themes**: Keel has six built-in color themes (dark, light, Midnight, Paper, Dusk and High contrast); pick one in Settings → **General** → **Theme** (**Theme** in the status bar toggles dark and light). Any `.toml` file in the `themes` folder of the configuration folder (see below) is listed too, and a VS Code color theme installs from the Marketplace next to **Color themes**, after you read its license and press **I accept**. More in [Color themes](files.md#color-themes).
 
 **Icon themes**: Settings → **Icons** previews the built-in file icons and any installed theme and switches between them. To install a VS Code icon theme, type its Marketplace id (for example `PKief.material-icon-theme`), press **Install from VS Code Marketplace…**, read its license and press **I accept**. More in [Icon themes](files.md#icon-themes).
 
