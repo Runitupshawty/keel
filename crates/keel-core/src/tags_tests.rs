@@ -214,6 +214,12 @@ fn recents_merge_opens_and_executed_operations() {
     .unwrap();
     let job = copy.execute(lib, true).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    // Tag changes after them do not crowd them out.
+    let t = lib.create_tag("t", None, None).unwrap();
+    for i in 0..50 {
+        lib.set_tag(t, std::slice::from_ref(&a), i % 2 == 0)
+            .unwrap();
+    }
 
     let recents = lib.recents(10).unwrap();
     let mut ops = names(recents[..2].to_vec());

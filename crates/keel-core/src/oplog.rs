@@ -201,6 +201,18 @@ pub(crate) fn entries(lib: &Shared, limit: usize) -> Result<Vec<OpLogEntry>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The newest finished copies, moves and renames (whose targets Recents shows), newest
+/// first: tag changes, which can be many, never crowd them out.
+pub(crate) fn target_entries(lib: &Shared, limit: usize) -> Result<Vec<OpLogEntry>> {
+    let conn = lib.db.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, kind, payload, result, ok FROM op_log
+         WHERE kind IN ('copy', 'move', 'rename') AND ok = 1 ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit as i64], row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// An entry from `SELECT id, ts, kind, payload, result, ok FROM op_log`.
 pub(crate) fn row(r: &rusqlite::Row) -> rusqlite::Result<OpLogEntry> {
     Ok(OpLogEntry {
