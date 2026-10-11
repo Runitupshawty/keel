@@ -197,17 +197,20 @@ pub(crate) fn entries(lib: &Shared, limit: usize) -> Result<Vec<OpLogEntry>> {
     let mut stmt = conn.prepare(
         "SELECT id, ts, kind, payload, result, ok FROM op_log ORDER BY id DESC LIMIT ?1",
     )?;
-    let rows = stmt.query_map([limit as i64], |r| {
-        Ok(OpLogEntry {
-            id: r.get(0)?,
-            ts: r.get(1)?,
-            kind: r.get(2)?,
-            payload: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
-            result: r.get(4)?,
-            ok: r.get(5)?,
-        })
-    })?;
+    let rows = stmt.query_map([limit as i64], row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// An entry from `SELECT id, ts, kind, payload, result, ok FROM op_log`.
+pub(crate) fn row(r: &rusqlite::Row) -> rusqlite::Result<OpLogEntry> {
+    Ok(OpLogEntry {
+        id: r.get(0)?,
+        ts: r.get(1)?,
+        kind: r.get(2)?,
+        payload: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+        result: r.get(4)?,
+        ok: r.get(5)?,
+    })
 }
 
 #[cfg(test)]

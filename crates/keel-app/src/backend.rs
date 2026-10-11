@@ -1039,6 +1039,20 @@ impl LibraryBackend {
         (answered, out)
     }
 
+    /// Task 59: `library.inspect` (in this process through the same operation).
+    pub fn inspect(&self, path: &VPath, max: usize) -> Result<api::Inspection> {
+        let params = json!({"path": path.display(), "max": max});
+        let answer = match self {
+            LibraryBackend::InProcess(lib) => {
+                let ctx = keel_api::Ctx::new(lib.clone(), lib.router());
+                keel_api::call(&ctx, "library.inspect", params)
+            }
+            LibraryBackend::Daemon(r) => r.call_raw("library.inspect", params),
+        };
+        let v = answer.map_err(|e| anyhow::anyhow!("{}", e.message))?;
+        Ok(serde_json::from_value(v)?)
+    }
+
     /// Ctrl+P's file finder: up to `max` indexed files (display paths), each source's newest
     /// first, and whether there were more.
     pub fn file_names(&self, max: usize) -> Result<(Vec<String>, bool)> {

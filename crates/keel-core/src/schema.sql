@@ -342,3 +342,9 @@ CREATE TRIGGER record_total_au AFTER UPDATE OF parent, kind, size, flags ON reco
     INSERT OR IGNORE INTO folder_dirty SELECT new.parent WHERE new.parent IS NOT NULL;
     INSERT OR IGNORE INTO folder_dirty SELECT new.id WHERE new.kind = 1;
 END;
+
+-- @source 10
+-- The inspector (Task 59): when the index first saw a record and when its bytes were last
+-- hashed (unix seconds; NULL = before this version, or not hashed here).
+ALTER TABLE record ADD COLUMN seen INTEGER;
+ALTER TABLE record ADD COLUMN hashed INTEGER;

@@ -24,6 +24,7 @@ mod fsid;
 pub mod fuzz;
 mod hash;
 mod index;
+mod inspect;
 mod integrity;
 mod jobs;
 mod library;
@@ -52,6 +53,7 @@ pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,
     RECONCILE_INTERVAL, WALK_INTERVAL,
 };
+pub use inspect::{FolderTotals, History, Inspection};
 pub use integrity::{IntegrityJob, IntegrityResult, DEFAULT_SAMPLE_PCT, INTEGRITY_EVERY};
 pub use jobs::{Job, JobCtx, JobEvent, JobId, JobInfo, JobStatus, Jobs, Restore};
 pub use library::{

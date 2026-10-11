@@ -269,12 +269,23 @@ fn upsert(
         | if item.error.is_some() { UNREADABLE } else { 0 };
     let Some(f) = found else {
         c.prepare_cached(
-            "INSERT INTO record(parent, name, path, kind, size, mtime, ctime, fs_id, gen, flags, error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO record(parent, name, path, kind, size, mtime, ctime, fs_id, gen, flags, error,
+                 seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?
         .execute(params![
-            parent, item.name, rel, item.kind, item.size, item.mtime, item.ctime, fs_id, gen,
-            flags, item.error
+            parent,
+            item.name,
+            rel,
+            item.kind,
+            item.size,
+            item.mtime,
+            item.ctime,
+            fs_id,
+            gen,
+            flags,
+            item.error,
+            crate::now()
         ])?;
         return Ok((c.last_insert_rowid(), Outcome::Inserted));
     };
@@ -309,7 +320,9 @@ fn upsert(
              sampled_hash = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
                  THEN sampled_hash END,
              drift = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
-                 THEN drift END
+                 THEN drift END,
+             hashed = CASE WHEN size = ?3 AND mtime IS ?4 AND ctime IS ?5 AND kind = ?2
+                 THEN hashed END
          WHERE id = ?1",
     )?
     .execute(params![

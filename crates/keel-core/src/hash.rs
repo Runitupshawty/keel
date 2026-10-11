@@ -786,9 +786,9 @@ impl HashJob {
             match full_hash(&path, size as u64, ctx.stop_flag()) {
                 Ok(full) => {
                     self.reconfirmed += s.store.get()?.execute(
-                        "UPDATE record SET cas_id = ?2
+                        "UPDATE record SET cas_id = ?2, hashed = ?4
                          WHERE id = ?1 AND sampled_hash = ?3 AND cas_id IS NULL",
-                        params![id, &full[..], sampled],
+                        params![id, &full[..], sampled, crate::now()],
                     )? as u64;
                 }
                 Err(e) if e.is::<Cancelled>() => return Err(e),
@@ -831,7 +831,7 @@ fn hash_one(ctx: &JobCtx, src: &Source, rec: &Pending, path: &Path) -> Result<bo
 fn save_hash(src: &Source, rec: &Pending, sampled: &[u8; 32], cas: Option<[u8; 32]>) -> Result<()> {
     // Guarded: a record the indexer changed meanwhile keeps its reset hashes.
     src.store.get()?.execute(
-        "UPDATE record SET sampled_hash = ?2, cas_id = ?3
+        "UPDATE record SET sampled_hash = ?2, cas_id = ?3, hashed = ?7
          WHERE id = ?1 AND kind = 0 AND size = ?4 AND sampled_hash IS NULL
              AND mtime IS ?5 AND ctime IS ?6",
         params![
@@ -840,7 +840,8 @@ fn save_hash(src: &Source, rec: &Pending, sampled: &[u8; 32], cas: Option<[u8; 3
             cas.as_ref().map(|c| &c[..]),
             rec.size as i64,
             rec.mtime,
-            rec.ctime
+            rec.ctime,
+            crate::now()
         ],
     )?;
     Ok(())
@@ -876,9 +877,9 @@ fn confirm_others(ctx: &JobCtx, me: &Source, my_id: i64, sampled: &[u8]) -> Resu
             match full_hash(&path, size as u64, ctx.stop_flag()) {
                 Ok(full) => {
                     s.store.get()?.execute(
-                        "UPDATE record SET cas_id = ?2
+                        "UPDATE record SET cas_id = ?2, hashed = ?4
                          WHERE id = ?1 AND sampled_hash = ?3 AND cas_id IS NULL",
-                        params![id, &full[..], sampled],
+                        params![id, &full[..], sampled, crate::now()],
                     )?;
                 }
                 Err(e) if e.is::<Cancelled>() => return Err(e),

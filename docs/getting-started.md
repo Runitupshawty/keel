@@ -136,6 +136,7 @@ Keel opens on your home folder in both panes.
 | Ctrl+P | Jump to a folder or file by name |
 | Ctrl+Shift+P | Command palette |
 | F3 | Preview panel |
+| Ctrl+I | Inspector: copies, history and tags of the selected item |
 | F2 / Ctrl+F2 | Rename / bulk rename |
 | Ctrl+C, Ctrl+X, Ctrl+V | Copy, cut, paste (also with other apps) |
 | Del | Move to the Recycle Bin or Trash |

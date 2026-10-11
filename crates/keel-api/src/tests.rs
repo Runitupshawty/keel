@@ -126,6 +126,7 @@ fn registry_is_preview_first() {
         "redundancy.folder",
         "library.stats",
         "library.folder_sizes",
+        "library.inspect",
         "files.names",
         "protection.summary",
         "volumes.list",
@@ -1610,6 +1611,111 @@ fn library_folder_sizes_reads_the_index() {
         &f.ctx,
         "library.folder_sizes",
         json!({"path": s(outside.path())}),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiError::NOT_FOUND, "{err:?}");
+}
+
+/// Task 59: `library.inspect` on a hashed file with a copy in a second source (tagged), a
+/// renamed file (its history), a folder (totals) and a path outside the library.
+#[test]
+fn library_inspect_shows_copies_history_tags_and_totals() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let second = tempfile::tempdir().unwrap();
+    std::fs::write(second.path().join("invoice copy.pdf"), b"pdf bytes").unwrap();
+    let added = apply(&f.ctx, "sources.add", json!({"root": s(second.path())}));
+    let wait = |job: &Value| {
+        let info = f.ctx.lib.jobs().wait(job.as_i64().unwrap()).unwrap();
+        assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    };
+    wait(&apply(&f.ctx, "sources.index", json!({"id": added["id"]}))["job"]);
+    let notes = format!("library://{id}/docs/notes.txt");
+    let rename = json!({"op": "rename", "paths": [notes], "new_name": "notes-2026.txt"});
+    let preview: PlanPreview =
+        serde_json::from_value(call(&f.ctx, "plan", rename).unwrap()).unwrap();
+    let ids = json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash});
+    wait(&call(&f.ctx, "execute", ids).unwrap()["job"]);
+    wait(
+        &apply(
+            &f.ctx,
+            "hashing.set",
+            json!({"on": true, "idle_only": false}),
+        )["job"],
+    );
+    let pdf = s(&f.files.path().join("docs").join("invoice-2026.pdf"));
+    apply(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "receipts", "paths": [pdf]}),
+    );
+    let op = OPS.iter().find(|o| o.name == "library.inspect").unwrap();
+    assert!(!op.mutating);
+    let schema = jsonschema::validator_for(&(op.result)()).unwrap();
+    let inspect = |path: &str| {
+        let v = call(&f.ctx, "library.inspect", json!({ "path": path })).unwrap();
+        assert!(schema.is_valid(&v), "{v}");
+        serde_json::from_value::<Inspection>(v).unwrap()
+    };
+
+    let i = inspect(&pdf);
+    assert_eq!(
+        (i.entry.name.as_str(), i.entry.size),
+        ("invoice-2026.pdf", 9)
+    );
+    let lib = i.library.expect("indexed");
+    assert_eq!(lib.source, id);
+    assert_eq!(lib.content_id.as_ref().map(String::len), Some(64));
+    assert!(
+        lib.first_seen.is_some() && lib.last_hashed.is_some(),
+        "{lib:?}"
+    );
+    let copies = lib.copies.expect("a file");
+    assert_eq!(copies.copies, 2);
+    let other = s(&second.path().join("invoice copy.pdf"));
+    let paths: Vec<_> = copies.locations.iter().map(|l| l.path.clone()).collect();
+    assert_eq!(paths, std::slice::from_ref(&other), "only the other copy");
+    assert_eq!(
+        lib.tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        ["receipts"]
+    );
+    assert!(!lib.favorite);
+    assert_eq!(lib.history.len(), 1, "{:?}", lib.history);
+    assert_eq!(
+        (lib.history[0].kind.as_str(), lib.history[0].tag.as_deref()),
+        ("tag", Some("receipts"))
+    );
+    // The copy knows the first as its other copy.
+    let copy = inspect(&other).library.unwrap().copies.unwrap();
+    assert_eq!(copy.locations[0].path, pdf);
+
+    let renamed = inspect(&s(&f.files.path().join("docs").join("notes-2026.txt")));
+    let h = &renamed.library.unwrap().history;
+    assert_eq!(h.len(), 1, "{h:?}");
+    assert_eq!(h[0].kind, "rename");
+    assert_eq!(
+        h[0].from.as_deref(),
+        Some(&*s(&f.files.path().join("docs").join("notes.txt")))
+    );
+
+    // A folder by its library path: totals, no copies.
+    let docs = inspect(&format!("library://{id}/docs")).library.unwrap();
+    assert!(docs.copies.is_none() && docs.content_id.is_none());
+    let t = docs.folder.expect("a folder");
+    assert_eq!((t.bytes, t.files, t.folders), (Some(19), Some(2), 0));
+    assert_eq!(t.biggest.unwrap().name, "notes-2026.txt");
+    let root = inspect(&s(f.files.path())).library.unwrap().folder.unwrap();
+    assert_eq!((root.files, root.folders), (Some(2), 1));
+
+    // Outside the library: the entry, nothing else.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("x.txt"), b"x").unwrap();
+    let i = inspect(&s(&outside.path().join("x.txt")));
+    assert_eq!((i.entry.size, i.library), (1, None));
+    let err = call(
+        &f.ctx,
+        "library.inspect",
+        json!({"path": s(&outside.path().join("missing.txt"))}),
     )
     .unwrap_err();
     assert_eq!(err.code, ApiError::NOT_FOUND, "{err:?}");

@@ -335,6 +335,24 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     assert!(s.daemon.ctx().lib.hash_idle_only());
     assert_eq!(b.set_hashing(false, true, None).unwrap(), None);
     wait_job(&b, b.integrity(1.0).unwrap());
+    // Task 59: the inspector reads through the daemon too.
+    let renamed = VPath::local(s.files.path().join("docs").join("notes-2026.txt"));
+    let lib = b.inspect(&renamed, 50).unwrap().library.expect("indexed");
+    assert_eq!(lib.history[0].kind, "rename", "{:?}", lib.history);
+    assert!(lib.first_seen.is_some() && lib.copies.is_some(), "{lib:?}");
+    let lib = b.inspect(&invoice, 50).unwrap().library.unwrap();
+    assert!(lib.favorite && lib.tags.is_empty(), "{lib:?}");
+    let kinds: Vec<_> = (lib.history.iter())
+        .map(|h| (h.kind.as_str(), h.tag.as_deref()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("tag", Some("Favorites")),
+            ("untag", Some("receipts")),
+            ("tag", Some("receipts"))
+        ]
+    );
     wait_job(&b, b.media_job(&id).unwrap());
     let kinds = b.job_kinds().unwrap();
     for kind in ["index", "hash", "integrity", "sidecar"] {

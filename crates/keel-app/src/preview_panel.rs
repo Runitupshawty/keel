@@ -97,6 +97,9 @@ fn weight(p: &Preview) -> usize {
 
 pub struct PreviewPanel {
     pub open: bool,
+    /// Task 59: Preview or Inspector.
+    pub tab: crate::inspector::PanelTab,
+    pub inspector: crate::inspector::Inspector,
     pub key: Option<PreviewKey>,
     pub current: Option<Preview>,
     pub page: u32,
@@ -134,6 +137,12 @@ impl PreviewPanel {
         self.cache_bytes = 0;
     }
 
+    /// F3 / Ctrl+I: shows the panel on `tab`, or hides it when it already shows `tab`.
+    pub fn toggle(&mut self, tab: crate::inspector::PanelTab) {
+        self.open = !(self.open && self.tab == tab);
+        self.tab = tab;
+    }
+
     /// Stops the sound (the panel closed).
     pub fn stop_sound(&mut self) {
         self.player = None;
@@ -142,6 +151,8 @@ impl PreviewPanel {
     pub fn new(jobs: Sender<PreviewJob>) -> Self {
         Self {
             open: false,
+            tab: Default::default(),
+            inspector: Default::default(),
             key: None,
             current: None,
             page: 0,

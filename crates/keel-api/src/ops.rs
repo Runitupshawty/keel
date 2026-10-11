@@ -116,6 +116,8 @@ pub static OPS: &[Operation] = &[
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
         FolderSizesParams => FolderSizes, library_folder_sizes, json!({"path": example_dir()})),
+    now!("library.inspect", "Everything the library knows about one path, for an inspector: the entry from the file system, and when indexed its source, volume, content id, first seen, last hashed, protection count, the other files with its content, its history from the operation log (copied, moved, renamed, deleted, tagged; newest first), its tags and a folder's totals. Lists at most `max` (default 50); read-only.",
+        InspectParams => Inspection, library_inspect, json!({"path": example_file(), "max": 50})),
     previewed!("library.backup", "Writes a backup of the library (its index with tags, favorites and content ids, and its sources) to a new .keelbackup file on the host; thumbnails and the search index are rebuilt after a restore.",
         BackupParams => BackupWritten, backup_preview, backup, json!({"file": example_backup()})),
     previewed!("library.restore", "Restores a .keelbackup file on the host as a new library (never replacing one: `name` picks another name); sources whose folder exists there are walked again when it opens, the others are offline.",
@@ -1216,6 +1218,101 @@ fn library_folder_sizes(ctx: &Ctx, p: FolderSizesParams) -> Result<FolderSizes> 
                 }
             })
             .collect(),
+    })
+}
+
+/// `library.inspect`'s longest lists.
+const INSPECT_MAX: usize = 1000;
+
+fn library_inspect(ctx: &Ctx, p: InspectParams) -> Result<Inspection> {
+    let path = vpath(&p.path)?;
+    let real = crate::files::real(ctx, &path)?;
+    crate::files::readable(ctx, &real)?;
+    let max = p.max.unwrap_or(50).clamp(1, INSPECT_MAX);
+    let found = ctx.lib.inspect(&path, max)?;
+    let live = (ctx.router.provider_for(&real)).and_then(|pr| pr.stat(&real).ok());
+    let entry = match (live, &found) {
+        (Some(e), _) => EntryInfo {
+            name: e.name.clone(),
+            path: path.display(),
+            is_dir: e.kind == keel_vfs::Kind::Dir,
+            size: e.size,
+            modified: unix(e.modified),
+            hidden: e.hidden,
+        },
+        (None, Some(i)) => EntryInfo {
+            name: i.path.name().to_owned(),
+            path: path.display(),
+            is_dir: i.is_dir,
+            size: i.size,
+            modified: i.modified,
+            hidden: false,
+        },
+        (None, None) => {
+            return Err(ApiError::not_found(format!(
+                "{} cannot be reached and is not in the library",
+                path.display()
+            )))
+        }
+    };
+    let Some(i) = found else {
+        return Ok(Inspection {
+            entry,
+            library: None,
+        });
+    };
+    let all = ctx.lib.tags()?;
+    let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(Inspection {
+        entry,
+        library: Some(InspectedRecord {
+            source: i.record.source.0.clone(),
+            source_label: i.source_label,
+            record: i.record.id,
+            volume: volume_info(i.volume),
+            content_id: i.content_id.map(|c| hex(&c)),
+            first_seen: i.first_seen,
+            last_hashed: i.last_hashed,
+            copies: i.redundancy.map(Copies::from),
+            more_copies: i.more_copies,
+            tags: all
+                .into_iter()
+                .filter(|t| i.tags.contains(&t.id))
+                .map(|t| TagInfo {
+                    id: t.id,
+                    name: t.name,
+                    color: t.color,
+                    parent: t.parent,
+                })
+                .collect(),
+            favorite: i.tags.contains(&FAVORITES),
+            history: i
+                .history
+                .into_iter()
+                .map(|h| HistoryEntry {
+                    id: h.id,
+                    ts: h.ts,
+                    kind: h.kind,
+                    ok: h.ok,
+                    from: h.from,
+                    to: h.to,
+                    tag: h.tag,
+                })
+                .collect(),
+            more_history: i.more_history,
+            folder: i.folder.map(|f| FolderTotals {
+                bytes: f.total.map(|t| t.bytes),
+                files: f.total.map(|t| t.files),
+                folders: f.folders,
+                biggest: f.biggest.map(|c| ChildSize {
+                    path: i.path.join(&c.name).display(),
+                    name: c.name,
+                    is_dir: c.is_dir,
+                    bytes: c.total.map(|t| t.bytes),
+                    files: c.total.map(|t| t.files),
+                }),
+            }),
+        }),
     })
 }
 

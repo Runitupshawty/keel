@@ -164,6 +164,8 @@ pub enum Action {
     ReindexFolders,
     Palette,
     TogglePreview,
+    /// Task 59: the preview panel's Inspector tab (Ctrl+I).
+    ToggleInspector,
     /// Settings window (Ctrl+,).
     Settings,
     /// Palette "Switch profile: <name>".
@@ -292,6 +294,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::Enter, Action::OpenLocation),
     (CMD, Key::F, Action::Search),
     (CMD, Key::E, Action::FocusFilter),
+    (CMD, Key::I, Action::ToggleInspector),
     (CMD, Key::L, Action::FocusPath),
     (CMD, Key::T, Action::NewTab),
     (CMD, Key::W, Action::CloseTab),
@@ -334,6 +337,7 @@ const WHILE_TYPING: &[Action] = &[
     Action::Search,
     Action::ToggleDual,
     Action::TogglePreview,
+    Action::ToggleInspector,
     Action::NewTab,
     Action::CloseTab,
     Action::Settings,

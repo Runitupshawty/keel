@@ -60,7 +60,7 @@ fn check_name(name: &str) -> Result<()> {
 }
 
 /// A display path from the op log back to a path (None when it was redacted).
-fn vpath_of(shown: &str) -> Option<VPath> {
+pub(crate) fn vpath_of(shown: &str) -> Option<VPath> {
     if shown.contains("://") {
         VPath::parse(shown).ok()
     } else if shown.starts_with('<') {
@@ -406,13 +406,34 @@ impl Library {
     }
 
     /// Applies (`on`) or removes a tag on records, one transaction per source. Records that
-    /// no longer exist are skipped.
+    /// no longer exist are skipped. The records that changed go into the operation log
+    /// (`tag` / `untag`, their paths and the tag's name: the inspector's history).
     pub fn set_tag(&self, tag: TagId, records: &[RecordRef], on: bool) -> Result<()> {
         let changed = self.set_tag_rows(tag, records, on)?;
         let uid = self.tag_uid(tag)?;
         let mut changes = Vec::new();
+        let mut paths = Vec::new();
         for (src, ids) in changed {
+            {
+                let c = src.store.get()?;
+                let mut stmt = c.prepare_cached("SELECT path FROM record WHERE id = ?1")?;
+                for id in &ids {
+                    if let Some(rel) = stmt.query_row([id], |r| r.get::<_, String>(0)).optional()? {
+                        paths.push(src.absolute(&rel).display());
+                    }
+                }
+            }
             changes.extend(self.assign_changes(&uid, &src, &ids, on)?);
+        }
+        if !paths.is_empty() {
+            let name: String = self.shared.db.get()?.query_row(
+                "SELECT name FROM tag WHERE id = ?1",
+                [tag],
+                |r| r.get(0),
+            )?;
+            let kind = if on { "tag" } else { "untag" };
+            let payload = serde_json::json!({ "tag": name, "paths": paths });
+            self.log_op(kind, &payload, "ok", true)?;
         }
         self.log_sync(changes)
     }

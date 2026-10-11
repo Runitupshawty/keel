@@ -129,6 +129,11 @@ pub enum Msg {
         key: PreviewKey,
         preview: keel_preview::Preview,
     },
+    /// Task 59: `library.inspect`'s answer to inspector request `req`.
+    Inspected {
+        req: u64,
+        result: Box<Result<keel_api::types::Inspection, String>>,
+    },
     JobProgress {
         id: u64,
         p: keel_vfs::Progress,
@@ -898,6 +903,7 @@ impl AppState {
                 self.list_columns(Some((&dir, since)));
             }
             Msg::Preview { key, preview } => self.preview.insert(&self.ctx, key, preview),
+            Msg::Inspected { req, result } => self.preview.inspector.answered(req, *result),
             Msg::Search { id, result } => self.searched(id, result),
             Msg::Searcher { searcher, reason } => {
                 self.searcher = Some(searcher);
@@ -2277,7 +2283,8 @@ impl AppState {
             Action::ShellMenu { extended, keyboard } => self.shell_menu(p, extended, keyboard),
             #[cfg(windows)]
             Action::ShellCommand(id) => self.shell_command(id),
-            Action::TogglePreview => self.preview.open = !self.preview.open,
+            Action::TogglePreview => self.preview.toggle(crate::inspector::PanelTab::Preview),
+            Action::ToggleInspector => self.preview.toggle(crate::inspector::PanelTab::Inspector),
             Action::ExtractHere
             | Action::ExtractToFolder
             | Action::ExtractTo

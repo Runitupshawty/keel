@@ -37,7 +37,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Tabs | v1 (0.2) | [SD-B02] | **Has** |
 | Dual pane | planned (2023 list) | [SD-B23] | **Has**: two panes, one with Ctrl+Shift+D |
 | Quick Preview of images, video, audio and PDF, with pinch to zoom | v1 | [SD-B23], [SD-REL] | **Part**: preview panel (F3) and full-window media viewer; no audio preview |
-| Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Part**: Properties, the viewer's info panel, and the Copies column's hover; no single inspector |
+| Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Yes** (unreleased): the preview panel's Inspector tab (Ctrl+I) with source, volume, content id, first seen, last hashed, copies, history and tags ([files.md](files.md#inspector)) |
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
 | Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has** (unreleased): drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has**: configurable keys, command palette ([files.md](files.md#keyboard-shortcuts)) |
@@ -219,7 +219,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
-| 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D | S-M |
+| 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D. **Done** (unreleased, [files.md](files.md#inspector)) | S-M |
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
