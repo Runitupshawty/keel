@@ -591,7 +591,8 @@ fn column(
                         egui::pos2(rect.left() + 14.0, rect.center().y),
                         vec2(16.0, 16.0),
                     );
-                    egui::Image::new(crate::icons::icon_for(e)).paint_at(ui, icon);
+                    let style = cx.library.style_of(&e.path);
+                    crate::folder_style::paint_entry(ui, icon, e, style, false);
                     let text = Rect::from_min_max(
                         egui::pos2(icon.right() + 6.0, rect.top()),
                         egui::pos2(rect.right() - 16.0, rect.bottom()),

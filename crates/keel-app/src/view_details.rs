@@ -230,12 +230,13 @@ pub fn ui(
                     .map(|(s, _)| s);
                 let offline =
                     source.filter(|s| matches!(s.status, keel_core::SourceStatus::Offline { .. }));
+                // Task 56: a folder's color and icon.
+                let style = (e.kind == Kind::Dir)
+                    .then(|| real.as_ref().and_then(|r| lib.style_of(r)))
+                    .flatten();
                 row.col(|ui| {
                     tint(ui);
-                    ui.add(
-                        egui::Image::new(crate::icons::icon_for(e))
-                            .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                    );
+                    crate::folder_style::slot(ui, crate::icons::icon_for(e), style);
                     if e.encrypted {
                         ui.add(
                             egui::Image::new(crate::icons::lock())
@@ -261,6 +262,14 @@ pub fn ui(
                             } else {
                                 crate::pane::rename_focus(&r, text, e.kind == keel_vfs::Kind::Dir);
                             }
+                        }
+                        _ if style.is_some_and(|s| s.color.is_some()) => {
+                            // The name leaves room for the color dot after it.
+                            ui.scope(|ui| {
+                                ui.set_max_width((ui.available_width() - 14.0).max(0.0));
+                                ui.add(egui::Label::new(cell(shown, color)).truncate());
+                            });
+                            crate::folder_style::dot(ui, style);
                         }
                         _ => {
                             ui.add(egui::Label::new(cell(shown, color)).truncate());

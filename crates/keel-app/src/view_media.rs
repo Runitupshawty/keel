@@ -309,11 +309,13 @@ pub fn ui(
                                     Tex::Missing => {
                                         ui.painter().rect_filled(img, 3.0, placeholder);
                                     }
-                                    Tex::Failed => icon_tile(ui, e, img, muted, false),
+                                    Tex::Failed => icon_tile(ui, e, img, muted, false, None),
                                 }
                             }
                             None => {
-                                icon_tile(ui, e, img, if e.hidden { muted } else { text }, true)
+                                let style = cx.library.style_of(&e.path);
+                                let ink = if e.hidden { muted } else { text };
+                                icon_tile(ui, e, img, ink, true, style)
                             }
                         }
                         if e.encrypted {
@@ -379,16 +381,22 @@ pub fn ui(
 }
 
 /// A folder or file without a thumbnail: its icon (and name for non-media files).
-fn icon_tile(ui: &egui::Ui, e: &Entry, rect: Rect, color: Color32, named: bool) {
+fn icon_tile(
+    ui: &egui::Ui,
+    e: &Entry,
+    rect: Rect,
+    color: Color32,
+    named: bool,
+    style: Option<&keel_core::FolderStyle>,
+) {
     let side = (rect.width() * 0.45).min(96.0);
     let icon_center = if named {
         pos2(rect.center().x, rect.top() + rect.height() * 0.42)
     } else {
         rect.center()
     };
-    egui::Image::new(crate::icons::large(crate::icons::icon_for(e)))
-        .fit_to_exact_size(vec2(side, side))
-        .paint_at(ui, Rect::from_center_size(icon_center, vec2(side, side)));
+    let at = Rect::from_center_size(icon_center, vec2(side, side));
+    crate::folder_style::paint_entry(ui, at, e, style, true);
     if named {
         let mut job = egui::text::LayoutJob::simple(
             e.name.clone(),

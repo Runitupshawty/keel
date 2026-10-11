@@ -283,6 +283,26 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     b.note_open(&sources, &lib_path).unwrap();
     assert_eq!(b.search(&query(RECENTS_QUERY)).unwrap()[0].path, invoice);
 
+    // Task 56: folder styles through the daemon (by library path, one field at a time).
+    let docs = VPath::local(s.files.path().join("docs"));
+    let lib_docs = keel_vfs::library::path(&id.0, "docs");
+    let red = || Some(Some("#e5484d".to_owned()));
+    b.set_folder_style(&sources, &lib_docs, red(), None)
+        .unwrap();
+    b.set_folder_style(&sources, &docs, None, Some(Some("📷".into())))
+        .unwrap();
+    let styles = b.folder_styles().unwrap();
+    let style = &styles[&crate::folder_style::key(&docs)];
+    assert_eq!(style.color.as_deref(), Some("#e5484d"));
+    assert_eq!(style.emoji(), Some("📷"));
+    assert!(
+        b.set_folder_style(&sources, &invoice, red(), None).is_err(),
+        "a file"
+    );
+    b.set_folder_style(&sources, &docs, Some(None), Some(None))
+        .unwrap();
+    assert!(b.folder_styles().unwrap().is_empty());
+
     // A plan previews in the window's dialog, then runs as a daemon job.
     let notes = VPath::local(s.files.path().join("docs").join("notes.txt"));
     let planned = b

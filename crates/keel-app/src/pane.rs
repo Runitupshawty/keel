@@ -669,6 +669,12 @@ pub fn context_menu(
     if let Some(e) = entry.filter(|e| crate::clouds::can_link(ui.ctx(), e)) {
         item(ui, "Copy link", "", Action::CopyLink(e.path.clone()));
     }
+    // Task 56: Folder color, Folder icon.
+    let mut styled = Vec::new();
+    if let Some(e) = entry.filter(|e| e.kind == keel_vfs::Kind::Dir) {
+        ui.separator();
+        crate::folder_style::menu(ui, &e.path, &mut styled);
+    }
     if on_item {
         ui.separator();
         item(ui, "Rename", "F2", Action::Rename);
@@ -736,6 +742,7 @@ pub fn context_menu(
             }
         }
     }
+    out.extend(styled);
 }
 
 /// Keeps the inline rename box focused. The frame it takes the focus the name's stem is

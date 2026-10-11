@@ -53,6 +53,13 @@ pub enum Dialog {
     },
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(Box<crate::mount_ui::MountDialog>),
+    /// Task 56: Folder icon → Type an emoji…: one emoji (or `theme:<name>`) for `path`.
+    FolderIcon {
+        path: VPath,
+        text: String,
+        error: Option<String>,
+        focus: bool,
+    },
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -227,6 +234,43 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             file: file.clone(),
                             name: name.trim().to_owned(),
                         }));
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            }
+            Dialog::FolderIcon {
+                path,
+                text,
+                error,
+                focus,
+            } => {
+                ui.strong(format!("Folder icon for {}", path.name()));
+                ui.label("Type or paste one emoji (Win+. or Ctrl+Cmd+Space opens the emoji panel)");
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                let r = crate::a11y::Named::named(r, "Emoji");
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                if r.changed() {
+                    *error = None;
+                }
+                if let Some(e) = error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Set icon").clicked() || enter {
+                        let icon = text.trim();
+                        let names = crate::icons::theme_folder_names();
+                        *error = crate::folder_style::icon_error(icon, &names);
+                        if error.is_none() {
+                            out = Some(Action::Library(crate::library::LibCmd::FolderStyle {
+                                path: path.clone(),
+                                color: None,
+                                icon: Some(Some(icon.to_owned())),
+                            }));
+                        }
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });

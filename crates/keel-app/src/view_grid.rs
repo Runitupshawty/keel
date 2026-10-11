@@ -225,11 +225,9 @@ pub fn ui(
                                 None => {
                                     // The size hint makes the SVG rasterize at tile size, not 16 px.
                                     let icon = vec2(56.0, 56.0);
-                                    egui::Image::new(crate::icons::large(crate::icons::icon_for(
-                                        e,
-                                    )))
-                                    .fit_to_exact_size(icon)
-                                    .paint_at(ui, Rect::from_center_size(img_box.center(), icon));
+                                    let at = Rect::from_center_size(img_box.center(), icon);
+                                    let style = cx.library.style_of(&e.path);
+                                    crate::folder_style::paint_entry(ui, at, e, style, true);
                                 }
                             }
                             let label_rect = Rect::from_min_max(

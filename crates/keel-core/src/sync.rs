@@ -1,12 +1,13 @@
 //! Library sync between paired devices (spec 2.10): tags (name, color, nesting), tag
-//! assignments, favorites and what a device knows of its files' content ids.
+//! assignments, favorites, folder colors and icons, and what a device knows of its files'
+//! content ids.
 //!
 //! Every local change appends an entry to `sync_log` (library schema 8): its sequence
 //! number, its Lamport time and what changed ([`SyncOp`]). A peer pulls the entries after
 //! the last sequence number it read ([`Library::sync_page`]) and applies them
 //! ([`Library::sync_apply`]); keel-net carries the pages between devices that opted in.
-//! Each key (a tag by its stable id, an assignment by tag and target, a content id by
-//! device, source and path) keeps the change with the highest (Lamport time, device id):
+//! Each key (a tag by its stable id, an assignment by tag and target, a content id or a
+//! folder style by device, source and path) keeps the change with the highest (Lamport time, device id):
 //! last writer wins, the same on every device. A tag made on two devices under one name
 //! is one tag: both ids' changes compete for the local tag's key. Deletes are tombstones
 //! kept 30 days (pruned at open and daily).
@@ -15,9 +16,12 @@
 //! three devices sync when each pair has the switch on. An assignment's target is a
 //! content id (BLAKE3) when the file is hashed, else a path in one of the logging
 //! device's own sources: a peer's path targets only ever land in this library's sources
-//! of that peer (`node://<peer>/<source>/...`), never in a local folder.
+//! of that peer (`node://<peer>/<source>/...`), never in a local folder. Folder styles
+//! (`SyncOp::Style`) are path targets only. A device from before folder styles cannot
+//! read them: keel-net serves them only to a puller that says it can.
 
 use crate::library::Source;
+use crate::styles::FolderStyle;
 use crate::tags::{TagId, FAVORITES};
 use crate::{Library, RecordRef};
 use anyhow::{ensure, Context, Result};
@@ -88,6 +92,14 @@ pub enum SyncOp {
         path: String,
         cas: String,
     },
+    /// The logging device's folder at `path` in its source `source` has this color and
+    /// icon (`crate::FolderStyle`; both None: its style was cleared).
+    Style {
+        source: String,
+        path: String,
+        color: Option<String>,
+        icon: Option<String>,
+    },
 }
 
 /// What an assignment is about.
@@ -144,7 +156,7 @@ fn steering(c: char) -> bool {
 }
 
 /// No control or direction-override characters, at most `max` bytes.
-fn plain(s: &str, max: usize) -> bool {
+pub(crate) fn plain(s: &str, max: usize) -> bool {
     s.len() <= max && !s.chars().any(|c| c.is_control() || steering(c))
 }
 
@@ -242,6 +254,18 @@ impl SyncOp {
             Content { source, path, cas } => {
                 valid_device(source) && valid_path(path) && valid_hex(cas)
             }
+            Style {
+                source,
+                path,
+                color,
+                icon,
+            } => {
+                let style = FolderStyle {
+                    color: color.clone(),
+                    icon: icon.clone(),
+                };
+                valid_device(source) && valid_path(path) && style.check().is_ok()
+            }
         };
         ensure!(ok, "invalid sync entry");
         Ok(())
@@ -258,7 +282,7 @@ impl SyncOp {
         match self {
             SyncOp::Tag { uid, .. } | SyncOp::TagDeleted { uid } => Some(uid),
             SyncOp::Assign { tag, .. } => Some(tag),
-            SyncOp::Content { .. } => None,
+            SyncOp::Content { .. } | SyncOp::Style { .. } => None,
         }
     }
 
@@ -279,6 +303,7 @@ impl SyncOp {
                 }
             }
             SyncOp::Content { source, path, .. } => format!("ct:{device}:{source}:{path}"),
+            SyncOp::Style { source, path, .. } => format!("st:{device}:{source}:{path}"),
         }
     }
 
@@ -288,6 +313,7 @@ impl SyncOp {
             SyncOp::TagDeleted { .. } => false,
             SyncOp::Assign { on, .. } => *on,
             SyncOp::Tag { .. } | SyncOp::Content { .. } => true,
+            SyncOp::Style { color, icon, .. } => color.is_some() || icon.is_some(),
         }
     }
 }
@@ -328,6 +354,24 @@ fn node_root(src: &Source) -> Option<(String, String, String)> {
     let rest = root.path.trim_matches('/');
     let (source, sub) = rest.split_once('/').unwrap_or((rest, ""));
     (!source.is_empty()).then(|| (root.authority.clone(), source.to_owned(), sub.to_owned()))
+}
+
+/// Where `device`'s file at `path` in its source `source` is in `src` (a source of that
+/// device's folder), relative to `src`'s root; None when `src` does not hold it.
+fn rel_on_device(src: &Source, device: &str, source: &str, path: &str) -> Option<String> {
+    let (d, s, sub) = node_root(src)?;
+    if d != device || s != source {
+        return None;
+    }
+    if sub.is_empty() {
+        Some(path.to_owned())
+    } else if path == sub {
+        Some(String::new())
+    } else {
+        path.strip_prefix(&sub)?
+            .strip_prefix('/')
+            .map(str::to_owned)
+    }
 }
 
 fn join(a: &str, b: &str) -> String {
@@ -1146,7 +1190,61 @@ impl Library {
                 Ok(false)
             }
             SyncOp::Content { .. } => Ok(false),
+            SyncOp::Style {
+                source,
+                path,
+                color,
+                icon,
+            } => {
+                // A folder not indexed yet: styled once it is (`sync_reapply`).
+                let style = FolderStyle {
+                    color: color.clone(),
+                    icon: icon.clone(),
+                };
+                let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+                for src in sources.iter().filter(|s| s.is_device()) {
+                    let Some(rel) = rel_on_device(src, device, source, path) else {
+                        continue;
+                    };
+                    let found = crate::index::resolve(&*src.store.get()?, &rel, false)?;
+                    if let Some((id, _)) = found {
+                        if let Err(e) = self.set_style_row(src, id, &style) {
+                            tracing::debug!("sync: folder style of {rel}: {e:#}");
+                        }
+                    }
+                }
+                Ok(false)
+            }
         }
+    }
+
+    /// The folder style change to log for the folder at `path` in `src`: by this device's
+    /// path, or (a folder of another device's source) by that device's path, kept here
+    /// and never served.
+    pub(crate) fn style_change(
+        &self,
+        src: &Source,
+        path: &str,
+        style: &FolderStyle,
+    ) -> Option<Change> {
+        let (source, path, device, serve) = match src.is_device() {
+            true => {
+                let (device, source, sub) = node_root(src)?;
+                (source, join(&sub, path), device, false)
+            }
+            false => (src.id.0.clone(), path.to_owned(), String::new(), true),
+        };
+        let op = SyncOp::Style {
+            source,
+            path,
+            color: style.color.clone(),
+            icon: style.icon.clone(),
+        };
+        Some(Change {
+            key: op.key(&device),
+            op,
+            serve,
+        })
     }
 
     /// The records here that a target of `device` names: copies of the content, or the
@@ -1207,24 +1305,11 @@ impl Library {
             SyncTarget::Content(cas) => by_content(cas, &mut out)?,
             SyncTarget::Path { source, path } => {
                 for src in sources.iter().filter(|s| s.is_device()) {
-                    let Some((d, s, sub)) = node_root(src) else {
+                    let Some(rel) = rel_on_device(src, device, source, path) else {
                         continue;
-                    };
-                    if d != device || &s != source {
-                        continue;
-                    }
-                    let rel = if sub.is_empty() {
-                        path.as_str()
-                    } else if path == &sub {
-                        ""
-                    } else {
-                        match path.strip_prefix(&sub).and_then(|r| r.strip_prefix('/')) {
-                            Some(r) => r,
-                            None => continue,
-                        }
                     };
                     let c = src.store.get()?;
-                    if let Some((id, _)) = crate::index::resolve(&c, rel, false)? {
+                    if let Some((id, _)) = crate::index::resolve(&c, &rel, false)? {
                         let cas: Option<Vec<u8>> = c.query_row(
                             "SELECT remote_cas FROM record WHERE id = ?1",
                             [id],
@@ -1316,6 +1401,21 @@ impl Library {
             let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
+        // Received folder styles too (a folder indexed after its style arrived).
+        let styles: Vec<(String, i64, String)> = {
+            let c = self.shared.db.get()?;
+            let mut stmt = c.prepare(
+                "SELECT device, lamport, op FROM sync_key
+                 WHERE key LIKE 'st:%' AND live = 1 AND device <> ''",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (device, lamport, op) in styles {
+            if let Ok(op @ SyncOp::Style { .. }) = serde_json::from_str(&op) {
+                self.apply_op(&device, &op, lamport as u64)?;
+            }
+        }
         self.reapply_rows(rows)
     }
 

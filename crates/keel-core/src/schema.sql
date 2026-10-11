@@ -348,3 +348,16 @@ END;
 -- hashed (unix seconds; NULL = before this version, or not hashed here).
 ALTER TABLE record ADD COLUMN seen INTEGER;
 ALTER TABLE record ADD COLUMN hashed INTEGER;
+
+-- @source 11
+-- Folder styles (Task 56): a folder's color (`#rrggbb`) and icon (one emoji, or
+-- `theme:<name>`, an icon theme's folder icon of that name), by record like tag links: a
+-- move or rename the index records keeps the record and its style; the folder leaving the
+-- index drops it.
+CREATE TABLE folder_style(
+    record INTEGER PRIMARY KEY,
+    color TEXT,
+    icon TEXT);
+CREATE TRIGGER record_style_ad AFTER DELETE ON record BEGIN
+    DELETE FROM folder_style WHERE record = old.id;
+END;

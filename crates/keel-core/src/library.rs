@@ -1114,6 +1114,25 @@ impl Library {
         self.shared.source_for(p)
     }
 
+    /// The indexed record at `p` (a path in a source, or a `library://` path), None when
+    /// no source holds it or it is not indexed (yet).
+    pub fn record_at(&self, p: &VPath) -> Result<Option<RecordRef>> {
+        let found = match keel_vfs::library::split(p) {
+            Some((id, rel)) => self
+                .source(&SourceId(id.to_owned()))
+                .map(|s| (s, rel.trim_matches('/').to_owned())),
+            None => self.source_for(p),
+        };
+        let Some((src, rel)) = found else {
+            return Ok(None);
+        };
+        let found = crate::index::resolve(&*src.store.get()?, &rel, src.nocase())?;
+        Ok(found.map(|(id, _)| RecordRef {
+            source: src.id.clone(),
+            id,
+        }))
+    }
+
     /// Counts over every source store; a store that cannot be read is skipped (logged).
     pub fn stats(&self) -> LibraryStats {
         let sources = self.shared.sources.read().clone();
