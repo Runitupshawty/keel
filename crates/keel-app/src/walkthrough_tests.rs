@@ -2372,6 +2372,17 @@ fn library_folder_color_and_icon() {
         dump(&h, "Folder")
     );
     shot(&mut h, "library-folder-style");
+    // Ctrl+P shows the style on the folder's result (the search index's folders).
+    key(&mut h, CMD, Key::P);
+    type_text(&mut h, "Projects");
+    let found = |h: &H| has_contains(h, "Folder icon: 📷, Folder color: Red");
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !found(&h) && std::time::Instant::now() < end {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(found(&h), "{:?}", s(&h).jump.results);
+    key(&mut h, NONE, Key::Escape);
     // Type an emoji…: one emoji only.
     right_click_row(&mut h, "Projects");
     click(&mut h, "Folder icon");

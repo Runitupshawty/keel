@@ -209,7 +209,10 @@ pub fn paint(
     let src = if large { crate::icons::large(src) } else { src };
     let mut img = egui::Image::new(src).fit_to_exact_size(rect.size());
     if let Some(c) = color {
-        img = img.tint(c);
+        // Multiplied onto the icon's own (mid-grey) colour: lightened first, so the folder
+        // shows the color rather than a dark shade of it.
+        let up = |v: u8| (v as f32 * 1.6).min(255.0) as u8;
+        img = img.tint(Color32::from_rgb(up(c.r()), up(c.g()), up(c.b())));
     }
     img.paint_at(ui, rect);
 }
@@ -218,6 +221,20 @@ pub fn paint(
 pub fn paint_entry(ui: &egui::Ui, rect: Rect, e: &Entry, style: Option<&FolderStyle>, large: bool) {
     let style = style.filter(|_| e.kind == Kind::Dir);
     paint(ui, rect, crate::icons::icon_for(e), style, large);
+}
+
+/// A style in words, for screen readers ("Folder icon: 📷, Folder color: Red").
+pub fn describe(style: &FolderStyle) -> String {
+    let icon = (style.emoji().or(style.theme_icon())).map(|i| format!("Folder icon: {i}"));
+    let color = style.color.as_deref().map(|hex| {
+        let name = (COLORS.iter()).find(|(_, h)| h.eq_ignore_ascii_case(hex));
+        format!("Folder color: {}", name.map_or(hex, |(n, _)| n))
+    });
+    [icon, color]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `paint` in a 16 px slot of a layout (Details rows, the sidebar); a folder icon is
@@ -238,11 +255,11 @@ pub fn dot(ui: &mut egui::Ui, style: Option<&FolderStyle>) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     ui.painter()
         .circle_filled(rect.center(), 4.0, Color32::from_rgb(r, g, b));
-    let hex = style.and_then(|s| s.color.as_deref()).unwrap_or_default();
-    let name = (COLORS.iter())
-        .find(|(_, h)| h.eq_ignore_ascii_case(hex))
-        .map_or(hex, |(n, _)| n);
-    resp.named(&format!("Folder color: {name}"));
+    let color = FolderStyle {
+        color: style.and_then(|s| s.color.clone()),
+        icon: None,
+    };
+    resp.named(&describe(&color));
 }
 
 #[cfg(test)]

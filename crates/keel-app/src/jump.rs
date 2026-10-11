@@ -5,6 +5,7 @@
 //! matching runs on its own thread, because scoring 200k paths per keystroke would stall
 //! the UI.
 
+use crate::a11y::Named;
 use crate::backend::LibraryBackend;
 use crate::keys::Action;
 use crate::state::Msg;
@@ -524,6 +525,8 @@ impl Jump {
                                 .frame(i == self.cursor),
                         );
                         if let Some(style) = &style {
+                            let label = format!("{name} {dir}, {}", crate::folder_style::describe(style));
+                            r.clone().named(&label);
                             let at = egui::Rect::from_center_size(
                                 egui::pos2(r.rect.left() + ui.spacing().button_padding.x + 8.0, r.rect.center().y),
                                 egui::vec2(16.0, 16.0),
