@@ -30,7 +30,8 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 const FALLBACK_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", r"C:\ffmpeg\bin"];
 
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif",
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", "dng",
+    "cr2", "nef", "arw", "orf", "rw2", "pef",
 ];
 pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "wmv", "webm", "m4v", "mpg", "mpeg", "flv", "3gp",
@@ -186,20 +187,27 @@ fn image_meta(path: &Path) -> Result<MediaMeta> {
     if let Some(exif) = &exif {
         apply_exif(&mut meta, exif);
     }
-    if is_tiff(path) {
+    if is_tiff(path) || is_raw(path) {
         if let Some(o) = tiff_orientation(path)? {
             meta.orientation = o;
         }
     }
-    let dims = match ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-    {
-        Ok(d) => Some(d),
-        Err(_) if is_heif(path) => heif_dimensions(path, exif.as_ref())?,
-        Err(e) => return Err(image_error(e)),
+    let (w, h) = if is_raw(path) {
+        let p = raw_previews(path)?.first().copied();
+        let p = p.ok_or_else(|| corrupt("no embedded preview"))?;
+        (p.width, p.height)
+    } else if is_heif(path) || is_avif(path) {
+        let dims = converted_dimensions(path, exif.as_ref(), meta.orientation)?;
+        // Decoded upright (ffmpeg and libheif turn the picture by the file's own rotation):
+        // the size is as shown and no orientation applies on top.
+        meta.orientation = 1;
+        dims
+    } else {
+        ImageReader::open(path)?
+            .with_guessed_format()?
+            .into_dimensions()
+            .map_err(image_error)?
     };
-    let (w, h) = dims.context("no dimensions")?;
     (meta.width, meta.height) = if meta.orientation >= 5 {
         (h, w)
     } else {
@@ -212,29 +220,66 @@ fn image_meta(path: &Path) -> Result<MediaMeta> {
     Ok(meta)
 }
 
-/// HEIF dimensions: from libheif with feature `heic`, else from EXIF (None: unknown, an
-/// error that is not recorded so a build with `heic` retries it).
-#[cfg(not(feature = "heic"))]
-fn heif_dimensions(_path: &Path, exif: Option<&exif::Exif>) -> Result<Option<(u32, u32)>> {
+/// The size as shown of a HEIC, HEIF or AVIF file: from libheif (HEIC with feature
+/// `heic`), else from EXIF (turned by the EXIF `orientation`), else from ffprobe (the
+/// picture less its cropping, turned by its rotation). Without any of them it is unknown,
+/// an error that is not recorded (installing ffmpeg brings it).
+// ponytail: a tiled HEIF without EXIF sizes would report one tile's size from ffprobe
+// (phone photos carry EXIF sizes); read ffprobe's tile-grid stream group if that shows up.
+fn converted_dimensions(
+    path: &Path,
+    exif: Option<&exif::Exif>,
+    orientation: u8,
+) -> Result<(u32, u32)> {
+    #[cfg(feature = "heic")]
+    if is_heif(path) {
+        let ctx =
+            libheif_rs::HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
+        let handle = ctx.primary_image_handle().map_err(corrupt)?;
+        return Ok((handle.width(), handle.height()));
+    }
     let dim = |tag| {
         exif?
             .get_field(tag, exif::In::PRIMARY)
             .and_then(|f| f.value.get_uint(0))
+            .filter(|v| *v > 0)
     };
-    match (
+    if let (Some(w), Some(h)) = (
         dim(exif::Tag::PixelXDimension),
         dim(exif::Tag::PixelYDimension),
     ) {
-        (Some(w), Some(h)) => Ok(Some((w, h))),
-        _ => anyhow::bail!("HEIC needs Keel built with feature `heic`"),
+        return Ok(if orientation >= 5 { (h, w) } else { (w, h) });
     }
+    if find_tool("ffprobe").is_none() {
+        return Err(NeedsFfmpeg.into());
+    }
+    displayed_size(&ffprobe_json(path)?).ok_or_else(|| corrupt("no picture in the file"))
 }
 
-#[cfg(feature = "heic")]
-fn heif_dimensions(path: &Path, _exif: Option<&exif::Exif>) -> Result<Option<(u32, u32)>> {
-    let ctx = libheif_rs::HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
-    let handle = ctx.primary_image_handle().map_err(corrupt)?;
-    Ok(Some((handle.width(), handle.height())))
+/// A still picture's size as shown, from ffprobe JSON: the coded size less the cropping
+/// (HEIF pictures are coded in whole blocks), turned by the rotation.
+pub(crate) fn displayed_size(v: &serde_json::Value) -> Option<(u32, u32)> {
+    let s = v["streams"]
+        .as_array()?
+        .iter()
+        .find(|s| s["codec_type"] == "video")?;
+    let side = s["side_data_list"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let crop = |k: &str| side.iter().find_map(|d| d[k].as_u64()).unwrap_or(0);
+    let w = s["width"]
+        .as_u64()?
+        .checked_sub(crop("crop_left").saturating_add(crop("crop_right")))?;
+    let h = s["height"]
+        .as_u64()?
+        .checked_sub(crop("crop_top").saturating_add(crop("crop_bottom")))?;
+    let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+    let turned = side
+        .iter()
+        .find_map(|d| d["rotation"].as_i64())
+        .is_some_and(|r| r.rem_euclid(180) == 90);
+    (w > 0 && h > 0).then_some(if turned { (h, w) } else { (w, h) })
 }
 
 /// TIFFs bigger than this are not searched for EXIF: kamadak-exif reads a whole TIFF

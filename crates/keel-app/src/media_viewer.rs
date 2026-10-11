@@ -100,6 +100,14 @@ pub fn zoom_about(
 /// only.
 pub fn decode_full(path: &std::path::Path, max_side: u32) -> anyhow::Result<egui::ColorImage> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
+    // HEIC, HEIF, AVIF (ffmpeg, scaled by it) and RAW (the embedded preview), upright.
+    if keel_core::is_converted_photo(path) {
+        let mut img = keel_core::decode_image(path, max_side)?;
+        if img.width().max(img.height()) > max_side {
+            img = img.resize(max_side, max_side, image::imageops::FilterType::Triangle);
+        }
+        return Ok(media::color_image(img, 0));
+    }
     let mut decoder = ImageReader::open(path)?
         .with_guessed_format()?
         .into_decoder()?;

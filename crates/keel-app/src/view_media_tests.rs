@@ -182,6 +182,13 @@ fn full_decode_applies_exif_orientation() {
     assert!(top.r() > 200 && top.b() < 60, "{top:?}");
     let capped = crate::media_viewer::decode_full(&path, 10).unwrap();
     assert_eq!(capped.size, [5, 10], "fits the texture limit");
+    // A RAW file: its embedded preview (keel-preview's tiny.dng: 40 x 20, orientation 6).
+    let dng = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../keel-preview/tests/fixtures/tiny.dng");
+    let raw = crate::media_viewer::decode_full(&dng, 8192).unwrap();
+    assert_eq!(raw.size, [20, 40]);
+    let raw = crate::media_viewer::decode_full(&dng, 10).unwrap();
+    assert_eq!(raw.size, [5, 10]);
     let meta = keel_core::MediaMeta {
         width: 20,
         height: 40,

@@ -111,9 +111,9 @@ pub fn icon_for_ext(ext: &str) -> ImageSource<'static> {
         "html" | "htm" | "xhtml" => icon!("html"),
         "css" | "scss" | "sass" | "less" => icon!("css"),
         "svg" => icon!("svg"),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff" | "heic" => {
-            icon!("image")
-        }
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff" | "heic"
+        | "heif" | "avif" | "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2" | "pef"
+        | "raf" => icon!("image"),
         "pdf" => icon!("pdf"),
         "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "wmv" => icon!("video"),
         "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" => icon!("audio"),

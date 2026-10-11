@@ -587,3 +587,53 @@ fn write_dng_fixture() {
     std::fs::create_dir_all(&corpus).unwrap();
     std::fs::write(corpus.join("tiny.dng"), tiny_dng()).unwrap();
 }
+
+/// The media view's facts for HEIC, AVIF and RAW: size as shown, orientation 1 for the
+/// photos ffmpeg turns upright, EXIF capture time and camera from a HEIC.
+#[test]
+fn heic_avif_and_raw_metadata() {
+    assert_eq!(media_type(Path::new("a.HEIC")), Some(MediaType::Image));
+    for ext in ["avif", "dng", "nef", "cr2", "arw", "orf", "rw2", "pef"] {
+        assert_eq!(
+            media_type(Path::new(&format!("a.{ext}"))),
+            Some(MediaType::Image)
+        );
+    }
+    // EXIF sizes need no ffmpeg.
+    let dated = read_meta(&photo_fixture("pattern-dated.heic")).unwrap();
+    assert_eq!((dated.width, dated.height, dated.orientation), (64, 48, 1));
+    assert_eq!(dated.taken_at, unix_time(2024, 5, 1, 10, 34, 56));
+    assert_eq!(dated.camera.as_deref(), Some("Keel Test Camera"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let dng = dir.path().join("photo.dng");
+    std::fs::write(&dng, tiny_dng()).unwrap();
+    let raw = read_meta(&dng).unwrap();
+    assert_eq!((raw.width, raw.height, raw.orientation), (20, 40, 6));
+
+    if find_tool("ffprobe").is_none() {
+        eprintln!("ffprobe not found: the rest skipped");
+        return;
+    }
+    for (name, size) in [
+        ("pattern.heic", (64, 48)),
+        ("pattern-rot90.heic", (48, 64)),
+        ("pattern.avif", (64, 48)),
+    ] {
+        let meta = read_meta(&photo_fixture(name)).unwrap();
+        assert_eq!((meta.width, meta.height), size, "{name}");
+        assert_eq!(meta.orientation, 1, "{name}");
+    }
+}
+
+#[test]
+fn displayed_size_takes_off_cropping_and_turns() {
+    let v = serde_json::json!({"streams": [{"codec_type": "video", "width": 64, "height": 64,
+        "side_data_list": [{"crop_top": 0, "crop_bottom": 16, "crop_left": 0, "crop_right": 0},
+                           {"rotation": -90}]}]});
+    assert_eq!(displayed_size(&v), Some((48, 64)));
+    let bad = serde_json::json!({"streams": [{"codec_type": "video", "width": 8, "height": 8,
+        "side_data_list": [{"crop_top": 9}]}]});
+    assert_eq!(displayed_size(&bad), None);
+    assert_eq!(displayed_size(&serde_json::json!({})), None);
+}

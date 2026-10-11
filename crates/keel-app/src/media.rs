@@ -51,7 +51,8 @@ const THUMBS_BUDGET: u64 = 256 << 20;
 const DAYS_CHUNK: usize = 2000;
 
 pub const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif",
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", "dng",
+    "cr2", "nef", "arw", "orf", "rw2", "pef",
 ];
 pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "wmv", "webm", "m4v", "mpg", "mpeg", "flv", "3gp",

@@ -211,6 +211,16 @@ fn tiles_pick_the_sidecar_for_their_size() {
     let mut locked = e.clone();
     locked.encrypted = true;
     assert_eq!(media_type(&locked), None);
+    for name in [
+        "phone.heic",
+        "web.avif",
+        "camera.dng",
+        "camera.nef",
+        "camera.rw2",
+    ] {
+        let photo = crate::tab::test_entry(&dir, name, Kind::File, 1);
+        assert_eq!(media_type(&photo), Some(MediaType::Image), "{name}");
+    }
     assert_eq!(TileSize::S.step(false), TileSize::S);
     assert_eq!(TileSize::S.step(true), TileSize::M);
     assert_eq!(TileSize::L.step(true), TileSize::L);
