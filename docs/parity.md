@@ -136,7 +136,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
 | Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has** (unreleased): `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
-| Agent skill | landed | [SD-STATUS] | **Lacks** (MCP only) |
+| Agent skill | landed | [SD-STATUS] | **Has** (unreleased): [agent-skill.md](agent-skill.md), installable from `skills/keel` |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
 | Self-update and a nightly channel | nightly | [SD-REL] | **Part**: opt-in update check and Windows self-install; no nightly channel |
 | Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Part**: `keel-daemon --web`; no container image |
@@ -223,7 +223,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
-| 25 | Agent skill, `keel op <name>`, generated SDK | Spacedrive | — | S |
+| 25 | Agent skill, `keel op <name>`, generated SDK (**done**, unreleased: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); no generated SDK) | Spacedrive | — | S |
 | 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | — | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |

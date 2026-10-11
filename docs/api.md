@@ -461,7 +461,7 @@ unknown name, parameters that are not a JSON object, or `--execute` without a pr
 when the operation refuses its parameters (the error names the field:
 ``missing field `tags` ``, ``unknown field `tag` ``) or fails. Like the other subcommands it
 goes through keel-daemon when one runs for the profile, else opens the library
-in-process.
+in-process. [The agent skill](agent-skill.md) teaches an agent this protocol.
 
 ```
 $ keel op tags.set --params-file tag.json
@@ -512,6 +512,12 @@ same session, and only after the user confirmed:
 ```
 
 ### Pointing agents at it
+
+Agents that run shell commands rather than MCP tools can load [the agent
+skill](agent-skill.md) instead: it teaches `keel op` with the same preview-then-execute
+rules. Install it by copying the repository's `skills/keel` folder into the agent's skills
+folder (Claude Code: `~/.claude/skills/keel/SKILL.md`, or `.claude/skills/keel/` in a
+project).
 
 Claude Code (user scope, every project):
 
