@@ -100,6 +100,8 @@ pub fn history_text(h: &HistoryEntry) -> String {
         ("move", _, Some(t)) => format!("Moved to {t}"),
         ("rename", Some(f), _) => format!("Renamed from {}", name(f)),
         ("rename", _, Some(t)) => format!("Renamed to {}", name(t)),
+        (k @ ("merge" | "flatten" | "organize"), Some(f), _) => format!("Moved from {f} ({k})"),
+        (k @ ("merge" | "flatten" | "organize"), _, Some(t)) => format!("Moved to {t} ({k})"),
         ("delete", ..) => "Deleted".into(),
         ("tag", ..) if fav => "Added to Favorites".into(),
         ("untag", ..) if fav => "Removed from Favorites".into(),
@@ -364,6 +366,10 @@ mod tests {
                 "Renamed to new.txt",
             ),
             (h("delete", None, None, None), "Deleted"),
+            (
+                h("flatten", Some("/a/x/f.txt"), None, None),
+                "Moved from /a/x/f.txt (flatten)",
+            ),
             (h("tag", None, None, Some("receipts")), "Tagged receipts"),
             (
                 h("untag", None, None, Some("receipts")),

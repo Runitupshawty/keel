@@ -152,6 +152,11 @@ impl Op {
                 "folders": what.roots().into_iter().map(VPath::display).collect::<Vec<_>>(),
                 "moves": moves.len(),
                 "on_conflict": on_conflict,
+                // Each item and where it lands, for the inspector's history.
+                "items": moves
+                    .iter()
+                    .filter_map(|(item, _)| Some([item.display(), target(self, item)?.display()]))
+                    .collect::<Vec<_>>(),
             }),
             Op::SetAttributes { paths, attrs } => {
                 serde_json::json!({ "paths": shown(paths), "attributes": attrs })

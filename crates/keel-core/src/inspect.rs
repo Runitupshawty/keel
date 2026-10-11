@@ -16,7 +16,8 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// Operation log kinds that act on library paths (the history's sources).
-const KINDS: &str = "'copy', 'move', 'rename', 'delete', 'tag', 'untag'";
+const KINDS: &str =
+    "'copy', 'move', 'rename', 'delete', 'tag', 'untag', 'merge', 'flatten', 'organize'";
 
 /// One operation that touched an item, from the operation log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,13 +25,14 @@ pub struct History {
     pub id: i64,
     /// Unix seconds.
     pub ts: i64,
-    /// `copy`, `move`, `rename`, `delete`, `tag` or `untag`.
+    /// `copy`, `move`, `rename`, `delete`, `tag`, `untag`, or the folder operation that
+    /// moved it: `merge`, `flatten` or `organize`.
     pub kind: String,
     /// Whether it completed (None while running).
     pub ok: Option<bool>,
     /// The item came from here: it was moved or renamed from this path, or copied from it.
     pub from: Option<String>,
-    /// The item went here (moved, renamed), or a copy of it was made here.
+    /// A copy of it was made here.
     pub to: Option<String>,
     /// `tag` / `untag`: the tag's name.
     pub tag: Option<String>,
@@ -108,6 +110,16 @@ pub(crate) fn history_of(
     (f.out, f.more)
 }
 
+/// `p`'s name as it appears in an entry's JSON (lowercase on Windows).
+fn name_of(p: &VPath) -> String {
+    let json = serde_json::to_string(p.name()).unwrap_or_default();
+    let name = (json.strip_prefix('"').and_then(|j| j.strip_suffix('"'))).unwrap_or("");
+    match cfg!(windows) {
+        true => name.to_lowercase(),
+        false => name.to_owned(),
+    }
+}
+
 /// `history_of` one entry at a time, so a scan of the log can stop at `max` and skip the
 /// entries that cannot name the item without parsing them.
 struct Follow {
@@ -133,12 +145,7 @@ impl Follow {
     }
 
     fn know(&mut self, p: VPath) {
-        let json = serde_json::to_string(p.name()).unwrap_or_default();
-        let name = (json.strip_prefix('"').and_then(|j| j.strip_suffix('"'))).unwrap_or("");
-        self.names.push(match cfg!(windows) {
-            true => name.to_lowercase(),
-            false => name.to_owned(),
-        });
+        self.names.push(name_of(&p));
         self.known.push(p);
     }
 
@@ -187,22 +194,36 @@ impl Follow {
                 });
                 moved.into_iter().collect()
             }
+            // Folder operations: [item, where it landed] per move.
+            "merge" | "flatten" | "organize" => (e.payload.get("items"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|pair| {
+                    let at = |i: usize| pair.get(i)?.as_str().and_then(vpath_of);
+                    Some((at(0)?, Some(at(1)?)))
+                })
+                .collect(),
             _ => list("paths").into_iter().map(|p| (p, None)).collect(),
         };
         let is_known = |p: &VPath| self.known.iter().any(|k| same(k, p));
         let mut hit = None;
-        let mut origin = None;
+        // The item came to a known path here (before, that path held something else), or
+        // another file left one (the item came there later).
+        let (mut entered, mut left) = (None, None);
         for (from, to) in items {
             match to {
                 Some(to) if is_known(&to) => {
                     hit = Some((Some(from.display()), None));
-                    if e.kind != "copy" {
-                        origin = Some(from);
-                    }
+                    entered = Some((to, (e.kind != "copy").then_some(from)));
                     break;
                 }
-                Some(to) if is_known(&from) => {
+                Some(to) if is_known(&from) && e.kind == "copy" => {
                     hit = Some((None, Some(to.display())));
+                    break;
+                }
+                Some(_) if is_known(&from) => {
+                    left = Some(from);
                     break;
                 }
                 None if is_known(&from) => {
@@ -212,7 +233,11 @@ impl Follow {
                 _ => {}
             }
         }
-        if let Some(from) = origin {
+        if let Some(gone) = entered.as_ref().map(|(to, _)| to).or(left.as_ref()) {
+            self.known.retain(|k| !same(k, gone));
+            self.names = self.known.iter().map(name_of).collect();
+        }
+        if let Some((_, Some(from))) = entered {
             self.know(from);
         }
         let Some((from, to)) = hit else { return false };
@@ -446,6 +471,33 @@ mod tests {
         let renamed = json!({"path": p("b/old.txt"), "new_name": "New \"one\".txt"});
         assert!(!f.feed(entry(2, "rename", renamed)));
         assert!(f.may_name(&other));
+    }
+
+    /// Another file that left a path before the item came to it is not the item.
+    #[test]
+    fn history_stops_at_the_move_that_brought_the_item() {
+        let log = vec![
+            entry(3, "move", json!({"src": [p("a/f.txt")], "dst": p("b")})),
+            entry(2, "move", json!({"src": [p("a/f.txt")], "dst": p("c")})),
+            entry(1, "move", json!({"src": [p("d/f.txt")], "dst": p("a")})),
+        ];
+        let (h, _) = history_of(log, &VPath::local(p("b/f.txt")), 50);
+        let ids: Vec<i64> = h.iter().map(|e| e.id).collect();
+        assert_eq!(ids, [3], "{h:?}");
+    }
+
+    /// A merge, flatten or organize logs where each item landed.
+    #[test]
+    fn history_follows_folder_operations() {
+        let items = json!([[p("a/x/old.txt"), p("a/old.txt")]]);
+        let log = vec![
+            entry(2, "move", json!({"src": [p("a/old.txt")], "dst": p("b")})),
+            entry(1, "flatten", json!({"folders": [p("a")], "items": items})),
+        ];
+        let (h, _) = history_of(log, &VPath::local(p("b/old.txt")), 50);
+        assert_eq!(h.len(), 2, "{h:?}");
+        assert_eq!(h[1].kind, "flatten");
+        assert_eq!(h[1].from, Some(p("a/x/old.txt")));
     }
 
     #[test]

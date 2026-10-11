@@ -1339,7 +1339,7 @@ pub struct HistoryEntry {
     /// The item came from here (moved, renamed or copied from it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
-    /// The item went here (moved, renamed), or a copy of it was made here.
+    /// A copy of it was made here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
     /// `tag` / `untag`: the tag's name.
