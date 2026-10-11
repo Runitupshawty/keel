@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Folder colors and icons: right-click a folder in a library source for **Folder color** (the tag palette's nine colors, or Clear) and **Folder icon** (40 common emoji, **Type an emoji…** for any other, the installed icon theme's named folder icons, or Clear). The color tints the folder's icon in every view and puts a dot after its name in Details; an emoji replaces the folder icon. The sidebar's library section and Ctrl+P show the style too. Styles live in the library (the folder is never touched), follow a folder renamed or moved within its source, and sync to your other devices with library sync. See [Folder colors and icons](docs/files.md#folder-colors-and-icons).
+- `library.folder_style` (read) and `library.set_folder_style` (previewed) in the API: one folder's style or every styled folder, and a folder's `color` and `icon` (an omitted field stays, `""` clears it). See [api.md](docs/api.md).
+- The tag picker (Ctrl+Shift+T) has swatches of the tag palette next to the new tag's color.
+
+### Known limitations
+
+- Only folders in a library source can be styled; elsewhere the menu says "Add the folder's drive to the library to style it". A folder must be indexed first (a source's first walk has to reach it).
+- A folder moved or copied to another source (another drive, for example) does not take its style along; a rename or move within its source keeps it, also one made while Keel was closed. Styles are not written to the folder (no `desktop.ini` or Finder metadata), so other file managers do not show them.
+- Library sync carries folder styles only between devices that both run this version or later: an older device is sent the rest of the changes and never the styles. On the other device a style shows only in its `node://` source of the folder, never on a local folder of the same name.
+- Emoji are drawn with the window's monochrome emoji font: some newer emoji, and sequences such as families or flags, show as their parts or not at all. A `theme:<name>` icon shows the plain folder icon on a device whose icon theme has no folder icon of that name.
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

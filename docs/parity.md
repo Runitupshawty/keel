@@ -134,7 +134,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
-| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 57 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
+| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 60 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
 | Agent skill | landed | [SD-STATUS] | **Lacks** (MCP only) |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
@@ -156,7 +156,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Drop zone | yes | [AT] | **Has** ([files.md](files.md#columns-view-and-drop-zone)) |
 | Drag and drop | yes | [AT] | **Has** (Atlas is Windows-only, where Keel's drag-out works) |
 | Cloud integration | yes | [AT] | **Has** |
-| Custom folder and file icons | "change folder and file icons" | [AT] | **Lacks**: icon themes only, no icon or color per folder |
+| Custom folder and file icons | "change folder and file icons" | [AT] | **Part** (unreleased): a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
 | Filter by typing | yes | [AT] | **Has** |
 | Multiple profiles and sessions | yes | [AT] | **Part**: profiles, each with a restored session; no named sessions within a profile |
 | Rich color themes | yes | [AT] | **Part**: dark and light, each overridable in a TOML file ([features.md](features.md)) |
@@ -215,7 +215,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** (unreleased, [library.md](library.md#backup-and-restore)) | S |
 | 15 | Drag-out on macOS and Linux | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
-| 17 | An icon or color per folder | Atlas | D | S-M |
+| 17 | An icon or color per folder (**done**, unreleased: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |

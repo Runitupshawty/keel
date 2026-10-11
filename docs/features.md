@@ -23,6 +23,7 @@ Everything Keel does, with links to the reference for each part. New to Keel? St
 - **Folder sizes and a Sizes view**: folders show their total size (kept with the library index, or walked on request with **Calculate sizes**), sort by it, and the Sizes view shows what fills a folder or a drive with share bars; `keel du` from a terminal. See [Folder sizes and the Sizes view](files.md#folder-sizes-and-the-sizes-view).
 - **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](files.md#profiles).
 - **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](files.md#icon-themes).
+- **Folder colors and icons**: right-click a folder in a library source for a color (a tint and a dot) or an emoji or icon-theme icon, shown in every view, the sidebar and Ctrl+P, and synced to your other devices. See [Folder colors and icons](files.md#folder-colors-and-icons).
 - **Command line, single instance and a global hotkey**: `keel <folder>` opens in the running window; Ctrl+Shift+Alt+K brings Keel forward. See [Command line](files.md#command-line).
 - **Drag out** of Keel onto other apps (Windows).
 - **Windows shell menu**: **More options** in the right-click menu, Shift+right-click or Shift+F10 opens Explorer's menu for local files (installed handlers, Send to, Open with, Share), and its commands are searchable in the command palette as `Shell: …`. Keel's own Delete, Rename, Cut, Copy, Paste and Properties replace Explorer's. See [Windows shell menu](files.md#windows-shell-menu).
