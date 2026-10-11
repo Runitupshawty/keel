@@ -167,6 +167,8 @@ When the files are in a library source (see [The library](#the-library)), Keel f
 
 **Delete** (Del, or Delete in the context menu) asks first and then moves the items to the Recycle Bin (Windows) or Trash (macOS, Linux); Keel never deletes local files for good on its own. Open **Recycle Bin** or **Trash** in the sidebar to see what was deleted and when, and right-click to **Restore**, **Delete permanently** or empty it. Deleting on an SFTP host or in an S3 bucket is permanent, because there is no trash there; Keel says so before it asks.
 
+On Windows, **More options** at the end of the right-click menu (or Shift+right-click, or Shift+F10) opens the menu Explorer shows for those files, with Send to, Open with and the commands your other apps add. See [Windows shell menu](files.md#windows-shell-menu).
+
 ### Rename and bulk rename
 
 F2 renames the selected item in place, with the name before its extension selected so that typing replaces it; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; **Undo bulk rename** in the command palette reverses it.

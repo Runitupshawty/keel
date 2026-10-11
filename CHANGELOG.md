@@ -2,6 +2,19 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Windows: **More options** at the end of the right-click menu, Shift+right-click on files, and Shift+F10 open the Windows shell menu for the selection, the one Explorer shows: installed handlers (archivers, editors, version control), Send to, Open with, Share. Shift+right-click and Shift+F10 add the extended commands, such as Copy as path. The same commands are searchable in the command palette as `Shell: <menu path>` entries (for example `Shell: Send to > Documents`) while local files are selected. See [Windows shell menu](docs/files.md#windows-shell-menu).
+
+### Known limitations
+
+- The Windows shell menu works on files and folders in one folder on this computer (network shares included). For SFTP, cloud, `node://`, archive and library items, and for search results from several folders, **More options** is greyed with the reason; there is no temporary copy for a handler to act on.
+- Keel removes the shell menu's Delete, Rename, Cut, Copy, Paste, Paste shortcut, Create shortcut and Properties, so its own versions (Recycle Bin with a prompt, conflict prompts, its Properties dialog) always apply.
+- Shell extensions run inside Keel's process, as they do in Explorer: a crashing handler closes the window (Keel's crash safety cannot catch it) and a hanging one freezes it until it returns. The menu is built only when asked for, never in advance.
+- Palette entries list only menu items with text; items an app draws itself are only in the popup. The palette entries are built when the palette opens with local files selected, which can take a moment while the handlers load.
+
 ## [0.18.0] - 2026-10-11
 
 ### Added

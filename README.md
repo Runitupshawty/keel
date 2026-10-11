@@ -150,7 +150,7 @@ What is next, from the known limitations still open:
 
 - Signed and notarized builds, and Windows and macOS release builds with a mount backend (Windows: blocked by winfsp-rs being GPL-3.0; macOS: macFUSE cannot be installed on the build machines).
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
-- Drag-out to other apps on macOS and Linux, and the native Windows shell context menu.
+- Drag-out to other apps on macOS and Linux.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).
 
