@@ -32,8 +32,8 @@ const CONTENT_RANK: f64 = 100.0;
 pub const SNIPPET_PAGE: usize = 100;
 /// A snippet's length at most, in characters.
 pub const SNIPPET_CHARS: usize = 160;
-/// Emphasis markers in FTS5 `snippet()` output (private-use characters, so a document's
-/// own text never reads as one).
+/// Emphasis markers in FTS5 `snippet()` output (private-use characters, taken out of a
+/// document's text before it is stored, so its own never read as one).
 pub(crate) const MARK_ON: char = '\u{E000}';
 pub(crate) const MARK_OFF: char = '\u{E001}';
 /// Filter-only queries narrow through an index (extension, size) when it yields at most

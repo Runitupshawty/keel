@@ -575,3 +575,60 @@ fn a_root_on_a_network_volume_is_not_read_by_default() {
     assert_eq!(lib.source_contents(&id).unwrap(), (None, true));
     assert_eq!(lib.source(&id).unwrap().network.get(), Some(&false));
 }
+
+/// Review of 0.22.0, minor 5: a document's own U+E000 and U+E001 (the snippets' emphasis
+/// marks) are taken out of its text, so they never show as matched words.
+#[test]
+fn a_documents_own_emphasis_marks_are_not_marks() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    write(
+        &files.path().join("odd.txt"),
+        "\u{E000}alpha\u{E001} beta \u{E001}walrus",
+    );
+    let (lib, id) = library(data.path(), files.path());
+    run(&lib, &id);
+    let hits = lib
+        .search(&LibraryQuery::parse("content:walrus", 0).unwrap())
+        .unwrap();
+    let s = hits[0].snippet.as_ref().expect("a snippet");
+    assert_eq!(s.text, "alpha beta walrus");
+    assert_eq!(s.marks, [(11, 17)]);
+}
+
+/// Review of 0.22.0, minor 1: a read that ends after contents were turned off for its
+/// source writes nothing (checked inside the save's transaction, not before it).
+#[test]
+fn a_read_that_ends_after_the_switch_went_off_writes_nothing() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "walrus");
+    let (lib, id) = library(data.path(), files.path());
+    let src = lib.source(&id).unwrap();
+    let rec: Pending = (src.store.get().unwrap())
+        .query_row(
+            "SELECT id, path, name, size, mtime FROM record WHERE name = 'a.txt'",
+            [],
+            |r| {
+                Ok(Pending {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    name: r.get(2)?,
+                    size: r.get::<_, i64>(3)? as u64,
+                    mtime: r.get(4)?,
+                })
+            },
+        )
+        .unwrap();
+    lib.set_source_contents(&id, Some(false)).unwrap();
+    let done = TextOutcome::Done {
+        text: "walrus".into(),
+        truncated: false,
+    };
+    save(&lib.shared, &src, &rec, done.clone()).unwrap();
+    assert_eq!(rows(&lib, &id), 0);
+    lib.set_source_contents(&id, Some(true)).unwrap();
+    eventually("job ended", || lib.shared.text_jobs.lock().is_empty());
+    save(&lib.shared, &src, &rec, done).unwrap();
+    assert_eq!(rows(&lib, &id), 1);
+}

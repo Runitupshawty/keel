@@ -428,9 +428,7 @@ impl TextJob {
                     TextOutcome::SkippedKind | TextOutcome::SkippedSize => self.skipped += 1,
                     TextOutcome::Failed(_) => {}
                 }
-                if contents_on(lib, src) {
-                    retrying(ctx, || save(src, &rec, outcome.clone()))?;
-                }
+                retrying(ctx, || save(lib, src, &rec, outcome.clone()))?;
                 self.after = rec.id;
                 self.done += 1;
             }
@@ -588,11 +586,17 @@ fn retrying(ctx: &JobCtx, mut write: impl FnMut() -> Result<()>) -> Result<()> {
 }
 
 /// Writes one outcome: the status row, and the text into the body and the index (the
-/// old text out first). A record the walk removed meanwhile is left alone.
-fn save(src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
+/// old text out first). A record the walk removed meanwhile is left alone, and nothing is
+/// written once contents are off for the source.
+fn save(lib: &Shared, src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
     let mut c = src.store.get()?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute("DELETE FROM meta WHERE key = ?1", [READING])?;
+    // The switch may have gone off since the read. Checked under the store's write lock:
+    // turning it off sets it first and then deletes the text under that lock.
+    if !contents_on(lib, src) {
+        return Ok(tx.commit()?);
+    }
     let old: Option<String> = tx
         .query_row(
             "SELECT text FROM record_text_body WHERE record = ?1",
@@ -616,6 +620,12 @@ fn save(src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
     }
     let (status, chars, truncated) = match outcome {
         TextOutcome::Done { text, truncated } => {
+            // The snippets' emphasis marks: a document's own would show as matched words.
+            let marks = [crate::search::MARK_ON, crate::search::MARK_OFF];
+            let text = match text.contains(marks) {
+                true => text.replace(marks, ""),
+                false => text,
+            };
             let chars = text.chars().count() as i64;
             if !text.trim().is_empty() {
                 tx.execute(
@@ -644,7 +654,7 @@ fn save(src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
 
 /// The record a reader had open when the program last stopped (`READING`), saved as
 /// failed with its size and time so it is not read again until it changes. Its path.
-fn crashed(src: &Source) -> Result<Option<String>> {
+fn crashed(lib: &Shared, src: &Source) -> Result<Option<String>> {
     let Some(id) = src.store.meta(READING)? else {
         return Ok(None);
     };
@@ -667,7 +677,7 @@ fn crashed(src: &Source) -> Result<Option<String>> {
         .optional()?;
     match rec {
         Some(rec) => {
-            save(src, &rec, TextOutcome::Failed(String::new()))?;
+            save(lib, src, &rec, TextOutcome::Failed(String::new()))?;
             Ok(Some(rec.path))
         }
         None => {
@@ -703,7 +713,7 @@ impl Job for TextJob {
             .entry(src.id.clone())
             .or_insert(false);
         let mut claim = Claim(&ctx.lib, Some(src.id.clone()));
-        if let Some(path) = crashed(&src)? {
+        if let Some(path) = crashed(&ctx.lib, &src)? {
             self.failed += 1;
             ctx.log(&format!(
                 "{path}: the program stopped while reading it; not read again until it changes"
