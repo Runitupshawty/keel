@@ -83,7 +83,7 @@ also act directly: they change no file.
 | `duplicates` | read | Same-content groups, most wasted bytes first |
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
-| `library.folder_sizes` | read | A folder's indexed total and each child's size, biggest first: `{path, bytes, files, children: [{name, path, is_dir, bytes, files}]}`. `bytes` / `files` are absent for a folder whose total is not known yet (its source's first walk has not finished) and for a link. Apparent sizes; links are not counted. A path in no source, or not indexed, is NOT_FOUND |
+| `library.folder_sizes` | read | A folder's indexed total and each child's size, biggest first: `{path, bytes, files, children: [{name, path, is_dir, bytes, files}], truncated}`. At most `max` children (default 1000; `truncated` says there were more); `dirs_only: true` lists only the child folders. `bytes` / `files` are absent for a folder whose total is not known yet (its source's first walk has not finished) and for a link. Apparent sizes; links are not counted. A path in no source, or not indexed, is NOT_FOUND |
 | `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below); `hashing`: the remote hashing policy (`remote`, `cloud`, `max_remote_bytes`, as `hashing.set` last set them) |
 | `protection.summary` | read | The protection card: `single_copy`, `single_domain`, `unbacked`, `drifted`, `unchecked` (not hashed yet, in none of the other counts), `offline_volumes` |
 | `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
@@ -382,8 +382,9 @@ is `{"error": {"code", "message", "data"?}}`). `keel sources --json` lists each 
 `bytes`, `hashed_files` and `last_walk`. `last_walk` duplicates `indexed_at` (the end of
 the last completed walk, under the name `library.stats` uses), but is kept while the
 source is offline, where `indexed_at` is absent. `keel du` answers as `library.folder_sizes`
-does; a local folder in no source is walked instead (each child's total and the folder's,
-in the same shape). Exit codes: 0 ok, 1 the operation failed,
+does (the 1000 biggest children); a local folder in no source is walked instead (each
+child's total and the folder's, in the same shape; a child folder that cannot be read has
+no `bytes` and the folder's total counts what could be read). Exit codes: 0 ok, 1 the operation failed,
 2 usage. Typed at a terminal, a lone argument that names an existing folder opens that
 folder in the window even when it is a subcommand name (`keel devices` where `devices` is
 a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
