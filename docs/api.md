@@ -51,8 +51,10 @@ than be overwritten. `jobs.info` keeps its shape.
 The folder operations (`plan.merge`, `plan.flatten`, `plan.organize`) read the folders
 when they preview and list every move (`move`, with `to`), every folder they make
 (`make_folder`) and every folder they remove when it is left empty (`remove_folder`), and
-an `exists` warning for each target name that is taken, now or by an earlier move of the
-plan. `execute` runs them as file plans; when the folder no longer gives the same moves (a
+an `exists` warning for each target name that is taken. Two items of one plan never land
+on one name (letter case aside): with `skip` or `rename_new` the later ones move to the
+next free name (`same (2).txt`, in `to`), and with `overwrite` the preview is refused,
+one line per item that would replace another. `execute` runs them as file plans; when the folder no longer gives the same moves (a
 file added, removed or renamed), it answers `PLAN_CHANGED` with the new preview. For
 example, `plan.organize` with `{"path": "D:\\Inbox", "by": "type"}` previews
 

@@ -477,7 +477,7 @@ pub type Meta = (Vec<Tag>, Vec<View>, HashMap<VPath, Vec<TagId>>);
 pub enum Executed {
     Job(JobId),
     /// The sources changed since the preview: confirm this fresh one.
-    Changed(Planned),
+    Changed(Box<Planned>),
 }
 
 /// A volume change from the volume table.
@@ -930,7 +930,9 @@ impl LibraryBackend {
                 match plan.execute(lib, true) {
                     Ok(id) => Ok(Executed::Job(id)),
                     Err(e) => match e.downcast::<PlanChanged>() {
-                        Ok(PlanChanged(fresh)) => Ok(Executed::Changed(Planned::Local(*fresh))),
+                        Ok(PlanChanged(fresh)) => {
+                            Ok(Executed::Changed(Box::new(Planned::Local(*fresh))))
+                        }
                         Err(e) => Err(e),
                     },
                 }
@@ -941,9 +943,9 @@ impl LibraryBackend {
                     Ok(v) => job(serde_json::from_value(v)?).map(Executed::Job),
                     Err(e) if e.code == ApiError::PLAN_CHANGED => {
                         let fresh = e.data.context("no fresh preview")?;
-                        Ok(Executed::Changed(Planned::Daemon(serde_json::from_value(
-                            fresh,
-                        )?)))
+                        Ok(Executed::Changed(Box::new(Planned::Daemon(
+                            serde_json::from_value(fresh)?,
+                        ))))
                     }
                     Err(e) => bail!("{}", e.message),
                 }

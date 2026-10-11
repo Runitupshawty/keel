@@ -812,6 +812,74 @@ fn a_merge_undone_moves_the_items_back_into_the_folders_it_removed() {
     assert_eq!(tree(tmp.path()), before);
 }
 
+/// Two sources with a subfolder of one name: the second lands as `Vacation (2)` (one plan
+/// never lands two items on one name), so undo puts each back.
+#[test]
+fn a_merge_of_two_same_named_subfolders_undone_puts_each_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b, c) = (
+        tmp.path().join("A"),
+        tmp.path().join("B"),
+        tmp.path().join("C"),
+    );
+    std::fs::create_dir_all(a.join("Vacation")).unwrap();
+    std::fs::create_dir_all(b.join("Vacation")).unwrap();
+    std::fs::create_dir_all(&c).unwrap();
+    std::fs::write(a.join("Vacation/a.jpg"), "a").unwrap();
+    std::fs::write(b.join("Vacation/b.jpg"), "b").unwrap();
+    let before = tree(tmp.path());
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Merge {
+            folders: vec![VPath::local(&a), VPath::local(&b), VPath::local(&c)],
+            into: VPath::local(&c),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    assert!(c.join("Vacation/a.jpg").exists() && c.join("Vacation (2)/b.jpg").exists());
+    assert_eq!(e.items.len(), 2);
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(tree(tmp.path()), before);
+}
+
+/// A folder that merged into one already there stays on undo, and the toast says so; the
+/// rest goes back.
+#[test]
+fn a_merge_into_a_folder_already_there_is_left_out_of_the_undo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, c) = (tmp.path().join("A"), tmp.path().join("C"));
+    std::fs::create_dir_all(a.join("Vacation")).unwrap();
+    std::fs::create_dir_all(c.join("Vacation")).unwrap();
+    std::fs::write(a.join("Vacation/a.jpg"), "a").unwrap();
+    std::fs::write(a.join("x.txt"), "x").unwrap();
+    std::fs::write(c.join("Vacation/c.jpg"), "c").unwrap();
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Merge {
+            folders: vec![VPath::local(&a), VPath::local(&c)],
+            into: VPath::local(&c),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    assert!(c.join("Vacation/a.jpg").exists() && !a.exists());
+    assert_eq!(e.items.len(), 1, "{e:?}");
+    let text = e.done_text();
+    assert!(
+        text.contains("1 item merged into a folder already there, so Undo leaves it"),
+        "{text}"
+    );
+    assert!(e.preview().contains("Undo leaves it"), "{}", e.preview());
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(std::fs::read_to_string(a.join("x.txt")).unwrap(), "x");
+    assert!(c.join("Vacation/a.jpg").exists() && c.join("Vacation/c.jpg").exists());
+    assert!(
+        !a.join("Vacation").exists(),
+        "the merged folder was not split"
+    );
+}
+
 #[test]
 fn attributes_and_links_undone() {
     let (tmp, a, _b) = fixture();

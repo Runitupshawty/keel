@@ -64,6 +64,11 @@ pub enum Op {
         on_conflict: OnConflict,
         #[serde(default)]
         moves: Vec<(VPath, VPath)>,
+        /// Items whose name an earlier move of the plan takes, with the free name each
+        /// lands under instead (sorted as `moves`): no two items of one plan land on one
+        /// name.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renamed: Vec<(VPath, String)>,
         #[serde(default)]
         prune: Vec<VPath>,
     },
@@ -87,6 +92,7 @@ impl Op {
             what,
             on_conflict,
             moves: Vec::new(),
+            renamed: Vec::new(),
             prune: Vec::new(),
         }
     }
@@ -297,7 +303,7 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
     let mut changes = Vec::new();
     archive_writes(lib, &op, &mut warnings)?;
     // A folder operation's moves, from the disk as it is now.
-    let mut sizes = Vec::new();
+    let (mut sizes, mut landing) = (Vec::new(), Vec::new());
     let op = match op {
         Op::Arrange {
             what, on_conflict, ..
@@ -310,11 +316,14 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                 what.verb()
             );
             sizes = planned.iter().map(|p| (p.files, p.bytes)).collect();
+            let renamed;
+            (landing, renamed) = land(lib, &planned, on_conflict, what.verb())?;
             let moves = planned.into_iter().map(|p| (p.item, p.into)).collect();
             Op::Arrange {
                 what,
                 on_conflict,
                 moves,
+                renamed,
                 prune,
             }
         }
@@ -413,6 +422,7 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             on_conflict,
             moves,
             prune,
+            ..
         } => {
             for root in what.roots() {
                 probe(lib, root, &mut warnings)?;
@@ -436,16 +446,9 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                     }
                 }
             }
-            // Names taken now, or by an earlier move of this plan.
-            let mut taken = HashSet::new();
-            for ((item, into), (files, bytes)) in moves.iter().zip(sizes) {
-                let to = into.join(item.name());
-                let fold = if cfg!(windows) {
-                    to.path.to_lowercase()
-                } else {
-                    to.path.clone()
-                };
-                if !taken.insert(fold) || exists(lib, &to) {
+            for (((item, _), (to, existed)), (files, bytes)) in moves.iter().zip(landing).zip(sizes)
+            {
+                if existed {
                     warnings.push(Warning::Exists {
                         path: to.clone(),
                         on_conflict: *on_conflict,
@@ -666,6 +669,84 @@ fn indexed(src: &Source, rel: &str) -> Result<Option<Probe>> {
 }
 
 /// Live when the provider answers; from the index when the source is offline.
+/// Where each generated move of a folder operation lands, and whether something has that
+/// name now. No two items of one plan land on one name (case-folded everywhere: macOS
+/// volumes fold case too): a later item gets the next free name, as Rename new names it;
+/// under Overwrite, which would replace the operation's own files, the plan is refused
+/// naming each such item.
+#[allow(clippy::type_complexity)]
+fn land(
+    lib: &Shared,
+    planned: &[crate::arrange::Planned],
+    on_conflict: OnConflict,
+    verb: &str,
+) -> Result<(Vec<(VPath, bool)>, Vec<(VPath, String)>)> {
+    let fold = |p: &VPath| p.path.to_lowercase();
+    // Folded name -> the item of this plan that lands there.
+    let mut taken: HashMap<String, &VPath> = HashMap::new();
+    let (mut landing, mut renamed, mut clashes) = (Vec::new(), Vec::new(), Vec::new());
+    for p in planned {
+        let to = p.into.join(p.item.name());
+        match taken.get(&fold(&to)) {
+            None => {
+                let existed = exists(lib, &to);
+                // Skip leaves an item whose name is there (a folder merges into it); Rename
+                // new lands it under another name.
+                if !existed || on_conflict == OnConflict::Overwrite {
+                    taken.insert(fold(&to), &p.item);
+                }
+                landing.push((to, existed));
+            }
+            Some(first) if on_conflict == OnConflict::Overwrite => {
+                clashes.push(format!(
+                    "{} would replace {} at {}",
+                    p.item.display(),
+                    first.display(),
+                    to.display()
+                ));
+                landing.push((to, false));
+            }
+            Some(_) => {
+                let name = (2..)
+                    .map(|n| numbered(p.item.name(), n, p.dir))
+                    .find(|name| {
+                        let t = p.into.join(name);
+                        !taken.contains_key(&fold(&t)) && !exists(lib, &t)
+                    })
+                    .context("no free name")?;
+                let to = p.into.join(&name);
+                taken.insert(fold(&to), &p.item);
+                renamed.push((p.item.clone(), name));
+                landing.push((to, false));
+            }
+        }
+    }
+    if !clashes.is_empty() {
+        let more = clashes.len().saturating_sub(10);
+        clashes.truncate(10);
+        if more > 0 {
+            clashes.push(format!("and {more} more"));
+        }
+        anyhow::bail!(
+            "two items of this {verb} land on one name, and Overwrite would replace the \
+             {verb}'s own files: pick Skip or Rename new\n{}",
+            clashes.join("\n")
+        );
+    }
+    Ok((landing, renamed))
+}
+
+/// `a.txt` -> `a (2).txt`, a folder `a` -> `a (2)`: the name Rename new picks.
+fn numbered(name: &str, n: u64, dir: bool) -> String {
+    let p = std::path::Path::new(name);
+    match (dir, p.file_stem(), p.extension()) {
+        (false, Some(stem), Some(ext)) => {
+            format!("{} ({n}).{}", stem.to_string_lossy(), ext.to_string_lossy())
+        }
+        _ => format!("{name} ({n})"),
+    }
+}
+
 fn exists(lib: &Shared, p: &VPath) -> bool {
     let live = lib
         .router
@@ -864,9 +945,8 @@ fn target(op: &Op, item: &VPath) -> Option<VPath> {
     match op {
         Op::Copy { dst_dir, .. } | Op::Move { dst_dir, .. } => Some(dst_dir.join(item.name())),
         Op::Rename { new_name, .. } => item.parent().map(|p| p.join(new_name)),
-        Op::Arrange { moves, .. } => {
-            crate::arrange::into_of(moves, item).map(|d| d.join(item.name()))
-        }
+        Op::Arrange { moves, renamed, .. } => crate::arrange::into_of(moves, item)
+            .map(|d| d.join(crate::arrange::renamed_to(renamed, item).unwrap_or(item.name()))),
         Op::Link { link, .. } => Some(link.clone()),
         Op::Delete { .. } | Op::SetAttributes { .. } => None,
     }
@@ -1372,7 +1452,10 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
     match op {
         Op::Copy { .. } | Op::Move { .. } => anyhow::bail!("copies and moves run in batches"),
         Op::Arrange {
-            moves, on_conflict, ..
+            moves,
+            on_conflict,
+            renamed,
+            ..
         } => {
             let into = crate::arrange::into_of(moves, item)
                 .with_context(|| format!("no folder planned for {}", item.display()))?;
@@ -1383,17 +1466,32 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
                 provider.mkdir(into)?;
                 reindex(ctx, std::slice::from_ref(into), false);
             }
+            // An item an earlier one took the name of lands under the name the preview
+            // showed: Rename new picks it where that name is taken; on a volume that tells
+            // case apart it lands under its own name and is renamed after.
+            let mut conflict = (*on_conflict).into();
+            let own = into.join(item.name());
+            let mut rename = None;
+            if let Some(name) = crate::arrange::renamed_to(renamed, item) {
+                match provider.stat(&own) {
+                    Ok(_) => conflict = Conflict::RenameNew,
+                    Err(_) => rename = Some(into.join(name)),
+                }
+            }
             // ponytail: one transfer per item (a rename on one volume); batch per folder if
             // folder operations across volumes get slow.
             keel_vfs::ops::transfer(
                 std::slice::from_ref(item),
                 into,
                 true,
-                (*on_conflict).into(),
+                conflict,
                 &|_| {},
                 ctx.stop_flag(),
                 &router,
             )?;
+            if let Some(to) = rename.filter(|to| provider.stat(to).is_err()) {
+                provider.rename(&own, &to)?;
+            }
         }
         Op::SetAttributes { attrs, .. } => keel_vfs::fsattr::set_attributes(&local(item)?, attrs)?,
         Op::Link { link, kind, .. } => {

@@ -181,14 +181,22 @@ fn flatten_moves_files_up_and_follows_the_conflict_rule() {
     assert_eq!(removes.len(), 5);
     assert!(removes.iter().position(|n| n == "y") < removes.iter().position(|n| n == "x"));
     assert!(removes.iter().position(|n| n == "inner") < removes.iter().position(|n| n == "empty"));
-    // top.txt exists; a.txt is taken by the first of the two.
+    // top.txt exists; a.txt is taken by the first of the two, so the second is renamed.
     let exists: Vec<String> = (plan.warnings.iter())
         .filter_map(|w| match w {
             Warning::Exists { path, .. } => Some(path.name().to_owned()),
             _ => None,
         })
         .collect();
-    assert_eq!(exists, ["a.txt", "top.txt"]);
+    assert_eq!(exists, ["top.txt"]);
+    let to = |from: &str| {
+        let c = plan.changes.iter().find(|c| c.from == v(&root.join(from)));
+        c.unwrap().to.as_ref().unwrap().name().to_owned()
+    };
+    assert_eq!(
+        (to("x/a.txt"), to("x/y/a.txt")),
+        ("a.txt".into(), "a (2).txt".into())
+    );
     let id = plan.execute(&lib, true).unwrap();
     assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Done);
     let got = tree(&root);
@@ -200,6 +208,91 @@ fn flatten_moves_files_up_and_follows_the_conflict_rule() {
     );
     assert!(got.iter().all(|(p, _)| !p.contains('/')), "{got:?}");
     assert!(dirs(&root).is_empty(), "{:?}", dirs(&root));
+}
+
+/// Two items of one plan never land on one name: under Overwrite the plan is refused (the
+/// later one would replace the first), else the later ones get the next free name; the
+/// check folds case on every system (macOS volumes fold it too).
+#[test]
+fn one_plan_never_lands_two_items_on_one_name() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("f");
+    write(&root.join("x/same.txt"), "x");
+    write(&root.join("y/same.txt"), "y");
+    write(&root.join("x/deep/same.txt"), "deep");
+    write(&root.join("a/Read.txt"), "upper");
+    write(&root.join("b/read.txt"), "lower");
+    let (_data, lib, _src) = library_with(folder("f", files.path()));
+    let before = tree(&root);
+    let flatten = |c| Op::arrange(FolderOp::Flatten { folder: v(&root) }, c);
+    let err = validate_preview_execute(&lib, flatten(OnConflict::Overwrite)).unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("pick Skip or Rename new"), "{err}");
+    assert_eq!(err.lines().skip(1).count(), 3, "one line per item: {err}");
+    assert_eq!(tree(&root), before, "nothing moved");
+    for c in [OnConflict::Skip, OnConflict::RenameNew] {
+        let plan = validate_preview_execute(&lib, flatten(c)).unwrap();
+        assert!(
+            !plan
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::Exists { .. })),
+            "{c:?}: nothing was there: {:?}",
+            plan.warnings
+        );
+        let mut shown: Vec<String> = (plan.changes.iter())
+            .filter(|ch| ch.action == Action::Move)
+            .map(|ch| ch.to.as_ref().unwrap().name().to_owned())
+            .collect();
+        shown.sort();
+        assert_eq!(
+            shown,
+            [
+                "Read.txt",
+                "read (2).txt",
+                "same (2).txt",
+                "same (3).txt",
+                "same.txt"
+            ]
+        );
+        let id = plan.execute(&lib, true).unwrap();
+        let info = lib.jobs().wait(id).unwrap();
+        assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+        let got = tree(&root);
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Read.txt",
+                "read (2).txt",
+                "same (2).txt",
+                "same (3).txt",
+                "same.txt"
+            ],
+            "every file kept, under the name the preview showed"
+        );
+        // Put them back for the next rule.
+        for (dir, name) in [("a", "Read.txt"), ("b", "read (2).txt")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            let back = if dir == "b" { "read.txt" } else { name };
+            std::fs::rename(root.join(name), root.join(dir).join(back)).unwrap();
+        }
+        let mut same: Vec<(String, String)> = (got.iter())
+            .filter(|(n, _)| n.starts_with("same"))
+            .cloned()
+            .collect();
+        same.sort();
+        for (name, body) in same {
+            let dir = match body.as_str() {
+                "x" => "x",
+                "y" => "y",
+                _ => "x/deep",
+            };
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::rename(root.join(&name), root.join(dir).join("same.txt")).unwrap();
+        }
+        assert_eq!(tree(&root), before);
+    }
 }
 
 #[test]

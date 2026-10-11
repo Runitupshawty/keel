@@ -2526,7 +2526,7 @@ impl AppState {
                     }
                     match b.execute(plan) {
                         Ok(Executed::Job(id)) => Some(LibMsg::OpStarted { id, undo }),
-                        Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(fresh)),
+                        Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(*fresh)),
                         Err(e) => {
                             worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
                             None

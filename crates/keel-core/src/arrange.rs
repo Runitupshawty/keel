@@ -53,6 +53,8 @@ impl FolderOp {
 pub(crate) struct Planned {
     pub item: VPath,
     pub into: VPath,
+    /// `item` is a folder (merge moves folders whole).
+    pub dir: bool,
     pub files: u64,
     pub bytes: u64,
 }
@@ -99,6 +101,7 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                         _ => (e.size, 1),
                     };
                     moves.push(Planned {
+                        dir: e.kind == Kind::Dir,
                         item: e.path,
                         into: into.clone(),
                         files,
@@ -123,6 +126,7 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                         _ => moves.push(Planned {
                             item: e.path,
                             into: root.clone(),
+                            dir: false,
                             files: 1,
                             bytes: e.size,
                         }),
@@ -143,6 +147,7 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                 moves.push(Planned {
                     into: root.join(&group),
                     item: e.path,
+                    dir: false,
                     files: 1,
                     bytes: e.size,
                 });
@@ -164,6 +169,14 @@ pub(crate) fn into_of<'a>(moves: &'a [(VPath, VPath)], item: &VPath) -> Option<&
         .binary_search_by(|(i, _)| key(i).cmp(&key(item)))
         .ok()
         .map(|i| &moves[i].1)
+}
+
+/// The name `item` lands under when an earlier item of its plan takes its own.
+pub(crate) fn renamed_to<'a>(renamed: &'a [(VPath, String)], item: &VPath) -> Option<&'a str> {
+    renamed
+        .binary_search_by(|(i, _)| key(i).cmp(&key(item)))
+        .ok()
+        .map(|i| renamed[i].1.as_str())
 }
 
 /// The subfolder a file goes into.

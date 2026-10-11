@@ -31,10 +31,13 @@ pub enum Op {
     Trash,
     /// Merge, flatten or organize: the items go back; the folders in `removed` (emptied
     /// and removed by it) are made again first, those in `made` removed after when empty.
+    /// `merged` items went into a folder that was there and stay (the toast says so).
     Arrange {
         what: Arranged,
         made: Vec<VPath>,
         removed: Vec<VPath>,
+        #[serde(default)]
+        merged: usize,
     },
     /// Attributes set: each item gets these back.
     Attributes(Vec<(VPath, keel_vfs::Attributes)>),
@@ -233,16 +236,33 @@ impl Entry {
             Op::Copy => format!("Copied {n} {}", Self::place(self.nows(), "to", "")),
             Op::Create(_) => format!("Created {}", self.items[0].now.name()),
             Op::Trash => format!("Moved {n} to the trash"),
-            Op::Arrange { what, .. } => match what {
-                Arranged::Merge => format!("Merged {n} {}", Self::place(self.nows(), "into", "")),
-                Arranged::Flatten => format!("Flattened: {n} moved up"),
-                Arranged::Organize => format!("Organized {n} into folders"),
-            },
+            Op::Arrange { what, merged, .. } => {
+                let done = match what {
+                    Arranged::Merge => {
+                        format!("Merged {n} {}", Self::place(self.nows(), "into", ""))
+                    }
+                    Arranged::Flatten => format!("Flattened: {n} moved up"),
+                    Arranged::Organize => format!("Organized {n} into folders"),
+                };
+                match merged {
+                    0 => done,
+                    m => format!("{}; {}", done.trim_end(), Self::merged_note(*m)),
+                }
+            }
             Op::Attributes(_) => format!("Changed the attributes of {n}"),
             Op::Link => format!("Made the link {}", self.items[0].now.name()),
         }
         .trim_end()
         .to_owned()
+    }
+
+    /// Items that merged into a folder that was there: Undo cannot take them out alone.
+    fn merged_note(merged: usize) -> String {
+        let (n, it) = match merged {
+            1 => ("1 item".to_owned(), "it"),
+            m => (format!("{m} items"), "them"),
+        };
+        format!("{n} merged into a folder already there, so Undo leaves {it}")
     }
 
     /// The preview an undo that moves or deletes asks to confirm.
@@ -273,11 +293,17 @@ impl Entry {
                 "Undo delete: restore {n} {}?",
                 Self::place(self.wases(), "to", "to where they were")
             ),
-            Op::Arrange { .. } => format!(
-                "Undo {}: move {n} back {}?",
-                self.noun(),
-                Self::place(self.wases(), "to", "to where they were")
-            ),
+            Op::Arrange { merged, .. } => {
+                let back = format!(
+                    "Undo {}: move {n} back {}?",
+                    self.noun(),
+                    Self::place(self.wases(), "to", "to where they were")
+                );
+                match merged {
+                    0 => back,
+                    m => format!("{back} ({})", Self::merged_note(*m)),
+                }
+            }
             Op::Attributes(_) => format!("Undo attributes: set {n} back as they were?"),
             Op::Link => format!("Undo link: remove {}?", self.items[0].now.name()),
         }
@@ -586,11 +612,22 @@ impl Planned {
                 if *on_conflict == keel_core::OnConflict::Overwrite {
                     return Err("files were replaced by Overwrite".into());
                 }
-                // In order: of two items planned for one name, the first took it.
+                // An item gone into a folder that was there (Skip), or into one another item
+                // of the plan landed on too, cannot go back alone (what is in that folder now
+                // is both): its target is left out of the undo, and the toast says so.
                 let mut seen = HashSet::new();
-                let mut items = Vec::new();
+                let shared: HashSet<&VPath> = (self.moves.iter())
+                    .map(|(_, to)| to)
+                    .filter(|to| !seen.insert(*to))
+                    .collect();
+                let (mut items, mut merged) = (Vec::new(), 0);
                 for (from, to) in &self.moves {
-                    if !seen.insert(to) || self.taken.contains(to) || stat(from).is_some() {
+                    if stat(from).is_some() {
+                        continue;
+                    }
+                    if shared.contains(to) || self.taken.contains(to) {
+                        // Keep both put it under another name (not known here).
+                        merged += usize::from(*on_conflict == keel_core::OnConflict::Skip);
                         continue;
                     }
                     if let Some(stamp) = stat(to) {
@@ -610,10 +647,14 @@ impl Planned {
                     .filter(|d| stat(d).is_none())
                     .cloned()
                     .collect();
+                if items.is_empty() && merged > 0 {
+                    return Err(Entry::merged_note(merged));
+                }
                 let op = Op::Arrange {
                     what,
                     made: self.made.clone(),
                     removed,
+                    merged,
                 };
                 Ok((op, items))
             }
