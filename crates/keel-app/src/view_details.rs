@@ -1,6 +1,7 @@
 //! Details view: a virtual-row table (Name / Ext / Size / Modified; search results show
 //! Name / Folder / Size / Modified).
 
+use crate::a11y::Named;
 use crate::keys::Action;
 use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::tab::{SortKey, Tab};
@@ -121,7 +122,13 @@ pub fn ui(
                         label
                     };
                     let text = egui::RichText::new(format!("{label}{arrow}")).strong();
-                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                    let name = match sort {
+                        (k, true) if k == key => format!("{label}, sorted ascending"),
+                        (k, false) if k == key => format!("{label}, sorted descending"),
+                        _ => label.to_owned(),
+                    };
+                    let r = ui.add(egui::Button::new(text).frame(false));
+                    if r.named(&name).clicked() {
                         sort_click = Some(key);
                     }
                 });
@@ -266,7 +273,7 @@ pub fn ui(
                         let on = lib.tagged.get(real).map_or(&[][..], |t| t.as_slice());
                         let fav = on.contains(&FAVORITES);
                         let star = egui::Button::new(if fav { "★" } else { "☆" }).frame(false);
-                        if ui.add(star).on_hover_text("Favorite (Ctrl+D)").clicked() {
+                        if ui.add(star).tip("Favorite (Ctrl+D)").clicked() {
                             out.push(Action::Library(crate::library::LibCmd::TagPaths {
                                 paths: vec![e.path.clone()],
                                 tag: FAVORITES,
@@ -285,6 +292,7 @@ pub fn ui(
         });
 
     for (r, e) in clicks {
+        crate::pane::a11y_item(ui, &r, tab, &e);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }

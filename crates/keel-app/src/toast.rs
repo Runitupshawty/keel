@@ -96,11 +96,13 @@ impl Toasts {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_max_width(420.0);
                         let text = egui::RichText::new(&t.text);
-                        ui.label(if t.level == Level::Error {
+                        let r = ui.label(if t.level == Level::Error {
                             text.color(error_color)
                         } else {
                             text
                         });
+                        // Screen readers announce it (errors interrupt).
+                        crate::a11y::live_label(&r, t.level == Level::Error);
                         if let Some((button, action)) = &t.action {
                             if ui.button(button.as_str()).clicked() {
                                 clicked = Some((i, action.clone()));

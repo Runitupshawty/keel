@@ -24,7 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
-eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
+eframe = { version = "0.31", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland", "accesskit"] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["image", "svg", "file"] }
 # Icon theme SVGs are checked with the parser usvg uses (egui_extras 0.31 -> usvg 0.37).

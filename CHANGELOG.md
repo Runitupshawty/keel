@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Screen readers: the release build now includes AccessKit (it was only in the test build), and every control has a name and a role. Buttons drawn as symbols say what they do ("Back (Alt+Left)", "Close tab Documents", "Clear filter (Esc)", "The rest of the path"), column headers say how they sort ("Name, sorted ascending"), Settings fields carry their labels, and a file row or tile reads as its name, size (or "folder") and modified date, with its selection.
+- The status bar announces the folder and its item count after navigation, and notifications are announced (errors interrupt).
+- `a11y_tests`: AccessKit checks on the fixture (every control of the window, the views, Settings, the palette and the dialogs named; rows; live regions).
+
 ## [0.16.0] - 2026-10-10
 
 ### Changed

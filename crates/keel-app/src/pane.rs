@@ -1,6 +1,7 @@
 //! A file pane: tab strip, navigation bar with breadcrumb / editable path, filter box,
 //! and the active tab's details or grid view.
 
+use crate::a11y::Named;
 use crate::keys::Action;
 use crate::tab::{Nav, Tab};
 use crate::theme::Theme;
@@ -220,7 +221,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
-            if ui.small_button("×").clicked() {
+            if ui.small_button("×").tip("Dismiss the error").clicked() {
                 tab.error = None;
             }
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -269,6 +270,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                     if pane.tabs.len() > 1
                         && ui
                             .add(egui::Button::new("×").frame(false).small())
+                            .named(&format!("Close tab {}", tab.title()))
                             .on_hover_text("Close tab (Ctrl+W)")
                             .clicked()
                     {
@@ -277,7 +279,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                 }
                 if ui
                     .add(egui::Button::new("+").frame(false))
-                    .on_hover_text("New tab (Ctrl+T)")
+                    .tip("New tab (Ctrl+T)")
                     .clicked()
                 {
                     out.push(Action::NewTab);
@@ -301,7 +303,7 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         let tab = &pane.tabs[pane.active];
         let nav = |ui: &mut egui::Ui, enabled: bool, text: &str, tip: &str| {
             ui.add_enabled(enabled, egui::Button::new(text).frame(false))
-                .on_hover_text(tip)
+                .tip(tip)
                 .clicked()
         };
         let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
@@ -440,7 +442,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     });
                 })
                 .response
-                .on_hover_text("The rest of the path");
+                .tip("The rest of the path");
                 if first < parts.len() {
                     ui.weak("›");
                 }
@@ -466,6 +468,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             let size = egui::vec2(ui.available_width().max(0.0), h);
             let empty = ui.allocate_response(size, Sense::click());
             if empty
+                .named("Type a path (Ctrl+L)")
                 .on_hover_text("Click to type a path (Ctrl+L)")
                 .clicked()
             {
@@ -534,10 +537,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 state.store(ui.ctx(), id);
             }
         }
-        let close = ui
-            .small_button("×")
-            .on_hover_text("Clear filter (Esc)")
-            .clicked();
+        let close = ui.small_button("×").tip("Clear filter (Esc)").clicked();
         if close || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
             tab.filter.clear();
             tab.filter_open = false;
@@ -701,6 +701,20 @@ pub fn handle_click(
     } else if r.middle_clicked() && entry.kind == keel_vfs::Kind::Dir {
         out.push(Action::NewTabAt(entry.path.clone()));
     }
+}
+
+/// A row or tile for screen readers (`a11y::item`): its name, size (or "folder") and
+/// modified date.
+pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Entry) {
+    let size = if e.kind == keel_vfs::Kind::Dir {
+        "folder".to_owned()
+    } else {
+        view_details::size_text(e)
+    };
+    let date = view_details::date_text(e);
+    let parts = [tab.shown_name(e), size.as_str(), date.as_str()];
+    let label: Vec<&str> = parts.into_iter().filter(|s| !s.is_empty()).collect();
+    crate::a11y::item(ui, r, &label.join(", "), tab.selected.contains(&e.name));
 }
 
 /// In-app drag payload: entries dragged out of pane `pane` showing folder `dir`.

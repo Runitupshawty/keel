@@ -1,6 +1,9 @@
 // Release builds on Windows open no console window (debug builds keep it for logs).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod a11y;
+#[cfg(test)]
+mod a11y_tests; // AccessKit tree and keyboard-only use
 mod anim;
 mod app;
 mod backend; // the library in-process or in keel-daemon

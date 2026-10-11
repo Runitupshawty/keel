@@ -2,6 +2,7 @@
 //! wizard, the validate/preview dialog, the tag picker, the duplicate finder, Settings →
 //! Library and the library rows of the jobs panel. State and workers are in `library.rs`.
 
+use crate::a11y::Named;
 use crate::keys::Action;
 use crate::library::{
     count, protection_lines, reclaimable, source_count_rows, source_rows, state_text, volume_rows,
@@ -691,7 +692,7 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     ui.end_row();
                     if !remotes.is_empty() {
                         ui.label("Or a remote");
-                        egui::ComboBox::from_id_salt("add-source-remote")
+                        let combo = egui::ComboBox::from_id_salt("add-source-remote")
                             .selected_text("Pick a host or cloud account")
                             .show_ui(ui, |ui| {
                                 for (label, root) in &remotes {
@@ -704,6 +705,7 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                                     }
                                 }
                             });
+                        let _ = combo.response.named("Or a remote");
                         ui.end_row();
                     }
                     ui.label("Label");
@@ -943,7 +945,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
             ui.label("Library");
-            egui::ComboBox::from_id_salt("settings-library-name")
+            let combo = egui::ComboBox::from_id_salt("settings-library-name")
                 .selected_text(lib_settings.name.as_str())
                 .show_ui(ui, |ui| {
                     for summary in &l.libraries {
@@ -958,6 +960,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                         }
                     }
                 });
+            let _ = combo.response.named("Library");
             ui.end_row();
             ui.label("New library");
             ui.horizontal(|ui| {
@@ -1022,20 +1025,22 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             }
             ui.end_row();
             ui.label("Check remote sources every");
-            ui.add(
-                egui::Slider::new(
-                    &mut lib_settings.remote_poll_secs,
-                    keel_api::config::REMOTE_POLL_SECS,
+            let _ = ui
+                .add(
+                    egui::Slider::new(
+                        &mut lib_settings.remote_poll_secs,
+                        keel_api::config::REMOTE_POLL_SECS,
+                    )
+                    .logarithmic(true)
+                    .suffix(" s"),
                 )
-                .logarithmic(true)
-                .suffix(" s"),
-            )
-            .on_hover_text(
-                "Google Drive and Dropbox report their changes, SFTP folders are checked for \
+                .on_hover_text(
+                    "Google Drive and Dropbox report their changes, SFTP folders are checked for \
                  new and removed files, other sources are walked again (every 5 minutes or \
                  this interval, whichever is longer); local sources are watched live. From the \
                  next start for this value.",
-            );
+                )
+                .named("Check remote sources every");
             ui.end_row();
             ui.label("Details view");
             ui.checkbox(&mut lib_settings.tags_column, "Tags column");
@@ -1043,7 +1048,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             // --- Task 33 ---
             ui.label("Integrity check");
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("settings-library-integrity")
+                let combo = egui::ComboBox::from_id_salt("settings-library-integrity")
                     .selected_text(match lib_settings.integrity_days {
                         0 => "Off".to_owned(),
                         1 => "Daily".to_owned(),
@@ -1058,15 +1063,18 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                             ui.selectable_value(&mut lib_settings.integrity_days, days, text);
                         }
                     });
-                ui.add(
-                    egui::Slider::new(&mut lib_settings.integrity_pct, 0.1..=10.0)
-                        .logarithmic(true)
-                        .suffix(" % of files"),
-                )
-                .on_hover_text(
-                    "Each check re-hashes this share of every source's hashed files, at idle \
+                let _ = combo.response.named("Integrity check");
+                let _ = ui
+                    .add(
+                        egui::Slider::new(&mut lib_settings.integrity_pct, 0.1..=10.0)
+                            .logarithmic(true)
+                            .suffix(" % of files"),
+                    )
+                    .on_hover_text(
+                        "Each check re-hashes this share of every source's hashed files, at idle \
                      priority, and marks files whose bytes changed under the same size and times",
-                );
+                    )
+                    .named("Share of files the integrity check re-hashes");
             });
             ui.end_row();
             ui.label("Index");

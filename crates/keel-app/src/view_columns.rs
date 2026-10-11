@@ -575,14 +575,6 @@ fn column(
                         Sense::click_and_drag(),
                     );
                     let selected = col.selected.contains(&e.name);
-                    r.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            true,
-                            selected,
-                            &e.name,
-                        )
-                    });
                     if selected {
                         let t = if col.cursor.as_deref() == Some(&e.name) {
                             fade
@@ -664,6 +656,7 @@ fn column(
     col.grid_scroll = (output.state.offset.y, output.inner_rect.height());
     for (r, e) in rows {
         clicked |= r.clicked() || r.secondary_clicked() || r.double_clicked() || r.drag_started();
+        crate::pane::a11y_item(ui, &r, col, &e);
         handle_click(&r, col, &e, out);
         drag_and_drop(&r, id.0, col, &e, out);
     }
@@ -1016,9 +1009,13 @@ mod tests {
         // Rows stack down their column (not across it).
         // The row (selectable; the preview column and the path bar repeat names).
         let center = |h: &Harness<App>, label: &str| {
-            let node = egui_kittest::kittest::Queryable::query_all_by_label(h, label)
-                .find(|n| n.toggled().is_some())
-                .expect("row");
+            let prefix = format!("{label}, ");
+            let node = egui_kittest::kittest::Queryable::query_all(
+                h,
+                egui_kittest::kittest::by().role(egui::accesskit::Role::ListItem),
+            )
+            .find(|n| n.label().is_some_and(|l| l.starts_with(&prefix)))
+            .expect("row");
             let b = node.raw_bounds().expect("row bounds");
             egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32)
         };

@@ -369,6 +369,7 @@ pub fn ui(
     });
     tab.grid_scroll = (output.state.offset.y, output.inner_rect.height());
     for (r, e) in clicks {
+        crate::pane::a11y_item(ui, &r, tab, &e);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }

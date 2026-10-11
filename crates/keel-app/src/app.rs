@@ -473,6 +473,8 @@ impl eframe::App for App {
         if self.crashed {
             crate::crash::modal(ctx, &mut self.crashed);
         }
+        crate::a11y::hide_dead_stops(ctx);
+        crate::a11y::focus_has_node(ctx);
         if self.persist.is_some() {
             let session = self.changed_session();
             let persist = self.persist.as_mut().expect("checked");
@@ -552,6 +554,15 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 ui.label(part);
             }
         }
+        // Announced after navigation: the folder and its item count (a live region).
+        let live = format!("{}, {}", tab.title(), crate::jobs::items(n));
+        crate::a11y::live(
+            ui.ctx(),
+            egui::Id::new("keel-live-folder"),
+            ui.min_rect(),
+            &live,
+            false,
+        );
         let dir = tab.dir.clone();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = format!("Theme: {}", s.theme.name);
@@ -807,7 +818,7 @@ mod tests {
             deepest.sort_by(f64::total_cmp);
             assert_eq!(details.len(), 2);
             assert_eq!(
-                harness.query_all_by_label("…").count(),
+                harness.query_all_by_label("The rest of the path").count(),
                 2,
                 "{width}: the rest"
             );
@@ -816,7 +827,11 @@ mod tests {
                 assert!(deepest.is_empty(), "{width}: {deepest:?}");
                 // The menu lists the nearest parts first (a deep path would cut off the
                 // farthest, not the ones the user is after).
-                harness.query_all_by_label("…").next().unwrap().click();
+                harness
+                    .query_all_by_label("The rest of the path")
+                    .next()
+                    .unwrap()
+                    .click();
                 harness.run_steps(2);
                 let y = |label: &str| {
                     let ys: Vec<f64> = (harness.query_all_by_label(label))
