@@ -108,6 +108,10 @@ export async function run({ browser, base, token, ids, daemon }) {
   // The light theme.
   const light = await openPage(browser, base, token, { colorScheme: "light" });
   await light.until("light login", (s) => s.login && !s.dark);
+  // The password box over the form is light too (it was a dark box on the light form).
+  const bg = await light.page.locator("#token").evaluate((e) => getComputedStyle(e).backgroundColor);
+  const [r, g, b] = bg.match(/\d+/g).map(Number);
+  if (r + g + b < 600) await light.fail(`the token box is dark in the light theme: ${bg}`);
   await light.shot("31-light-login");
   await light.signIn();
   await light.act("open-source", "Fixture");
