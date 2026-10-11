@@ -139,6 +139,8 @@ fn registry_is_preview_first() {
         "library.sync",
         "library.backup",
         "library.restore",
+        "library.folder_style",
+        "library.set_folder_style",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -276,6 +278,87 @@ fn mutating_calls_only_preview_until_executed() {
     let removed = apply(&f.ctx, "sources.remove", json!({"id": id}));
     assert_eq!(removed["removed"]["id"], id);
     assert!(f.ctx.lib.sources().is_empty());
+}
+
+/// Task 56: a folder's color and icon, previewed then set; omitted fields stay, "" clears.
+#[test]
+fn folder_styles_are_previewed_set_read_and_cleared() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let docs = s(&f.files.path().join("docs"));
+    let read = |path: Option<&str>| {
+        let params = match path {
+            Some(p) => json!({ "path": p }),
+            None => json!({}),
+        };
+        call(&f.ctx, "library.folder_style", params).unwrap()
+    };
+    assert_eq!(read(Some(&docs)), json!([{ "path": docs }]));
+    assert_eq!(read(None), json!([]));
+    let preview = call(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": docs, "color": "#3b82f6", "icon": "📷"}),
+    )
+    .unwrap();
+    assert_eq!(preview["changes"][0]["action"], "folder_style");
+    assert_eq!(read(None), json!([]), "a preview sets nothing");
+    let set = apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": docs, "color": "#3b82f6", "icon": "📷"}),
+    );
+    assert_eq!(set, json!({"path": docs, "color": "#3b82f6", "icon": "📷"}));
+    assert_eq!(read(None), json!([set]));
+    // The same folder by its library path; only the icon changes.
+    let lib_docs = keel_vfs::library::path(&id, "docs").display();
+    apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": lib_docs, "icon": "theme:docs"}),
+    );
+    assert_eq!(
+        read(Some(&docs)),
+        json!([{"path": docs, "color": "#3b82f6", "icon": "theme:docs"}])
+    );
+    // A source's root takes a style too.
+    let root = s(f.files.path());
+    apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": root, "color": "#e5484d"}),
+    );
+    assert_eq!(read(None).as_array().unwrap().len(), 2);
+    apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": root, "color": ""}),
+    );
+    // Refused at the preview: bad values, a file, a folder outside the library.
+    let refused = |params: Value| call(&f.ctx, "library.set_folder_style", params).unwrap_err();
+    for bad in [
+        json!({"path": docs, "color": "blue"}),
+        json!({"path": docs, "icon": "📷📷"}),
+        json!({"path": docs, "icon": "x"}),
+        json!({"path": s(&f.files.path().join("docs/notes.txt")), "color": "#000000"}),
+    ] {
+        assert_eq!(refused(bad.clone()).code, ApiError::INVALID_PARAMS, "{bad}");
+    }
+    let outside = tempfile::tempdir().unwrap();
+    let err = refused(json!({"path": s(outside.path()), "color": "#000000"}));
+    assert_eq!(err.code, ApiError::NOT_FOUND);
+    assert!(
+        err.message
+            .contains("add the folder's drive to the library"),
+        "{err}"
+    );
+    // Cleared: both fields "".
+    apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": docs, "color": "", "icon": ""}),
+    );
+    assert_eq!(read(None), json!([]));
 }
 
 #[test]

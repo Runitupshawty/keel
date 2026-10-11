@@ -1044,6 +1044,42 @@ pub struct TaggedPath {
     pub tags: Vec<i64>,
 }
 
+/// `library.folder_style`: one folder, or every styled folder.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FolderStyleParams {
+    /// A folder in a library source; omitted: every folder that has a color or icon.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// A folder's color and icon (both absent: none).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FolderStyleInfo {
+    pub path: String,
+    /// `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// One emoji, or `theme:<name>` (the icon theme's folder icon for folders of that
+    /// name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+/// `library.set_folder_style`: omitted fields stay as they are, `""` clears one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetFolderStyleParams {
+    /// An indexed folder in a library source.
+    pub path: String,
+    /// `#rrggbb`, or `""` to clear it.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// One emoji or `theme:<name>`, or `""` to clear it.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
 /// A saved view (sidebar).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ViewInfo {

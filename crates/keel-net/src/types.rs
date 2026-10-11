@@ -306,6 +306,10 @@ pub enum Request {
     /// when the host turned sync with the asking device on; `Response::Denied` otherwise.
     SyncPull {
         since: Vec<(NodeId, u64)>,
+        /// The puller reads folder styles (`keel_core::SyncOp::Style`, Keel 0.21): a
+        /// host leaves them out for an older puller, which could not read the page.
+        #[serde(default)]
+        styles: bool,
     },
 }
 impl Request {

@@ -225,7 +225,7 @@ impl Node {
                     self.drop_cancel(&ctx, &id).await;
                     Response::Ok
                 }
-                Request::SyncPull { since } => self.serve_sync(peer, since).await?,
+                Request::SyncPull { since, styles } => self.serve_sync(peer, since, styles).await?,
                 Request::Write {
                     source,
                     path,

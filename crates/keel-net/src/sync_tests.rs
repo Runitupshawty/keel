@@ -273,3 +273,52 @@ fn devices_pull_on_their_own_once_sync_is_on() {
     }
     t.close();
 }
+
+/// Task 56: folder styles travel in pages, but only to a puller that reads them; an older
+/// Keel's pull (no `styles` in its request) gets the page without them.
+#[test]
+fn folder_styles_travel_only_to_pullers_that_read_them() {
+    let t = two(&[("a.txt", "a")], &[], manual());
+    t.on();
+    let style = keel_core::FolderStyle {
+        color: Some("#e5484d".into()),
+        icon: Some("📁".into()),
+    };
+    let folder = t.a.lib.record_at(&t.a.src.def.root).unwrap().unwrap();
+    t.a.lib.set_folder_style(&folder, &style).unwrap();
+    let pull = |styles: bool| {
+        let req = Request::SyncPull {
+            since: vec![(t.a.node.id(), 0)],
+            styles,
+        };
+        match t.rt.block_on(t.b.node.request(&t.a.id(), req)).unwrap() {
+            Response::SyncEntries { entries, .. } => entries,
+            other => panic!("{other:?}"),
+        }
+    };
+    let is_style = |e: &keel_core::SyncEntry| matches!(e.op, keel_core::SyncOp::Style { .. });
+    assert_eq!(pull(true).iter().filter(|e| is_style(e)).count(), 1);
+    assert_eq!(pull(false).iter().filter(|e| is_style(e)).count(), 0);
+    t.close();
+}
+
+/// A pull request from before folder styles (no `styles` field) still decodes.
+#[test]
+fn a_pull_without_the_styles_field_decodes() {
+    #[derive(serde::Serialize)]
+    enum Old {
+        SyncPull { since: Vec<(NodeId, u64)> },
+    }
+    let id = NodeId([7; 32]);
+    let bytes = crate::wire::encode(&Old::SyncPull {
+        since: vec![(id, 3)],
+    })
+    .unwrap();
+    match crate::wire::decode::<Request>(&bytes).unwrap() {
+        Request::SyncPull { since, styles } => {
+            assert_eq!(since, [(id, 3)]);
+            assert!(!styles);
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -461,6 +461,78 @@ fn malformed_entries_are_refused() {
     assert!(b.lib.sync_apply("bad id!", &page_of(Vec::new())).is_err());
 }
 
+/// Task 56: a folder's color and icon reach the other device's source of that folder,
+/// wait there for a folder not indexed yet, and are cleared alike; never in a local folder.
+#[test]
+fn folder_styles_sync_like_path_tags() {
+    let a = device("deva", &[("Work/plan.txt", "plan"), ("Later/x.txt", "x")]);
+    let b = device("devb", &[("Work/plan.txt", "plan")]);
+    let theirs = device_source(&b.lib, "deva", &a.src.id.0, &["Work/plan.txt"]);
+    let style = |color: &str, icon: &str| crate::FolderStyle {
+        color: Some(color.into()),
+        icon: Some(icon.into()),
+    };
+    let red = style("#e5484d", "📁");
+    a.lib.set_folder_style(&a.rec("Work"), &red).unwrap();
+    a.lib
+        .set_folder_style(&a.rec("Later"), &style("#30a46c", "theme:src"))
+        .unwrap();
+    let done = b.pull(&a);
+    assert_eq!(done.applied, 2, "{done:?}");
+    let rec = |s: &Source, rel: &str| RecordRef {
+        source: s.id.clone(),
+        id: id_of(s, rel).unwrap(),
+    };
+    assert_eq!(
+        b.lib.folder_style(&rec(&theirs, "Work")).unwrap(),
+        Some(red)
+    );
+    assert_eq!(b.lib.folder_style(&b.rec("Work")).unwrap(), None, "local");
+    // "Later" was not in b's index yet: styled once it is.
+    let c = theirs.store.get().unwrap();
+    let root: i64 = c
+        .query_row("SELECT id FROM record WHERE parent IS NULL", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    c.execute(
+        "INSERT INTO record(parent, name, path, kind, fs_id, gen) VALUES (?1, 'Later', 'Later', 1, 'h:Later', 1)",
+        [root],
+    )
+    .unwrap();
+    drop(c);
+    b.lib.sync_reapply().unwrap();
+    assert_eq!(
+        b.lib.folder_style(&rec(&theirs, "Later")).unwrap(),
+        Some(style("#30a46c", "theme:src"))
+    );
+    // Cleared on a: cleared on b.
+    a.lib
+        .set_folder_style(&a.rec("Work"), &crate::FolderStyle::default())
+        .unwrap();
+    assert_eq!(b.pull(&a).applied, 1);
+    assert_eq!(b.lib.folder_style(&rec(&theirs, "Work")).unwrap(), None);
+    // Styling a's folder on b is kept by a's path and never served back.
+    b.lib
+        .set_folder_style(&rec(&theirs, "Work"), &style("#3b82f6", "⭐"))
+        .unwrap();
+    assert!(b.lib.sync_page(0, SYNC_PAGE).unwrap().entries.is_empty());
+    // A forged path in another device's namespace, and a malformed style, land nowhere.
+    let op = |path: &str, icon: &str| SyncOp::Style {
+        source: b.src.id.0.clone(),
+        path: path.into(),
+        color: None,
+        icon: Some(icon.into()),
+    };
+    let forged = page_of(vec![
+        entry(1, 100, op("Work", "🔥")),
+        entry(2, 101, op("Work", "xx")),
+    ]);
+    let done = b.lib.sync_apply("devc", &forged).unwrap();
+    assert_eq!((done.applied, done.rejected), (1, 1));
+    assert_eq!(b.lib.folder_style(&b.rec("Work")).unwrap(), None);
+}
+
 #[test]
 fn the_same_tag_made_on_both_devices_is_one_tag() {
     let a = device("deva", &[("f.txt", "shared")]);

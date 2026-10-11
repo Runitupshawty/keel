@@ -342,3 +342,16 @@ CREATE TRIGGER record_total_au AFTER UPDATE OF parent, kind, size, flags ON reco
     INSERT OR IGNORE INTO folder_dirty SELECT new.parent WHERE new.parent IS NOT NULL;
     INSERT OR IGNORE INTO folder_dirty SELECT new.id WHERE new.kind = 1;
 END;
+
+-- @source 10
+-- Folder styles (Task 56): a folder's color (`#rrggbb`) and icon (one emoji, or
+-- `theme:<name>`, an icon theme's folder icon of that name), by record like tag links: a
+-- move or rename the index records keeps the record and its style; the folder leaving the
+-- index drops it.
+CREATE TABLE folder_style(
+    record INTEGER PRIMARY KEY,
+    color TEXT,
+    icon TEXT);
+CREATE TRIGGER record_style_ad AFTER DELETE ON record BEGIN
+    DELETE FROM folder_style WHERE record = old.id;
+END;

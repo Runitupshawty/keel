@@ -112,6 +112,10 @@ pub static OPS: &[Operation] = &[
         PathParams => Copies, redundancy, json!({"path": example_file()})),
     now!("redundancy.folder", "The copies of every indexed file in a folder (the first 5000 files).",
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
+    now!("library.folder_style", "A folder's color and icon, or (no path) every folder in the library that has one; read-only.",
+        FolderStyleParams => Vec<FolderStyleInfo>, folder_style, json!({"path": example_dir()})),
+    previewed!("library.set_folder_style", "Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon); an omitted field stays, \"\" clears it. Changes only the library.",
+        SetFolderStyleParams => FolderStyleInfo, set_folder_style_preview, set_folder_style, json!({"path": example_dir(), "color": "#3b82f6", "icon": "📷"})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
@@ -699,6 +703,106 @@ fn tags_tagged(ctx: &Ctx, _: NoParams) -> Result<Vec<TaggedPath>> {
         .into_iter()
         .map(|(path, tags)| TaggedPath { path, tags })
         .collect())
+}
+
+// --- folder styles ---
+
+/// The indexed folder at `path` (a source's root included).
+fn folder_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
+    let p = vpath(path)?;
+    locate(ctx, &p).map_err(|_| {
+        ApiError::not_found(format!(
+            "{path} is in no library source: add the folder's drive to the library to style it"
+        ))
+    })?;
+    let found = ctx.lib.record_at(&p)?;
+    let record = found
+        .ok_or_else(|| ApiError::not_found(format!("{path} is not in the library index yet")))?;
+    match ctx.lib.record(&record)? {
+        Some(h) if h.is_dir => Ok(record),
+        _ => Err(ApiError::invalid_params(format!(
+            "{path} is a file: only folders take a color or icon"
+        ))),
+    }
+}
+
+fn style_info(path: String, s: keel_core::FolderStyle) -> FolderStyleInfo {
+    FolderStyleInfo {
+        path,
+        color: s.color,
+        icon: s.icon,
+    }
+}
+
+fn folder_style(ctx: &Ctx, p: FolderStyleParams) -> Result<Vec<FolderStyleInfo>> {
+    match &p.path {
+        Some(path) => {
+            let style = ctx.lib.folder_style(&folder_at(ctx, path)?)?;
+            Ok(vec![style_info(
+                vpath(path)?.display(),
+                style.unwrap_or_default(),
+            )])
+        }
+        None => Ok(ctx
+            .lib
+            .folder_styles()?
+            .into_iter()
+            .map(|(h, s)| style_info(h.path.display(), s))
+            .collect()),
+    }
+}
+
+/// The folder and the style it gets: the given fields over its current style.
+fn wanted_style(
+    ctx: &Ctx,
+    p: &SetFolderStyleParams,
+) -> Result<(RecordRef, keel_core::FolderStyle)> {
+    let record = folder_at(ctx, &p.path)?;
+    let mut style = ctx.lib.folder_style(&record)?.unwrap_or_default();
+    let field = |v: &Option<String>, old: Option<String>| match v.as_deref() {
+        None => old,
+        Some("") => None,
+        Some(v) => Some(v.to_owned()),
+    };
+    style.color = field(&p.color, style.color.take());
+    style.icon = field(&p.icon, style.icon.take());
+    style
+        .check()
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok((record, style))
+}
+
+fn style_text(s: &keel_core::FolderStyle) -> String {
+    let parts: Vec<String> = [
+        s.color.as_ref().map(|c| format!("color {c}")),
+        s.icon.as_ref().map(|i| format!("icon {i}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    match parts.is_empty() {
+        true => "no color or icon".into(),
+        false => parts.join(", "),
+    }
+}
+
+fn set_folder_style_preview(ctx: &Ctx, p: &SetFolderStyleParams) -> Result<Preview> {
+    let (_, style) = wanted_style(ctx, p)?;
+    let path = vpath(&p.path)?.display();
+    Ok(Preview {
+        pin: None,
+        summary: format!("Set the folder style of {path}: {}", style_text(&style)),
+        changes: vec![change("folder_style", Some(path), Some(style_text(&style)))],
+        warnings: Vec::new(),
+    })
+}
+
+fn set_folder_style(ctx: &Ctx, p: SetFolderStyleParams) -> Result<FolderStyleInfo> {
+    let (record, style) = wanted_style(ctx, &p)?;
+    ctx.lib
+        .set_folder_style(&record, &style)
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok(style_info(vpath(&p.path)?.display(), style))
 }
 
 fn views_list(ctx: &Ctx, _: NoParams) -> Result<Vec<ViewInfo>> {

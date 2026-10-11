@@ -34,6 +34,7 @@ mod protect;
 mod search;
 mod sidecar_job;
 mod sidecars;
+mod styles;
 mod sync;
 mod tags;
 mod totals;
@@ -73,6 +74,7 @@ pub use sidecars::{
     strip_retry_due, Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars, StripWaits,
     DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET, STRIP_RETRY,
 };
+pub use styles::{valid_color, valid_emoji, valid_icon, valid_theme_icon, FolderStyle, THEME_ICON};
 pub use sync::{
     plain_text, valid_device, valid_tag_name, SyncApplied, SyncEntry, SyncOp, SyncPage, SyncPeer,
     SyncTarget, FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,

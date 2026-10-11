@@ -140,11 +140,13 @@ impl Node {
         n
     }
 
-    /// Answers a `SyncPull`: this device's changes after the sequence number given for it.
+    /// Answers a `SyncPull`: this device's changes after the sequence number given for it
+    /// (folder styles only when the puller reads them: `styles`).
     pub(crate) async fn serve_sync(
         &self,
         peer: PeerId,
         since: Vec<(NodeId, u64)>,
+        styles: bool,
     ) -> Result<Response> {
         if !self.syncs_with(&peer) {
             return Ok(Response::Denied("library sync is off".into()));
@@ -156,6 +158,10 @@ impl Node {
         let mut page =
             tokio::task::spawn_blocking(move || h.sync_page(since, keel_core::SYNC_PAGE)).await??;
         let me = me.to_string();
+        if !styles {
+            // An older Keel fails to read a page with a kind it does not know.
+            (page.entries).retain(|e| !matches!(e.op, keel_core::SyncOp::Style { .. }));
+        }
         for e in &mut page.entries {
             e.device = me.clone();
         }
@@ -215,6 +221,7 @@ impl Node {
             let since = tokio::task::spawn_blocking(move || h.sync_since(&p)).await??;
             let pull = Request::SyncPull {
                 since: vec![(peer.0, since)],
+                styles: true,
             };
             let (mut entries, mut more, mut upto, epoch) = match self.request(peer, pull).await? {
                 Response::SyncEntries {

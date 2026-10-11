@@ -4864,6 +4864,8 @@ dependencies = [
  "starship-battery",
  "tempfile",
  "tracing",
+ "unicode-properties",
+ "unicode-segmentation",
  "wait-timeout",
  "windows 0.58.0",
  "zip 2.4.2",
