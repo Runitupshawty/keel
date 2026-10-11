@@ -4,7 +4,7 @@ Reference for `keel-daemon`, the `keel` subcommands, the MCP server and mounts. 
 
 ## Daemon, CLI and MCP
 
-Everything the library can do is also a typed operation (54 of them: search, reading and previewing files, tags, favorites, recents, sources, jobs, duplicates, redundancy, protection, volumes, hashing, integrity and media jobs, copy, move, delete and rename plans, devices and their settings, library sync, shares, Spacedrop and mounts), reachable three ways: JSON-RPC from `keel-daemon`, `keel` subcommands, and an MCP server. The window uses the same operations when it is attached to the daemon. The reference with schemas and examples is [docs/api.md](api.md).
+Everything the library can do is also a typed operation (57 of them: search, reading and previewing files, tags, favorites, recents, sources, jobs, duplicates, redundancy, protection, volumes, hashing, integrity and media jobs, copy, move, delete and rename plans, library backup and restore, devices and their settings, library sync, shares, Spacedrop and mounts), reachable three ways: JSON-RPC from `keel-daemon`, `keel` subcommands, and an MCP server. The window uses the same operations when it is attached to the daemon. The reference with schemas and examples is [docs/api.md](api.md).
 
 **The preview-first rule.** A command that would change anything only returns a preview with a plan id and an input hash. `execute` applies exactly that plan; it refuses a wrong hash, a plan older than 10 minutes, and a plan whose sources changed in the meantime. Revoking a share (`shares.revoke`), noting an opened file (`recents.note`) and noting that you are working (`activity.note`, which pauses idle jobs for 5 s, sidecar jobs for 1 s) are the only things done directly; removing a source previews too, with what its index store holds (size, tags, favorites).
 
@@ -21,10 +21,12 @@ keel plan delete ~/old-photos --json
 keel devices
 keel shares
 keel sources add ~/Photos --label photos
+keel library backup /media/backup
+keel library restore /media/backup/main-2026-10-11.keelbackup --as old-main
 keel daemon status
 ```
 
-`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel library backup|restore`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
 
 **MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
 
@@ -47,6 +49,8 @@ args = ["mcp"]
 ```
 
 Use the full path to `keel` when it is not on `PATH`. Every mutating tool returns a preview and says to call `execute` with the plan id; tell your agent to show you the preview and run `execute` only after you agree. Read-only tools are marked as such.
+
+**Backup and restore.** `keel library backup <file or folder>` writes the library to a `.keelbackup` file (in a folder, as `<library>-<date>.keelbackup`; never over an existing file) and `keel library restore <file> [--as <name>]` restores one as a new library, never over an existing one ([Backup and restore](library.md#backup-and-restore)). With a daemon running both run in the daemon, which holds the databases; the file is read or written on the daemon's machine at the path given (local paths only). Without one, `restore` writes straight into the data folder without opening a library, so it works on a machine where Keel has never run.
 
 Limits: a window that opened the library in-process keeps it until it closes or switches (Settings → Library → Run the library in a background daemon hands it over at once).
 

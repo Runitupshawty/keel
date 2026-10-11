@@ -12,7 +12,7 @@ Keel is an open-source file manager for Windows, macOS and Linux, written in Rus
 - **Archives as folders**: zip, 7z, tar and rar; zip and jar archives can be edited in place.
 - **A terminal pane** that follows the active folder.
 - **SFTP remotes** (with `~/.ssh/config` and jump hosts) and **cloud accounts**: Google Drive, Dropbox, S3 and WebDAV.
-- **The library**: an index of all your sources that works offline, with tags, favorites, a duplicate finder, protection counts, a drive inventory and a preview before every change.
+- **The library**: an index of all your sources that works offline, with tags, favorites, a duplicate finder, protection counts, a drive inventory, a preview before every change, and a backup to one file.
 - **A media view** for photos and videos, with a full-window viewer and video playback.
 - **Devices**: pair your own computers, share folders, send files with Spacedrop and keep tags in sync.
 - **Daemon, CLI and MCP**: the library from a terminal, over JSON-RPC, in a browser or on a phone, and for AI agents, always preview first.

@@ -84,7 +84,9 @@ also act directly: they change no file.
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
 | `library.folder_sizes` | read | A folder's indexed total and each child's size, biggest first: `{path, bytes, files, children: [{name, path, is_dir, bytes, files}], truncated}`. At most `max` children (default 1000; `truncated` says there were more); `dirs_only: true` lists only the child folders. `bytes` / `files` are absent for a folder whose total is not known yet (its source's first walk has not finished) and for a link. Apparent sizes; links are not counted. A path in no source, or not indexed, is NOT_FOUND |
-| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below); `hashing`: the remote hashing policy (`remote`, `cloud`, `max_remote_bytes`, as `hashing.set` last set them) |
+| `library.stats` | read | Counts over every source: `sources`, `offline_sources`, `records`, `files`, `bytes`, `unique_content`, `running_jobs`, and `per_source` (each source's `id`, `label`, `files`, `folders`, `bytes`, `hashed_files`, `last_walk`, `offline`; example below); `hashing`: the remote hashing policy (`remote`, `cloud`, `max_remote_bytes`, as `hashing.set` last set them); `last_backup`: when `library.backup` last wrote a backup (unix seconds, absent before the first) |
+| `library.backup` | preview | Write a backup of the library to `file` on the host: a new `.keelbackup` file, or a folder to write `<library>-<YYYY-MM-DD>.keelbackup` in (an absolute local path; an existing file is refused). Answers `{file, bytes, created, sources}`. Holds `library.db` and every source's store as `VACUUM INTO` snapshots; no thumbnails or search index ([Backup and restore](library.md#backup-and-restore)) |
+| `library.restore` | preview | Restore the backup `file` on the host as a new library, named `name` or the backed-up library's; a library of that name is never replaced (refused at the preview). The preview lists the library and each source, walked again or offline; answers `{name, dir, sources: [{id, label, root, online}]}`. The host's open library stays open: switch to the new one in the window. A file that is not a backup, is damaged or comes from a newer Keel is refused with that message |
 | `protection.summary` | read | The protection card: `single_copy`, `single_domain`, `unbacked`, `drifted`, `unchecked` (not hashed yet, in none of the other counts), `offline_volumes` |
 | `volumes.list` | read | The drive inventory: each volume's `id`, `label`, `kind`, `failure_domain` (`domain_set` when set by hand), `state`, `last_seen`, `backup`, `used` / `total` |
 | `volumes.set` | preview | Set a volume's `state` (`archived` / `lost` / `retired`; `online` makes it automatic again), `backup` mark or `failure_domain` (`""`: the detected one) |
@@ -366,6 +368,8 @@ keel plan copy|move <src…> --to <dir> [--on-conflict skip|overwrite|rename] [-
 keel plan delete <paths…> [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
+keel library backup <file or folder>
+keel library restore <file> [--as NAME]
 keel devices | keel shares
 keel mount <source id or label> <K:|folder> [--subtree PATH]
 keel unmount <K:|folder>
@@ -391,7 +395,7 @@ a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
 subcommand; without a terminal (an agent starting `keel mcp`, a script) a name is never
 taken as a folder. `keel ./name` always means the folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
-job. Other mutating subcommands (`tag`, `sources add|remove|index`, `mount`, `unmount`) print the preview and
+job. Other mutating subcommands (`tag`, `sources add|remove|index`, `library backup|restore`, `mount`, `unmount`) print the preview and
 confirm it themselves: typing the command is the confirmation. Plans are kept in the
 library folder (`api-plans.json`, owner-only; on Windows a file owned by the user, the
 token's default owner or Administrators, with a protected DACL naming only them and

@@ -79,7 +79,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Portable source store, kept on the source itself if wanted ("provider exit") | described | [SD-README], [SD-DIR] | **Part**: one store per source that can move between libraries; always under the data folder, never on the source |
 | Point-in-time freezes, browsing an old state | described | [SD-README] | **Part**: an offline source shows its last indexed state; no dated freezes |
 | Multiple libraries | described | [SD-LIB] | **Has** |
-| Library backup and restore | landed (2026-10-07) | [SD-STATUS], [SD-LIB] | **Lacks** |
+| Library backup and restore | landed (2026-10-07) | [SD-STATUS], [SD-LIB] | **Has**: a `.keelbackup` file, restored as a new library ([library.md](library.md#backup-and-restore)) |
 | Locked or unmounted volumes, drive inventory | landed | [SD-STATUS], [SD-README] | **Has**: drive inventory with Archived, Lost, Retired ([library.md](library.md#protection)) |
 | Redundancy by failure domain, backup state, integrity checks | described | [SD-README] | **Has** ([library.md](library.md#protection)) |
 | "Last copy" warnings; validate, then preview, then execute | described | [SD-README] | **Has** |
@@ -134,7 +134,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
-| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 54 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
+| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 57 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
 | Agent skill | landed | [SD-STATUS] | **Lacks** (MCP only) |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
@@ -212,7 +212,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 11 | Text inside documents in library search (OCR later) | Spacedrive; spec 2.10 Search | D | M-L |
 | 12 | Fuzzy finder over files, not only folders | Atlas | D | S |
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
-| 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping | S |
+| 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** (unreleased, [library.md](library.md#backup-and-restore)) | S |
 | 15 | Drag-out on macOS and Linux | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
 | 17 | An icon or color per folder | Atlas | D | S-M |

@@ -2,6 +2,18 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Library backup and restore: **Back up library…** and **Restore library…** in the command palette (also **Back up…** and **Restore…** in Settings → Library, which shows the **Last backup** time), `keel library backup <file or folder>` and `keel library restore <file> [--as <name>]`, and the previewed API operations `library.backup` and `library.restore` (run in keel-daemon when one runs; `library.stats` reports `last_backup`). A `<library>-<YYYY-MM-DD>.keelbackup` file holds a manifest and a consistent `VACUUM INTO` copy of `library.db` and of each source's store: sources, tags, favorites, content ids, saved views, recents and the drive inventory. A restore always creates a new library and refuses a name that exists; sources whose folder exists on the machine are walked again when it opens, the others are offline until their folder is back. A backup file is checked before anything is written (only the listed entries, size and expansion bounds, a SHA-256 per file, SQLite's `quick_check`, no newer schema, no triggers of its own) and a bad one says "not a Keel backup", "damaged backup" or "made by a newer Keel". Fuzzed (`backup` target). See [Backup and restore](docs/library.md#backup-and-restore).
+
+### Known limitations
+
+- Backups are made only when you ask: there is no schedule.
+- Thumbnails, video strips and each store's search index are not in a backup; a restored library rebuilds them (the sidecar job makes the thumbnails again at idle priority). Settings, profiles, remote hosts and cloud accounts are not in it either: a restored remote or cloud source is offline until the profile has that host or account.
+- A restored library opens beside the current one: switch to it in Settings → Library. On a machine where Keel already created its empty `main`, a backup of a library called `main` is restored under another name (`--as`).
+
 ## [0.19.0] - 2026-10-11
 
 ### Added
