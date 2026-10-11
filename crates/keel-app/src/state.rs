@@ -704,7 +704,11 @@ impl AppState {
                 self.sidebar.drives_pending = None;
                 self.sidebar.drives_stuck = false;
             }
-            Msg::WslDistros(names) => self.sidebar.wsl = names,
+            Msg::WslDistros(names) => {
+                if !self.sidebar.wsl_frozen {
+                    self.sidebar.wsl = names;
+                }
+            }
             Msg::WslOpened { name, result } => {
                 if self.sidebar.wsl_starting.as_ref() == Some(&name) {
                     self.sidebar.wsl_starting = None;
