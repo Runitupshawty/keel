@@ -223,6 +223,9 @@ fn bytes(s: &str) -> Option<u64> {
     Some((n * mult as f64) as u64)
 }
 
+/// Years a date filter may name (the day arithmetic stays far from overflow).
+const MAX_YEAR: i64 = 100_000;
+
 /// Days since 1970-01-01 of a civil date (proleptic Gregorian).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -235,7 +238,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// `[start, end)` in unix seconds of `2026`, `2026-10`, `2026-10-09`, `today`, `yesterday`,
-/// as local dates `offset` seconds east of UTC.
+/// as local dates `offset` seconds east of UTC. Years beyond [`MAX_YEAR`] either way are
+/// refused.
 fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
     const DAY: i64 = 86_400;
     let today = (now + offset).div_euclid(DAY) * DAY - offset;
@@ -248,6 +252,9 @@ fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
         .split(['-', '/', '.'])
         .map(|p| p.parse().ok())
         .collect::<Option<_>>()?;
+    if !(-MAX_YEAR..=MAX_YEAR).contains(parts.first()?) {
+        return None;
+    }
     let day = |y, m, d| days_from_civil(y, m, d) * DAY - offset;
     match parts[..] {
         [y] => Some((day(y, 1, 1), day(y + 1, 1, 1))),
@@ -308,12 +315,13 @@ fn millis(s: &str) -> Option<i64> {
 fn span(v: &str, num: impl Fn(&str) -> Option<i64>) -> Option<Span> {
     let (from, before) = range_filter(v, |x| {
         let n = num(x)?;
-        Some((n, n + 1))
+        Some((n, n.checked_add(1)?))
     })?;
-    Some(Span {
-        min: from,
-        max: before.map(|b| b - 1),
-    })
+    let max = match before {
+        Some(b) => Some(b.checked_sub(1)?),
+        None => None,
+    };
+    Some(Span { min: from, max })
 }
 
 impl LibraryQuery {
@@ -322,7 +330,7 @@ impl LibraryQuery {
         Self::parse_at(s, crate::now(), utc_offset)
     }
 
-    fn parse_at(s: &str, now: i64, utc_offset: i64) -> Result<LibraryQuery> {
+    pub(crate) fn parse_at(s: &str, now: i64, utc_offset: i64) -> Result<LibraryQuery> {
         let mut q = LibraryQuery::default();
         for tok in tokens(s) {
             if tok.starts_with('"') {
@@ -346,8 +354,8 @@ impl LibraryQuery {
                 "size" => {
                     // Sizes as an integer range: exclusive end = inclusive max + 1.
                     let (from, before) = range_filter(&value, |x| {
-                        let b = bytes(x)? as i64;
-                        Some((b, b + 1))
+                        let b = i64::try_from(bytes(x)?).ok()?;
+                        Some((b, b.checked_add(1)?))
                     })
                     .with_context(|| format!("bad size: {value}"))?;
                     q.min_size = from.map(|b| b as u64);
@@ -415,7 +423,7 @@ impl LibraryQuery {
     /// The FTS5 MATCH expressions (ANDed) for the words and phrases. Only the last word is a
     /// prefix (it may be half typed) unless `all_prefix`: a prefix of a
     /// very common word (one in every path) costs a full read of its postings.
-    fn text_parts(&self, all_prefix: bool) -> Vec<String> {
+    pub(crate) fn text_parts(&self, all_prefix: bool) -> Vec<String> {
         let last = self.terms.len().saturating_sub(1);
         let mut parts: Vec<String> = self
             .terms
@@ -452,7 +460,7 @@ impl LibraryQuery {
 
     /// Extensions are name tokens too: a query with `ext:` (or a `kind:` that implies
     /// extensions) narrows through the index before the exact LIKE check.
-    fn ext_match(&self) -> Option<String> {
+    pub(crate) fn ext_match(&self) -> Option<String> {
         let ext = self.extensions()?;
         let usable = !ext.is_empty() && ext.iter().all(|e| e.chars().any(char::is_alphanumeric));
         usable.then(|| {
@@ -511,7 +519,7 @@ impl LibraryQuery {
 
     /// SQL conditions on `record r` (each starting with " AND ") and their arguments; None
     /// when nothing can match.
-    fn filters(&self) -> Option<(String, Vec<Value>)> {
+    pub(crate) fn filters(&self) -> Option<(String, Vec<Value>)> {
         let mut sql = String::from(" AND r.parent IS NOT NULL");
         let mut args = Vec::new();
         let ext = self.extensions()?;
