@@ -34,7 +34,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - woff and woff2 fonts are not previewed (woff2 needs a brotli decoder); a font collection shows its first font.
 - Audio waveforms are drawn for files up to 20 minutes. The panel's player has no volume control (it plays at full volume through the default output).
 
-
 ## [0.18.0] - 2026-10-11
 
 ### Added
