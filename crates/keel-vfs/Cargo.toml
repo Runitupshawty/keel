@@ -129,7 +129,25 @@ reflink-copy = "0.1"
 # Trashing through NSFileManager keeps the item's URL in the Trash (undo puts it back);
 # the same version the `trash` crate uses.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSFileManager", "NSGeometry", "NSString", "NSURL"] }
+# Drag-out (`drag_out::mac`): a dragging session on Keel's window; the versions winit and
+# arboard already use.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSEvent",
+    "NSImage",
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+
 
 [dev-dependencies]
 # Host keys for the in-process SSH server in the SFTP tests (same rand as russh).
