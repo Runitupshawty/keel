@@ -253,8 +253,28 @@ mod linux {
 
     impl Drag {
         fn track(&self, allow_move: bool) -> Result<DropEffect> {
-            let escape = self.escape_keycode()?;
             let mut target: Option<Target> = None;
+            match self.follow(allow_move, &mut target) {
+                Ok(true) => match target {
+                    Some(t) => self.drop_on(t),
+                    None => Ok(DropEffect::None),
+                },
+                Ok(false) => Ok(DropEffect::None),
+                Err(e) => {
+                    // An X error mid-drag: the window under the pointer still follows this
+                    // drag; tell it it is over.
+                    if let Some(t) = &target {
+                        let _ = self.send_leave(t);
+                    }
+                    Err(e)
+                }
+            }
+        }
+
+        /// Follows the pointer over the windows under it until the button goes up (true)
+        /// or Esc cancels (false; the window under it was told).
+        fn follow(&self, allow_move: bool, target: &mut Option<Target>) -> Result<bool> {
+            let escape = self.escape_keycode()?;
             let mut sent = None;
             loop {
                 self.pump(target.as_mut())?;
@@ -264,13 +284,13 @@ mod linux {
                     None => false,
                 };
                 if cancel {
-                    if let Some(t) = target {
+                    if let Some(t) = target.take() {
                         self.send_leave(&t)?;
                     }
-                    return Ok(DropEffect::None);
+                    return Ok(false);
                 }
                 if !p.mask.contains(KeyButMask::BUTTON1) {
-                    break;
+                    return Ok(true);
                 }
                 let under = self.target_at()?;
                 if under.map(|u| u.0) != target.as_ref().map(|t| t.win) {
@@ -280,7 +300,7 @@ mod linux {
                     if let Some((win, version)) = under {
                         let msg = enter(self.win, version, self.atoms.uri_list);
                         self.send(win, self.atoms.enter, msg)?;
-                        target = Some(Target {
+                        *target = Some(Target {
                             win,
                             version: version.min(VERSION),
                             accepted: false,
@@ -305,10 +325,6 @@ mod linux {
                     }
                 }
                 std::thread::sleep(TICK);
-            }
-            match target {
-                Some(t) => self.drop_on(t),
-                None => Ok(DropEffect::None),
             }
         }
 
