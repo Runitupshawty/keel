@@ -79,6 +79,7 @@ The guide covers everyday use; these pages hold the details.
 | Daemon, CLI and MCP, mounts | [docs/daemon.md](docs/daemon.md) |
 | Every operation of the API, with schemas and examples | [docs/api.md](docs/api.md) |
 | Measured speed on realistic data, what scales how, running the measurements | [docs/performance.md](docs/performance.md) |
+| How Keel compares with Spacedrive and Atlas, and the gaps still open | [docs/parity.md](docs/parity.md) |
 | Changes and known limitations of each release | [CHANGELOG.md](CHANGELOG.md) |
 | Making a release, signing the builds, verifying a download | [docs/releasing.md](docs/releasing.md) |
 
