@@ -6,7 +6,7 @@ operations (`keel_api::OPS`, crate `keel-api`). The same list serves three front
 | Front end | How to reach it | Transport |
 | --- | --- | --- |
 | JSON-RPC 2.0 | `keel-daemon` (per user, per profile) | local socket / named pipe; optional WebSocket |
-| CLI | `keel search …`, `keel plan …`, … | the daemon when it runs, else the library in-process |
+| CLI | `keel search …`, `keel plan …`, …, and `keel op <name>` for any operation | the daemon when it runs, else the library in-process |
 | MCP | `keel mcp` | stdio (Model Context Protocol 2025-06-18) |
 
 Every operation has a stable name, JSON schemas for its parameters and result (generated
@@ -401,6 +401,8 @@ keel unmount <K:|folder>
 keel mounts
 keel daemon start|stop|status|rotate-token
 keel mcp [--allow-execute]
+keel op [list]
+keel op <name> [--params <json> | --params-file <file>] [--execute]
 ```
 
 All take `--profile NAME` and `--json`; `--json` prints exactly one JSON document per
@@ -430,6 +432,47 @@ a daemon too. Release builds on Windows are GUI programs that attach to the call
 console, which does not wait for them: pipe the output (`keel … | more`, PowerShell
 `keel … | Out-Host`) to see it in order. Redirected output (`--json` into a file or a
 program, `keel mcp` under an agent) is unaffected.
+
+### `keel op`: any operation by name
+
+`keel op <name>` calls any operation in the [list above](#operations) with its parameters
+as a JSON object, given as `--params '<json>'` or in a file with `--params-file <file>`
+(default `{}`; paths absolute, as everywhere in the API). `keel op list` (or `keel op`
+alone) lists every operation with its summary and whether it previews; in JSON each entry
+also has `mutating`, the parameters' JSON schema (`params`) and an `example`. `list` is
+also an operation (a folder listing): `keel op list --params '{"path": "…"}'` calls it.
+
+- A read (and the few operations that act directly, such as `shares.revoke`) prints its
+  result.
+- An operation that previews (every other mutating one, and `plan`) prints the preview
+  (summary, changes, warnings, plan id and input hash) and exits 0; nothing changes.
+  Apply exactly that preview with
+  `keel op execute --params '{"plan_id": "…", "input_hash": "…"}'` (or
+  `keel execute <plan id> --hash <hash>`), which waits for a job as `keel execute` does.
+- `--execute` previews, prints the preview, then executes that plan (its `plan_id` and
+  `input_hash`) in the same run, waiting for its job. Typing it is the confirmation, as
+  with `keel tag`. It is refused (usage) on an operation that does not preview.
+
+The output is JSON whenever stdout is not a terminal (or with `--json`): the result, the
+preview, or with `--execute` one document `{"preview": …, "executed": …}` (`executed` is
+the finished job, or `execute`'s answer); an execute that fails prints
+`{"error": …, "preview": …}`. Exit codes are those of the other subcommands: 2 for an
+unknown name, parameters that are not a JSON object, or `--execute` without a preview; 1
+when the operation refuses its parameters (the error names the field:
+``missing field `tags` ``, ``unknown field `tag` ``) or fails. Like the other subcommands it
+goes through keel-daemon when one runs for the profile, else opens the library
+in-process.
+
+```
+$ keel op tags.set --params-file tag.json
+Set the tags of 1 item(s) to [receipts]
+  tags.set D:\Scans\r1.pdf  [receipts]
+Warnings:
+  ! tag "receipts" does not exist yet and will be created
+plan: 13c5dd406fb8e46347589df153de3cc3
+hash: 33a24e08724cf73a2cf5f81bb3e2663808e6330cf26227e8a5315e5815f5d2b4
+Apply with: keel execute 13c5dd406fb8e46347589df153de3cc3 --hash 33a24e08724cf73a2cf5f81bb3e2663808e6330cf26227e8a5315e5815f5d2b4
+```
 
 ## MCP (`keel mcp`)
 

@@ -134,7 +134,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
-| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 57 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
+| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has** (unreleased): `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
 | Agent skill | landed | [SD-STATUS] | **Lacks** (MCP only) |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |

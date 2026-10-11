@@ -602,3 +602,80 @@ fn library_backup_and_restore_round_trip() {
     let err = String::from_utf8_lossy(&bad.stderr);
     assert!(err.contains("not a Keel backup"), "{err}");
 }
+
+/// Task 58: `keel op` runs any operation by name; one that previews only prints its preview
+/// unless `--execute`; usage mistakes exit 2, a refused operation 1 (naming the field).
+#[test]
+fn op_runs_any_operation_with_preview_then_execute() {
+    let env = env();
+    env.ok(&["sources", "add", &s(env.files.path())]);
+    let doc = |args: &[&str]| -> Value { serde_json::from_str(&env.ok(args)).unwrap() };
+    // Without a terminal the output is JSON, `--json` or not.
+    let list = doc(&["op", "list"]);
+    let list = list.as_array().unwrap();
+    let find = |name: &str| list.iter().find(|o| o["name"] == name).unwrap().clone();
+    assert_eq!(find("library.stats")["previews"], false);
+    assert_eq!(find("tags.set")["previews"], true);
+    assert_eq!(find("plan")["previews"], true);
+    assert!(find("tags.set")["params"]["properties"]["tags"].is_object());
+    assert!(find("search")["example"]["query"].is_string());
+    assert_eq!(
+        doc(&["op"]),
+        Value::Array(list.clone()),
+        "`keel op` lists too"
+    );
+    // A read prints its result.
+    let stats = doc(&["op", "library.stats"]);
+    assert_eq!(stats["files"], 2, "{stats}");
+    let hits = doc(&["op", "search", "--params", r#"{"query": "invoice"}"#]);
+    assert_eq!(hits[0]["name"], "invoice-2026.pdf", "{hits}");
+    // A previewed operation: the preview only; nothing is tagged.
+    let notes = env.file("notes.txt");
+    let params = json!({"paths": [notes], "tags": ["receipts"]}).to_string();
+    let preview = doc(&["op", "tags.set", "--params", &params]);
+    assert_eq!(preview["operation"], "tags.set", "{preview}");
+    assert!(preview["plan_id"].is_string() && preview["input_hash"].is_string());
+    let tagged = |env: &Env| doc_of(&env.ok(&["search", "tag:receipts", "--json"]));
+    assert_eq!(tagged(&env), json!([]), "a preview changes nothing");
+    // The agent's second step: `execute` with that preview's plan id and input hash.
+    let ids = json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]});
+    let done = doc(&["op", "execute", "--params", &ids.to_string()]);
+    assert_eq!(done["result"]["records"], 1, "{done}");
+    assert_eq!(tagged(&env)[0]["name"], "notes.txt");
+    // `--execute` previews and applies at once (parameters from a file here).
+    let file = env.files.path().join("params.json");
+    let params = json!({"paths": [env.file("docs/invoice-2026.pdf")], "tags": ["receipts"]});
+    std::fs::write(&file, params.to_string()).unwrap();
+    let done = doc(&["op", "tags.set", "--params-file", &s(&file), "--execute"]);
+    assert_eq!(done["preview"]["operation"], "tags.set", "{done}");
+    assert_eq!(done["executed"]["result"]["records"], 1, "{done}");
+    assert_eq!(tagged(&env).as_array().unwrap().len(), 2);
+    // Usage: an unknown name, JSON that does not parse or is no object, --execute on a
+    // read, both --params and --params-file.
+    for args in [
+        &["op", "no.such.op"][..],
+        &["op", "search", "--params", "{query"],
+        &["op", "search", "--params", "[1]"],
+        &["op", "library.stats", "--execute"],
+        &["op", "search", "--params", "{}", "--params-file", "p.json"],
+    ] {
+        let out = env.run(args);
+        assert_eq!(out.status.code(), Some(2), "keel {args:?}");
+        assert!(out.stdout.is_empty(), "keel {args:?}");
+    }
+    let wrong = env.run(&["op", "no.such.op"]);
+    let err = String::from_utf8_lossy(&wrong.stderr);
+    assert!(err.contains("no operation no.such.op"), "{err}");
+    // Parameters the operation refuses: exit 1, the error names the field.
+    let params = json!({ "paths": [notes] }).to_string();
+    let out = env.run(&["op", "tags.set", "--params", &params]);
+    assert_eq!(out.status.code(), Some(1));
+    let failed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let message = failed["error"]["message"].as_str().unwrap();
+    assert!(message.contains("`tags`"), "{failed}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("`tags`"));
+}
+
+fn doc_of(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}

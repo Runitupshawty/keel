@@ -107,6 +107,23 @@ pub enum Command {
     /// Start, stop or check keel-daemon for the profile.
     #[command(subcommand)]
     Daemon(DaemonCmd),
+    /// Any API operation by name (`keel op list` lists them). One that changes something
+    /// prints its preview; `--execute` applies that preview right after printing it.
+    /// Output is JSON unless stdout is a terminal (`--json` forces it).
+    Op {
+        /// The operation's name (`search`, `tags.set`, ...); `list` without parameters, or
+        /// nothing, lists every operation.
+        name: Option<String>,
+        /// The parameters, a JSON object (default `{}`). Paths are absolute.
+        #[arg(long, value_name = "JSON", conflicts_with = "params_file")]
+        params: Option<String>,
+        /// Read the parameters from this JSON file.
+        #[arg(long, value_name = "FILE")]
+        params_file: Option<PathBuf>,
+        /// Apply the preview at once (it is printed first).
+        #[arg(long)]
+        execute: bool,
+    },
     /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
     /// asks the user to confirm each plan through the client (MCP elicitation).
     Mcp {
@@ -691,6 +708,24 @@ mod tests {
             }
         );
         assert_eq!(cmd(&["mounts"]), Command::Mounts);
+        assert_eq!(
+            cmd(&["op", "tags.set", "--params", "{}", "--execute"]),
+            Command::Op {
+                name: Some("tags.set".into()),
+                params: Some("{}".into()),
+                params_file: None,
+                execute: true
+            }
+        );
+        assert_eq!(
+            cmd(&["op"]),
+            Command::Op {
+                name: None,
+                params: None,
+                params_file: None,
+                execute: false
+            }
+        );
         // Usage errors (exit code 2).
         for bad in [
             &["plan", "copy", "a"][..],
@@ -701,6 +736,7 @@ mod tests {
             &["mount", "Photos"],
             &["unmount"],
             &["plan", "copy", "a", "--to", "d", "--on-conflict", "maybe"],
+            &["op", "search", "--params", "{}", "--params-file", "p.json"],
         ] {
             let err = parse(bad).unwrap_err();
             assert_eq!(err.exit_code(), 2, "{bad:?}");
