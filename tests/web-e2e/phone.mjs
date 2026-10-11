@@ -38,6 +38,15 @@ export async function run({ browser, base, token, ids, daemon }) {
   await p.shot("22-phone-sheet");
   await p.act("back");
   s = await p.until("sheet closed", (s) => !s.sheet && s.rects["bravo-readme.txt"]);
+  // The phone's Back (the browser's history) closes the sheet too, and stays in the app
+  // (it left the app: the sheet was no history entry). Closed in the app, the sheet
+  // leaves no entry behind.
+  if (await page.evaluate(() => history.state) === "keel-sheet") await p.fail("the closed sheet left a history entry");
+  await touch(page, [centre(s, "alpha-notes.txt")]);
+  await p.until("sheet again", (s) => s.sheet);
+  await page.goBack();
+  s = await p.until("Back closed the sheet", (s) => !s.sheet && s.rects["bravo-readme.txt"]);
+  if (!page.url().startsWith(base)) await p.fail(`Back left the app: ${page.url()}`);
 
   // A long-press opens the entry's menu (and changes nothing).
   await touch(page, [centre(s, "bravo-readme.txt")], 900);

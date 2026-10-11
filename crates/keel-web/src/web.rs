@@ -241,6 +241,59 @@ pub(crate) fn take_query() -> String {
     query
 }
 
+/// The phone's preview sheet as a history entry, so Back (the phone's button or gesture,
+/// the browser's) closes the sheet instead of leaving the app.
+pub(crate) struct History {
+    popped: Rc<Cell<bool>>,
+    /// Our entry is on top of the history.
+    pushed: bool,
+    _listener: Closure<dyn FnMut()>,
+}
+
+impl History {
+    /// `ctx` repaints when Back is pressed.
+    pub(crate) fn install(ctx: &egui::Context) -> Option<History> {
+        let window = web_sys::window()?;
+        let popped = Rc::new(Cell::new(false));
+        let (flag, ctx) = (popped.clone(), ctx.clone());
+        let listener = Closure::<dyn FnMut()>::new(move || {
+            flag.set(true);
+            ctx.request_repaint();
+        });
+        window
+            .add_event_listener_with_callback("popstate", listener.as_ref().unchecked_ref())
+            .ok()?;
+        Some(History {
+            popped,
+            pushed: false,
+            _listener: listener,
+        })
+    }
+
+    /// Back was pressed while our entry was on top (since the last call): close the sheet.
+    pub(crate) fn back_pressed(&mut self) -> bool {
+        let popped = self.popped.replace(false);
+        popped && std::mem::take(&mut self.pushed)
+    }
+
+    /// After a frame: an entry while the sheet is open, none once the app closed it.
+    pub(crate) fn sync(&mut self, sheet: bool) {
+        let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else {
+            return;
+        };
+        if sheet && !self.pushed {
+            self.pushed = history
+                .push_state(&JsValue::from_str("keel-sheet"), "")
+                .is_ok();
+        } else if !sheet && self.pushed {
+            // Closed in the app (its Back button, Escape, a tab): drop our entry; the
+            // popstate that follows finds nothing pushed.
+            self.pushed = false;
+            let _ = history.back();
+        }
+    }
+}
+
 /// Plain http from a non-loopback host (`crate::guard::insecure`).
 pub(crate) fn insecure() -> bool {
     let Some(loc) = web_sys::window().map(|w| w.location()) else {

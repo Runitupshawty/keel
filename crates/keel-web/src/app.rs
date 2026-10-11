@@ -136,6 +136,8 @@ pub struct WebApp {
     insecure: bool,
     // layout
     screen: Screen,
+    /// Back closes the phone's preview sheet.
+    history: Option<web::History>,
     base_style: Arc<egui::Style>,
     // library
     library: String,
@@ -278,6 +280,7 @@ impl WebApp {
             notice: None,
             insecure: web::insecure(),
             screen: Screen::new(width),
+            history: web::History::install(&cc.egui_ctx),
             base_style: cc.egui_ctx.style(),
             library: String::new(),
             sources: Vec::new(),
@@ -2103,6 +2106,13 @@ impl WebApp {
 impl eframe::App for WebApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump();
+        if self
+            .history
+            .as_mut()
+            .is_some_and(web::History::back_pressed)
+        {
+            self.screen.back();
+        }
         #[cfg(feature = "e2e")]
         self.e2e();
         #[cfg(feature = "e2e")]
@@ -2127,5 +2137,8 @@ impl eframe::App for WebApp {
         }
         self.share_window(ctx);
         self.plan_window(ctx);
+        if let Some(h) = &mut self.history {
+            h.sync(self.screen.sheet);
+        }
     }
 }
