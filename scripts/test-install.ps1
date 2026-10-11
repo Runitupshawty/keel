@@ -92,6 +92,20 @@ try {
     if ((Save-Installer $unpacked $self $self) -ne 'release') { throw "not the release's" }
     if ((Get-Content $self) -ne 'release') { throw "kept '$(Get-Content $self)'" }
   }
+  Check 'update: only programs inside the install folder count' {
+    if (-not (Test-Inside 'C:\Apps\Keel\keel.exe' 'C:\Apps\Keel')) { throw 'inside' }
+    if (-not (Test-Inside 'C:\Apps\Keel\keel.exe' 'C:\Apps\Keel\')) { throw 'trailing backslash' }
+    if (Test-Inside 'C:\Apps\Keel2\keel-daemon.exe' 'C:\Apps\Keel') { throw 'a sibling folder matched' }
+    if (Test-Inside '' 'C:\Apps\Keel') { throw 'no path matched' }
+  }
+  Check "update: the default profile's daemon starts again" {
+    $log = Join-Path $dir 'calls.txt'
+    $fake = Join-Path $dir 'keel.cmd'
+    Set-Content $fake "@echo %*>> `"$log`""
+    $said = Restart-KeelDaemon $fake 6>&1 | Out-String
+    if ((Get-Content $log) -ne 'daemon start') { throw "ran '$(Get-Content $log)'" }
+    if ($said -notlike '*keel --profile <name> daemon start*') { throw "said '$said'" }
+  }
 } finally {
   Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
 }

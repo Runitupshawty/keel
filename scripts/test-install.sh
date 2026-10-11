@@ -142,6 +142,29 @@ check "codesign: a broken signature is refused" 2 mac_signed "$t/mac/keel" "$t/m
 FAKE_CS_VERIFY=0
 rm "$t/mac/keel-daemon.team"
 check "codesign: partly signed is refused" 2 mac_signed "$t/mac/keel" "$t/mac/keel-daemon"
+
+# --- daemons on update: fake keel, pgrep and pkill record what they were asked ---
+mkdir "$t/share"
+CALLS="$t/calls"; export CALLS
+printf '#!/usr/bin/env bash\necho "keel $*" >> "$CALLS"\n' > "$t/share/keel"
+printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"; exit "${FAKE_PGREP:-0}"\n' > "$t/fake/pgrep"
+printf '#!/usr/bin/env bash\necho "pkill $*" >> "$CALLS"\n' > "$t/fake/pkill"
+chmod +x "$t/share/keel" "$t/fake/pgrep" "$t/fake/pkill"
+: > "$CALLS"
+ran="$(stop_daemons "$t/share")"
+if [ "$ran" = 1 ] && grep -qx "keel daemon stop" "$CALLS" && grep -qx "pkill -f $t/share/keel-daemon" "$CALLS"; then
+  ok "update: every daemon of the install stops (other profiles' too)"
+else fail "update: stop said $ran: $(cat "$CALLS")"; fi
+: > "$CALLS"
+check "update: the default profile's daemon starts again" 0 restart_daemon "$t/share"
+said "keel --profile <name> daemon start"
+if [ "$(cat "$CALLS")" = "keel daemon start" ]; then ok "update: one start, default profile"
+else fail "update: start ran: $(cat "$CALLS")"; fi
+: > "$CALLS"
+FAKE_PGREP=1; export FAKE_PGREP
+ran="$(stop_daemons "$t/share")"
+if [ "$ran" = 0 ] && ! grep -q "^keel\|^pkill" "$CALLS"; then ok "update: no daemon, nothing stopped"
+else fail "update: idle stop said $ran: $(cat "$CALLS")"; fi
 PATH="$real_path"
 
 [ "$failed" = 0 ] || { echo "$failed check(s) failed"; exit 1; }

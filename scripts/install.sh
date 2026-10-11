@@ -94,6 +94,28 @@ mac_signed() {
   [ "$n" = "$#" ] || { echo "only some of the programs are signed. Nothing was installed." >&2; return 2; }
 }
 
+# An update replaces running daemons (the phone web client, mounts, attached windows).
+# stop_daemons SHARE: stops every keel-daemon of the install in SHARE, the default profile's
+# with `keel daemon stop` and any other profile's by signal; prints 1 when one ran, else 0.
+stop_daemons() {
+  if pgrep -f "$1/keel-daemon" >/dev/null 2>&1; then
+    "$1/keel" daemon stop >/dev/null 2>&1 || true
+    pkill -f "$1/keel-daemon" >/dev/null 2>&1 || true
+    echo 1
+  else
+    echo 0
+  fi
+}
+# restart_daemon SHARE: starts the default profile's daemon again; other profiles' are
+# left to `keel --profile <name> daemon start`.
+restart_daemon() {
+  if "$1/keel" daemon start >/dev/null 2>&1; then
+    echo "keel-daemon restarted (the default profile's; for another profile run: keel --profile <name> daemon start)."
+  else
+    echo "keel-daemon was running and could not be restarted; run: keel daemon start" >&2
+  fi
+}
+
 # scripts/test-install.sh sources this file for the functions above, with this set.
 if [ "${KEEL_INSTALL_FUNCTIONS_ONLY:-}" = 1 ]; then return 0; fi
 
@@ -184,20 +206,15 @@ case "$plat" in
     ;;
 esac
 
-# An update replaces a running daemon (the phone web client, mounts, attached windows):
-# stop the old one before the files go and start the new one after.
+# Stop the old daemons before the files go and start the new default one after.
 daemon_was_running=0
-if [ -x "$share/keel" ] && pgrep -f "$share/keel-daemon" >/dev/null 2>&1; then
-  daemon_was_running=1; "$share/keel" daemon stop >/dev/null 2>&1 || pkill -f "$share/keel-daemon" 2>/dev/null || true
-fi
+if [ -x "$share/keel" ]; then daemon_was_running="$(stop_daemons "$share")"; fi
 rm -rf "$share"; mkdir -p "$share" "$(dirname "$bin")"
 cp -R "$src/." "$share/"
 chmod +x "$share/keel" "$share/keel-daemon"
 ln -sf "$share/keel" "$bin"
 ln -sf "$share/keel-daemon" "$dbin"
-if [ "$daemon_was_running" = 1 ]; then
-  "$share/keel" daemon start >/dev/null 2>&1 && echo "keel-daemon restarted." || echo "keel-daemon was running and could not be restarted; run: keel daemon start" >&2
-fi
+if [ "$daemon_was_running" = 1 ]; then restart_daemon "$share"; fi
 
 case "$plat" in
   linux-*)

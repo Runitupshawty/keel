@@ -43,11 +43,26 @@ $lnkName = if ($RegistryKeyName -eq 'Keel') { 'Keel' } else { $RegistryKeyName }
 $Lnk = Join-Path ([Environment]::GetFolderPath('Programs')) "$lnkName.lnk"
 $DesktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$lnkName.lnk"
 
+# Whether $Path is inside the folder $Dir (not a sibling such as ...\Keel2 of ...\Keel).
+function Test-Inside([string]$Path, [string]$Dir) {
+  [bool]$Path -and $Path.StartsWith($Dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Stop-Keel {
   Get-Process keel, keel-daemon -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
+    Where-Object { Test-Inside $_.Path $InstallDir } |
     Stop-Process -Force
   Start-Sleep -Milliseconds 300
+}
+
+# The update stopped every running daemon (the phone web client, mounts, attached windows):
+# the default profile's starts again; other profiles' are left to
+# `keel --profile <name> daemon start`.
+function Restart-KeelDaemon([string]$Exe) {
+  & $Exe daemon start
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "keel-daemon restarted (the default profile's; for another profile run: keel --profile <name> daemon start)."
+  } else { Write-Warning 'keel-daemon was running and could not be restarted; run: keel daemon start' }
 }
 
 function Set-UserPath([string]$Dir, [bool]$Add) {
@@ -179,7 +194,7 @@ try {
   } else { Write-Warning "Release $tag is not signed; the checksum is all that was verified." }
 
   $daemonWasRunning = [bool](Get-Process keel-daemon -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) })
+    Where-Object { Test-Inside $_.Path $InstallDir })
   Stop-Keel
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
   Copy-Item (Join-Path $src.FullName '*') $InstallDir -Recurse -Force
@@ -188,12 +203,7 @@ try {
   $self = Join-Path $InstallDir 'install.ps1'
   $null = Save-Installer $src.FullName $self $PSCommandPath
 
-  # The update stopped a running daemon (the phone web client, mounts, attached windows):
-  # start the new one so they come back without a sign-out.
-  if ($daemonWasRunning) {
-    & $exe daemon start
-    if ($LASTEXITCODE -eq 0) { Write-Host 'keel-daemon restarted.' } else { Write-Warning 'keel-daemon was running and could not be restarted; run: keel daemon start' }
-  }
+  if ($daemonWasRunning) { Restart-KeelDaemon $exe }
 
   New-Shortcut $Lnk $exe
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }
