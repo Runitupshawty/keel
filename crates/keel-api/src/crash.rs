@@ -34,6 +34,18 @@ pub fn dir() -> Option<PathBuf> {
     keel_core::data_dir().map(|d| d.join("crashes"))
 }
 
+/// `base` (a `tracing` filter such as `RUST_LOG`) with the directives every Keel log keeps,
+/// whatever `base` says (later directives for the same target win): the FTP library logs
+/// each command it sends at trace level, `PASS <password>` included, so it is always off;
+/// the S3 signer logs its credential providers at debug.
+pub fn log_filter(base: &str) -> String {
+    let base = match base.trim() {
+        "" => "info",
+        b => b,
+    };
+    format!("{base},suppaftp=off,{}", keel_vfs::cloud::LOG_FILTER_HINT)
+}
+
 /// A log writer for `tracing_subscriber::fmt().with_writer(|| tee(std::io::stderr()))`:
 /// writes through to `W` and keeps the last [`LOG_LINES`] lines for crash reports.
 pub fn tee<W: Write>(inner: W) -> Tee<W> {

@@ -93,7 +93,7 @@ fn main() -> eframe::Result<()> {
         }
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
-            .with_env_filter("warn")
+            .with_env_filter(keel_api::crash::log_filter("warn"))
             .init();
         std::process::exit(commands::run(cmd, &cli::profile(), cli.json));
     }
@@ -109,7 +109,7 @@ fn main() -> eframe::Result<()> {
         std::process::exit(code);
     }
     tracing_subscriber::fmt()
-        .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))
+        .with_env_filter(keel_api::crash::log_filter("info"))
         .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();

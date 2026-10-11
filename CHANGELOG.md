@@ -49,7 +49,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - FTP data connections always go to the control connection's address, never to the address in a `PASV` reply, so a server cannot point them at another machine. Paths with line breaks are refused before anything is sent, and the server's reply text is never shown or logged (errors name the reply code and what it means).
 - `KEEL_NET_SECRET=memory` now also keeps SFTP and FTP passwords and passphrases in memory instead of the OS keychain (tests and trials).
 - Copying a folder from an SFTP or FTP host (or a cloud account) into a local folder could write outside that folder on Windows: a name in the server's listing such as `..\x` was read as a path, so the file landed beside or above the destination (and Overwrite replaced what was there), and a name with `:` wrote an alternate data stream. Such names are now refused before anything is written, with the entry named: on Windows any name with `\`, `:`, `<>"|?*` or a control character, a trailing dot or space, or a device name such as `CON` or `aux.txt`; on Linux and macOS a name with a control character. Every target is also checked to lie inside the destination folder before it is written.
-
+- With `RUST_LOG` at trace level, keel-daemon's log (`daemon.log`, and the last log lines a crash report keeps) recorded FTP passwords: the FTP library logs every command it sends, `PASS` included. Its log is now off in keel-daemon, the window and the CLI whatever `RUST_LOG` says.
 
 
 ## [0.19.0] - 2026-10-11

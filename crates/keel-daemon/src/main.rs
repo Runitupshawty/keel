@@ -50,14 +50,18 @@ fn profile_name(name: &str) -> Result<String, String> {
     }
 }
 
+/// `RUST_LOG` (default `info`) plus the directives that keep secrets out of the log
+/// (`keel_api::crash::log_filter`).
+fn filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(keel_api::crash::log_filter(rust_log.unwrap_or("info")))
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_writer(|| keel_api::crash::tee(std::io::stderr()))
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
+        .with_env_filter(filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
     // Panics write <data dir>/crashes/<time>.txt (scrubbed) and log where.
     keel_api::crash::install_panic_hook("keel-daemon", keel_api::crash::dir());
@@ -153,6 +157,39 @@ fn status(cfg: &HostConfig) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    /// Whatever `RUST_LOG` asks for, the FTP library's command log (`PASS <password>` at
+    /// trace level, forwarded from `log`) never reaches the daemon log; Keel's own lines do.
+    #[test]
+    fn the_log_filter_never_lets_ftp_passwords_through() {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for rust_log in [None, Some(""), Some("trace"), Some("suppaftp=trace,trace")] {
+            let buf = Buf::default();
+            let out = buf.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || out.clone())
+                .with_env_filter(super::filter(rust_log))
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::trace!(target: "suppaftp::sync_ftp", "CC OUT: PASS hunter2");
+                tracing::error!(target: "suppaftp", "CC OUT: PASS hunter2");
+                tracing::info!(target: "keel_daemon", "still logged");
+            });
+            let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+            assert!(!text.contains("PASS"), "{rust_log:?}: {text}");
+            assert!(text.contains("still logged"), "{rust_log:?}: {text}");
+        }
+    }
     #[test]
     fn profile_names_are_validated() {
         use clap::Parser;
