@@ -417,12 +417,15 @@ impl WebApp {
         if r.devices {
             self.call("devices.list", json!({}), Want::Devices);
         }
+        // Read again in place: the pane the user works in stays the active one.
+        let active = self.active;
         for pane in (0..2).filter(|_| r.listing) {
             let path = self.panes[pane].path.clone();
             if !path.is_empty() {
                 self.open(pane, path);
             }
         }
+        self.active = active;
     }
 
     fn select(&mut self, e: EntryInfo) {
