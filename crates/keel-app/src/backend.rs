@@ -986,6 +986,21 @@ impl LibraryBackend {
         (answered, out)
     }
 
+    /// Ctrl+P's file finder: up to `max` indexed files (display paths), each source's newest
+    /// first, and whether there were more.
+    pub fn file_names(&self, max: usize) -> Result<(Vec<String>, bool)> {
+        Ok(match self {
+            LibraryBackend::InProcess(lib) => {
+                let (paths, more) = lib.file_names(max)?;
+                (paths.iter().map(VPath::display).collect(), more)
+            }
+            LibraryBackend::Daemon(r) => {
+                let names: api::FileNames = r.call("files.names", json!({ "max": max }))?;
+                (names.paths, names.truncated)
+            }
+        })
+    }
+
     /// Kinds of every job (for rows that arrived as bare events).
     pub fn job_kinds(&self) -> Result<Vec<(JobId, String)>> {
         Ok(self

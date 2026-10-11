@@ -78,6 +78,8 @@ pub static OPS: &[Operation] = &[
         PathParams => FileLink, crate::files::file_get, json!({"path": example_file()})),
     now!("search", "Searches the library index across all sources (words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:).",
         SearchParams => Vec<Hit>, search, json!({"query": "invoice ext:pdf", "max": 20})),
+    now!("files.names", "The full paths of indexed files in the online sources, each source's newest first, for a fuzzy file finder (at most `max`, default and largest 100000; `truncated` when there were more); read-only.",
+        FileNamesParams => FileNames, files_names, json!({"max": 1000})),
     now!("tags.list", "All tags, or the tags on one indexed path.",
         TagsListParams => Vec<TagInfo>, tags_list, json!({})),
     now!("tags.tagged", "Every tagged path (Favorites included) with its tag ids.",
@@ -857,6 +859,15 @@ fn favorites_set(ctx: &Ctx, p: FavoritesSetParams) -> Result<Tagged> {
 
 fn recents(ctx: &Ctx, p: LimitParams) -> Result<Vec<Hit>> {
     Ok(hits(ctx.lib.recents(p.limit.unwrap_or(50).clamp(1, 1000))?))
+}
+
+fn files_names(ctx: &Ctx, p: FileNamesParams) -> Result<FileNames> {
+    let max = p.max.unwrap_or(keel_core::FILE_NAMES_MAX);
+    let (paths, truncated) = ctx.lib.file_names(max.min(keel_core::FILE_NAMES_MAX))?;
+    Ok(FileNames {
+        paths: paths.iter().map(VPath::display).collect(),
+        truncated,
+    })
 }
 
 fn recents_note(ctx: &Ctx, p: PathParams) -> Result<Done> {

@@ -166,9 +166,17 @@ pub enum Msg {
     SearchProbe(Option<String>),
     /// Folder list for Ctrl+P.
     JumpIndexed(Vec<String>),
+    /// Files for Ctrl+P: a batch of a list, `end` when it is complete (and whether it
+    /// stopped at its cap).
+    JumpFiles {
+        origin: crate::jump::Origin,
+        gen: u64,
+        items: Vec<String>,
+        end: Option<bool>,
+    },
     Jump {
         id: u64,
-        results: Vec<String>,
+        results: Vec<crate::jump::Found>,
     },
     // --- remotes (Task 16) ---
     /// A connection status change or host-key prompt from an SFTP provider.
@@ -888,6 +896,12 @@ impl AppState {
                 }
             }
             Msg::JumpIndexed(items) => self.jump.indexed(items),
+            Msg::JumpFiles {
+                origin,
+                gen,
+                items,
+                end,
+            } => self.jump.files(origin, gen, items, end),
             Msg::Jump { id, results } => self.jump.results(id, results),
             Msg::Remote(event) => self.remote_event(event),
             Msg::Download { name, done, total } => self.download_progress(name, done, total),
@@ -1042,6 +1056,42 @@ impl AppState {
             let items = crate::jump::build_index(searcher.as_ref(), home.as_deref());
             worker::send(&tx, &ctx, Msg::JumpIndexed(items));
         });
+    }
+
+    /// Ctrl+P's file lists, each read on a worker when stale (`fresh`: also when not): the
+    /// active folder's tree (local folders only) and the library's names.
+    fn index_files(&mut self, fresh: bool) {
+        let root = self.tab(self.active).dir.to_local_path();
+        if fresh || self.jump.tree_stale(root.as_deref()) {
+            self.jump.walk_tree(root);
+        }
+        let backend = self.library.backend.clone().filter(|_| !self.library.lost);
+        if let Some(b) = backend.filter(|_| fresh || self.jump.lib_stale()) {
+            self.jump.read_library(b);
+        }
+    }
+
+    /// Opens a Ctrl+P result in pane `p`, or in the other pane (a new tab when single-pane).
+    fn jump_to(&mut self, p: usize, path: VPath, file: bool, new_tab: bool, other_pane: bool) {
+        let (q, new_tab) = match other_pane {
+            true if self.dual => (1 - p, new_tab || self.tab(1 - p).is_search()),
+            true => (p, true),
+            false => (p, new_tab),
+        };
+        match path.parent().filter(|_| file) {
+            Some(dir) => {
+                self.reveal_in(q, dir, path.name().to_owned(), new_tab);
+                self.preview.open = true;
+            }
+            None if new_tab => {
+                self.open_tab(q, path);
+                self.active = q;
+            }
+            None => {
+                self.active = q;
+                self.run(q, Action::Navigate(path));
+            }
+        }
     }
 
     /// Asks the searcher again whether it works (status bar click).
@@ -2166,12 +2216,23 @@ impl AppState {
             }
             Action::OpenLocation => self.open_location(p),
             Action::JumpFolder => {
+                self.jump.filter = self.settings.jump_filter;
                 self.jump.show();
                 if self.jump.stale() {
                     self.index_folders();
                 }
+                self.index_files(false);
             }
-            Action::ReindexFolders => self.index_folders(),
+            Action::JumpTo {
+                path,
+                file,
+                new_tab,
+                other_pane,
+            } => self.jump_to(p, path, file, new_tab, other_pane),
+            Action::ReindexFolders => {
+                self.index_folders();
+                self.index_files(true);
+            }
             Action::Palette => {
                 let selection = !self.tab(p).targets().is_empty();
                 self.palette.undo = self.undo.label();

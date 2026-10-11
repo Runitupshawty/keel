@@ -250,6 +250,23 @@ pub struct LimitParams {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct FileNamesParams {
+    /// At most this many names (default and largest: 100000).
+    #[serde(default)]
+    pub max: Option<usize>,
+}
+
+/// Indexed files of the online sources, each source's newest first (`files.names`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FileNames {
+    /// Full paths.
+    pub paths: Vec<String>,
+    /// There were more than `max`.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct JobParams {
     pub id: i64,
 }

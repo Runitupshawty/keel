@@ -131,7 +131,7 @@ Keel opens on your home folder in both panes.
 | Ctrl+T / Ctrl+W | New tab / close tab |
 | Ctrl+L | Type a path |
 | Ctrl+F | Search |
-| Ctrl+P | Jump to a folder by name |
+| Ctrl+P | Jump to a folder or file by name |
 | Ctrl+Shift+P | Command palette |
 | F3 | Preview panel |
 | F2 / Ctrl+F2 | Rename / bulk rename |
@@ -191,7 +191,7 @@ The menu at the left of the search box switches between the system search and **
 
 ![A library search for ext:pdf across three sources](screenshots/search.png)
 
-Ctrl+P is a different search: it jumps to any folder by a few letters of its name.
+Ctrl+P is a different search: it jumps to a folder or a file by a few letters of its name. Enter on a file opens its folder with the file selected and previewed; Tab switches between folders, files and both. See [Finding folders and files](files.md#finding-folders-and-files-ctrlp).
 
 ### Archives as folders
 

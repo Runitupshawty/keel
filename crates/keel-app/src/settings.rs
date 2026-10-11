@@ -78,6 +78,8 @@ pub struct Settings {
     pub updates: crate::update::UpdateSettings,
     /// Offer a new crash report at start (`crash`; off after "Don't ask again").
     pub crash_prompt: bool,
+    /// Ctrl+P lists folders, files or both (Tab in the popup switches).
+    pub jump_filter: crate::jump::JumpFilter,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -211,6 +213,7 @@ impl Default for Settings {
             open_with: Default::default(),
             updates: Default::default(),
             crash_prompt: true,
+            jump_filter: Default::default(),
         }
     }
 }

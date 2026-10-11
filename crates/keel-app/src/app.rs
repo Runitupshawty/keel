@@ -486,6 +486,7 @@ impl App {
             if let Some(action) = s.jump.ui(ctx) {
                 out.push((s.active, action));
             }
+            s.settings.jump_filter = s.jump.filter;
         }
         if s.palette.open {
             if let Some(action) = s.palette.ui(ctx) {

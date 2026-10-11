@@ -126,6 +126,7 @@ fn registry_is_preview_first() {
         "redundancy.folder",
         "library.stats",
         "library.folder_sizes",
+        "files.names",
         "protection.summary",
         "volumes.list",
         "volumes.set",
@@ -1515,6 +1516,30 @@ fn library_stats_example_and_answer_match_the_result_schema() {
 
 /// Task 46: folder sizes from the index, by real and by library path; read-only; a path in
 /// no source is NOT_FOUND.
+/// Ctrl+P's file finder, attached to the daemon: the indexed files' full paths, capped.
+#[test]
+fn files_names_lists_indexed_files_up_to_max() {
+    let f = fixture(None);
+    add_and_index(&f);
+    let all = call(&f.ctx, "files.names", json!({})).unwrap();
+    let mut paths: Vec<String> = serde_json::from_value(all["paths"].clone()).unwrap();
+    paths.sort();
+    let docs = f.files.path().join("docs");
+    assert_eq!(
+        paths,
+        [
+            s(&docs.join("invoice-2026.pdf")),
+            s(&docs.join("notes.txt"))
+        ],
+        "files only: {all}"
+    );
+    assert_eq!(all["truncated"], false);
+    let one = call(&f.ctx, "files.names", json!({"max": 1})).unwrap();
+    assert_eq!(one["paths"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["truncated"], true, "{one}");
+    assert!(call(&f.ctx, "files.names", json!({"limit": 1})).is_err());
+}
+
 #[test]
 fn library_folder_sizes_reads_the_index() {
     let f = fixture(None);

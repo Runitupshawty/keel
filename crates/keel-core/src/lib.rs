@@ -60,7 +60,9 @@ pub use plan::{
     validate_preview_execute, Action, Change, OnConflict, Op, Plan, PlanChanged, Warning,
 };
 pub use protect::{CopyAt, ProtectionSummary, Redundancy, Volume, VolumeKind, VolumeState};
-pub use search::{KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX};
+pub use search::{
+    KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX, FILE_NAMES_MAX,
+};
 pub use sidecar_job::SidecarJob;
 pub use sidecars::{
     strip_retry_due, Pinned, SidecarKey, SidecarKind, SidecarStats, Sidecars, StripWaits,

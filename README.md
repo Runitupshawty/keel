@@ -6,7 +6,7 @@ Keel is an open-source file manager for Windows, macOS and Linux, written in Rus
 
 - **Two panes and tabs**, with Details, Grid, Columns and Media views, a breadcrumb path bar, filter-as-you-type and a command palette (Ctrl+Shift+P).
 - **Previews** (F3) of code, text, Markdown, images (also HEIC, AVIF and camera RAW), PDF pages, spreadsheets, Word, PowerPoint and OpenDocument files, fonts, video frames, and audio files with their tags and playback.
-- **Search** through Everything, Spotlight, `locate` or Keel's own index, and Ctrl+P to jump to any folder.
+- **Search** through Everything, Spotlight, `locate` or Keel's own index, and Ctrl+P to jump to any folder or file.
 - **File operations** with progress, conflict prompts, the system clipboard and drag and drop; deletes go to the Recycle Bin or Trash.
 - **Folder sizes** in the file list and a **Sizes view** of what fills a folder or a drive.
 - **Archives as folders**: zip, 7z, tar and rar; zip and jar archives can be edited in place.
