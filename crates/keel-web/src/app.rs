@@ -140,6 +140,8 @@ enum Act {
 
 /// Files read for the Type chips' extensions (fewer than the desktop's: a phone's link).
 const CHIP_FILES: usize = 2_000;
+/// Least seconds between two reads of the chip data after library changes.
+const CHIP_REFRESH: f64 = 10.0;
 
 pub struct WebApp {
     conn: Conn<Socket>,
@@ -185,7 +187,11 @@ pub struct WebApp {
     /// search page shows, again after a library change).
     chip_tags: Vec<String>,
     chip_types: Vec<String>,
-    chips_asked: bool,
+    /// When the chip data was last asked for (`web::now`), and whether the library changed
+    /// since: asked again at most every `CHIP_REFRESH` seconds (an index run changes it
+    /// many times a second).
+    chips_asked: Option<f64>,
+    chips_stale: bool,
     // phone
     grid: bool,
     tile: f32,
@@ -341,7 +347,8 @@ impl WebApp {
             searched: None,
             chip_tags: Vec::new(),
             chip_types: Vec::new(),
-            chips_asked: false,
+            chips_asked: None,
+            chips_stale: false,
             grid: false,
             tile: 128.0,
             thumbs: HashMap::new(),
@@ -703,7 +710,7 @@ impl WebApp {
     fn on_note(&mut self, method: &str, params: &Value) {
         match method {
             "library.changed" => {
-                self.chips_asked = false;
+                self.chips_stale = true;
                 self.changes.add(crate::refresh::of(params), web::now())
             }
             "job.progress" => {
@@ -1674,8 +1681,12 @@ impl WebApp {
             }
         });
         // Task 57: the filter chips, as on the desktop (the daemon parses the same terms).
-        if !self.chips_asked {
-            self.chips_asked = true;
+        let now = web::now();
+        let due = self
+            .chips_asked
+            .is_none_or(|at| self.chips_stale && now - at >= CHIP_REFRESH);
+        if due {
+            (self.chips_asked, self.chips_stale) = (Some(now), false);
             self.call("tags.list", json!({}), Want::Tags);
             self.call("files.names", json!({ "max": CHIP_FILES }), Want::Types);
         }
