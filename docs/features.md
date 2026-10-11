@@ -24,7 +24,7 @@ Everything Keel does, with links to the reference for each part. New to Keel? St
 - **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](files.md#profiles).
 - **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](files.md#icon-themes).
 - **Command line, single instance and a global hotkey**: `keel <folder>` opens in the running window; Ctrl+Shift+Alt+K brings Keel forward. See [Command line](files.md#command-line).
-- **Drag out** of Keel onto other apps (Windows).
+- **Drag out** of Keel onto other apps: Windows, macOS, and Linux on X11 (or XWayland); see [Dragging files to other apps](files.md#dragging-files-to-other-apps).
 - **Windows shell menu**: **More options** in the right-click menu, Shift+right-click or Shift+F10 opens Explorer's menu for local files (installed handlers, Send to, Open with, Share), and its commands are searchable in the command palette as `Shell: …`. Keel's own Delete, Rename, Cut, Copy, Paste and Properties replace Explorer's. See [Windows shell menu](files.md#windows-shell-menu).
 - **Own search index** on Windows, so search works without Everything. See [Search without Everything](files.md#search-without-everything).
 - **Library**: an index of every file across your folders, drives, SSH hosts and cloud accounts that keeps working when a drive is unplugged. Cross-source search, tags, favorites, saved views, a duplicate finder, and a preview before every copy, move or delete. See [Library](library.md#library).

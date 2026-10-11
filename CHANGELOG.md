@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Dragging files out of Keel onto other apps works on macOS and Linux, as on Windows: drag rows out of the window onto Finder, a file manager, a mail draft or an editor. The other app copies the files; holding Command (macOS) or Shift (Linux) while dropping lets it move them. Keel never moves or deletes them itself: it refreshes the folder when the drop is over, and counts a move only once the files are really gone. On macOS each file's icon follows the pointer; on Linux the files are offered as `text/uri-list` over XDND. See [Dragging files to other apps](docs/files.md#dragging-files-to-other-apps).
+
+### Fixed
+
+- Dragging rows out of the window on macOS and Linux did nothing (a known limitation since 0.5.0); it now starts a file drag to the app under the pointer.
+
+### Known limitations
+
+- Linux: dragging files to other apps needs X11. In a Wayland session it works when Keel runs through XWayland (start it with `WAYLAND_DISPLAY` unset); a native Wayland window shows "dragging files to other apps needs X11 (XWayland) on this desktop" instead.
+- Linux: no drag image or drag cursor while dragging files out (the pointer keeps its shape), and a desktop that takes drops through a proxy window (icons on the desktop) is not a target.
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

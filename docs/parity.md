@@ -39,7 +39,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Quick Preview of images, video, audio and PDF, with pinch to zoom | v1 | [SD-B23], [SD-REL] | **Part**: preview panel (F3) and full-window media viewer; no audio preview |
 | Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Part**: Properties, the viewer's info panel, and the Copies column's hover; no single inspector |
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
-| Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Part**: drag-out on Windows only (README roadmap) |
+| Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has** (unreleased): drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has**: configurable keys, command palette ([files.md](files.md#keyboard-shortcuts)) |
 | 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
 | Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Part**: fixed Quick access, library Favorites and saved views; no user-arranged sidebar |
@@ -213,7 +213,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 12 | Fuzzy finder over files, not only folders (**done**: Ctrl+P finds files, [files.md](files.md#finding-folders-and-files-ctrlp)) | Atlas | D | S |
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** (unreleased, [library.md](library.md#backup-and-restore)) | S |
-| 15 | Drag-out on macOS and Linux | Spacedrive v1; README roadmap | F | M |
+| 15 | Drag-out on macOS and Linux (**done** (unreleased): [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
 | 17 | An icon or color per folder | Atlas | D | S-M |
 | 18 | Filter chips for library search | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
