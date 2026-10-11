@@ -311,7 +311,7 @@ impl AppState {
         home: VPath,
     ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let themes = Themes::load(&settings.theme);
+        let themes = Themes::load();
         let theme = themes.get(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
         let mut media = crate::media::Media::new(ctx.clone(), router.clone());
@@ -444,6 +444,7 @@ impl AppState {
             self.searcher.as_ref().map(|x| x.name()), // Task 24
             &mut self.library,
             &self.devices,
+            &self.themes.list(),
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;

@@ -12,9 +12,6 @@ use std::time::Duration;
 /// Writes wait this long after the last change.
 pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
-/// Built-in themes offered in the Settings window.
-pub const THEMES: &[&str] = &["dark", "light"];
-
 const MB: u64 = 1024 * 1024;
 /// The UI scale's range (egui allows 0.2 to 5).
 pub const MIN_SCALE: f32 = 0.5;
@@ -580,6 +577,7 @@ pub fn window(
     searcher: Option<&str>, // Task 24: the active search backend's name
     library: &mut crate::library::LibraryUi, // Task 29
     devices: &crate::devices::Devices, // Task 36
+    themes: &[(String, String)], // Task 47: (name, label)
 ) -> bool {
     let mut theme_changed = false;
     crate::a11y::esc_closes(ctx, "Settings", open);
@@ -616,14 +614,17 @@ pub fn window(
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Theme");
+                    let shown = (themes.iter().find(|(n, _)| *n == s.theme))
+                        .map_or(s.theme.as_str(), |(_, label)| label.as_str());
                     let combo = egui::ComboBox::from_id_salt("settings-theme")
-                        .selected_text(s.theme.as_str())
+                        .selected_text(shown)
+                        .width(220.0)
                         .show_ui(ui, |ui| {
-                            for name in THEMES {
-                                if ui.selectable_label(s.theme == *name, *name).clicked()
+                            for (name, label) in themes {
+                                if ui.selectable_label(s.theme == *name, label).clicked()
                                     && s.theme != *name
                                 {
-                                    s.theme = (*name).to_owned();
+                                    s.theme = name.clone();
                                     theme_changed = true;
                                 }
                             }
