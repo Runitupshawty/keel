@@ -3,6 +3,7 @@
   Install, update or remove Keel for the current Windows user (no admin needed).
 .DESCRIPTION
   Downloads the latest GitHub release win64 zip, verifies it against the release's SHA256SUMS,
+  checks the Authenticode signature of keel.exe and keel-daemon.exe when the build is signed,
   and installs it. One-liner:
     irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1 | iex
   With options:
@@ -14,7 +15,8 @@
 .PARAMETER NoRegister  Skip the Settings -> Apps (uninstall) registry entry.
 .PARAMETER RegistryKeyName  Name of that entry under HKCU\...\Uninstall (default Keel). A non-default name
                    also gives the shortcuts that name, so a test install never touches a real one.
-.PARAMETER SkipVerify  Install a release that has no SHA256SUMS (older than this installer). Not recommended.
+.PARAMETER SkipVerify  Install a release that has no SHA256SUMS (older than this installer), or an unsigned
+                   one while $ExpectedSigner is set. Not recommended.
 #>
 param(
   [switch]$Desktop,
@@ -29,6 +31,11 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $Repo = 'Runitupshawty/keel'
+# Who signs Keel for Windows: the signing certificate's thumbprint or its exact Subject
+# (docs/releasing.md says how to read both). Empty: any valid signature is accepted and an
+# unsigned build only warns. Set: a build signed by anyone else is refused, and so is an
+# unsigned one unless -SkipVerify.
+$ExpectedSigner = ''
 $RawUrl = "https://raw.githubusercontent.com/$Repo/main/scripts/install.ps1"
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $RegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$RegistryKeyName"
@@ -62,6 +69,47 @@ function New-Shortcut([string]$Path, [string]$Target) {
   $s.Save()
 }
 
+# The SHA-256 SHA256SUMS lists for $Name (`<hash>  <name>`, `<hash> *<name>` or a path), or $null.
+function Get-ListedSha256([string]$SumsPath, [string]$Name) {
+  $pat = '^([0-9a-fA-F]{64})\s+\*?(\S*/)?' + [regex]::Escape($Name) + '$'
+  Get-Content $SumsPath | ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -match $pat } | ForEach-Object { $Matches[1].ToLower() } | Select-Object -First 1
+}
+
+# Throws unless $File's SHA-256 is the one SHA256SUMS lists for its name.
+function Assert-Checksum([string]$File, [string]$SumsPath) {
+  $name = Split-Path $File -Leaf
+  $want = Get-ListedSha256 $SumsPath $name
+  if (-not $want) { throw "SHA256SUMS has no entry for $name." }
+  $got = (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLower()
+  if ($got -ne $want) { throw "Checksum mismatch for ${name}: expected $want, got $got. Nothing was installed." }
+}
+
+# The Authenticode state of $Paths: $true when all are validly signed (by $Expected, a
+# thumbprint or Subject, when set), $false when none is signed. Throws on a bad signature, a
+# signer other than $Expected, or a build where only some files are signed.
+function Test-KeelSignature([string[]]$Paths, [string]$Expected) {
+  $signed = 0
+  foreach ($p in $Paths) {
+    $name = Split-Path $p -Leaf
+    $sig = Get-AuthenticodeSignature -LiteralPath $p
+    if ($sig.Status -eq 'NotSigned') { continue }
+    if ($sig.Status -ne 'Valid') {
+      throw "$name has a signature Windows does not accept ($($sig.Status): $($sig.StatusMessage)). Nothing was installed."
+    }
+    $cert = $sig.SignerCertificate
+    if ($Expected -and $cert.Thumbprint -ne $Expected -and $cert.Subject -ne $Expected) {
+      throw "$name is signed by '$($cert.Subject)' ($($cert.Thumbprint)), not by Keel's certificate. Nothing was installed."
+    }
+    $signed++
+  }
+  if ($signed -and $signed -ne $Paths.Count) { throw "Only some of the programs are signed. Nothing was installed." }
+  return [bool]$signed
+}
+
+# scripts/test-install.ps1 dot-sources this file for the functions above, with this set.
+if ($env:KEEL_INSTALL_FUNCTIONS_ONLY) { return }
+
 if ($Uninstall) {
   Stop-Keel
   foreach ($f in $Lnk, $DesktopLnk) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
@@ -93,12 +141,7 @@ try {
   if ($sumAsset) {
     $sumsPath = Join-Path $work 'SHA256SUMS'
     Invoke-WebRequest $sumAsset.browser_download_url -OutFile $sumsPath -UseBasicParsing
-    $pat = '^([0-9a-fA-F]{64})\s+\*?(\S*/)?' + [regex]::Escape($zip.name) + '$'
-    $want = Get-Content $sumsPath | ForEach-Object { $_.Trim() } |
-      Where-Object { $_ -match $pat } | ForEach-Object { $Matches[1].ToLower() } | Select-Object -First 1
-    if (-not $want) { throw "SHA256SUMS has no entry for $($zip.name)." }
-    $got = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
-    if ($got -ne $want) { throw "Checksum mismatch for $($zip.name): expected $want, got $got. Nothing was installed." }
+    Assert-Checksum $zipPath $sumsPath
     Write-Host 'Checksum OK.'
   } elseif ($SkipVerify) {
     Write-Warning "Release $tag has no SHA256SUMS; installing unverified (-SkipVerify)."
@@ -110,6 +153,11 @@ try {
   $src = Get-ChildItem (Join-Path $work 'x') -Directory | Select-Object -First 1
   if (-not $src -or -not (Test-Path (Join-Path $src.FullName 'keel.exe'))) { throw 'The archive does not contain keel.exe.' }
   if (-not (Test-Path (Join-Path $src.FullName 'keel-daemon.exe'))) { throw 'The archive does not contain keel-daemon.exe.' }
+  $signed = Test-KeelSignature @((Join-Path $src.FullName 'keel.exe'), (Join-Path $src.FullName 'keel-daemon.exe')) $ExpectedSigner
+  if ($signed) { Write-Host 'Signature OK.' }
+  elseif ($ExpectedSigner -and -not $SkipVerify) {
+    throw "Release $tag is not signed, but this installer expects Keel's signature. Nothing was installed. Pass -SkipVerify to install it anyway."
+  } else { Write-Warning "Release $tag is not signed; the checksum is all that was verified." }
 
   Stop-Keel
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
@@ -151,6 +199,9 @@ try {
   }
   Write-Host "Keel $tag installed to $InstallDir. Find it in the Start menu."
   if (-not $AddToPath) { Write-Host 'Add -AddToPath to run keel from a terminal.' }
+  if (-not $signed) {
+    Write-Host 'If Windows says "Windows protected your PC" at the first start, choose More info, then Run anyway (this build is not signed).'
+  }
 } finally {
   Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 }

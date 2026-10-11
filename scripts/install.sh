@@ -2,11 +2,99 @@
 # Install, update or remove Keel for the current user (macOS, Linux). No root needed.
 #   curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.sh | bash
 #   ... | bash -s -- --uninstall
-# Downloads the latest GitHub release, verifies it against the release's SHA256SUMS, installs to
-# ~/.local/share/keel and links ~/.local/bin/keel. Linux gets a launcher entry, macOS a ~/Applications/Keel.app.
-# KEEL_PLATFORM (macos-arm64, macos-x64, linux-x64) overrides detection; --skip-verify installs a release without SHA256SUMS.
+# Downloads the latest GitHub release, verifies it against the release's SHA256SUMS (and that
+# file's GPG signature, SHA256SUMS.asc, when the release has one and gpg is installed; on macOS
+# also the binaries' code signature when they are signed), installs to ~/.local/share/keel and
+# links ~/.local/bin/keel. Linux gets a launcher entry, macOS a ~/Applications/Keel.app.
+# KEEL_PLATFORM (macos-arm64, macos-x64, linux-x64) overrides detection; --skip-verify installs
+# a release without SHA256SUMS, or an unsigned one while a signer is pinned below.
 set -euo pipefail
 REPO=Runitupshawty/keel
+# Who signs Keel (docs/releasing.md). Empty: a signature is checked and reported, and an
+# unsigned release only warns. Set: a release signed by anyone else is refused, and so is an
+# unsigned one unless --skip-verify.
+# The release key's full fingerprint (40 hex digits, upper case, no spaces).
+KEEL_GPG_FINGERPRINT=""
+# The Team ID of the Developer ID Application certificate.
+KEEL_APPLE_TEAM_ID=""
+skip=0
+
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# verify_sums DIR NAME: DIR/NAME's SHA-256 must be the one DIR/SHA256SUMS lists for NAME.
+verify_sums() {
+  local want got
+  want="$(awk -v n="$2" '{f=$2; sub(/^\*/,"",f); sub(/.*\//,"",f); if (f==n) print tolower($1)}' "$1/SHA256SUMS" | head -n1)"
+  [ -n "$want" ] || { echo "SHA256SUMS has no entry for $2" >&2; return 1; }
+  got="$(sha256 "$1/$2")"
+  [ "$got" = "$want" ] || { echo "checksum mismatch for $2: expected $want, got $got. Nothing was installed." >&2; return 1; }
+}
+
+# verify_sums_sig DIR: checks DIR/SHA256SUMS.asc against DIR/SHA256SUMS with the release's key
+# (DIR/SHA256SUMS.key.asc) in a throwaway keyring. Returns 0 when it verifies or there is
+# nothing to check (with a warning), 1 to refuse the release.
+verify_sums_sig() {
+  local dir="$1" home status="" fpr ok=1
+  if [ ! -f "$dir/SHA256SUMS.asc" ]; then
+    if [ -n "$KEEL_GPG_FINGERPRINT" ] && [ "$skip" != 1 ]; then
+      echo "the release's SHA256SUMS is not signed, but this installer expects Keel's signature. Nothing was installed. Pass --skip-verify to install it anyway." >&2
+      return 1
+    fi
+    echo "warning: SHA256SUMS is not signed; the checksum is all that was verified." >&2
+    return 0
+  fi
+  if ! command -v gpg >/dev/null; then
+    echo "warning: gpg is not installed, so the signature of SHA256SUMS was not checked." >&2
+    return 0
+  fi
+  [ -f "$dir/SHA256SUMS.key.asc" ] || { echo "the release has SHA256SUMS.asc but no SHA256SUMS.key.asc. Nothing was installed." >&2; return 1; }
+  home="$(mktemp -d)"
+  GNUPGHOME="$home" gpg --batch --quiet --import "$dir/SHA256SUMS.key.asc" 2>/dev/null &&
+    status="$(GNUPGHOME="$home" gpg --batch --status-fd 1 --verify "$dir/SHA256SUMS.asc" "$dir/SHA256SUMS" 2>/dev/null)" || ok=0
+  GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
+  rm -rf "$home"
+  # VALIDSIG's last field is the primary key's fingerprint (also when a subkey signed).
+  fpr="$(printf '%s\n' "$status" | awk '$1=="[GNUPG:]" && $2=="VALIDSIG" {print $NF; exit}')"
+  if [ "$ok" = 0 ] || [ -z "$fpr" ]; then
+    echo "SHA256SUMS.asc does not verify, so the checksums cannot be trusted. Nothing was installed." >&2
+    return 1
+  fi
+  if [ -z "$KEEL_GPG_FINGERPRINT" ]; then
+    echo "Signature OK, by key $fpr (this installer pins no key yet; docs/releasing.md lists Keel's)."
+  elif [ "$fpr" = "$KEEL_GPG_FINGERPRINT" ]; then
+    echo "Signature OK."
+  else
+    echo "SHA256SUMS is signed by key $fpr, not by Keel's key $KEEL_GPG_FINGERPRINT. Nothing was installed." >&2
+    return 1
+  fi
+}
+
+# mac_signed FILE...: 0 when every FILE has a valid Developer ID code signature (of
+# KEEL_APPLE_TEAM_ID when set), 1 when none is signed (or only ad-hoc), 2 to refuse: a broken
+# signature, another team, or only some files signed.
+mac_signed() {
+  local f team n=0
+  command -v codesign >/dev/null || return 1
+  for f in "$@"; do
+    team="$(codesign -dv "$f" 2>&1 | sed -n 's/^TeamIdentifier=//p' || true)"
+    case "$team" in "" | "not set") continue ;; esac
+    codesign --verify --strict "$f" 2>/dev/null || { echo "${f##*/} has a broken code signature. Nothing was installed." >&2; return 2; }
+    if [ -n "$KEEL_APPLE_TEAM_ID" ] && [ "$team" != "$KEEL_APPLE_TEAM_ID" ]; then
+      echo "${f##*/} is signed by team $team, not by Keel's team $KEEL_APPLE_TEAM_ID. Nothing was installed." >&2
+      return 2
+    fi
+    n=$((n + 1))
+  done
+  [ "$n" != 0 ] || return 1
+  [ "$n" = "$#" ] || { echo "only some of the programs are signed. Nothing was installed." >&2; return 2; }
+}
+
+# scripts/test-install.sh sources this file for the functions above, with this set.
+if [ "${KEEL_INSTALL_FUNCTIONS_ONLY:-}" = 1 ]; then return 0; fi
+
 share="$HOME/.local/share/keel"
 bin="$HOME/.local/bin/keel"
 dbin="$HOME/.local/bin/keel-daemon"
@@ -14,7 +102,7 @@ desktop="$HOME/.local/share/applications/keel.desktop"
 icon="$HOME/.local/share/icons/hicolor/256x256/apps/keel.png"
 app="$HOME/Applications/Keel.app"
 
-uninstall=0; skip=0
+uninstall=0
 for a in "$@"; do
   case "$a" in
     --uninstall) uninstall=1 ;;
@@ -38,16 +126,15 @@ case "${KEEL_PLATFORM:-$(uname -s)-$(uname -m)}" in
   *) echo "unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
-if command -v sha256sum >/dev/null; then sha() { sha256sum "$1" | cut -d' ' -f1; }
-elif command -v shasum >/dev/null; then sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
-else echo "need sha256sum or shasum" >&2; exit 1; fi
+command -v sha256sum >/dev/null || command -v shasum >/dev/null || { echo "need sha256sum or shasum" >&2; exit 1; }
 
 json="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
 urls="$(printf '%s' "$json" | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4)"
 tag="$(printf '%s' "$json" | grep -m1 -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)"
 url="$(printf '%s\n' "$urls" | grep -- "-$plat\.tar\.gz\$" | head -n1 || true)"
 [ -n "$url" ] || { echo "release $tag has no $plat archive" >&2; exit 1; }
-sums_url="$(printf '%s\n' "$urls" | grep '/SHA256SUMS$' | head -n1 || true)"
+asset() { printf '%s\n' "$urls" | grep "/$1\$" | head -n1 || true; }
+sums_url="$(asset SHA256SUMS)"
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 name="${url##*/}"
@@ -56,10 +143,12 @@ curl -fsSL "$url" -o "$tmp/$name"
 
 if [ -n "$sums_url" ]; then
   curl -fsSL "$sums_url" -o "$tmp/SHA256SUMS"
-  want="$(awk -v n="$name" '{f=$2; sub(/^\*/,"",f); sub(/.*\//,"",f); if (f==n) print $1}' "$tmp/SHA256SUMS" | head -n1)"
-  [ -n "$want" ] || { echo "SHA256SUMS has no entry for $name" >&2; exit 1; }
-  got="$(sha "$tmp/$name")"
-  [ "$got" = "$want" ] || { echo "checksum mismatch for $name: expected $want, got $got. Nothing was installed." >&2; exit 1; }
+  for f in SHA256SUMS.asc SHA256SUMS.key.asc; do
+    u="$(asset "$f")"
+    [ -z "$u" ] || curl -fsSL "$u" -o "$tmp/$f"
+  done
+  verify_sums_sig "$tmp" || exit 1
+  verify_sums "$tmp" "$name" || exit 1
   echo "Checksum OK."
 elif [ "$skip" = 1 ]; then
   echo "warning: release $tag has no SHA256SUMS; installing unverified (--skip-verify)" >&2
@@ -72,6 +161,26 @@ mkdir "$tmp/x" && tar xzf "$tmp/$name" -C "$tmp/x"
 src="$(find "$tmp/x" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 [ -f "$src/keel" ] || { echo "the archive does not contain keel" >&2; exit 1; }
 [ -f "$src/keel-daemon" ] || { echo "the archive does not contain keel-daemon" >&2; exit 1; }
+
+# macOS: a Developer ID signed and notarized build passes Gatekeeper as it is; an unsigned one
+# has its download quarantine removed below (curl sets none, a browser download does).
+signed=1
+case "$plat" in
+  macos-*)
+    signed=0; mac_signed "$src/keel" "$src/keel-daemon" "$src/libpdfium.dylib" || signed=$?
+    case "$signed" in
+      0) echo "Code signature OK." ;;
+      1)
+        if [ -n "$KEEL_APPLE_TEAM_ID" ] && [ "$skip" != 1 ]; then
+          echo "release $tag is not signed, but this installer expects Keel's signature. Nothing was installed. Pass --skip-verify to install it anyway." >&2
+          exit 1
+        fi
+        echo "warning: release $tag is not signed (Developer ID); see Gatekeeper in docs/getting-started.md." >&2
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+esac
 
 rm -rf "$share"; mkdir -p "$share" "$(dirname "$bin")"
 cp -R "$src/." "$share/"
@@ -86,7 +195,7 @@ case "$plat" in
     sed "s|^Exec=.*|Exec=$share/keel %f|" "$share/keel.desktop" > "$desktop"
     ;;
   macos-*)
-    xattr -dr com.apple.quarantine "$share" 2>/dev/null || true
+    [ "$signed" = 0 ] || xattr -dr com.apple.quarantine "$share" 2>/dev/null || true
     mkdir -p "$app/Contents/MacOS"
     printf '#!/bin/sh\nexec "%s/keel" "$@"\n' "$share" > "$app/Contents/MacOS/Keel"
     chmod +x "$app/Contents/MacOS/Keel"

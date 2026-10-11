@@ -26,6 +26,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The installers' checksum and signature checks, against temp files (no download).
+      - name: Installer checks (install.sh)
+        shell: bash
+        run: bash scripts/test-install.sh
+      - name: Installer checks (install.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install.ps1
 
   # The web client (crates/keel-web) for the browser: its UI and glue only build for wasm32.
   wasm:
