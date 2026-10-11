@@ -38,6 +38,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
 - Each document is bounded: files over 8 MiB (PDFs over 64 MiB) are skipped unread, at most 200,000 characters of a document are kept, and a document is read for at most 10 s (the text read until then is kept). A damaged or password-protected file is counted as failed and not read again until it changes.
 - Snippets come with the first 100 results of a search; the others show their name only.
+- Chinese, Japanese and Korean text without spaces is indexed as one word per run: a search finds the whole run (or its start), not a word inside it.
+- A reader stuck inside one call is abandoned after 15 s; while three are still running, the text jobs stop early and read the rest once they end or after Keel restarts.
+- No overall cap on the text kept: at most 200,000 characters per document, so a source of 10,000 large documents can grow its store by 3 to 4 GB (see [performance.md](docs/performance.md)).
 
 ## [0.21.0] - 2026-10-11
 

@@ -93,7 +93,9 @@ const CHECKPOINT_EVERY: usize = if cfg!(test) { 10 } else { 100 };
 const LOGGED_ERRORS: u64 = 20;
 /// A reader past `TextCaps::time` by this much is abandoned.
 const ABANDON_AFTER: Duration = Duration::from_secs(5);
-/// Abandoned readers still running at most; past that the job stops (and runs again later).
+/// Abandoned readers still running at most; past that every text job stops early (`Stuck`)
+/// until some of them end. A reader that never ends holds its place until the program
+/// restarts (ponytail: no reset per run, which would let hung threads pile up).
 const MAX_ABANDONED: usize = 3;
 /// `library.db` meta key of **Index file contents** ("0" = off).
 const SETTING: &str = "index_contents";
@@ -317,7 +319,9 @@ struct Stuck;
 
 impl std::fmt::Display for Stuck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("readers are stuck; the rest is read on the next run")
+        f.write_str(
+            "readers are stuck; the rest is read once they end, or after the program restarts",
+        )
     }
 }
 
