@@ -307,6 +307,9 @@ fn remote_sources_are_read_only_when_their_switch_is_on() {
     assert_eq!(lib.source_contents(&id).unwrap(), (None, false));
     assert_eq!(lib.index_text(&id).unwrap(), None);
     assert!(!lib.stats().per_source[0].contents);
+    // A copy a reader never deleted (the program stopped while it read) is swept when the
+    // job starts.
+    std::fs::write(src.store_dir().join("text-leftover.txt"), "left").unwrap();
     // On: read through the provider (a copy in the store's folder, removed after).
     lib.set_text_caps(TextCaps {
         max_bytes: 1_000,

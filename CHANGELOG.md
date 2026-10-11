@@ -24,6 +24,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A drive letter mapped to a network share (or a share mounted on Linux or macOS) was read for its documents' text by default, like a local drive, downloading every document; it is now off by default like other shares, by the volume's type.
 - Turning off Index file contents (or a source's Contents switch) while a document was being read could leave that document's text indexed; the switch is now checked when the text is written.
 - A document holding the private-use characters U+E000 or U+E001 showed false highlights in its snippet (they are the snippet's own marks); they are taken out of the text read.
+- The copy of a remote document the text job reads was left in the source's store folder when Keel stopped while reading it; leftover copies are deleted when the job next starts.
 
 ### Security
 

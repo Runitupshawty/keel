@@ -652,6 +652,19 @@ fn save(lib: &Shared, src: &Source, rec: &Pending, outcome: TextOutcome) -> Resu
     Ok(())
 }
 
+/// Copies of remote documents (`download`) whose reader never deleted them: the program
+/// stopped while it read. Swept when the job starts (it is the only one of its source).
+fn sweep(src: &Source) {
+    let Ok(dir) = std::fs::read_dir(src.store_dir()) else {
+        return;
+    };
+    for e in dir.flatten() {
+        if e.file_name().to_string_lossy().starts_with("text-") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// The record a reader had open when the program last stopped (`READING`), saved as
 /// failed with its size and time so it is not read again until it changes. Its path.
 fn crashed(lib: &Shared, src: &Source) -> Result<Option<String>> {
@@ -713,6 +726,7 @@ impl Job for TextJob {
             .entry(src.id.clone())
             .or_insert(false);
         let mut claim = Claim(&ctx.lib, Some(src.id.clone()));
+        sweep(&src);
         if let Some(path) = crashed(&ctx.lib, &src)? {
             self.failed += 1;
             ctx.log(&format!(
