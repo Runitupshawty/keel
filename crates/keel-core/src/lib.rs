@@ -67,8 +67,8 @@ pub use sidecars::{
     DEFAULT_BUDGET as DEFAULT_SIDECAR_BUDGET, STRIP_RETRY,
 };
 pub use sync::{
-    valid_device, valid_tag_name, SyncApplied, SyncEntry, SyncOp, SyncPage, SyncPeer, SyncTarget,
-    FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
+    plain_text, valid_device, valid_tag_name, SyncApplied, SyncEntry, SyncOp, SyncPage, SyncPeer,
+    SyncTarget, FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
 };
 pub use tags::{Tag, TagId, View, FAVORITES};
 pub use totals::{ChildSize, FolderSizes, Total};

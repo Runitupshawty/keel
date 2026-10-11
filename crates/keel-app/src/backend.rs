@@ -32,6 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Child folder totals asked for per shown folder (`library.folder_sizes` `max`).
+pub const SIZES_MAX: usize = 100_000;
+
 /// How long a started daemon gets to answer.
 pub const SPAWN_WAIT: Duration = Duration::from_secs(15);
 
@@ -930,13 +933,16 @@ impl LibraryBackend {
     }
 
     /// Task 46: the indexed totals of the folders in `dirs` (real paths) and of `dirs`
-    /// themselves, by real path; folders not indexed (or not known yet) are left out.
+    /// themselves, by real path; folders not indexed (or not known yet) are left out. Child
+    /// folders only, at most [`SIZES_MAX`] per folder. Also the folders that answered: their
+    /// totals not in the map are not known (any more).
     pub fn folder_sizes(
         &self,
         sources: &[SourceSummary],
         dirs: &[VPath],
-    ) -> HashMap<VPath, keel_core::Total> {
+    ) -> (Vec<VPath>, HashMap<VPath, keel_core::Total>) {
         let mut out = HashMap::new();
+        let mut answered = Vec::new();
         for dir in dirs {
             let mut put = |p: VPath, bytes: Option<u64>, files: Option<u64>| {
                 if let (Some(bytes), Some(files)) = (bytes, files) {
@@ -948,9 +954,10 @@ impl LibraryBackend {
                     let Some((source, rel)) = crate::library::locate(sources, dir) else {
                         continue;
                     };
-                    let Ok(sizes) = lib.folder_sizes(&source, &rel) else {
+                    let Ok(sizes) = lib.folder_sizes(&source, &rel, true, SIZES_MAX) else {
                         continue;
                     };
+                    answered.push(dir.clone());
                     let t = sizes.total;
                     put(dir.clone(), t.map(|t| t.bytes), t.map(|t| t.files));
                     for c in sizes.children.into_iter().filter(|c| c.is_dir) {
@@ -964,10 +971,11 @@ impl LibraryBackend {
                     };
                     let Ok(sizes) = r.call::<api::FolderSizes>(
                         "library.folder_sizes",
-                        json!({"path": real.display()}),
+                        json!({"path": real.display(), "dirs_only": true, "max": SIZES_MAX}),
                     ) else {
                         continue;
                     };
+                    answered.push(dir.clone());
                     put(dir.clone(), sizes.bytes, sizes.files);
                     for c in sizes.children.into_iter().filter(|c| c.is_dir) {
                         put(dir.join(&c.name), c.bytes, c.files);
@@ -975,7 +983,7 @@ impl LibraryBackend {
                 }
             }
         }
-        out
+        (answered, out)
     }
 
     /// Kinds of every job (for rows that arrived as bare events).

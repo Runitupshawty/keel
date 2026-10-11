@@ -1199,13 +1199,20 @@ impl Library {
 
     /// A folder's total size and its children's sizes, biggest first (`rel` relative to the
     /// source root, "" for the root), kept with the index (Task 46): a folder's total is
-    /// None until the source's first walk has finished.
-    pub fn folder_sizes(&self, source: &SourceId, rel: &str) -> Result<crate::FolderSizes> {
+    /// None until the source's first walk has finished. At most `max` children (`truncated`
+    /// says when there were more), only the folders with `dirs_only`.
+    pub fn folder_sizes(
+        &self,
+        source: &SourceId,
+        rel: &str,
+        dirs_only: bool,
+        max: usize,
+    ) -> Result<crate::FolderSizes> {
         let src = self
             .source(source)
             .with_context(|| format!("no source {source}"))?;
         let c = src.store.get()?;
-        crate::totals::folder_sizes(&c, rel, src.nocase())?
+        crate::totals::folder_sizes(&c, rel, src.nocase(), dirs_only, max)?
             .with_context(|| format!("{rel} is not an indexed folder of {}", src.def.label))
     }
 

@@ -637,3 +637,47 @@ fn displayed_size_takes_off_cropping_and_turns() {
     assert_eq!(displayed_size(&bad), None);
     assert_eq!(displayed_size(&serde_json::json!({})), None);
 }
+
+/// A HEIF whose `meta` box runs to the end of a file larger than the cap: the EXIF reader
+/// is offered the head only, never the whole box.
+#[test]
+fn heif_exif_reads_at_most_the_cap() {
+    use std::cell::Cell;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::rc::Rc;
+    struct Counting(std::io::Cursor<Vec<u8>>, Rc<Cell<u64>>);
+    impl Read for Counting {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(buf)?;
+            self.1.set(self.1.get() + n as u64);
+            Ok(n)
+        }
+    }
+    impl Seek for Counting {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(to)
+        }
+    }
+    let mut file = Vec::new();
+    // ftyp: major brand heic, minor version, compatible brands mif1 heic.
+    file.extend_from_slice(&24u32.to_be_bytes());
+    file.extend_from_slice(b"ftypheic\0\0\0\0mif1heic");
+    // meta, size 0: "to the end of the file".
+    file.extend_from_slice(&0u32.to_be_bytes());
+    file.extend_from_slice(b"meta");
+    file.resize(3 << 20, 0);
+    let len = file.len() as u64;
+    let cap = 1 << 20;
+    let read = Rc::new(Cell::new(0));
+    let r = heif_exif(
+        Counting(std::io::Cursor::new(file.clone()), read.clone()),
+        len,
+        cap,
+    );
+    assert!(r.is_err(), "no EXIF in it");
+    assert!(read.get() <= cap, "read {} bytes", read.get());
+    // Without the cap the whole box is read: the test sees the difference.
+    let all = Rc::new(Cell::new(0));
+    let _ = heif_exif(Counting(std::io::Cursor::new(file), all.clone()), len, len);
+    assert!(all.get() > cap, "read {} bytes", all.get());
+}

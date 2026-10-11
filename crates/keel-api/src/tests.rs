@@ -1552,6 +1552,25 @@ fn library_folder_sizes_reads_the_index() {
         "biggest first: {docs}"
     );
     assert_eq!(docs["children"][0]["files"], 1, "{docs}");
+    assert_eq!(docs["truncated"], false, "{docs}");
+    // A cap keeps the biggest and says so; `dirs_only` leaves the files out.
+    let one = call(
+        &f.ctx,
+        "library.folder_sizes",
+        json!({"path": format!("library://{id}/docs"), "max": 1}),
+    )
+    .unwrap();
+    assert_eq!(one["children"].as_array().unwrap().len(), 1, "{one}");
+    assert_eq!(one["children"][0]["name"], "notes.txt", "{one}");
+    assert_eq!(one["truncated"], true, "{one}");
+    let dirs = call(
+        &f.ctx,
+        "library.folder_sizes",
+        json!({"path": format!("library://{id}/docs"), "dirs_only": true}),
+    )
+    .unwrap();
+    assert_eq!(dirs["children"], json!([]), "{dirs}");
+    assert_eq!(dirs["bytes"], docs["bytes"], "{dirs}");
     let op = OPS
         .iter()
         .find(|o| o.name == "library.folder_sizes")

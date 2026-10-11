@@ -32,6 +32,9 @@ pub struct ChildSize {
 pub struct FolderSizes {
     pub total: Option<Total>,
     pub children: Vec<ChildSize>,
+    /// More children exist than the `max` asked for.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Depth of a record path ("" = the root, 0).
@@ -172,9 +175,16 @@ fn update(c: &Connection, dirty: Vec<i64>) -> Result<()> {
     Ok(())
 }
 
-/// The folder at `rel` with its children's sizes (None when it is not indexed or not a
-/// folder).
-pub(crate) fn folder_sizes(c: &Connection, rel: &str, nocase: bool) -> Result<Option<FolderSizes>> {
+/// The folder at `rel` with its children's sizes, biggest first (unknown last, then by
+/// name): at most `max` of them, folders only with `dirs_only` (None when `rel` is not
+/// indexed or not a folder).
+pub(crate) fn folder_sizes(
+    c: &Connection,
+    rel: &str,
+    nocase: bool,
+    dirs_only: bool,
+    max: usize,
+) -> Result<Option<FolderSizes>> {
     let Some((id, _)) = crate::index::resolve(c, rel, nocase)? else {
         return Ok(None);
     };
@@ -197,13 +207,20 @@ pub(crate) fn folder_sizes(c: &Connection, rel: &str, nocase: bool) -> Result<Op
         )
         .optional()?
         .flatten();
+    // One more than `max` tells whether there are more.
+    let limit = max.saturating_add(1).min(i64::MAX as usize) as i64;
     let mut children: Vec<ChildSize> = c
         .prepare_cached(
-            "SELECT r.name, r.kind, r.flags, r.size, t.bytes, t.files FROM record r
+            "SELECT r.name, r.kind, r.flags, r.size, t.bytes, t.files,
+                    CASE WHEN r.kind = ?3 AND r.flags & ?4 = 0 THEN r.size
+                         WHEN r.kind = ?2 AND t.files IS NOT NULL THEN t.bytes END AS s
+             FROM record r
              LEFT JOIN folder_total t ON r.kind = ?2 AND t.record = r.id
-             WHERE r.parent = ?1",
+             WHERE r.parent = ?1 AND (?5 = 0 OR r.kind = ?2)
+             ORDER BY s IS NULL, s DESC, r.name
+             LIMIT ?6",
         )?
-        .query_map(params![id, DIR], |r| {
+        .query_map(params![id, DIR, FILE, LINK, dirs_only, limit], |r| {
             let (kind, flags, size): (i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?);
             let total = match kind {
                 FILE if flags & LINK == 0 => Some(Total {
@@ -220,16 +237,12 @@ pub(crate) fn folder_sizes(c: &Connection, rel: &str, nocase: bool) -> Result<Op
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    children.sort_by(|a, b| {
-        let key = |c: &ChildSize| c.total.map(|t| t.bytes);
-        // Biggest first, unknown last, then by name.
-        (key(b).is_some().cmp(&key(a).is_some()))
-            .then(key(b).cmp(&key(a)))
-            .then_with(|| a.name.cmp(&b.name))
-    });
+    let truncated = children.len() > max;
+    children.truncate(max);
     Ok(Some(FolderSizes {
         total: own,
         children,
+        truncated,
     }))
 }
 

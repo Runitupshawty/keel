@@ -301,8 +301,9 @@ pub enum LibMsg {
     Protection(ProtectionSummary, Vec<Volume>),
     /// Copies badges of the files in some folders (by real path).
     Badges(HashMap<VPath, Badge>),
-    /// Task 46: indexed folder totals (by real path) of the folders asked for.
-    Sizes(HashMap<VPath, keel_core::Total>),
+    /// Task 46: the folders asked for that answered, and the indexed totals (by real path)
+    /// known in them.
+    Sizes(Vec<VPath>, HashMap<VPath, keel_core::Total>),
 }
 
 /// An opened library: where it is, its running jobs and their events, and why a wanted
@@ -1588,7 +1589,13 @@ impl AppState {
                 l.volumes = v;
             }
             LibMsg::Badges(b) => l.badges.extend(b),
-            LibMsg::Sizes(sizes) => {
+            LibMsg::Sizes(answered, sizes) => {
+                // A folder that answered replaces what was known in it: totals of folders
+                // gone or no longer known go.
+                let answered: HashSet<VPath> = answered.into_iter().collect();
+                l.sizes.retain(|p, _| {
+                    !answered.contains(p) && !p.parent().is_some_and(|d| answered.contains(&d))
+                });
                 l.sizes.extend(sizes);
                 l.sizes_gen += 1;
             }
@@ -2490,7 +2497,8 @@ impl LibraryUi {
         }
         let sources = self.sources.clone();
         self.spawn("keel-library-sizes", move |b| {
-            Some(LibMsg::Sizes(b.folder_sizes(&sources, &dirs)))
+            let (answered, sizes) = b.folder_sizes(&sources, &dirs);
+            Some(LibMsg::Sizes(answered, sizes))
         });
     }
 

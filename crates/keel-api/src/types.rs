@@ -1040,6 +1040,18 @@ pub struct FileCopies {
     pub copies: Copies,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FolderSizesParams {
+    pub path: String,
+    /// At most this many children, the biggest (default 1000).
+    #[serde(default)]
+    pub max: Option<usize>,
+    /// Only the child folders.
+    #[serde(default)]
+    pub dirs_only: bool,
+}
+
 /// A folder's indexed total and its children's sizes, biggest first (`library.folder_sizes`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FolderSizes {
@@ -1051,6 +1063,9 @@ pub struct FolderSizes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<u64>,
     pub children: Vec<ChildSize>,
+    /// More children exist than `max`.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// One child of a folder: a file's length, a folder's total (absent while unknown, and for

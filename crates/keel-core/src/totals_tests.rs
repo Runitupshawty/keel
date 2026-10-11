@@ -124,18 +124,35 @@ fn totals_follow_adds_removes_renames_and_moves() {
     assert_consistent(&src);
 
     // The reader: biggest first, files with their length.
-    let sizes = lib.folder_sizes(&src.id, "").unwrap();
+    let sizes = lib.folder_sizes(&src.id, "", false, usize::MAX).unwrap();
     assert_eq!(sizes.total, Some(t(13, 3)));
     let names: Vec<_> = sizes.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["empty", "a", "b"]);
-    let inner = lib.folder_sizes(&src.id, "empty").unwrap();
+    let inner = lib
+        .folder_sizes(&src.id, "empty", false, usize::MAX)
+        .unwrap();
     assert_eq!(inner.children[0].name, "drei.txt");
     assert_eq!(inner.children[0].total, Some(t(7, 1)));
-    assert!(lib.folder_sizes(&src.id, "empty/drei.txt").is_err());
+    assert!(lib
+        .folder_sizes(&src.id, "empty/drei.txt", false, usize::MAX)
+        .is_err());
+    // A cap keeps the biggest and says there were more; folders only leaves files out.
+    let two = lib.folder_sizes(&src.id, "", false, 2).unwrap();
+    let names: Vec<_> = two.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!((names, two.truncated), (vec!["empty", "a"], true));
+    assert!(!sizes.truncated);
+    write(&root.join("loose.txt"), "x");
+    changed(&src, &[&root.join("loose.txt")]);
+    let all = lib.folder_sizes(&src.id, "", false, usize::MAX).unwrap();
+    assert!(all.children.iter().any(|c| c.name == "loose.txt"));
+    let dirs = lib.folder_sizes(&src.id, "", true, usize::MAX).unwrap();
+    assert!(dirs.children.iter().all(|c| c.is_dir), "{dirs:?}");
+    assert_eq!(dirs.children.len(), 3);
+    assert!(lib.folder_sizes(&src.id, "", false, 0).unwrap().truncated);
 
     // Removed with its source.
     lib.remove_source(&src.id, true).unwrap();
-    assert!(lib.folder_sizes(&src.id, "").is_err());
+    assert!(lib.folder_sizes(&src.id, "", false, usize::MAX).is_err());
 }
 
 #[test]
@@ -209,7 +226,7 @@ fn links_are_not_counted() {
     assert_consistent(&src);
     assert_eq!(total(&src, ""), t(100, 1));
     if linked {
-        let sizes = lib.folder_sizes(&src.id, "").unwrap();
+        let sizes = lib.folder_sizes(&src.id, "", false, usize::MAX).unwrap();
         let again = sizes.children.iter().find(|c| c.name == "again").unwrap();
         assert_eq!(again.total, None, "a folder link has no total");
     }

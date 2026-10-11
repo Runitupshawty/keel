@@ -137,12 +137,35 @@ pub struct SyncPeer {
     pub received: u64,
 }
 
+/// A direction override, embedding or isolate character: text after it can show in
+/// another order than it is stored.
+fn steering(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// No control or direction-override characters, at most `max` bytes.
 fn plain(s: &str, max: usize) -> bool {
-    s.len() <= max
-        && !s.chars().any(|c| {
-            c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    s.len() <= max && !s.chars().any(|c| c.is_control() || steering(c))
+}
+
+/// `s` (from an untrusted file: audio tags, font names) made fit to show: what [`plain`]
+/// refuses dropped (line breaks and tabs become spaces), trimmed, at most `max` characters
+/// (`…` marks a cut).
+pub fn plain_text(s: &str, max: usize) -> String {
+    let kept: String = s
+        .chars()
+        .filter(|c| !steering(*c))
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
         })
+        .collect();
+    let kept = kept.trim();
+    match kept.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", kept[..cut].trim_end()),
+        None => kept.to_owned(),
+    }
 }
 
 fn valid_uid(s: &str) -> bool {

@@ -112,8 +112,8 @@ pub static OPS: &[Operation] = &[
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
-    now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first, from the library index; read-only.",
-        PathParams => FolderSizes, library_folder_sizes, json!({"path": example_dir()})),
+    now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
+        FolderSizesParams => FolderSizes, library_folder_sizes, json!({"path": example_dir()})),
     now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
         NoParams => Protection, protection_summary, json!({})),
     now!("volumes.list", "The drive inventory: volumes holding sources, their failure domain, state and backup mark.",
@@ -1007,12 +1007,13 @@ impl From<keel_core::Redundancy> for Copies {
 
 // --- protection, volumes, background work ---
 
-fn library_folder_sizes(ctx: &Ctx, p: PathParams) -> Result<FolderSizes> {
+fn library_folder_sizes(ctx: &Ctx, p: FolderSizesParams) -> Result<FolderSizes> {
     let dir = vpath(&p.path)?;
     let (source, rel) = locate(ctx, &dir)?;
+    let max = p.max.unwrap_or(1000).max(1);
     let sizes = ctx
         .lib
-        .folder_sizes(&source, &rel)
+        .folder_sizes(&source, &rel, p.dirs_only, max)
         .map_err(|e| ApiError::not_found(format!("{e:#}")))?;
     let split = |t: Option<keel_core::Total>| (t.map(|t| t.bytes), t.map(|t| t.files));
     let (bytes, files) = split(sizes.total);
@@ -1020,6 +1021,7 @@ fn library_folder_sizes(ctx: &Ctx, p: PathParams) -> Result<FolderSizes> {
         path: dir.display(),
         bytes,
         files,
+        truncated: sizes.truncated,
         children: sizes
             .children
             .into_iter()

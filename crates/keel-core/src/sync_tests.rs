@@ -747,3 +747,13 @@ fn tombstones_expire_while_the_library_stays_open() {
     a.lib.sync_page(0, SYNC_PAGE).unwrap();
     assert_eq!(count(&c), 0);
 }
+
+/// Text from untrusted files: control and direction characters go, line breaks become
+/// spaces, and a long value is cut at a character boundary with `…`.
+#[test]
+fn plain_text_drops_controls_and_caps_length() {
+    assert_eq!(plain_text("  a\u{202E}b\u{0007}\tc\r\nd  ", 50), "ab c  d");
+    assert_eq!(plain_text("\u{2066}\u{0000}", 5), "");
+    assert_eq!(plain_text("ééééé", 3), "ééé…");
+    assert_eq!(plain_text("abc", 3), "abc");
+}

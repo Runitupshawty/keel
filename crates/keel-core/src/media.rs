@@ -372,17 +372,39 @@ pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
 }
 
 /// None when the file has no (readable) EXIF, or is a TIFF or RAW over [`TIFF_EXIF_MAX`].
+/// Of a larger HEIF or AVIF only the first [`TIFF_EXIF_MAX`] bytes are read.
 fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     let file = File::open(path)?;
-    if (is_tiff(path) || is_raw(path)) && file.metadata()?.len() > TIFF_EXIF_MAX {
+    let len = file.metadata()?.len();
+    if (is_tiff(path) || is_raw(path)) && len > TIFF_EXIF_MAX {
         return Ok(None);
     }
-    let mut r = BufReader::new(file);
-    match exif::Reader::new().read_from_container(&mut r) {
+    let read = if is_heif(path) || is_avif(path) {
+        heif_exif(file, len, TIFF_EXIF_MAX)
+    } else {
+        exif::Reader::new().read_from_container(&mut BufReader::new(file))
+    };
+    match read {
         Ok(e) => Ok(Some(e)),
         Err(exif::Error::Io(e)) if e.kind() != std::io::ErrorKind::UnexpectedEof => Err(e.into()),
         Err(_) => Ok(None),
     }
+}
+
+/// EXIF of a HEIF or AVIF container `len` bytes long. kamadak-exif reads a file-level box
+/// (`meta`) whole, as long as the file says it is: past `cap` bytes only the head of the
+/// file is offered, so a crafted box costs at most `cap` bytes of memory.
+pub(crate) fn heif_exif(
+    file: impl Read + std::io::Seek,
+    len: u64,
+    cap: u64,
+) -> Result<exif::Exif, exif::Error> {
+    if len <= cap {
+        return exif::Reader::new().read_from_container(&mut BufReader::new(file));
+    }
+    let mut head = Vec::new();
+    file.take(cap).read_to_end(&mut head)?;
+    exif::Reader::new().read_from_container(&mut Cursor::new(head))
 }
 
 fn ascii(exif: &exif::Exif, tag: exif::Tag) -> Option<String> {

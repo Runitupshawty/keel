@@ -309,6 +309,7 @@ fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
         bytes: Some(children.iter().filter_map(|c| c.bytes).sum()),
         files: Some(children.iter().filter_map(|c| c.files).sum()),
         children,
+        truncated: false,
     })
 }
 
@@ -352,6 +353,13 @@ fn command(
                     format!("{f} file{}", if f == 1 { "" } else { "s" })
                 });
                 let _ = writeln!(out, "{:>10}  {files:>12}  {}", size(c.bytes), c.path);
+            }
+            if sizes.truncated {
+                let _ = writeln!(
+                    out,
+                    "{:>10}  {:>12}  (more, smaller items not shown)",
+                    "", ""
+                );
             }
             let files = sizes.files.map_or(String::new(), |f| {
                 format!("{f} file{}", if f == 1 { "" } else { "s" })
