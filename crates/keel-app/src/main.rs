@@ -14,6 +14,7 @@ mod crash;
 mod devices;
 mod dialogs;
 mod dropzone;
+mod fonts; // also the web client's (keel-web includes it by path)
 mod icon_theme;
 mod icons;
 mod jobs;

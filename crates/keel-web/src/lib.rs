@@ -25,5 +25,10 @@ mod app;
 /// `window.__keel` for tests/web-e2e: only with the `e2e` feature and `?e2e=1`.
 #[cfg(all(target_arch = "wasm32", feature = "e2e"))]
 mod e2e;
+/// keel-app's fonts, shared by path: Hack fills in the arrows and symbols egui's interface
+/// font lacks, in the daemon's messages too ("Settings \u{2192} Devices").
+#[cfg(target_arch = "wasm32")]
+#[path = "../../keel-app/src/fonts.rs"]
+mod fonts;
 #[cfg(target_arch = "wasm32")]
 mod web;

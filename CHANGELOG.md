@@ -25,6 +25,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Enter or Space on a focused button, checkbox or sidebar item presses it; they used to open or select the file under the cursor instead (the arrow keys moved the cursor too). Esc gives the keys back to the file list.
 - Dialogs open with the focus on their main button or first field (name conflicts on Keep both, Properties on Close, Open with on the first app), and Esc closes the Settings window and the library and devices windows.
 - Contrast: secondary text, links, warnings and errors reach 4.5:1 in both themes (the muted grey and the light theme's accent are slightly darker or lighter, warnings and errors are new colours, weak text is the muted colour), and a selected row draws its secondary text in the text colour.
+- Web client: arrows and symbols drew as empty boxes, in its own text ("← Back", the pull-to-refresh hint, the connection dot) and in the daemon's messages ("turn on Settings → Devices"). It now uses the window's fonts, where the built-in monospace font fills in what the interface font lacks (the window was fixed in 0.15.0), and its error bar closes with "×" like the window's. The glyph test now checks the strings of every crate, not only the window's.
 
 
 ## [0.16.0] - 2026-10-10

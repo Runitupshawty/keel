@@ -122,29 +122,16 @@ impl Themes {
     }
 }
 
-/// egui's built-in fonts, with Hack (already built in, the monospace font) as the last
-/// fallback of proportional text too: Ubuntu Light has no arrows ("Settings \u{2192}
-/// Library", "Copy A \u{2192} B") and no "\u{22ef}".
-pub fn fonts() -> egui::FontDefinitions {
-    let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .push("Hack".into());
-    fonts
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Theme, Themes};
 
-    /// Every non-ASCII character in a string or char literal of keel-app's non-test code
-    /// (test modules, `*_tests.rs` and the screenshot harness are skipped), with a file
-    /// it is in.
-    fn ui_symbols() -> std::collections::BTreeMap<char, String> {
+    /// Every non-ASCII character in a string or char literal of the non-test code under
+    /// `src` (test modules, `*_tests.rs` and the screenshot harness are skipped), with a
+    /// file it is in.
+    fn ui_symbols(src: std::path::PathBuf) -> std::collections::BTreeMap<char, String> {
         let mut found = std::collections::BTreeMap::new();
-        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut dirs = vec![src];
         while let Some(dir) = dirs.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let path = e.path();
@@ -204,32 +191,46 @@ mod tests {
         found
     }
 
-    /// Found making the screenshots: the arrow drew as a box. Every symbol the UI's
-    /// strings use has a glyph in the proportional and the monospace fonts.
+    /// Found making the screenshots: the arrow drew as a box. Every symbol in the strings
+    /// of every crate has a glyph in the proportional and the monospace fonts: errors and
+    /// notes from the other crates reach the window too, and the web client (same fonts)
+    /// shows the daemon's.
     #[test]
     fn every_ui_symbol_has_a_glyph() {
         let ctx = egui::Context::default();
-        ctx.set_fonts(super::fonts());
+        ctx.set_fonts(crate::fonts::fonts());
         let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let symbols = ui_symbols();
-        for c in ['\u{2192}', '\u{2026}', '\u{d7}', '\u{2022}', '\u{22ef}'] {
-            assert!(
-                symbols.contains_key(&c),
-                "{c} not found: the scan is broken"
-            );
-        }
-        for (c, file) in symbols {
-            for font in [
-                egui::FontId::proportional(14.0),
-                egui::FontId::monospace(14.0),
-            ] {
-                assert!(
-                    ctx.fonts(|f| f.has_glyph(&font, c)),
-                    "{c:?} (U+{:04X}, {file}) has no glyph in {font:?}",
-                    c as u32
-                );
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut scanned = 0;
+        for e in std::fs::read_dir(crates).unwrap().flatten() {
+            let src = e.path().join("src");
+            if !src.is_dir() {
+                continue;
+            }
+            scanned += 1;
+            let symbols = ui_symbols(src);
+            if e.file_name() == "keel-app" {
+                for c in ['\u{2192}', '\u{2026}', '\u{d7}', '\u{2022}', '\u{22ef}'] {
+                    assert!(
+                        symbols.contains_key(&c),
+                        "{c} not found: the scan is broken"
+                    );
+                }
+            }
+            for (c, file) in symbols {
+                for font in [
+                    egui::FontId::proportional(14.0),
+                    egui::FontId::monospace(14.0),
+                ] {
+                    assert!(
+                        ctx.fonts(|f| f.has_glyph(&font, c)),
+                        "{c:?} (U+{:04X}, {file}) has no glyph in {font:?}",
+                        c as u32
+                    );
+                }
             }
         }
+        assert!(scanned > 5, "only {scanned} crates found");
     }
 
     /// WCAG 2.x relative luminance of an sRGB colour.
