@@ -541,7 +541,8 @@ fn a_resumed_operation_continues_at_its_checkpoint() {
 
 /// Review item 4: an operation over 3,000 one-byte files (top-level items) runs in < 3 s
 /// where a plain copy of them takes 0.34 s: its overhead over the plain copy (measured
-/// here too, as file system speed varies widely) stays under 2.66 s.
+/// here too, as file system speed varies widely) stays under 2.66 s. The plain copy (small
+/// files on the copy worker pool) stays under 2.5 s, 1,200 files a second (outside CI).
 /// `cargo test -p keel-core --release -- --ignored three_thousand --nocapture`
 #[test]
 #[ignore]
@@ -585,6 +586,10 @@ fn three_thousand_items_copy_fast() {
     assert!(
         overhead < std::time::Duration::from_millis(2_660),
         "took {took:?}, a plain copy {plain:?}"
+    );
+    assert!(
+        std::env::var_os("CI").is_some() || plain < std::time::Duration::from_millis(2_500),
+        "a plain copy took {plain:?}"
     );
 }
 
