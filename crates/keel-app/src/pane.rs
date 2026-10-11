@@ -216,6 +216,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         nav_bar(ui, pane, out);
         filter_bar(ui, pane, out);
     }
+    crate::library_ui::assign_bar(ui, idx, pane.tab(), cx.library, out); // Task 58
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
     tab.sizes_view = pane.view == ViewMode::Sizes && !search;

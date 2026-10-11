@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Tag assign mode: press Ctrl+Shift+A (or **Assign tags with number keys** in the command palette) and a bar above the file list shows the first nine tags as `1 Receipts (2)  2 Taxes (0)  …`, in their colors, with how many of the selected items carry each. A number key toggles that tag on the selection (on for all when any lacks it, else off), and the mode follows the selection, so you can select, press, select, press. Shift+1 to Shift+9 reach tags 10 to 18 (the bar shows them while Shift is held). 0, Esc, **Leave**, or going to another folder, tab or pane ends the mode. See [Library](docs/library.md#library).
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

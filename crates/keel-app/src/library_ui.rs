@@ -41,19 +41,75 @@ fn dot_color(ui: &egui::Ui, dot: Dot) -> Color32 {
 
 /// A tag chip: its name on its color.
 pub fn chip(ui: &mut egui::Ui, tag: &Tag) -> egui::Response {
+    chip_text(ui, tag, &tag.name)
+}
+
+/// A chip in `tag`'s color saying `text`.
+fn chip_text(ui: &mut egui::Ui, tag: &Tag, text: &str) -> egui::Response {
     let fill = color_of(tag.color.as_deref());
     let luma = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
-    let text = if luma > 150.0 {
+    let text_color = if luma > 150.0 {
         Color32::BLACK
     } else {
         Color32::WHITE
     };
     ui.add(
-        egui::Button::new(RichText::new(&tag.name).small().color(text))
+        egui::Button::new(RichText::new(text).small().color(text_color))
             .fill(fill)
             .corner_radius(8.0)
             .min_size(egui::vec2(0.0, 14.0)),
     )
+}
+
+/// Task 58: tag assign mode's bar above pane `idx`'s file list: which number toggles which
+/// tag, with how many of the selected items carry it (the second page while Shift is
+/// held). A chip click toggles too; Leave ends the mode.
+pub fn assign_bar(
+    ui: &mut egui::Ui,
+    idx: usize,
+    tab: &crate::tab::Tab,
+    l: &LibraryUi,
+    out: &mut Vec<Action>,
+) {
+    if l.assign.as_ref().is_none_or(|a| a.pane != idx) {
+        return;
+    }
+    let targets: Vec<VPath> = (tab.targets().iter())
+        .filter_map(|e| crate::library::real_of(&l.sources, &e.path))
+        .collect();
+    let carry = |tag: &Tag| {
+        (targets.iter())
+            .filter(|t| l.tagged.get(t).is_some_and(|tags| tags.contains(&tag.id)))
+            .count()
+    };
+    let counted: Vec<(&str, usize)> = l.tags.iter().map(|t| (t.name.as_str(), carry(t))).collect();
+    let shift = ui.input(|i| i.modifiers.shift);
+    let (labels, hint) = crate::library::assign_labels(&counted, shift);
+    let page = match shift && l.tags.len() > crate::library::ASSIGN_PAGE {
+        true => crate::library::ASSIGN_PAGE,
+        false => 0,
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(format!(
+            "Assign tags to {}:",
+            crate::jobs::items(targets.len())
+        ));
+        for (i, label) in labels.iter().enumerate() {
+            let tag = &l.tags[page + i];
+            let r = chip_text(ui, tag, label).on_hover_text(format!("Toggle {}", tag.name));
+            if r.clicked() {
+                out.push(lib(LibCmd::AssignTag(page + i)));
+            }
+        }
+        ui.weak(hint);
+        if ui
+            .small_button("Leave")
+            .on_hover_text("Leave tag assign mode (0 or Esc)")
+            .clicked()
+        {
+            out.push(lib(LibCmd::AssignMode));
+        }
+    });
 }
 
 fn section(ui: &mut egui::Ui, title: &str, theme: &Theme) {

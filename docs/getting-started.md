@@ -232,7 +232,7 @@ The library is an index of your **sources**: local folders and drives, SSH hosts
 
 ![The library Overview with three sources, next to the Documents folder](screenshots/library-overview.png)
 
-**Tags, favorites and recents.** Ctrl+D marks the selection as a favorite; Ctrl+Shift+T opens the tag picker, where you can also create tags with a colour. Tags show as chips on the rows and in the sidebar, where a click lists everything with that tag. **★ Favorites** and **Recents** (files you opened) are in the sidebar too.
+**Tags, favorites and recents.** Ctrl+D marks the selection as a favorite; Ctrl+Shift+T opens the tag picker, where you can also create tags with a colour; Ctrl+Shift+A turns on tag assign mode, where the number keys toggle the first nine tags on whatever is selected. Tags show as chips on the rows and in the sidebar, where a click lists everything with that tag. **★ Favorites** and **Recents** (files you opened) are in the sidebar too.
 
 **Duplicates and copies.** Keel hashes file contents at idle priority (Settings → Library → Hashing). **Find duplicates** in the command palette, or the duplicates line in the Overview, lists groups of identical files and the space you could reclaim; **Keep this one** removes the others through the usual preview. In the Details view the **Copies** column shows how many copies of each file exist and on how many disks; hover over it to see where they are.
 

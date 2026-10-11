@@ -126,6 +126,12 @@ fn global_items() -> Vec<Item> {
         ("Library overview", "", Library(LibCmd::Overview)),
         ("Add library source…", "", Library(LibCmd::AddSource)),
         ("Find duplicates", "", Library(LibCmd::Duplicates)),
+        // --- Task 58 ---
+        (
+            "Assign tags with number keys",
+            "Ctrl+Shift+A",
+            Library(LibCmd::AssignMode),
+        ),
         // --- Task 53 ---
         ("Back up library…", "", Library(LibCmd::Backup)),
         ("Restore library…", "", Library(LibCmd::Restore)),

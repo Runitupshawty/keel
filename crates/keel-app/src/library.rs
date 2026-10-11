@@ -154,6 +154,10 @@ pub enum LibCmd {
     /// Favorites, Recents, a tag or a saved view as a library search tab.
     Query(String),
     TagPicker,
+    /// Task 58: enter (or leave) tag assign mode in this pane (`Assign`).
+    AssignMode,
+    /// Assign mode: toggle the tag at this index of `LibraryUi::tags` on the selection.
+    AssignTag(usize),
     ToggleFavorite,
     /// Tag (or untag) the tag picker's targets (else the active pane's).
     SetTag {
@@ -764,6 +768,43 @@ pub struct TagPicker {
     pub new_color: [u8; 3],
 }
 
+/// Task 58: tag assign mode. Number keys 1–9 (Shift: 10–18) toggle the first tags on
+/// pane `pane`'s selection, whatever it is at the time; moving away from `dir` (another
+/// folder, tab or pane) leaves it, as do 0 and Esc.
+pub struct Assign {
+    pub pane: usize,
+    pub dir: VPath,
+}
+
+/// Tags one page of assign mode reaches (Shift: the next page).
+pub const ASSIGN_PAGE: usize = 9;
+
+/// Assign mode's bar: one label per tag of the page shown (`shift`: tags 10–18), from
+/// each tag's name and how many selected items carry it, and the hint after them.
+pub fn assign_labels(tags: &[(&str, usize)], shift: bool) -> (Vec<String>, String) {
+    if tags.is_empty() {
+        let picker = crate::keys::shortcut_label("Ctrl+Shift+T");
+        return (
+            Vec::new(),
+            format!("No tags yet: create one with Tag… ({picker})"),
+        );
+    }
+    let second = shift && tags.len() > ASSIGN_PAGE;
+    let page = if second { ASSIGN_PAGE } else { 0 };
+    let labels = (tags.iter().skip(page).take(ASSIGN_PAGE).enumerate())
+        .map(|(i, (name, n))| {
+            let key = if second { "Shift+" } else { "" };
+            format!("{key}{} {name} ({n})", i + 1)
+        })
+        .collect();
+    let more = match (tags.len() > ASSIGN_PAGE, second) {
+        (false, _) => "",
+        (true, false) => "Shift+number for 10–18 · ",
+        (true, true) => "Release Shift for 1–9 · ",
+    };
+    (labels, format!("{more}0 or Esc leaves"))
+}
+
 pub struct DupFinder {
     pub groups: Option<Result<Vec<DupGroup>, String>>,
 }
@@ -825,6 +866,8 @@ pub struct LibraryUi {
     pub libraries: Vec<LibrarySummary>,
     pub add: Option<AddSource>,
     pub picker: Option<TagPicker>,
+    /// Task 58: tag assign mode, while it is on.
+    pub assign: Option<Assign>,
     pub dups: Option<DupFinder>,
     /// Latest duplicate summary (groups, reclaimable bytes) for the Overview.
     pub dup_summary: Option<(usize, u64)>,
@@ -903,6 +946,7 @@ impl LibraryUi {
             libraries: Vec::new(),
             add: None,
             picker: None,
+            assign: None,
             dups: None,
             dup_summary: None,
             synced_with: 0,
@@ -2247,6 +2291,39 @@ impl AppState {
                     });
                 }
             }
+            LibCmd::AssignMode => {
+                self.library.assign = match self.library.assign.take() {
+                    Some(_) => None,
+                    None => Some(Assign {
+                        pane: p,
+                        dir: self.tab(p).dir.clone(),
+                    }),
+                };
+            }
+            LibCmd::AssignTag(i) => {
+                let Some(tag) = self.library.tags.get(i).map(|t| t.id) else {
+                    return;
+                };
+                let Some(targets) = self.library_targets(p) else {
+                    return;
+                };
+                let tagged = &mut self.library.tagged;
+                let on = !targets
+                    .iter()
+                    .all(|t| tagged.get(t).is_some_and(|tags| tags.contains(&tag)));
+                // Shown at once (the bar's counts, a quick second press); the worker's
+                // write is read back right after.
+                for t in &targets {
+                    let tags = tagged.entry(t.clone()).or_default();
+                    tags.retain(|&x| x != tag);
+                    if on {
+                        tags.push(tag);
+                    } else if tags.is_empty() {
+                        tagged.remove(t);
+                    }
+                }
+                self.set_tag(targets, tag, on);
+            }
             LibCmd::ToggleFavorite => {
                 let Some(targets) = self.library_targets(p) else {
                     return;
@@ -2481,6 +2558,69 @@ impl AppState {
         self.library.protection_changed();
     }
 
+    /// Task 58: assign mode's keys, before the keyboard map sees them (every frame). The
+    /// mode ends when its pane shows another folder (or tab), loses the focus, or the
+    /// library closes. Digits are read by their physical key, so Shift+1 and the number
+    /// row of a French layout count too; their text never reaches the filter.
+    pub fn assign_keys(&mut self, ctx: &egui::Context, keys_on: bool) {
+        let Some(a) = &self.library.assign else {
+            return;
+        };
+        let p = a.pane;
+        let tab = self.tab(p);
+        if !self.library.is_open()
+            || self.active != p
+            || tab.dir != a.dir
+            || tab.kind == TabKind::Overview
+        {
+            self.library.assign = None;
+            return;
+        }
+        if !keys_on || crate::keys::typing(ctx) {
+            return;
+        }
+        let (mut leave, mut toggles) = (false, Vec::new());
+        ctx.input_mut(|i| {
+            let mut used = false;
+            i.events.retain(|e| {
+                let egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed,
+                    repeat,
+                    modifiers,
+                } = e
+                else {
+                    return true;
+                };
+                if modifiers.command || modifiers.alt {
+                    return true;
+                }
+                let k = physical_key.unwrap_or(*key);
+                let digit = DIGITS.iter().position(|d| *d == k);
+                if digit.is_none() && *key != egui::Key::Escape {
+                    return true;
+                }
+                used = true;
+                match digit {
+                    _ if !*pressed || *repeat => {}
+                    None | Some(0) => leave = true,
+                    Some(n) => toggles.push(n - 1 + if modifiers.shift { ASSIGN_PAGE } else { 0 }),
+                }
+                false
+            });
+            if used {
+                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+            }
+        });
+        for n in toggles {
+            self.run(p, Action::Library(LibCmd::AssignTag(n)));
+        }
+        if leave {
+            self.library.assign = None;
+        }
+    }
+
     fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
         self.undo
             .refuse("tags and favorites (set or clear them again instead)");
@@ -2492,6 +2632,19 @@ impl AppState {
         self.library.refresh_meta_soon();
     }
 }
+
+const DIGITS: [egui::Key; 10] = [
+    egui::Key::Num0,
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+    egui::Key::Num7,
+    egui::Key::Num8,
+    egui::Key::Num9,
+];
 
 /// Why nothing is written while an attached daemon is gone.
 pub const LOST: &str =

@@ -64,7 +64,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | Nested, colored tags that follow the content to every copy | described; v1 tags | [SD-TAGS], [SD-B23] | **Has** ([library.md](library.md#library)) |
-| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Part**: tag picker (Ctrl+Shift+T); no number keys |
+| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Has** (unreleased): Ctrl+Shift+A, then 1–9 (Shift: 10–18) toggle tags on the selection ([library.md](library.md#library)) |
 | Favorites, recents | mockup; described | [SD-WEB] | **Has** |
 | Saved views | described | [SD-LIB] | **Has** |
 
@@ -217,7 +217,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
 | 17 | An icon or color per folder | Atlas | D | S-M |
 | 18 | Filter chips for library search | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
-| 19 | Tag assign mode with number keys | Spacedrive v1 | D | S |
+| 19 | Tag assign mode with number keys (**done**, unreleased: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
 | 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D | S-M |
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
