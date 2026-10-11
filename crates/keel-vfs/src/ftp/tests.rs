@@ -564,7 +564,7 @@ fn router_and_saved_remotes() {
 /// Live, against a real server: `KEEL_FTP_TEST=user@host:port`, `KEEL_FTP_TEST_PASS`
 /// (optional `KEEL_FTP_TEST_TLS=1` for FTPS, `KEEL_FTP_TEST_FINGERPRINT` to trust a
 /// certificate that does not verify). Lists, uploads, downloads and deletes in a folder it
-/// creates and removes.
+/// creates in the server's starting folder (`PWD`; `/` is often not writable) and removes.
 #[test]
 #[ignore = "needs a live FTP server (KEEL_FTP_TEST)"]
 fn live_ftp_round_trip() {
@@ -605,7 +605,18 @@ fn live_ftp_round_trip() {
         }
     });
     let p = FtpProvider::new(h, tx);
-    let base = at("live-ftp", &format!("/keel-live-{}", std::process::id()));
+    let home = {
+        let mut lease = p.pool.lease().unwrap();
+        let pwd = lease.conn().ftp.pwd().unwrap();
+        lease.release();
+        pwd
+    };
+    let dir = format!(
+        "{}/keel-live-{}",
+        home.trim_end_matches('/'),
+        std::process::id()
+    );
+    let base = at("live-ftp", &dir);
     let start = Instant::now();
     p.mkdir(&base).unwrap();
     let body: Vec<u8> = (0..3 << 20).map(|i| (i % 253) as u8).collect();
