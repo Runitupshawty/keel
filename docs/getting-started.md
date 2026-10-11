@@ -15,7 +15,7 @@ Keel is a file manager for Windows, macOS and Linux: two panes with tabs, a prev
 
 ## Install
 
-Keel's builds are not signed yet, so each system warns once before the first start; the sections below say what to click. The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS` and install for your user only (no administrator or root rights). Run a script again to update.
+Keel's builds are not signed yet, so each system warns once before the first start; the sections below say what to click. The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS`, check the signatures it has (and say when it has none) and install for your user only (no administrator or root rights). Run a script again to update. `keel --version` shows whether your copy is signed; [Releasing](releasing.md) explains the signatures and how to verify a download by hand.
 
 ### Windows
 
@@ -35,7 +35,7 @@ $i = [scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/
 
 Without the script: download `keel-<version>-win64.zip` from Releases, extract it anywhere and run `keel.exe`. Keep the DLLs and `keel-daemon.exe` next to it. No Visual C++ redistributable is needed.
 
-The first start may show a SmartScreen warning about an unknown publisher: choose **More info**, then **Run anyway**.
+The first start of an unsigned build may show a SmartScreen warning about an unknown publisher: choose **More info**, then **Run anyway**. The install script says so when the build it installed is unsigned; when a build is signed it checks the signature and refuses one that is broken.
 
 For the fastest search, install and start [Everything](https://www.voidtools.com/); Keel uses it whenever it runs and its own index otherwise.
 
@@ -55,7 +55,7 @@ xattr -dr com.apple.quarantine .
 ./keel
 ```
 
-Gatekeeper blocks unsigned apps that still carry the download quarantine. Either clear it with `xattr -dr com.apple.quarantine <folder or Keel.app>` as above, or open the app once by right-clicking (Control-clicking) it and choosing **Open**, then **Open** again in the dialog. On macOS 15 and later the dialog has no Open button: try to open Keel once, then choose **Open Anyway** in System Settings → Privacy & Security.
+Gatekeeper blocks unsigned apps that still carry the download quarantine (a build signed with a Developer ID and notarized opens without this; the install script checks its signature and leaves the quarantine alone). Either clear it with `xattr -dr com.apple.quarantine <folder or Keel.app>` as above, or open the app once by right-clicking (Control-clicking) it and choosing **Open**, then **Open** again in the dialog. On macOS 15 and later the dialog has no Open button: try to open Keel once, then choose **Open Anyway** in System Settings → Privacy & Security.
 
 ### Linux
 
@@ -286,7 +286,7 @@ A profile's settings are in `profiles/<name>/config.toml` inside the settings fo
 
 **Keel exits at once on Linux with "Library libxkbcommon-x11.so could not be loaded".** An X11 session needs `libxkbcommon-x11`: `sudo apt install libxkbcommon-x11-0` (the .deb installs it for you).
 
-**Windows SmartScreen says "Windows protected your PC".** The builds are not signed yet. Choose **More info**, then **Run anyway**; the install script's downloads are checked against the release's checksums.
+**Windows SmartScreen says "Windows protected your PC".** The build is not signed (`keel --version` says), or it is signed but its certificate has not built up SmartScreen reputation yet. Choose **More info**, then **Run anyway**; the install script's downloads are checked against the release's checksums, and against the signature when there is one.
 
 **Search says Everything is not running (Windows).** Start Everything, or let Keel use its own index: Settings → General → **Index all drives (administrator)**.
 
@@ -294,10 +294,10 @@ A profile's settings are in `profiles/<name>/config.toml` inside the settings fo
 
 **Is there a newer Keel?** Run `keel --check-update`, or turn on Settings → General → **Check for updates** for a daily check (one request to GitHub that sends only the Keel version; see [Updates](../README.md#updates)). To update, run the install command again; on Windows the banner's **Install** does that for you. Nothing shows up while you are offline or GitHub limits requests; Keel tries again the next day.
 
-**Keel crashed, or said "Keel hit a bug".** The report is in `crashes/` in the data folder (table above), one file per crash, the newest ten kept; keel-daemon writes there too and logs the file. At the next start Keel offers a new report once: **Show report** opens the file, **Copy for a bug report** copies it, **Open an issue** opens a new GitHub issue with the Keel version filled in (paste the report there), **Don't ask again** stops the offer (Settings → General → **Crash reports** brings it back). The report has the Keel version, the system, the panic message and where it happened, a backtrace and the last 50 log lines; your home folder is shown as `~`, user names, remote host names, network servers, profile names and e-mail addresses are replaced, and nothing is sent unless you send it. File and folder names can still appear: read it before you post it.
+**Keel crashed, or said "Keel hit a bug".** The report is in `crashes/` in the data folder (table above), one file per crash, the newest ten kept; keel-daemon writes there too and logs the file. At the next start Keel offers a new report once: **Show report** opens the file, **Copy for a bug report** copies it, **Open an issue** opens a new GitHub issue with the Keel version filled in (paste the report there), **Don't ask again** stops the offer (Settings → General → **Crash reports** brings it back). The report has the Keel version and whether it is signed, the system, the panic message and where it happened, a backtrace and the last 50 log lines; your home folder is shown as `~`, user names, remote host names, network servers, profile names and e-mail addresses are replaced, and nothing is sent unless you send it. File and folder names can still appear: read it before you post it.
 
 **Something else.** Known limitations of each release are listed in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Getting help and contributing
 
-Questions and bug reports go to the [issue tracker](https://github.com/Runitupshawty/keel/issues); include your system, the Keel version (`keel --version`) and, for a crash, the report from `crashes/` (**Copy for a bug report** in the dialog copies it). Pull requests are welcome: [CONTRIBUTING.md](../CONTRIBUTING.md) explains the checks to run, and how to rebuild the screenshots in this guide.
+Questions and bug reports go to the [issue tracker](https://github.com/Runitupshawty/keel/issues); include your system, the Keel version and signature state (`keel --version`) and, for a crash, the report from `crashes/` (**Copy for a bug report** in the dialog copies it). Pull requests are welcome: [CONTRIBUTING.md](../CONTRIBUTING.md) explains the checks to run, and how to rebuild the screenshots in this guide.

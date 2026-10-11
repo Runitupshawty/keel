@@ -71,7 +71,7 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update]
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
-| `--version`, `--help` | Print and exit |
+| `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
 

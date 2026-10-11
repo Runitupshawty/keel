@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Signing-ready releases: CI signs the Windows binaries (Authenticode, timestamped), signs and notarizes the macOS binaries (Developer ID, hardened runtime) and signs `SHA256SUMS` with GPG (`SHA256SUMS.asc`, the public key as `SHA256SUMS.key.asc`) as soon as the certificates and keys are repository secrets; until then each step is skipped with a notice and releases are unsigned as before. The release job's summary lists the signatures made. [docs/releasing.md](docs/releasing.md) has the release procedure, the secret names, how to get the certificates and how to rotate them.
+- Signature checks in the installers: `install.ps1` checks the Authenticode signature of `keel.exe` and `keel-daemon.exe` when the build is signed (a broken signature, another signer or a partly signed build is refused) and shows the SmartScreen hint only for unsigned builds; `install.sh` checks `SHA256SUMS.asc` with gpg when the release has it and gpg is installed, and on macOS the code signature of the binaries (a signed build keeps its quarantine attribute). Each installer can pin the expected signer; an unsigned release only warns while none is pinned. `scripts/test-install.ps1` and `scripts/test-install.sh` test the checks in CI.
+- `keel --version` prints whether the running binary is signed (`signature: signed`, `unsigned`, `unsigned (ad-hoc)` on macOS, `not signed (Linux)`), and crash reports include the same line, so bug reports say which build they came from.
+
 ## [0.17.0] - 2026-10-10
 
 ### Added

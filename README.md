@@ -21,7 +21,7 @@ The complete list is in [docs/features.md](docs/features.md).
 
 ## Install
 
-The builds are not signed yet. The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS` and install for your user only (no admin, no root). Run them again to update.
+The builds are not signed yet; CI signs them as soon as certificates are set up ([docs/releasing.md](docs/releasing.md)). The install scripts download the latest [release](https://github.com/Runitupshawty/keel/releases), check it against the release's `SHA256SUMS`, check the signatures a release has (Authenticode on Windows, the GPG signature of `SHA256SUMS` and the Developer ID signature on macOS) and install for your user only (no admin, no root). Run them again to update. `keel --version` says whether your copy is signed.
 
 **Windows** (PowerShell):
 
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/ins
 
 **Debian and Ubuntu**: download `keel_<version>_amd64.deb` from Releases and `sudo apt install ./keel_*.deb`.
 
-The zip and tarballs, uninstalling, SmartScreen and Gatekeeper on unsigned builds, the Linux runtime libraries and `fuse3`: see [Install](docs/getting-started.md#install) in the guide. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`.
+The zip and tarballs, uninstalling, SmartScreen and Gatekeeper on unsigned builds, the Linux runtime libraries and `fuse3`: see [Install](docs/getting-started.md#install) in the guide. Releases from before the checksum file need `-SkipVerify` (Windows) or `--skip-verify`. To check a download by hand (`gpg --verify SHA256SUMS.asc SHA256SUMS` once releases are signed), and how releases are made and signed: [docs/releasing.md](docs/releasing.md).
 
 ## Updates
 
@@ -45,7 +45,7 @@ Keel can tell you when a new release is out, but only if you turn it on: **Setti
 
 ## Crashes and bug reports
 
-When the window or keel-daemon crashes, Keel writes a report to `crashes/<time>.txt` in its data folder (`%LOCALAPPDATA%\Keel`, `~/Library/Application Support/Keel` or `~/.local/share/keel`; `KEEL_DATA_DIR` moves it) and keeps the newest ten, readable by your user only. A report holds the Keel version, the operating system, the panic message and location, a backtrace and the last 50 log lines. Before it is saved, your home folder becomes `~`; user names in other users' folders and in URLs, remote host names, network servers, profile names, e-mail addresses and `user@host` are replaced; source paths keep only the crate and file name. Other file and folder names can still appear (`~\Documents\taxes.pdf`), so read the report before you post it. A panic Keel catches on purpose (a damaged file a previewer chokes on, a job that fails and says so) is only logged. Keel never sends it: at the next start a dialog offers **Show report**, **Copy for a bug report**, **Open an issue** (GitHub's new-issue page with only the Keel version filled in; you paste the report) and **Don't ask again**. To turn the dialog off or back on: Settings → General → **Crash reports**. A bug inside the window resets the panes and shows the same dialog at once, and Keel keeps running.
+When the window or keel-daemon crashes, Keel writes a report to `crashes/<time>.txt` in its data folder (`%LOCALAPPDATA%\Keel`, `~/Library/Application Support/Keel` or `~/.local/share/keel`; `KEEL_DATA_DIR` moves it) and keeps the newest ten, readable by your user only. A report holds the Keel version, whether the binary is signed, the operating system, the panic message and location, a backtrace and the last 50 log lines. Before it is saved, your home folder becomes `~`; user names in other users' folders and in URLs, remote host names, network servers, profile names, e-mail addresses and `user@host` are replaced; source paths keep only the crate and file name. Other file and folder names can still appear (`~\Documents\taxes.pdf`), so read the report before you post it. A panic Keel catches on purpose (a damaged file a previewer chokes on, a job that fails and says so) is only logged. Keel never sends it: at the next start a dialog offers **Show report**, **Copy for a bug report**, **Open an issue** (GitHub's new-issue page with only the Keel version filled in; you paste the report) and **Don't ask again**. To turn the dialog off or back on: Settings → General → **Crash reports**. A bug inside the window resets the panes and shows the same dialog at once, and Keel keeps running.
 
 ## Start here
 
@@ -80,6 +80,7 @@ The guide covers everyday use; these pages hold the details.
 | Every operation of the API, with schemas and examples | [docs/api.md](docs/api.md) |
 | Measured speed on realistic data, what scales how, running the measurements | [docs/performance.md](docs/performance.md) |
 | Changes and known limitations of each release | [CHANGELOG.md](CHANGELOG.md) |
+| Making a release, signing the builds, verifying a download | [docs/releasing.md](docs/releasing.md) |
 
 ### Phones
 
