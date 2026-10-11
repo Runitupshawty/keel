@@ -773,3 +773,278 @@ fn file_names_lists_files_newest_first_up_to_the_cap() {
     assert_eq!(f.lib.file_names(5).unwrap(), (all, false));
     let _ = &f.a;
 }
+
+// --- Task 57: filter chips ---
+
+use crate::chips::{self, Chip, Group};
+
+fn every_chip() -> Vec<Chip> {
+    let mut all = Chip::kinds();
+    all.extend(Chip::sizes());
+    all.extend(Chip::modified());
+    all.push(Chip::favorites());
+    all.extend(["pdf", ".JPG"].iter().filter_map(|e| Chip::ext(e)));
+    all.extend(["taxes", "two words"].iter().filter_map(|t| Chip::tag(t)));
+    all.extend(
+        ["Backup", "My Drive"]
+            .iter()
+            .filter_map(|s| Chip::source(s)),
+    );
+    all
+}
+
+fn on(q: &str) -> Vec<String> {
+    every_chip()
+        .into_iter()
+        .filter(|c| chips::is_on(q, c))
+        .map(|c| c.name())
+        .collect()
+}
+
+/// Chip → term: each chip adds the term it shows on hover, and the parser reads that term
+/// as the filter the chip names.
+#[test]
+fn every_chip_adds_a_term_the_parser_reads_as_its_filter() {
+    let terms: Vec<String> = every_chip().iter().map(|c| c.term.clone()).collect();
+    assert_eq!(
+        terms,
+        [
+            "kind:image",
+            "kind:video",
+            "kind:audio",
+            "kind:document",
+            "kind:archive",
+            "kind:folder",
+            "size:<1mb",
+            "size:1mb..100mb",
+            "size:>100mb",
+            "size:>1gb",
+            "dm:today",
+            "dm:thisweek",
+            "dm:thismonth",
+            "dm:thisyear",
+            "tag:Favorites",
+            "ext:pdf",
+            "ext:jpg",
+            "tag:taxes",
+            "tag:\"two words\"",
+            "in:Backup",
+            "in:\"My Drive\"",
+        ]
+    );
+    for c in every_chip() {
+        assert_eq!(chips::toggle("", &c), c.term, "{}", c.name());
+        assert_eq!(on(&c.term), [c.name()], "only its own chip lights");
+        assert!(
+            LibraryQuery::parse_at(&c.term, NOW, 0).is_ok(),
+            "{}",
+            c.term
+        );
+    }
+    let p = |t: &str| LibraryQuery::parse_at(t, NOW, 0).unwrap();
+    let kinds = [
+        KindFilter::Image,
+        KindFilter::Video,
+        KindFilter::Audio,
+        KindFilter::Document,
+        KindFilter::Archive,
+        KindFilter::Folder,
+    ];
+    for (c, k) in Chip::kinds().iter().zip(kinds) {
+        assert_eq!(p(&c.term).kind, Some(k));
+    }
+    const MB: u64 = 1 << 20;
+    let sizes = [
+        (None, Some(MB - 1)),
+        (Some(MB), Some(100 * MB)),
+        (Some(100 * MB + 1), None),
+        (Some((1 << 30) + 1), None),
+    ];
+    for (c, s) in Chip::sizes().iter().zip(sizes) {
+        let q = p(&c.term);
+        assert_eq!((q.min_size, q.max_size), s, "{}", c.term);
+    }
+    for c in Chip::modified() {
+        let q = p(&c.term);
+        assert!(q.modified_from.is_some() && q.modified_before.is_some());
+    }
+    assert_eq!(p("tag:Favorites").tags, ["Favorites"]);
+    assert_eq!(p("ext:jpg").ext, ["jpg"]);
+    assert_eq!(p("tag:\"two words\"").tags, ["two words"]);
+    assert_eq!(p("in:\"My Drive\"").sources, ["My Drive"]);
+    // A chip the parser cannot read back is not offered.
+    assert_eq!(Chip::tag("say \"hi\""), None);
+    assert_eq!(Chip::source(" "), None);
+    assert_eq!(Chip::ext("tar gz"), None);
+    assert_eq!(Chip::ext("a;b"), None);
+    assert_eq!(Chip::tag("favorites"), Some(Chip::favorites()));
+}
+
+/// Term → chip: every spelling the parser accepts for a filter a chip shows lights that
+/// chip, and the chip that lights is the term the parser keeps.
+#[test]
+fn every_term_the_parser_accepts_lights_its_chip() {
+    for (kind, words) in chips::KIND_WORDS {
+        for w in words {
+            let k = KindFilter::parse(w).expect("the parser reads every chip word");
+            assert_eq!(KindFilter::parse(kind), Some(k));
+            for key in ["kind", "type", "KIND"] {
+                let q = format!("{key}:{}", w.to_uppercase());
+                let lit = on(&q);
+                match chips::KINDS.iter().find(|(_, word)| *word == kind) {
+                    Some((label, _)) => assert_eq!(lit, [format!("Kind: {label}")], "{q}"),
+                    None => assert!(lit.is_empty(), "{q}: no File chip"),
+                }
+            }
+        }
+    }
+    assert_eq!(on("folder:"), ["Kind: Folder"]);
+    assert!(on("file:").is_empty());
+    assert!(on("kind:photo").is_empty(), "a media filter, not a kind");
+    // The parser keeps the last kind, size and date.
+    assert_eq!(on("kind:image kind:doc"), ["Kind: Document"]);
+    let q = LibraryQuery::parse_at("kind:image kind:doc", NOW, 0).unwrap();
+    assert_eq!(q.kind, Some(KindFilter::Document));
+    assert_eq!(on("size:>1gb SIZE:<1MB"), ["Size: Under 1 MB"]);
+    assert_eq!(on("size:1MB..100MB"), ["Size: 1\u{2013}100 MB"]);
+    assert_eq!(on("size:>100mb"), ["Size: Over 100 MB"]);
+    assert_eq!(on("size:>1GB"), ["Size: Over 1 GB"]);
+    assert!(on("size:>50mb").is_empty(), "no preset");
+    for key in ["dm", "datemodified", "Modified"] {
+        assert_eq!(on(&format!("{key}:TODAY")), ["Modified: Today"]);
+        assert_eq!(on(&format!("{key}:thisweek")), ["Modified: This week"]);
+        assert_eq!(on(&format!("{key}:thismonth")), ["Modified: This month"]);
+        assert_eq!(on(&format!("{key}:thisyear")), ["Modified: This year"]);
+    }
+    assert!(on("dm:2026-10").is_empty(), "a date no chip shows");
+    assert_eq!(on("ext:.PDF"), ["Type: pdf"]);
+    assert_eq!(on("ext:docx;Jpg"), ["Type: jpg"]);
+    assert_eq!(on("ext:\"pdf\""), ["Type: pdf"]);
+    assert_eq!(on("tag:TAXES"), ["Tag: taxes"]);
+    assert_eq!(on("tag:favorites"), ["Only favorites"]);
+    assert_eq!(on("tag:\"Two Words\""), ["Tag: two words"]);
+    assert_eq!(on("in:backup"), ["Source: Backup"]);
+    assert_eq!(on("source:\"my drive\""), ["Source: My Drive"]);
+    assert_eq!(
+        on("report ext:pdf tag:taxes in:Backup kind:doc size:<1mb dm:today"),
+        [
+            "Kind: Document",
+            "Size: Under 1 MB",
+            "Modified: Today",
+            "Type: pdf",
+            "Tag: taxes",
+            "Source: Backup",
+        ]
+    );
+    // Values the row shows as chips although it does not offer them.
+    let q = "ext:heic;.PNG tag:old ext:heic in:Phone";
+    assert_eq!(chips::values(q, Group::Type), ["heic", "png"]);
+    assert_eq!(chips::values(q, Group::Tag), ["old"]);
+    assert_eq!(chips::values(q, Group::Source), ["Phone"]);
+}
+
+/// Terms no chip shows (words, phrases, media filters, a date) stay exactly as typed while
+/// chips go on and off around them.
+#[test]
+fn chips_keep_the_terms_they_cannot_show() {
+    let foreign = r#"report "annual report" camera:canon taken:2024 w:>4000 has:gps kind:photo duration:>30s dm:2026-10 C:\x"#;
+    for c in every_chip() {
+        let with = chips::toggle(foreign, &c);
+        assert!(chips::is_on(&with, &c), "{with}");
+        let back = chips::toggle(&with, &c);
+        assert!(!chips::is_on(&back, &c));
+        if c.group != Group::Modified {
+            assert_eq!(back, foreign, "{}", c.term);
+        }
+    }
+    // A Modified chip replaces the typed date (the parser keeps only one).
+    let today = Chip::modified().remove(0);
+    assert_eq!(
+        chips::toggle(foreign, &today),
+        foreign.replace(" dm:2026-10", "") + " dm:today"
+    );
+    // Kind replaces the kind; other chips add.
+    let image = Chip::kinds().remove(0);
+    let doc = Chip::kinds().remove(3);
+    let q = chips::toggle("invoice kind:image ext:pdf;docx", &doc);
+    assert_eq!(q, "invoice ext:pdf;docx kind:document");
+    assert!(!chips::is_on(&q, &image));
+    // Taking one extension out of a list keeps the others.
+    let pdf = Chip::ext("pdf").unwrap();
+    assert_eq!(chips::toggle(&q, &pdf), "invoice ext:docx kind:document");
+    assert_eq!(chips::toggle("ext:pdf", &pdf), "");
+    // A quote left open is closed before the term goes in.
+    let q = chips::toggle("\"annual rep", &doc);
+    assert_eq!(q, "\"annual rep\" kind:document");
+    let parsed = LibraryQuery::parse_at(&q, NOW, 0).unwrap();
+    assert_eq!(parsed.phrases, ["annual rep"]);
+    assert_eq!(parsed.kind, Some(KindFilter::Document));
+}
+
+#[test]
+fn top_extensions_count_names_and_paths() {
+    let names = [
+        "C:\\a\\x.PDF",
+        "/b/y.pdf",
+        "z.jpg",
+        "w.jpg",
+        "v.pdf",
+        ".hidden",
+        "noext",
+        "a.b c",
+        "dir.d/file",
+        "t.md",
+    ];
+    assert_eq!(
+        chips::top_extensions(names, 3),
+        ["pdf", "jpg", "md"],
+        "most first, ties by name"
+    );
+}
+
+/// The Modified chips' dates: this week from Monday, this month, this year, local days.
+#[test]
+fn this_week_month_and_year_are_local() {
+    // NOW is Friday 2026-10-09 12:00 UTC.
+    let day = |y, m, d| days_from_civil(y, m, d) * 86_400;
+    let span = |q: &str, offset| {
+        let q = LibraryQuery::parse_at(q, NOW, offset).unwrap();
+        (q.modified_from.unwrap(), q.modified_before.unwrap())
+    };
+    assert_eq!(
+        span("dm:thisweek", 0),
+        (day(2026, 10, 5), day(2026, 10, 12))
+    );
+    assert_eq!(
+        span("dm:thismonth", 0),
+        (day(2026, 10, 1), day(2026, 11, 1))
+    );
+    assert_eq!(span("dm:thisyear", 0), (day(2026, 1, 1), day(2027, 1, 1)));
+    let h = 3_600;
+    assert_eq!(
+        span("dm:thisweek", 2 * h),
+        (day(2026, 10, 5) - 2 * h, day(2026, 10, 12) - 2 * h)
+    );
+    // Sunday 2026-11-01 01:00 UTC is still Saturday 31 October at UTC-5.
+    let at = day(2026, 11, 1) + h;
+    let q = LibraryQuery::parse_at("dm:thismonth taken:thisweek", at, -5 * h).unwrap();
+    assert_eq!(q.modified_from, Some(day(2026, 10, 1) + 5 * h));
+    assert_eq!(q.taken.min, Some(day(2026, 10, 26) + 5 * h));
+    assert_eq!(
+        LibraryQuery::parse_at("dm:thisyear", day(2026, 12, 31) + 23 * h, 2 * h)
+            .unwrap()
+            .modified_from,
+        Some(day(2027, 1, 1) - 2 * h)
+    );
+    assert_eq!(civil_from_days(0), (1970, 1));
+    assert_eq!(civil_from_days(days_from_civil(2000, 2, 29)), (2000, 2));
+    assert_eq!(civil_from_days(days_from_civil(1969, 12, 31)), (1969, 12));
+}
+
+#[test]
+fn taking_an_extension_out_keeps_a_quoted_rest_quoted() {
+    let pdf = Chip::ext("pdf").unwrap();
+    let q = chips::toggle("ext:pdf;\"a b\" x", &pdf);
+    assert_eq!(q, "ext:\"a b\" x");
+    assert_eq!(LibraryQuery::parse_at(&q, NOW, 0).unwrap().ext, ["a b"]);
+}

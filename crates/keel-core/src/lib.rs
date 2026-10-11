@@ -14,6 +14,8 @@
 
 /// Library backup and restore (`keel library backup` / `restore`).
 pub mod backup;
+/// Filter chips for library search (shared with keel-web by path).
+pub mod chips;
 mod db;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).

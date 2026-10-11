@@ -2354,11 +2354,7 @@ fn search_tab_with_library_filters() {
     click_last(&mut h, "Library");
     assert!(s(&h).tab(0).library_search);
     let query = |h: &mut H, q: &str| {
-        let at = h
-            .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
-            .map(|n| center_of(&n))
-            .min_by(|a, b| a.x.total_cmp(&b.x))
-            .expect("search box");
+        let at = search_box(h);
         fill(h, at, q);
         key(h, NONE, Key::Enter);
         assert!(wait(h, 30, &|s| !s.tab(0).loading), "{q}");
@@ -2401,6 +2397,136 @@ fn search_tab_with_library_filters() {
     assert!(wait(&mut h, 10, &|s| s.library.tagged.contains_key(&notes)));
     assert_eq!(query(&mut h, "tag:taxes"), ["notes.md"]);
     shot(&mut h, "search-library-tag");
+    close_library(&mut h);
+}
+
+/// The search tab's query box: the topmost text box (the chip row's extension box is
+/// below it).
+fn search_box(h: &H) -> Pos2 {
+    h.query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
+        .map(|n| center_of(&n))
+        .filter(|p| p.x > 150.0)
+        .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
+        .expect("search box")
+}
+
+fn search_text(s: &AppState) -> String {
+    match &s.tab(0).kind {
+        crate::tab::TabKind::Search { query, .. } => query.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Task 57: the filter chips build a library query without the syntax. Kind → Document
+/// and Tag → taxes write `kind:document tag:taxes` and the results follow; a term typed by
+/// hand lights its chip; Tab from the query box reaches the chips and Space toggles one.
+#[test]
+#[ignore]
+fn search_chips_build_the_query() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, _base, _lib) = with_library("chips", &docs, &root.join("Backup"));
+    add_source(&mut h, &docs);
+    let create = crate::library::LibCmd::CreateTag {
+        name: "taxes".into(),
+        color: "#e5484d".into(),
+    };
+    sm(&mut h).run(0, Action::Library(create));
+    let made = |s: &AppState| s.library.tags.iter().any(|t| t.name == "taxes");
+    assert!(wait(&mut h, 10, &made), "tag made");
+    let tag = (s(&h).library.tags.iter())
+        .find(|t| t.name == "taxes")
+        .map(|t| t.id)
+        .unwrap();
+    sm(&mut h).run(1, Action::Navigate(VPath::local(&docs)));
+    assert!(wait(&mut h, 10, &listed));
+    sm(&mut h).tab_mut(1).click("notes.md", false, false);
+    sm(&mut h).run(1, Action::Library(crate::library::LibCmd::TagPicker));
+    sm(&mut h).run(
+        1,
+        Action::Library(crate::library::LibCmd::SetTag { tag, on: true }),
+    );
+    sm(&mut h).library.picker = None;
+    let notes = VPath::local(docs.join("notes.md"));
+    assert!(wait(&mut h, 10, &|s| s.library.tagged.contains_key(&notes)));
+    // Ctrl+F, then Library: the chip row shows under the box (not for the system search).
+    key(&mut h, CMD, Key::F);
+    assert!(s(&h).tab(0).is_search());
+    assert!(!has(&h, "Kind: Document"), "no chips for the system search");
+    let combo = h
+        .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::ComboBox))
+        .map(|n| center_of(&n))
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+        .expect("backend menu");
+    click_at(&mut h, combo, NONE, PointerButton::Primary);
+    click_last(&mut h, "Library");
+    assert!(s(&h).tab(0).library_search);
+    h.run_steps(3);
+    for chip in [
+        "Kind: Document",
+        "Size: Under 1 MB",
+        "Modified: This week",
+        "Only favorites",
+    ] {
+        assert!(has(&h, chip), "{chip}");
+    }
+    assert!(has(&h, "Type: another extension"));
+    // The Type chips come from the index's most common extensions.
+    assert!(wait(&mut h, 10, &|s| s
+        .library
+        .top_ext
+        .first()
+        .is_some_and(|e| e == "pdf")));
+    h.run_steps(3);
+    assert!(has(&h, "Type: pdf"), "{:?}", s(&h).library.top_ext);
+    let settled = |h: &mut H| {
+        assert!(wait(h, 30, &|s| !s.tab(0).loading && s.tab(0).error.is_none()));
+        h.run_steps(5);
+        let mut found = names(s(h), 0);
+        found.sort();
+        found
+    };
+    click(&mut h, "Kind: Document");
+    assert_eq!(search_text(s(&h)), "kind:document");
+    let documents = [
+        "2026-q1.pdf",
+        "2026-q2.pdf",
+        "budget.csv",
+        "letter.docx",
+        "materials.csv",
+        "notes.md",
+        "plan.md",
+        "plants.xlsx",
+        "report.pdf",
+        "todo.txt",
+    ];
+    assert_eq!(settled(&mut h), documents);
+    assert!(checked(&h, "Kind: Document"));
+    click(&mut h, "Tag: taxes");
+    assert_eq!(search_text(s(&h)), "kind:document tag:taxes");
+    assert_eq!(settled(&mut h), ["notes.md"]);
+    assert!(checked(&h, "Tag: taxes") && checked(&h, "Kind: Document"));
+    shot(&mut h, "search-chips");
+    // Clicking a lit chip takes its term out again.
+    click(&mut h, "Kind: Document");
+    assert_eq!(search_text(s(&h)), "tag:taxes");
+    assert!(!checked(&h, "Kind: Document"));
+    // Typed by hand: the chips light from the text.
+    let at = search_box(&h);
+    fill(&mut h, at, "TAG:taxes size:<1MB ext:.MD");
+    key(&mut h, NONE, Key::Enter);
+    assert_eq!(settled(&mut h), ["notes.md"]);
+    for chip in ["Tag: taxes", "Size: Under 1 MB", "Type: md"] {
+        assert!(checked(&h, chip), "{chip}");
+    }
+    assert!(!checked(&h, "Kind: Document") && !checked(&h, "Type: pdf"));
+    // The keyboard: Tab from the query box reaches the first chip, Space toggles it.
+    click_at(&mut h, at, NONE, PointerButton::Primary);
+    key(&mut h, NONE, Key::Tab);
+    key(&mut h, NONE, Key::Space);
+    assert_eq!(search_text(s(&h)), "TAG:taxes size:<1MB ext:.MD kind:image");
+    assert!(settled(&mut h).is_empty());
+    assert!(checked(&h, "Kind: Image"));
     close_library(&mut h);
 }
 

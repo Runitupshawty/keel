@@ -46,14 +46,16 @@ pub fn probe(searcher: &dyn Searcher) -> Option<String> {
 }
 
 /// The query box. Editing schedules the query `DEBOUNCE` later; Enter runs it now;
-/// Up/Down move the result cursor while typing.
+/// Up/Down move the result cursor while typing. With the Library backend the filter chips
+/// (`chip_row`) follow; a chip runs the query now.
 pub fn bar(
     ui: &mut egui::Ui,
     pane: &mut Pane,
     platform: Option<&str>,
-    library: bool,
+    lib: &crate::library::LibraryUi,
     out: &mut Vec<Action>,
 ) {
+    let library = lib.is_open();
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     let (count, busy) = (tab.entries().len(), tab.loading);
@@ -131,6 +133,19 @@ pub fn bar(
             n => format!("{n} results"),
         });
     });
+    if tab.library_search && library {
+        let tags: Vec<String> = lib.tags.iter().map(|t| t.name.clone()).collect();
+        let sources: Vec<String> = lib.sources.iter().map(|s| s.label.clone()).collect();
+        let offer = crate::chip_row::Offer {
+            tags: &tags,
+            sources: &sources,
+            types: &lib.top_ext,
+        };
+        if crate::chip_row::chip_row(ui, query, &offer) {
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+        }
+    }
 }
 
 #[cfg(test)]

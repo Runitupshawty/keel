@@ -42,15 +42,16 @@ pub enum KindFilter {
 }
 
 impl KindFilter {
+    /// The words are `chips::KIND_WORDS` (the filter chips light from the same table).
     fn parse(s: &str) -> Option<KindFilter> {
-        Some(match s.to_ascii_lowercase().as_str() {
-            "file" | "files" => KindFilter::File,
-            "folder" | "folders" | "dir" => KindFilter::Folder,
-            "image" | "images" | "pic" | "picture" => KindFilter::Image,
-            "video" | "videos" => KindFilter::Video,
-            "audio" | "music" => KindFilter::Audio,
-            "doc" | "docs" | "document" | "documents" => KindFilter::Document,
-            "archive" | "archives" | "zip" => KindFilter::Archive,
+        Some(match crate::chips::kind_word(s)? {
+            "file" => KindFilter::File,
+            "folder" => KindFilter::Folder,
+            "image" => KindFilter::Image,
+            "video" => KindFilter::Video,
+            "audio" => KindFilter::Audio,
+            "document" => KindFilter::Document,
+            "archive" => KindFilter::Archive,
             _ => return None,
         })
     }
@@ -177,30 +178,7 @@ impl Default for LibraryQuery {
     }
 }
 
-/// Splits on whitespace outside double quotes.
-fn tokens(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in s.chars() {
-        match c {
-            '"' => {
-                quoted = !quoted;
-                cur.push(c);
-            }
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
+use crate::chips::tokens;
 
 fn unquote(s: &str) -> String {
     s.replace('"', "")
@@ -239,15 +217,43 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The year and month of a day since 1970-01-01 (proleptic Gregorian).
+fn civil_from_days(z: i64) -> (i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m)
+}
+
 /// `[start, end)` in unix seconds of `2026`, `2026-10`, `2026-10-09`, `today`, `yesterday`,
-/// as local dates `offset` seconds east of UTC. Years beyond [`MAX_YEAR`] either way are
+/// `thisweek` (from Monday), `thismonth`, `thisyear`, as local dates `offset` seconds east of UTC. Years beyond [`MAX_YEAR`] either way are
 /// refused.
 fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
     const DAY: i64 = 86_400;
     let today = (now + offset).div_euclid(DAY) * DAY - offset;
+    let day = |y, m, d| days_from_civil(y, m, d) * DAY - offset;
+    let days = (now + offset).div_euclid(DAY);
     match s.to_ascii_lowercase().as_str() {
         "today" => return Some((today, today + DAY)),
         "yesterday" => return Some((today - DAY, today)),
+        "thisweek" => {
+            // 1970-01-01 was a Thursday.
+            let monday = today - (days + 3).rem_euclid(7) * DAY;
+            return Some((monday, monday + 7 * DAY));
+        }
+        "thismonth" => {
+            let (y, m) = civil_from_days(days);
+            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            return Some((day(y, m, 1), day(ny, nm, 1)));
+        }
+        "thisyear" => {
+            let y = civil_from_days(days).0;
+            return Some((day(y, 1, 1), day(y + 1, 1, 1)));
+        }
         _ => {}
     }
     let parts: Vec<i64> = s
@@ -257,7 +263,6 @@ fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
     if !(-MAX_YEAR..=MAX_YEAR).contains(parts.first()?) {
         return None;
     }
-    let day = |y, m, d| days_from_civil(y, m, d) * DAY - offset;
     match parts[..] {
         [y] => Some((day(y, 1, 1), day(y + 1, 1, 1))),
         [y, m] if (1..=12).contains(&m) => {

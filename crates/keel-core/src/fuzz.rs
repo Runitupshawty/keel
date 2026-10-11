@@ -57,9 +57,20 @@ pub fn probe(data: &[u8]) {
     }
 }
 
-/// The library search box: `LibraryQuery::parse` and the SQL it becomes.
+/// The library search box: `LibraryQuery::parse` and the SQL it becomes, and the filter
+/// chips (Task 57): a chip's click turns it on or off whatever the text around it.
 pub fn query(data: &[u8]) {
     let text = String::from_utf8_lossy(data);
+    let mut chips = crate::chips::Chip::kinds();
+    chips.extend(crate::chips::Chip::sizes());
+    chips.push(crate::chips::Chip::favorites());
+    chips.extend(crate::chips::Chip::ext("pdf"));
+    chips.extend(crate::chips::Chip::tag("two words"));
+    for c in &chips {
+        let on = crate::chips::is_on(&text, c);
+        assert_ne!(crate::chips::is_on(&crate::chips::toggle(&text, c), c), on);
+    }
+    let _ = crate::chips::values(&text, crate::chips::Group::Type);
     for offset in [0, -36_000, 50_400] {
         if let Ok(q) = crate::search::LibraryQuery::parse_at(&text, 1_760_000_000, offset) {
             let _ = q.filters();

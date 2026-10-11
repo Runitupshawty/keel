@@ -35,6 +35,9 @@ pub const RECENTS_QUERY: &str = "is:recent";
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Sources, stats and tags are refreshed this often (stats every `STATS_EVERY`).
 const META_EVERY: Duration = Duration::from_secs(30);
+/// Files read for the Type chips' extensions (the newest of each source first).
+// ponytail: a sample, not every file; a GROUP BY over the stores if suggestions look off.
+const TOP_EXT_FILES: usize = 20_000;
 const STATS_EVERY: Duration = Duration::from_secs(5);
 const STATUS_EVERY: Duration = Duration::from_secs(60);
 /// A watcher that could not start (source offline) is tried again after this long.
@@ -288,6 +291,8 @@ pub enum LibMsg {
         views: Vec<View>,
         tagged: HashMap<VPath, Vec<TagId>>,
     },
+    /// Task 57: the Type chips' extensions.
+    TopExt(Vec<String>),
     Watching(SourceId, Option<WatchHandle>),
     /// A job this app started (index, hash, operation); None: it failed to start.
     Spawned {
@@ -808,6 +813,9 @@ pub struct LibraryUi {
     pub sources: Vec<SourceSummary>,
     pub stats: LibraryStats,
     pub tags: Vec<Tag>,
+    /// Task 57: the most common extensions of the newest indexed files (the search tab's
+    /// Type chips).
+    pub top_ext: Vec<String>,
     pub views: Vec<View>,
     /// Tags (Favorites included) by real path.
     pub tagged: HashMap<VPath, Vec<TagId>>,
@@ -890,6 +898,7 @@ impl LibraryUi {
             sources: Vec::new(),
             stats: LibraryStats::default(),
             tags: Vec::new(),
+            top_ext: Vec::new(),
             views: Vec::new(),
             tagged: HashMap::new(),
             jobs: BTreeMap::new(),
@@ -984,6 +993,7 @@ impl LibraryUi {
         self.jobs.clear();
         self.tagged.clear();
         self.tags.clear();
+        self.top_ext.clear();
         self.views.clear();
         let handles = std::mem::take(&mut self.watchers)
             .into_values()
@@ -1067,6 +1077,23 @@ impl LibraryUi {
             Err(e) => {
                 tracing::warn!("library tags: {e:#}");
                 None
+            }
+        });
+    }
+
+    /// Task 57: the most common extensions among the newest `TOP_EXT_FILES` indexed files,
+    /// for the search tab's Type chips (read when the library opens and after indexing).
+    fn refresh_top_ext(&mut self) {
+        self.spawn("keel-library-types", |b| {
+            match b.file_names(TOP_EXT_FILES) {
+                Ok((names, _)) => Some(LibMsg::TopExt(keel_core::chips::top_extensions(
+                    names.iter().map(String::as_str),
+                    8,
+                ))),
+                Err(e) => {
+                    tracing::warn!("library extensions: {e:#}");
+                    None
+                }
             }
         });
     }
@@ -1507,6 +1534,7 @@ impl AppState {
                         l.refresh_meta();
                         l.refresh_stats();
                         l.refresh_dups();
+                        l.refresh_top_ext();
                         l.refresh_libraries();
                         self.library.policy = self.settings.library.hashing;
                         // The library's remote policy wins over settings.toml (a client's
@@ -1587,6 +1615,7 @@ impl AppState {
                 l.views = views;
                 l.tagged = tagged;
             }
+            LibMsg::TopExt(top) => l.top_ext = top,
             LibMsg::Watching(id, handle) => {
                 let known = l.sources.iter().any(|s| s.id == id) && l.lib.is_some();
                 match handle {
@@ -1799,6 +1828,7 @@ impl AppState {
             l.refresh_meta();
             l.refresh_stats();
             if ended.iter().any(|k| k == "index") {
+                l.refresh_top_ext();
                 l.start_hashing();
                 l.start_media(); // Task 32
             } else if l.media_again && ended.iter().any(|k| k == "sidecar") {

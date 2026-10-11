@@ -56,6 +56,9 @@ enum Want {
     },
     /// The query.
     Search(String),
+    /// The filter chips' tags and extensions.
+    Tags,
+    Types,
     Plan,
     Execute,
     Job,
@@ -135,6 +138,9 @@ enum Act {
     },
 }
 
+/// Files read for the Type chips' extensions (fewer than the desktop's: a phone's link).
+const CHIP_FILES: usize = 2_000;
+
 pub struct WebApp {
     conn: Conn<Socket>,
     events: Events,
@@ -175,6 +181,11 @@ pub struct WebApp {
     hits: Vec<Hit>,
     /// The query `hits` answer.
     searched: Option<String>,
+    /// Task 57: the filter chips' tags and most common extensions (asked for when the
+    /// search page shows, again after a library change).
+    chip_tags: Vec<String>,
+    chip_types: Vec<String>,
+    chips_asked: bool,
     // phone
     grid: bool,
     tile: f32,
@@ -328,6 +339,9 @@ impl WebApp {
             query: String::new(),
             hits: Vec::new(),
             searched: None,
+            chip_tags: Vec::new(),
+            chip_types: Vec::new(),
+            chips_asked: false,
             grid: false,
             tile: 128.0,
             thumbs: HashMap::new(),
@@ -540,6 +554,17 @@ impl WebApp {
                     self.per_source = stats.per_source;
                 }
             }
+            Want::Tags => {
+                if let Ok(tags) = parse::<Vec<TagInfo>>(r.result) {
+                    self.chip_tags = tags.into_iter().map(|t| t.name).collect();
+                }
+            }
+            Want::Types => {
+                if let Ok(names) = parse::<FileNames>(r.result) {
+                    let paths = names.paths.iter().map(String::as_str);
+                    self.chip_types = crate::chips::top_extensions(paths, 8);
+                }
+            }
             Want::Devices => self.devices = parse(r.result),
             Want::Inbox => self.inbox = parse(r.result),
             Want::Jobs => {
@@ -677,7 +702,10 @@ impl WebApp {
 
     fn on_note(&mut self, method: &str, params: &Value) {
         match method {
-            "library.changed" => self.changes.add(crate::refresh::of(params), web::now()),
+            "library.changed" => {
+                self.chips_asked = false;
+                self.changes.add(crate::refresh::of(params), web::now())
+            }
             "job.progress" => {
                 let now = web::now();
                 if now - self.jobs_asked > 1.0 {
@@ -1645,6 +1673,21 @@ impl WebApp {
                 act = Some(Act::Search(self.query.clone()));
             }
         });
+        // Task 57: the filter chips, as on the desktop (the daemon parses the same terms).
+        if !self.chips_asked {
+            self.chips_asked = true;
+            self.call("tags.list", json!({}), Want::Tags);
+            self.call("files.names", json!({ "max": CHIP_FILES }), Want::Types);
+        }
+        let sources: Vec<String> = self.sources.iter().map(|s| s.label.clone()).collect();
+        let offer = crate::chip_row::Offer {
+            tags: &self.chip_tags,
+            sources: &sources,
+            types: &self.chip_types,
+        };
+        if crate::chip_row::chip_row(ui, &mut self.query, &offer) {
+            act = Some(Act::Search(self.query.clone()));
+        }
         let phone = self.screen.phone();
         let out = egui::ScrollArea::vertical()
             .auto_shrink(false)

@@ -8,6 +8,7 @@ mod anim;
 mod app;
 mod backend; // the library in-process or in keel-daemon
 mod bulk_rename;
+mod chip_row; // Task 57: library search filter chips (keel-web includes it by path)
 mod clipboard;
 mod clouds;
 mod color_theme; // Task 47: VS Code color themes
@@ -71,6 +72,8 @@ mod index_ui;
 mod single_instance;
 // --- end Task 24 ---
 
+// `crate::chips` for `chip_row` (keel-web has its own copy of the module at that path).
+use keel_core::chips;
 use keel_vfs::VPath;
 use session::Session;
 use settings::Settings;

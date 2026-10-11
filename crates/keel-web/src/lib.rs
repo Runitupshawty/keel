@@ -8,6 +8,10 @@
 //! the share-sheet flow, what a library change reads again and the display helpers build
 //! and are tested on every target; the UI and the browser glue only on wasm32.
 
+/// keel-core's filter chips (Task 57), shared by path: the same terms the daemon's
+/// `search` parses.
+#[path = "../../keel-core/src/chips.rs"]
+pub mod chips;
 pub mod conn;
 pub mod gesture;
 pub mod guard;
@@ -22,6 +26,10 @@ pub mod util;
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+/// keel-app's filter chip row, shared by path.
+#[cfg(target_arch = "wasm32")]
+#[path = "../../keel-app/src/chip_row.rs"]
+mod chip_row;
 /// `window.__keel` for tests/web-e2e: only with the `e2e` feature and `?e2e=1`.
 #[cfg(all(target_arch = "wasm32", feature = "e2e"))]
 mod e2e;

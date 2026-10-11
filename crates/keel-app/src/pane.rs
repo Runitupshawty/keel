@@ -211,7 +211,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     let search = pane.tab().is_search();
     if search {
-        crate::search_tab::bar(ui, pane, cx.searcher, cx.library.is_open(), out);
+        crate::search_tab::bar(ui, pane, cx.searcher, cx.library, out);
     } else {
         nav_bar(ui, pane, out);
         filter_bar(ui, pane, out);
