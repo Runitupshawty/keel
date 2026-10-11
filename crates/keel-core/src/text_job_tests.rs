@@ -547,3 +547,31 @@ fn filters_do_not_starve_content_hits() {
     assert_eq!(hits("content:invoice ext:md"), 5);
     assert_eq!(hits("content:invoice size:<20"), 5);
 }
+
+/// Review of 0.22.0, M3: a drive letter mapped to a share is a local path, so only its
+/// volume's type tells it apart: such a root is not read by default (the volume faked as a
+/// network one here), until its switch is turned on. A local folder's volume is not one.
+#[test]
+fn a_root_on_a_network_volume_is_not_read_by_default() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("a.txt"), "walrus");
+    let lib = Library::open(data.path(), "t").unwrap();
+    lib.set_pause_on_battery(false);
+    lib.set_hash_after_walk(false);
+    lib.set_text_extractor(extractor());
+    let id = lib.add_source(folder("mapped", files.path())).unwrap();
+    let src = lib.source(&id).unwrap();
+    src.network.set(true).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(lib.source_contents(&id).unwrap(), (None, false));
+    assert_eq!(lib.index_text(&id).unwrap(), None);
+    lib.set_source_contents(&id, Some(true)).unwrap();
+    eventually("read", || rows(&lib, &id) == 1);
+    eventually("job ended", || lib.shared.text_jobs.lock().is_empty());
+
+    let local = tempfile::tempdir().unwrap();
+    let id = lib.add_source(folder("local", local.path())).unwrap();
+    assert_eq!(lib.source_contents(&id).unwrap(), (None, true));
+    assert_eq!(lib.source(&id).unwrap().network.get(), Some(&false));
+}

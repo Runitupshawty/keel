@@ -144,6 +144,9 @@ pub struct Source {
     pub(crate) volume_id: RwLock<Option<String>>,
     /// Task 62: the source's **Index file contents** switch (None: by its kind).
     pub(crate) contents: RwLock<Option<bool>>,
+    /// Whether the root's volume is a network one (a drive letter mapped to a share), once
+    /// the volume could be told (`text_job::default_on`).
+    pub(crate) network: std::sync::OnceLock<bool>,
     /// The library's sources (this one included), for checks across sources.
     peers: Weak<RwLock<Vec<Arc<Source>>>>,
     dir: PathBuf,
@@ -188,6 +191,7 @@ impl Source {
             held: RwLock::new(held),
             volume_id: RwLock::new(volume_id),
             contents: RwLock::new(contents),
+            network: std::sync::OnceLock::new(),
             peers,
             dir,
         })

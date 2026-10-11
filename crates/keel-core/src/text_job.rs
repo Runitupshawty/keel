@@ -144,14 +144,29 @@ pub(crate) fn counts(src: &Source) -> Result<TextCounts> {
     )?)
 }
 
-/// Whether `src` is read by default: a local folder or drive (not a network share).
+/// Whether `src` is read by default: a local folder or drive, not a network share (a UNC
+/// path, a share source, or a drive mapped to a share: its volume's type).
 pub(crate) fn default_on(src: &Source) -> bool {
-    let unc =
-        (src.def.root.to_local_path()).is_some_and(|p| p.to_string_lossy().starts_with(r"\\"));
-    src.def.root.to_local_path().is_some()
-        && !unc
+    let Some(root) = src.def.root.to_local_path() else {
+        return false;
+    };
+    !root.to_string_lossy().starts_with(r"\\")
         && src.def.kind != SourceKind::Share
         && !src.is_device()
+        && !on_network(src, &root)
+}
+
+/// Whether `src`'s root is on a network volume, asked once the volume can be told (an
+/// unplugged drive is not, until it is seen: its text stays searchable, and nothing is
+/// read from a root that is not there).
+fn on_network(src: &Source, root: &Path) -> bool {
+    if let Some(n) = src.network.get() {
+        return *n;
+    }
+    keel_vfs::volume_info(root).is_some_and(|v| {
+        *src.network
+            .get_or_init(|| v.kind == keel_vfs::VolumeType::Network)
+    })
 }
 
 /// Whether the text of `src`'s documents is read and searched now.
