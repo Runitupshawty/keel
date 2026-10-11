@@ -468,3 +468,51 @@ fn snippets_are_one_line_and_bounded() {
     );
     assert!(s.text.contains("narwhal"));
 }
+
+/// Review of 0.22.0, B1/B2: a reader that takes the process down (an abort no panic hook
+/// sees) leaves the record it was reading in the store's meta; the next run marks that
+/// record failed instead of reading it again at every start, until the file changes.
+#[test]
+fn a_record_whose_reader_took_the_process_down_is_not_read_again() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let f = files.path();
+    write(&f.join("boom.txt"), "crater");
+    write(&f.join("fine.txt"), "meadow");
+    let (lib, id) = library(data.path(), f);
+    let src = lib.source(&id).unwrap();
+    let boom: i64 = (src.store.get().unwrap())
+        .query_row("SELECT id FROM record WHERE name = 'boom.txt'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // As the store is left when the process dies while a reader has boom.txt open.
+    src.store.set_meta(READING, &boom.to_string()).unwrap();
+    let info = run(&lib, &id);
+    assert!(
+        info.log
+            .contains("boom.txt: the program stopped while reading it"),
+        "{}",
+        info.log
+    );
+    assert!(info.log.contains("1 failed"), "{}", info.log);
+    assert_eq!(names(&lib, "meadow"), ["fine.txt"]);
+    assert!(names(&lib, "crater").is_empty(), "never read again");
+    assert_eq!(src.store.meta(READING).unwrap(), None);
+    assert_eq!(lib.index_text(&id).unwrap(), None, "nothing left to read");
+    // Changed: read again, and the marker is gone after a normal read.
+    std::thread::sleep(Duration::from_millis(20));
+    write(&f.join("boom.txt"), "crater again");
+    walk(&src, &lib.router()).unwrap();
+    run(&lib, &id);
+    assert_eq!(names(&lib, "crater"), ["boom.txt"]);
+    assert_eq!(src.store.meta(READING).unwrap(), None);
+    // A marker naming no record is dropped.
+    src.store.set_meta(READING, "999999").unwrap();
+    write(&f.join("new.txt"), "lagoon");
+    walk(&src, &lib.router()).unwrap();
+    let info = run(&lib, &id);
+    assert!(info.log.contains("0 failed"), "{}", info.log);
+    assert_eq!(names(&lib, "lagoon"), ["new.txt"]);
+    assert_eq!(src.store.meta(READING).unwrap(), None);
+}

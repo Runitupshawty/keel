@@ -23,7 +23,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Security
 
-- A crafted Word document (tables nested thousands deep), `.xlsb` workbook (one cell at the far corner of a sheet) or `.xlsx` workbook (a count of strings no file holds) crashed Keel or keel-daemon when it was previewed, and the text job would have read it unattended after every start. A Word document nesting tables more than 64 deep (or any markup more than 256 deep) is now refused as damaged, `.xlsb` sheets are read cell by cell like `.xlsx`, and an impossible string count is refused.
+- A crafted Word document (tables nested thousands deep), `.xlsb` workbook (one cell at the far corner of a sheet) or `.xlsx` workbook (a count of strings no file holds) crashed Keel or keel-daemon when it was previewed, and the text job would have read it unattended after every start. A Word document nesting tables more than 64 deep (or any markup more than 256 deep) is now refused as damaged, `.xlsb` sheets are read cell by cell like `.xlsx`, and an impossible string count is refused. Should a document's reader still take Keel or keel-daemon down, the text job marks that document failed at the next start instead of reading it again (and crashing again) at every start.
 - A Word, Excel, PowerPoint or OpenDocument file whose zip directory understates its parts' sizes could inflate far past the 64 MiB limit while previewed or read for its text (hundreds of megabytes from a file under 1 MB). Every part is now inflated through that limit before the Word and Excel readers see it.
 
 ### Known limitations

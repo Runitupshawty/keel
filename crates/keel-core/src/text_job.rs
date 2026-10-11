@@ -4,7 +4,10 @@
 //! priority, pausing on battery and for 5 s after user activity like hashing, with
 //! checkpoints a restart resumes from. A record is read again when its size or modified
 //! time changed. Each read is bounded (`TextCaps`): too big is skipped unread, and an
-//! extraction past its time is abandoned on its helper thread (the record fails).
+//! extraction past its time is abandoned on its helper thread (the record fails). The
+//! record being read is noted in the store first: if a reader takes the process down (an
+//! abort no panic hook sees), the next run marks that record failed instead of reading it
+//! again at every start.
 //!
 //! **Index file contents** (`Library::set_index_contents`, on by default) and the
 //! per-source switch (`Library::set_source_contents`): local folders and drives are read
@@ -96,6 +99,11 @@ const MAX_ABANDONED: usize = 3;
 const SETTING: &str = "index_contents";
 /// Source store meta key of the per-source switch ("1" on, "0" off; absent: by kind).
 const SOURCE_SETTING: &str = "index_contents";
+/// Source store meta key: the record whose document a reader has open now. A reader that
+/// takes the process down (a stack overflow or a failed allocation aborts it, and no panic
+/// hook sees that) leaves it behind: the next run marks that record failed instead of
+/// reading it again at every start.
+const READING: &str = "text_reading";
 
 /// The text counts of a source, or summed over the library (`LibraryStats::text`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,11 +196,12 @@ fn pending_sql(extensions: &[&str]) -> String {
 pub(crate) fn clear(src: &Source) -> Result<()> {
     let mut c = src.store.get()?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute_batch(
+    tx.execute_batch(&format!(
         "INSERT INTO record_content(record_content) VALUES ('delete-all');
          DELETE FROM record_text_body;
-         DELETE FROM record_text;",
-    )?;
+         DELETE FROM record_text;
+         DELETE FROM meta WHERE key = '{READING}';"
+    ))?;
     tx.commit()?;
     Ok(())
 }
@@ -405,7 +414,7 @@ impl TextJob {
                     TextOutcome::Failed(_) => {}
                 }
                 if contents_on(lib, src) {
-                    save_retrying(ctx, src, &rec, outcome)?;
+                    retrying(ctx, || save(src, &rec, outcome.clone()))?;
                 }
                 self.after = rec.id;
                 self.done += 1;
@@ -446,6 +455,8 @@ fn read(
             Err(e) => return Ok(TextOutcome::Failed(short(&format!("{e:#}")))),
         },
     };
+    // Cleared by `save`; left behind only when the reader takes the process down.
+    retrying(ctx, || src.store.set_meta(READING, &rec.id.to_string()))?;
     let (tx, rx) = crossbeam_channel::bounded(1);
     // Set by whichever comes first: the reader ending, or the job giving up on it.
     let settled = Arc::new(AtomicBool::new(false));
@@ -536,9 +547,9 @@ fn short(why: &str) -> String {
     s
 }
 
-/// `save`, again after a pause while the store stays busy past its 5 s timeout (a walk
+/// A write, again after a pause while the store stays busy past its 5 s timeout (a walk
 /// or another job writing a big batch on a loaded machine), up to 3 times.
-fn save_retrying(ctx: &JobCtx, src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
+fn retrying(ctx: &JobCtx, mut write: impl FnMut() -> Result<()>) -> Result<()> {
     let busy = |e: &anyhow::Error| {
         e.chain().any(|c| {
             matches!(c.downcast_ref::<rusqlite::Error>(),
@@ -549,7 +560,7 @@ fn save_retrying(ctx: &JobCtx, src: &Source, rec: &Pending, outcome: TextOutcome
     };
     let mut tries = 0;
     loop {
-        match save(src, rec, outcome.clone()) {
+        match write() {
             Err(e) if busy(&e) && tries < 3 && !ctx.stopping() => {
                 tries += 1;
                 std::thread::sleep(Duration::from_secs(1));
@@ -564,6 +575,7 @@ fn save_retrying(ctx: &JobCtx, src: &Source, rec: &Pending, outcome: TextOutcome
 fn save(src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
     let mut c = src.store.get()?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM meta WHERE key = ?1", [READING])?;
     let old: Option<String> = tx
         .query_row(
             "SELECT text FROM record_text_body WHERE record = ?1",
@@ -613,6 +625,41 @@ fn save(src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
     Ok(())
 }
 
+/// The record a reader had open when the program last stopped (`READING`), saved as
+/// failed with its size and time so it is not read again until it changes. Its path.
+fn crashed(src: &Source) -> Result<Option<String>> {
+    let Some(id) = src.store.meta(READING)? else {
+        return Ok(None);
+    };
+    let rec = src
+        .store
+        .get()?
+        .query_row(
+            "SELECT id, path, name, size, mtime FROM record WHERE id = ?1",
+            [id.parse::<i64>().unwrap_or(-1)],
+            |r| {
+                Ok(Pending {
+                    id: r.get(0)?,
+                    path: r.get(1)?,
+                    name: r.get(2)?,
+                    size: r.get::<_, i64>(3)? as u64,
+                    mtime: r.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    match rec {
+        Some(rec) => {
+            save(src, &rec, TextOutcome::Failed(String::new()))?;
+            Ok(Some(rec.path))
+        }
+        None => {
+            (src.store.get()?).execute("DELETE FROM meta WHERE key = ?1", [READING])?;
+            Ok(None)
+        }
+    }
+}
+
 impl Job for TextJob {
     fn kind(&self) -> &'static str {
         Self::KIND
@@ -639,6 +686,12 @@ impl Job for TextJob {
             .entry(src.id.clone())
             .or_insert(false);
         let mut claim = Claim(&ctx.lib, Some(src.id.clone()));
+        if let Some(path) = crashed(&src)? {
+            self.failed += 1;
+            ctx.log(&format!(
+                "{path}: the program stopped while reading it; not read again until it changes"
+            ))?;
+        }
         loop {
             match self.round(ctx, &src, &x) {
                 Err(e) if e.is::<Stuck>() => {
