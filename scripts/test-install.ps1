@@ -106,6 +106,28 @@ try {
     if ((Get-Content $log) -ne 'daemon start') { throw "ran '$(Get-Content $log)'" }
     if ($said -notlike '*keel --profile <name> daemon start*') { throw "said '$said'" }
   }
+  Check 'update: Stop-Keel stops the programs of the install, and only those' {
+    # Two stand-ins named keel.exe (ping, kept busy): one in the install, one elsewhere.
+    $ping = Join-Path $env:SystemRoot 'System32\PING.EXE'
+    $run = foreach ($name in 'inst', 'other') {
+      $d = Join-Path $dir $name
+      New-Item -ItemType Directory $d | Out-Null
+      Copy-Item $ping (Join-Path $d 'keel.exe')
+      Start-Process (Join-Path $d 'keel.exe') '-n 120 127.0.0.1' -PassThru -WindowStyle Hidden
+    }
+    $saved = $script:InstallDir
+    try {
+      # The folder as Windows reports the running program (a temp path may be 8.3).
+      $script:InstallDir = Split-Path (Get-Process -Id $run[0].Id).Path
+      Stop-Keel
+      if (-not $run[0].HasExited) { throw "the install's keel still runs" }
+      if ($run[1].HasExited) { throw 'a keel outside the install was stopped' }
+    } finally {
+      $script:InstallDir = $saved
+      $run | Stop-Process -Force -ErrorAction SilentlyContinue
+      $run | ForEach-Object { try { [void]$_.WaitForExit(5000) } catch {} }
+    }
+  }
 } finally {
   Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -30,6 +30,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The agent skill said nothing changes without a preview: it now lists the operations that act at once (`shares.revoke`, `library.sync`, `recents.note`, `activity.note`) for the agent to ask about first, the `deletes_permanent` warning and error -32007. `library.sync` is marked as changing the library in `keel op list` and `keel mcp`.
 - The inspector read every copy of a file and every operation log entry for each selection: a file with 100,000 identical copies took seconds even with `max: 1`. It now counts the copies in the index, reads only as many as it shows, and parses only the log entries that name the item.
 - `keel execute` of a library backup or restore preview through keel-daemon gave up after 2 minutes while the backup still ran; it now waits as long as `keel library backup` does.
+- Updating Keel: `install.ps1` waited up to 15 seconds for each running Keel program in turn, so several daemons could hold an update for minutes; it waits 15 seconds for all of them. `install.sh` went on to replace the files under a daemon that had not stopped after 15 seconds; it now kills it first.
 
 ### Security
 

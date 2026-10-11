@@ -103,6 +103,11 @@ stop_daemons() {
     pkill -f "$1/keel-daemon" >/dev/null 2>&1 || true
     # Wait until they are gone: a daemon still unmounting or flushing keeps its files busy.
     for _ in $(seq 1 75); do pgrep -f "$1/keel-daemon" >/dev/null 2>&1 || break; sleep 0.2; done
+    # Still there after 15 s: killed, so the files can be replaced.
+    if pgrep -f "$1/keel-daemon" >/dev/null 2>&1; then
+      pkill -KILL -f "$1/keel-daemon" >/dev/null 2>&1 || true
+      sleep 0.5
+    fi
     echo 1
   else
     echo 0

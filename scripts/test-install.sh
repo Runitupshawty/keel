@@ -147,7 +147,8 @@ check "codesign: partly signed is refused" 2 mac_signed "$t/mac/keel" "$t/mac/ke
 mkdir "$t/share"
 CALLS="$t/calls"; export CALLS
 printf '#!/usr/bin/env bash\necho "keel $*" >> "$CALLS"\n' > "$t/share/keel"
-printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"; exit "${FAKE_PGREP:-0}"\n' > "$t/fake/pgrep"
+# The fake daemon is gone once pkill ran, as a real one is.
+printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nif grep -q "^pkill" "$CALLS"; then exit 1; fi\nexit "${FAKE_PGREP:-0}"\n' > "$t/fake/pgrep"
 printf '#!/usr/bin/env bash\necho "pkill $*" >> "$CALLS"\n' > "$t/fake/pkill"
 chmod +x "$t/share/keel" "$t/fake/pgrep" "$t/fake/pkill"
 : > "$CALLS"
@@ -155,6 +156,8 @@ ran="$(stop_daemons "$t/share")"
 if [ "$ran" = 1 ] && grep -qx "keel daemon stop" "$CALLS" && grep -qx "pkill -f $t/share/keel-daemon" "$CALLS"; then
   ok "update: every daemon of the install stops (other profiles' too)"
 else fail "update: stop said $ran: $(cat "$CALLS")"; fi
+if ! grep -q "pkill -KILL" "$CALLS"; then ok "update: a daemon that stops in time is not killed"
+else fail "update: killed one that stopped: $(cat "$CALLS")"; fi
 : > "$CALLS"
 check "update: the default profile's daemon starts again" 0 restart_daemon "$t/share"
 said "keel --profile <name> daemon start"
