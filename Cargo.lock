@@ -4952,6 +4952,7 @@ dependencies = [
  "docx-rs",
  "encoding_rs",
  "image",
+ "keel-core",
  "keel-vfs",
  "pdfium-render",
  "pulldown-cmark",

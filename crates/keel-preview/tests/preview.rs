@@ -720,3 +720,40 @@ fn gif_frame_larger_than_its_screen_is_refused() {
         Preview::Error(_)
     ));
 }
+
+fn has_ffmpeg() -> bool {
+    let found = keel_core::find_tool("ffmpeg").is_some();
+    if !found {
+        eprintln!("skipping: ffmpeg is missing");
+    }
+    found
+}
+
+/// HEIC and AVIF photos (committed synthetic fixtures) preview through ffmpeg, upright and
+/// within the fit box.
+#[test]
+fn heic_and_avif_preview_through_ffmpeg() {
+    if !has_ffmpeg() {
+        return;
+    }
+    for (name, w, h) in [
+        ("pattern.heic", 32, 24),
+        ("pattern.avif", 32, 24),
+        ("pattern-rot90.heic", 24, 32),
+    ] {
+        let mut req = request(name);
+        req.max_px = 32;
+        let result = preview(&req);
+        let Preview::Image(image) = result else {
+            panic!("{name}: expected an image, got {result:?}");
+        };
+        assert_eq!((image.w, image.h), (w, h), "{name}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.heic");
+    std::fs::write(&bad, b"not a photo").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "heic", 64)),
+        Preview::Error(_)
+    ));
+}

@@ -118,7 +118,7 @@ fn thumbnails_apply_exif_orientation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("photo.jpg");
     exif_jpeg(&path);
-    let img = decode_image(&path).unwrap();
+    let img = decode_image(&path, u32::MAX).unwrap();
     assert_eq!((img.width(), img.height()), (20, 40));
     // Orientation 6 (rotate 90 degrees clockwise): the left (red) half ends up on top.
     let [r, _, b] = rgb(&img, 10, 5);
@@ -194,7 +194,7 @@ fn tiff_orientation_comes_from_the_header_in_either_byte_order() {
         let meta = read_meta(&path).unwrap();
         assert_eq!(meta.orientation, 6);
         assert_eq!((meta.width, meta.height), (20, 40), "as displayed");
-        let img = decode_image(&path).unwrap();
+        let img = decode_image(&path, u32::MAX).unwrap();
         assert_eq!((img.width(), img.height()), (20, 40));
         // Rotated 90 degrees clockwise: the left (red) half ends up on top.
         let [r, _, b] = rgb(&img, 10, 5);
@@ -363,4 +363,70 @@ fn video_meta_thumb_and_strip() {
     std::fs::write(&bad, b"not a video at all").unwrap();
     assert!(is_corrupt(&read_meta(&bad).unwrap_err()));
     assert!(is_corrupt(&thumbnail(&bad, 256).unwrap_err()));
+}
+
+#[test]
+fn ffmpeg_version_lines() {
+    let major = parse_ffmpeg_major;
+    assert_eq!(
+        major("ffmpeg version 6.1.1-3ubuntu5 Copyright (c)"),
+        Some(6)
+    );
+    assert_eq!(major("ffmpeg version n7.1 Copyright"), Some(7));
+    assert_eq!(
+        major("ffmpeg version 9.0.1-full_build-www.gyan.dev"),
+        Some(9)
+    );
+    assert_eq!(
+        major("ffmpeg version N-113000-g1234abcd"),
+        None,
+        "git build"
+    );
+    assert_eq!(major("something else"), None);
+}
+
+/// A committed synthetic photo (keel-preview's fixtures, made as their README says).
+pub(crate) fn photo_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../keel-preview/tests/fixtures")
+        .join(name)
+}
+
+/// HEIC (also with an `irot` quarter turn) and AVIF decode through ffmpeg, scaled to the
+/// asked size and upright. Skipped without ffmpeg.
+#[test]
+fn heic_and_avif_decode_through_ffmpeg() {
+    if find_tool("ffmpeg").is_none() {
+        eprintln!("ffmpeg not found: skipped");
+        return;
+    }
+    for name in ["pattern.heic", "pattern.avif"] {
+        let img = decode_image(&photo_fixture(name), 1024).unwrap();
+        assert_eq!(
+            (img.width(), img.height()),
+            (64, 48),
+            "{name}: never enlarged"
+        );
+        let [r, _, b] = rgb(&img, 4, 40);
+        assert!(r > 150 && b < 100, "{name}: red on the left");
+        let [_, g, _] = rgb(&img, 32, 4);
+        assert!(g > 150, "{name}: green on top");
+        let small = decode_image(&photo_fixture(name), 32).unwrap();
+        assert_eq!((small.width(), small.height()), (32, 24), "{name}");
+    }
+    let turned = decode_image(&photo_fixture("pattern-rot90.heic"), 1024).unwrap();
+    assert_eq!((turned.width(), turned.height()), (48, 64));
+    let [_, g, _] = rgb(&turned, 44, 32);
+    assert!(
+        g > 150,
+        "the green band is on the right after a quarter turn"
+    );
+    let thumb =
+        image::load_from_memory(&thumbnail(&photo_fixture("pattern.heic"), 32).unwrap()).unwrap();
+    assert_eq!((thumb.width(), thumb.height()), (32, 24));
+
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.heic");
+    std::fs::write(&bad, b"not a photo").unwrap();
+    assert!(is_corrupt(&decode_image(&bad, 64).unwrap_err()));
 }

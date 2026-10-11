@@ -4,14 +4,24 @@ use resvg::usvg::{fontdb, Options, Tree};
 use std::sync::{Arc, OnceLock};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
+/// Photos keel-core converts (`keel_core::decode_image`): HEIC, HEIF and AVIF through ffmpeg.
+const CONVERTED: &[&str] = &["heic", "heif", "avif"];
+const NEEDS_FFMPEG: &str = "Install ffmpeg to see HEIC and AVIF photos";
 
 pub(crate) fn accepts(ext: &str) -> bool {
-    IMAGE_EXTENSIONS.contains(&ext)
+    IMAGE_EXTENSIONS.contains(&ext) || CONVERTED.contains(&ext)
 }
 
 pub(crate) fn render(req: &Request, ext: &str) -> Preview {
     let result = if ext == "svg" {
         render_svg(req)
+    } else if CONVERTED.contains(&ext) {
+        // keel-core picks the decoder by the extension (local copies keep the file name).
+        match keel_core::decode_image(&req.bytes_path, req.max_px.max(1)) {
+            Ok(image) => Ok(downscale(image, req.max_px)),
+            Err(e) if e.is::<keel_core::NeedsFfmpeg>() => return Preview::Missing(NEEDS_FFMPEG),
+            Err(e) => Err(format!("{e:#}")),
+        }
     } else {
         decode(&req.bytes_path).map(|image| downscale(image, req.max_px))
     };

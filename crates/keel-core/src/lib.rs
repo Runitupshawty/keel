@@ -51,8 +51,8 @@ pub use library::{
     SourceId, SourceKind, SourceStats, SourceStatus, SourceSummary, StoreUsage,
 };
 pub use media::{
-    ffmpeg_available, ffprobe_json, find_tool, parse_probe, read_meta, MediaMeta, TimedOutAt,
-    MAX_PIXELS,
+    decode_image, ffmpeg_available, ffprobe_json, find_tool, is_converted_photo, parse_probe,
+    read_meta, MediaMeta, NeedsFfmpeg, TimedOutAt, MAX_PIXELS, STILL_MIN_FFMPEG,
 };
 pub use oplog::{OpDone, OpLogEntry};
 pub use plan::{

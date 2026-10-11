@@ -148,10 +148,25 @@ pub fn read_meta(path: &Path) -> Result<MediaMeta> {
     }
 }
 
-fn is_heif(path: &Path) -> bool {
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("heic") || e.eq_ignore_ascii_case("heif"))
+        .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+fn is_heif(path: &Path) -> bool {
+    has_ext(path, &["heic", "heif"])
+}
+
+/// AVIF: decoded by ffmpeg (the `image` crate's AVIF decoder needs dav1d, a C library).
+fn is_avif(path: &Path) -> bool {
+    has_ext(path, &["avif"])
+}
+
+/// Photos the `image` crate cannot open, which [`decode_image`] converts: HEIC and HEIF
+/// (ffmpeg, or libheif with feature `heic`) and AVIF (ffmpeg).
+pub fn is_converted_photo(path: &Path) -> bool {
+    is_heif(path) || is_avif(path)
 }
 
 fn image_meta(path: &Path) -> Result<MediaMeta> {
@@ -611,31 +626,110 @@ fn iso6709(s: &str) -> Option<(f64, f64)> {
     }
 }
 
-/// Decodes an image with its EXIF orientation applied, refusing ones over [`MAX_PIXELS`].
-pub(crate) fn decode_image(path: &Path) -> Result<DynamicImage> {
+/// Decodes an image with its orientation applied, refusing ones over [`MAX_PIXELS`]. The
+/// [converted](is_converted_photo) kinds come at most `max` px on the longer side (ffmpeg
+/// scales them); the others come full size.
+pub fn decode_image(path: &Path, max: u32) -> Result<DynamicImage> {
     if is_heif(path) {
-        return decode_heif(path);
+        return decode_heif(path, max);
     }
-    let (w, h) = ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-        .map_err(image_error)?;
+    if is_avif(path) {
+        return ffmpeg_still(path, max);
+    }
+    let mut img = decode_bounded(|| Ok(ImageReader::open(path)?.with_guessed_format()?))?;
+    img.apply_orientation(orientation_of(path)?);
+    Ok(img)
+}
+
+/// Decodes what `open` reads, refusing pictures over [`MAX_PIXELS`] by their header.
+fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
+    open: impl Fn() -> Result<ImageReader<R>>,
+) -> Result<DynamicImage> {
+    let (w, h) = open()?.into_dimensions().map_err(image_error)?;
     if u64::from(w) * u64::from(h) > MAX_PIXELS {
         return Err(corrupt(format!(
             "{w}x{h} is over {} MP: not decoded",
             MAX_PIXELS / 1_000_000
         )));
     }
-    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    let mut reader = open()?;
     let mut limits = Limits::default();
     // Decoders allocate by what each frame declares, which can be far more than the header
     // says (a 52-byte GIF with a 4x3 screen and a 14693x14649 frame): hold them to the
     // header's size, with room for 16 bytes a pixel.
     limits.max_alloc = Some((u64::from(w) * u64::from(h) * 16).clamp(64 << 20, MAX_PIXELS * 8));
     reader.limits(limits);
-    let mut img = reader.decode().map_err(image_error)?;
-    img.apply_orientation(orientation_of(path)?);
-    Ok(img)
+    reader.decode().map_err(image_error)
+}
+
+/// The oldest ffmpeg major version that reads HEIF still images (with the tile grids of
+/// phone photos) and AVIF image items.
+pub const STILL_MIN_FFMPEG: u32 = 7;
+/// The longest side ffmpeg is asked for (a photo is never decoded bigger than this).
+const STILL_MAX_SIDE: u32 = 8192;
+
+/// No ffmpeg on PATH for a photo only ffmpeg can decode. Not the file's fault.
+#[derive(Debug)]
+pub struct NeedsFfmpeg;
+impl std::fmt::Display for NeedsFfmpeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Install ffmpeg to see HEIC and AVIF photos")
+    }
+}
+impl std::error::Error for NeedsFfmpeg {}
+
+/// The picture of a HEIC, HEIF or AVIF file through ffmpeg, with the file's rotation and
+/// mirroring applied (ffmpeg turns the frame by its `irot`/`imir`), at most `max` px on the
+/// longer side (never enlarged). A failure with an ffmpeg older than [`STILL_MIN_FFMPEG`]
+/// says so and is not recorded against the file (a newer ffmpeg may read it).
+fn ffmpeg_still(path: &Path, max: u32) -> Result<DynamicImage> {
+    let ffmpeg = find_tool("ffmpeg").ok_or(NeedsFfmpeg)?;
+    let max = max.clamp(1, STILL_MAX_SIDE);
+    let mut command = Command::new(&ffmpeg);
+    command
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-vf"])
+        .arg(format!(
+            "scale=w='min(iw,{max})':h='min(ih,{max})':force_original_aspect_ratio=decrease"
+        ))
+        .args(["-f", "image2pipe", "-vcodec", "png", "-"]);
+    let (status, stdout, stderr) = run(command)?;
+    if status.success() && !stdout.is_empty() {
+        return decode_bounded(|| {
+            Ok(ImageReader::with_format(
+                Cursor::new(stdout.as_slice()),
+                ImageFormat::Png,
+            ))
+        });
+    }
+    let kind = if is_avif(path) { "AVIF" } else { "HEIC" };
+    if let Some(v) = ffmpeg_major(&ffmpeg).filter(|v| *v < STILL_MIN_FFMPEG) {
+        anyhow::bail!("{kind} photos need ffmpeg {STILL_MIN_FFMPEG} or newer (this one is {v})");
+    }
+    let err = String::from_utf8_lossy(&stderr).trim().to_owned();
+    Err(corrupt(if err.is_empty() {
+        format!("ffmpeg could not read this {kind} file")
+    } else {
+        err
+    }))
+}
+
+/// The major version of `ffmpeg` (None for a git build or an unreadable answer).
+fn ffmpeg_major(ffmpeg: &Path) -> Option<u32> {
+    let mut command = Command::new(ffmpeg);
+    command.arg("-version");
+    let (_, stdout, _) = run(command).ok()?;
+    parse_ffmpeg_major(String::from_utf8_lossy(&stdout).lines().next()?)
+}
+
+/// `ffmpeg version 6.1.1-3ubuntu5 ...` or `ffmpeg version n7.1 ...` as 6 or 7; None for a
+/// git build (`N-113-g...`), which is newer than any release.
+pub(crate) fn parse_ffmpeg_major(line: &str) -> Option<u32> {
+    let v = line.strip_prefix("ffmpeg version ")?;
+    let v = v.strip_prefix('n').unwrap_or(v);
+    let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
@@ -657,7 +751,7 @@ fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
 /// libheif applies the file's own rotation/mirroring, so EXIF orientation is not applied
 /// again.
 #[cfg(feature = "heic")]
-fn decode_heif(path: &Path) -> Result<DynamicImage> {
+fn decode_heif(path: &Path, _max: u32) -> Result<DynamicImage> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let ctx = HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
     let handle = ctx.primary_image_handle().map_err(corrupt)?;
@@ -680,9 +774,10 @@ fn decode_heif(path: &Path) -> Result<DynamicImage> {
     Ok(DynamicImage::ImageRgb8(rgb))
 }
 
+/// Without libheif: ffmpeg.
 #[cfg(not(feature = "heic"))]
-fn decode_heif(_path: &Path) -> Result<DynamicImage> {
-    anyhow::bail!("HEIC needs Keel built with feature `heic`")
+fn decode_heif(path: &Path, max: u32) -> Result<DynamicImage> {
+    ffmpeg_still(path, max)
 }
 
 /// Fits `img` within `max` x `max` (never enlarging) and encodes it as lossless WebP (the
@@ -707,7 +802,7 @@ pub(crate) fn webp(img: DynamicImage, max: u32) -> Result<Vec<u8>> {
 pub(crate) fn thumbnail(path: &Path, max: u32) -> Result<Vec<u8>> {
     let img = match media_type(path) {
         Some(MediaType::Video) => video_frame(path)?,
-        _ => decode_image(path)?,
+        _ => decode_image(path, max)?,
     };
     webp(img, max)
 }
