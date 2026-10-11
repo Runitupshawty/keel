@@ -533,6 +533,69 @@ fn folder_styles_sync_like_path_tags() {
     assert_eq!(b.lib.folder_style(&b.rec("Work")).unwrap(), None);
 }
 
+/// A styled folder renamed (seen by a walk) takes its style along on the other device,
+/// and the old path keeps none there.
+#[test]
+fn a_styled_folder_renamed_takes_its_style_along_on_the_other_device() {
+    let a = device("deva", &[("Work/plan.txt", "plan")]);
+    let b = device("devb", &[]);
+    let paths = ["Work/plan.txt", "Done/plan.txt"];
+    let theirs = device_source(&b.lib, "deva", &a.src.id.0, &paths);
+    let red = crate::FolderStyle {
+        color: Some("#e5484d".into()),
+        icon: None,
+    };
+    a.lib.set_folder_style(&a.rec("Work"), &red).unwrap();
+    b.pull(&a);
+    let rec = |rel: &str| RecordRef {
+        source: theirs.id.clone(),
+        id: id_of(&theirs, rel).unwrap(),
+    };
+    assert_eq!(b.lib.folder_style(&rec("Work")).unwrap(), Some(red.clone()));
+    let root = a.src.def.root.to_local_path().unwrap();
+    std::fs::rename(root.join("Work"), root.join("Done")).unwrap();
+    walk(&a.src, &a.lib.router()).unwrap();
+    assert_eq!(b.pull(&a).applied, 2);
+    assert_eq!(b.lib.folder_style(&rec("Work")).unwrap(), None);
+    assert_eq!(b.lib.folder_style(&rec("Done")).unwrap(), Some(red));
+    assert_eq!(b.pull(&a).applied, 0, "logged once");
+}
+
+/// A library an older Keel synced (which pulled the logs without folder styles) reads
+/// every log again once, and gets the styles it missed.
+#[test]
+fn an_upgraded_library_reads_the_logs_again_once_for_the_styles() {
+    let a = device("deva", &[("Work/plan.txt", "plan")]);
+    let b = device("devb", &[]);
+    let theirs = device_source(&b.lib, "deva", &a.src.id.0, &["Work/plan.txt"]);
+    let red = crate::FolderStyle {
+        color: Some("#e5484d".into()),
+        icon: None,
+    };
+    a.lib.set_folder_style(&a.rec("Work"), &red).unwrap();
+    // As an older Keel pulls: the style is left out, the position moves past it.
+    let mut page = a.lib.sync_page(0, SYNC_PAGE).unwrap();
+    page.entries
+        .retain(|e| !matches!(e.op, SyncOp::Style { .. }));
+    b.lib.sync_apply("deva", &page).unwrap();
+    assert!(b.lib.sync_since("deva").unwrap() > 0);
+    let work = RecordRef {
+        source: theirs.id.clone(),
+        id: id_of(&theirs, "Work").unwrap(),
+    };
+    assert_eq!(b.lib.folder_style(&work).unwrap(), None);
+    // That library had no mark yet: the next open reads every log again, once.
+    (b.lib.shared.db.get().unwrap())
+        .execute("DELETE FROM meta WHERE key = 'sync_styles_read'", [])
+        .unwrap();
+    b.lib.sync_reread_for_styles().unwrap();
+    assert_eq!(b.lib.sync_since("deva").unwrap(), 0);
+    b.pull(&a);
+    assert_eq!(b.lib.folder_style(&work).unwrap(), Some(red));
+    b.lib.sync_reread_for_styles().unwrap();
+    assert!(b.lib.sync_since("deva").unwrap() > 0, "once");
+}
+
 #[test]
 fn the_same_tag_made_on_both_devices_is_one_tag() {
     let a = device("deva", &[("f.txt", "shared")]);

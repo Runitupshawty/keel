@@ -759,6 +759,7 @@ impl Library {
         lib.reconcile_tags()?;
         // Library sync: what existed before it, once; old tombstones go.
         lib.sync_seed()?;
+        lib.sync_reread_for_styles()?;
         lib.sync_prune()?;
         Ok(lib)
     }

@@ -704,6 +704,18 @@ impl Library {
         Ok(true)
     }
 
+    /// Once per library, in the first Keel that reads folder styles: every device's log is
+    /// read again from its start. An older Keel pulled it without the folder styles (the
+    /// serving device leaves them out for a puller that cannot read them) and its position
+    /// moved past them; applying an entry twice changes nothing.
+    pub(crate) fn sync_reread_for_styles(&self) -> Result<()> {
+        if self.shared.db.meta("sync_styles_read")?.is_some() {
+            return Ok(());
+        }
+        (self.shared.db.get()?).execute("UPDATE sync_peer SET seq = 0", [])?;
+        self.shared.db.set_meta("sync_styles_read", "1")
+    }
+
     /// Once per library: logs the tags and assignments that existed before sync, so a
     /// device that syncs later gets them too.
     pub(crate) fn sync_seed(&self) -> Result<()> {
@@ -828,6 +840,7 @@ impl Library {
     pub fn sync_page(&self, since: u64, limit: usize) -> Result<SyncPage> {
         self.sync_prune_due()?;
         self.note_content()?;
+        self.note_styles()?;
         let epoch = self.sync_epoch()?;
         let limit = limit.clamp(1, SYNC_PAGE);
         let c = self.shared.db.get()?;
@@ -1466,6 +1479,68 @@ impl Library {
                 .sum::<usize>();
         }
         Ok(added)
+    }
+
+    /// Brings the folder styles this device serves in line with its folders: a styled
+    /// folder renamed, moved or deleted since leaves a cleared style at its old path (else
+    /// the other devices keep the old style there, for whatever folder comes to that path)
+    /// and its style at the new one. ponytail: reads every styled folder per page served;
+    /// a styled-folder count is small.
+    fn note_styles(&self) -> Result<()> {
+        let logged: Vec<String> = {
+            let c = self.shared.db.get()?;
+            let mut stmt = c.prepare(
+                "SELECT op FROM sync_key WHERE key LIKE 'st::%' AND live = 1 AND device = ''",
+            )?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut now: std::collections::HashMap<(String, String), FolderStyle> =
+            std::collections::HashMap::new();
+        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        for src in sources.iter().filter(|s| !s.is_device()) {
+            let c = src.store.get()?;
+            let mut stmt = c.prepare(
+                "SELECT r.path, s.color, s.icon FROM folder_style s
+                 JOIN record r ON r.id = s.record",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                let style = FolderStyle {
+                    color: r.get(1)?,
+                    icon: r.get(2)?,
+                };
+                Ok(((src.id.0.clone(), r.get::<_, String>(0)?), style))
+            })?;
+            now.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        let change = |(source, path): (String, String), style: FolderStyle| {
+            Change::local(SyncOp::Style {
+                source,
+                path,
+                color: style.color,
+                icon: style.icon,
+            })
+        };
+        let mut changes = Vec::new();
+        for op in logged {
+            let Ok(SyncOp::Style {
+                source,
+                path,
+                color,
+                icon,
+            }) = serde_json::from_str(&op)
+            else {
+                continue;
+            };
+            let at = (source, path);
+            match now.remove(&at) {
+                Some(style) if style == FolderStyle { color, icon } => {}
+                Some(style) => changes.push(change(at, style)),
+                None => changes.push(change(at, FolderStyle::default())),
+            }
+        }
+        changes.extend(now.into_iter().map(|(at, style)| change(at, style)));
+        self.log_sync(changes)
     }
 
     /// Logs the content id of local files whose tags are kept by path, once they are
