@@ -105,6 +105,16 @@ fn collisions_are_hashed_whole_and_only_true_copies_are_duplicates() {
     let (su, cu) = hashes(sa, "unique.bin");
     assert!(su.is_some());
     assert_eq!(cu, None, "a unique large file needs no content id");
+    let when = |rel: &str| -> Option<i64> {
+        let c = sa.store.get().unwrap();
+        let id = rec(sa, rel).id;
+        c.query_row("SELECT hashed FROM record WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(when("unique.bin"), None, "no content id: not hashed yet");
+    assert!(when("big1.bin").is_some());
     // Small files: the content id is BLAKE3 of the bytes, like a confirmed large one.
     assert_eq!(
         hashes(sa, "small.txt").1.as_deref(),

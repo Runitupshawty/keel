@@ -829,9 +829,11 @@ fn hash_one(ctx: &JobCtx, src: &Source, rec: &Pending, path: &Path) -> Result<bo
 }
 
 fn save_hash(src: &Source, rec: &Pending, sampled: &[u8; 32], cas: Option<[u8; 32]>) -> Result<()> {
-    // Guarded: a record the indexer changed meanwhile keeps its reset hashes.
+    // Guarded: a record the indexer changed meanwhile keeps its reset hashes. `hashed` is
+    // when its content id was made: a sampled hash alone is no content id.
     src.store.get()?.execute(
-        "UPDATE record SET sampled_hash = ?2, cas_id = ?3, hashed = ?7
+        "UPDATE record SET sampled_hash = ?2, cas_id = ?3,
+             hashed = CASE WHEN ?3 IS NULL THEN hashed ELSE ?7 END
          WHERE id = ?1 AND kind = 0 AND size = ?4 AND sampled_hash IS NULL
              AND mtime IS ?5 AND ctime IS ?6",
         params![
