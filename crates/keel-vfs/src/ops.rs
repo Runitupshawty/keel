@@ -383,8 +383,8 @@ fn transfer_local(
     let dst_key = canonical_key(&dst)?;
     // Preflight the entire selection before any writes.
     let sources = src.iter().map(|p| long(p)).collect::<Result<Vec<_>>>()?;
-    let mut keys: Vec<PathBuf> = Vec::new();
-    for path in &sources {
+    let mut keys: Vec<(PathBuf, usize)> = Vec::with_capacity(sources.len());
+    for (i, path) in sources.iter().enumerate() {
         let metadata =
             fs::symlink_metadata(path).with_context(|| format!("source {}", path.display()))?;
         ensure_regular(path, &metadata)?;
@@ -396,14 +396,7 @@ fn transfer_local(
                 path.display()
             );
         }
-        for previous in &keys {
-            anyhow::ensure!(
-                !key.starts_with(previous) && !previous.starts_with(&key),
-                "overlapping source selection: {}",
-                path.display()
-            );
-        }
-        keys.push(key);
+        keys.push((key, i));
         let target = dst.join(path.file_name().context("cannot copy a root")?);
         if target.try_exists()? {
             anyhow::ensure!(
@@ -412,6 +405,17 @@ fn transfer_local(
                 path.display()
             );
         }
+    }
+    // Sorted by components, the paths inside a path come right after it: checking
+    // neighbours finds every overlap without comparing each pair.
+    keys.sort_unstable();
+    for pair in keys.windows(2) {
+        let ((outer, _), (inner, i)) = (&pair[0], &pair[1]);
+        anyhow::ensure!(
+            !inner.starts_with(outer),
+            "overlapping source selection: {}",
+            sources[*i].display()
+        );
     }
     let (total_bytes, total_items) = plan_size(&sources)?;
     let mut job = Job {
@@ -588,19 +592,37 @@ impl Job<'_, '_> {
                 || metadata.len() > RECORD_BYTES
                 || j.unfinished.as_ref().is_some_and(|u| u.source == key)
         });
-        if resumable {
+        let stamp = if resumable {
             self.copy_resumable(source, &target, &metadata, &key, picked)?;
+            None
         } else {
-            self.copy_file(source, &target, metadata.len())?;
-        }
+            Some(self.copy_file(source, &target, metadata.len())?)
+        };
+        self.placed_file(source, &target, key, metadata.len(), stamp)?;
+        Ok(true)
+    }
+
+    /// `source` is in place at `target` (now `stamp`, when known): a move drops the
+    /// source, the journal records the target, the progress counts it.
+    fn placed_file(
+        &mut self,
+        source: &Path,
+        target: &Path,
+        key: crate::VPath,
+        size: u64,
+        stamp: Option<Stamp>,
+    ) -> Result<()> {
         if self.moving {
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
         }
         if let Some(j) = self.journal.as_deref_mut() {
-            let file = Some(Stamp::of(&fs::symlink_metadata(&target)?));
-            let target = crate::VPath::local(&target);
+            let file = Some(match stamp {
+                Some(stamp) => stamp,
+                None => Stamp::of(&fs::symlink_metadata(target)?),
+            });
+            let target = crate::VPath::local(target);
             j.placed(
                 key,
                 Placed {
@@ -611,10 +633,10 @@ impl Job<'_, '_> {
                 false,
             )?;
         }
-        self.state.done_bytes += metadata.len();
+        self.state.done_bytes += size;
         self.state.done_items += 1;
         (self.progress)(self.state.clone());
-        Ok(true)
+        Ok(())
     }
 
     /// A file an earlier run placed at `target`: counted, and a move drops its source now.
@@ -652,34 +674,23 @@ impl Job<'_, '_> {
 
     /// Copies to a unique `<target>.keel-partial-<pid>-<n>`, then renames into place. On
     /// cancel or error the partial is deleted and an existing `target` is untouched.
-    fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<()> {
-        let name = target.file_name().context("target has no name")?;
-        let partial = target.with_file_name(partial_name(&name.to_string_lossy()));
-        anyhow::ensure!(
-            fs::symlink_metadata(&partial).is_err(),
-            "leftover partial copy exists: {}",
-            partial.display()
-        );
-        let partial = Partial(partial);
+    /// Returns the placed file's stamp.
+    fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<Stamp> {
         let base = &self.state;
-        let result = sys::copy_file(
+        let staged = stage(
             source,
-            &partial.0,
+            target,
+            size,
             &|bytes| {
                 let mut state = base.clone();
                 state.done_bytes += bytes;
                 (self.progress)(state);
             },
             self.cancel,
-        );
-        check_cancel(self.cancel)?;
-        result?;
-        anyhow::ensure!(
-            fs::metadata(&partial.0)?.len() == size,
-            "source changed during copy: {}",
-            source.display()
-        );
-        place(self.conflict, source, &partial.0, target)
+        )?;
+        place(self.conflict, source, &staged.partial.0, target)?;
+        staged.partial.keep();
+        Ok(staged.stamp)
     }
 
     /// `copy_file` for a journaled transfer: the staging file is recorded every
@@ -792,6 +803,44 @@ impl Job<'_, '_> {
             }
         }
     }
+}
+
+/// A complete copy of a file at its staging name, not placed yet.
+struct Staged {
+    partial: Partial,
+    /// The copy's size and modified time (the placed file keeps both).
+    stamp: Stamp,
+}
+
+/// Copies `source` (`size` bytes) to a unique staging name next to `target`.
+fn stage(
+    source: &Path,
+    target: &Path,
+    size: u64,
+    on_bytes: &dyn Fn(u64),
+    cancel: &AtomicBool,
+) -> Result<Staged> {
+    let name = target.file_name().context("target has no name")?;
+    let partial = target.with_file_name(partial_name(&name.to_string_lossy()));
+    anyhow::ensure!(
+        fs::symlink_metadata(&partial).is_err(),
+        "leftover partial copy exists: {}",
+        partial.display()
+    );
+    let partial = Partial(partial);
+    let result = sys::copy_file(source, &partial.0, on_bytes, cancel);
+    check_cancel(cancel)?;
+    result?;
+    let copied = fs::metadata(&partial.0)?;
+    anyhow::ensure!(
+        copied.len() == size,
+        "source changed during copy: {}",
+        source.display()
+    );
+    Ok(Staged {
+        stamp: Stamp::of(&copied),
+        partial,
+    })
 }
 
 /// Syncs a local staging file, then records it as `u` at `bytes`.
