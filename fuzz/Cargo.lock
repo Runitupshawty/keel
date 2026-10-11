@@ -3617,6 +3617,7 @@ dependencies = [
  "russh-sftp",
  "rustls",
  "rustls-graviola",
+ "rustls-platform-verifier",
  "ruzstd",
  "same-file",
  "serde",
@@ -3625,6 +3626,7 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.10.9",
  "ssh-key 0.6.7",
+ "suppaftp",
  "sysinfo",
  "tar",
  "tempfile",
@@ -3699,6 +3701,29 @@ dependencies = [
  "arrayvec",
  "euclid",
  "smallvec",
+]
+
+[[package]]
+name = "lazy-regex"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0a2cce8a22920a29fdcc8c9170aa5d29edd9fbcf8bea856e24c2cb1c2419f67"
+dependencies = [
+ "lazy-regex-proc_macros",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
+name = "lazy-regex-proc_macros"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f1e4b1f1d8c71edb4ff2b2150ec4606445fd2ddf67ddc097655daf59286baa6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -7108,6 +7133,18 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "suppaftp"
+version = "12.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0228dd7e39628ab8a5af1b2785be4fbb126f1d8e199ace66b5fbd529194f7258"
+dependencies = [
+ "chrono",
+ "lazy-regex",
+ "log",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "svgtypes"

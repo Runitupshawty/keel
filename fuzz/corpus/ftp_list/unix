@@ -1,0 +1,7 @@
+total 12
+drwxr-xr-x    2 1000     1000         4096 Jan  5 12:30 Ordner Ã¼
+-rw-r--r--    1 1000     1000         1234 Feb 27  2019 a file.txt
+lrwxrwxrwx    1 owner    group           4 Mar  1 09:05 latest -> v2
+-rw-r--r-- 1 may staff 12 Dec 31 23:59 owner like a month
+-rw-r--r-- 1 u g 7 Feb 29 2024 leap
+-rw-r--r-- 1 u g 7 Jan 1 2020 ÿþ not utf-8
