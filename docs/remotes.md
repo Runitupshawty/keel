@@ -1,6 +1,6 @@
 # Remotes over SSH
 
-Reference for SFTP remotes, `~/.ssh/config` and jump hosts. Cloud accounts are described in the [README](../README.md#cloud-accounts-bring-your-own-client-id).
+Reference for SFTP remotes, `~/.ssh/config` and jump hosts, and for [FTP and FTPS](#ftp-and-ftps) remotes. Cloud accounts are described in the [README](../README.md#cloud-accounts-bring-your-own-client-id).
 
 ## Remotes over SSH
 
@@ -30,3 +30,34 @@ Not read: `Match` blocks (skipped; the editor shows a note with the file and lin
 ### Security notes
 
 Passwords and key passphrases live in the operating system's keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux) and are never written to `config.toml`, logs or toasts. Host keys are checked against your `~/.ssh/known_hosts`; an unknown key needs your explicit approval and a changed key is a hard error. Uploads are written to a temporary file next to the target and renamed only when complete, so a dropped connection does not leave a half-written file under the real name.
+
+## FTP and FTPS
+
+NAS boxes, web hosts, cameras and old file servers that speak only FTP can be added as remotes too. They appear in the sidebar like SFTP hosts (same status dot, bookmarks, Connect, Disconnect, Edit and Copy address), and you browse, preview, search names in, copy to and from, rename and delete on them the same way.
+
+### Add an FTP or FTPS server
+
+1. **Settings** (`Ctrl+,`) → **Remotes** → **Add host…**, then pick the **Protocol**: **FTPS** (FTP over TLS) or **FTP**. The port follows the protocol (21) until you change it.
+2. Enter a label, the host name or IP address, and either a user name and password or **Anonymously** (Keel signs in as `anonymous` with an email-shaped password, as public servers expect). The password goes to the same credential store as SFTP passwords (the OS keychain), never to `config.toml`.
+3. Optionally set the initial folder and bookmarks, then Save. Paths on the host are `ftp://<host id>/<path>`, for FTP and FTPS alike.
+
+**FTPS** asks the server for TLS on the control connection (`AUTH TLS`, explicit FTPS) and protects every data connection (`PROT P`); on port 990 it speaks TLS from the first byte (implicit FTPS). A server that refuses TLS is an error: Keel never falls back from FTPS to plain FTP, and never continues a failed TLS handshake.
+
+**Plain FTP sends the password and the files unencrypted**: anyone on the network path can read both. The Add remote dialog says so next to the protocol choice ("FTP sends the password and the files unencrypted. Prefer FTPS or SFTP."), and the remote's sidebar tooltip and its line in Settings → Remotes repeat it. Use plain FTP only on a network you trust, for servers that offer nothing else.
+
+### Certificates
+
+An FTPS server's certificate is checked against the operating system's trust store (the same checks as the cloud accounts' HTTPS). A certificate that fails (self-signed, expired, issued for another name: common on NAS boxes) gets the same kind of prompt as an unknown SSH host key, with the reason and the certificate's SHA-256 fingerprint. Compare the fingerprint with the one the server shows (for example its admin page, or `openssl s_client -connect host:21 -starttls ftp | openssl x509 -noout -fingerprint -sha256` run from a machine you trust) and choose **Trust and connect** only if they match. Keel then remembers that fingerprint for that host and port in `ftps_known_hosts` in its configuration folder (`KEEL_CONFIG_DIR` when set), and connects to it without asking again. If the server later presents a different certificate that again fails verification, Keel refuses to connect and says so; delete the host's line from `ftps_known_hosts` only after you know why it changed. With no Keel window open to ask (keel-daemon, the CLI), an unverified certificate is refused.
+
+### How transfers work
+
+- **Passive mode only.** The data connection always goes to the address of the control connection (a server behind NAT that names an inside address in its `PASV` reply works, and a server cannot send Keel's data connection to a third machine); IPv6 servers use `EPSV`. Active mode (`PORT`) is not supported.
+- **Listings** use `MLSD` when the server offers it, else `LIST` in the UNIX (`ls -l`) or DOS (IIS) format, with `-a` on UNIX servers so dot files show. Lines over 8 KiB and folders over a million entries are refused. Dates from `LIST` are shown in UTC to the minute (a server's own time zone is unknown), and `LIST` dates without a year are placed in the last twelve months. A symbolic link shows as the folder or file it points to (checked with `CWD`, for the first 256 links of a folder).
+- **Downloads** can start in the middle of a file (`REST`), so previews of large files and resumed copies do not read the start again.
+- **Uploads** go to a staging name beside the target and are renamed into place when complete (and size-checked where the server answers `SIZE`), like SFTP uploads: a dropped connection never leaves a half-written file under the real name. A long copy that stops (Cancel, a lost connection, a closed window) continues where it stopped with `APPE` or `REST` when it runs again and the server reports the staging file's size, else it starts that file over.
+- **Deletes are permanent**: FTP has no trash, and the delete dialog says so ("This cannot be undone").
+- Connect, reply and data timeouts are 20 seconds, as for SFTP; a transfer holds its own connection, so browsing during a copy opens another one.
+
+### What FTP remotes do not support
+
+Mounting an FTP remote as a drive, using an FTP folder as a library source (and so hashing its files, protection counts and the duplicate finder over it), `~/.ssh/config`, key files and agents, **Open terminal here**, active mode and free-space figures. A library source on an FTP path is refused with "library sources are not supported for FTP remotes", and the library's **Add a library source** lists only SFTP hosts and cloud accounts.

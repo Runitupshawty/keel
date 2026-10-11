@@ -2,6 +2,28 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- FTP and FTPS remotes: **Settings → Remotes → Add host…** has a **Protocol** choice (SFTP, FTPS, FTP). FTP and FTPS hosts sit in the sidebar like SFTP hosts and are browsed, previewed, searched by name, copied to and from, renamed and deleted the same way; paths are `ftp://<host id>/…`. Sign in with a user name and password (kept in the OS keychain, like SFTP passwords) or **Anonymously**. FTPS uses explicit TLS (`AUTH TLS`) on port 21 and implicit TLS on port 990. Listings use `MLSD` where the server has it, else `LIST` in the UNIX or DOS (IIS) format; downloads can start mid-file (`REST`); uploads go to a staging name and are renamed into place when complete, and a stopped long copy continues where it stopped (`APPE`/`REST`) when the server reports the staging file's size. See [FTP and FTPS](docs/remotes.md#ftp-and-ftps).
+- `[[remotes]]` entries in `config.toml` take `protocol = "sftp"`, `"ftp"` or `"ftps"` (missing: SFTP, so saved remotes load unchanged); keel-daemon and the CLI register FTP hosts from it, and Settings → Remotes lists each host with its protocol.
+- Two fuzz targets, `ftp_list` and `ftp_mlsd`, for the FTP listing parsers.
+
+### Security
+
+- FTPS checks the server's certificate against the operating system's trust store. A certificate that fails (self-signed, expired, another name) is shown with its SHA-256 fingerprint and the reason, like an unknown SSH host key; trusting it pins that fingerprint for the host and port (`ftps_known_hosts` in the configuration folder), and a different failing certificate later is refused. Keel never falls back from FTPS to plain FTP and never continues a failed TLS handshake; keel-daemon and the CLI refuse certificates nobody trusted.
+- Plain FTP sends the password and the files unencrypted: the Add remote dialog says so next to the protocol choice, and the host's sidebar tooltip and its line in Settings → Remotes repeat it.
+- FTP data connections always go to the control connection's address, never to the address in a `PASV` reply, so a server cannot point them at another machine. Paths with line breaks are refused before anything is sent, and the server's reply text is never shown or logged (errors name the reply code and what it means).
+- `KEEL_NET_SECRET=memory` now also keeps SFTP and FTP passwords and passphrases in memory instead of the OS keychain (tests and trials).
+
+### Known limitations
+
+- FTP remotes cannot be mounted, cannot be library sources (so their files are never hashed, counted for protection or searched in the library) and have no **Open terminal here**; a library source on an `ftp://` path is refused with "library sources are not supported for FTP remotes".
+- FTP uses passive mode only (`PASV`, `EPSV` on IPv6); active mode is not supported. Free space is not shown for FTP hosts.
+- `LIST` dates are read as UTC to the minute (the server's time zone is unknown); a rename onto an existing name is checked first and refused, but a file that appears between the check and the rename is replaced on servers whose rename replaces.
+- An FTPS certificate pinned before can only be replaced by removing its line from `ftps_known_hosts`. Implicit FTPS (port 990) connects without Keel's own connect timeout (the system's applies).
+
 ## [0.19.0] - 2026-10-11
 
 ### Added

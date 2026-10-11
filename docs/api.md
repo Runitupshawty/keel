@@ -179,6 +179,30 @@ the config on every connection like the window; with no window to confirm a prom
 unknown host key on any hop fails the connection. `ProxyCommand` is refused, never run.
 Paths stay `sftp://<host id>/...`; no operation changed.
 
+FTP and FTPS remotes are `[[remotes]]` entries with `protocol = "ftp"` or `"ftps"` (an
+entry without `protocol` is SFTP, so earlier configurations load unchanged); their paths
+are `ftp://<host id>/...`, and `list`, `stat`, `read`, `preview.render` and `plan` /
+`execute` (copy, move, delete) take them like SFTP paths. The user
+`anonymous` signs in without a password; any other user's password comes from the OS
+keychain (`KEEL_NET_SECRET=memory`: from memory, for tests), where the window's
+**Settings → Remotes** put it. An FTPS server whose certificate does not verify is refused
+by the daemon and the CLI (nobody can be asked) unless its fingerprint was trusted in the
+window before ([certificates](remotes.md#certificates)). `sources.add` refuses
+an `ftp://` root ("library sources are not supported for FTP remotes"), so FTP folders
+are never indexed, hashed or mounted:
+
+```toml
+[[remotes]]
+id = "camera"
+label = "Camera"
+protocol = "ftps"
+host = "camera.example.invalid"
+port = 21
+user = "anonymous"
+auth = "PasswordInKeyring"
+bookmarks = []
+```
+
 Mounts live in keel-daemon (a mount made by an in-process CLI call would vanish when the
 command exits) and need a daemon built with a mount backend (the Linux release build has
 one; from source, `--features winfsp` on Windows (GPL-3.0, in no release build) and
