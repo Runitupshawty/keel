@@ -49,6 +49,7 @@ mod tests {
 
     #[test]
     fn fuzz_preview() {
+        crate::image::warm_fonts();
         run("preview", super::preview);
     }
     #[test]

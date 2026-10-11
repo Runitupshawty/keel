@@ -11,6 +11,15 @@ use std::time::{Duration, Instant};
 
 /// Longest one case may take (debug build, a busy machine).
 pub const CASE_LIMIT: Duration = Duration::from_secs(10);
+
+/// [`CASE_LIMIT`], or three times it under CI (debug builds on shared runners).
+fn case_limit() -> Duration {
+    if std::env::var_os("CI").is_some() {
+        CASE_LIMIT * 3
+    } else {
+        CASE_LIMIT
+    }
+}
 /// Largest single allocation a target may make.
 pub const ALLOC_CAP: usize = 512 << 20;
 /// Longest generated input.
@@ -214,7 +223,7 @@ pub fn run(target: &'static str, f: fn(&[u8])) {
         let _ = std::fs::write(&running, &input);
         let started = Instant::now();
         job_tx.send(input.clone()).unwrap();
-        let outcome = done_rx.recv_timeout(CASE_LIMIT);
+        let outcome = done_rx.recv_timeout(case_limit());
         slowest = slowest.max(started.elapsed());
         let why = match outcome {
             Ok(true) => continue,

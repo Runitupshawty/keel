@@ -71,6 +71,13 @@ fn downscale(image: DynamicImage, max_px: u32) -> Rgba {
     }
 }
 
+/// Loads the system fonts now rather than on the first SVG (the fuzz runs warm them so one
+/// case does not carry the scan: a debug build on a loaded CI runner takes many seconds).
+#[cfg(test)]
+pub(crate) fn warm_fonts() {
+    let _ = fonts();
+}
+
 /// System fonts, loaded once (a few hundred ms) so SVG `<text>` renders.
 fn fonts() -> Arc<fontdb::Database> {
     static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
