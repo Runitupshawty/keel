@@ -178,6 +178,8 @@ try {
     throw "Release $tag is not signed, but this installer expects Keel's signature. Nothing was installed. Pass -SkipVerify to install it anyway."
   } else { Write-Warning "Release $tag is not signed; the checksum is all that was verified." }
 
+  $daemonWasRunning = [bool](Get-Process keel-daemon -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) })
   Stop-Keel
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
   Copy-Item (Join-Path $src.FullName '*') $InstallDir -Recurse -Force
@@ -185,6 +187,13 @@ try {
 
   $self = Join-Path $InstallDir 'install.ps1'
   $null = Save-Installer $src.FullName $self $PSCommandPath
+
+  # The update stopped a running daemon (the phone web client, mounts, attached windows):
+  # start the new one so they come back without a sign-out.
+  if ($daemonWasRunning) {
+    & $exe daemon start
+    if ($LASTEXITCODE -eq 0) { Write-Host 'keel-daemon restarted.' } else { Write-Warning 'keel-daemon was running and could not be restarted; run: keel daemon start' }
+  }
 
   New-Shortcut $Lnk $exe
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }
