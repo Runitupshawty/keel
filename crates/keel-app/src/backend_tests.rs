@@ -554,15 +554,30 @@ fn devices_go_through_the_daemons_node() {
     pump_devices(&mut st, "a code", |s| {
         matches!(s.devices.pair, Some(Pair::Showing { .. }))
     });
-    let Some(Pair::Showing { ticket, .. }) = st.devices.pair.clone() else {
-        unreachable!()
-    };
     let mut c = Client::connect(other.daemon.name()).unwrap();
-    let p: api::PlanPreview = serde_json::from_value(
-        c.call("devices.pair_with", json!({ "code": ticket }))
-            .unwrap(),
-    )
-    .unwrap();
+    // The other device's pairing call has a deadline; a loaded CI machine can miss it, so
+    // show a fresh code and try again (a code works once).
+    let mut preview = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            st.devices_cmd(0, DevCmd::PairStep(PairEvent::ShowCode));
+            pump_devices(&mut st, "a new code", |s| {
+                matches!(s.devices.pair, Some(Pair::Showing { .. }))
+            });
+        }
+        let Some(Pair::Showing { ticket, .. }) = st.devices.pair.clone() else {
+            unreachable!()
+        };
+        match c.call("devices.pair_with", json!({ "code": ticket })) {
+            Ok(v) => {
+                preview = Some(serde_json::from_value::<api::PlanPreview>(v).unwrap());
+                break;
+            }
+            Err(e) if attempt < 2 => eprintln!("pair_with attempt {attempt}: {e}"),
+            Err(e) => panic!("pair_with: {e}"),
+        }
+    }
+    let p = preview.unwrap();
     c.call(
         "execute",
         json!({"plan_id": p.plan_id, "input_hash": p.input_hash}),

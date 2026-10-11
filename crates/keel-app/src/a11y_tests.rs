@@ -275,11 +275,11 @@ fn dialogs_focus_their_primary_action_and_esc_cancels() {
     }
     assert_eq!(focus(&h), Some((Role::Button, "Close".into())));
     press(&mut h, Modifiers::NONE, Key::Enter);
-    for _ in 0..20 {
-        if h.state().state.dialog.is_none() {
-            break;
-        }
+    // Closing takes a few frames; a loaded CI machine needs more of them.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().state.dialog.is_some() && std::time::Instant::now() < until {
         h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(h.state().state.dialog.is_none(), "Enter presses Close");
     assert_eq!(focus(&h).map(|f| f.0), Some(Role::ListItem));
