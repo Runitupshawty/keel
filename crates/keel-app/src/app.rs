@@ -7,7 +7,7 @@ use crate::session::Session;
 use crate::settings::{Persist, Settings};
 use crate::state::AppState;
 use crate::tab::Tab;
-use egui::{pos2, Rect, Sense, UiBuilder};
+use egui::{pos2, Rect, UiBuilder};
 use humansize::{format_size, DECIMAL};
 use keel_vfs::{Router, VPath};
 use std::path::PathBuf;
@@ -83,6 +83,9 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, boot: Boot) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        // The AccessKit tree is built every frame, screen reader or not: it is how
+        // `a11y` finds the pointer-only Tab stops to skip (cheap at this widget count).
+        cc.egui_ctx.enable_accesskit();
         cc.egui_ctx.set_fonts(crate::theme::fonts());
         // Another Keel is the single instance (and holds the global hotkey).
         let not_server = boot.settings.single_instance && boot.server.is_none();
@@ -207,6 +210,9 @@ impl App {
         // selection under it (Task 23: the columns view's keyboard column).
         // Any modal (a host editor, the cloud wizard, a license) has the keys too: none may
         // reach the list behind it (Del would ask to trash the selected file).
+        // Tab leaves the sidebar in one press (arrow keys move inside it).
+        crate::a11y::tab_out(ctx, "sidebar");
+        crate::a11y::skip_dead_stop(ctx);
         let modal = ctx.memory(|m| !m.is_above_modal_layer(egui::LayerId::background()));
         let keys_on = s.dialog.is_none()
             && !modal
@@ -240,6 +246,7 @@ impl App {
         );
         out.extend(job_acts.into_iter().map(|a| (s.active, a)));
         s.terminal.panel(ctx, &mut s.settings, &s.tx);
+        crate::a11y::group_start(ctx, "sidebar");
         let sidebar = egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(s.settings.sidebar_width)
@@ -252,6 +259,7 @@ impl App {
                     .ui(ui, &s.theme, &current, &archives, &s.library, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
+        crate::a11y::group_end(ctx, "sidebar");
         let w = sidebar.response.rect.width().round();
         if self.seen_widths.0.is_some_and(|seen| seen != w) {
             s.settings.sidebar_width = w;
@@ -296,7 +304,7 @@ impl App {
                     let x = full.left() + full.width() * share;
                     let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, full.y_range());
                     let r = ui
-                        .interact(handle, ui.id().with("split"), Sense::drag())
+                        .interact(handle, ui.id().with("split"), crate::a11y::NO_TAB)
                         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                     if let Some(p) = r.dragged().then(|| r.interact_pointer_pos()).flatten() {
                         self.split = ((p.x - full.left()) / full.width()).clamp(0.15, 0.85);
@@ -392,6 +400,7 @@ impl App {
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: s.settings.library.tags_column,
                         media: &mut s.media,
+                        keys: s.active == p,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {
@@ -474,6 +483,7 @@ impl eframe::App for App {
             crate::crash::modal(ctx, &mut self.crashed);
         }
         crate::a11y::hide_dead_stops(ctx);
+        crate::a11y::focus_ring(ctx);
         crate::a11y::focus_has_node(ctx);
         if self.persist.is_some() {
             let session = self.changed_session();

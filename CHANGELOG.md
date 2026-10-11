@@ -7,8 +7,15 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Screen readers: the release build now includes AccessKit (it was only in the test build), and every control has a name and a role. Buttons drawn as symbols say what they do ("Back (Alt+Left)", "Close tab Documents", "Clear filter (Esc)", "The rest of the path"), column headers say how they sort ("Name, sorted ascending"), Settings fields carry their labels, and a file row or tile reads as its name, size (or "folder") and modified date, with its selection.
-- The status bar announces the folder and its item count after navigation, and notifications are announced (errors interrupt).
-- `a11y_tests`: AccessKit checks on the fixture (every control of the window, the views, Settings, the palette and the dialogs named; rows; live regions).
+- The row under the cursor holds the keyboard focus, so a screen reader reads each row the cursor moves to; the status bar announces the folder and its item count after navigation, and notifications are announced (errors interrupt).
+- A focus ring around the focused control while the keyboard is in use (frameless buttons, sidebar items and file rows showed none).
+- `a11y_tests`: AccessKit checks on the fixture (every control of the window, the views, Settings, the palette and the dialogs named; rows; focus; live regions; dialogs) and a walk of the whole window with Tab and Shift+Tab.
+
+### Fixed
+
+- Keyboard only: Tab and Shift+Tab reach every control once and come back, in reading order; the sidebar is one stop with the arrow keys inside it; the file rows, the empty space below them, the tab drag handles and egui's resize handles and scroll surfaces are no longer stops.
+- Enter or Space on a focused button, checkbox or sidebar item presses it; they used to open or select the file under the cursor instead (the arrow keys moved the cursor too). Esc gives the keys back to the file list.
+- Dialogs open with the focus on their main button or first field (name conflicts on Keep both, Properties on Close, Open with on the first app), and Esc closes the Settings window and the library and devices windows.
 
 ## [0.16.0] - 2026-10-10
 

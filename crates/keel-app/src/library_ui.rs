@@ -657,6 +657,8 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     };
     let mut open = true;
     let mut close = false;
+    // Esc closes it (a11y).
+    crate::a11y::esc_closes(ctx, "Add a library source", &mut open);
     egui::Window::new("Add a library source")
         .open(&mut open)
         .collapsible(false)
@@ -821,6 +823,8 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let l = &mut s.library;
     let Some(picker) = &mut l.picker else { return };
     let mut open = true;
+    // Esc closes it (a11y).
+    crate::a11y::esc_closes(ctx, "Tags", &mut open);
     egui::Window::new("Tags")
         .open(&mut open)
         .collapsible(false)
@@ -871,6 +875,8 @@ fn dup_finder(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         return;
     };
     let mut open = true;
+    // Esc closes it (a11y).
+    crate::a11y::esc_closes(ctx, "Duplicate finder", &mut open);
     egui::Window::new("Duplicate finder")
         .open(&mut open)
         .default_size([620.0, 420.0])

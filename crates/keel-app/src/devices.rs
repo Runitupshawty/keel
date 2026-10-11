@@ -1606,6 +1606,8 @@ pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     if let Some(peer) = s.devices.forget {
         let label = label_of(&s.devices.peers, &peer);
         let mut open = true;
+        // Esc closes it (a11y).
+        crate::a11y::esc_closes(ctx, "Forget device", &mut open);
         egui::Window::new("Forget device")
             .open(&mut open)
             .collapsible(false)
@@ -1638,6 +1640,8 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     };
     let step = |ev| dev(DevCmd::PairStep(ev));
     let mut open = true;
+    // Esc closes it (a11y).
+    crate::a11y::esc_closes(ctx, "Pair a device", &mut open);
     egui::Window::new("Pair a device")
         .open(&mut open)
         .collapsible(false)
@@ -1736,7 +1740,9 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let rows = share_rows(&s.devices.grants, &s.library.sources, &peer);
     let sources = shareable(&s.library.sources);
     let mut open = true;
-    egui::Window::new(format!("Shares with {label}"))
+    let title = format!("Shares with {label}");
+    crate::a11y::esc_closes(ctx, &title, &mut open);
+    egui::Window::new(title)
         .id(egui::Id::new("keel-shares"))
         .open(&mut open)
         .collapsible(false)
@@ -1819,6 +1825,8 @@ fn pick_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         return;
     };
     let mut open = true;
+    // Esc closes it (a11y).
+    crate::a11y::esc_closes(ctx, "Send with Spacedrop", &mut open);
     egui::Window::new("Send with Spacedrop")
         .open(&mut open)
         .collapsible(false)

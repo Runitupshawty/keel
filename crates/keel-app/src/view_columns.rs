@@ -514,7 +514,8 @@ fn column(
             .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
     }
     // Empty space: click clears the selection (closing the columns right of it).
-    let bg = ui.interact(rect, ui.id().with("bg"), Sense::click());
+    let bg = ui.interact(rect, ui.id().with("bg"), Sense::CLICK);
+    crate::a11y::not_a_stop(&bg);
     let mut clicked = bg.clicked() || bg.secondary_clicked();
     if clicked {
         clear_selection(col);
@@ -572,7 +573,7 @@ fn column(
                     let e = &col.entries()[col.visible_cached()[pos]];
                     let (rect, r) = ui.allocate_exact_size(
                         vec2(ui.available_width(), ROW_H),
-                        Sense::click_and_drag(),
+                        crate::a11y::NO_TAB,
                     );
                     let selected = col.selected.contains(&e.name);
                     if selected {
@@ -656,7 +657,7 @@ fn column(
     col.grid_scroll = (output.state.offset.y, output.inner_rect.height());
     for (r, e) in rows {
         clicked |= r.clicked() || r.secondary_clicked() || r.double_clicked() || r.drag_started();
-        crate::pane::a11y_item(ui, &r, col, &e);
+        crate::pane::a11y_item(ui, &r, col, &e, focused && cx.keys);
         handle_click(&r, col, &e, out);
         drag_and_drop(&r, id.0, col, &e, out);
     }

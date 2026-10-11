@@ -80,9 +80,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");
-                    if !yes.has_focus() && !no.has_focus() {
-                        yes.request_focus();
-                    }
+                    crate::a11y::first_focus(&yes);
                     cancel |= no.clicked();
                     if !cancel && yes.clicked() {
                         out = Some(on_yes.clone());
@@ -112,7 +110,12 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         ("Overwrite", Conflict::Overwrite),
                         ("Keep both", Conflict::RenameNew),
                     ] {
-                        if ui.button(text).clicked() {
+                        let b = ui.button(text);
+                        // Enter keeps both (nothing is lost), Tab reaches the others.
+                        if conflict == Conflict::RenameNew {
+                            crate::a11y::first_focus(&b);
+                        }
+                        if b.clicked() {
                             out = Some(Action::StartTransfer {
                                 op: op.clone(),
                                 conflict,
@@ -193,7 +196,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             Dialog::Properties { paths, info } => {
                 properties::ui(ui, paths, info, &mut out);
                 ui.add_space(8.0);
-                cancel |= ui.button("Close").clicked();
+                let close = ui.button("Close");
+                crate::a11y::first_focus(&close);
+                cancel |= close.clicked();
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::BulkRename(m) => {
@@ -237,7 +242,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         for (label, app) in &shown {
                             let button = egui::Button::new(label.as_str())
                                 .min_size(egui::vec2(ui.available_width(), 0.0));
-                            if ui.add(button).on_hover_text(app.as_str()).clicked() {
+                            let r = ui.add(button).on_hover_text(app.as_str());
+                            crate::a11y::first_focus(&r);
+                            if r.clicked() {
                                 out = Some(Action::OpenWithApp {
                                     paths: paths.clone(),
                                     app: app.clone(),
@@ -248,7 +255,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Browse…").clicked() {
+                    let browse = ui.button("Browse…");
+                    crate::a11y::first_focus(&browse);
+                    if browse.clicked() {
                         out = Some(Action::OpenWithBrowse {
                             paths: paths.clone(),
                             remember: *remember,

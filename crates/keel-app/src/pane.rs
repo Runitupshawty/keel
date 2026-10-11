@@ -57,6 +57,8 @@ pub struct ViewCx<'a> {
     pub tags_column: bool,
     // --- Task 32 ---
     pub media: &'a mut crate::media::Media,
+    /// This pane has the keys: its cursor row takes the keyboard focus (`a11y::item`).
+    pub keys: bool,
 }
 
 impl Pane {
@@ -248,7 +250,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (i, tab) in pane.tabs.iter().enumerate() {
-                    let drag = ui.dnd_drag_source(ui.id().with(("tab", i)), (idx, i), |ui| {
+                    let drag = drag_source(ui, ui.id().with(("tab", i)), (idx, i), |ui| {
                         ui.selectable_label(i == pane.active, tab.title())
                             .on_hover_text(
                                 crate::devices::node_location(&tab.dir)
@@ -294,6 +296,32 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
     }
     if let Some(i) = close {
         pane.close_tab(i);
+    }
+}
+
+/// `Ui::dnd_drag_source` without its own Tab stop: the dragged tab follows the pointer, the
+/// keyboard reaches only the tab itself.
+fn drag_source<R>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    payload: (usize, usize),
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    if ui.ctx().is_being_dragged(id) {
+        egui::DragAndDrop::set_payload(ui.ctx(), payload);
+        let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+        let r = ui.scope_builder(egui::UiBuilder::new().layer_id(layer), add);
+        if let Some(at) = ui.ctx().pointer_interact_pos() {
+            let delta = at - r.response.rect.center();
+            ui.ctx()
+                .transform_layer_shapes(layer, egui::emath::TSTransform::from_translation(delta));
+        }
+        r
+    } else {
+        let r = ui.scope(add);
+        let drag =
+            (ui.interact(r.response.rect, id, Sense::DRAG)).on_hover_cursor(egui::CursorIcon::Grab);
+        egui::InnerResponse::new(r.inner, drag | r.response)
     }
 }
 
@@ -704,8 +732,8 @@ pub fn handle_click(
 }
 
 /// A row or tile for screen readers (`a11y::item`): its name, size (or "folder") and
-/// modified date.
-pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Entry) {
+/// modified date; the cursor row of the pane with the keys holds the keyboard focus.
+pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Entry, keys: bool) {
     let size = if e.kind == keel_vfs::Kind::Dir {
         "folder".to_owned()
     } else {
@@ -714,7 +742,14 @@ pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Ent
     let date = view_details::date_text(e);
     let parts = [tab.shown_name(e), size.as_str(), date.as_str()];
     let label: Vec<&str> = parts.into_iter().filter(|s| !s.is_empty()).collect();
-    crate::a11y::item(ui, r, &label.join(", "), tab.selected.contains(&e.name));
+    let cursor = keys && tab.cursor.as_deref() == Some(e.name.as_str());
+    crate::a11y::item(
+        ui,
+        r,
+        &label.join(", "),
+        tab.selected.contains(&e.name),
+        cursor,
+    );
 }
 
 /// In-app drag payload: entries dragged out of pane `pane` showing folder `dir`.

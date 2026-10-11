@@ -567,6 +567,7 @@ pub fn window(
     devices: &crate::devices::Devices, // Task 36
 ) -> bool {
     let mut theme_changed = false;
+    crate::a11y::esc_closes(ctx, "Settings", open);
     egui::Window::new("Settings")
         .open(open)
         .collapsible(false)

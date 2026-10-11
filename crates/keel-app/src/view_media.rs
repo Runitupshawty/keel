@@ -7,7 +7,7 @@ use crate::keys::Action;
 use crate::media::{self, Media, MediaType, Req, Row, Tex, TileSize};
 use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::tab::{SortKey, Tab};
-use egui::{pos2, vec2, Color32, Key, Rect, Sense};
+use egui::{pos2, vec2, Color32, Key, Rect};
 use keel_vfs::Entry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -267,8 +267,7 @@ pub fn ui(
                         let e = &tab.entries()[i];
                         let x = origin.x + (pos - a) as f32 * cell + GAP / 2.0;
                         let rect = Rect::from_min_size(pos2(x, top + GAP / 2.0), vec2(tile, tile));
-                        let resp =
-                            ui.interact(rect, ui.id().with(&e.name), Sense::click_and_drag());
+                        let resp = ui.interact(rect, ui.id().with(&e.name), crate::a11y::NO_TAB);
                         let back = rect.expand(GAP / 2.0 - 0.5);
                         if tab.selected.contains(&e.name) {
                             let t = if tab.cursor.as_deref() == Some(&e.name) {
@@ -369,7 +368,7 @@ pub fn ui(
     });
     tab.grid_scroll = (output.state.offset.y, output.inner_rect.height());
     for (r, e) in clicks {
-        crate::pane::a11y_item(ui, &r, tab, &e);
+        crate::pane::a11y_item(ui, &r, tab, &e, cx.keys);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }

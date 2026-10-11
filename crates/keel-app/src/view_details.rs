@@ -72,7 +72,7 @@ pub fn ui(
         .id_salt((id, search, trash))
         .striped(true)
         .resizable(true)
-        .sense(Sense::click_and_drag())
+        .sense(crate::a11y::NO_TAB)
         .auto_shrink([false, true])
         .max_scroll_height(f32::INFINITY)
         .cell_layout(Layout::left_to_right(Align::Center))
@@ -292,7 +292,7 @@ pub fn ui(
         });
 
     for (r, e) in clicks {
-        crate::pane::a11y_item(ui, &r, tab, &e);
+        crate::pane::a11y_item(ui, &r, tab, &e, cx.keys);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }
@@ -319,7 +319,8 @@ pub fn empty_area(ui: &mut egui::Ui, tab: &mut Tab, out: &mut Vec<Action>) {
     if rest.height() < 4.0 {
         return;
     }
-    let r = ui.allocate_rect(rest, Sense::click());
+    let r = ui.allocate_rect(rest, Sense::CLICK);
+    crate::a11y::not_a_stop(&r);
     if r.clicked() || r.secondary_clicked() {
         tab.selected.clear();
     }
