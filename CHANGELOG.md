@@ -2,6 +2,19 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Undo for file operations: Ctrl+Z (Cmd+Z) in the file list undoes the last rename, bulk rename, move, copy, new folder or file and delete to the Recycle Bin or Trash, then the one before (the window keeps the last 20). A move goes back, copies and new items go to the trash, deleted items come back from the Recycle Bin or Trash (on macOS from where NSFileManager put them, recorded when Keel trashed them). Each operation's toast has an **Undo** button (bulk rename's became this one) and the palette lists "Undo <what>". A rename is undone at once; an undo that moves or deletes shows what it will do first ("Undo move: 3 items back to D:Photos?") and runs as a job. It checks every item first and does nothing but say why when one changed since (size or modified time), is gone, or its old place is taken; it never overwrites and never picks a new name. Operations through the library preview are recorded too, by what their job did. Ctrl+Z in a text box stays the box's own undo. The palette's "Undo bulk rename" is now "Undo rename".
+
+### Known limitations
+
+- Not undoable, and the next Ctrl+Z says so once before going on to the operation before: permanent deletes (SFTP, S3, WebDAV without a trash, Delete permanently), files replaced by Overwrite, changes inside archives, extracting and adding to archives, restoring from or emptying the Recycle Bin, copies, moves and new items on SSH hosts, cloud accounts and other devices' `node://` folders, tags and favorites, and deletes made through the library preview on macOS.
+- The undo list lives in the window: it is not kept across a restart and is cleared on a profile switch. There is no redo.
+- An undo runs in the window, also when the operation went through the library or keel-daemon; the sources' watchers pick the change up.
+- Only what an operation made is undone: files a copy merged into a folder that was already there stay, and a folder whose move stopped partway stays where it is.
+
 ## [0.18.0] - 2026-10-11
 
 ### Added

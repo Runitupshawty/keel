@@ -283,6 +283,11 @@ pub enum LibMsg {
         id: Option<JobId>,
     },
     Planned(Result<Planned, String>),
+    /// A confirmed file operation runs as job `id`; `undo`: what to record when it ends.
+    OpStarted {
+        id: JobId,
+        undo: Option<crate::undo::Planned>,
+    },
     /// `Plan::execute` refused: the sources changed; show this fresh plan.
     Changed(Planned),
     Dups(Result<Vec<DupGroup>, String>),
@@ -760,6 +765,10 @@ pub struct LibraryUi {
     pub badges: HashMap<VPath, Badge>,
     badge_wanted: parking_lot::Mutex<HashSet<VPath>>,
     badge_asked: HashSet<VPath>,
+    /// The operation of the open preview (for undo).
+    undo_op: Option<Op>,
+    /// Operations running as jobs, recorded for undo when they end.
+    undo_jobs: HashMap<JobId, crate::undo::Planned>,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -817,6 +826,8 @@ impl LibraryUi {
             badges: HashMap::new(),
             badge_wanted: parking_lot::Mutex::new(HashSet::new()),
             badge_asked: HashSet::new(),
+            undo_op: None,
+            undo_jobs: HashMap::new(),
             tx,
             ctx,
         }
@@ -1512,6 +1523,13 @@ impl AppState {
                     None => {}
                 }
             }
+            LibMsg::OpStarted { id, undo } => {
+                if let Some(u) = undo {
+                    l.undo_jobs.insert(id, u);
+                }
+                let id = Some(id);
+                self.library_msg(LibMsg::Spawned { kind: "op", id });
+            }
             LibMsg::Planned(Ok(plan)) => {
                 l.plan = Some(PlanDialog {
                     plan,
@@ -1604,6 +1622,7 @@ impl AppState {
             _ => {}
         }
         let mut ended: Vec<String> = Vec::new();
+        let mut finished: Vec<JobId> = Vec::new();
         let mut unknown = false;
         if let Some(rx) = &l.events {
             while let Ok(ev) = rx.try_recv() {
@@ -1621,11 +1640,20 @@ impl AppState {
                 if !row.active() && row.ended.is_none() {
                     row.ended = Some(now);
                     ended.push(row.kind.clone());
+                    finished.push(ev.id);
                     if ev.status == JobStatus::Failed {
                         self.toasts.error(format!("{} failed", row.title()));
                     }
                 }
             }
+        }
+        // Operations that ended (done, failed or cancelled): what they did, for undo.
+        for u in finished.iter().filter_map(|id| l.undo_jobs.remove(id)) {
+            let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+            worker::spawn("keel-library-undo", move || {
+                let done = u.done(crate::undo::stat_fn(&router));
+                worker::send(&tx, &ctx, Msg::Undoable(done));
+            });
         }
         if unknown {
             // Kinds of jobs this app did not start.
@@ -1783,6 +1811,7 @@ impl AppState {
         if self.library.plan.is_some() {
             return self.toasts.error("Another preview is open");
         }
+        self.library.undo_op = Some(op.clone());
         self.library
             .spawn_try("keel-library-plan", "Preview", move |b| {
                 Ok(Some(LibMsg::Planned(
@@ -2157,13 +2186,22 @@ impl AppState {
                 }
                 dialog.running = true;
                 let plan = dialog.plan.clone();
+                let (existed, permanent) = plan.undo_facts();
+                let undo = match self.library.undo_op.take() {
+                    _ if permanent => {
+                        self.undo.refuse(crate::state::PERMANENT);
+                        None
+                    }
+                    op => op.map(|op| crate::undo::Planned {
+                        op,
+                        existed,
+                        since: std::time::SystemTime::now(),
+                    }),
+                };
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 self.library
                     .spawn("keel-library-execute", move |b| match b.execute(plan) {
-                        Ok(Executed::Job(id)) => Some(LibMsg::Spawned {
-                            kind: "op",
-                            id: Some(id),
-                        }),
+                        Ok(Executed::Job(id)) => Some(LibMsg::OpStarted { id, undo }),
                         Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(fresh)),
                         Err(e) => {
                             worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
@@ -2266,6 +2304,8 @@ impl AppState {
     }
 
     fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
+        self.undo
+            .refuse("tags and favorites (set or clear them again instead)");
         let (sources, tags) = (self.library.sources.clone(), self.library.tags.clone());
         self.library.spawn_try("keel-library-tag", "Tag", move |b| {
             b.set_tag(&sources, &tags, &targets, tag, on)?;

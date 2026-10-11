@@ -362,6 +362,29 @@ impl Planned {
         }
     }
 
+    /// For undo: the targets that existed before (shown paths: a Skip leaves or merges
+    /// them), and whether the plan deletes for good.
+    pub fn undo_facts(&self) -> (Vec<String>, bool) {
+        match self {
+            Planned::Local(p) => (
+                (p.warnings.iter())
+                    .filter_map(|w| match w {
+                        keel_core::Warning::Exists { path, .. } => Some(path.display()),
+                        _ => None,
+                    })
+                    .collect(),
+                (p.warnings.iter()).any(|w| matches!(w, keel_core::Warning::Permanent { .. })),
+            ),
+            Planned::Daemon(p) => (
+                (p.warnings.iter())
+                    .filter(|w| w.kind == "exists")
+                    .filter_map(|w| w.path.clone())
+                    .collect(),
+                p.warnings.iter().any(|w| w.kind == "permanent"),
+            ),
+        }
+    }
+
     /// One line per warning.
     pub fn warnings(&self, sources: &[SourceSummary]) -> Vec<String> {
         match self {

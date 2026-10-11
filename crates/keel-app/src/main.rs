@@ -46,6 +46,7 @@ mod term_pane;
 mod theme;
 mod toast;
 mod trash_ui;
+mod undo; // Ctrl+Z for file operations
 mod update;
 mod video_player;
 mod view_columns;

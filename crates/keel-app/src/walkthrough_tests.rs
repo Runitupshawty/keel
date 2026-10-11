@@ -965,10 +965,75 @@ fn bulk_rename_and_undo() {
     assert!(wait(&mut h, 10, &|s| names(s, 0).contains(&todo)));
     // Undo from the command palette.
     key(&mut h, CMD_SHIFT, Key::P);
-    type_text(&mut h, "undo bulk");
+    type_text(&mut h, "undo rename");
     key(&mut h, NONE, Key::Enter);
     let back = |a: &Path| a.join("budget.csv").exists() && a.join("todo.txt").exists();
     assert!(wait(&mut h, 10, &|_| back(&a)));
+}
+
+/// Ctrl+Z: F2 rename then Ctrl+Z brings the name back (Ctrl+Z while typing a name stays
+/// the text box's own); a move's toast has an Undo button whose preview moves it back.
+#[test]
+fn undo_rename_and_move() {
+    let dir = scratch("undo");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let mut h = app(&a, &b);
+    key(&mut h, CMD, Key::Z);
+    assert!(wait(&mut h, 5, &|s| toast_texts(s)
+        .contains(&"Nothing to undo".to_owned())));
+    click_row(&mut h, "todo.txt", 0, NONE);
+    key(&mut h, NONE, Key::F2);
+    type_text(&mut h, "chores");
+    key(&mut h, NONE, Key::Enter);
+    let chores = "chores.txt".to_owned();
+    assert!(wait(&mut h, 10, &|s| names(s, 0).contains(&chores)));
+    assert!(wait(&mut h, 10, &|s| s.undo.label().is_some()), "recorded");
+    let renamed = format!("Renamed todo.txt to {chores}");
+    assert!(toast_texts(s(&h)).contains(&renamed), "the toast says so");
+    // In the rename box Ctrl+Z is the text's undo: no file comes back.
+    click_row(&mut h, "notes.md", 0, NONE);
+    key(&mut h, NONE, Key::F2);
+    type_text(&mut h, "x");
+    key(&mut h, CMD, Key::Z);
+    key(&mut h, NONE, Key::Escape);
+    h.run_steps(5);
+    assert!(a.join("chores.txt").exists() && a.join("notes.md").exists());
+    // In the list it is file undo: the old name is back, with no question asked.
+    key(&mut h, CMD, Key::Z);
+    assert!(wait(&mut h, 10, &|_| a.join("todo.txt").exists()));
+    assert!(!a.join("chores.txt").exists());
+    shot(&mut h, "undo-rename");
+
+    // A move, then its toast's Undo: the preview, then back.
+    let paths = vec![VPath::local(a.join("todo.txt"))];
+    h.input_mut().modifiers = Modifiers::SHIFT;
+    h.step();
+    let (from, dst) = (Some((0, VPath::local(&a))), VPath::local(&b));
+    sm(&mut h).run(1, Action::Drop { paths, from, dst });
+    h.input_mut().modifiers = NONE;
+    assert!(wait(&mut h, 20, &|_| b.join("todo.txt").exists()));
+    let moved = format!("Moved 1 item to {}", VPath::local(&b).display());
+    assert!(wait(&mut h, 10, &|s| toast_texts(s).contains(&moved)));
+    // The toast slides in first.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    h.run_steps(3);
+    click(&mut h, "Undo");
+    let question = format!("Undo move: 1 item back to {}?", VPath::local(&a).display());
+    let asked = wait(&mut h, 10, &|s| {
+        matches!(
+            &s.dialog,
+            Some(crate::dialogs::Dialog::Confirm { text, .. }) if *text == question
+        )
+    });
+    assert!(asked, "{:?}", toast_texts(s(&h)));
+    shot(&mut h, "undo-move-preview");
+    click_last(&mut h, "Undo");
+    assert!(wait(&mut h, 20, &|_| a.join("todo.txt").exists()));
+    assert!(!b.join("todo.txt").exists());
+    assert_eq!(
+        read(&a.join("todo.txt")),
+        read(&demo().join("Documents/todo.txt"))
+    );
 }
 
 /// Ctrl+Shift+N and the palette's New file: the dialog, Create, the new row.
@@ -2164,4 +2229,108 @@ fn recycle_bin_restore_and_purge() {
     let done = s(&h).jobs.list[0].done.as_ref().map(|r| r.is_ok());
     assert_eq!(done, Some(true), "purged");
     assert!(!a.join(&name).exists());
+}
+
+/// The live check of undo, in the harness: rename, move between panes, copy, new folder
+/// and delete, then Ctrl+Z five times. Each comes back, and the Recycle Bin / Trash no
+/// longer holds the deleted file (the copy and the new folder go there; they are purged
+/// at the end). Ignored: it uses the real Recycle Bin.
+#[test]
+#[ignore]
+fn undo_five_operations() {
+    let dir = scratch("undo5");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let doomed = format!("keel-trash-test-walk-{}.txt", std::process::id());
+    std::fs::write(a.join(&doomed), "bring me back").unwrap();
+    let before = (tree_of(&a), tree_of(&b));
+    let mut h = build(boot(&a, &b, Default::default()), SIZE, false);
+    let settle = |h: &mut H| {
+        assert!(wait(h, 30, &job_done));
+        sm(h).jobs.list.clear();
+        sm(h).toasts.list.clear();
+        sm(h).active = 0;
+        h.run_steps(3);
+    };
+    // 1. F2 rename.
+    click_row(&mut h, "notes.md", 0, NONE);
+    key(&mut h, NONE, Key::F2);
+    type_text(&mut h, "renamed");
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|_| a.join("renamed.md").exists()));
+    assert!(wait(&mut h, 10, &|s| s.undo.label().is_some()));
+    // 2. Move to the other pane, 3. copy there.
+    for (name, mv) in [("todo.txt", true), ("garden.rs", false)] {
+        let paths = vec![VPath::local(a.join(name))];
+        h.input_mut().modifiers = if mv { Modifiers::SHIFT } else { NONE };
+        h.step();
+        let (from, dst) = (Some((0, VPath::local(&a))), VPath::local(&b));
+        sm(&mut h).run(1, Action::Drop { paths, from, dst });
+        h.input_mut().modifiers = NONE;
+        settle(&mut h);
+        assert!(b.join(name).exists() && a.join(name).exists() != mv);
+    }
+    // 4. New folder, 5. delete.
+    key(&mut h, CMD_SHIFT, Key::N);
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|_| a.join("New folder").is_dir()));
+    assert!(wait(&mut h, 10, &|s| names(s, 0).contains(&doomed)));
+    sm(&mut h).tab_mut(0).click(&doomed, false, false);
+    key(&mut h, NONE, Key::Delete);
+    click(&mut h, "Move to trash");
+    settle(&mut h);
+    assert!(!a.join(&doomed).exists());
+    assert_eq!(s(&h).undo.label().as_deref(), Some("Undo delete"));
+    // Ctrl+Z five times: each preview confirmed, the rename at once.
+    let since = std::time::SystemTime::now();
+    for what in ["delete", "new folder", "copy", "move", "rename"] {
+        assert_eq!(s(&h).undo.label(), Some(format!("Undo {what}")));
+        key(&mut h, CMD, Key::Z);
+        if what != "rename" {
+            let asked = |s: &AppState| {
+                matches!(&s.dialog, Some(crate::dialogs::Dialog::Confirm { text, .. })
+                    if text.starts_with(&format!("Undo {what}: ")))
+            };
+            assert!(wait(&mut h, 30, &asked), "{what}: {:?}", toast_texts(s(&h)));
+            click_last(&mut h, "Undo");
+        }
+        settle(&mut h);
+        let done = s(&h).jobs.list.is_empty();
+        assert!(done, "{what}");
+    }
+    assert_eq!((tree_of(&a), tree_of(&b)), before, "everything is back");
+    assert_eq!(read(&a.join(&doomed)), "bring me back");
+    // The deleted file left the Recycle Bin; the copy and the new folder went there.
+    let bin = |p: &Path| keel_vfs::trashbin::find_trashed(&[p.to_path_buf()], since).unwrap();
+    assert_eq!(bin(&a.join(&doomed)), [None]);
+    // (macOS: the Trash does not say where its items came from.)
+    for p in [b.join("garden.rs"), a.join("New folder")]
+        .iter()
+        .filter(|_| keel_vfs::trashbin::KNOWS_ORIGIN)
+    {
+        let found = bin(p);
+        let [Some(item)] = found.as_slice() else {
+            panic!("{} is not in the bin", p.display());
+        };
+        keel_vfs::TrashProvider
+            .purge_paths(std::slice::from_ref(item))
+            .unwrap();
+    }
+}
+
+/// Names and bytes under `dir`, sorted.
+fn tree_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .map(|p| {
+            let bytes = if p.is_file() {
+                std::fs::read(&p).unwrap()
+            } else {
+                Vec::new()
+            };
+            (p.file_name().unwrap().to_string_lossy().into_owned(), bytes)
+        })
+        .collect();
+    out.sort();
+    out
 }

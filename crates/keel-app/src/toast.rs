@@ -57,6 +57,12 @@ impl Toasts {
         }
     }
 
+    /// Closes the toasts whose button runs `action` (it no longer can).
+    pub fn drop_action(&mut self, action: &Action) {
+        self.list
+            .retain(|t| t.action.as_ref().is_none_or(|(_, a)| a != action));
+    }
+
     /// A question: `button` runs `action`, `dismiss` closes it (kept 30 s).
     pub fn ask(&mut self, text: impl Into<String>, button: &str, action: Action, dismiss: &str) {
         self.offer(text, button, action);
