@@ -322,6 +322,9 @@ pub(crate) fn render(ctx: &Ctx, p: RenderParams) -> Result<Rendered> {
         Preview::Audio {
             cover: Some(picture),
             ..
+        }
+        | Preview::Font {
+            sample: picture, ..
         } => image(picture, max_px, None)?,
         Preview::Audio {
             tags,

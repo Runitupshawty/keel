@@ -20,7 +20,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained, pulled by syntect 5.3 (`dump-load`: its bundled syntax and theme dumps, also via two-face); no syntect feature avoids it." },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (proc macro, build time only), pulled by metal 0.31 (wgpu-hal 24, eframe 0.31), pulp 0.22 (exr, image) and rav1e 0.8 (ravif, image)." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz 0.18 unmaintained, pulled by usvg 0.44 <- resvg 0.44 (keel-preview SVG text)." },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained: 0.24 via fontdb 0.22 and rustybuzz 0.18 (usvg/resvg 0.44, keel-preview), 0.25 via owned_ttf_parser <- ab_glyph <- epaint 0.31 (egui)." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained: 0.24 via fontdb 0.22 and rustybuzz 0.18 (usvg/resvg 0.44, keel-preview), 0.25 via owned_ttf_parser <- ab_glyph <- epaint 0.31 (egui), and directly in keel-preview (font preview names, the same 0.25 build). No maintained drop-in yet (skrifa is a different API); font files are fuzzed (`font` target)." },
 ]
 
 [licenses]

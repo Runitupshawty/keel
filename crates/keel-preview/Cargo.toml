@@ -30,6 +30,9 @@ keel-vfs = { path = "../keel-vfs", default-features = false }
 keel-core = { path = "../keel-core", default-features = false }
 # ffprobe's JSON (audio files).
 serde_json.workspace = true
+# Font samples: egui's rasterizer and the font parser under it (both already built for egui).
+ab_glyph = "0.2"
+ttf-parser = "0.25"
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 wait-timeout = "0.2"
 # Legacy (Windows-1252) text files.
@@ -38,4 +41,6 @@ tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# egui's bundled fonts, as font preview fixtures.
+epaint_default_fonts = "0.31"
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }

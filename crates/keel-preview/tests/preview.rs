@@ -863,3 +863,25 @@ fn audio_files_show_tags_cover_and_waveform() {
         Preview::Error(_)
     ));
 }
+
+/// TrueType files show a sample with their names; woff and woff2 are not previewed.
+#[test]
+fn fonts_show_a_sample() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Hack-Regular.ttf");
+    std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let result = preview(&temp_request(&path, "ttf", 480));
+    let Preview::Font { sample, name, .. } = result else {
+        panic!("expected a font preview, got {result:?}");
+    };
+    assert_eq!(name, "Hack Regular");
+    assert_eq!(sample.w, 480);
+    assert!(accepts("otf") && accepts("TTC"));
+    assert!(!accepts("woff") && !accepts("woff2"));
+    let bad = dir.path().join("bad.otf");
+    std::fs::write(&bad, b"OTTO and then nothing").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "otf", 64)),
+        Preview::Error(_)
+    ));
+}

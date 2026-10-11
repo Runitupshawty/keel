@@ -4947,10 +4947,12 @@ dependencies = [
 name = "keel-preview"
 version = "0.18.0"
 dependencies = [
+ "ab_glyph",
  "calamine",
  "csv",
  "docx-rs",
  "encoding_rs",
+ "epaint_default_fonts",
  "image",
  "keel-core",
  "keel-vfs",
@@ -4961,6 +4963,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "tempfile",
+ "ttf-parser 0.25.1",
  "two-face",
  "wait-timeout",
  "zip 2.4.2",

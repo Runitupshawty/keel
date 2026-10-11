@@ -71,6 +71,7 @@ fn weight(p: &Preview) -> usize {
             rgba(r)
         }
         Preview::Audio { cover, wave, .. } => cover.iter().chain(wave).map(rgba).sum(),
+        Preview::Font { sample, .. } => rgba(sample),
         Preview::Text { lines, .. } => lines
             .iter()
             .flat_map(|l| l.iter().map(|(_, s)| s.len() + 8))
@@ -253,7 +254,9 @@ impl PreviewPanel {
             Some(
                 Preview::Image(r) | Preview::Pdf { image: r, .. } | Preview::Video { thumb: r, .. },
             ) => load(0, r),
-            Some(Preview::Audio { cover: Some(r), .. }) => load(0, r),
+            Some(Preview::Audio { cover: Some(r), .. } | Preview::Font { sample: r, .. }) => {
+                load(0, r)
+            }
             _ => None,
         };
         self.doc_tex = match &preview {
@@ -380,6 +383,13 @@ impl PreviewPanel {
                     let wave = self.doc_tex.first();
                     audio_controls(ui, &mut self.player, resolve, wave, *duration_s);
                 });
+            }
+            Preview::Font { name, info, .. } => {
+                ui.strong(name);
+                ui.weak(info);
+                if let Some(t) = &self.tex {
+                    egui::ScrollArea::vertical().show(ui, |ui| fit(ui, t));
+                }
             }
             Preview::Table {
                 headers,
@@ -787,6 +797,15 @@ mod tests {
                 duration_s: 0.0,
                 tags: vec![],
                 meta: String::new(),
+            },
+            Preview::Font {
+                sample: Rgba {
+                    w: 3,
+                    h: 2,
+                    data: vec![255; 24],
+                },
+                name: "Keel Test Regular".into(),
+                info: "TrueType · 3 glyphs".into(),
             },
             Preview::Hex {
                 head: (0..40).collect(),

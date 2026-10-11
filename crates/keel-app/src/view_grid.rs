@@ -107,7 +107,8 @@ impl Thumbs {
             Preview::Image(r)
             | Preview::Pdf { image: r, .. }
             | Preview::Video { thumb: r, .. }
-            | Preview::Audio { cover: Some(r), .. } => Some(r),
+            | Preview::Audio { cover: Some(r), .. }
+            | Preview::Font { sample: r, .. } => Some(r),
             _ => None,
         };
         let tex = rgba

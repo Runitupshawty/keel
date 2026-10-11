@@ -2,6 +2,7 @@
 
 mod audio;
 mod docx;
+mod font;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -75,6 +76,14 @@ pub enum Preview {
         /// "flac · 44.1 kHz · stereo · 912 kb/s".
         meta: String,
     },
+    /// A font file: a sample sentence drawn in it.
+    Font {
+        sample: Rgba,
+        /// Family and style ("Ubuntu Light").
+        name: String,
+        /// "TrueType · 1,234 glyphs · first of 4 fonts".
+        info: String,
+    },
     Hex {
         head: Vec<u8>,
         size: u64,
@@ -121,6 +130,7 @@ pub fn accepts(ext: &str) -> bool {
         || odf::accepts(&ext)
         || video::accepts(&ext)
         || audio::accepts(&ext)
+        || font::accepts(&ext)
 }
 
 pub fn init_pdfium(dll_dir: &Path) {
@@ -190,6 +200,9 @@ pub(crate) fn preview_inner(req: &Request) -> Preview {
     }
     if audio::accepts(&ext) {
         return audio::render(req);
+    }
+    if font::accepts(&ext) {
+        return font::render(req);
     }
     hex::render(req, size)
 }

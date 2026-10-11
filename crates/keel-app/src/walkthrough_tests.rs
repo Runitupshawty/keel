@@ -721,6 +721,7 @@ fn preview_kind(p: &keel_preview::Preview) -> String {
         Doc { .. } => "doc".into(),
         Video { .. } => "video".into(),
         Audio { .. } => "audio".into(),
+        Font { .. } => "font".into(),
         Hex { .. } => "hex".into(),
         TooLarge(n) => format!("too large {n}"),
         Unsupported => "unsupported".into(),
