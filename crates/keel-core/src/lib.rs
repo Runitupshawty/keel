@@ -12,6 +12,8 @@
 //! `Jobs::subscribe` return at once. Protection calls (`volumes`, `redundancy`,
 //! `protection_summary`, …) may also look at a source's root.
 
+/// Merge, flatten and organize (folder operations through plans).
+mod arrange;
 /// Library backup and restore (`keel library backup` / `restore`).
 pub mod backup;
 mod db;
@@ -38,6 +40,7 @@ mod sync;
 mod tags;
 mod totals;
 
+pub use arrange::{attributes_text, FolderOp, OrganizeBy};
 pub use backup::{
     BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
 };

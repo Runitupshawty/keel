@@ -29,6 +29,24 @@ pub enum Op {
     Create(bool),
     /// Delete to the Recycle Bin or Trash.
     Trash,
+    /// Merge, flatten or organize: the items go back; the folders in `removed` (emptied
+    /// and removed by it) are made again first, those in `made` removed after when empty.
+    Arrange {
+        what: Arranged,
+        made: Vec<VPath>,
+        removed: Vec<VPath>,
+    },
+    /// Attributes set: each item gets these back.
+    Attributes(Vec<(VPath, keel_vfs::Attributes)>),
+    /// A link made (`now`): removed again (a hard link goes to the trash).
+    Link,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Arranged {
+    Merge,
+    Flatten,
+    Organize,
 }
 
 /// One item an operation left behind.
@@ -172,6 +190,13 @@ impl Entry {
             Op::Create(true) => "new folder",
             Op::Create(false) => "new file",
             Op::Trash => "delete",
+            Op::Arrange { what, .. } => match what {
+                Arranged::Merge => "merge",
+                Arranged::Flatten => "flatten",
+                Arranged::Organize => "organize",
+            },
+            Op::Attributes(_) => "attributes",
+            Op::Link => "link",
         }
     }
 
@@ -208,6 +233,13 @@ impl Entry {
             Op::Copy => format!("Copied {n} {}", Self::place(self.nows(), "to", "")),
             Op::Create(_) => format!("Created {}", self.items[0].now.name()),
             Op::Trash => format!("Moved {n} to the trash"),
+            Op::Arrange { what, .. } => match what {
+                Arranged::Merge => format!("Merged {n} {}", Self::place(self.nows(), "into", "")),
+                Arranged::Flatten => format!("Flattened: {n} moved up"),
+                Arranged::Organize => format!("Organized {n} into folders"),
+            },
+            Op::Attributes(_) => format!("Changed the attributes of {n}"),
+            Op::Link => format!("Made the link {}", self.items[0].now.name()),
         }
         .trim_end()
         .to_owned()
@@ -241,6 +273,13 @@ impl Entry {
                 "Undo delete: restore {n} {}?",
                 Self::place(self.wases(), "to", "to where they were")
             ),
+            Op::Arrange { .. } => format!(
+                "Undo {}: move {n} back {}?",
+                self.noun(),
+                Self::place(self.wases(), "to", "to where they were")
+            ),
+            Op::Attributes(_) => format!("Undo attributes: set {n} back as they were?"),
+            Op::Link => format!("Undo link: remove {}?", self.items[0].now.name()),
         }
     }
 
@@ -289,10 +328,16 @@ impl Entry {
             if !vacated && stat(was).is_some() {
                 return Err(Refusal::transient(format!("{} is taken", was.display())));
             }
-            // Into its old folder, which must still be there (the Recycle Bin makes it).
-            let into_folder = match self.op {
+            // Into its old folder, which must still be there (the Recycle Bin makes it, an
+            // undone merge or flatten makes again the folders it removed).
+            let into_folder = match &self.op {
                 Op::Move => true,
                 Op::Trash => it.now.scheme == "file",
+                Op::Arrange { removed, .. } => !removed.iter().any(|r| {
+                    was.path
+                        .strip_prefix(r.path.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+                }),
                 _ => false,
             };
             if into_folder {
@@ -453,9 +498,37 @@ pub struct Planned {
     pub since: std::time::SystemTime,
     /// The journal's generation when it started.
     pub generation: u64,
+    /// A folder operation's moves (item, where it goes) as previewed, in order.
+    pub moves: Vec<(VPath, VPath)>,
+    /// The folders it makes (organize) and removes when emptied (merge, flatten).
+    pub made: Vec<VPath>,
+    pub prune: Vec<VPath>,
+    /// Read just before it ran: the targets of `moves` that existed (an item that merged
+    /// into one stays), and the attributes an attribute plan changes.
+    pub taken: Vec<VPath>,
+    pub before: Vec<(VPath, keel_vfs::Attributes)>,
 }
 
 impl Planned {
+    /// Reads, on a worker just before the plan runs, what undo needs to know about the disk
+    /// as it was: the targets of a folder operation's moves that exist, an attribute
+    /// plan's attributes.
+    pub fn read_before(&mut self, stat: impl Fn(&VPath) -> Option<Stamp>) {
+        self.taken = (self.moves.iter())
+            .map(|(_, to)| to)
+            .filter(|to| stat(to).is_some())
+            .cloned()
+            .collect();
+        if let keel_core::Op::SetAttributes { paths, .. } = &self.op {
+            self.before = (paths.iter())
+                .filter_map(|p| {
+                    let a = keel_vfs::fsattr::attributes(&p.to_local_path()?).ok()?;
+                    Some((p.clone(), a))
+                })
+                .collect();
+        }
+    }
+
     /// What the operation did, as the disk shows it now that its job ended (the part that
     /// was done, when it failed); or why it cannot be undone.
     pub fn done(&self, stat: impl Fn(&VPath) -> Option<Stamp>) -> Result<(Op, Vec<Item>), String> {
@@ -502,6 +575,72 @@ impl Planned {
                 }
                 let steps = vec![(path.clone(), dir.join(new_name))];
                 Ok((Op::Rename(steps.clone()), renamed(&steps, stat)))
+            }
+            L::Arrange {
+                what, on_conflict, ..
+            } => {
+                let paths = self.moves.iter().flat_map(|(a, b)| [a, b]);
+                if paths.clone().any(|p| p.to_local_path().is_none()) {
+                    return Err("folder operations on remote hosts and cloud accounts".into());
+                }
+                if *on_conflict == keel_core::OnConflict::Overwrite {
+                    return Err("files were replaced by Overwrite".into());
+                }
+                // In order: of two items planned for one name, the first took it.
+                let mut seen = HashSet::new();
+                let mut items = Vec::new();
+                for (from, to) in &self.moves {
+                    if !seen.insert(to) || self.taken.contains(to) || stat(from).is_some() {
+                        continue;
+                    }
+                    if let Some(stamp) = stat(to) {
+                        items.push(Item {
+                            now: to.clone(),
+                            was: Some(from.clone()),
+                            stamp: Some(stamp),
+                        });
+                    }
+                }
+                let what = match what {
+                    keel_core::FolderOp::Merge { .. } => Arranged::Merge,
+                    keel_core::FolderOp::Flatten { .. } => Arranged::Flatten,
+                    keel_core::FolderOp::Organize { .. } => Arranged::Organize,
+                };
+                let removed = (self.prune.iter())
+                    .filter(|d| stat(d).is_none())
+                    .cloned()
+                    .collect();
+                let op = Op::Arrange {
+                    what,
+                    made: self.made.clone(),
+                    removed,
+                };
+                Ok((op, items))
+            }
+            L::SetAttributes { paths, .. } => {
+                if self.before.len() < paths.len() {
+                    return Err("the attributes before could not be read".into());
+                }
+                let items = (self.before.iter())
+                    .map(|(p, _)| Item {
+                        now: p.clone(),
+                        was: None,
+                        stamp: None,
+                    })
+                    .collect();
+                Ok((Op::Attributes(self.before.clone()), items))
+            }
+            L::Link { link, .. } => {
+                let items = match stat(link) {
+                    Some(_) => vec![Item {
+                        now: link.clone(),
+                        was: None,
+                        // A junction's folder changes with what is in it: not compared.
+                        stamp: None,
+                    }],
+                    None => Vec::new(),
+                };
+                Ok((Op::Link, items))
             }
             L::Delete { paths } => {
                 if paths.iter().any(|p| p.to_local_path().is_none()) {
@@ -588,43 +727,51 @@ pub fn run(
         Op::Move => {
             for it in &e.items {
                 step(&mut p, &it.now)?;
-                let was = it.was.as_ref().context("a move records where items were")?;
-                let dir = was.parent().context("moved from a folder")?;
-                if it.now.name() == was.name() {
-                    // A no-replace rename first: on one volume it is atomic and never lands
-                    // in (or merges into) something that appeared at the old place since.
-                    let back = provider(router, was)?;
-                    if back.rename_noreplace(&it.now, was).is_err() {
-                        anyhow::ensure!(
-                            stat_fn(router)(was).is_none(),
-                            "Can't undo: {} is taken",
-                            was.display()
-                        );
-                        // Across volumes. Skip never overwrites a file, but would merge into
-                        // a folder made at the old place since the check just above.
-                        // ponytail: check-then-transfer window; a staged name and a
-                        // no-replace rename if it ever matters.
-                        keel_vfs::ops::transfer(
-                            std::slice::from_ref(&it.now),
-                            &dir,
-                            true,
-                            Conflict::Skip,
-                            &|_| {},
-                            cancel,
-                            router,
-                        )?;
-                    }
-                } else {
-                    // Moved under a new name (Keep both): the same volume renames back.
-                    provider(router, was)?.rename(&it.now, was)?;
+                move_back(it, router, cancel)?;
+                p.done_items += 1;
+            }
+        }
+        Op::Arrange { made, removed, .. } => {
+            // Shallowest first: a folder before the ones inside it.
+            let mut again: Vec<&VPath> = removed.iter().collect();
+            again.sort_by_key(|d| d.path.matches('/').count());
+            for d in again {
+                let local = d
+                    .to_local_path()
+                    .context("folder operations undo locally")?;
+                std::fs::create_dir_all(&local).with_context(|| d.display())?;
+            }
+            for it in &e.items {
+                step(&mut p, &it.now)?;
+                move_back(it, router, cancel)?;
+                p.done_items += 1;
+            }
+            for d in made {
+                // Only when empty: whatever came in since stays.
+                if let Some(local) = d.to_local_path() {
+                    let _ = std::fs::remove_dir(local);
                 }
-                let stat = stat_fn(router);
-                anyhow::ensure!(
-                    stat(was).is_some() && stat(&it.now).is_none(),
-                    "{} was left in {}",
-                    it.now.name(),
-                    it.now.parent().map(|d| d.display()).unwrap_or_default()
-                );
+            }
+        }
+        Op::Attributes(before) => {
+            for (path, attrs) in before {
+                step(&mut p, path)?;
+                let local = path.to_local_path().context("attributes are local")?;
+                keel_vfs::fsattr::set_attributes(&local, attrs)?;
+                p.done_items += 1;
+            }
+        }
+        Op::Link => {
+            for it in &e.items {
+                step(&mut p, &it.now)?;
+                let local = it.now.to_local_path().context("links are local")?;
+                // A symbolic link or junction holds nothing: it goes, never what it points
+                // to. A hard link is the file under a second name: to the trash.
+                if std::fs::symlink_metadata(&local)?.file_type().is_symlink() {
+                    keel_vfs::local::delete_permanently(&it.now)?;
+                } else {
+                    keel_vfs::local::trash(&it.now)?;
+                }
                 p.done_items += 1;
             }
         }
@@ -660,6 +807,48 @@ pub fn run(
         }
     }
     report(p);
+    Ok(())
+}
+
+/// Moves a moved item back where it was (never over anything that took its place).
+fn move_back(it: &Item, router: &Router, cancel: &AtomicBool) -> anyhow::Result<()> {
+    let was = it.was.as_ref().context("a move records where items were")?;
+    let dir = was.parent().context("moved from a folder")?;
+    if it.now.name() == was.name() {
+        // A no-replace rename first: on one volume it is atomic and never lands
+        // in (or merges into) something that appeared at the old place since.
+        let back = provider(router, was)?;
+        if back.rename_noreplace(&it.now, was).is_err() {
+            anyhow::ensure!(
+                stat_fn(router)(was).is_none(),
+                "Can't undo: {} is taken",
+                was.display()
+            );
+            // Across volumes. Skip never overwrites a file, but would merge into
+            // a folder made at the old place since the check just above.
+            // ponytail: check-then-transfer window; a staged name and a
+            // no-replace rename if it ever matters.
+            keel_vfs::ops::transfer(
+                std::slice::from_ref(&it.now),
+                &dir,
+                true,
+                Conflict::Skip,
+                &|_| {},
+                cancel,
+                router,
+            )?;
+        }
+    } else {
+        // Moved under a new name (Keep both): the same volume renames back.
+        provider(router, was)?.rename(&it.now, was)?;
+    }
+    let stat = stat_fn(router);
+    anyhow::ensure!(
+        stat(was).is_some() && stat(&it.now).is_none(),
+        "{} was left in {}",
+        it.now.name(),
+        it.now.parent().map(|d| d.display()).unwrap_or_default()
+    );
     Ok(())
 }
 

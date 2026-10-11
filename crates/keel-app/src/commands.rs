@@ -4,7 +4,9 @@
 //! exit codes are 0 (ok), 1 (the operation failed) and 2 (usage). Mutating subcommands show the preview and then confirm it themselves (the
 //! command line is the confirmation), except `keel plan`, whose plan `keel execute` runs.
 
-use crate::cli::{Command, Conflict, DaemonCmd, LibraryCmd, PlanCmd, SourcesCmd, TagCmd};
+use crate::cli::{
+    Command, Conflict, DaemonCmd, LibraryCmd, LinkKind, OrganizeBy, PlanCmd, SourcesCmd, TagCmd,
+};
 use keel_api::client::Client;
 use keel_api::config::HostConfig;
 use keel_api::host::{Host, NetSetup};
@@ -424,24 +426,92 @@ fn command(
                     Conflict::Rename => "rename_new",
                 })
             };
-            let params = match p {
+            let (method, params) = match p {
                 PlanCmd::Copy {
                     src,
                     to,
                     on_conflict,
-                } => json!({
-                    "op": "copy", "paths": abs_all(&src), "to": abs(&to), "on_conflict": conflict(on_conflict),
-                }),
+                } => (
+                    "plan",
+                    json!({
+                        "op": "copy", "paths": abs_all(&src), "to": abs(&to), "on_conflict": conflict(on_conflict),
+                    }),
+                ),
                 PlanCmd::Move {
                     src,
                     to,
                     on_conflict,
-                } => json!({
-                    "op": "move", "paths": abs_all(&src), "to": abs(&to), "on_conflict": conflict(on_conflict),
-                }),
-                PlanCmd::Delete { paths } => json!({"op": "delete", "paths": abs_all(&paths)}),
+                } => (
+                    "plan",
+                    json!({
+                        "op": "move", "paths": abs_all(&src), "to": abs(&to), "on_conflict": conflict(on_conflict),
+                    }),
+                ),
+                PlanCmd::Delete { paths } => {
+                    ("plan", json!({"op": "delete", "paths": abs_all(&paths)}))
+                }
+                PlanCmd::Merge {
+                    folders,
+                    into,
+                    on_conflict,
+                } => (
+                    "plan.merge",
+                    json!({
+                        "paths": abs_all(&folders), "into": abs(&into), "on_conflict": conflict(on_conflict),
+                    }),
+                ),
+                PlanCmd::Flatten {
+                    folder,
+                    on_conflict,
+                } => (
+                    "plan.flatten",
+                    json!({
+                        "path": abs(&folder), "on_conflict": conflict(on_conflict),
+                    }),
+                ),
+                PlanCmd::Organize {
+                    folder,
+                    by,
+                    on_conflict,
+                } => {
+                    let by = match by {
+                        OrganizeBy::Type => "type",
+                        OrganizeBy::Year => "year",
+                        OrganizeBy::Month => "month",
+                    };
+                    (
+                        "plan.organize",
+                        json!({
+                            "path": abs(&folder), "by": by, "on_conflict": conflict(on_conflict),
+                        }),
+                    )
+                }
+                PlanCmd::Attrs {
+                    paths,
+                    hidden,
+                    readonly,
+                    mode,
+                } => (
+                    "plan.set_attributes",
+                    json!({
+                        "paths": abs_all(&paths), "hidden": hidden, "readonly": readonly, "mode": mode,
+                    }),
+                ),
+                PlanCmd::Link { target, link, kind } => {
+                    let kind = match kind {
+                        LinkKind::Symlink => "symlink",
+                        LinkKind::Junction => "junction",
+                        LinkKind::Hardlink => "hardlink",
+                    };
+                    (
+                        "plan.link",
+                        json!({
+                            "target": abs(&target), "link": abs(&link), "kind": kind,
+                        }),
+                    )
+                }
             };
-            let preview = b.call("plan", params)?;
+            let preview = b.call(method, params)?;
             if json {
                 return Ok(Some(preview));
             }

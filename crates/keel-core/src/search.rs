@@ -55,7 +55,7 @@ impl KindFilter {
         })
     }
 
-    fn extensions(self) -> &'static [&'static str] {
+    pub(crate) fn extensions(self) -> &'static [&'static str] {
         match self {
             KindFilter::File | KindFilter::Folder => &[],
             KindFilter::Image => &[

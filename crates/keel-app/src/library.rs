@@ -726,6 +726,9 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
 
 /// The dialog's headline: "Delete 3 files (1.2 MB)".
 pub fn plan_summary(plan: &Plan) -> String {
+    if let Some(headline) = plan.headline() {
+        return headline;
+    }
     let (files, bytes) = plan
         .changes
         .iter()
@@ -735,6 +738,8 @@ pub fn plan_summary(plan: &Plan) -> String {
         Op::Move { .. } => "Move",
         Op::Delete { .. } => "Delete",
         Op::Rename { .. } => "Rename",
+        // Worded by `headline`.
+        _ => "Change",
     };
     let what = if files == 1 {
         "1 file".to_owned()
@@ -2306,7 +2311,8 @@ impl AppState {
                 dialog.running = true;
                 let plan = dialog.plan.clone();
                 let (existed, permanent) = plan.undo_facts();
-                let undo = match self.library.undo_op.take() {
+                let (moves, made, prune) = plan.arranged();
+                let mut undo = match self.library.undo_op.take() {
                     _ if permanent => {
                         self.undo.refuse(crate::state::PERMANENT);
                         None
@@ -2316,18 +2322,28 @@ impl AppState {
                         existed,
                         since: std::time::SystemTime::now(),
                         generation: self.undo.generation(),
+                        moves,
+                        made,
+                        prune,
+                        taken: Vec::new(),
+                        before: Vec::new(),
                     }),
                 };
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                self.library
-                    .spawn("keel-library-execute", move |b| match b.execute(plan) {
+                let router = self.router.clone();
+                self.library.spawn("keel-library-execute", move |b| {
+                    if let Some(u) = &mut undo {
+                        u.read_before(crate::undo::stat_fn(&router));
+                    }
+                    match b.execute(plan) {
                         Ok(Executed::Job(id)) => Some(LibMsg::OpStarted { id, undo }),
                         Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(fresh)),
                         Err(e) => {
                             worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
                             None
                         }
-                    });
+                    }
+                });
                 // The dialog closes; a refused plan comes back as `Changed`.
                 self.library.plan = None;
             }

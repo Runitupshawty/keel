@@ -87,7 +87,7 @@ pub fn tool(op: &Operation) -> Value {
         "inputSchema": schema,
         "annotations": {
             "title": op.name,
-            "readOnlyHint": !op.mutating && op.name != "plan",
+            "readOnlyHint": !op.mutating && op.name != "plan" && !op.name.starts_with("plan."),
             "destructiveHint": op.name == "execute" || op.name == "shares.revoke",
             "idempotentHint": !op.mutating,
             "openWorldHint": (["devices.", "shares.", "spacedrop."].iter().any(|p| op.name.starts_with(p))),

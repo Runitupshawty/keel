@@ -315,6 +315,32 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
         })
         .unwrap();
     assert!(!planned.warnings(&sources).is_empty(), "the last copy");
+    // A folder operation previews through its own operation; undo reads its moves back.
+    let docs_dir = s.files.path().join("docs");
+    let planned = b
+        .plan(Op::arrange(
+            keel_core::FolderOp::Organize {
+                folder: VPath::local(&docs_dir),
+                by: keel_core::OrganizeBy::Type,
+            },
+            keel_core::OnConflict::Skip,
+        ))
+        .unwrap();
+    assert!(matches!(planned, Planned::Daemon(_)));
+    assert!(
+        planned.summary().starts_with("Organize"),
+        "{}",
+        planned.summary()
+    );
+    let (moves, made, prune) = planned.arranged();
+    assert_eq!(moves.len(), 2, "{moves:?}");
+    assert_eq!(made, [VPath::local(docs_dir.join("Documents"))]);
+    assert!(prune.is_empty());
+    assert!(
+        planned.changes()[0].starts_with("Make folder"),
+        "{:?}",
+        planned.changes()
+    );
 
     // The Overview and the background work the window drives.
     let stats = b.stats().unwrap();
