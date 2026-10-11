@@ -24,6 +24,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Dragging rows out of the window on macOS and Linux did nothing (a known limitation since 0.5.0); it now starts a file drag to the app under the pointer.
+- `keel op plan.merge` (and `plan.flatten`, `plan.organize`, `plan.set_attributes`, `plan.link`) `--execute` was refused as "only reads", `keel op list` said they do not preview, and a terminal showed their preview as raw JSON; they preview and execute like `plan`.
+- The agent skill said nothing changes without a preview: it now lists the operations that act at once (`shares.revoke`, `library.sync`, `recents.note`, `activity.note`) for the agent to ask about first, the `deletes_permanent` warning and error -32007. `library.sync` is marked as changing the library in `keel op list` and `keel mcp`.
 
 ### Known limitations
 

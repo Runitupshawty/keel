@@ -25,7 +25,14 @@ configuration folder (the read operations refuse it anyway).
 
 ## The two-step protocol: preview, then execute
 
-Nothing in Keel changes without a preview.
+Almost nothing in Keel changes without a preview. These operations act at once, with no
+preview: **ask the user first** and call them only on a clear yes.
+
+- `shares.revoke`: takes a paired device's access to a folder away.
+- `library.sync`: pulls tag, favorite, folder style and content-id changes from the
+  user's other devices and applies them to the library.
+- `recents.note` and `activity.note`: bookkeeping only (a file was opened, the user is
+  working); they change no file. Call them only when the user asks.
 
 1. **Preview.** Call the operation. A read (`search`, `list`, `stat`, `tags.list`,
    `library.stats`, `duplicates`, ...) answers at once. An operation that changes
@@ -87,8 +94,10 @@ elicitation cannot execute unless the server was started with `--allow-execute`,
    Bin or Trash where there is one. A preview warning of kind `permanent` (an SFTP host,
    a cloud account or another place without a trash) means the files cannot be brought
    back: say so plainly, and execute only when the user explicitly said to delete those
-   files permanently. A `last_copy` warning on a delete or move means Keel knows no other
-   copy of that content: say so before asking.
+   files permanently. A `deletes_permanent` warning (on `shares.grant` with read-write
+   access, or `mounts.add`) means deletes made through that share or mount are for good
+   too: say so before asking. A `last_copy` warning on a delete or move means Keel knows
+   no other copy of that content: say so before asking.
 3. **Mention every warning** (`last_copy`, `single_domain`, `offline_source`,
    `not_indexed`, `exists`, `content_unverified`, `creates_tag`, ...), and do not
    execute a plan whose warnings the user has not seen.
@@ -112,6 +121,7 @@ in words; read it before retrying.
 | -32004 | the files changed since the preview; `data` is the new preview | show the new preview and ask again |
 | -32005 | devices are off in Keel's settings | tell the user; do not change settings yourself |
 | -32006 | timed out | the operation may still finish: check `jobs.list` before retrying |
+| -32007 | not signed in to keel-daemon's web or WebSocket server (no or a wrong token, or it was rotated) | tell the user; never look for the token yourself |
 | -32008 | mounts need keel-daemon | suggest `keel daemon start` |
 | -32000 | the operation failed (I/O, a locked library) | report the message; "already open" means a Keel window holds the library: suggest `keel daemon start` so both can share it |
 

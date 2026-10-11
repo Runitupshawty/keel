@@ -63,10 +63,12 @@ fn registry_is_preview_first() {
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "duplicate operation names");
     for op in OPS {
-        let direct = ["shares.revoke", "execute", "recents.note", "activity.note"];
-        let direct = direct.contains(&op.name);
+        let direct = crate::DIRECT.contains(&op.name);
         if op.mutating && !direct {
             assert!(op.previewed(), "{} mutates without a preview", op.name);
+        }
+        if direct {
+            assert!(op.mutating && !op.previewed(), "{}", op.name);
         }
         if op.previewed() {
             assert!(op.mutating, "{}", op.name);
@@ -1934,6 +1936,16 @@ fn agent_skill_copy_matches_and_names_real_operations() {
         })
         .collect();
     assert!(named.contains(&"tags.set") && named.contains(&"jobs.info"));
+    // The operations that act without a preview are all listed, to ask the user first.
+    let protocol = doc.split("## The two-step protocol").nth(1).unwrap();
+    let listed = protocol.split("\n1. **Preview.**").next().unwrap();
+    for name in crate::DIRECT.iter().filter(|n| **n != "execute") {
+        assert!(
+            listed.contains(&format!("`{name}`")),
+            "the skill does not list {name} as acting without a preview"
+        );
+    }
+    assert!(doc.contains("`deletes_permanent`") && doc.contains("| -32007 |"));
     for name in named {
         assert!(
             find(name).is_some(),

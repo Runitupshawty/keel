@@ -728,6 +728,16 @@ fn op_runs_any_operation_with_preview_then_execute() {
     let job = doc(&["op", "execute", "--params", &ids.to_string()]);
     assert_eq!(job["status"], "done", "{job}");
     assert!(dst.path().join("notes.txt").exists());
+    // The folder operations preview too: `--execute` applies the flatten.
+    assert_eq!(find("plan.flatten")["previews"], true);
+    let flat = tempfile::tempdir().unwrap();
+    std::fs::create_dir(flat.path().join("sub")).unwrap();
+    std::fs::write(flat.path().join("sub").join("a.txt"), b"a").unwrap();
+    let params = json!({"path": s(flat.path()), "on_conflict": "skip"}).to_string();
+    let done = doc(&["op", "plan.flatten", "--params", &params, "--execute"]);
+    assert_eq!(done["preview"]["operation"], "plan", "{done}");
+    assert_eq!(done["executed"]["status"], "done", "{done}");
+    assert!(flat.path().join("a.txt").exists(), "{done}");
     // Usage: an unknown name, JSON that does not parse or is no object, --execute on a
     // read, both --params and --params-file.
     for args in [

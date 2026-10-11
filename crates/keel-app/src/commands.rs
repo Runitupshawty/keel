@@ -728,11 +728,6 @@ struct OpCall {
     execute: bool,
 }
 
-/// What previews: every previewed operation, and `plan` (file operations).
-fn previews(op: &keel_api::Operation) -> bool {
-    op.previewed() || op.name == "plan"
-}
-
 /// Task 58: `keel op <name>`: any operation of the API. A read prints its result; an
 /// operation that previews prints its preview, and with `--execute` applies exactly that
 /// preview (its plan id and input hash) after printing it. With `json` one document: the
@@ -761,7 +756,7 @@ fn op(cfg: &HostConfig, call: OpCall, json: bool, out: &mut Out) -> Result<(), F
     if !params.is_object() {
         return Err(Usage("the parameters must be a JSON object".into()).into());
     }
-    if call.execute && !previews(op) {
+    if call.execute && !op.previews() {
         let what = if op.mutating {
             "acts at once"
         } else {
@@ -783,7 +778,7 @@ fn op(cfg: &HostConfig, call: OpCall, json: bool, out: &mut Out) -> Result<(), F
         return Ok(());
     }
     let answer = b.call(op.name, params)?;
-    if !previews(op) {
+    if !op.previews() {
         print_json(&answer, out);
         return Ok(());
     }
@@ -826,7 +821,7 @@ fn op_list(json: bool, out: &mut Out) {
                 json!({
                     "name": op.name,
                     "summary": op.summary,
-                    "previews": previews(op),
+                    "previews": op.previews(),
                     "mutating": op.mutating,
                     "params": (op.params)(),
                     "example": (op.example)(),
@@ -836,7 +831,7 @@ fn op_list(json: bool, out: &mut Out) {
         return print_json(&Value::Array(list), out);
     }
     for op in keel_api::OPS {
-        let mark = if previews(op) { "preview" } else { "" };
+        let mark = if op.previews() { "preview" } else { "" };
         let _ = writeln!(out, "{:<22} {mark:<8} {}", op.name, op.summary);
     }
 }

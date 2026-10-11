@@ -158,7 +158,23 @@ impl Operation {
     pub fn previewed(&self) -> bool {
         matches!(self.run, Run::Previewed { .. })
     }
+
+    /// A direct call returns a preview for `execute`: every previewed operation and the
+    /// file plans (`plan`, `plan.merge`, `plan.flatten`, …).
+    pub fn previews(&self) -> bool {
+        self.previewed() || self.name == "plan" || self.name.starts_with("plan.")
+    }
 }
+
+/// The operations that change something at once, without a preview (`execute` applies a
+/// preview). The agent skill lists the others for the user to be asked first.
+pub const DIRECT: &[&str] = &[
+    "execute",
+    "shares.revoke",
+    "library.sync",
+    "recents.note",
+    "activity.note",
+];
 
 pub fn find(name: &str) -> Option<&'static Operation> {
     OPS.iter().find(|op| op.name == name)

@@ -73,9 +73,10 @@ work on this computer's files only, and none of these takes a path inside an arc
 Keel's configuration folder.
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
-more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
-revoked. `recents.note` (a file was opened) and `activity.note` (the user is working)
-also act directly: they change no file.
+more), …`). `shares.revoke` (taking access away) acts directly; it returns what it
+revoked. `library.sync` acts directly too: it applies the tag, favorite, folder style and
+content-id changes it pulls. `recents.note` (a file was opened) and `activity.note` (the
+user is working) also act directly: they change no file.
 
 ## Operations
 
