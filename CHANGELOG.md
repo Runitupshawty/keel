@@ -22,6 +22,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - An FTP server that kept sending empty listing lines held the folder being opened (or copied) for as long as it kept sending, reading gigabytes. A listing now stops at a million lines, empty ones included, and at 64 MiB.
 - FTP entries dated before 1601 were left out of listings on Windows (and listed with that date elsewhere); they are now listed without a date on every system.
 - A library with a database over 4 GiB was backed up into a file that restore then refused. The backup now refuses such a library before it writes anything (an older backup file stays as it was) and names the database that is too large.
+- A library backup or restore through keel-daemon that took more than two minutes was reported as failed while it went on: the restore finished anyway and a retry said the name was taken, and replacing an existing backup file from the window left a `<name>.<number>.keelbackup` file beside it. keel-daemon, the window, `keel library` and `keel mcp` now wait up to 6 hours for these two operations, and the window removes the new file when a replace fails.
 
 ### Known limitations
 
@@ -40,6 +41,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - An FTPS certificate pinned before can only be replaced by removing its line from `ftps_known_hosts`. Implicit FTPS (port 990) connects without Keel's own connect timeout (the system's applies).
 - A parallel copy makes folders ahead of the files queued for them: one stopped by a cancel or an error can leave such a folder empty. Undo removes it with the rest of the copy.
 - A library whose `library.db` or any one source's store is over 4 GiB cannot be backed up.
+- Library backup and restore run within their request rather than as jobs: they show no progress and cannot be cancelled, and through keel-daemon one that takes longer than 6 hours is reported as timed out while it goes on.
 
 ### Changed
 

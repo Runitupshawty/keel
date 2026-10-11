@@ -204,6 +204,16 @@ pub fn call(ctx: &Ctx, method: &str, params: Value) -> Result<Value> {
 }
 
 /// Somewhere to send calls: a [`Ctx`] in this process or a daemon over its socket.
+/// How long the daemon lets the request `method` with `params` run before it answers with
+/// a timeout: `client::request_wait` of its operation (for `execute`, the plan's).
+pub fn request_wait(ctx: &Ctx, method: &str, params: &Value) -> std::time::Duration {
+    let plan = (method == "execute")
+        .then(|| params.get("plan_id").and_then(Value::as_str))
+        .flatten()
+        .and_then(|id| ctx.plans.method(id));
+    client::request_wait(plan.as_deref().unwrap_or(method))
+}
+
 pub trait Backend {
     fn call(&mut self, method: &str, params: Value) -> Result<Value>;
 }

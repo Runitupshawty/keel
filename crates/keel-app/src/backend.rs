@@ -90,13 +90,25 @@ impl Remote {
 
     /// One call, its typed error kept (`execute`'s PLAN_CHANGED carries a fresh preview).
     pub fn call_raw(&self, method: &str, params: Value) -> keel_api::Result<Value> {
+        self.call_within(method, params, keel_api::client::REQUEST_WAIT)
+    }
+
+    /// `call_raw` waiting up to `wait` for the answer.
+    fn call_within(
+        &self,
+        method: &str,
+        params: Value,
+        wait: std::time::Duration,
+    ) -> keel_api::Result<Value> {
         let client = self.idle.lock().pop();
         let mut client = match client {
             Some(c) => c,
             None => Client::connect(&self.name)
                 .map_err(|e| ApiError::failed(format!("keel-daemon: {e}")))?,
         };
+        client.timeout = wait;
         let result = client.call(method, params);
+        client.timeout = keel_api::client::REQUEST_WAIT;
         // Transport errors are the client's own ("keel-daemon: …"): that one is dropped.
         let broken = matches!(&result, Err(e) if e.message.starts_with("keel-daemon: "));
         if !broken {
@@ -122,12 +134,17 @@ impl Remote {
 
     /// A previewed operation the user already asked for (a click is the confirmation):
     /// its preview, then `execute` of exactly that preview.
+    /// Waits as long as the daemon lets `method` run (`keel_api::client::request_wait`).
     pub fn apply(&self, method: &str, params: Value) -> Result<api::Executed> {
         let preview: api::PlanPreview = self.call(method, params)?;
-        self.call(
-            "execute",
-            json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
-        )
+        let done = self
+            .call_within(
+                "execute",
+                json!({"plan_id": preview.plan_id, "input_hash": preview.input_hash}),
+                keel_api::client::request_wait(method),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e.message))?;
+        serde_json::from_value(done).context("execute: unexpected answer")
     }
 
     /// The sources last read.
@@ -752,12 +769,22 @@ impl LibraryBackend {
             LibraryBackend::Daemon(r) if file.exists() => {
                 let ext = keel_core::backup::EXTENSION;
                 let fresh = file.with_extension(format!("{}.{ext}", std::process::id()));
-                r.apply(
+                let written = r.apply(
                     "library.backup",
                     json!({"file": fresh.display().to_string()}),
-                )?;
-                std::fs::rename(&fresh, file)
-                    .with_context(|| format!("replacing {}", file.display()))
+                );
+                // Nothing of a failed backup stays beside the old one.
+                if let Err(e) = written {
+                    let _ = std::fs::remove_file(&fresh);
+                    return Err(e);
+                }
+                std::fs::rename(&fresh, file).with_context(|| {
+                    format!(
+                        "replacing {} (the new backup is {})",
+                        file.display(),
+                        fresh.display()
+                    )
+                })
             }
             LibraryBackend::Daemon(r) => {
                 r.apply(

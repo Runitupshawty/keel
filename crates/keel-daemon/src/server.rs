@@ -4,8 +4,9 @@
 //! Local socket: one JSON message per line, at most `rpc::MAX_REQUEST` bytes (a longer
 //! one is read to its end, answered with an error and dropped). A connection may stay
 //! idle for as long as it likes, but once a request has started it must arrive within
-//! `READ_WAIT`; each request runs for at most `REQUEST_WAIT` before it is answered with a
-//! timeout (it keeps running). Besides the registered operations (`keel_api::OPS`) the
+//! `READ_WAIT`; each request runs for at most `REQUEST_WAIT` (a library backup or restore:
+//! `keel_api::client::LONG_REQUEST_WAIT`) before it is answered with a timeout (it keeps
+//! running). Besides the registered operations (`keel_api::OPS`) the
 //! daemon answers `subscribe` / `unsubscribe` (job progress, library and device events as
 //! JSON-RPC notifications on that connection) and `daemon.shutdown`.
 
@@ -140,6 +141,7 @@ impl Shared {
                 Ok(json!({"stopping": true}))
             }
             method => {
+                let wait = keel_api::request_wait(self.ctx(), method, &req.params);
                 let (ctx, m, params) = (self.ctx().clone(), method.to_owned(), req.params.clone());
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 std::thread::Builder::new()
@@ -148,10 +150,10 @@ impl Shared {
                         let _ = tx.send(keel_api::call(&ctx, &m, params));
                     })
                     .map_err(|e| ApiError::failed(e.to_string()))?;
-                let result = rx.recv_timeout(REQUEST_WAIT).unwrap_or_else(|_| {
+                let result = rx.recv_timeout(wait).unwrap_or_else(|_| {
                     Err(ApiError::new(
                         ApiError::TIMEOUT,
-                        format!("{method} did not finish within {REQUEST_WAIT:?}"),
+                        format!("{method} did not finish within {wait:?}"),
                     ))
                 });
                 if let Some(kind) = changed(method, &result) {

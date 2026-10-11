@@ -1650,6 +1650,25 @@ fn backup_and_restore_round_trip_through_the_api() {
         0,
         "a preview writes nothing"
     );
+    // The daemon and its clients wait hours, not two minutes, for a backup's `execute`.
+    let long = crate::client::LONG_REQUEST_WAIT;
+    let plan = json!({"plan_id": preview["plan_id"]});
+    assert_eq!(crate::request_wait(&f.ctx, "execute", &plan), long);
+    assert_eq!(
+        crate::request_wait(&f.ctx, "library.restore", &Value::Null),
+        long
+    );
+    let other = call(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "x", "paths": [s(&f.files.path().join("docs/notes.txt"))]}),
+    )
+    .unwrap();
+    let other = json!({"plan_id": other["plan_id"]});
+    assert_eq!(
+        crate::request_wait(&f.ctx, "execute", &other),
+        crate::client::REQUEST_WAIT
+    );
     let done = apply(&f.ctx, "library.backup", json!({"file": s(out.path())}));
     let file = done["file"].as_str().unwrap().to_owned();
     assert!(

@@ -10,6 +10,17 @@ use std::time::Duration;
 pub const CONNECT_WAIT: Duration = Duration::from_secs(3);
 /// Default per-request timeout.
 pub const REQUEST_WAIT: Duration = Duration::from_secs(120);
+/// The timeout of `library.backup` and `library.restore` (and of their `execute`): they
+/// copy whole databases within the request, not as a job.
+pub const LONG_REQUEST_WAIT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How long a request for `operation` may take (for `execute`, the plan's operation).
+pub fn request_wait(operation: &str) -> Duration {
+    match operation {
+        "library.backup" | "library.restore" => LONG_REQUEST_WAIT,
+        _ => REQUEST_WAIT,
+    }
+}
 /// Longest answer read.
 const MAX_RESPONSE: u64 = 256 * 1024 * 1024;
 

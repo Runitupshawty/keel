@@ -243,7 +243,7 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 | -32003 | `input_hash` is not the previewed input's |
 | -32004 | the sources (or the files a drop sends) changed since the preview; `data` is the new preview |
 | -32005 | devices are off (keel-net disabled) |
-| -32006 | the request timed out (the daemon answers within 120 s) |
+| -32006 | the request timed out (the daemon answers within 120 s; `library.backup` and `library.restore`, and their `execute`, within 6 hours) |
 | -32007 | `--web`: a message before `auth`, a wrong token or no `auth` within 10 s; `--ws`/`--web`: the token was rotated (the connection closes) |
 | -32008 | mounts unavailable: not served by this host (no daemon) or no mount backend built in |
 

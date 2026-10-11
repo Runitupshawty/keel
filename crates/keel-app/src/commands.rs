@@ -56,8 +56,10 @@ impl Drop for Local {
 
 /// keel-daemon for the profile, else the library in-process (keel-net only then, so one
 /// node per profile).
-fn connect(cfg: &HostConfig) -> anyhow::Result<Box<dyn Backend>> {
-    if let Ok(client) = Client::connect(&cfg.socket_name()) {
+/// `wait`: how long the daemon's answers are waited for.
+fn connect(cfg: &HostConfig, wait: Duration) -> anyhow::Result<Box<dyn Backend>> {
+    if let Ok(mut client) = Client::connect(&cfg.socket_name()) {
+        client.timeout = wait;
         return Ok(Box::new(client));
     }
     let offset = chrono::Local::now().offset().local_minus_utc().into();
@@ -132,16 +134,24 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         },
         cmd => cmd,
     };
+    // A backup or restore runs within its request: wait as long as the daemon lets it.
+    let wait = match &cmd {
+        Command::Library(_) => keel_api::client::LONG_REQUEST_WAIT,
+        _ => keel_api::client::REQUEST_WAIT,
+    };
     // A restore without a daemon needs no library open (on a new machine, opening the
     // profile's library would create the very name being restored).
     let backend = match &cmd {
         Command::Library(LibraryCmd::Restore { file, name }) => {
             match Client::connect(&cfg.socket_name()) {
-                Ok(c) => Ok(Box::new(c) as Box<dyn Backend>),
+                Ok(mut c) => {
+                    c.timeout = wait;
+                    Ok(Box::new(c) as Box<dyn Backend>)
+                }
                 Err(_) => return restore_here(&cfg, file, name.as_deref(), json, &mut out),
             }
         }
-        _ => connect(&cfg),
+        _ => connect(&cfg, wait),
     };
     let mut backend = match backend {
         Ok(b) => b,
@@ -869,7 +879,8 @@ fn plan_given_differs(text: &str, plan: &str) -> bool {
 }
 
 fn mcp(cfg: &HostConfig, allow_execute: bool) -> i32 {
-    let mut backend = match connect(cfg) {
+    // An agent may run a backup or restore: the daemon answers everything else in 120 s.
+    let mut backend = match connect(cfg, keel_api::client::LONG_REQUEST_WAIT) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("keel mcp: {e:#}");
