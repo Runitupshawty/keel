@@ -160,6 +160,14 @@ pub enum LibCmd {
         tag: TagId,
         on: bool,
     },
+    /// Task 56: a folder's color and icon (`None`: unchanged, `Some(None)`: cleared).
+    FolderStyle {
+        path: VPath,
+        color: Option<Option<String>>,
+        icon: Option<Option<String>>,
+    },
+    /// Folder icon → Type an emoji…: the dialog for this folder.
+    TypeFolderIcon(VPath),
     /// Tag (or untag) these paths (the details view's favorite star).
     TagPaths {
         paths: Vec<VPath>,
@@ -287,6 +295,8 @@ pub enum LibMsg {
         tags: Vec<Tag>,
         views: Vec<View>,
         tagged: HashMap<VPath, Vec<TagId>>,
+        /// Task 56: folder styles by `folder_style::key` of the real path.
+        styles: crate::folder_style::Styles,
     },
     Watching(SourceId, Option<WatchHandle>),
     /// A job this app started (index, hash, operation); None: it failed to start.
@@ -811,6 +821,8 @@ pub struct LibraryUi {
     pub views: Vec<View>,
     /// Tags (Favorites included) by real path.
     pub tagged: HashMap<VPath, Vec<TagId>>,
+    /// Task 56: folder colors and icons by `folder_style::key` of the real path.
+    pub styles: crate::folder_style::Styles,
     /// Paired devices library sync is on with (the Overview says so).
     pub synced_with: usize,
     pub jobs: BTreeMap<JobId, JobRow>,
@@ -892,6 +904,7 @@ impl LibraryUi {
             tags: Vec::new(),
             views: Vec::new(),
             tagged: HashMap::new(),
+            styles: Default::default(),
             jobs: BTreeMap::new(),
             events: None,
             watchers: HashMap::new(),
@@ -983,6 +996,7 @@ impl LibraryUi {
         self.forget_badges();
         self.jobs.clear();
         self.tagged.clear();
+        self.styles = Default::default();
         self.tags.clear();
         self.views.clear();
         let handles = std::mem::take(&mut self.watchers)
@@ -1063,6 +1077,11 @@ impl LibraryUi {
                 tags,
                 views,
                 tagged,
+                // An older daemon has none to give.
+                styles: Arc::new(b.folder_styles().unwrap_or_else(|e| {
+                    tracing::debug!("folder styles: {e:#}");
+                    HashMap::new()
+                })),
             }),
             Err(e) => {
                 tracing::warn!("library tags: {e:#}");
@@ -1582,10 +1601,12 @@ impl AppState {
                 tags,
                 views,
                 tagged,
+                styles,
             } => {
                 l.tags = tags;
                 l.views = views;
                 l.tagged = tagged;
+                l.styles = styles;
             }
             LibMsg::Watching(id, handle) => {
                 let known = l.sources.iter().any(|s| s.id == id) && l.lib.is_some();
@@ -2270,6 +2291,23 @@ impl AppState {
                 self.set_tag(targets, tag, on);
             }
             LibCmd::TagPaths { paths, tag, on } => self.set_tag(paths, tag, on),
+            LibCmd::FolderStyle { path, color, icon } => {
+                let sources = self.library.sources.clone();
+                self.library
+                    .spawn_try("keel-library-style", "Folder style", move |b| {
+                        b.set_folder_style(&sources, &path, color, icon)?;
+                        Ok(None)
+                    });
+                self.library.refresh_meta_soon();
+            }
+            LibCmd::TypeFolderIcon(path) => {
+                self.dialog = Some(crate::dialogs::Dialog::FolderIcon {
+                    path,
+                    text: String::new(),
+                    error: None,
+                    focus: true,
+                });
+            }
             LibCmd::CreateTag { name, color } => {
                 let name = name.trim().to_owned();
                 if name.is_empty() {
@@ -2498,6 +2536,15 @@ pub const LOST: &str =
     "keel-daemon stopped: reconnect, or open the library in this window, to make changes";
 
 impl LibraryUi {
+    /// Task 56: the style of the folder at `p` (real or `library://`), if it has one.
+    pub fn style_of(&self, p: &VPath) -> Option<&keel_core::FolderStyle> {
+        if self.styles.is_empty() {
+            return None;
+        }
+        let real = real_of(&self.sources, p)?;
+        self.styles.get(&crate::folder_style::key(&real))
+    }
+
     /// Tags change on a worker; read them back right after.
     pub(crate) fn refresh_meta_soon(&mut self) {
         self.next_meta = Instant::now() + Duration::from_millis(300);

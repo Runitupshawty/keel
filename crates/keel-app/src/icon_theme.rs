@@ -241,6 +241,23 @@ impl Loaded {
         let id = self.assoc(light).folder_icon(name, open)?;
         self.icons.get(id).cloned()
     }
+
+    /// Task 56: the theme's own icon for folders named `name` (no default).
+    pub fn named_folder(&self, name: &str, light: bool) -> Option<ImageSource<'static>> {
+        let id = self.assoc(light).folder_names.get(&name.to_lowercase())?;
+        self.icons.get(id).cloned()
+    }
+
+    /// The folder names the theme has an icon for, sorted.
+    pub fn folder_names(&self, light: bool) -> Vec<String> {
+        let names = &self.assoc(light).folder_names;
+        let mut out: Vec<String> = (names.iter())
+            .filter(|(_, id)| self.icons.contains_key(*id))
+            .map(|(n, _)| n.clone())
+            .collect();
+        out.sort();
+        out
+    }
 }
 
 /// Why an icon theme's SVG is refused, or None when it is self-contained. Themes come from
@@ -1223,6 +1240,13 @@ mod tests {
             bytes_of(t.folder(Some("src"), false, false)),
             "<svg id='folder-src'/>"
         );
+        // Task 56: `theme:<name>` folder icons, by name only.
+        assert_eq!(t.folder_names(false), ["src"]);
+        assert_eq!(
+            bytes_of(t.named_folder("SRC", false)),
+            "<svg id='folder-src'/>"
+        );
+        assert!(t.named_folder("docs", false).is_none());
         // No expanded src icon was stored: the default expanded folder instead.
         assert_eq!(
             bytes_of(t.folder(Some("src"), true, false)),

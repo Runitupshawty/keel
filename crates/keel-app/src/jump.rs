@@ -503,16 +503,33 @@ impl Jump {
                         let mut job = egui::text::LayoutJob::default();
                         job.append(name, 0.0, fmt(strong));
                         job.append(dir, 12.0, fmt(weak));
+                        // Task 56: a folder's color and icon from the library.
+                        let style = (!found.file)
+                            .then(|| crate::folder_style::published(ui.ctx(), &found.vpath()))
+                            .flatten();
                         let icon = match found.file {
                             true => crate::icons::file_icon(name),
                             false => crate::icons::folder(),
                         };
-                        let icon = egui::Image::new(icon).fit_to_exact_size([16.0, 16.0].into());
+                        let image = egui::Image::new(icon.clone()).fit_to_exact_size([16.0, 16.0].into());
+                        // Styled: the icon slot is drawn over (an emoji, a tint).
+                        let image = if style.is_some() {
+                            image.tint(egui::Color32::TRANSPARENT)
+                        } else {
+                            image
+                        };
                         let r = ui.add(
-                            egui::Button::image_and_text(icon, job)
+                            egui::Button::image_and_text(image, job)
                                 .selected(i == self.cursor)
                                 .frame(i == self.cursor),
                         );
+                        if let Some(style) = &style {
+                            let at = egui::Rect::from_center_size(
+                                egui::pos2(r.rect.left() + ui.spacing().button_padding.x + 8.0, r.rect.center().y),
+                                egui::vec2(16.0, 16.0),
+                            );
+                            crate::folder_style::paint(ui, at, icon, Some(style), false);
+                        }
                         if i == self.cursor && (up + down) > 0 {
                             r.scroll_to_me(None);
                         }

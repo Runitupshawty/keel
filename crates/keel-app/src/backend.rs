@@ -588,6 +588,69 @@ impl LibraryBackend {
         }
     }
 
+    /// Task 56: every styled folder, by `folder_style::key` of its real path.
+    pub fn folder_styles(&self) -> Result<HashMap<String, keel_core::FolderStyle>> {
+        let list: Vec<(VPath, keel_core::FolderStyle)> = match self {
+            LibraryBackend::InProcess(lib) => (lib.folder_styles()?.into_iter())
+                .map(|(h, s)| (h.path, s))
+                .collect(),
+            LibraryBackend::Daemon(r) => {
+                let list: Vec<api::FolderStyleInfo> = r.call("library.folder_style", json!({}))?;
+                (list.into_iter())
+                    .map(|i| {
+                        let style = keel_core::FolderStyle {
+                            color: i.color,
+                            icon: i.icon,
+                        };
+                        (vpath_of(&i.path), style)
+                    })
+                    .collect()
+            }
+        };
+        Ok((list.into_iter())
+            .map(|(p, s)| (crate::folder_style::key(&p), s))
+            .collect())
+    }
+
+    /// Task 56: sets a folder's color and icon (`None`: unchanged, `Some(None)`: cleared).
+    pub fn set_folder_style(
+        &self,
+        sources: &[SourceSummary],
+        path: &VPath,
+        color: Option<Option<String>>,
+        icon: Option<Option<String>>,
+    ) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => {
+                let real = real_of(sources, path)
+                    .with_context(|| format!("{} is not in a library source", path.display()))?;
+                let record = (lib.record_at(&real)?).with_context(|| {
+                    format!("{} is not in the library index yet", path.display())
+                })?;
+                let mut style = lib.folder_style(&record)?.unwrap_or_default();
+                if let Some(c) = color {
+                    style.color = c;
+                }
+                if let Some(i) = icon {
+                    style.icon = i;
+                }
+                lib.set_folder_style(&record, &style)
+            }
+            LibraryBackend::Daemon(r) => {
+                let path = real_paths(sources, std::slice::from_ref(path))?;
+                let mut params = json!({ "path": path[0] });
+                if let Some(c) = color {
+                    params["color"] = json!(c.unwrap_or_default());
+                }
+                if let Some(i) = icon {
+                    params["icon"] = json!(i.unwrap_or_default());
+                }
+                r.apply("library.set_folder_style", params)?;
+                Ok(())
+            }
+        }
+    }
+
     /// Duplicate groups of at least `min_size` bytes, each copy resolved for display.
     pub fn dups(&self, min_size: u64) -> Result<Vec<DupGroup>> {
         match self {

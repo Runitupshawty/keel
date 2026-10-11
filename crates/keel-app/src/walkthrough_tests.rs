@@ -2323,6 +2323,83 @@ fn library_favorites_and_tags() {
     close_library(&mut h);
 }
 
+/// Task 56: right-click a folder → Folder color → Red: the dot shows after its name;
+/// Folder icon → 📷: the row shows the emoji; Clear both. Outside the library the menu
+/// says why it cannot style.
+#[test]
+#[ignore]
+fn library_folder_color_and_icon() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, _base, _lib) = with_library("styles", &docs, &root.join("Backup"));
+    // Not in a source yet: the menu says what to do.
+    sm(&mut h).run(0, Action::Navigate(VPath::local(&docs)));
+    assert!(wait(&mut h, 10, &listed));
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder color");
+    assert!(
+        has(&h, crate::folder_style::NOT_IN_LIBRARY),
+        "{}",
+        dump(&h, "library")
+    );
+    key(&mut h, NONE, Key::Escape);
+    key(&mut h, NONE, Key::Escape);
+    add_source(&mut h, &docs);
+    sm(&mut h).run(0, Action::Navigate(VPath::local(&docs)));
+    assert!(wait(&mut h, 10, &listed));
+    let projects = VPath::local(docs.join("Projects"));
+    let style = |s: &AppState| s.library.style_of(&projects).cloned().unwrap_or_default();
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder color");
+    click_last(&mut h, "Red");
+    let red = |s: &AppState| style(s).color.as_deref() == Some("#e5484d");
+    assert!(wait(&mut h, 10, &red), "colored");
+    h.run_steps(3);
+    assert!(
+        has(&h, "Folder color: Red"),
+        "the dot: {}",
+        dump(&h, "Folder")
+    );
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder icon");
+    click_last(&mut h, "📷");
+    let camera = |s: &AppState| style(s).emoji() == Some("📷") && style(s).color.is_some();
+    assert!(wait(&mut h, 10, &camera), "the icon, the color kept");
+    h.run_steps(3);
+    assert!(
+        has(&h, "Folder icon: 📷"),
+        "the row's icon: {}",
+        dump(&h, "Folder")
+    );
+    shot(&mut h, "library-folder-style");
+    // Type an emoji…: one emoji only.
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder icon");
+    click_last(&mut h, "Type an emoji…");
+    assert!(matches!(
+        s(&h).dialog,
+        Some(crate::dialogs::Dialog::FolderIcon { .. })
+    ));
+    type_text(&mut h, "ab");
+    click_last(&mut h, "Set icon");
+    assert!(has(&h, "Type one emoji"));
+    key(&mut h, NONE, Key::Escape);
+    // Clear both.
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder color");
+    click_last(&mut h, "Clear color");
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Folder icon");
+    click_last(&mut h, "Clear icon");
+    assert!(
+        wait(&mut h, 10, &|s| s.library.style_of(&projects).is_none()),
+        "cleared"
+    );
+    h.run_steps(3);
+    assert!(!has_contains(&h, "Folder color:") && !has_contains(&h, "Folder icon:"));
+    close_library(&mut h);
+}
+
 /// Ctrl+F, the backend menu → Library, then `ext:`, `in:` and `tag:` queries.
 #[test]
 #[ignore]

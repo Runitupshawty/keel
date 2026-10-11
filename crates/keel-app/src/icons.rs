@@ -42,6 +42,18 @@ pub fn folder() -> ImageSource<'static> {
     themed(|t, light| t.folder(None, false, light)).unwrap_or(icon!("folder"))
 }
 
+/// Task 56: the icon theme's icon for folders named `name` (`theme:<name>` folder icons);
+/// None without a theme or when it has none.
+pub fn named_folder(name: &str) -> Option<ImageSource<'static>> {
+    themed(|t, light| t.named_folder(name, light))
+}
+
+/// The folder names the icon theme has an icon for (empty without a theme).
+pub fn theme_folder_names() -> Vec<String> {
+    let theme = THEME.read().unwrap_or_else(|e| e.into_inner());
+    (theme.as_deref()).map_or_else(Vec::new, |t| t.folder_names(LIGHT.load(Ordering::Relaxed)))
+}
+
 pub fn folder_open() -> ImageSource<'static> {
     themed(|t, light| t.folder(None, true, light)).unwrap_or(icon!("folder-open"))
 }

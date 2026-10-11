@@ -15,6 +15,7 @@ mod crash;
 mod devices;
 mod dialogs;
 mod dropzone;
+mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)
 #[cfg(test)]
 mod fuzz_tests;

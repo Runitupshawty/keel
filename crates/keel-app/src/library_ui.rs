@@ -20,6 +20,19 @@ fn lib(cmd: LibCmd) -> Action {
     Action::Library(cmd)
 }
 
+/// The tag palette: a new tag's color swatches, and Folder color (Task 56).
+pub const TAG_COLORS: [(&str, &str); 9] = [
+    ("Red", "#e5484d"),
+    ("Orange", "#f76b15"),
+    ("Yellow", "#ffc53d"),
+    ("Green", "#30a46c"),
+    ("Teal", "#12a594"),
+    ("Blue", "#3b82f6"),
+    ("Purple", "#8e4ec6"),
+    ("Pink", "#d6409f"),
+    ("Gray", "#8b8d98"),
+];
+
 /// `#rrggbb` (anything else: the accent blue).
 pub fn color_of(s: Option<&str>) -> Color32 {
     let hex = s.and_then(|s| s.strip_prefix('#')).filter(|h| h.len() == 6);
@@ -106,6 +119,10 @@ pub fn sidebar(
                 let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
                 ui.painter()
                     .circle_filled(rect.center(), 4.5, dot_color(ui, s.dot));
+                // Task 56: a styled source root shows its folder icon.
+                if let Some(style) = l.style_of(&keel_vfs::library::path(&s.id.0, "")) {
+                    crate::folder_style::slot(ui, crate::icons::folder(), Some(style));
+                }
                 let here =
                     current.scheme == keel_vfs::library::SCHEME && current.authority == s.id.0;
                 let r = ui.add(
@@ -850,6 +867,17 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 });
             }
             ui.separator();
+            ui.horizontal(|ui| {
+                for (name, hex) in TAG_COLORS {
+                    let c = color_of(Some(hex));
+                    let swatch = egui::Button::new("")
+                        .fill(c)
+                        .min_size(egui::vec2(14.0, 14.0));
+                    if ui.add(swatch).tip(name).clicked() {
+                        picker.new_color = [c.r(), c.g(), c.b()];
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.color_edit_button_srgb(&mut picker.new_color);
                 let r = ui.add(
