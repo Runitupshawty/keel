@@ -2,6 +2,32 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Library search finds words inside documents: plain text and code, Markdown, CSV, PDF (its text layer), Word (`.docx`), Excel (`.xlsx`, `.xls`, `.xlsb`), PowerPoint (`.pptx`) and OpenDocument (`.odt`, `.ods`, `.odp`) files. A result found by its text shows a line of it under its name with the matched words in the text colour (at most 160 characters, for the first 100 results), after the results found by name. Words match names and text alike; `content:word` (or `content:"a phrase"`) searches only the text, `-content:word` leaves out documents whose text has it, `name:word` searches only names, and `contents:off` searches names only. Every word is searched as typed, so `NEAR(`, `OR`, `*` or an unbalanced quote are plain words. See [Searching](docs/library.md#searching).
+- A **Contents** chip in the library search's chip row, in the window and the web client: lit while words also match the text inside documents; off adds `contents:off`.
+- A background **text** job reads the text of each source's documents after its walks and when the library opens, at idle priority: it pauses while you use Keel and on battery, continues where it stopped after a restart, and reads a document again when its size or modified time changes. It runs in keel-daemon when the window is attached to one; `keel sources index` starts it with the walk.
+- **Index file contents** in Settings → Library (on by default), and a **Contents** switch per source in the Overview's per-source table with its count of indexed documents. Local folders and drives are read by default; network shares, SFTP hosts, cloud accounts and paired devices only when their switch is on (each document is downloaded once). Turning a switch off deletes the text read so far.
+- The API's `search` takes `contents` (default true; false searches names only) and its hits carry `snippet` (`text` and the byte ranges of the matched words in `marks`); `library.stats` reports `text` (on, documents indexed, skipped, failed, characters) for the library and each source; `contents.set` (previewed) turns Index file contents or a source's switch on or off. See [api.md](docs/api.md).
+
+### Changed
+
+- Source stores are now at version 12 (the text read from documents and its search index): a store this Keel opened is refused by an older Keel ("newer than this Keel").
+- A library backup leaves out the text read from documents, like the name index; after a restore the text job reads it again.
+
+### Fixed
+
+- A NUL character typed into a library search word ended the search's query early, so that source's search failed and returned nothing; it is now read as a space.
+
+### Known limitations
+
+- No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped.
+- The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
+- Each document is bounded: files over 8 MiB (PDFs over 64 MiB) are skipped unread, at most 200,000 characters of a document are kept, and a document is read for at most 10 s (the text read until then is kept). A damaged or password-protected file is counted as failed and not read again until it changes.
+- Snippets come with the first 100 results of a search; the others show their name only.
+
 ## [0.21.0] - 2026-10-11
 
 ### Added

@@ -192,6 +192,8 @@ Queries are parts of names, `*.pdf` globs or `regex:`, with `folder:` for folder
 
 The menu at the left of the search box switches between the system search and **Library**, which searches the library index across all your sources, also the offline ones. With Library a row of filter chips appears under the box: click **Kind → Document**, a **Tag**, a **Size** or **Modified** range, a **Source** or **★ Favorites** and the search narrows at once, without any syntax. Each chip writes its term into the box (hover it to see which), so you pick the syntax up as you go and can type it later. The library takes filters such as `ext:pdf`, `in:photos` (under a path or source), `size:>1mb`, `dm:2026-10`, `kind:image` and `tag:taxes`; the chips and the full list are in [Searching](library.md#searching).
 
+Library search also finds words inside your documents (text, PDF, Word, Excel, PowerPoint and OpenDocument files): a result found that way shows a line of its text under its name. The library reads the text in the background, from local folders and drives by default; `content:word` searches only the text, and the **Contents** chip off searches names only. Settings → Library → **Index file contents** turns it off. See [Text inside documents](library.md#searching).
+
 ![A library search for ext:pdf across three sources](screenshots/search.png)
 
 Ctrl+P is a different search: it jumps to a folder or a file by a few letters of its name. Enter on a file opens its folder with the file selected and previewed; Tab switches between folders, files and both. See [Finding folders and files](files.md#finding-folders-and-files-ctrlp).

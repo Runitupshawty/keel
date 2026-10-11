@@ -52,7 +52,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | --- | --- | --- | --- |
 | Search across every source, offline ones too | described | [SD-README] | **Has**: library search ([library.md](library.md#library)) |
 | Filter UI with date range and kind | v1 (0.4.3) | [SD-REL] | **Part**: the same filters as query syntax (`ext:`, `dm:`, `size:`, `kind:`, `tag:`), but no filter chips |
-| Text inside documents, OCR | alpha (alpha.1 notes claim OCR); sidecars doc says only thumbnails exist | [SD-REL], [SD-SIDECARS] | **Lacks**: full-text search covers names and paths only |
+| Text inside documents, OCR | alpha (alpha.1 notes claim OCR); sidecars doc says only thumbnails exist | [SD-REL], [SD-SIDECARS] | **Has** (unreleased) for the text inside documents (text, PDF, Office, OpenDocument; [library.md](library.md#searching)); **Lacks** OCR of images and scans |
 | On-device AI image labels | v1 (0.2, YOLO model) | [SD-B02] | **Lacks** |
 | File System Intelligence (folder summaries, user context) | planned ("flagship direction") | [SD-DIR] | **Lacks** (not planned) |
 | Transcripts, faces, embeddings | planned | [SD-SIDECARS], [SD-B23] | **Lacks** |
@@ -209,7 +209,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 8 | **Done** (unreleased; not yet checked on a machine with WSL, see [Checking](wsl.md#checking)): WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window ([wsl.md](wsl.md)) | spec section 1 | R: CLI and WSL | S |
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |
 | 10 | Signed builds and package channels (winget, Scoop, Homebrew, Flatpak or AppImage) | both are commercial | F. Needs the owner (certificates, account submissions) | M |
-| 11 | Text inside documents in library search (OCR later) | Spacedrive; spec 2.10 Search | D | M-L |
+| 11 | Text inside documents in library search (OCR later) (**done** (unreleased): [library.md](library.md#searching); text, PDF, Office and OpenDocument files; no OCR) | Spacedrive; spec 2.10 Search | D | M-L |
 | 12 | Fuzzy finder over files, not only folders (**done**: Ctrl+P finds files, [files.md](files.md#finding-folders-and-files-ctrlp)) | Atlas | D | S |
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** (unreleased, [library.md](library.md#backup-and-restore)) | S |
