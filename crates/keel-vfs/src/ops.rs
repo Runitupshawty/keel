@@ -1326,11 +1326,12 @@ fn transfer_with(
             );
         }
         roots.push(key);
-        scan_remote(&*provider, source, &mut state, cancel, 0)?;
+        scan_remote(&*provider, source, dst_dir, &mut state, cancel, 0)?;
         sources.push(provider);
     }
     let mut job = ProviderJob {
         dst: target_provider,
+        root: dst_dir.clone(),
         state,
         conflict: on_conflict,
         progress,
@@ -1341,8 +1342,8 @@ fn transfer_with(
     };
     let mut result = Ok(());
     for (source, provider) in src.iter().zip(&sources) {
-        result = job
-            .node(provider, source, &dst_dir.join(source.name()), 0, false)
+        result = entry_target(dst_dir, dst_dir, source.name())
+            .and_then(|to| job.node(provider, source, &to, 0, false))
             .map(drop);
         if result.is_err() {
             break;
@@ -1364,6 +1365,65 @@ fn routed(
         .provider_for(path)
         .with_context(|| format!("no provider: {}", path.display()))
 }
+/// Whether `name`, one entry name read from a provider (a server's listing), is usable as
+/// a single name in a folder on `dst`'s provider. Anywhere: not empty, `.`, `..`, and no `/`
+/// or NUL. In a local folder also no control characters, and on Windows the portable rules
+/// of `archive::safe_name` (no `\`, `:`, `<>"|?*`, trailing dot or space, device names),
+/// so a name cannot climb out, name a stream or open a device.
+pub fn safe_entry_name(dst: &crate::VPath, name: &str) -> bool {
+    let plain = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0']);
+    if !plain || dst.to_local_path().is_none() {
+        return plain;
+    }
+    if cfg!(windows) {
+        crate::archive::safe_name(name).is_ok_and(|safe| safe == name)
+    } else {
+        !name.chars().any(char::is_control)
+    }
+}
+/// `parent` (a folder at or under the destination `root`) joined with the provider entry
+/// name `name`, refused unless the name is safe there (`safe_entry_name`) and the result
+/// stays under `root` (`stays_under`).
+fn entry_target(root: &crate::VPath, parent: &crate::VPath, name: &str) -> Result<crate::VPath> {
+    check_entry_name(root, parent, name)?;
+    let target = parent.join(name);
+    stays_under(root, &target)?;
+    Ok(target)
+}
+fn check_entry_name(root: &crate::VPath, parent: &crate::VPath, name: &str) -> Result<()> {
+    anyhow::ensure!(
+        safe_entry_name(root, name),
+        "refusing an unsafe name in {}: {name:?} cannot be used in {}",
+        parent.display(),
+        root.display()
+    );
+    Ok(())
+}
+/// Refuses `target` unless it is strictly below `root`: for local folders by path
+/// components (nothing but plain names after `root`'s), elsewhere by the `/`-path.
+fn stays_under(root: &crate::VPath, target: &crate::VPath) -> Result<()> {
+    let inside = match (root.to_local_path(), target.to_local_path()) {
+        (Some(r), Some(t)) => t.strip_prefix(&r).is_ok_and(|rest| {
+            rest.components().next().is_some()
+                && rest
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_)))
+        }),
+        (None, None) => {
+            within(target, root)
+                && target.path.len() > root.path.trim_end_matches('/').len() + 1
+                && !target.path.split('/').any(|p| p == "." || p == "..")
+        }
+        _ => false,
+    };
+    anyhow::ensure!(
+        inside,
+        "refusing to write outside the destination {}: {}",
+        root.display(),
+        target.display()
+    );
+    Ok(())
+}
 fn within(path: &crate::VPath, root: &crate::VPath) -> bool {
     if path.scheme != root.scheme || path.authority != root.authority {
         return false;
@@ -1378,9 +1438,12 @@ fn within(path: &crate::VPath, root: &crate::VPath) -> bool {
     }
     p == r || p.starts_with(&format!("{r}/"))
 }
+/// Counts `p`'s tree into `state`, refusing any entry name that is unsafe in `dst`
+/// (`safe_entry_name`) before anything is written.
 fn scan_remote(
     provider: &dyn crate::Provider,
     p: &crate::VPath,
+    dst: &crate::VPath,
     state: &mut Progress,
     cancel: &AtomicBool,
     depth: usize,
@@ -1396,7 +1459,8 @@ fn scan_remote(
     state.total_items = state.total_items.checked_add(1).context("too many items")?;
     if e.kind == crate::Kind::Dir {
         for child in provider.list(p)? {
-            scan_remote(provider, &child.path, state, cancel, depth + 1)?;
+            check_entry_name(dst, p, &child.name)?;
+            scan_remote(provider, &child.path, dst, state, cancel, depth + 1)?;
         }
     } else {
         state.total_bytes = state
@@ -1425,6 +1489,8 @@ struct ProviderJob<'a, 'j> {
     progress: &'a dyn Fn(Progress),
     cancel: &'a AtomicBool,
     moving: bool,
+    /// The destination folder: nothing is written outside it.
+    root: crate::VPath,
     /// Destination folders already swept for stale staging files.
     swept: std::collections::HashSet<String>,
     journal: Option<&'a mut Journal<'j>>,
@@ -1532,6 +1598,7 @@ impl ProviderJob<'_, '_> {
                 }
             }
         }
+        stays_under(&self.root, &target)?;
         if self.moving && same_remote(source, &target) {
             // Merging into an existing folder still walks its children; everything else
             // is one rename on the server.
@@ -1556,7 +1623,7 @@ impl ProviderJob<'_, '_> {
             }
             let mut complete = true;
             for child in src.list(source)? {
-                let to = target.join(&child.name);
+                let to = entry_target(&self.root, &target, &child.name)?;
                 complete &= self.node(src, &child.path, &to, depth + 1, ours)?;
             }
             if self.moving && complete {
@@ -1881,7 +1948,7 @@ impl ProviderJob<'_, '_> {
             total_bytes: 0,
             ..self.state.clone()
         };
-        scan_remote(&**src, source, &mut counted, self.cancel, 0)?;
+        scan_remote(&**src, source, &self.root, &mut counted, self.cancel, 0)?;
         check_cancel(self.cancel)?;
         let renamed = if replace {
             dst.rename_replace(source, target)
@@ -2868,6 +2935,79 @@ mod tests {
         ] {
             assert!(!is_partial(not), "{not}");
         }
+    }
+
+    /// Entry names from a server (the in-memory provider stands in for SFTP) cannot leave a
+    /// local copy destination. On Windows every name that is not one plain file name is
+    /// refused before anything is written; on Unix only control characters are, and the
+    /// rest land as one file each. The final "stays under" check holds on its own.
+    #[test]
+    fn remote_names_cannot_escape_a_local_destination() {
+        use super::{stays_under, transfer, Conflict};
+        use crate::{memory::MemoryProvider, Router, VPath};
+        use std::sync::{atomic::AtomicBool, Arc};
+        let names = [
+            "..\\x",
+            "..\\..\\y",
+            "a\\b",
+            "c:d",
+            "CON",
+            "aux.txt",
+            "x.",
+            "x ",
+            "bell\u{7}",
+            "new\nline",
+        ];
+        for name in names {
+            let refused = cfg!(windows) || name.chars().any(char::is_control);
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("dl").join("inner");
+            std::fs::create_dir_all(&dest).unwrap();
+            let mem = Arc::new(MemoryProvider::new());
+            mem.put(&format!("/trav/{name}"), b"payload".to_vec());
+            let router = Router::new();
+            router.register_remote_provider("box".into(), mem);
+            for conflict in [Conflict::Overwrite, Conflict::RenameNew] {
+                let result = transfer(
+                    &[VPath::parse("sftp://box/trav").unwrap()],
+                    &VPath::local(&dest),
+                    false,
+                    conflict,
+                    &|_| {},
+                    &AtomicBool::new(false),
+                    &router,
+                );
+                let top: Vec<_> = std::fs::read_dir(tmp.path().join("dl"))
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name())
+                    .collect();
+                assert_eq!(top, ["inner"], "{name:?}");
+                if refused {
+                    let e = result.unwrap_err();
+                    assert!(format!("{e:#}").contains("unsafe name"), "{name:?}: {e:#}");
+                    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name:?}");
+                } else {
+                    result.unwrap();
+                    assert_eq!(
+                        std::fs::read(dest.join("trav").join(name)).unwrap(),
+                        b"payload"
+                    );
+                }
+            }
+        }
+        let root = VPath::local(std::env::temp_dir());
+        assert!(stays_under(&root, &root.join("..")).is_err());
+        assert!(stays_under(&root, &root).is_err());
+        assert!(stays_under(&root, &root.join("ok.txt")).is_ok());
+        // Windows reads `\` as a separator: a joined `..\x` climbs out and is caught here.
+        assert_eq!(
+            stays_under(&root, &root.join("..\\x")).is_err(),
+            cfg!(windows)
+        );
+        let remote = VPath::parse("sftp://box/dest").unwrap();
+        assert!(stays_under(&remote, &remote.join("a")).is_ok());
+        assert!(stays_under(&remote, &remote.join("..")).is_err());
+        assert!(stays_under(&remote, &VPath::parse("sftp://box/destx").unwrap()).is_err());
     }
 }
 

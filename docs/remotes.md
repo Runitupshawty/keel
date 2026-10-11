@@ -31,6 +31,8 @@ Not read: `Match` blocks (skipped; the editor shows a note with the file and lin
 
 Passwords and key passphrases live in the operating system's keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux) and are never written to `config.toml`, logs or toasts. Host keys are checked against your `~/.ssh/known_hosts`; an unknown key needs your explicit approval and a changed key is a hard error. Uploads are written to a temporary file next to the target and renamed only when complete, so a dropped connection does not leave a half-written file under the real name.
 
+A name in a server's listing is never trusted as a path. Copying from a remote (SFTP, FTP or a cloud account) into a local folder refuses, before anything is written, any entry whose name is not one plain file name there: on Windows a name with `\`, `:` or `<>"|?*`, a control character, a trailing dot or space, or a device name such as `CON` or `aux.txt`; on Linux and macOS a name with a control character. The error names the entry ("refusing an unsafe name in …"); rename it on the server to copy it. Every target is also checked to lie inside the destination folder before it is written.
+
 ## FTP and FTPS
 
 NAS boxes, web hosts, cameras and old file servers that speak only FTP can be added as remotes too. They appear in the sidebar like SFTP hosts (same status dot, bookmarks, Connect, Disconnect, Edit and Copy address), and you browse, preview, search names in, copy to and from, rename and delete on them the same way.

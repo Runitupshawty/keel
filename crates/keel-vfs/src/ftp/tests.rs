@@ -375,6 +375,64 @@ fn resume_and_cancel() {
     assert_eq!(names(&p, &at("resume", "/moved")), ["big.bin"]);
 }
 
+/// A listing name cannot leave a local copy destination: on Windows every name that is not
+/// one plain file name there is refused before anything is written; on Unix (where `\`,
+/// `:`, `CON` and a trailing dot are ordinary) only control characters are, and the rest
+/// land as one file each inside the destination.
+#[test]
+fn listing_names_cannot_escape_a_local_copy() {
+    for mlsd in [true, false] {
+        for name in ["..\\x", "..\\..\\y", "a\\b", "c:d", "CON", "x.", "\u{1}x"] {
+            let refused = cfg!(windows) || name.chars().any(char::is_control);
+            let server = Server::start(Options {
+                listed: if refused { vec![name.into()] } else { vec![] },
+                ..options(mlsd)
+            });
+            std::fs::create_dir(server.path("trav")).unwrap();
+            if !refused {
+                put(&server.root, &format!("trav/{name}"), b"payload");
+            }
+            let id = if mlsd { "names-mlsd" } else { "names-list" };
+            let (p, _events) = provider_for(&server, id);
+            let router = crate::Router::new();
+            router.register_remote_provider(id.into(), Arc::new(p));
+            let local = tempfile::tempdir().unwrap();
+            let dest = local.path().join("dl").join("inner");
+            std::fs::create_dir_all(&dest).unwrap();
+            let result = transfer(
+                &[at(id, "/trav")],
+                &VPath::local(&dest),
+                false,
+                Conflict::Overwrite,
+                &|_| {},
+                &AtomicBool::new(false),
+                &router,
+            );
+            let top: Vec<_> = std::fs::read_dir(local.path().join("dl"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(top, ["inner"], "{name:?}");
+            let inside: Vec<_> = std::fs::read_dir(&dest)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            if refused {
+                let e = result.unwrap_err();
+                assert!(format!("{e:#}").contains("unsafe name"), "{name:?}: {e:#}");
+                assert!(inside.is_empty(), "{name:?}: {inside:?}");
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    std::fs::read(dest.join("trav").join(name)).unwrap(),
+                    b"payload"
+                );
+                assert_eq!(std::fs::read_dir(dest.join("trav")).unwrap().count(), 1);
+            }
+        }
+    }
+}
+
 fn ftps(
     server: &Server,
     id: &str,

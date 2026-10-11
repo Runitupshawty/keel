@@ -69,6 +69,9 @@ pub struct Options {
     pub cut_retr: Option<usize>,
     /// `RETR` opens the data connection and sends nothing.
     pub stall_retr: bool,
+    /// Names every `LIST`/`MLSD` also shows as 1-byte files that cannot be read: hostile
+    /// names the disk under the root cannot hold.
+    pub listed: Vec<String>,
 }
 
 pub struct Server {
@@ -379,6 +382,14 @@ impl Session {
                         text.push_str(&match cmd.as_str() {
                             "LIST" => unix_line(&name, &m),
                             _ => mlsd_line(&name, &m),
+                        });
+                    }
+                    for name in &self.options.listed {
+                        text.push_str(&match cmd.as_str() {
+                            "LIST" => format!(
+                                "-rw-r--r--    1 1000     1000            1 Jan  1  2020 {name}\r\n"
+                            ),
+                            _ => format!("type=file;size=1;modify=20200101000000; {name}\r\n"),
                         });
                     }
                     self.reply("150 here it comes")?;
