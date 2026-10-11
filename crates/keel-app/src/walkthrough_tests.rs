@@ -2229,8 +2229,17 @@ fn search_tab_with_library_filters() {
     shot(&mut h, "search-library-ext");
     let backup = query(&mut h, "ext:md in:Backup");
     assert_eq!(backup, ["notes-2025.md"]);
-    // Tag notes.md "taxes", then tag:taxes finds it.
+    // Tag notes.md "taxes", then tag:taxes finds it. The tag was created on a worker at the
+    // start; under machine load its list refresh can land after the searches above.
     let notes = VPath::local(root.join("Documents").join("notes.md"));
+    assert!(
+        wait(&mut h, 10, &|s| s
+            .library
+            .tags
+            .iter()
+            .any(|t| t.name == "taxes")),
+        "tag made"
+    );
     let tag = s(&h)
         .library
         .tags
