@@ -1674,7 +1674,9 @@ impl WebApp {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut self.query)
                     .desired_width(f32::INFINITY)
-                    .hint_text("words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:"),
+                    .hint_text(
+                        "words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:, content:",
+                    ),
             );
             if field.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter)) {
                 act = Some(Act::Search(self.query.clone()));
@@ -1727,6 +1729,13 @@ impl WebApp {
                             ui.weak(&h.source_label);
                         }
                     });
+                    // Task 62: found by the text inside the document.
+                    if let Some(sn) = &h.snippet {
+                        let marks: Vec<(usize, usize)> =
+                            sn.marks.iter().map(|m| (m[0], m[1])).collect();
+                        let muted = ui.visuals().weak_text_color();
+                        crate::chip_row::snippet(ui, &sn.text, &marks, muted);
+                    }
                 }
                 if let Some(q) = self.searched.as_deref().filter(|_| self.hits.is_empty()) {
                     empty_note(ui, &format!("Nothing matches {q}."));

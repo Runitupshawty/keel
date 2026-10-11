@@ -987,6 +987,9 @@ impl AppState {
         let remote = crate::remotes::is_network(&tab.dir);
         match result {
             Ok(hits) => {
+                tab.snippets = (hits.iter())
+                    .filter_map(|h| Some((h.path.clone(), h.snippet.clone()?)))
+                    .collect();
                 tab.set_listing(crate::tab::hits_listing(hits));
                 tab.error = None;
                 if !remote {

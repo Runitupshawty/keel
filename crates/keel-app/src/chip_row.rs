@@ -1,5 +1,5 @@
 //! The filter chip row under the library search box (Task 57): Kind, Type, Tag, Source,
-//! Size, Modified and Favorites. A chip edits the query text (`chips::toggle`) and lights
+//! Size, Modified, Favorites and (Task 62) Contents. A chip edits the query text (`chips::toggle`) and lights
 //! when the text has its term (`chips::is_on`), so clicking and typing agree; hovering a
 //! chip shows its term. Every chip is a Tab stop with a name of its own, and Space (or
 //! Enter) toggles the focused one.
@@ -47,8 +47,53 @@ pub fn chip_row(ui: &mut egui::Ui, query: &mut String, offer: &Offer) -> bool {
         if chip(ui, query, &fav) {
             *query = chips::toggle(query, &fav);
         }
+        // Task 62: lit while words also match the text inside documents; off adds
+        // `contents:off`.
+        let contents = Chip::contents();
+        let on = chips::contents_on(query);
+        let r = ui
+            .add(
+                egui::Button::new(&contents.label)
+                    .selected(on)
+                    .corner_radius(8.0),
+            )
+            .on_hover_text(match on {
+                true => "Words also match the text inside documents. Off adds contents:off",
+                false => "Names only (contents:off). On searches the text inside documents too",
+            });
+        let name = contents.name();
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, &name)
+        });
+        if r.clicked() {
+            *query = chips::toggle(query, &contents);
+        }
     });
     *query != before
+}
+
+/// Task 62: a line of a document's text under a search hit, the words that matched
+/// (`marks`, byte ranges) in the text colour, the rest in `muted`; cut to the width.
+pub fn snippet(ui: &mut egui::Ui, text: &str, marks: &[(usize, usize)], muted: egui::Color32) {
+    use egui::text::{LayoutJob, TextFormat};
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let strong = ui.visuals().strong_text_color();
+    let mut job = LayoutJob::default();
+    let mut at = 0;
+    let part = |job: &mut LayoutJob, s: &str, color| {
+        job.append(s, 0.0, TextFormat::simple(font.clone(), color));
+    };
+    for &(a, b) in marks {
+        let fits = at <= a && a < b && b <= text.len();
+        if !fits || !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+            continue;
+        }
+        part(&mut job, &text[at..a], muted);
+        part(&mut job, &text[a..b], strong);
+        at = b;
+    }
+    part(&mut job, &text[at..], muted);
+    ui.add(egui::Label::new(job).truncate()).on_hover_text(text);
 }
 
 /// Up to `max` offered values, then the ones the query has that are not among them (a tag

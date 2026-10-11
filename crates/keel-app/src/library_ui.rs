@@ -486,13 +486,19 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
     ui.label(RichText::new("Per source").strong())
         .on_hover_text("Counts from each source's index as last walked or changed.");
     egui::Grid::new("keel-source-counts")
-        .num_columns(6)
+        .num_columns(7)
         .striped(true)
         .spacing([14.0, 6.0])
         .show(ui, |ui| {
             for h in ["Source", "Files", "Folders", "Size", "Hashed", "Last walk"] {
                 ui.label(RichText::new(h).small().strong());
             }
+            ui.label(RichText::new("Contents").small().strong())
+                .on_hover_text(
+                    "Index file contents: search finds words inside its documents. Local folders \
+                 and drives are read by default; shares, SFTP, cloud and devices only when \
+                 turned on here (every document is downloaded once).",
+                );
             ui.end_row();
             for r in rows {
                 let link = ui.link(&r.label);
@@ -519,6 +525,20 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                 } else {
                     walk
                 });
+                let mut on = r.contents;
+                let box_ = ui
+                    .checkbox(&mut on, &r.documents)
+                    .on_hover_text("Documents whose text is indexed");
+                let name = format!("Index file contents of {}", r.label);
+                box_.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &name)
+                });
+                if box_.changed() {
+                    out.push(lib(LibCmd::Contents {
+                        source: Some(r.id.clone()),
+                        on: Some(on),
+                    }));
+                }
                 ui.end_row();
             }
         });
@@ -1156,6 +1176,26 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             ui.end_row();
             ui.label("Details view");
             ui.checkbox(&mut lib_settings.tags_column, "Tags column");
+            ui.end_row();
+            // --- Task 62 ---
+            ui.label("Contents");
+            ui.vertical(|ui| {
+                let mut on = l.stats.index_contents;
+                if ui.checkbox(&mut on, "Index file contents").changed() {
+                    l.stats.index_contents = on;
+                    l.pending.push(LibCmd::Contents {
+                        source: None,
+                        on: Some(on),
+                    });
+                }
+                ui.weak(
+                    "Library search finds words inside text, PDF, Word, spreadsheet and \
+                     presentation files (no OCR of images or scans). Read at idle priority from \
+                     local folders and drives; shares, SFTP, cloud and paired devices only when \
+                     turned on per source in the Overview: every document is downloaded once, \
+                     which takes time and can cost egress fees. Off deletes the text read so far.",
+                );
+            });
             ui.end_row();
             // --- Task 53 ---
             ui.label("Last backup");

@@ -796,6 +796,26 @@ impl LibraryBackend {
         }
     }
 
+    /// Task 62: Index file contents for the library (`source` None) or one source (`on`
+    /// None: its kind's default).
+    pub fn set_contents(&self, source: Option<&SourceId>, on: Option<bool>) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => match source {
+                None => lib.set_index_contents(on.unwrap_or(true)),
+                Some(id) => lib.set_source_contents(id, on),
+            },
+            LibraryBackend::Daemon(r) => {
+                let mut params = json!({"on": on.unwrap_or(true)});
+                if let Some(id) = source {
+                    params["id"] = json!(id.0);
+                    params["default"] = json!(on.is_none());
+                }
+                r.apply("contents.set", params)?;
+                Ok(())
+            }
+        }
+    }
+
     pub fn media_job(&self, id: &SourceId) -> Result<JobId> {
         match self {
             LibraryBackend::InProcess(lib) => lib.media_job(id),

@@ -2788,6 +2788,78 @@ fn search_chips_build_the_query() {
     close_library(&mut h);
 }
 
+/// Task 62: text inside documents. Documents is indexed, the text job reads its documents;
+/// a word only inside todo.txt finds it with a snippet line under the name; the Contents
+/// chip off (`contents:off`) hides it again.
+#[test]
+#[ignore]
+fn search_finds_words_inside_documents() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, _base, lib) = with_library("contents", &docs, &root.join("Backup"));
+    lib.set_text_extractor(keel_preview::text_extractor());
+    add_source(&mut h, &docs);
+    // The walk started the text job; Overview's stats count the documents read.
+    let read = |s: &AppState| {
+        s.library.stats.text.documents >= 5 && !s.library.jobs.values().any(|j| j.active())
+    };
+    let jobs = || {
+        let list = lib.jobs().list().unwrap_or_default();
+        let list: Vec<_> = list.iter().map(|j| (&j.kind, j.status, &j.log)).collect();
+        format!("{list:?}")
+    };
+    assert!(
+        wait(&mut h, 120, &read),
+        "{:?} {}",
+        s(&h).library.stats.text,
+        jobs()
+    );
+    key(&mut h, CMD, Key::F);
+    let combo = h
+        .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::ComboBox))
+        .map(|n| center_of(&n))
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+        .expect("backend menu");
+    click_at(&mut h, combo, NONE, PointerButton::Primary);
+    click_last(&mut h, "Library");
+    assert!(s(&h).tab(0).library_search);
+    h.run_steps(3);
+    assert!(checked(&h, "Search file contents"), "on by default");
+    let settled = |h: &mut H| {
+        assert!(wait(h, 30, &|s| !s.tab(0).loading && s.tab(0).error.is_none()));
+        h.run_steps(5);
+        names(s(h), 0)
+    };
+    // "plumber" is only inside todo.txt.
+    let at = search_box(&h);
+    fill(&mut h, at, "plumber");
+    key(&mut h, NONE, Key::Enter);
+    assert_eq!(settled(&mut h), ["todo.txt"]);
+    let snippet = s(&h)
+        .tab(0)
+        .snippets
+        .values()
+        .next()
+        .cloned()
+        .expect("a snippet");
+    assert!(snippet.text.contains("Call the plumber"), "{snippet:?}");
+    assert!(has(&h, &snippet.text), "the snippet line under the name");
+    shot(&mut h, "search-contents");
+    // The Contents chip off: names only.
+    click(&mut h, "Search file contents");
+    assert_eq!(search_text(s(&h)), "plumber contents:off");
+    assert!(settled(&mut h).is_empty());
+    assert!(!checked(&h, "Search file contents"));
+    // On again; `content:` finds the word inside notes.md (a Markdown list item).
+    click(&mut h, "Search file contents");
+    assert_eq!(search_text(s(&h)), "plumber");
+    let at = search_box(&h);
+    fill(&mut h, at, "content:drip");
+    key(&mut h, NONE, Key::Enter);
+    assert_eq!(settled(&mut h), ["notes.md"]);
+    close_library(&mut h);
+}
+
 // ---------------------------------------------------------------------------------------
 // Devices
 

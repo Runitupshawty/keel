@@ -90,6 +90,15 @@ fn main() -> eframe::Result<()> {
     }
     let request = cli.request();
     // --- end Task 24 ---
+    // pdfium sits next to the executable (copied there by build.rs); a
+    // command's library reads PDF text with it too (Task 62).
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+    {
+        keel_preview::init_pdfium(dir);
+    }
     // --- Task 37 ---
     // `keel <subcommand>`: no window, output on the shell's console.
     if let Some(cmd) = cli.command.clone() {
@@ -136,14 +145,6 @@ fn main() -> eframe::Result<()> {
                 1
             }
         });
-    }
-    // pdfium sits next to the executable (copied there by build.rs).
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(Path::parent)
-    {
-        keel_preview::init_pdfium(dir);
     }
     let home = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_owned())

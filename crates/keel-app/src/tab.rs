@@ -123,6 +123,8 @@ pub struct Tab {
     // --- end Task 23 ---
     /// Task 29: a search tab querying the library instead of the platform backend.
     pub library_search: bool,
+    /// Task 62: a library search's snippets of the text inside documents, by hit path.
+    pub snippets: std::collections::HashMap<VPath, keel_search::Snippet>,
     // --- Task 46 ---
     /// Shown in the Sizes view: biggest first, folders mixed with files (set by the pane
     /// before drawing).
@@ -175,6 +177,7 @@ impl Tab {
             left_search: None,
             columns: Default::default(),
             library_search: false,
+            snippets: Default::default(),
             sizes_view: false,
             totals_key: None,
             totals: Default::default(),

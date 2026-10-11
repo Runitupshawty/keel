@@ -217,6 +217,13 @@ pub enum LibCmd {
     },
     /// Overview → Protection: re-hash a sample now.
     CheckIntegrity,
+    // --- Task 62 ---
+    /// Index file contents: the library's setting (`source` None) or a source's switch
+    /// (`on` None: back to its kind's default).
+    Contents {
+        source: Option<SourceId>,
+        on: Option<bool>,
+    },
     /// The daemon went away: connect again (starting it when it is not running).
     Reconnect,
     /// The daemon went away: open the library in this window.
@@ -1485,7 +1492,10 @@ fn open_library(
     lib.set_router(router);
     keel_net::spacedrop::register(&lib); // Task 36
     lib.set_utc_offset(chrono::Local::now().offset().local_minus_utc().into());
+    // Task 62: the text inside documents (the text job reads it with the preview's readers).
+    lib.set_text_extractor(keel_preview::text_extractor());
     lib.jobs().resume_all()?;
+    lib.start_text_jobs();
     let lib = Arc::new(lib);
     let events = lib.jobs().subscribe();
     let backend = LibraryBackend::InProcess(lib);
@@ -2584,6 +2594,23 @@ impl AppState {
             LibCmd::SetDomain { volume, domain } => {
                 self.set_volume(volume, VolumeChange::Domain(domain))
             }
+            LibCmd::Contents { source, on } => {
+                // Shown at once; the stats read after the change confirm it.
+                match &source {
+                    None => self.library.stats.index_contents = on.unwrap_or(true),
+                    Some(id) => {
+                        let row = (self.library.stats.per_source.iter_mut()).find(|s| &s.id == id);
+                        if let (Some(row), Some(on)) = (row, on) {
+                            row.contents = on;
+                        }
+                    }
+                }
+                self.library
+                    .spawn_try("keel-library-contents", "Index file contents", move |b| {
+                        b.set_contents(source.as_ref(), on)?;
+                        Ok(Some(LibMsg::Stats(b.stats()?)))
+                    });
+            }
             LibCmd::CheckIntegrity => {
                 let pct = self.settings.library.integrity_pct;
                 self.library.spawn("keel-library-integrity", move |b| {
@@ -3109,6 +3136,9 @@ pub struct SourceCountRow {
     pub hashed: String,
     pub last_walk: String,
     pub offline: bool,
+    /// Task 62: its documents' text is read (the switch), and how many are indexed.
+    pub contents: bool,
+    pub documents: String,
 }
 
 pub fn source_count_rows(per: &[keel_core::SourceStats]) -> Vec<SourceCountRow> {
@@ -3125,6 +3155,11 @@ pub fn source_count_rows(per: &[keel_core::SourceStats]) -> Vec<SourceCountRow> 
             },
             last_walk: when(s.last_walk),
             offline: s.offline,
+            contents: s.contents,
+            documents: match s.text.documents {
+                0 if !s.contents => "—".into(),
+                n => count(n),
+            },
         })
         .collect()
 }

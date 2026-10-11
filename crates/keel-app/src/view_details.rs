@@ -12,6 +12,8 @@ use keel_core::{SourceStatus, FAVORITES};
 use keel_vfs::{Entry, Kind};
 
 pub const ROW_H: f32 = 22.0;
+/// A library search hit with a snippet of its text under the name (Task 62).
+pub const SNIPPET_ROW_H: f32 = 40.0;
 
 pub fn size_text(e: &Entry) -> String {
     if e.kind == Kind::Dir {
@@ -204,7 +206,16 @@ pub fn ui(
         })
         .body(|body| {
             let vis = tab.visible_cached();
-            body.rows(ROW_H, vis.len(), |mut row| {
+            // Task 62: a hit found by the text inside its document is two lines tall.
+            let heights: Vec<f32> = (vis.iter())
+                .map(
+                    |&i| match search && tab.snippets.contains_key(&tab.entries()[i].path) {
+                        true => SNIPPET_ROW_H,
+                        false => ROW_H,
+                    },
+                )
+                .collect();
+            let draw = |mut row: egui_extras::TableRow<'_, '_>| {
                 let e = &tab.entries()[vis[row.index()]];
                 let shown = tab.shown_name(e);
                 let selected = tab.selected.contains(&e.name);
@@ -236,55 +247,72 @@ pub fn ui(
                     .flatten();
                 row.col(|ui| {
                     tint(ui);
-                    crate::folder_style::slot(ui, crate::icons::icon_for(e), style);
-                    if e.encrypted {
-                        ui.add(
-                            egui::Image::new(crate::icons::lock())
-                                .fit_to_exact_size(egui::vec2(12.0, 12.0)),
-                        )
-                        .on_hover_text("Password-protected");
-                    }
-                    match &mut renaming {
-                        Some((name, text)) if *name == e.name => {
-                            let r = ui
-                                .add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                            if r.lost_focus() {
-                                rename_done = true;
-                                if ui.input(|i| i.key_pressed(Key::Enter))
-                                    && !text.trim().is_empty()
-                                    && text.trim() != shown
-                                {
-                                    out.push(Action::RenameTo {
-                                        from: e.path.clone(),
-                                        to: text.trim().to_owned(),
-                                    });
+                    let snippet = tab.snippets.get(&e.path).filter(|_| search);
+                    let mut line = |ui: &mut egui::Ui| {
+                        crate::folder_style::slot(ui, crate::icons::icon_for(e), style);
+                        if e.encrypted {
+                            ui.add(
+                                egui::Image::new(crate::icons::lock())
+                                    .fit_to_exact_size(egui::vec2(12.0, 12.0)),
+                            )
+                            .on_hover_text("Password-protected");
+                        }
+                        match &mut renaming {
+                            Some((name, text)) if *name == e.name => {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(text).desired_width(f32::INFINITY),
+                                );
+                                if r.lost_focus() {
+                                    rename_done = true;
+                                    if ui.input(|i| i.key_pressed(Key::Enter))
+                                        && !text.trim().is_empty()
+                                        && text.trim() != shown
+                                    {
+                                        out.push(Action::RenameTo {
+                                            from: e.path.clone(),
+                                            to: text.trim().to_owned(),
+                                        });
+                                    }
+                                } else {
+                                    crate::pane::rename_focus(
+                                        &r,
+                                        text,
+                                        e.kind == keel_vfs::Kind::Dir,
+                                    );
                                 }
-                            } else {
-                                crate::pane::rename_focus(&r, text, e.kind == keel_vfs::Kind::Dir);
+                            }
+                            _ if style.is_some_and(|s| s.color.is_some()) => {
+                                // The name leaves room for the color dot after it.
+                                ui.scope(|ui| {
+                                    ui.set_max_width((ui.available_width() - 14.0).max(0.0));
+                                    ui.add(egui::Label::new(cell(shown, color)).truncate());
+                                });
+                                crate::folder_style::dot(ui, style);
+                            }
+                            _ => {
+                                ui.add(egui::Label::new(cell(shown, color)).truncate());
                             }
                         }
-                        _ if style.is_some_and(|s| s.color.is_some()) => {
-                            // The name leaves room for the color dot after it.
-                            ui.scope(|ui| {
-                                ui.set_max_width((ui.available_width() - 14.0).max(0.0));
-                                ui.add(egui::Label::new(cell(shown, color)).truncate());
+                        if let Some(s) = offline {
+                            let SourceStatus::Offline { last_seen, reason } = s.status else {
+                                unreachable!("filtered")
+                            };
+                            ui.label(egui::RichText::new("offline").small().color(muted))
+                                .on_hover_text(format!(
+                                    "{} is {}: listed from the library index",
+                                    s.label,
+                                    crate::library::offline_text(last_seen, reason)
+                                ));
+                        }
+                    };
+                    match snippet {
+                        Some(sn) => {
+                            ui.vertical(|ui| {
+                                ui.horizontal(line);
+                                crate::chip_row::snippet(ui, &sn.text, &sn.marks, muted);
                             });
-                            crate::folder_style::dot(ui, style);
                         }
-                        _ => {
-                            ui.add(egui::Label::new(cell(shown, color)).truncate());
-                        }
-                    }
-                    if let Some(s) = offline {
-                        let SourceStatus::Offline { last_seen, reason } = s.status else {
-                            unreachable!("filtered")
-                        };
-                        ui.label(egui::RichText::new("offline").small().color(muted))
-                            .on_hover_text(format!(
-                                "{} is {}: listed from the library index",
-                                s.label,
-                                crate::library::offline_text(last_seen, reason)
-                            ));
+                        None => line(ui),
                     }
                 });
                 row.col(|ui| {
@@ -388,7 +416,12 @@ pub fn ui(
                 let r = row.response();
                 r.context_menu(|ui| context_menu(ui, tab, Some(e), out));
                 clicks.push((r, e.clone()));
-            });
+            };
+            if heights.iter().all(|h| *h == ROW_H) {
+                body.rows(ROW_H, vis.len(), draw);
+            } else {
+                body.heterogeneous_rows(heights.into_iter(), draw);
+            }
         });
 
     for (r, e) in clicks {
