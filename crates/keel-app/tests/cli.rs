@@ -423,6 +423,31 @@ fn mcp_without_elicitation() {
     assert!(mcp.child.wait().unwrap().success());
 }
 
+/// `keel --version` names the version and whether the binary is signed (a test build is
+/// not), for bug reports.
+#[test]
+fn version_says_whether_signed() {
+    let out = Command::new(env!("CARGO_BIN_EXE_keel"))
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some(concat!("keel ", env!("CARGO_PKG_VERSION")))
+    );
+    let sig = lines.next().unwrap_or_default();
+    assert!(
+        ["signature: unsigned", "signature: not signed (Linux)"]
+            .iter()
+            .any(|s| sig.starts_with(s)),
+        "{text}"
+    );
+}
+
 /// Process start to exit of `keel --version` (median of 20): `cargo test -p keel-app
 /// --release --test cli -- --ignored --nocapture perf_version`.
 #[test]

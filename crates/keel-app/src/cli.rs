@@ -231,12 +231,19 @@ impl Request {
 impl Cli {
     /// Parses `std::env::args`; `--help`, `--version` and bad arguments print and exit (a
     /// release build on Windows has no console of its own, so it borrows the shell's).
+    /// `--version` also says whether this binary is signed, for bug reports; it is read
+    /// only then, not at every start.
     pub fn from_env() -> Self {
         use std::io::IsTerminal;
         let interactive = std::io::stdin().is_terminal();
         Self::parse_args(std::env::args_os(), interactive, |p| p.is_dir()).unwrap_or_else(|e| {
             #[cfg(windows)]
             keel_vfs::desktop::attach_parent_console();
+            if e.kind() == clap::error::ErrorKind::DisplayVersion {
+                let _ = e.print();
+                println!("signature: {}", keel_api::signature::current());
+                std::process::exit(0);
+            }
             e.exit()
         })
     }

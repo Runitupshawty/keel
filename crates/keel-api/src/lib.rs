@@ -28,6 +28,7 @@ mod ops;
 pub mod plans;
 pub mod private;
 pub mod rpc;
+pub mod signature;
 pub mod socket;
 pub mod types;
 

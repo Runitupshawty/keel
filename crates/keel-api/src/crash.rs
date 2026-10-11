@@ -1,5 +1,5 @@
 //! Crash reports for keel and keel-daemon: a panic writes `<data dir>/crashes/<time>.txt`
-//! (UTC, owner-only) with the version, the OS, the panic message and location, a backtrace
+//! (UTC, owner-only) with the version, whether the binary is signed, the OS, the panic message and location, a backtrace
 //! and the last [`LOG_LINES`] log lines ([`tee`]). The text is [`scrub`]bed first: the home
 //! folder becomes `~`; user names in other users' folders, profile names, e-mail addresses,
 //! URL user names and hosts and network servers become placeholders; Rust source paths keep
@@ -112,6 +112,7 @@ pub fn report(p: &Panic) -> String {
     format!(
         "Keel crash report\n\
          Program: {} {}\n\
+         Signature: {}\n\
          OS: {} {}\n\
          Time: {} UTC\n\
          Thread: {}\n\
@@ -123,6 +124,7 @@ pub fn report(p: &Panic) -> String {
          Last log lines:\n{log}\n",
         p.program,
         env!("CARGO_PKG_VERSION"),
+        crate::signature::current(),
         std::env::consts::OS,
         std::env::consts::ARCH,
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
@@ -474,6 +476,12 @@ mod tests {
         });
         assert!(text.contains(concat!("Program: keel ", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains(std::env::consts::OS));
+        let signature = format!(
+            "Signature: {}
+",
+            crate::signature::current()
+        );
+        assert!(text.contains(&signature), "{text}");
         assert!(text.contains("Panic: index out of bounds"));
         assert!(text.contains("At: crates/keel-app/src/pane.rs:1:2"));
         assert!(text.contains("0: frame"));
