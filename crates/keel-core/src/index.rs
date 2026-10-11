@@ -866,6 +866,9 @@ impl Indexer {
         })();
         let _w = src.write.lock();
         drop(pending);
+        // Folder totals follow what the walk wrote (also after a cancel or an outage), and
+        // what watcher batches applied while it ran (they leave the refresh to it).
+        refresh_totals(src);
         match result {
             Ok(done) => {
                 // Released in the store by the walk's last transaction.
@@ -1768,6 +1771,9 @@ fn apply_batch(
                 }
             }
         }
+        if src.pending_gen.load(Ordering::SeqCst) == 0 {
+            refresh_totals(src);
+        }
         failed.map_or(Ok(found), Err)
     })();
     drop(w);
@@ -1781,6 +1787,14 @@ fn apply_batch(
     result
 }
 
+/// Brings the source's folder totals up to date (`totals::refresh`); a failure leaves the
+/// marks for the next refresh.
+fn refresh_totals(src: &Source) {
+    if let Err(e) = src.store.get().and_then(|c| crate::totals::refresh(&c)) {
+        tracing::warn!("folder totals of {}: {e:#}", src.def.label);
+    }
+}
+
 /// `rel` lies below folder `top` (every path lies below the root, `""`).
 fn is_below(rel: &str, top: &str) -> bool {
     top.is_empty() && !rel.is_empty()
@@ -1788,7 +1802,7 @@ fn is_below(rel: &str, top: &str) -> bool {
 }
 
 /// `BEGIN IMMEDIATE`, retried while another writer keeps the store busy.
-fn begin_immediate(c: &Connection) -> Result<()> {
+pub(crate) fn begin_immediate(c: &Connection) -> Result<()> {
     let mut attempt = 1;
     loop {
         match c.execute_batch("BEGIN IMMEDIATE") {

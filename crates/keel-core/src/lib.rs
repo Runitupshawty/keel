@@ -34,6 +34,7 @@ mod sidecar_job;
 mod sidecars;
 mod sync;
 mod tags;
+mod totals;
 
 pub use fsid::unix_ns;
 pub use hash::{
@@ -70,6 +71,7 @@ pub use sync::{
     FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
 };
 pub use tags::{Tag, TagId, View, FAVORITES};
+pub use totals::{ChildSize, FolderSizes, Total};
 
 use std::path::PathBuf;
 
