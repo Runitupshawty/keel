@@ -908,11 +908,12 @@ pub(crate) fn raw_previews(path: &Path) -> Result<Vec<RawPreview>> {
             continue;
         }
         let n = usize::from(u16_of(&count)).min(RAW_IFD_ENTRIES);
-        let mut entries = vec![0u8; n * 12 + 4];
+        // A truncated directory keeps the entries that are there (a read may come short).
+        let mut entries = Vec::with_capacity(n * 12 + 4);
         let got = file
             .by_ref()
-            .take(entries.len() as u64)
-            .read(&mut entries)?;
+            .take((n * 12 + 4) as u64)
+            .read_to_end(&mut entries)?;
         let n = n.min(got / 12);
         let next = (got >= n * 12 + 4).then(|| u32_of(&entries[n * 12..]));
         let mut jpeg = (None, None);
