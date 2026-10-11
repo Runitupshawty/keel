@@ -21,6 +21,9 @@ export async function run({ browser, base, token, ids, daemon }) {
     await touch(page, [[((i + 0.5) * 390) / tabs.length, 844 - 30]]);
     const s = await p.until(`${name} tab`, (s) => s.phone_tab === name && !s.sheet);
     if (name === "Devices" && !s.devices.id) await p.until("devices listed", (s) => s.devices.id);
+    // The first screen is not blank: it says where the sources are.
+    if (name === "Browse")
+      await p.until("browse hint", (s) => s.notes.includes("Open a source under Library, or type a path above."));
     await sleep(200);
     await p.shot(`21-phone-tab-${name.toLowerCase()}`);
   }

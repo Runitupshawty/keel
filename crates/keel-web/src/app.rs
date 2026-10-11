@@ -1319,6 +1319,9 @@ impl WebApp {
             .id_salt(("pane", i))
             .auto_shrink(false)
             .show(ui, |ui| {
+                if self.panes[i].path.is_empty() {
+                    empty_note(ui, "Open a source from the sidebar, or type a path above.");
+                }
                 for e in &self.panes[i].entries {
                     let label = if e.is_dir {
                         format!("📁 {}", e.name)
@@ -1392,6 +1395,9 @@ impl WebApp {
             .id_salt(("phone-pane", i))
             .auto_shrink(false)
             .show(ui, |ui| {
+                if self.panes[i].path.is_empty() {
+                    empty_note(ui, "Open a source under Library, or type a path above.");
+                }
                 if grid {
                     ui.horizontal_wrapped(|ui| {
                         for e in &self.panes[i].entries {
