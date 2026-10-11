@@ -405,7 +405,7 @@ impl TextJob {
                     TextOutcome::Failed(_) => {}
                 }
                 if contents_on(lib, src) {
-                    save(src, &rec, outcome)?;
+                    save_retrying(ctx, src, &rec, outcome)?;
                 }
                 self.after = rec.id;
                 self.done += 1;
@@ -534,6 +534,29 @@ fn short(why: &str) -> String {
         s.push('…');
     }
     s
+}
+
+/// `save`, again after a pause while the store stays busy past its 5 s timeout (a walk
+/// or another job writing a big batch on a loaded machine), up to 3 times.
+fn save_retrying(ctx: &JobCtx, src: &Source, rec: &Pending, outcome: TextOutcome) -> Result<()> {
+    let busy = |e: &anyhow::Error| {
+        e.chain().any(|c| {
+            matches!(c.downcast_ref::<rusqlite::Error>(),
+                Some(rusqlite::Error::SqliteFailure(f, _))
+                    if f.code == rusqlite::ErrorCode::DatabaseBusy
+                        || f.code == rusqlite::ErrorCode::DatabaseLocked)
+        })
+    };
+    let mut tries = 0;
+    loop {
+        match save(src, rec, outcome.clone()) {
+            Err(e) if busy(&e) && tries < 3 && !ctx.stopping() => {
+                tries += 1;
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            r => return r,
+        }
+    }
 }
 
 /// Writes one outcome: the status row, and the text into the body and the index (the
