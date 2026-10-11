@@ -2,6 +2,23 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Previews of HEIC, HEIF and AVIF photos (phone photos), through `ffmpeg` when it is on `PATH` (ffmpeg 7 or newer): the picture comes upright (the file's own rotation is applied) and scaled to the panel, under the same pixel and size limits as other images. Without ffmpeg the panel says to install it. The `heic` build feature (libheif) still decodes HEIC without ffmpeg.
+- Previews of camera RAW files (DNG, CR2, NEF, ARW, ORF, RW2, PEF) by their largest embedded JPEG, turned by the file's orientation. Only the preview is read, so RAW files of any size preview. Pure Rust, no RAW decoder; the directory walk is bounded and fuzzed (`raw` target).
+- Audio previews (mp3, flac, wav, ogg, opus, m4a, aac): title, artist and album, duration, codec, sample rate, channels and bitrate, the embedded cover and a waveform, with **Play**/**Pause** and a click on the waveform to play from there. Playback uses the media viewer's sound path (`ffmpeg`, the default sound output) and stops when the selection moves or the panel closes. Needs `ffmpeg`; without it the panel says so. Covers are also the grid's thumbnails.
+- Font previews (ttf, otf, ttc, otc): "The quick brown fox jumps over the lazy dog 0123456789" at four sizes in the font itself, with its family, style, format and glyph count. Drawn with egui's own rasterizer, so no new library; fuzzed (`font` target).
+- The media view takes HEIC, HEIF, AVIF and the RAW formats above: tiles, the viewer and their sidecars. Capture time and camera come from EXIF, also in HEIF files, so `taken:` and the date headers find phone photos.
+
+### Known limitations
+
+- HEIC and AVIF need ffmpeg 7 or newer (it reads the tiled pictures phones write); with an older one the panel says "HEIC photos need ffmpeg 7 or newer (this one is 6)". A tiled HEIC without an EXIF picture size can show one tile's size as its dimensions in the viewer's information panel.
+- CR3 (Canon) and RAF (Fujifilm) are not TIFF-based: they show "No preview" and are not in the media view. Capture time and camera are not read from RAW files over 64 MiB.
+- woff and woff2 fonts are not previewed (woff2 needs a brotli decoder); a font collection shows its first font.
+- Audio waveforms are drawn for files up to 20 minutes. The panel's player has no volume control (it plays at full volume through the default output).
+
 ## [0.18.0] - 2026-10-11
 
 ### Added

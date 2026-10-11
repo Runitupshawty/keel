@@ -92,7 +92,7 @@ sudo apt install libgtk-3-0 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 
 
 ### Optional everywhere
 
-- `ffmpeg` on your `PATH`: video thumbnails, the frame strips in the media view and video playback with sound. Without it videos show their icon and open in the system player.
+- `ffmpeg` on your `PATH` (version 7 or newer for HEIC): video thumbnails, the frame strips in the media view and video playback with sound; HEIC, HEIF and AVIF photos (iPhone photos) in previews and the media view; audio previews with their tags, cover art and playback. Without it videos show their icon and open in the system player, HEIC and audio previews say to install it, and other photos, RAW files and fonts preview as usual.
 - PDF previews need pdfium, which the release archives already contain.
 
 ## First run
