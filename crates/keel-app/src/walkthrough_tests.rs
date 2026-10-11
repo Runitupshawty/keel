@@ -2797,12 +2797,25 @@ fn search_finds_words_inside_documents() {
     let root = demo();
     let docs = root.join("Documents");
     let (mut h, _base, lib) = with_library("contents", &docs, &root.join("Backup"));
+    lib.set_pause_on_battery(false);
     lib.set_text_extractor(keel_preview::text_extractor());
     add_source(&mut h, &docs);
-    // The walk started the text job; Overview's stats count the documents read.
-    let read = |s: &AppState| {
-        s.library.stats.text.documents >= 5 && !s.library.jobs.values().any(|j| j.active())
+    // The walk started the text job: wait for its end in the library itself (the window's
+    // job list can lag), and for Overview's stats to count the documents read.
+    let text_ended = || {
+        let list = lib.jobs().list().unwrap_or_default();
+        let mut text = list.iter().filter(|j| j.kind == "text").peekable();
+        text.peek().is_some()
+            && text.all(|j| {
+                matches!(
+                    j.status,
+                    keel_core::JobStatus::Done
+                        | keel_core::JobStatus::Failed
+                        | keel_core::JobStatus::Cancelled
+                )
+            })
     };
+    let read = |s: &AppState| s.library.stats.text.documents >= 5 && text_ended();
     let jobs = || {
         let list = lib.jobs().list().unwrap_or_default();
         let list: Vec<_> = list.iter().map(|j| (&j.kind, j.status, &j.log)).collect();
