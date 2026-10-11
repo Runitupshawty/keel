@@ -753,3 +753,23 @@ fn edge_numbers_are_refused_not_wrapped() {
     assert_eq!(q.width.max, Some(i64::MAX - 1));
     assert!(q.modified_before.is_some());
 }
+
+/// Ctrl+P's file finder: files only, each source's newest first, capped.
+#[test]
+fn file_names_lists_files_newest_first_up_to_the_cap() {
+    let f = fixture();
+    let (all, more) = f.lib.file_names(100).unwrap();
+    assert!(!more);
+    let names: Vec<&str> = all.iter().map(|p| p.name()).collect();
+    assert_eq!(names.len(), 5, "files, no folders: {names:?}");
+    let (q3, old) = (
+        names.iter().position(|n| *n == "Q3 report.pdf").unwrap(),
+        names.iter().position(|n| *n == "old report.pdf").unwrap(),
+    );
+    assert!(q3 < old, "newest first: {names:?}");
+    assert!(all.contains(&f.b.absolute("photos/beach.jpg")));
+    let (two, more) = f.lib.file_names(2).unwrap();
+    assert_eq!((two.len(), more), (2, true));
+    assert_eq!(f.lib.file_names(5).unwrap(), (all, false));
+    let _ = &f.a;
+}

@@ -12,7 +12,7 @@ impl Fuzzy {
         let mut fuzzy = Self {
             matcher: Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(|| {}), None, 1),
         };
-        fuzzy.inject(items);
+        fuzzy.push(items);
         fuzzy
     }
 
@@ -43,7 +43,8 @@ impl Fuzzy {
             .collect()
     }
 
-    fn inject(&mut self, items: Vec<String>) {
+    /// Adds items after the ones there (the next `search` matches them too).
+    pub fn push(&mut self, items: Vec<String>) {
         let injector = self.matcher.injector();
         for item in items {
             injector.push(item, |value, columns| {

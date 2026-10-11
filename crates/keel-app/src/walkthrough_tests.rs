@@ -2557,3 +2557,62 @@ fn undo_reports_from_before_a_profile_switch_are_dropped() {
     assert_eq!(s(&h).undo.label().as_deref(), Some("Undo copy"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Ctrl+P finds files: part of a file's name, Enter, and the file is selected in its folder
+/// with the preview open. Tab switches to Folders (kept for the next Ctrl+P), and the file
+/// leaves the results.
+#[test]
+fn ctrl_p_finds_a_file_selects_and_previews_it() {
+    use crate::jump::JumpFilter;
+    let dir = scratch("jump-file");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let deep = a.join("sub").join("deep");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("quarterly-ledger.txt"), "ledger\n").unwrap();
+    let mut h = app(&a, &b);
+    let first_file = |s: &AppState| {
+        (s.jump.results.first()).is_some_and(|f| f.file && f.path.ends_with("quarterly-ledger.txt"))
+    };
+    key(&mut h, CMD, Key::P);
+    assert!(s(&h).jump.open, "Ctrl+P");
+    assert_eq!(
+        s(&h).jump.filter,
+        JumpFilter::Both,
+        "folders and files by default"
+    );
+    type_text(&mut h, "qledger");
+    assert!(wait(&mut h, 20, &first_file), "{:?}", s(&h).jump.results);
+    assert!(!s(&h).jump.tree.busy, "{}", s(&h).jump.status());
+    shot(&mut h, "find-a-file");
+    key(&mut h, NONE, Key::Tab);
+    assert_eq!(s(&h).jump.filter, JumpFilter::Folders, "Tab");
+    assert!(
+        wait(&mut h, 10, &|s| s.jump.results.iter().all(|f| !f.file)),
+        "folders only: {:?}",
+        s(&h).jump.results
+    );
+    key(&mut h, NONE, Key::Escape);
+    assert!(!s(&h).jump.open);
+    assert_eq!(
+        s(&h).settings.jump_filter,
+        JumpFilter::Folders,
+        "remembered"
+    );
+    key(&mut h, CMD, Key::P);
+    assert_eq!(s(&h).jump.filter, JumpFilter::Folders, "kept");
+    key(&mut h, NONE, Key::Tab);
+    key(&mut h, NONE, Key::Tab);
+    assert_eq!(s(&h).jump.filter, JumpFilter::Both);
+    type_text(&mut h, "qledger");
+    assert!(wait(&mut h, 10, &first_file), "{:?}", s(&h).jump.results);
+    key(&mut h, NONE, Key::Enter);
+    assert!(!s(&h).jump.open, "Enter closes it");
+    let shown = |s: &AppState| {
+        dir_is(s, 0, &deep) && s.tab(0).cursor.as_deref() == Some("quarterly-ledger.txt")
+    };
+    assert!(wait(&mut h, 10, &shown), "{}", s(&h).tab(0).dir.display());
+    assert!(s(&h).tab(0).selected.contains("quarterly-ledger.txt"));
+    assert!(s(&h).preview.open, "the preview opens");
+    assert!(wait(&mut h, 10, &previewed), "and shows the file");
+    let _ = std::fs::remove_dir_all(&dir);
+}

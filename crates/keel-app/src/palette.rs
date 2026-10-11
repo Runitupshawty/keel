@@ -105,8 +105,8 @@ fn global_items() -> Vec<Item> {
         ("Edit path", "Ctrl+L", FocusPath),
         // Not "with Everything": Windows uses Keel's own index when Everything is not running.
         ("Search files", "Ctrl+F", Search),
-        ("Jump to folder", "Ctrl+P", JumpFolder),
-        ("Rebuild folder index", "", ReindexFolders),
+        ("Jump to folder or file", "Ctrl+P", JumpFolder),
+        ("Rebuild folder and file lists", "", ReindexFolders),
         ("Select all", "Ctrl+A", SelectAll),
         ("Invert selection", "", InvertSelection),
         ("Paste", "Ctrl+V", Paste),

@@ -149,7 +149,15 @@ pub enum Action {
     OpenLocation,
     Search,
     JumpFolder,
-    /// Rebuild the Ctrl+P folder index (F5 in the popup).
+    /// A Ctrl+P result: a folder opens; a file opens its folder with it selected and the
+    /// preview shown. In a new tab, or in the other pane (a new tab when single-pane).
+    JumpTo {
+        path: VPath,
+        file: bool,
+        new_tab: bool,
+        other_pane: bool,
+    },
+    /// Read Ctrl+P's folder and file lists again (F5 in the popup).
     ReindexFolders,
     Palette,
     TogglePreview,

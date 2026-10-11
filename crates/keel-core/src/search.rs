@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 /// Hits returned when a query names no limit.
 pub const DEFAULT_MAX: usize = 500;
+/// Ctrl+P reads at most this many library file names (`Library::file_names`, `files.names`).
+pub const FILE_NAMES_MAX: usize = 100_000;
 /// The most a fresh file's score improves on an old one's (bm25 scores run about -1 to -25).
 const RECENCY: f64 = 1.0;
 /// Recency halves over this many seconds (30 days).
@@ -939,6 +941,42 @@ impl Library {
         hits.sort_by(|a, b| a.score.total_cmp(&b.score));
         hits.truncate(q.max);
         Ok(hits)
+    }
+
+    /// Up to `max` indexed files (no folders) for Ctrl+P's file finder, each source's newest
+    /// first, and whether there were more. Offline sources are left out (their folders
+    /// cannot be opened); a store that cannot be read is skipped (logged).
+    pub fn file_names(&self, max: usize) -> Result<(Vec<VPath>, bool)> {
+        let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
+        let mut out = Vec::new();
+        for src in &sources {
+            if matches!(*src.status.read(), SourceStatus::Offline { .. }) {
+                continue;
+            }
+            // One more than fits: a source with files left over says there were more.
+            let want = (max - out.len()) as i64 + 1;
+            let read = || -> Result<Vec<String>> {
+                let c = src.store.get()?;
+                let mut q = c.prepare_cached(
+                    "SELECT path FROM record WHERE kind = ?1 AND parent IS NOT NULL
+                     ORDER BY mtime DESC LIMIT ?2",
+                )?;
+                let rows = q.query_map(rusqlite::params![crate::fsid::FILE, want], |r| r.get(0))?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            };
+            match read() {
+                Ok(paths) => {
+                    for rel in paths {
+                        if out.len() == max {
+                            return Ok((out, true));
+                        }
+                        out.push(src.absolute(&rel));
+                    }
+                }
+                Err(e) => tracing::warn!("file names of {}: {e:#}", src.def.label),
+            }
+        }
+        Ok((out, false))
     }
 }
 
