@@ -29,6 +29,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Library search: a filter number too large for it (`w:9223372036854775807`, `size:<9223372036854775808`, `duration:>99999999999999999999`, a year such as `dm:99999999999999999`) is reported as a bad value; it used to wrap around and match the wrong files.
 - Previewing a damaged Word document says "not a valid Word document" and writes no crash report; it used to show "previewer panicked".
 - A transfer whose planning hits a bug shows the error; it pointed to `crash.log`, which crash reports replace.
+- Web client: arrows and symbols drew as empty boxes, in its own text ("← Back", the pull-to-refresh hint, the connection dot) and in the daemon's messages ("turn on Settings → Devices"). It now uses the window's fonts, where the built-in monospace font fills in what the interface font lacks (the window was fixed in 0.15.0), and its error bar closes with "×" like the window's. The glyph test now checks the strings of every crate, not only the window's.
+
 
 ### Security
 

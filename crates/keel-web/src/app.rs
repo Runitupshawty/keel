@@ -216,6 +216,7 @@ fn phone_style(base: &egui::Style) -> egui::Style {
 
 impl WebApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_fonts(crate::fonts::fonts());
         let width = cc.egui_ctx.screen_rect().width();
         let mut app = WebApp {
             conn: Conn::default(),
@@ -1715,7 +1716,7 @@ impl WebApp {
             egui::TopBottomPanel::bottom("error").show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(ui.visuals().error_fg_color, e);
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("×").clicked() {
                         self.error = None;
                     }
                 });

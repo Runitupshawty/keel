@@ -92,7 +92,7 @@ impl App {
         // The AccessKit tree is built every frame, screen reader or not: it is how
         // `a11y` finds the pointer-only Tab stops to skip (cheap at this widget count).
         cc.egui_ctx.enable_accesskit();
-        cc.egui_ctx.set_fonts(crate::theme::fonts());
+        cc.egui_ctx.set_fonts(crate::fonts::fonts());
         // Another Keel is the single instance (and holds the global hotkey).
         let not_server = boot.settings.single_instance && boot.server.is_none();
         let persist = boot
