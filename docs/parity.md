@@ -1,6 +1,6 @@
 # Feature parity with Spacedrive and Atlas
 
-Date: 2026-10-11. Keel: 0.18.0 (commit `171be99`). The design spec ([section 1](superpowers/specs/2026-10-08-keel-design.md#1-purpose)) names two references for feature parity: Atlas for how the window feels, and Spacedrive for the library across devices. This page lists every feature a user can reach in either app, says whether Keel has it, and ranks what Keel still lacks. The next cycle's plan is [Phase 12](superpowers/plans/2026-10-11-keel-phase12.md); earlier cycles: [Phase 11](superpowers/plans/2026-10-11-keel-phase11.md), [Phase 10](superpowers/plans/2026-10-11-keel-phase10.md).
+Date: 2026-10-11. Keel: 0.18.0 (commit `171be99`). The design spec ([section 1](superpowers/specs/2026-10-08-keel-design.md#1-purpose)) names two references for feature parity: Atlas for how the window feels, and Spacedrive for the library across devices. This page lists every feature a user can reach in either app, says whether Keel has it, and ranks what Keel still lacks. The next cycle's plan is [Phase 13](superpowers/plans/2026-10-11-keel-phase13.md); earlier cycles: [Phase 12](superpowers/plans/2026-10-11-keel-phase12.md), [Phase 11](superpowers/plans/2026-10-11-keel-phase11.md), [Phase 10](superpowers/plans/2026-10-11-keel-phase10.md).
 
 ## How to read this
 
