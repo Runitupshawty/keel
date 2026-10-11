@@ -208,6 +208,16 @@ pub enum LibCmd {
     OpenHere,
     /// Close and open again (Settings → Library → background daemon turned on).
     Restart,
+    // --- Task 53 ---
+    /// Back up library…: a save dialog, then the backup.
+    Backup,
+    /// Restore library…: a file dialog, then the name dialog (`Dialog::RestoreLibrary`).
+    Restore,
+    /// The name dialog's answer.
+    RestoreAs {
+        file: std::path::PathBuf,
+        name: String,
+    },
 }
 
 /// How `LibraryUi::open` reaches the library.
@@ -252,6 +262,8 @@ pub fn refresh_for(kind: &str) -> Refresh {
         }
         // Devices follow `net.event` and their own poll.
         "devices.settings_set" => Refresh::Nothing,
+        // A backup changes nothing shown; a restore makes another library.
+        "library.backup" | "library.restore" => Refresh::Nothing,
         "volumes.set" | "protection.recount" => Refresh::Protection,
         "recents.note" => Refresh::Recents,
         _ => Refresh::All,
@@ -304,6 +316,15 @@ pub enum LibMsg {
     /// Task 46: the folders asked for that answered, and the indexed totals (by real path)
     /// known in them.
     Sizes(Vec<VPath>, HashMap<VPath, keel_core::Total>),
+    // --- Task 53 ---
+    /// A good news toast.
+    Note(String),
+    /// A backup file was picked for restoring: what it holds and the name proposed.
+    RestorePicked {
+        file: std::path::PathBuf,
+        about: String,
+        name: String,
+    },
 }
 
 /// An opened library: where it is, its running jobs and their events, and why a wanted
@@ -507,6 +528,68 @@ pub fn when(t: Option<i64>) -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "never".into())
+}
+
+/// Unix seconds.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Task 53: what a backup file holds (for the restore dialog) and the name to propose: its
+/// library's, or a free one beside it when a library has that name.
+pub fn restore_offer(file: &std::path::Path) -> anyhow::Result<(String, String)> {
+    let m = keel_core::backup::inspect(file)?;
+    let data = crate::settings::data_dir().context("no data folder")?;
+    let mut name = m.library.clone();
+    let mut n = 2;
+    while keel_core::backup::exists(&data, &name) {
+        name = format!("{} {n}", m.library);
+        n += 1;
+    }
+    let here = (m.sources.iter())
+        .filter(|s| keel_core::backup::reachable(&s.root))
+        .count();
+    let about = format!(
+        "Library {} backed up {} by Keel {}: {}, {here} found on this machine (walked again; \
+         the others stay offline until their folder is back). It is restored as a new library \
+         beside the open one; Settings → Library switches to it.",
+        m.library,
+        when(Some(m.created)),
+        m.keel_version,
+        counted(m.sources.len() as u64, "source"),
+    );
+    Ok((about, name))
+}
+
+/// Task 53: restores `file` as library `name`, in the daemon when attached (it holds the
+/// data folder), else here; the toast's text.
+fn restore(
+    backend: Option<&LibraryBackend>,
+    file: &std::path::Path,
+    name: &str,
+) -> anyhow::Result<String> {
+    let (name, sources) = match backend.and_then(LibraryBackend::remote) {
+        Some(r) => {
+            let done = r.apply(
+                "library.restore",
+                serde_json::json!({"file": file.display().to_string(), "name": name}),
+            )?;
+            let r: keel_api::types::RestoredLibrary =
+                serde_json::from_value(done.result.unwrap_or_default())?;
+            (r.name, r.sources.len())
+        }
+        None => {
+            let data = crate::settings::data_dir().context("no data folder")?;
+            let r = keel_core::backup::restore(&data, file, Some(name))?;
+            (r.name, r.sources.len())
+        }
+    };
+    Ok(format!(
+        "Restored library {name} ({}): switch to it in Settings → Library",
+        counted(sources as u64, "source")
+    ))
 }
 
 /// The source whose root holds `p` (a real path), with `p` relative to it.
@@ -1568,6 +1651,15 @@ impl AppState {
                 }
             }
             LibMsg::Libraries(list) => l.libraries = list,
+            LibMsg::Note(text) => self.toasts.info(text),
+            LibMsg::RestorePicked { file, about, name } => {
+                self.dialog = Some(crate::dialogs::Dialog::RestoreLibrary {
+                    file,
+                    about,
+                    name,
+                    focus: true,
+                });
+            }
             LibMsg::Picked(picked) => {
                 if let Some(add) = &mut l.add {
                     add.picking = false;
@@ -2020,6 +2112,8 @@ impl AppState {
         let always = matches!(
             cmd,
             LibCmd::Switch(_)
+                | LibCmd::Restore
+                | LibCmd::RestoreAs { .. }
                 | LibCmd::Enable(_)
                 | LibCmd::Overview
                 | LibCmd::Reconnect
@@ -2316,6 +2410,64 @@ impl AppState {
                 if self.library.is_open() {
                     self.library.close_later();
                 }
+            }
+            // --- Task 53 ---
+            LibCmd::Backup => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let name = keel_core::backup::file_name(&self.settings.library.name, now());
+                self.library
+                    .spawn_try("keel-library-backup", "Back up library", move |b| {
+                        // The OS dialog blocks: on this worker, never the UI thread.
+                        let Some(file) = rfd::FileDialog::new()
+                            .set_title("Back up library")
+                            .set_file_name(name)
+                            .add_filter("Keel backup", &[keel_core::backup::EXTENSION])
+                            .save_file()
+                        else {
+                            return Ok(None);
+                        };
+                        let note = |text: String| Msg::Library(LibMsg::Note(text));
+                        worker::send(&tx, &ctx, note("Backing up the library…".into()));
+                        b.backup(&file)?;
+                        let done = format!("Backed up to {}", file.display());
+                        worker::send(&tx, &ctx, note(done));
+                        Ok(Some(LibMsg::Stats(b.stats()?)))
+                    });
+            }
+            LibCmd::Restore => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-library-restore-pick", move || {
+                    let Some(file) = rfd::FileDialog::new()
+                        .set_title("Restore library")
+                        .add_filter("Keel backup", &[keel_core::backup::EXTENSION])
+                        .pick_file()
+                    else {
+                        return;
+                    };
+                    let msg = match restore_offer(&file) {
+                        Ok((about, name)) => {
+                            Msg::Library(LibMsg::RestorePicked { file, about, name })
+                        }
+                        Err(e) => Msg::Toast(format!("Restore library: {e:#}")),
+                    };
+                    worker::send(&tx, &ctx, msg);
+                });
+            }
+            LibCmd::RestoreAs { file, name } => {
+                let backend = self.library.backend.clone().filter(|_| !self.library.lost);
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                worker::spawn("keel-library-restore", move || {
+                    let msg = match restore(backend.as_ref(), &file, &name) {
+                        Ok(text) => {
+                            let data = crate::settings::data_dir().unwrap_or_default();
+                            let list = Msg::Library(LibMsg::Libraries(Library::list_in(&data)));
+                            worker::send(&tx, &ctx, list);
+                            Msg::Library(LibMsg::Note(text))
+                        }
+                        Err(e) => Msg::Toast(format!("Restore library: {e:#}")),
+                    };
+                    worker::send(&tx, &ctx, msg);
+                });
             }
         }
     }

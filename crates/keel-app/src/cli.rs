@@ -98,6 +98,9 @@ pub enum Command {
     Unmount { target: String },
     /// Active Keel mounts.
     Mounts,
+    /// Back up the library to a file, or restore one as a new library.
+    #[command(subcommand)]
+    Library(LibraryCmd),
     /// Start, stop or check keel-daemon for the profile.
     #[command(subcommand)]
     Daemon(DaemonCmd),
@@ -182,6 +185,20 @@ pub enum SourcesCmd {
     },
     /// Index a source now.
     Index { id: String },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum LibraryCmd {
+    /// Write a backup (the index with tags, favorites and content ids, and the sources) to
+    /// FILE (`.keelbackup`), or to `<library>-<date>.keelbackup` in FILE when it is a folder.
+    Backup { file: String },
+    /// Restore a backup as a new library (never over an existing one).
+    Restore {
+        file: String,
+        /// The new library's name (default: the backed-up library's).
+        #[arg(long = "as", value_name = "NAME")]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq)]
@@ -421,10 +438,12 @@ mod tests {
             parse(&["--bogus"]).unwrap_err().kind(),
             ErrorKind::UnknownArgument
         );
-        assert_eq!(
+        // A second positional is refused (clap calls it a subcommand when one is similar:
+        // "b" and "library").
+        assert!(matches!(
             parse(&["a", "b"]).unwrap_err().kind(),
-            ErrorKind::UnknownArgument
-        );
+            ErrorKind::UnknownArgument | ErrorKind::InvalidSubcommand
+        ));
         assert_eq!(
             parse(&["--help"]).unwrap_err().kind(),
             ErrorKind::DisplayHelp
@@ -522,6 +541,19 @@ mod tests {
                 query: "two words".into(),
                 max: Some(5)
             }
+        );
+        assert_eq!(
+            cmd(&["library", "backup", "b.keelbackup"]),
+            Command::Library(LibraryCmd::Backup {
+                file: "b.keelbackup".into()
+            })
+        );
+        assert_eq!(
+            cmd(&["library", "restore", "b.keelbackup", "--as", "copy"]),
+            Command::Library(LibraryCmd::Restore {
+                file: "b.keelbackup".into(),
+                name: Some("copy".into())
+            })
         );
         let cli = parse(&["search", "x", "--json", "--profile", "work"]).unwrap();
         assert!(cli.json);

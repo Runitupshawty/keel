@@ -53,6 +53,13 @@ pub enum Dialog {
     },
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(Box<crate::mount_ui::MountDialog>),
+    /// Task 53: Restore library…: what the backup holds and the new library's name.
+    RestoreLibrary {
+        file: PathBuf,
+        about: String,
+        name: String,
+        focus: bool,
+    },
 }
 
 /// Shows the open dialog; closes it on an answer, Esc or a click outside.
@@ -190,6 +197,36 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             src: src.clone(),
                             format,
                         });
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            }
+            Dialog::RestoreLibrary {
+                file,
+                about,
+                name,
+                focus,
+            } => {
+                ui.strong(format!(
+                    "Restore {}",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                ));
+                ui.label(about.as_str());
+                ui.add_space(6.0);
+                ui.label("New library name");
+                let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+                let r = crate::a11y::Named::named(r, "New library name");
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if (ui.button("Restore").clicked() || enter) && !name.trim().is_empty() {
+                        out = Some(Action::Library(crate::library::LibCmd::RestoreAs {
+                            file: file.clone(),
+                            name: name.trim().to_owned(),
+                        }));
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });

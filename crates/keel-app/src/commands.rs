@@ -4,11 +4,13 @@
 //! exit codes are 0 (ok), 1 (the operation failed) and 2 (usage). Mutating subcommands show the preview and then confirm it themselves (the
 //! command line is the confirmation), except `keel plan`, whose plan `keel execute` runs.
 
-use crate::cli::{Command, Conflict, DaemonCmd, PlanCmd, SourcesCmd, TagCmd};
+use crate::cli::{Command, Conflict, DaemonCmd, LibraryCmd, PlanCmd, SourcesCmd, TagCmd};
 use keel_api::client::Client;
 use keel_api::config::HostConfig;
 use keel_api::host::{Host, NetSetup};
-use keel_api::types::{ChildSize, FolderSizes, Hit, JobInfo, PlanPreview};
+use keel_api::types::{
+    ChildSize, FolderSizes, Hit, JobInfo, PlanPreview, RestoredLibrary, RestoredSourceInfo,
+};
 use keel_api::{ApiError, Backend};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read, Write};
@@ -130,7 +132,18 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         },
         cmd => cmd,
     };
-    let mut backend = match connect(&cfg) {
+    // A restore without a daemon needs no library open (on a new machine, opening the
+    // profile's library would create the very name being restored).
+    let backend = match &cmd {
+        Command::Library(LibraryCmd::Restore { file, name }) => {
+            match Client::connect(&cfg.socket_name()) {
+                Ok(c) => Ok(Box::new(c) as Box<dyn Backend>),
+                Err(_) => return restore_here(&cfg, file, name.as_deref(), json, &mut out),
+            }
+        }
+        _ => connect(&cfg),
+    };
+    let mut backend = match backend {
         Ok(b) => b,
         Err(e) => return report(Fail::Api(e.into()), json, &mut out),
     };
@@ -554,6 +567,37 @@ fn command(
             }
             None
         }
+        Command::Library(LibraryCmd::Backup { file }) => {
+            let done = confirm(
+                b,
+                "library.backup",
+                json!({ "file": abs(&file) }),
+                json,
+                out,
+            )?;
+            if !json {
+                let _ = writeln!(
+                    out,
+                    "backed up to {} ({})",
+                    done["file"].as_str().unwrap_or(""),
+                    humansize::format_size(done["bytes"].as_u64().unwrap_or(0), humansize::DECIMAL)
+                );
+            }
+            Some(done)
+        }
+        Command::Library(LibraryCmd::Restore { file, name }) => {
+            let done = confirm(
+                b,
+                "library.restore",
+                json!({"file": abs(&file), "name": name}),
+                json,
+                out,
+            )?;
+            if !json {
+                print_restored(&parse(done.clone())?, out);
+            }
+            Some(done)
+        }
         Command::Daemon(_) | Command::Mcp { .. } => unreachable!("handled by run"),
     };
     Ok(doc.filter(|_| json))
@@ -704,6 +748,57 @@ fn sources(
         }
         Some(SourcesCmd::Index { id }) => Some(index(b, &id, out)?),
     })
+}
+
+/// `keel library restore` with no daemon running: straight into the data folder.
+fn restore_here(
+    cfg: &HostConfig,
+    file: &str,
+    name: Option<&str>,
+    json: bool,
+    out: &mut Out,
+) -> i32 {
+    let restored = keel_api::private::create_dir_all(&cfg.data_dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| {
+            keel_core::backup::restore(&cfg.data_dir, std::path::Path::new(&abs(file)), name)
+        });
+    let r = match restored {
+        Ok(r) => RestoredLibrary {
+            name: r.name,
+            dir: r.dir.display().to_string(),
+            sources: (r.sources.into_iter())
+                .map(|s| RestoredSourceInfo {
+                    id: s.id,
+                    label: s.label,
+                    root: s.root.display(),
+                    online: s.online,
+                })
+                .collect(),
+        },
+        Err(e) => return report(Fail::Api(ApiError::failed(format!("{e:#}"))), json, out),
+    };
+    match json {
+        true => print_json(&serde_json::to_value(&r).unwrap_or_default(), out),
+        false => print_restored(&r, out),
+    }
+    OK
+}
+
+fn print_restored(r: &RestoredLibrary, out: &mut Out) {
+    let _ = writeln!(out, "restored library {} in {}", r.name, r.dir);
+    for s in &r.sources {
+        let state = match s.online {
+            true => "walked again when the library opens",
+            false => "offline until its folder is back",
+        };
+        let _ = writeln!(out, "  {}  {}: {state}", s.label, s.root);
+    }
+    let _ = writeln!(
+        out,
+        "Open it in Settings → Library, or with [library] name = \"{}\" in the profile's config.toml",
+        r.name
+    );
 }
 
 fn print_preview(p: &PlanPreview, out: &mut Out) {
