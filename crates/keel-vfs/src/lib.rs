@@ -32,7 +32,7 @@ pub mod local;
 pub mod provider;
 pub mod router;
 pub mod sftp;
-/// Explorer Properties sheet (Windows).
+/// Explorer's Properties sheet and context menu (Windows).
 #[cfg(windows)]
 pub mod shell;
 pub mod trashbin;

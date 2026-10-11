@@ -44,7 +44,7 @@ pub fn focus_own_window() -> bool {
     }
 }
 
-fn is_winit(hwnd: HWND) -> bool {
+pub(crate) fn is_winit(hwnd: HWND) -> bool {
     let mut buf = [0u16; 64];
     let n = unsafe { GetClassNameW(hwnd, &mut buf) }.max(0) as usize;
     String::from_utf16_lossy(&buf[..n]) == WINIT_CLASS

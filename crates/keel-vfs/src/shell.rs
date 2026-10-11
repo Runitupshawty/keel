@@ -1,4 +1,7 @@
-//! Windows shell dialogs keel-app may open without using the `windows` crate itself.
+//! Windows shell dialogs and menus keel-app may open without using the `windows` crate
+//! itself.
+pub mod context_menu;
+
 use anyhow::Result;
 use std::{os::windows::ffi::OsStrExt, path::Path};
 use windows::{

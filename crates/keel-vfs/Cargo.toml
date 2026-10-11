@@ -110,6 +110,8 @@ windows = { workspace = true, features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
+    # Task 43: the shell context menu (PIDLs).
+    "Win32_UI_Shell_Common",
 ] }
 windows-core = "0.58"
 
