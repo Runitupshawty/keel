@@ -219,7 +219,15 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<PathBuf> {
         crate::private::create_dir_all(parent)?;
     }
     crate::private::create_dir_all(dir)?;
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+    // Time plus a process-wide sequence: several reports in one millisecond keep their
+    // order, and a name freed by the rotation below is never handed out again (which once
+    // made the newest file sort as the oldest on a fast machine).
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000;
+    let stamp = format!(
+        "{}-{seq:04}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f")
+    );
     let mut path = dir.join(format!("{stamp}.txt"));
     let mut n = 0;
     let mut file = loop {
