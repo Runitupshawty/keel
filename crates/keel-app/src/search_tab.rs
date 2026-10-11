@@ -64,7 +64,7 @@ pub fn bar(
         // Task 29: the backend (the platform's, or the library index).
         let platform = platform.unwrap_or("System");
         let before = tab.library_search;
-        egui::ComboBox::from_id_salt("search-backend")
+        let combo = egui::ComboBox::from_id_salt("search-backend")
             .width(110.0)
             .selected_text(if tab.library_search {
                 "Library"
@@ -78,6 +78,7 @@ pub fn bar(
                         .on_disabled_hover_text("The library is off or still opening");
                 });
             });
+        let _ = crate::a11y::Named::named(combo.response, "Search with");
         if tab.library_search != before {
             // Run the query again on the other backend now.
             *due = Some(Instant::now());
@@ -121,7 +122,7 @@ pub fn bar(
             ui.ctx().request_repaint();
         }
         if busy {
-            ui.spinner();
+            crate::anim::spinner(ui);
         }
         let n = count;
         ui.weak(match n {

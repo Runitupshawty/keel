@@ -7,7 +7,7 @@ use crate::session::Session;
 use crate::settings::{Persist, Settings};
 use crate::state::AppState;
 use crate::tab::Tab;
-use egui::{pos2, Rect, Sense, UiBuilder};
+use egui::{pos2, Rect, UiBuilder};
 use humansize::{format_size, DECIMAL};
 use keel_vfs::{Router, VPath};
 use std::path::PathBuf;
@@ -74,6 +74,8 @@ pub struct App {
     seen_session: Option<(Session, u64)>,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
+    /// The UI scale applied last (`sync_zoom`).
+    seen_zoom: f32,
     // --- Task 24 ---
     drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
@@ -87,6 +89,9 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext, boot: Boot) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        // The AccessKit tree is built every frame, screen reader or not: it is how
+        // `a11y` finds the pointer-only Tab stops to skip (cheap at this widget count).
+        cc.egui_ctx.enable_accesskit();
         cc.egui_ctx.set_fonts(crate::theme::fonts());
         // Another Keel is the single instance (and holds the global hotkey).
         let not_server = boot.settings.single_instance && boot.server.is_none();
@@ -160,6 +165,7 @@ impl App {
             save_session: true,
             seen_session: None,
             seen_widths: (None, None),
+            seen_zoom: 0.0,
             drag_out: Default::default(),
             hotkey,
             updates,
@@ -222,6 +228,7 @@ impl App {
         }
         let s = &mut self.state;
         crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
+        sync_zoom(ctx, &mut s.settings.ui_scale, &mut self.seen_zoom);
         s.drain();
         s.tick();
         s.jobs.tick();
@@ -230,6 +237,9 @@ impl App {
         // selection under it (Task 23: the columns view's keyboard column).
         // Any modal (a host editor, the cloud wizard, a license) has the keys too: none may
         // reach the list behind it (Del would ask to trash the selected file).
+        // Tab leaves the sidebar in one press (arrow keys move inside it).
+        crate::a11y::tab_out(ctx, "sidebar");
+        crate::a11y::skip_dead_stop(ctx);
         let modal = ctx.memory(|m| !m.is_above_modal_layer(egui::LayerId::background()));
         let keys_on = s.dialog.is_none()
             && !modal
@@ -267,6 +277,7 @@ impl App {
         );
         out.extend(job_acts.into_iter().map(|a| (s.active, a)));
         s.terminal.panel(ctx, &mut s.settings, &s.tx);
+        crate::a11y::group_start(ctx, "sidebar");
         let sidebar = egui::SidePanel::left("sidebar")
             .resizable(true)
             .default_width(s.settings.sidebar_width)
@@ -279,6 +290,7 @@ impl App {
                     .ui(ui, &s.theme, &current, &archives, &s.library, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
+        crate::a11y::group_end(ctx, "sidebar");
         let w = sidebar.response.rect.width().round();
         if self.seen_widths.0.is_some_and(|seen| seen != w) {
             s.settings.sidebar_width = w;
@@ -323,7 +335,7 @@ impl App {
                     let x = full.left() + full.width() * share;
                     let handle = Rect::from_x_y_ranges(x - 3.0..=x + 3.0, full.y_range());
                     let r = ui
-                        .interact(handle, ui.id().with("split"), Sense::drag())
+                        .interact(handle, ui.id().with("split"), crate::a11y::NO_TAB)
                         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
                     if let Some(p) = r.dragged().then(|| r.interact_pointer_pos()).flatten() {
                         self.split = ((p.x - full.left()) / full.width()).clamp(0.15, 0.85);
@@ -419,6 +431,7 @@ impl App {
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: s.settings.library.tags_column,
                         media: &mut s.media,
+                        keys: s.active == p,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {
@@ -501,6 +514,9 @@ impl eframe::App for App {
         if self.report.is_none() {
             self.crashed = false;
         }
+        crate::a11y::hide_dead_stops(ctx);
+        crate::a11y::focus_ring(ctx);
+        crate::a11y::focus_has_node(ctx);
         if self.persist.is_some() {
             let session = self.changed_session();
             let persist = self.persist.as_mut().expect("checked");
@@ -538,6 +554,27 @@ fn drag_verb(drag: &DragPayload, over: Option<usize>, shift: bool) -> &'static s
 /// Below this width the status bar's left group (counts, size, filter) is one line that
 /// truncates, so it never runs under the right group.
 const NARROW_STATUS: f32 = 800.0;
+
+/// The UI scale follows Ctrl+= / Ctrl+- / Ctrl+0 (egui zooms) into the setting, and the
+/// setting (Settings slider, a loaded profile) into egui's zoom factor.
+fn sync_zoom(ctx: &egui::Context, setting: &mut f32, seen: &mut f32) {
+    use crate::settings::{MAX_SCALE, MIN_SCALE};
+    let zoom = ctx.zoom_factor();
+    if zoom != *seen && *seen != 0.0 {
+        *setting = zoom;
+    }
+    if !(MIN_SCALE..=MAX_SCALE).contains(setting) {
+        *setting = if setting.is_finite() {
+            setting.clamp(MIN_SCALE, MAX_SCALE)
+        } else {
+            1.0
+        };
+    }
+    if zoom != *setting {
+        ctx.set_zoom_factor(*setting);
+    }
+    *seen = *setting;
+}
 
 fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)>) {
     let narrow = ui.available_width() < NARROW_STATUS;
@@ -580,6 +617,15 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 ui.label(part);
             }
         }
+        // Announced after navigation: the folder and its item count (a live region).
+        let live = format!("{}, {}", tab.title(), crate::jobs::items(n));
+        crate::a11y::live(
+            ui.ctx(),
+            egui::Id::new("keel-live-folder"),
+            ui.min_rect(),
+            &live,
+            false,
+        );
         let dir = tab.dir.clone();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = format!("Theme: {}", s.theme.name);
@@ -835,7 +881,7 @@ mod tests {
             deepest.sort_by(f64::total_cmp);
             assert_eq!(details.len(), 2);
             assert_eq!(
-                harness.query_all_by_label("…").count(),
+                harness.query_all_by_label("The rest of the path").count(),
                 2,
                 "{width}: the rest"
             );
@@ -844,7 +890,11 @@ mod tests {
                 assert!(deepest.is_empty(), "{width}: {deepest:?}");
                 // The menu lists the nearest parts first (a deep path would cut off the
                 // farthest, not the ones the user is after).
-                harness.query_all_by_label("…").next().unwrap().click();
+                harness
+                    .query_all_by_label("The rest of the path")
+                    .next()
+                    .unwrap()
+                    .click();
                 harness.run_steps(2);
                 let y = |label: &str| {
                     let ys: Vec<f64> = (harness.query_all_by_label(label))

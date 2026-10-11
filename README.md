@@ -51,6 +51,10 @@ When the window or keel-daemon crashes, Keel writes a report to `crashes/<time>.
 
 New to Keel? Read **[docs/getting-started.md](docs/getting-started.md)**: installing, the window and its keys, copying, renaming, searching, archives, remotes, the library, devices, where your settings live, and troubleshooting.
 
+## Accessibility
+
+Keel works with a screen reader (Narrator, NVDA or JAWS on Windows, VoiceOver on macOS, Orca on Linux) through AccessKit: every button, field and file row has a name and a role, a file row reads as its name, size and modified date, the row under the cursor holds the keyboard focus as you move, and the current folder with its item count and every notification are announced. Everything works from the keyboard: Tab and Shift+Tab go through the controls (the sidebar is one stop, the arrow keys move inside it), Enter or Space presses the focused button, Esc closes a dialog or the Settings window and returns to the file list, and a focus ring shows where you are. Ctrl+= and Ctrl+- scale the whole window (Ctrl+0 resets; also Settings → General → **UI scale**), **Reduce motion** turns off every animation, and both themes keep text at a contrast of at least 4.5:1. See [the keyboard section](docs/getting-started.md#keyboard-only-and-screen-readers) of the guide.
+
 ## Screenshots
 
 ![The main window: library, quick access, drives, remotes and devices in the sidebar; Documents with copies and tags on the left, a photo folder as thumbnails on the right](docs/screenshots/main-window.png)

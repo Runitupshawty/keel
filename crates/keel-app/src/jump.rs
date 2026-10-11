@@ -187,7 +187,7 @@ impl Jump {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if self.indexing {
-                    ui.spinner();
+                    crate::anim::spinner(ui);
                     ui.weak("Indexing folders…");
                 } else {
                     ui.weak(format!("{} folders", self.indexed));

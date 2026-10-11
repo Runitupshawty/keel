@@ -7,7 +7,7 @@ use crate::state::Msg;
 use crate::tab::Tab;
 use crate::worker::{ThumbPool, THUMB_PX};
 use crossbeam_channel::Sender;
-use egui::{pos2, vec2, Key, Rect, Sense, TextureHandle};
+use egui::{pos2, vec2, Key, Rect, TextureHandle};
 use keel_preview::Preview;
 use keel_vfs::{Entry, Router};
 use std::collections::{HashMap, HashSet};
@@ -191,8 +191,7 @@ pub fn ui(
                                 break;
                             };
                             let e = &tab.entries()[i];
-                            let (rect, resp) =
-                                ui.allocate_exact_size(TILE, Sense::click_and_drag());
+                            let (rect, resp) = ui.allocate_exact_size(TILE, crate::a11y::NO_TAB);
                             let tile = rect.shrink(3.0);
                             if tab.selected.contains(&e.name) {
                                 let t = if tab.cursor.as_deref() == Some(&e.name) {
@@ -268,7 +267,8 @@ pub fn ui(
                                     }
                                 }
                                 _ => {
-                                    let color = if e.hidden {
+                                    let selected = tab.selected.contains(&e.name);
+                                    let color = if e.hidden && !selected {
                                         muted
                                     } else {
                                         ui.visuals().text_color()
@@ -309,6 +309,7 @@ pub fn ui(
     tab.grid_scroll = (output.state.offset.y, output.inner_rect.height());
 
     for (r, e) in clicks {
+        crate::pane::a11y_item(ui, &r, tab, &e, cx.keys);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }
@@ -406,6 +407,7 @@ mod tests {
                             searcher: None,
                             tags_column: false,
                             media: &mut media,
+                            keys: true,
                         };
                         super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
                     });

@@ -96,7 +96,7 @@ impl Hotkey {
 
 /// The Settings → General field: edits a copy and applies it when the field loses focus
 /// (so a half-typed "Ctrl+A" never grabs Ctrl+A system-wide).
-pub fn field(ui: &mut egui::Ui, hotkey: &mut String) {
+pub fn field(ui: &mut egui::Ui, hotkey: &mut String) -> egui::Response {
     let id = ui.id().with("hotkey-draft");
     let mut draft = ui
         .data_mut(|d| d.get_temp::<String>(id))
@@ -115,6 +115,7 @@ pub fn field(ui: &mut egui::Ui, hotkey: &mut String) {
         }
         ui.data_mut(|d| d.remove::<String>(id));
     }
+    r
 }
 
 #[cfg(test)]

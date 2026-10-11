@@ -1,6 +1,7 @@
 //! Details view: a virtual-row table (Name / Ext / Size / Modified; search results show
 //! Name / Folder / Size / Modified).
 
+use crate::a11y::Named;
 use crate::keys::Action;
 use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
 use crate::tab::{SortKey, Tab};
@@ -58,6 +59,7 @@ pub fn ui(
         egui::Id::new(("keel-fade", id)),
         tab.cursor.as_deref(),
     );
+    let text = ui.visuals().text_color();
     let selection = ui.visuals().selection.bg_fill;
     // --- Task 29 ---: tags and favorites (library on), offline badges.
     let lib = cx.library;
@@ -71,7 +73,7 @@ pub fn ui(
         .id_salt((id, search, trash))
         .striped(true)
         .resizable(true)
-        .sense(Sense::click_and_drag())
+        .sense(crate::a11y::NO_TAB)
         .auto_shrink([false, true])
         .max_scroll_height(f32::INFINITY)
         .cell_layout(Layout::left_to_right(Align::Center))
@@ -121,7 +123,13 @@ pub fn ui(
                         label
                     };
                     let text = egui::RichText::new(format!("{label}{arrow}")).strong();
-                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                    let name = match sort {
+                        (k, true) if k == key => format!("{label}, sorted ascending"),
+                        (k, false) if k == key => format!("{label}, sorted descending"),
+                        _ => label.to_owned(),
+                    };
+                    let r = ui.add(egui::Button::new(text).frame(false));
+                    if r.named(&name).clicked() {
                         sort_click = Some(key);
                     }
                 });
@@ -145,6 +153,8 @@ pub fn ui(
                 let e = &tab.entries()[vis[row.index()]];
                 let shown = tab.shown_name(e);
                 let selected = tab.selected.contains(&e.name);
+                // Secondary text on a selected row is in the text colour (contrast).
+                let muted = if selected { text } else { muted };
                 let fading = selected && fade < 1.0 && tab.cursor.as_deref() == Some(&e.name);
                 row.set_selected(selected && !fading);
                 let tint = |ui: &mut egui::Ui| {
@@ -248,7 +258,7 @@ pub fn ui(
                             .filter(|_| source.is_some() && e.kind != Kind::Dir)
                             .and_then(|r| lib.badge(r));
                         if let Some(b) = badge {
-                            let color = if b.risk {
+                            let color = if b.risk && !selected {
                                 ui.visuals().warn_fg_color
                             } else {
                                 muted
@@ -266,7 +276,7 @@ pub fn ui(
                         let on = lib.tagged.get(real).map_or(&[][..], |t| t.as_slice());
                         let fav = on.contains(&FAVORITES);
                         let star = egui::Button::new(if fav { "★" } else { "☆" }).frame(false);
-                        if ui.add(star).on_hover_text("Favorite (Ctrl+D)").clicked() {
+                        if ui.add(star).tip("Favorite (Ctrl+D)").clicked() {
                             out.push(Action::Library(crate::library::LibCmd::TagPaths {
                                 paths: vec![e.path.clone()],
                                 tag: FAVORITES,
@@ -285,6 +295,7 @@ pub fn ui(
         });
 
     for (r, e) in clicks {
+        crate::pane::a11y_item(ui, &r, tab, &e, cx.keys);
         handle_click(&r, tab, &e, out);
         drag_and_drop(&r, id.0, tab, &e, out);
     }
@@ -311,7 +322,8 @@ pub fn empty_area(ui: &mut egui::Ui, tab: &mut Tab, out: &mut Vec<Action>) {
     if rest.height() < 4.0 {
         return;
     }
-    let r = ui.allocate_rect(rest, Sense::click());
+    let r = ui.allocate_rect(rest, Sense::CLICK);
+    crate::a11y::not_a_stop(&r);
     if r.clicked() || r.secondary_clicked() {
         tab.selected.clear();
     }

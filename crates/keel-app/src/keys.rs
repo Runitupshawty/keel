@@ -330,7 +330,8 @@ pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool)
 }
 
 /// Actions for this frame. Empty while a text field has focus (rename, filter, path box);
-/// a focused button (after Tab) does not block the key map. Call every frame: with
+/// a focused button, checkbox or sidebar item (after Tab) keeps Enter, Space and the
+/// arrow keys for itself (`a11y::list_has_keys`), every other shortcut still works. Call every frame: with
 /// `enabled` false (a modal is open) nothing is returned, but V presses are still tracked
 /// so a V held while the modal closes cannot turn into a paste.
 pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
@@ -353,14 +354,18 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
                 .collect()
         });
     }
+    let list = crate::a11y::list_has_keys(ctx);
     let mut out = ctx.input_mut(|i| {
         let mut out = Vec::new();
         for (mods, key, action) in SHORTCUTS {
+            if !list && *mods == Modifiers::NONE && matches!(key, Key::Enter | Key::Space) {
+                continue;
+            }
             if i.consume_key(*mods, *key) {
                 out.push(action.clone());
             }
         }
-        for (key, nav) in MOVES {
+        for (key, nav) in MOVES.iter().filter(|_| list) {
             let extend = i.modifiers.shift;
             // Counted: a slow frame can carry several key repeats.
             for _ in 0..i.count_and_consume_key(Modifiers::NONE, *key) {

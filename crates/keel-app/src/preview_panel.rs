@@ -280,7 +280,7 @@ impl PreviewPanel {
             return;
         }
         let Some(current) = &self.current else {
-            ui.centered_and_justified(|ui| ui.spinner());
+            ui.centered_and_justified(crate::anim::spinner);
             return;
         };
         match current {

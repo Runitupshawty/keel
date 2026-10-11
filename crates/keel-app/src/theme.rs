@@ -66,6 +66,25 @@ impl Theme {
         v.selection.bg_fill = rgb(self.selection);
         v.hyperlink_color = self.accent();
         v.widgets.noninteractive.bg_fill = panel;
+        // Contrast (WCAG 4.5:1 on panel, background and stripes; the theme tests check it).
+        // Weak text (`ui.weak`, disabled widgets) is the muted colour: egui mixes the text
+        // colour half and half with this fill.
+        let (muted, mix) = (self.muted(), |t: u8, m: u8| {
+            (2 * m as i32 - t as i32).clamp(0, 255) as u8
+        });
+        v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(
+            mix(text.r(), muted.r()),
+            mix(text.g(), muted.g()),
+            mix(text.b(), muted.b()),
+        );
+        (v.warn_fg_color, v.error_fg_color) = if self.dark {
+            (
+                Color32::from_rgb(255, 143, 0),
+                Color32::from_rgb(255, 107, 107),
+            )
+        } else {
+            (Color32::from_rgb(155, 80, 0), Color32::from_rgb(190, 0, 0))
+        };
         ctx.set_theme(if self.dark {
             egui::ThemePreference::Dark
         } else {
@@ -211,6 +230,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// WCAG 2.x relative luminance of an sRGB colour.
+    fn luminance(c: egui::Color32) -> f64 {
+        let lin = |v: u8| {
+            let s = v as f64 / 255.0;
+            if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn ratio(a: egui::Color32, b: egui::Color32) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn contrast_ratio_matches_the_wcag_examples() {
+        use egui::Color32;
+        assert!((ratio(Color32::BLACK, Color32::WHITE) - 21.0).abs() < 1e-9);
+        assert!((ratio(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 1e-9);
+        // #767676 on white is the classic 4.54:1.
+        assert!((ratio(Color32::from_gray(0x76), Color32::WHITE) - 4.54).abs() < 0.01);
+    }
+
+    /// Both built-in themes: text, secondary (muted, weak) text, text on the selection,
+    /// links / accents, warnings and errors reach 4.5:1 on the backgrounds they are drawn
+    /// on; the focus ring 3:1 (a UI component).
+    #[test]
+    fn builtin_themes_meet_wcag_contrast() {
+        let mut failures = Vec::new();
+        for name in super::BUILTIN.iter().map(|(n, _)| *n) {
+            let theme = Theme::load(name);
+            let ctx = egui::Context::default();
+            theme.apply(&ctx);
+            let v = ctx.style().visuals.clone();
+            let text = v.text_color();
+            let backs = [
+                ("panel", v.panel_fill),
+                ("bg", v.extreme_bg_color),
+                ("stripe", v.faint_bg_color),
+            ];
+            let mut check = |what: &str, fg, on: &str, bg, min: f64| {
+                let r = ratio(fg, bg);
+                if r < min {
+                    failures.push(format!(
+                        "{name}: {what} on {on} {r:.2} < {min} ({fg:?} on {bg:?})"
+                    ));
+                }
+            };
+            for (on, bg) in backs {
+                check("text", text, on, bg, 4.5);
+                check("muted", theme.muted(), on, bg, 4.5);
+                check("weak text", v.weak_text_color(), on, bg, 4.5);
+                check("accent", theme.accent(), on, bg, 4.5);
+                check("warning", v.warn_fg_color, on, bg, 4.5);
+                check("error", v.error_fg_color, on, bg, 4.5);
+                check("focus ring", crate::a11y::ring_color(&v), on, bg, 3.0);
+            }
+            let sel = v.selection.bg_fill;
+            check("text", text, "selection", sel, 4.5);
+            // Selected rows draw their secondary text in the text colour (views).
+            check(
+                "focus ring",
+                crate::a11y::ring_color(&v),
+                "selection",
+                sel,
+                3.0,
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
     }
 
     #[test]

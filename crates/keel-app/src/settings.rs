@@ -2,6 +2,7 @@
 //! Settings window, and the persistence worker that writes settings and the session off the
 //! UI thread.
 
+use crate::a11y::Named;
 use crate::session::Session;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,9 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 pub const THEMES: &[&str] = &["dark", "light"];
 
 const MB: u64 = 1024 * 1024;
+/// The UI scale's range (egui allows 0.2 to 5).
+pub const MIN_SCALE: f32 = 0.5;
+pub const MAX_SCALE: f32 = 3.0;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -51,6 +55,8 @@ pub struct Settings {
     pub column_widths: Vec<f32>,
     /// No transitions (panels, pane split, highlight, toasts).
     pub reduce_motion: bool,
+    /// UI scale (egui's zoom factor): Ctrl+= / Ctrl+- / Ctrl+0 and the Settings slider.
+    pub ui_scale: f32,
     // --- Task 29 ---
     /// `[library]`: the library layer (on by default).
     pub library: crate::library::LibrarySettings,
@@ -193,6 +199,7 @@ impl Default for Settings {
             single_instance: true,
             column_widths: Vec::new(),
             reduce_motion: false,
+            ui_scale: 1.0,
             media_tile: Default::default(),
             media_dates: false,
             library: Default::default(),
@@ -572,6 +579,7 @@ pub fn window(
     devices: &crate::devices::Devices, // Task 36
 ) -> bool {
     let mut theme_changed = false;
+    crate::a11y::esc_closes(ctx, "Settings", open);
     egui::Window::new("Settings")
         .open(open)
         .collapsible(false)
@@ -605,7 +613,7 @@ pub fn window(
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Theme");
-                    egui::ComboBox::from_id_salt("settings-theme")
+                    let combo = egui::ComboBox::from_id_salt("settings-theme")
                         .selected_text(s.theme.as_str())
                         .show_ui(ui, |ui| {
                             for name in THEMES {
@@ -617,6 +625,7 @@ pub fn window(
                                 }
                             }
                         });
+                    let _ = combo.response.named("Theme");
                     ui.end_row();
                     ui.label("Hidden files");
                     ui.checkbox(&mut s.show_hidden, "Show");
@@ -631,22 +640,34 @@ pub fn window(
                     ui.label("Motion");
                     ui.checkbox(&mut s.reduce_motion, "Reduce motion");
                     ui.end_row();
-                    ui.label("Max preview size");
-                    ui.add(
+                    let label = ui.label("UI scale");
+                    let scale = ui.add(
+                        egui::Slider::new(&mut s.ui_scale, MIN_SCALE..=MAX_SCALE)
+                            .step_by(0.1)
+                            .fixed_decimals(1)
+                            .suffix("{d7}"),
+                    );
+                    let _ = scale
+                        .labelled_by(label.id)
+                        .on_hover_text("Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0{d7})");
+                    ui.end_row();
+                    let label = ui.label("Max preview size");
+                    let slider = ui.add(
                         egui::Slider::new(
                             &mut s.max_preview_mb,
                             1..=keel_preview::MAX_PREVIEW_BYTES / MB,
                         )
                         .suffix(" MB"),
                     );
+                    let _ = slider.labelled_by(label.id);
                     ui.end_row();
                     ui.label("Transfers");
                     ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
                         .on_hover_text("Copies and moves on the same drive wait for each other");
                     ui.end_row();
                     // --- Task 24 ---
-                    ui.label("Global hotkey");
-                    crate::hotkey::field(ui, &mut s.hotkey);
+                    let label = ui.label("Global hotkey");
+                    let _ = crate::hotkey::field(ui, &mut s.hotkey).labelled_by(label.id);
                     ui.end_row();
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")

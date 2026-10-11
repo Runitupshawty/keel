@@ -25,6 +25,15 @@ pub fn apply(ctx: &Context, reduce: bool) {
     }
 }
 
+/// A busy indicator: egui's spinning one, or a still "…" with reduce motion.
+pub fn spinner(ui: &mut egui::Ui) -> egui::Response {
+    if duration(ui.ctx()) > 0.0 {
+        ui.spinner()
+    } else {
+        ui.weak("…")
+    }
+}
+
 /// The transition length now: 0 with reduce motion.
 pub fn duration(ctx: &Context) -> f32 {
     ctx.style().animation_time

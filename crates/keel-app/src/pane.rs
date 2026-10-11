@@ -1,6 +1,7 @@
 //! A file pane: tab strip, navigation bar with breadcrumb / editable path, filter box,
 //! and the active tab's details or grid view.
 
+use crate::a11y::Named;
 use crate::keys::Action;
 use crate::tab::{Nav, Tab};
 use crate::theme::Theme;
@@ -56,6 +57,8 @@ pub struct ViewCx<'a> {
     pub tags_column: bool,
     // --- Task 32 ---
     pub media: &'a mut crate::media::Media,
+    /// This pane has the keys: its cursor row takes the keyboard focus (`a11y::item`).
+    pub keys: bool,
 }
 
 impl Pane {
@@ -213,21 +216,21 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     if let Some(banner) = &cx.banner {
         ui.horizontal(|ui| {
             if tab.loading {
-                ui.spinner();
+                crate::anim::spinner(ui);
             }
             ui.weak(banner);
         });
     }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
-            if ui.small_button("×").clicked() {
+            if ui.small_button("×").tip("Dismiss the error").clicked() {
                 tab.error = None;
             }
             ui.colored_label(ui.visuals().error_fg_color, err);
         });
     }
     if tab.loading && tab.listed_dir.is_none() {
-        ui.centered_and_justified(|ui| ui.spinner());
+        ui.centered_and_justified(crate::anim::spinner);
         return;
     }
     match pane.view {
@@ -247,7 +250,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (i, tab) in pane.tabs.iter().enumerate() {
-                    let drag = ui.dnd_drag_source(ui.id().with(("tab", i)), (idx, i), |ui| {
+                    let drag = drag_source(ui, ui.id().with(("tab", i)), (idx, i), |ui| {
                         ui.selectable_label(i == pane.active, tab.title())
                             .on_hover_text(
                                 crate::devices::node_location(&tab.dir)
@@ -269,6 +272,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                     if pane.tabs.len() > 1
                         && ui
                             .add(egui::Button::new("×").frame(false).small())
+                            .named(&format!("Close tab {}", tab.title()))
                             .on_hover_text("Close tab (Ctrl+W)")
                             .clicked()
                     {
@@ -277,7 +281,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                 }
                 if ui
                     .add(egui::Button::new("+").frame(false))
-                    .on_hover_text("New tab (Ctrl+T)")
+                    .tip("New tab (Ctrl+T)")
                     .clicked()
                 {
                     out.push(Action::NewTab);
@@ -295,13 +299,39 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
     }
 }
 
+/// `Ui::dnd_drag_source` without its own Tab stop: the dragged tab follows the pointer, the
+/// keyboard reaches only the tab itself.
+fn drag_source<R>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    payload: (usize, usize),
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    if ui.ctx().is_being_dragged(id) {
+        egui::DragAndDrop::set_payload(ui.ctx(), payload);
+        let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+        let r = ui.scope_builder(egui::UiBuilder::new().layer_id(layer), add);
+        if let Some(at) = ui.ctx().pointer_interact_pos() {
+            let delta = at - r.response.rect.center();
+            ui.ctx()
+                .transform_layer_shapes(layer, egui::emath::TSTransform::from_translation(delta));
+        }
+        r
+    } else {
+        let r = ui.scope(add);
+        let drag =
+            (ui.interact(r.response.rect, id, Sense::DRAG)).on_hover_cursor(egui::CursorIcon::Grab);
+        egui::InnerResponse::new(r.inner, drag | r.response)
+    }
+}
+
 fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         // The tab itself (history), not its keyboard column.
         let tab = &pane.tabs[pane.active];
         let nav = |ui: &mut egui::Ui, enabled: bool, text: &str, tip: &str| {
             ui.add_enabled(enabled, egui::Button::new(text).frame(false))
-                .on_hover_text(tip)
+                .tip(tip)
                 .clicked()
         };
         let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
@@ -337,7 +367,7 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 }
             }
             if pane.tab().loading {
-                ui.spinner();
+                crate::anim::spinner(ui);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 path_box(ui, pane, out)
@@ -440,7 +470,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     });
                 })
                 .response
-                .on_hover_text("The rest of the path");
+                .tip("The rest of the path");
                 if first < parts.len() {
                     ui.weak("›");
                 }
@@ -466,6 +496,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             let size = egui::vec2(ui.available_width().max(0.0), h);
             let empty = ui.allocate_response(size, Sense::click());
             if empty
+                .named("Type a path (Ctrl+L)")
                 .on_hover_text("Click to type a path (Ctrl+L)")
                 .clicked()
             {
@@ -534,10 +565,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 state.store(ui.ctx(), id);
             }
         }
-        let close = ui
-            .small_button("×")
-            .on_hover_text("Clear filter (Esc)")
-            .clicked();
+        let close = ui.small_button("×").tip("Clear filter (Esc)").clicked();
         if close || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
             tab.filter.clear();
             tab.filter_open = false;
@@ -701,6 +729,27 @@ pub fn handle_click(
     } else if r.middle_clicked() && entry.kind == keel_vfs::Kind::Dir {
         out.push(Action::NewTabAt(entry.path.clone()));
     }
+}
+
+/// A row or tile for screen readers (`a11y::item`): its name, size (or "folder") and
+/// modified date; the cursor row of the pane with the keys holds the keyboard focus.
+pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Entry, keys: bool) {
+    let size = if e.kind == keel_vfs::Kind::Dir {
+        "folder".to_owned()
+    } else {
+        view_details::size_text(e)
+    };
+    let date = view_details::date_text(e);
+    let parts = [tab.shown_name(e), size.as_str(), date.as_str()];
+    let label: Vec<&str> = parts.into_iter().filter(|s| !s.is_empty()).collect();
+    let cursor = keys && tab.cursor.as_deref() == Some(e.name.as_str());
+    crate::a11y::item(
+        ui,
+        r,
+        &label.join(", "),
+        tab.selected.contains(&e.name),
+        cursor,
+    );
 }
 
 /// In-app drag payload: entries dragged out of pane `pane` showing folder `dir`.

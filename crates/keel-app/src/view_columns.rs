@@ -514,7 +514,8 @@ fn column(
             .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
     }
     // Empty space: click clears the selection (closing the columns right of it).
-    let bg = ui.interact(rect, ui.id().with("bg"), Sense::click());
+    let bg = ui.interact(rect, ui.id().with("bg"), Sense::CLICK);
+    crate::a11y::not_a_stop(&bg);
     let mut clicked = bg.clicked() || bg.secondary_clicked();
     if clicked {
         clear_selection(col);
@@ -527,7 +528,7 @@ fn column(
         ui.colored_label(ui.visuals().error_fg_color, err);
     }
     if col.loading && col.listed_dir.is_none() {
-        ui.centered_and_justified(|ui| ui.spinner());
+        ui.centered_and_justified(crate::anim::spinner);
         take_drop(ui, col, out);
         return clicked || out.len() > asked;
     }
@@ -572,17 +573,9 @@ fn column(
                     let e = &col.entries()[col.visible_cached()[pos]];
                     let (rect, r) = ui.allocate_exact_size(
                         vec2(ui.available_width(), ROW_H),
-                        Sense::click_and_drag(),
+                        crate::a11y::NO_TAB,
                     );
                     let selected = col.selected.contains(&e.name);
-                    r.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            true,
-                            selected,
-                            &e.name,
-                        )
-                    });
                     if selected {
                         let t = if col.cursor.as_deref() == Some(&e.name) {
                             fade
@@ -628,7 +621,7 @@ fn column(
                             }
                         }
                         _ => {
-                            let color = if e.hidden {
+                            let color = if e.hidden && !selected {
                                 muted
                             } else {
                                 ui.visuals().text_color()
@@ -652,7 +645,11 @@ fn column(
                             egui::Align2::CENTER_CENTER,
                             "›",
                             egui::TextStyle::Body.resolve(ui.style()),
-                            muted,
+                            if selected {
+                                ui.visuals().text_color()
+                            } else {
+                                muted
+                            },
                         );
                     }
                     r.context_menu(|ui| context_menu(ui, col, Some(e), out));
@@ -664,6 +661,7 @@ fn column(
     col.grid_scroll = (output.state.offset.y, output.inner_rect.height());
     for (r, e) in rows {
         clicked |= r.clicked() || r.secondary_clicked() || r.double_clicked() || r.drag_started();
+        crate::pane::a11y_item(ui, &r, col, &e, focused && cx.keys);
         handle_click(&r, col, &e, out);
         drag_and_drop(&r, id.0, col, &e, out);
     }
@@ -1016,9 +1014,13 @@ mod tests {
         // Rows stack down their column (not across it).
         // The row (selectable; the preview column and the path bar repeat names).
         let center = |h: &Harness<App>, label: &str| {
-            let node = egui_kittest::kittest::Queryable::query_all_by_label(h, label)
-                .find(|n| n.toggled().is_some())
-                .expect("row");
+            let prefix = format!("{label}, ");
+            let node = egui_kittest::kittest::Queryable::query_all(
+                h,
+                egui_kittest::kittest::by().role(egui::accesskit::Role::ListItem),
+            )
+            .find(|n| n.label().is_some_and(|l| l.starts_with(&prefix)))
+            .expect("row");
             let b = node.raw_bounds().expect("row bounds");
             egui::pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32)
         };

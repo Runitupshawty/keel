@@ -173,7 +173,17 @@ fn in_panes(h: &H, label: &str, top: f32) -> Vec<Pos2> {
 /// A file row in pane `pane` (the leftmost or rightmost match below the headers; the
 /// sidebar, tabs and path bar repeat names).
 fn row(h: &H, name: &str, pane: usize) -> Pos2 {
-    let rows = in_panes(h, name, 50.0);
+    let mut rows = in_panes(h, name, 50.0);
+    if rows.is_empty() {
+        // A row painted without a label of its own (columns view): its AccessKit name.
+        let prefix = format!("{name}, ");
+        rows = (h.query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::ListItem)))
+            .filter(|n| n.label().is_some_and(|l| l.starts_with(&prefix)))
+            .map(|n| center_of(&n))
+            .filter(|p| p.x > 150.0)
+            .collect();
+        rows.sort_by(|a, b| a.x.total_cmp(&b.x));
+    }
     if rows.is_empty() {
         let all: Vec<_> = h
             .query_all_by_label_contains(name)
@@ -389,11 +399,11 @@ fn back_forward_up() {
     key(&mut h, NONE, Key::Backspace);
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, root)), "backspace");
     // The toolbar arrows.
-    click(&mut h, "⏴");
+    click(&mut h, "Back (Alt+Left)");
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &docs)), "back button");
-    click(&mut h, "⏵");
+    click(&mut h, "Forward (Alt+Right)");
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, root)), "forward button");
-    click(&mut h, "⏶");
+    click(&mut h, "Up (Alt+Up)");
     assert!(wait(&mut h, 10, &|s| s.tab(0).dir
         == VPath::local(root.parent().unwrap())));
     shot(&mut h, "back-forward-up");
@@ -410,7 +420,7 @@ fn tabs_new_close_move() {
     assert_eq!(s(&h).panes[0].active, 1, "the new tab is active");
     sm(&mut h).run(0, Action::Navigate(VPath::local(docs.join("Reports"))));
     assert!(wait(&mut h, 10, &listed));
-    click(&mut h, "+");
+    click(&mut h, "New tab (Ctrl+T)");
     assert_eq!(s(&h).panes[0].tabs.len(), 3);
     sm(&mut h).run(0, Action::Navigate(VPath::local(docs.join("Projects"))));
     assert!(wait(&mut h, 10, &listed));
@@ -433,7 +443,7 @@ fn tabs_new_close_move() {
     key(&mut h, CMD, Key::W);
     assert_eq!(titles(&h), ["Documents", "Reports"]);
     // × closes the tab it belongs to.
-    click(&mut h, "×");
+    click(&mut h, "Close tab Documents");
     assert_eq!(s(&h).panes[0].tabs.len(), 1);
     // The last tab never closes.
     key(&mut h, CMD, Key::W);
@@ -536,7 +546,7 @@ fn sort_by_every_column() {
         click_nth(&mut h, label, 0);
         assert_eq!(s(&h).tab(0).sort, (key_, true), "{label}");
         assert_eq!(files(&h)[0], first, "{label} ascending");
-        let arrow = format!("{label} ⏶");
+        let arrow = format!("{label}, sorted ascending");
         click_nth(&mut h, &arrow, 0);
         assert_eq!(s(&h).tab(0).sort, (key_, false), "{label} again");
         assert_ne!(files(&h)[0], first, "{label} descending");
@@ -556,7 +566,9 @@ fn column_view() {
     assert!(wait(&mut h, 10, &|s| s.panes[0].tabs[0].columns.cols.len() == 1));
     assert!(wait(&mut h, 10, &|s| !s.tab(0).loading));
     assert!(
-        h.query_all_by_label("shed").any(|n| n.toggled().is_some()),
+        h.query_all_by_label_contains("shed, folder, ")
+            .next()
+            .is_some(),
         "next column"
     );
     shot(&mut h, "column-view");
@@ -594,6 +606,13 @@ fn status_bar_counts() {
 
 /// The text box on the same row as `label`, as a click target.
 fn field(h: &H, label: &str) -> Pos2 {
+    // A field labelled by `label` (AccessKit `labelled_by`) is found by it.
+    let own = h
+        .query_all_by_label(label)
+        .find(|n| n.role() == egui::accesskit::Role::TextInput);
+    if let Some(n) = own {
+        return center_of(&n);
+    }
     let at = pos(h, label, 0);
     let mut fields: Vec<Pos2> = h
         .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
@@ -1392,9 +1411,8 @@ fn settings_controls_persist_after_reopening() {
     assert!(!s(&h).theme.dark, "applied at once");
     // The size slider: a click near its left end.
     let max = s(&h).settings.max_preview_mb;
-    let slider = h
-        .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::Slider))
-        .next()
+    let slider = (h.query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::Slider)))
+        .find(|n| n.label().as_deref() == Some("Max preview size"))
         .expect("slider")
         .raw_bounds()
         .unwrap();
@@ -1407,7 +1425,7 @@ fn settings_controls_persist_after_reopening() {
     // The hotkey box: typed, then committed when it loses focus.
     let at = field(&h, "Global hotkey");
     fill(&mut h, at, "Ctrl+Shift+Alt+J");
-    click(&mut h, "Max preview size");
+    click(&mut h, "Transfers");
     assert_eq!(s(&h).settings.hotkey, "Ctrl+Shift+Alt+J");
     click_last(&mut h, "Remotes");
     click(&mut h, "Thumbnails for remote and cloud files");
@@ -1698,8 +1716,8 @@ fn window_sizes() {
             "Grid",
             "Columns",
             "Media",
-            "⏴",
-            "+",
+            "Back (Alt+Left)",
+            "New tab (Ctrl+T)",
             "Theme: dark",
         ] {
             inside(&h, label, size);
@@ -1709,7 +1727,10 @@ fn window_sizes() {
             .query_all_by_label("Media")
             .map(|n| center_of(&n))
             .collect();
-        let back: Vec<Pos2> = h.query_all_by_label("⏴").map(|n| center_of(&n)).collect();
+        let back: Vec<Pos2> = h
+            .query_all_by_label("Back (Alt+Left)")
+            .map(|n| center_of(&n))
+            .collect();
         assert_eq!((media.len(), back.len()), (2, 2));
         let (left_media, right_back) = (
             media.iter().map(|p| p.x).fold(f32::MAX, f32::min),

@@ -8,10 +8,24 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Opt-in update check: Settings → General → **Check for updates** (off by default; the first start asks once with a toast, "Not now" never asks again). When on, Keel asks GitHub for the latest release at most once a day, on a background thread, with one request that carries only `User-Agent: keel/<version>`, and shows a banner when a newer release is out: **What's new** opens the release page, **Install** runs the installer the README describes (on Windows the `install.ps1` copy next to `keel.exe`, which verifies the download against `SHA256SUMS`; elsewhere it opens the release page and shows the one-liner), **Skip this version** hides that version for good. Pre-releases are offered only to a running pre-release; offline, rate limited or unexpected answers are silent and retried the next day. `keel --check-update` checks once from a terminal.
 - Crash reports you can send: a panic in the window or in keel-daemon writes `crashes/<time>.txt` in the data folder (the newest ten are kept; the daemon also logs the file) with the version, the system, the panic message and location, a backtrace, the last 50 log lines and the profile name hashed. Your home folder becomes `~`; user names in `C:\Users\…`, `/home/…` and `/Users/…`, the user and host of `sftp://` and other URLs, network servers and the folders of source paths are removed. The next start offers a new report once: **Show report**, **Copy for a bug report**, **Open an issue** (a new GitHub issue with the bug template and the version filled in, nothing else), **Don't ask again** (Settings → General → **Crash reports** turns it back on). Keel sends nothing.
+- Screen readers: the release build now includes AccessKit (it was only in the test build), and every control has a name and a role. Buttons drawn as symbols say what they do ("Back (Alt+Left)", "Close tab Documents", "Clear filter (Esc)", "The rest of the path"), column headers say how they sort ("Name, sorted ascending"), Settings fields carry their labels, and a file row or tile reads as its name, size (or "folder") and modified date, with its selection.
+- The row under the cursor holds the keyboard focus, so a screen reader reads each row the cursor moves to; the status bar announces the folder and its item count after navigation, and notifications are announced (errors interrupt).
+- A focus ring around the focused control while the keyboard is in use (frameless buttons, sidebar items and file rows showed none).
+- **UI scale** in Settings → General, kept with the settings: Ctrl+= and Ctrl+- scale the window, Ctrl+0 resets it.
+- **Reduce motion** also stops the spinners.
+- `a11y_tests`: AccessKit checks on the fixture (every control named, rows, focus, live regions, dialogs) and a walk of the whole window with Tab and Shift+Tab; a WCAG contrast test of both built-in themes.
 
 ### Changed
 
 - `crash.log` in the cache folder is replaced by the crash reports above: a bug inside the window shows the report dialog. An old `crash.log` is left alone and can be deleted.
+
+### Fixed
+
+- Keyboard only: Tab and Shift+Tab reach every control once and come back, in reading order; the sidebar is one stop with the arrow keys inside it; the file rows, the empty space below them, the tab drag handles and egui's resize handles and scroll surfaces are no longer stops.
+- Enter or Space on a focused button, checkbox or sidebar item presses it; they used to open or select the file under the cursor instead (the arrow keys moved the cursor too). Esc gives the keys back to the file list.
+- Dialogs open with the focus on their main button or first field (name conflicts on Keep both, Properties on Close, Open with on the first app), and Esc closes the Settings window and the library and devices windows.
+- Contrast: secondary text, links, warnings and errors reach 4.5:1 in both themes (the muted grey and the light theme's accent are slightly darker or lighter, warnings and errors are new colours, weak text is the muted colour), and a selected row draws its secondary text in the text colour.
+
 
 ## [0.16.0] - 2026-10-10
 

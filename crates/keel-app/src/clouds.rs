@@ -1037,7 +1037,7 @@ impl Wizard {
                                 kind_name(self.kind)
                             ));
                             ui.horizontal(|ui| {
-                                ui.spinner();
+                                crate::anim::spinner(ui);
                                 let s = left.as_secs();
                                 ui.weak(format!("{}:{:02} left", s / 60, s % 60));
                             });
@@ -1045,7 +1045,7 @@ impl Wizard {
                         }
                         None => {
                             ui.horizontal(|ui| {
-                                ui.spinner();
+                                crate::anim::spinner(ui);
                                 ui.label(format!("Saving {} to the OS keychain…", p.account.label));
                             });
                         }
@@ -1247,7 +1247,7 @@ impl Wizard {
                     self.test_connection(existing, store, ctx);
                 }
                 if testing {
-                    ui.spinner();
+                    crate::anim::spinner(ui);
                 }
             }
             if !editing && ui.button("Back").clicked() {
