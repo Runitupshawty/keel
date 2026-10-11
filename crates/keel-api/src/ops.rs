@@ -112,6 +112,8 @@ pub static OPS: &[Operation] = &[
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
+    now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first, from the library index; read-only.",
+        PathParams => FolderSizes, library_folder_sizes, json!({"path": example_dir()})),
     now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
         NoParams => Protection, protection_summary, json!({})),
     now!("volumes.list", "The drive inventory: volumes holding sources, their failure domain, state and backup mark.",
@@ -1004,6 +1006,36 @@ impl From<keel_core::Redundancy> for Copies {
 }
 
 // --- protection, volumes, background work ---
+
+fn library_folder_sizes(ctx: &Ctx, p: PathParams) -> Result<FolderSizes> {
+    let dir = vpath(&p.path)?;
+    let (source, rel) = locate(ctx, &dir)?;
+    let sizes = ctx
+        .lib
+        .folder_sizes(&source, &rel)
+        .map_err(|e| ApiError::not_found(format!("{e:#}")))?;
+    let split = |t: Option<keel_core::Total>| (t.map(|t| t.bytes), t.map(|t| t.files));
+    let (bytes, files) = split(sizes.total);
+    Ok(FolderSizes {
+        path: dir.display(),
+        bytes,
+        files,
+        children: sizes
+            .children
+            .into_iter()
+            .map(|c| {
+                let (bytes, files) = split(c.total);
+                ChildSize {
+                    path: dir.join(&c.name).display(),
+                    name: c.name,
+                    is_dir: c.is_dir,
+                    bytes,
+                    files,
+                }
+            })
+            .collect(),
+    })
+}
 
 fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
     let s = ctx.lib.stats();

@@ -1039,3 +1039,29 @@ pub struct FileCopies {
     pub path: String,
     pub copies: Copies,
 }
+
+/// A folder's indexed total and its children's sizes, biggest first (`library.folder_sizes`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FolderSizes {
+    pub path: String,
+    /// Apparent bytes below the folder; absent until its source's first walk has finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// Files below the folder (absent with `bytes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u64>,
+    pub children: Vec<ChildSize>,
+}
+
+/// One child of a folder: a file's length, a folder's total (absent while unknown, and for
+/// a link).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChildSize {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u64>,
+}

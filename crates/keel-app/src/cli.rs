@@ -54,6 +54,9 @@ pub enum Command {
         #[arg(long, value_name = "N")]
         max: Option<usize>,
     },
+    /// Folder sizes: each child of PATH by size, biggest first (from the library index;
+    /// a folder outside the library is walked).
+    Du { path: String },
     /// Tag or untag indexed files.
     #[command(subcommand)]
     Tag(TagCmd),
@@ -586,6 +589,12 @@ mod tests {
             }
         );
         assert_eq!(cmd(&["devices"]), Command::Devices);
+        assert_eq!(
+            cmd(&["du", "photos"]),
+            Command::Du {
+                path: "photos".into()
+            }
+        );
         assert_eq!(cmd(&["shares"]), Command::Shares);
         assert_eq!(cmd(&["sources"]), Command::Sources { action: None });
         assert_eq!(

@@ -56,6 +56,7 @@ pub use trashbin::TrashProvider;
 pub mod ops;
 #[cfg(not(windows))]
 mod ops_unix;
+pub mod sizes;
 #[cfg(not(windows))]
 use ops_unix as sys;
 #[cfg(windows)]

@@ -473,3 +473,26 @@ fn perf_version_startup() {
     );
     assert!(median < std::time::Duration::from_millis(500), "{median:?}");
 }
+
+/// Task 46: `keel du` reads folder sizes from the index, and walks a folder outside the
+/// library; biggest first either way.
+#[test]
+fn du_from_the_index_and_by_walking() {
+    let env = env();
+    let outside: Value =
+        serde_json::from_str(&env.ok(&["du", &s(env.files.path()), "--json"])).unwrap();
+    // "pdf bytes" (9) in docs, "notes" (5)
+    assert_eq!(outside["bytes"], 14, "{outside}");
+    assert_eq!(outside["children"][0]["name"], "docs", "{outside}");
+    assert_eq!(outside["children"][0]["files"], 1, "{outside}");
+    env.ok(&["sources", "add", &s(env.files.path()), "--json"]);
+    let indexed: Value =
+        serde_json::from_str(&env.ok(&["du", &s(env.files.path()), "--json"])).unwrap();
+    assert_eq!(indexed, outside, "the index agrees with the walk");
+    let text = env.ok(&["du", &env.file("docs")]);
+    assert!(
+        text.lines().next().unwrap().ends_with("invoice-2026.pdf"),
+        "{text}"
+    );
+    assert!(text.contains(" 1 file "), "{text}");
+}
