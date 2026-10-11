@@ -94,6 +94,7 @@ pub fn job_title(kind: &str) -> &str {
         "drop" => "Spacedrop: sending",
         "sidecar" => "Media thumbnails",
         "integrity" => "Checking integrity",
+        "text" => "Reading document text",
         other => other,
     }
 }

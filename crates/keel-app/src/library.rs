@@ -391,6 +391,7 @@ impl JobRow {
             keel_net::spacedrop::KIND => "Spacedrop: sending",
             "sidecar" => "Library: media thumbnails",
             "integrity" => "Library: checking integrity",
+            "text" => "Library: reading document text",
             _ => "Library job",
         }
     }
