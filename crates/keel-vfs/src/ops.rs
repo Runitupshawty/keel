@@ -115,11 +115,15 @@ pub const RECORD_FILES: usize = 256;
 pub const RECORD_BYTES: u64 = 4 << 20;
 
 /// A file's size and modified time (nanoseconds since 1970), as a resumable transfer
-/// records it.
+/// records it; for undo also which file it is ([`Stamp::with_file_id`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stamp {
     pub size: u64,
     pub mtime: Option<i64>,
+    /// The file's identity: volume serial and file index on Windows, device and inode
+    /// elsewhere. None when not read (transfers never read it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<(u64, u64)>,
 }
 
 impl Stamp {
@@ -128,7 +132,23 @@ impl Stamp {
             Ok(d) => i64::try_from(d.as_nanos()).ok(),
             Err(e) => i64::try_from(e.duration().as_nanos()).ok().map(|n| -n),
         });
-        Stamp { size, mtime }
+        Stamp {
+            size,
+            mtime,
+            id: None,
+        }
+    }
+
+    /// This stamp with the identity of the local file at `path` (None when it cannot be
+    /// read): a copy keeps its original's size and modified time, never its identity.
+    pub fn with_file_id(mut self, path: &Path) -> Stamp {
+        #[cfg(windows)]
+        let path = &match long(path) {
+            Ok(p) => p,
+            Err(_) => return self,
+        };
+        self.id = crate::sys::file_id(path);
+        self
     }
     pub(crate) fn of(m: &fs::Metadata) -> Stamp {
         Stamp::new(m.len(), m.modified().ok())

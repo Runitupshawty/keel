@@ -21,9 +21,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, IContextMenu, IContextMenu2, IContextMenu3, ILFindLastID, ILFree,
-    IShellFolder, RemoveWindowSubclass, SHBindToParent, SHParseDisplayName, SetWindowSubclass,
-    CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
-    GCS_VERBW, SEE_MASK_UNICODE,
+    IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetPathFromIDListEx, SHParseDisplayName,
+    SetWindowSubclass, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
+    CMINVOKECOMMANDINFOEX, GCS_VERBW, GPFIDL_DEFAULT, SEE_MASK_UNICODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DeleteMenu, DestroyMenu, EnumThreadWindows, GetCursorPos, GetMenuItemCount,
@@ -90,6 +90,35 @@ impl Drop for Pidl {
     }
 }
 
+/// Whether a name in `p` ends with a dot or space: the shell trims those when it parses a
+/// path, so `foo.` would name the sibling `foo`.
+fn trimmed_by_shell(p: &Path) -> bool {
+    p.components().any(|c| {
+        matches!(c, std::path::Component::Normal(n) if n.to_string_lossy().ends_with(['.', ' ']))
+    })
+}
+
+/// The file-system path `pidl` names, if it names one.
+///
+/// # Safety
+/// `pidl` is a valid absolute PIDL.
+unsafe fn pidl_path(pidl: *const ITEMIDLIST) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 32_768];
+    SHGetPathFromIDListEx(pidl, &mut buf, GPFIDL_DEFAULT)
+        .as_bool()
+        .then(|| {
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            PathBuf::from(String::from_utf16_lossy(&buf[..n]))
+        })
+}
+
+/// Whether the shell's `got` is the `want` Keel asked for (NTFS names ignore case).
+fn same_path(got: &Path, want: &Path) -> bool {
+    let norm =
+        |p: &Path| (p.to_string_lossy().trim_end_matches('\\').to_lowercase()).replace('/', "\\");
+    norm(got) == norm(want)
+}
+
 fn wide(p: &Path) -> Result<Vec<u16>> {
     let w: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
     anyhow::ensure!(!w[..w.len() - 1].contains(&0), "path contains NUL");
@@ -98,13 +127,20 @@ fn wide(p: &Path) -> Result<Vec<u16>> {
 
 impl ShellMenu {
     /// The menu for `paths`, which must all be in one local folder (UNC shares count).
-    /// `extended`: the Shift+right-click verbs too (`CMF_EXTENDEDVERBS`).
+    /// `extended`: the Shift+right-click verbs too (`CMF_EXTENDEDVERBS`). Refuses a name
+    /// ending in a dot or space, and any path the shell resolves to a different file.
     pub fn new(paths: &[PathBuf], extended: bool) -> Result<Self> {
         let first = paths.first().context("nothing selected")?;
         anyhow::ensure!(
             paths.iter().all(|p| p.parent() == first.parent()),
             "the Windows menu works on files in one folder"
         );
+        if let Some(p) = paths.iter().find(|p| trimmed_by_shell(p)) {
+            anyhow::bail!(
+                "{}: the Windows menu cannot act on a name ending in a dot or space",
+                p.display()
+            );
+        }
         let dir = wide(first.parent().unwrap_or(first))?;
         // SAFETY: COM init on this thread (S_FALSE / RPC_E_CHANGED_MODE are harmless); each
         // PIDL lives until GetUIObjectOf returns, and `children` point into them.
@@ -116,7 +152,14 @@ impl ShellMenu {
                 let mut pidl = std::ptr::null_mut();
                 SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None)
                     .with_context(|| p.display().to_string())?;
-                pidls.push(Pidl(pidl));
+                let pidl = Pidl(pidl);
+                // The handlers act on what the PIDL names: refuse anything else.
+                anyhow::ensure!(
+                    pidl_path(pidl.0).is_some_and(|got| same_path(&got, p)),
+                    "{}: the shell resolved this to a different item",
+                    p.display()
+                );
+                pidls.push(pidl);
             }
             let folder: IShellFolder = SHBindToParent(pidls[0].0, None)?;
             let children: Vec<*const ITEMIDLIST> = pidls
@@ -581,6 +624,51 @@ mod tests {
             }
             tidy_separators(m.0);
             assert_eq!(labels(m.0), ["a", "-", "b"]);
+        }
+    }
+
+    #[test]
+    fn names_the_shell_would_trim_are_refused() {
+        assert!(trimmed_by_shell(Path::new(r"C:\a\foo.")));
+        assert!(trimmed_by_shell(Path::new(r"C:\a \foo")));
+        assert!(!trimmed_by_shell(Path::new(r"C:\a\foo.txt")));
+        assert!(same_path(Path::new(r"C:\A\Foo"), Path::new(r"c:\a\foo")));
+        assert!(!same_path(Path::new(r"C:\a\foo"), Path::new(r"C:\a\foo.")));
+    }
+
+    /// `foo.` beside `foo`: SHParseDisplayName would resolve `foo.` to `foo`, so the menu is
+    /// refused for it and still built for `foo`, whose PIDL round-trips. Nothing is invoked.
+    #[test]
+    fn trailing_dot_never_reaches_the_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("foo");
+        std::fs::write(&plain, "plain").unwrap();
+        let dotted = dir.path().join("foo.");
+        let mut raw = std::ffi::OsString::from(r"\\?\");
+        raw.push(dotted.as_os_str());
+        std::fs::write(&raw, "dotted").unwrap();
+        let err = ShellMenu::new(std::slice::from_ref(&dotted), false)
+            .err()
+            .expect("foo. refused");
+        assert!(format!("{err:#}").contains("dot or space"), "{err:#}");
+        // The round trip: the parsed PIDL of `foo` names `foo`; of `foo.` (asked of the
+        // shell directly) names `foo`, which the check refuses.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            for (asked, ok) in [(&plain, true), (&dotted, false)] {
+                let w = wide(asked).unwrap();
+                let mut pidl = std::ptr::null_mut();
+                SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).unwrap();
+                let pidl = Pidl(pidl);
+                let got = pidl_path(pidl.0).unwrap();
+                assert_eq!(
+                    same_path(&got, asked),
+                    ok,
+                    "{} -> {}",
+                    asked.display(),
+                    got.display()
+                );
+            }
         }
     }
 

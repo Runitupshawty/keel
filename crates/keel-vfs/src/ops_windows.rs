@@ -31,6 +31,28 @@ fn wide(p: &Path) -> io::Result<Vec<u16>> {
     Ok(units)
 }
 
+/// The volume serial and file index of `path` (a final link itself, not its target); None
+/// when it cannot be opened or the file system gives no index.
+pub(crate) fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    // No access asked: reads attributes only, never blocks or changes the file.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+        .open(path)
+        .ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a handle owned by `file`, which outlives the call; `info` is written once.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    (index != 0).then_some((u64::from(info.dwVolumeSerialNumber), index))
+}
+
 /// Rename that fails instead of replacing an existing `to`. Cross-volume moves fail with
 /// `ErrorKind::CrossesDevices` (no MOVEFILE_COPY_ALLOWED) so callers can copy with progress.
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {

@@ -209,9 +209,24 @@ fn find(paths: &[VPath]) -> Result<Vec<TrashItem>> {
     Ok(out)
 }
 
+/// `p` (which may be gone) in canonical form: its folder resolved (8.3 short names, links,
+/// letter case), its name joined, without the `\\?\` prefix. None when the folder cannot
+/// be resolved.
+fn canonical(p: &Path) -> Option<PathBuf> {
+    let dir = std::fs::canonicalize(p.parent()?).ok()?;
+    let dir = dir.to_string_lossy();
+    let dir = if let Some(unc) = dir.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        dir.strip_prefix(r"\\?\").unwrap_or(&dir).to_owned()
+    };
+    Some(Path::new(&dir).join(p.file_name()?))
+}
+
 /// Where `originals` (local paths deleted at or after `since`) are in the trash: for each,
 /// the newest item deleted from that path since then (a `trash://` path), None when there
-/// is none. One listing. Always None on macOS, whose Trash does not record origins: keep
+/// is none. Deletion times are whole seconds, so two deletes of one path within the same
+/// second tie and the one listed last wins. One listing. Always None on macOS, whose Trash does not record origins: keep
 /// the path [`crate::local::trash`] returns there instead.
 pub fn find_trashed(originals: &[PathBuf], since: SystemTime) -> Result<Vec<Option<VPath>>> {
     if !KNOWS_ORIGIN || originals.is_empty() {
@@ -233,10 +248,15 @@ pub fn find_trashed(originals: &[PathBuf], since: SystemTime) -> Result<Vec<Opti
     Ok(originals
         .iter()
         .map(|o| {
-            let o = key(o);
+            // The bin records the long canonical form (`C:\Program Files\…`); the path
+            // asked for may be another spelling of it (`C:\PROGRA~1\…`).
+            let keys = [Some(key(o)), canonical(o).map(|c| key(&c))];
             items
                 .iter()
-                .filter(|i| i.time_deleted >= since && key(&i.original_path()) == o)
+                .filter(|i| {
+                    let k = Some(key(&i.original_path()));
+                    i.time_deleted >= since && keys.contains(&k)
+                })
                 .max_by_key(|i| i.time_deleted)
                 .map(path_of)
         })
@@ -596,6 +616,36 @@ mod tests {
             original_parent: PathBuf::from("/home/u"),
             time_deleted: 1_700_000_000,
         }
+    }
+
+    /// An 8.3 short spelling of a folder and its long form give one canonical path for a
+    /// file that is gone (what `find_trashed` compares with the bin's record).
+    #[cfg(windows)]
+    #[test]
+    fn short_and_long_spellings_compare_equal() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        let tmp = tempfile::tempdir().unwrap();
+        let long = tmp.path().join("keel long folder name");
+        std::fs::create_dir(&long).unwrap();
+        let w: Vec<u16> = long.as_os_str().encode_wide().chain([0]).collect();
+        let mut buf = vec![0u16; 32_768];
+        // SAFETY: `w` is NUL-terminated; the call writes at most `buf.len()` units.
+        let n = unsafe { GetShortPathNameW(PCWSTR(w.as_ptr()), Some(&mut buf)) } as usize;
+        let short = PathBuf::from(OsString::from_wide(&buf[..n.min(buf.len())]));
+        if n == 0 || short.file_name() == long.file_name() {
+            return eprintln!("skipped: this volume makes no 8.3 names");
+        }
+        let gone = "deleted.txt";
+        let (a, b) = (canonical(&short.join(gone)), canonical(&long.join(gone)));
+        assert!(a.is_some(), "{}", short.display());
+        assert_eq!(a, b);
+        let a = a.unwrap();
+        assert!(!a.to_string_lossy().starts_with(r"\\?\"), "{}", a.display());
+        assert_eq!(a.file_name().unwrap(), gone);
+        // A folder that cannot be resolved gives None: the asked spelling is kept.
+        assert_eq!(canonical(&long.join("missing").join(gone)), None);
     }
 
     #[test]

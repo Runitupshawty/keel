@@ -7,6 +7,13 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// The device and inode of `path` (a final link itself, not its target).
+pub(crate) fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::symlink_metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
 /// Rename that fails instead of replacing an existing `to`; EXDEV maps to `CrossesDevices`.
 /// A case-only rename on a case-insensitive filesystem (`a.txt` -> `A.txt` on APFS) finds
 /// `to` already there as the same file, and is allowed.
