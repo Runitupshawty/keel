@@ -2708,7 +2708,9 @@ impl AppState {
             self.library.assign = None;
             return;
         }
-        if !keys_on || crate::keys::typing(ctx) {
+        // Only while the file list has the keys: not with the focus in the tag picker,
+        // Settings or the duplicate finder.
+        if !keys_on || crate::keys::typing(ctx) || !crate::a11y::list_has_keys(ctx) {
             return;
         }
         let (mut leave, mut toggles) = (false, Vec::new());
