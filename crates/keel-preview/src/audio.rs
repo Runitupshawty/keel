@@ -72,6 +72,9 @@ pub(crate) struct Facts {
 }
 
 /// None when the file has no audio stream.
+/// Longest tag value shown, in characters.
+const MAX_TAG: usize = 200;
+
 pub(crate) fn facts(v: &serde_json::Value) -> Option<Facts> {
     let streams = v["streams"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     let audio = streams.iter().find(|s| s["codec_type"] == "audio")?;
@@ -86,9 +89,8 @@ pub(crate) fn facts(v: &serde_json::Value) -> Option<Facts> {
                     .iter()
                     .find(|(k, _)| k.eq_ignore_ascii_case(key))
                     .and_then(|(_, v)| v.as_str())
-                    .map(str::trim)
+                    .map(|v| keel_core::plain_text(v, MAX_TAG))
                     .filter(|v| !v.is_empty())
-                    .map(str::to_owned)
             })
     };
     let tags = [("Title", "title"), ("Artist", "artist"), ("Album", "album")]
@@ -200,6 +202,17 @@ mod tests {
         assert_eq!(f.meta, "opus · 48 kHz · mono · 64 kb/s");
         assert_eq!((f.duration_s, f.cover), (0.0, None));
         assert_eq!(facts(&json!({"streams": [{"codec_type": "video"}]})), None);
+        // Control and direction characters go, long values are cut.
+        let odd = json!({
+            "streams": [{"codec_type": "audio",
+                         "tags": {"title": "\u{202E}evil\u{0007}\nname", "artist": "x".repeat(5000),
+                                  "album": "\u{2066}\u{0000}"}}]
+        });
+        let f = facts(&odd).unwrap();
+        assert_eq!(f.tags[0], ("Title".into(), "evil name".into()));
+        assert_eq!(f.tags[1].1.chars().count(), MAX_TAG + 1);
+        assert!(f.tags[1].1.ends_with('…'));
+        assert_eq!(f.tags.len(), 2, "an album of nothing printable is left out");
         assert_eq!(facts(&json!({})), None);
     }
 }

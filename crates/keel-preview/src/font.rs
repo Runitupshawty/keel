@@ -62,7 +62,8 @@ pub(crate) fn sample(data: &[u8], max_px: u32) -> Result<Preview, String> {
     }
     Ok(Preview::Font {
         sample: draw(&font, max_px.clamp(MIN_W, MAX_W))?,
-        name: format!("{family} {style}").trim().to_owned(),
+        // Names come from the file: no control or direction characters, bounded.
+        name: keel_core::plain_text(&format!("{family} {style}"), 120),
         info: info.join(" · "),
     })
 }
