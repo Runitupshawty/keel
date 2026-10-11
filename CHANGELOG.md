@@ -21,6 +21,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Updating Keel (the update banner, `install.ps1` or `install.sh`) left a running `keel-daemon` stopped until the next sign-in, so the phone web client, mounts and attached windows went away; the installers now start the new daemon again when they stopped one.
 - An FTP server that kept sending empty listing lines held the folder being opened (or copied) for as long as it kept sending, reading gigabytes. A listing now stops at a million lines, empty ones included, and at 64 MiB.
 - FTP entries dated before 1601 were left out of listings on Windows (and listed with that date elsewhere); they are now listed without a date on every system.
+- A library with a database over 4 GiB was backed up into a file that restore then refused. The backup now refuses such a library before it writes anything (an older backup file stays as it was) and names the database that is too large.
 
 ### Known limitations
 
@@ -38,6 +39,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - `LIST` dates are read as UTC to the minute (the server's time zone is unknown); a rename onto an existing name is checked first and refused, but a file that appears between the check and the rename is replaced on servers whose rename replaces.
 - An FTPS certificate pinned before can only be replaced by removing its line from `ftps_known_hosts`. Implicit FTPS (port 990) connects without Keel's own connect timeout (the system's applies).
 - A parallel copy makes folders ahead of the files queued for them: one stopped by a cancel or an error can leave such a folder empty. Undo removes it with the rest of the copy.
+- A library whose `library.db` or any one source's store is over 4 GiB cannot be backed up.
 
 ### Changed
 

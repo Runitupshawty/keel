@@ -76,6 +76,31 @@ fn file_names_carry_the_utc_date() {
     assert_eq!(file_name("x", -86_400), "x-1969-12-31.keelbackup");
 }
 
+/// The writer refuses exactly what the reader would: no backup is written that cannot be
+/// restored.
+#[test]
+fn a_backup_never_holds_a_file_a_restore_refuses() {
+    assert!(fits("library.db", MAX_ENTRY).is_ok());
+    let e = fits("x.db", MAX_ENTRY + 1).unwrap_err();
+    assert!(format!("{e:#}").contains("at most 4 GiB"), "{e:#}");
+    let mut m = Manifest {
+        format: FORMAT,
+        keel_version: String::new(),
+        library: "main".into(),
+        library_id: String::new(),
+        created: 0,
+        sources: Vec::new(),
+        files: vec![BackupFile {
+            name: LIBRARY_DB.into(),
+            size: MAX_ENTRY,
+            sha256: "0".repeat(64),
+        }],
+    };
+    assert!(check_manifest(&m).is_ok());
+    m.files[0].size = MAX_ENTRY + 1;
+    assert!(check_manifest(&m).is_err());
+}
+
 #[test]
 fn a_restore_brings_back_files_tags_favorites_content_ids_and_sources() {
     let (data, files, other) = (

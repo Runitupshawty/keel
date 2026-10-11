@@ -226,6 +226,11 @@ impl Library {
             });
         }
         drop(lib_copy);
+        // Refused before anything is written (an older backup at `to` stays): a restore
+        // reads no file over `MAX_ENTRY`.
+        for name in &names {
+            fits(name, std::fs::metadata(scratch.0.join(name))?.len())?;
+        }
         let partial = to.with_extension(format!("{EXTENSION}.partial"));
         let written = (|| -> Result<Manifest> {
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&partial)?);
@@ -279,6 +284,16 @@ impl Library {
         self.shared.db.set_meta(LAST_BACKUP, &created.to_string())?;
         Ok(manifest)
     }
+}
+
+/// A backup holds no file a restore would refuse (`MAX_ENTRY`).
+fn fits(name: &str, size: u64) -> Result<()> {
+    anyhow::ensure!(
+        size <= MAX_ENTRY,
+        "cannot back up this library: {name} is {size} bytes, and a backup holds files of \
+         at most 4 GiB"
+    );
+    Ok(())
 }
 
 /// The opened zip and its checked manifest.
