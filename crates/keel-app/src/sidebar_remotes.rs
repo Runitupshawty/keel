@@ -5,7 +5,7 @@
 use crate::clouds::{has_quota, needs_sign_in, quota_text, root_of, CloudCmd, QuotaSlot};
 use crate::keys::Action;
 use crate::remotes::{home_of, remote_path, RemoteCmd};
-use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, VPath};
+use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, RemoteProtocol, VPath};
 use std::collections::HashMap;
 
 /// What the sidebar shows for one host (rebuilt from config + status every frame).
@@ -18,6 +18,10 @@ pub struct RemoteRow {
     pub detail: String,
     pub home: VPath,
     pub bookmarks: Vec<(String, VPath)>,
+    /// Plain FTP: the clear-text warning, repeated in the hover text.
+    pub warning: Option<&'static str>,
+    /// SFTP: "Open terminal here" runs ssh.
+    pub ssh: bool,
 }
 
 pub fn rows(
@@ -40,8 +44,10 @@ pub fn rows(
                 bookmarks: h
                     .bookmarks
                     .iter()
-                    .map(|(label, path)| (label.clone(), remote_path(&h.id, path)))
+                    .map(|(label, path)| (label.clone(), remote_path(h.protocol, &h.id, path)))
                     .collect(),
+                warning: (h.protocol == RemoteProtocol::Ftp).then_some(keel_vfs::FTP_CLEAR_TEXT),
+                ssh: h.protocol == RemoteProtocol::Sftp,
             }
         })
         .collect()
@@ -75,7 +81,7 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
                 let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
                 ui.painter()
                     .circle_filled(rect.center(), 4.5, dot_color(ui, row.status));
-                let on_host = current.scheme == "sftp" && current.authority == row.id;
+                let on_host = current.scheme == row.home.scheme && current.authority == row.id;
                 ui.add(
                     egui::Button::new(row.label.as_str())
                         .frame(false)
@@ -83,10 +89,13 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
                 )
             })
             .inner;
-        let tip = match row.status {
+        let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected".to_owned(),
             _ => row.detail.clone(),
         };
+        if let Some(warning) = row.warning {
+            tip = format!("{tip}\n{warning}");
+        }
         let r = r.on_hover_text(tip);
         if r.clicked() {
             out.push(Action::Navigate(row.home.clone()));
@@ -101,6 +110,9 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
                 ("Open terminal here", RemoteCmd::Terminal),
                 ("Copy address", RemoteCmd::CopyAddress),
             ] {
+                if cmd == RemoteCmd::Terminal && !row.ssh {
+                    continue;
+                }
                 if ui.button(text).clicked() {
                     out.push(Action::Remote {
                         host: row.id.clone(),

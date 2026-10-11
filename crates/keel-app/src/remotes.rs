@@ -1,7 +1,8 @@
-//! SFTP remotes in the app: hosts from `[[remotes]]` in config.toml registered with the
-//! Router, connection status and host-key prompts from the providers, the host editor
-//! (Settings → Remotes), and the remote-only actions (connect, disconnect, ssh in the
-//! terminal, name search, download progress). No IO here runs on the UI thread.
+//! SFTP, FTP and FTPS remotes in the app: hosts from `[[remotes]]` in config.toml
+//! registered with the Router, connection status, host-key and certificate prompts from the
+//! providers, the host editor (Settings → Remotes), and the remote-only actions (connect,
+//! disconnect, ssh in the terminal, name search, download progress). No IO here runs on the
+//! UI thread.
 
 use crate::settings::Settings;
 use crate::state::{AppState, Msg};
@@ -10,7 +11,7 @@ use crate::worker::{send, spawn};
 use crossbeam_channel::{Receiver, Sender};
 use egui::{Id, Modal};
 use keel_vfs::{ConnStatus, Kind, Provider, RemoteAuth, RemoteEvent, RemoteHost, Router};
-use keel_vfs::{SftpProvider, VPath};
+use keel_vfs::{FtpProvider, RemoteProtocol, SftpProvider, VPath};
 use parking_lot::RwLock;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
@@ -28,8 +29,43 @@ pub const RETRY: Duration = Duration::from_secs(10);
 /// The provider waits this long for a host-key answer, then gives up.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Live SFTP providers by host id (connect / disconnect from the sidebar).
-pub type SftpMap = Arc<RwLock<HashMap<String, Arc<SftpProvider>>>>;
+/// A host's live provider, with the sidebar's connect / disconnect.
+#[derive(Clone)]
+pub enum HostConn {
+    Sftp(Arc<SftpProvider>),
+    Ftp(Arc<FtpProvider>),
+}
+impl HostConn {
+    fn new(h: &RemoteHost, events: Sender<RemoteEvent>) -> Self {
+        match h.protocol {
+            RemoteProtocol::Sftp => Self::Sftp(Arc::new(SftpProvider::new(h.clone(), events))),
+            RemoteProtocol::Ftp | RemoteProtocol::Ftps => {
+                Self::Ftp(Arc::new(FtpProvider::new(h.clone(), events)))
+            }
+        }
+    }
+    fn provider(&self) -> Arc<dyn Provider> {
+        match self {
+            Self::Sftp(p) => p.clone(),
+            Self::Ftp(p) => p.clone(),
+        }
+    }
+    fn connect(&self) {
+        let _ = match self {
+            Self::Sftp(p) => p.connect(),
+            Self::Ftp(p) => p.connect(),
+        };
+    }
+    fn disconnect(&self) {
+        match self {
+            Self::Sftp(p) => p.disconnect(),
+            Self::Ftp(p) => p.disconnect(),
+        }
+    }
+}
+
+/// Live providers by host id (connect / disconnect from the sidebar).
+pub type HostMap = Arc<RwLock<HashMap<String, HostConn>>>;
 
 /// Sidebar right-click commands on a host (`Add` opens an empty editor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +83,8 @@ pub struct HostKeyPrompt {
     /// The resolved `host:port` (`jump host ` first for a ProxyJump hop).
     pub endpoint: String,
     pub fingerprint: String,
+    /// An FTPS certificate that failed verification: why (None: an SSH host key).
+    pub problem: Option<String>,
     reply: Sender<bool>,
     since: Instant,
 }
@@ -54,7 +92,7 @@ pub struct HostKeyPrompt {
 pub struct Remotes {
     /// The hosts the providers were built from (the last synced `settings.remotes`).
     hosts: Vec<RemoteHost>,
-    pub sftp: SftpMap,
+    pub conns: HostMap,
     pub status: HashMap<String, (ConnStatus, String)>,
     events: Sender<RemoteEvent>,
     pub prompts: VecDeque<HostKeyPrompt>,
@@ -79,7 +117,7 @@ impl Remotes {
         });
         Self {
             hosts: Vec::new(),
-            sftp: Arc::default(),
+            conns: Arc::default(),
             status: HashMap::new(),
             events,
             prompts: VecDeque::new(),
@@ -98,13 +136,13 @@ impl Remotes {
             return;
         }
         let mut old = Vec::new();
-        let mut map = self.sftp.write();
+        let mut map = self.conns.write();
         for h in hosts {
             if self.hosts.contains(h) && map.contains_key(&h.id) {
                 continue;
             }
-            let provider = Arc::new(SftpProvider::new(h.clone(), self.events.clone()));
-            router.register_remote_provider(h.id.clone(), provider.clone());
+            let provider = HostConn::new(h, self.events.clone());
+            router.register_remote_provider(h.id.clone(), provider.provider());
             old.extend(map.insert(h.id.clone(), provider));
             self.status
                 .insert(h.id.clone(), (ConnStatus::Disconnected, String::new()));
@@ -143,7 +181,7 @@ impl Remotes {
     /// The line above a remote tab's listing: connecting / reconnecting, or the remote
     /// search note. None for local tabs and connected hosts.
     pub fn banner(&self, tab: &Tab) -> Option<String> {
-        if tab.dir.scheme != "sftp" {
+        if !keel_vfs::is_remote_scheme(&tab.dir.scheme) {
             return None;
         }
         let id = tab.dir.authority.as_str();
@@ -202,13 +240,27 @@ impl Remotes {
         let mut answer = None;
         let modal = Modal::new(Id::new("keel-host-key")).show(ctx, |ui| {
             ui.set_width(440.0);
-            ui.strong(format!("First connection to {label}"));
-            ui.label(&p.endpoint);
-            ui.add_space(4.0);
-            ui.label(
-                "This host's key is not in ~/.ssh/known_hosts yet. Check that the fingerprint \
-                 matches the server's before trusting it:",
-            );
+            match &p.problem {
+                None => {
+                    ui.strong(format!("First connection to {label}"));
+                    ui.label(&p.endpoint);
+                    ui.add_space(4.0);
+                    ui.label(
+                        "This host's key is not in ~/.ssh/known_hosts yet. Check that the \
+                         fingerprint matches the server's before trusting it:",
+                    );
+                }
+                Some(problem) => {
+                    ui.strong(format!("Unverified certificate on {label}"));
+                    ui.label(&p.endpoint);
+                    ui.add_space(4.0);
+                    ui.label(format!(
+                        "The server's TLS certificate could not be verified ({problem}). \
+                         Check that its SHA-256 fingerprint matches the server's certificate \
+                         before trusting it; Keel then remembers it for this server:"
+                    ));
+                }
+            }
             ui.add_space(4.0);
             ui.monospace(&p.fingerprint);
             ui.add_space(8.0);
@@ -249,8 +301,17 @@ impl Remotes {
             .show(ui, |ui| {
                 for h in &s.remotes {
                     ui.strong(&h.label);
-                    ui.label(format!("{}@{}:{}", h.user, h.host, h.port));
-                    ui.weak(auth_name(&h.auth));
+                    let r = ui.label(format!(
+                        "{} {}@{}:{}",
+                        h.protocol.name(),
+                        h.user,
+                        h.host,
+                        h.port
+                    ));
+                    if h.protocol == RemoteProtocol::Ftp {
+                        r.on_hover_text(keel_vfs::FTP_CLEAR_TEXT);
+                    }
+                    ui.weak(auth_name(h));
                     ui.horizontal(|ui| {
                         if ui.button("Edit…").clicked() {
                             self.editor = Some(Editor::edit(h));
@@ -292,8 +353,14 @@ impl Remotes {
     }
 }
 
-fn auth_name(a: &RemoteAuth) -> &'static str {
-    match a {
+fn auth_name(h: &RemoteHost) -> &'static str {
+    if h.protocol != RemoteProtocol::Sftp {
+        return match is_anonymous(&h.user) {
+            true => "Anonymous",
+            false => "Password (keychain)",
+        };
+    }
+    match &h.auth {
         RemoteAuth::Agent => "SSH agent",
         RemoteAuth::KeyFile { .. } => "Key file",
         RemoteAuth::PasswordInKeyring => "Password (keychain)",
@@ -309,7 +376,15 @@ fn store_secret(
     ctx: egui::Context,
 ) {
     spawn("keel-keychain", move || {
-        let msg = match keel_vfs::sftp::auth::store_secret(&host_id, kind, &value) {
+        // Tests never touch the keychain.
+        #[cfg(test)]
+        let stored = {
+            let _ = (&host_id, &value);
+            Ok::<(), anyhow::Error>(())
+        };
+        #[cfg(not(test))]
+        let stored = keel_vfs::sftp::auth::store_secret(&host_id, kind, &value);
+        let msg = match stored {
             Ok(()) => Msg::Info(format!("The {kind} is saved in the OS keychain")),
             Err(e) => Msg::Toast(format!("Could not save the {kind}: {e:#}")),
         };
@@ -330,6 +405,9 @@ pub struct Editor {
     /// None: a new host (the id is made from the label on save).
     pub id: Option<String>,
     pub label: String,
+    pub protocol: RemoteProtocol,
+    /// FTP: sign in as `anonymous` (no password).
+    pub anonymous: bool,
     pub host: String,
     pub port: String,
     pub user: String,
@@ -354,6 +432,8 @@ impl Default for Editor {
         Self {
             id: None,
             label: String::new(),
+            protocol: RemoteProtocol::Sftp,
+            anonymous: false,
             host: String::new(),
             port: "22".into(),
             user: String::new(),
@@ -398,6 +478,16 @@ fn valid_user(u: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
+/// FTP user names are often email addresses; no spaces or control characters.
+fn valid_ftp_user(u: &str) -> bool {
+    !u.is_empty() && !u.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// FTP's anonymous sign-in (RFC 1635); an empty user means the same.
+pub fn is_anonymous(user: &str) -> bool {
+    user.is_empty() || user.eq_ignore_ascii_case("anonymous")
+}
+
 /// A stable id slug from the label, unique among the `taken` ids.
 pub fn slug(label: &str, taken: &[String]) -> String {
     let mut base: String = label
@@ -437,9 +527,12 @@ impl Editor {
             ),
             RemoteAuth::PasswordInKeyring => (AuthKind::Password, String::new(), false),
         };
+        let ftp = h.protocol != RemoteProtocol::Sftp;
         Self {
             id: Some(h.id.clone()),
             label: h.label.clone(),
+            protocol: h.protocol,
+            anonymous: ftp && is_anonymous(&h.user),
             host: h.host.clone(),
             port: h.port.to_string(),
             user: h.user.clone(),
@@ -469,8 +562,17 @@ impl Editor {
             Ok(p) if p > 0 => p,
             _ => return Err("The port must be 1-65535".into()),
         };
+        let ftp = self.protocol != RemoteProtocol::Sftp;
+        let user = match ftp && self.anonymous {
+            true => "anonymous",
+            false => user,
+        };
+        if ftp {
+            if !valid_ftp_user(user) {
+                return Err("Enter a user name (no spaces), or sign in anonymously".into());
+            }
         // With ~/.ssh/config an empty user comes from the config (or the local account).
-        if !(valid_user(user) || user.is_empty() && self.use_ssh_config) {
+        } else if !(valid_user(user) || user.is_empty() && self.use_ssh_config) {
             return Err("Enter a user name (letters, digits, . _ -)".into());
         }
         let home = self.home.trim();
@@ -491,9 +593,15 @@ impl Editor {
         }
         let new = self.id.is_none();
         let secret = (!self.secret.is_empty()).then(|| self.secret.clone());
-        let (auth, secret) = match self.auth {
-            AuthKind::Agent => (RemoteAuth::Agent, None),
-            AuthKind::KeyFile => (
+        let auth = match ftp {
+            true if self.anonymous => None,
+            true => Some(AuthKind::Password),
+            false => Some(self.auth),
+        };
+        let (auth, secret) = match auth {
+            None => (RemoteAuth::PasswordInKeyring, None),
+            Some(AuthKind::Agent) => (RemoteAuth::Agent, None),
+            Some(AuthKind::KeyFile) => (
                 RemoteAuth::KeyFile {
                     path: PathBuf::from(self.key_path.trim()),
                     passphrase_in_keyring: self.passphrase_in_keyring,
@@ -502,7 +610,7 @@ impl Editor {
                     .filter(|_| self.passphrase_in_keyring)
                     .map(|s| ("passphrase", s)),
             ),
-            AuthKind::Password => {
+            Some(AuthKind::Password) => {
                 if new && secret.is_none() {
                     return Err("Enter the password (it is kept in the OS keychain)".into());
                 }
@@ -512,7 +620,12 @@ impl Editor {
                 )
             }
         };
-        if new && self.auth == AuthKind::KeyFile && self.passphrase_in_keyring && secret.is_none() {
+        if new
+            && !ftp
+            && self.auth == AuthKind::KeyFile
+            && self.passphrase_in_keyring
+            && secret.is_none()
+        {
             return Err("Enter the key passphrase (it is kept in the OS keychain)".into());
         }
         let taken: Vec<String> = existing.iter().map(|h| h.id.clone()).collect();
@@ -527,8 +640,8 @@ impl Editor {
                 auth,
                 home: (!home.is_empty()).then(|| home.to_owned()),
                 bookmarks,
-                use_ssh_config: self.use_ssh_config,
-                protocol: Default::default(),
+                use_ssh_config: self.use_ssh_config && !ftp,
+                protocol: self.protocol,
             },
             secret,
         ))
@@ -566,23 +679,72 @@ impl Editor {
                         ui.end_row();
                     };
                     field(ui, "Label", &mut self.label, "Mac mini");
-                    field(
-                        ui,
-                        "Host",
-                        &mut self.host,
-                        "host name, IP or ~/.ssh/config alias",
-                    );
-                    ui.label("");
+                    ui.label("Protocol");
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut self.use_ssh_config, "Use ~/.ssh/config");
-                        if !self.summary.is_empty() {
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(&self.summary).small()).wrap(),
-                            );
+                        let before = self.protocol;
+                        ui.horizontal(|ui| {
+                            for p in [
+                                RemoteProtocol::Sftp,
+                                RemoteProtocol::Ftps,
+                                RemoteProtocol::Ftp,
+                            ] {
+                                ui.radio_value(&mut self.protocol, p, p.name());
+                            }
+                        });
+                        // The port follows the protocol unless the user changed it.
+                        if self.protocol != before
+                            && self.port.trim() == before.default_port().to_string()
+                        {
+                            self.port = self.protocol.default_port().to_string();
+                        }
+                        match self.protocol {
+                            RemoteProtocol::Ftp => {
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    keel_vfs::FTP_CLEAR_TEXT,
+                                );
+                            }
+                            RemoteProtocol::Ftps => {
+                                ui.weak("TLS from the start on port 990, else AUTH TLS");
+                            }
+                            RemoteProtocol::Sftp => {}
                         }
                     });
                     ui.end_row();
-                    field(ui, "Port", &mut self.port, "22");
+                    let ftp = self.protocol != RemoteProtocol::Sftp;
+                    let hint = match ftp {
+                        true => "host name or IP",
+                        false => "host name, IP or ~/.ssh/config alias",
+                    };
+                    field(ui, "Host", &mut self.host, hint);
+                    if !ftp {
+                        ui.label("");
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut self.use_ssh_config, "Use ~/.ssh/config");
+                            if !self.summary.is_empty() {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(&self.summary).small())
+                                        .wrap(),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
+                    let port_hint = self.protocol.default_port().to_string();
+                    field(ui, "Port", &mut self.port, &port_hint);
+                    if ftp {
+                        ui.label("Sign in");
+                        ui.checkbox(&mut self.anonymous, "Anonymously");
+                        ui.end_row();
+                        if !self.anonymous {
+                            field(ui, "User", &mut self.user, "");
+                            ui.label("Password");
+                            secret_field(ui, &mut self.secret, self.id.is_some());
+                            ui.end_row();
+                        }
+                        field(ui, "Initial folder", &mut self.home, "/ (optional)");
+                        return;
+                    }
                     field(ui, "User", &mut self.user, "");
                     ui.label("Sign in with");
                     ui.horizontal(|ui| {
@@ -689,7 +851,7 @@ impl Editor {
             self.summary_rx = None;
         }
         let host = self.host.trim();
-        if !valid_host(host) {
+        if !valid_host(host) || self.protocol != RemoteProtocol::Sftp {
             self.summary.clear();
             self.summary_of = None;
             return;
@@ -704,7 +866,7 @@ impl Editor {
             home: None,
             bookmarks: Vec::new(),
             use_ssh_config: self.use_ssh_config,
-            protocol: Default::default(),
+            protocol: RemoteProtocol::Sftp,
         };
         if self.summary_of.as_ref() == Some(&draft) {
             return;
@@ -754,25 +916,25 @@ fn pick_key(ctx: egui::Context) -> Receiver<Option<PathBuf>> {
     rx
 }
 
-/// `sftp://<id><home>`, `/` when the host has no initial folder.
+/// `sftp://<id><home>` (`ftp://` for FTP and FTPS), `/` when the host has no initial folder.
 pub fn home_of(h: &RemoteHost) -> VPath {
-    remote_path(&h.id, h.home.as_deref().unwrap_or("/"))
+    remote_path(h.protocol, &h.id, h.home.as_deref().unwrap_or("/"))
 }
 
-pub fn remote_path(id: &str, path: &str) -> VPath {
+pub fn remote_path(protocol: RemoteProtocol, id: &str, path: &str) -> VPath {
     let path = if path.starts_with('/') {
         path.to_owned()
     } else {
         format!("/{path}")
     };
     VPath {
-        scheme: "sftp".into(),
+        scheme: protocol.scheme().into(),
         authority: id.into(),
         path,
     }
 }
 
-/// `sftp://user@host[:port]` for "Copy address".
+/// `sftp://user@host[:port]` (`ftp://`, `ftps://`) for "Copy address".
 pub fn address(h: &RemoteHost) -> String {
     let host = if h.host.contains(':') && !h.host.starts_with('[') {
         format!("[{}]", h.host)
@@ -784,15 +946,19 @@ pub fn address(h: &RemoteHost) -> String {
     } else {
         format!("{}@{host}", h.user)
     };
+    let scheme = h.protocol.name().to_ascii_lowercase();
     match h.port {
-        22 => format!("sftp://{login}"),
-        port => format!("sftp://{login}:{port}"),
+        port if port == h.protocol.default_port() => format!("{scheme}://{login}"),
+        port => format!("{scheme}://{login}:{port}"),
     }
 }
 
 /// The line typed into the terminal pane, or None when the config holds characters that
 /// could do more than name a host (it is hand-editable).
 pub fn ssh_command(h: &RemoteHost) -> Option<String> {
+    if h.protocol != RemoteProtocol::Sftp {
+        return None;
+    }
     let host = h.host.trim_start_matches('[').trim_end_matches(']');
     // No user: `ssh` takes it from the same ~/.ssh/config (an alias resolves there too).
     let login = match h.user.as_str() {
@@ -815,7 +981,7 @@ pub fn delete_text(n: usize, label: &str) -> String {
 
 /// Paths on a remote host or cloud account (no trash there, downloads for previews).
 pub fn is_network(p: &VPath) -> bool {
-    matches!(p.scheme.as_str(), "sftp" | "cloud")
+    matches!(p.scheme.as_str(), "sftp" | "ftp" | "cloud")
 }
 
 /// Materialises `path` for preview / open-with. Remote and cloud files report progress as
@@ -960,7 +1126,7 @@ impl AppState {
                         for p in 0..2 {
                             for t in 0..self.panes[p].tabs.len() {
                                 let tab = &self.panes[p].tabs[t];
-                                if tab.dir.scheme == "sftp"
+                                if keel_vfs::is_remote_scheme(&tab.dir.scheme)
                                     && tab.dir.authority == host_id
                                     && tab.error.is_some()
                                 {
@@ -985,13 +1151,24 @@ impl AppState {
                 host_id,
                 endpoint,
                 fingerprint,
+                problem: None,
                 reply,
                 since: Instant::now(),
             }),
-            // The window adds FTP hosts with their certificate prompt in the next change.
-            RemoteEvent::CertificatePrompt { reply, .. } => {
-                let _ = reply.send(false);
-            }
+            RemoteEvent::CertificatePrompt {
+                host_id,
+                endpoint,
+                fingerprint,
+                problem,
+                reply,
+            } => self.remotes.prompts.push_back(HostKeyPrompt {
+                host_id,
+                endpoint,
+                fingerprint,
+                problem: Some(problem),
+                reply,
+                since: Instant::now(),
+            }),
         }
     }
 
@@ -1017,7 +1194,11 @@ impl AppState {
         for p in 0..if self.dual { 2 } else { 1 } {
             let t = self.panes[p].active;
             let tab = &self.panes[p].tabs[t];
-            if tab.dir.scheme != "sftp" || tab.is_search() || tab.loading || tab.error.is_none() {
+            if !keel_vfs::is_remote_scheme(&tab.dir.scheme)
+                || tab.is_search()
+                || tab.loading
+                || tab.error.is_none()
+            {
                 continue;
             }
             let id = tab.dir.authority.clone();
@@ -1048,19 +1229,22 @@ impl AppState {
                 .toasts
                 .error("That remote host is no longer configured");
         };
-        let provider = self.remotes.sftp.read().get(&id).cloned();
+        let provider = self.remotes.conns.read().get(&id).cloned();
         match cmd {
             RemoteCmd::Connect | RemoteCmd::Disconnect => {
                 let Some(provider) = provider else { return };
                 // Both block on the network (connect may wait on a host-key prompt).
                 spawn("keel-connect", move || {
                     if cmd == RemoteCmd::Connect {
-                        let _ = provider.connect();
+                        provider.connect();
                     } else {
                         provider.disconnect();
                     }
                 });
             }
+            RemoteCmd::Terminal if host.protocol != RemoteProtocol::Sftp => self
+                .toasts
+                .error("FTP remotes have no terminal (ssh needs SFTP)"),
             RemoteCmd::Edit => self.remotes.editor = Some(Editor::edit(&host)),
             RemoteCmd::Terminal => match ssh_command(&host) {
                 Some(line) => {
@@ -1177,6 +1361,66 @@ mod tests {
     }
 
     #[test]
+    fn ftp_hosts_in_the_editor_and_the_sidebar() {
+        let editor = || Editor {
+            label: "Cam".into(),
+            protocol: RemoteProtocol::Ftp,
+            host: "cam.example.invalid".into(),
+            port: "21".into(),
+            user: "me".into(),
+            secret: "pw".into(),
+            ..Editor::default()
+        };
+        let (ftp, secret) = editor().build(&[]).unwrap();
+        assert_eq!(
+            (
+                ftp.protocol,
+                ftp.port,
+                ftp.user.as_str(),
+                ftp.use_ssh_config
+            ),
+            (RemoteProtocol::Ftp, 21, "me", false)
+        );
+        assert_eq!(ftp.auth, RemoteAuth::PasswordInKeyring);
+        assert_eq!(secret, Some(("password", "pw".into())));
+        let no_password = Editor {
+            secret: String::new(),
+            ..editor()
+        };
+        assert!(
+            no_password.build(&[]).is_err(),
+            "a new FTP host needs its password"
+        );
+        let anonymous = Editor {
+            anonymous: true,
+            user: String::new(),
+            secret: String::new(),
+            protocol: RemoteProtocol::Ftps,
+            ..editor()
+        };
+        let (ftps, secret) = anonymous.build(&[]).unwrap();
+        assert_eq!((ftps.user.as_str(), secret), ("anonymous", None));
+        assert_eq!(auth_name(&ftps), "Anonymous");
+        // Edit and save again: unchanged.
+        let again = Editor::edit(&ftp)
+            .build(std::slice::from_ref(&ftp))
+            .unwrap();
+        assert_eq!(again, (ftp.clone(), None));
+        assert!(Editor::edit(&ftps).anonymous);
+
+        assert_eq!(address(&ftp), "ftp://me@cam.example.invalid");
+        assert_eq!(address(&ftps), "ftps://anonymous@cam.example.invalid");
+        assert_eq!(ssh_command(&ftp), None, "no ssh for FTP");
+        assert_eq!(home_of(&ftp), VPath::parse("ftp://cam/").unwrap());
+        assert!(is_network(&home_of(&ftp)));
+        let rows = crate::sidebar_remotes::rows(&[ftp, ftps], &HashMap::new());
+        assert_eq!(rows[0].warning, Some(keel_vfs::FTP_CLEAR_TEXT));
+        assert_eq!(rows[1].warning, None, "FTPS is encrypted");
+        assert!(!rows[0].ssh && !rows[1].ssh);
+        assert_eq!(rows[1].home.scheme, "ftp");
+    }
+
+    #[test]
     fn sidebar_rows_follow_config_and_status() {
         let hosts = vec![
             host("nas", RemoteAuth::Agent),
@@ -1209,6 +1453,7 @@ mod tests {
             "no home = /"
         );
         assert_eq!(rows[1].status, ConnStatus::Disconnected);
+        assert!(rows[0].ssh && rows[0].warning.is_none());
         assert_eq!(address(&hosts[0]), "sftp://alice@example.invalid:2222");
         assert_eq!(
             ssh_command(&hosts[0]).as_deref(),
@@ -1238,6 +1483,21 @@ mod tests {
             assert_eq!(answer.try_recv(), Ok(expect));
             assert!(state.remotes.prompts.is_empty());
         }
+        // An FTPS certificate waits the same way and carries why it was not verified.
+        let (reply, answer) = crossbeam_channel::bounded(1);
+        state.apply(Msg::Remote(RemoteEvent::CertificatePrompt {
+            host_id: "cam".into(),
+            endpoint: "cam.example.invalid:21".into(),
+            fingerprint: "AB:CD".into(),
+            problem: "invalid peer certificate: UnknownIssuer".into(),
+            reply,
+        }));
+        assert_eq!(
+            state.remotes.prompts[0].problem.as_deref(),
+            Some("invalid peer certificate: UnknownIssuer")
+        );
+        state.remotes.answer(true);
+        assert_eq!(answer.try_recv(), Ok(true));
         // The provider's events reach the app through its channel too.
         state.settings.remotes = vec![host("nas", RemoteAuth::Agent)];
         state.remote_tick();
@@ -1413,7 +1673,7 @@ mod tests {
         let router = Arc::new(router);
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut jobs = Jobs::new(egui::Context::default());
-        let remote = remote_path("fake", "/");
+        let remote = remote_path(RemoteProtocol::Sftp, "fake", "/");
         let up = Transfer {
             src: vec![VPath::local(root.join("local/src"))],
             dst: remote.clone(),
@@ -1463,7 +1723,7 @@ mod tests {
             std::fs::write(root.join(f), "").unwrap();
         }
         let mirror = Mirror { root: root.clone() };
-        let top = remote_path("fake", "/");
+        let top = remote_path(RemoteProtocol::Sftp, "fake", "/");
         let hits = search_names(&mirror, &top, "report", 100, 100, &|| false).unwrap();
         assert_eq!(hits.len(), 3);
         let bounded = search_names(&mirror, &top, "report", 2, 100, &|| false).unwrap();
