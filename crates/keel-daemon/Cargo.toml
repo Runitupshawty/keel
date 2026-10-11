@@ -38,6 +38,7 @@ keel-api = { path = "../keel-api" }
 keel-core = { path = "../keel-core" }
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["zip", "sevenz", "tar", "cloud"] }
 keel-net = { path = "../keel-net" }
+keel-preview = { path = "../keel-preview" }
 keel-mount = { path = "../keel-mount" }
 clap = { version = "4.6.7", features = ["derive"] }
 interprocess = "2.4.4"

@@ -294,16 +294,24 @@ fn auth(msg: &[u8], token: &str) -> (Value, bool) {
     let v: Value = serde_json::from_slice(msg).unwrap_or_default();
     let id = v.get("id").cloned().unwrap_or(Value::Null);
     let given = match v.get("method").and_then(Value::as_str) {
-        Some("auth") => v["params"]["token"].as_str().unwrap_or_default(),
-        _ => "",
+        Some("auth") => Some(v["params"]["token"].as_str().unwrap_or_default()),
+        _ => None,
     };
-    if same(given.as_bytes(), token.as_bytes()) {
-        (rpc::response(id, Ok(json!({"ok": true}))), true)
-    } else {
-        let e = ApiError::new(
-            ApiError::UNAUTHORIZED,
-            "the first message must be auth with the daemon token",
-        );
-        (rpc::response(id, Err(e)), false)
+    match given {
+        Some(given) if same(given.as_bytes(), token.as_bytes()) => {
+            (rpc::response(id, Ok(json!({"ok": true}))), true)
+        }
+        // The web client shows this to whoever typed the token.
+        Some(_) => {
+            let e = ApiError::new(ApiError::UNAUTHORIZED, "not the token in daemon.token");
+            (rpc::response(id, Err(e)), false)
+        }
+        None => {
+            let e = ApiError::new(
+                ApiError::UNAUTHORIZED,
+                "the first message must be auth with the daemon token",
+            );
+            (rpc::response(id, Err(e)), false)
+        }
     }
 }

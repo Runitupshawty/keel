@@ -13,7 +13,7 @@ use crate::layout::{Screen, Tab as PhoneTab};
 use crate::refresh::Refresh;
 use crate::share::{self, SharedFile};
 use crate::types::*;
-use crate::util::{ago, human, node_title, parent};
+use crate::util::{ago, human, job_title, node_title, parent};
 use crate::web::{self, Events, Socket};
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -27,6 +27,8 @@ const CACHE: usize = 64;
 const THUMBS: usize = 512;
 /// Grid thumbnails asked for at once.
 const THUMBS_IN_FLIGHT: usize = 6;
+/// The desktop layout shows the second pane only when both get this width.
+const PANE_MIN: f32 = 280.0;
 
 /// What an outstanding call was for.
 enum Want {
@@ -36,12 +38,24 @@ enum Want {
     Devices,
     Inbox,
     Jobs,
-    List { pane: usize, path: String },
+    List {
+        pane: usize,
+        path: String,
+    },
     Stat(String),
-    Preview { path: String, key: String },
-    Thumb { path: String, key: String },
-    GridThumb { key: String },
-    Search,
+    Preview {
+        path: String,
+        key: String,
+    },
+    Thumb {
+        path: String,
+        key: String,
+    },
+    GridThumb {
+        key: String,
+    },
+    /// The query.
+    Search(String),
     Plan,
     Execute,
     Job,
@@ -100,6 +114,25 @@ enum Act {
     },
     /// Close the plan dialog without executing.
     Cancel,
+    /// Execute the plan under review.
+    Execute,
+    Tag {
+        path: String,
+        tag: String,
+    },
+    Untag {
+        path: String,
+        tag: String,
+    },
+    Favorite {
+        path: String,
+        on: bool,
+    },
+    /// Into the folder `to`.
+    Copy {
+        path: String,
+        to: String,
+    },
 }
 
 pub struct WebApp {
@@ -116,6 +149,10 @@ pub struct WebApp {
     insecure: bool,
     // layout
     screen: Screen,
+    /// The desktop layout showed both panes in the last frame.
+    two_panes: bool,
+    /// Back closes the phone's preview sheet.
+    history: Option<web::History>,
     base_style: Arc<egui::Style>,
     // library
     library: String,
@@ -136,6 +173,8 @@ pub struct WebApp {
     active: usize,
     query: String,
     hits: Vec<Hit>,
+    /// The query `hits` answer.
+    searched: Option<String>,
     // phone
     grid: bool,
     tile: f32,
@@ -143,6 +182,8 @@ pub struct WebApp {
     thumbs_asked: HashSet<String>,
     pull: Pull,
     zoom: f32,
+    /// The viewer's drag so far (a swipe once it stops).
+    swiped: egui::Vec2,
     // preview
     selected: Option<EntryInfo>,
     stat: Option<StatInfo>,
@@ -156,6 +197,18 @@ pub struct WebApp {
     share: share::Flow,
     #[cfg(feature = "e2e")]
     hook: Option<crate::e2e::Hook>,
+    /// The phone pane's entries as last drawn (names and rectangles), for the `e2e` hook.
+    #[cfg(feature = "e2e")]
+    e2e_rects: Vec<(String, egui::Rect)>,
+    /// The phone pane's entry whose long-press menu is open.
+    #[cfg(feature = "e2e")]
+    e2e_menu: Option<String>,
+    /// The desktop preview panel's width as last drawn.
+    #[cfg(feature = "e2e")]
+    e2e_preview_width: f32,
+    /// A phone tab's label did not fit on one line in its button (last frame).
+    #[cfg(feature = "e2e")]
+    e2e_tabs_cut: bool,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -188,6 +241,21 @@ fn is_media(name: &str) -> bool {
 /// Cache key of an entry's images.
 fn image_key(e: &EntryInfo) -> String {
     format!("{}|{}|{:?}", e.path, e.size, e.modified)
+}
+
+/// Records a message drawn this frame for the `e2e` hook's `notes` (nothing without it).
+fn shown(_ctx: &egui::Context, _text: &str) {
+    #[cfg(feature = "e2e")]
+    _ctx.data_mut(|d| {
+        let notes: &mut Vec<String> = d.get_temp_mut_or_default(egui::Id::new("e2e-notes"));
+        notes.push(_text.to_owned());
+    });
+}
+
+/// A weak line saying why a list is empty.
+fn empty_note(ui: &mut egui::Ui, text: &str) {
+    shown(ui.ctx(), text);
+    ui.weak(text);
 }
 
 fn hit_entry(h: &Hit) -> EntryInfo {
@@ -229,6 +297,8 @@ impl WebApp {
             notice: None,
             insecure: web::insecure(),
             screen: Screen::new(width),
+            two_panes: false,
+            history: web::History::install(&cc.egui_ctx),
             base_style: cc.egui_ctx.style(),
             library: String::new(),
             sources: Vec::new(),
@@ -244,12 +314,14 @@ impl WebApp {
             active: 0,
             query: String::new(),
             hits: Vec::new(),
+            searched: None,
             grid: false,
             tile: 128.0,
             thumbs: HashMap::new(),
             thumbs_asked: HashSet::new(),
             pull: Pull::default(),
             zoom: 1.0,
+            swiped: egui::Vec2::ZERO,
             selected: None,
             stat: None,
             shown: Shown::Nothing,
@@ -262,6 +334,14 @@ impl WebApp {
             // Before `take_query` clears the address.
             #[cfg(feature = "e2e")]
             hook: crate::e2e::Hook::install(&cc.egui_ctx),
+            #[cfg(feature = "e2e")]
+            e2e_rects: Vec::new(),
+            #[cfg(feature = "e2e")]
+            e2e_menu: None,
+            #[cfg(feature = "e2e")]
+            e2e_preview_width: 0.0,
+            #[cfg(feature = "e2e")]
+            e2e_tabs_cut: false,
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -340,12 +420,15 @@ impl WebApp {
         if r.devices {
             self.call("devices.list", json!({}), Want::Devices);
         }
+        // Read again in place: the pane the user works in stays the active one.
+        let active = self.active;
         for pane in (0..2).filter(|_| r.listing) {
             let path = self.panes[pane].path.clone();
             if !path.is_empty() {
                 self.open(pane, path);
             }
         }
+        self.active = active;
     }
 
     fn select(&mut self, e: EntryInfo) {
@@ -510,8 +593,11 @@ impl WebApp {
                     Err(e) => Shown::Message(e),
                 };
             }
-            Want::Search => match parse::<Vec<Hit>>(r.result) {
-                Ok(h) => self.hits = h,
+            Want::Search(q) => match parse::<Vec<Hit>>(r.result) {
+                Ok(h) => {
+                    self.hits = h;
+                    self.searched = Some(q);
+                }
                 Err(e) => self.error = Some(e),
             },
             Want::Plan => match parse::<PlanPreview>(r.result) {
@@ -768,7 +854,7 @@ impl WebApp {
             }
         }
         if self.sources.is_empty() {
-            ui.weak("No sources yet.");
+            empty_note(ui, "No sources yet.");
         }
         self.counts_ui(ui);
     }
@@ -827,7 +913,7 @@ impl WebApp {
         ui.heading("Jobs");
         for j in &self.jobs {
             ui.horizontal(|ui| {
-                ui.label(format!("#{} {}", j.id, j.kind));
+                ui.label(format!("#{} {}", j.id, job_title(&j.kind)));
                 if j.finished() {
                     ui.weak(&j.status);
                 } else {
@@ -843,8 +929,22 @@ impl WebApp {
         match &self.devices {
             Ok(d) => {
                 ui.label(format!("{} (this device)", d.label));
+                let id = format!("id {}", d.id);
+                shown(ui.ctx(), &id);
+                // Cut to the width (the whole id on hover).
+                ui.add(egui::Label::new(egui::RichText::new(id).weak()).truncate())
+                    .on_hover_text(format!(
+                        "This device's id ({}): other devices' [devices] auto_accept lists it",
+                        d.id
+                    ));
                 for p in &d.peers {
                     ui.label(format!("{}: {}", p.label, p.link));
+                }
+                if d.peers.is_empty() {
+                    empty_note(
+                        ui,
+                        "No paired devices: pair one in the Keel window (Devices → Pair a device…).",
+                    );
                 }
             }
             Err(e) if e.is_empty() => {
@@ -897,7 +997,7 @@ impl WebApp {
                     });
                 }
                 if inbox.pending.is_empty() && inbox.entries.is_empty() {
-                    ui.weak("Nothing received yet.");
+                    empty_note(ui, "Nothing received yet.");
                 }
             }
             Err(e) if e.is_empty() => {
@@ -958,13 +1058,55 @@ impl WebApp {
                 self.tab = Tab::Search;
                 self.screen.show(PhoneTab::Search);
                 self.query = q.clone();
-                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+                let params = json!({"query": q, "max": 500});
+                self.call("search", params, Want::Search(q));
             }
             Act::Rename { path, to } => self.plan(
                 "plan",
                 json!({"op": "rename", "paths": [path], "new_name": to}),
             ),
             Act::Cancel => self.plan = None,
+            Act::Tag { path, tag } => self.plan("tags.add", json!({"tag": tag, "paths": [path]})),
+            Act::Untag { path, tag } => {
+                self.plan("tags.remove", json!({"tag": tag, "paths": [path]}))
+            }
+            Act::Favorite { path, on } => {
+                self.plan("favorites.set", json!({"paths": [path], "on": on}))
+            }
+            Act::Copy { path, to } => {
+                self.plan("plan", json!({"op": "copy", "paths": [path], "to": to}))
+            }
+            Act::Execute => {
+                let Some(d) = self.plan.as_mut() else { return };
+                if !matches!(d.state, PlanState::Review) {
+                    return;
+                }
+                let params =
+                    json!({"plan_id": d.preview.plan_id, "input_hash": d.preview.input_hash});
+                d.state = PlanState::Executing;
+                self.call("execute", params, Want::Execute);
+            }
+        }
+    }
+
+    /// Where "Copy to the other pane…" copies: the other pane's folder, when the desktop
+    /// layout shows both panes and they are in different folders.
+    fn copy_target(&self) -> Option<String> {
+        let (here, there) = (&self.panes[self.active], &self.panes[1 - self.active]);
+        (self.two_panes
+            && !self.screen.phone()
+            && !there.path.is_empty()
+            && there.path != here.path)
+            .then(|| there.path.clone())
+    }
+
+    /// The share window's Open: the upload is claimed now, or once signed in.
+    fn share_open(&mut self) {
+        self.share.accept();
+        if self.conn.state == State::Online {
+            if let Some((method, params)) = self.share.claim() {
+                self.call(method, params, Want::Claim);
+            }
         }
     }
 
@@ -975,6 +1117,57 @@ impl WebApp {
             return;
         };
         for (name, arg) in calls {
+            // What the user changes on screen without an `Act`.
+            let on = arg.as_deref() != Some("off");
+            match name.as_str() {
+                "phone-tab" => {
+                    let tab = PhoneTab::ALL
+                        .into_iter()
+                        .find(|t| Some(t.label()) == arg.as_deref());
+                    match tab {
+                        Some(t) => self.screen.show(t),
+                        None => self.error = Some(format!("e2e: no tab {arg:?}")),
+                    }
+                    continue;
+                }
+                "back" => {
+                    self.screen.back();
+                    continue;
+                }
+                "grid" => {
+                    self.grid = on;
+                    continue;
+                }
+                "remember" => {
+                    self.remember = on;
+                    continue;
+                }
+                "sign-out" => {
+                    self.sign_out();
+                    continue;
+                }
+                "share-open" => {
+                    self.share_open();
+                    continue;
+                }
+                "share-close" => {
+                    self.share.close();
+                    continue;
+                }
+                "pane" => {
+                    self.active = usize::from(arg.as_deref() == Some("1"));
+                    continue;
+                }
+                _ => {}
+            }
+            let folder = |path: String| EntryInfo {
+                name: String::new(),
+                path,
+                is_dir: true,
+                size: 0,
+                modified: None,
+                hidden: false,
+            };
             let named = |app: &Self, n: &str| {
                 let pane = app.panes[app.active].entries.iter().find(|e| e.name == n);
                 let hit = app.hits.iter().find(|h| h.name == n).map(hit_entry);
@@ -996,6 +1189,16 @@ impl WebApp {
                         })
                     }),
                 ("search", Some(q)) => Some(Act::Search(q)),
+                ("open", Some(n)) => named(self, &n).filter(|e| e.is_dir).map(Act::Open),
+                ("go", Some(path)) => Some(Act::Open(folder(path))),
+                ("up", _) => parent(&self.panes[self.active].path).map(|p| Act::Open(folder(p))),
+                ("execute", _) => Some(Act::Execute),
+                ("tag", Some(tag)) => selected.map(|e| Act::Tag { path: e.path, tag }),
+                ("untag", Some(tag)) => selected.map(|e| Act::Untag { path: e.path, tag }),
+                ("favorite", _) => selected.map(|e| Act::Favorite { path: e.path, on }),
+                ("copy-preview", _) => {
+                    (selected.zip(self.copy_target())).map(|(e, to)| Act::Copy { path: e.path, to })
+                }
                 ("open-preview", n) => n
                     .and_then(|n| named(self, &n))
                     .or(selected)
@@ -1024,10 +1227,69 @@ impl WebApp {
                 PlanState::Done(_) => "done",
                 PlanState::Failed(_) => "failed",
             };
-            json!({"operation": d.preview.operation, "summary": d.preview.summary, "state": state})
+            let changes = d.preview.changes.iter().map(
+                |c| json!({"action": c.action, "path": c.path, "to": c.to, "detail": c.detail}),
+            );
+            let warnings = d.preview.warnings.iter().map(|w| &w.message);
+            json!({
+                "operation": d.preview.operation,
+                "summary": d.preview.summary,
+                "state": state,
+                "changes": changes.collect::<Vec<_>>(),
+                "warnings": warnings.collect::<Vec<_>>(),
+            })
         });
+        let devices = match &self.devices {
+            Ok(d) => json!({
+                "id": d.id,
+                "label": d.label,
+                "peers": d.peers.iter().map(|p| format!("{}: {}", p.label, p.link)).collect::<Vec<_>>(),
+            }),
+            Err(e) => json!({ "error": e }),
+        };
+        let inbox = match &self.inbox {
+            Ok(i) => json!({"pending": i.pending.len(), "entries": names(&i.entries)}),
+            Err(e) => json!({ "error": e }),
+        };
+        let indexed = self.stat.as_ref().and_then(|s| s.indexed.as_ref());
+        let rects: serde_json::Map<String, Value> = (self.e2e_rects.iter())
+            .map(|(n, r)| (n.clone(), json!([r.min.x, r.min.y, r.width(), r.height()])))
+            .collect();
         json!({
             "signed_in": self.conn.state == State::Online,
+            "conn": self.conn.state.label(),
+            "login": matches!(self.conn.state, State::NeedToken | State::Refused(_)),
+            "notice": self.notice,
+            "remember": self.remember,
+            "layout": if self.screen.phone() { "phone" } else { "desktop" },
+            "phone_tab": self.screen.tab.label(),
+            "sheet": self.screen.sheet,
+            "tab": if self.tab == Tab::Browse { "browse" } else { "search" },
+            "dark": self.ctx.style().visuals.dark_mode,
+            "menu": self.e2e_menu,
+            // The empty-list notes and banners of the last frame.
+            "notes": self.ctx.data_mut(|d| {
+                std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("e2e-notes")))
+            }),
+            "searched": self.searched,
+            "preview_width": self.e2e_preview_width,
+            "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
+            "columns": if self.two_panes { 2 } else { 1 },
+            "tabs_cut": self.e2e_tabs_cut,
+            "zoom": self.zoom,
+            "grid": self.grid,
+            "active": self.active,
+            "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
+            "pane_error": pane.error,
+            "devices": devices,
+            "inbox": inbox,
+            "jobs": (self.jobs.iter())
+                .map(|j| json!({"kind": j.kind, "title": job_title(&j.kind), "status": j.status}))
+                .collect::<Vec<_>>(),
+            "share": format!("{:?}", self.share.state).split([' ', '(', '{']).next().unwrap_or_default(),
+            "tags": indexed.map(|i| &i.tags),
+            "favorite": indexed.map(|i| i.favorite),
+            "rects": rects,
             "sources": self.sources.iter().map(|s| &s.label).collect::<Vec<_>>(),
             "path": pane.path,
             "entries": names(&pane.entries),
@@ -1112,28 +1374,40 @@ impl WebApp {
             .id_salt(("pane", i))
             .auto_shrink(false)
             .show(ui, |ui| {
+                if self.panes[i].path.is_empty() {
+                    empty_note(ui, "Open a source from the sidebar, or type a path above.");
+                }
                 for e in &self.panes[i].entries {
                     let label = if e.is_dir {
                         format!("📁 {}", e.name)
                     } else {
                         e.name.clone()
                     };
+                    // Size and date from the right, then the name in what is left, cut short
+                    // rather than drawn under them; a narrow pane leaves the date out.
                     ui.horizontal(|ui| {
-                        let r = ui.selectable_label(self.is_selected(&e.path), label);
-                        if r.clicked() {
-                            act = Some(Act::Select(e.clone()));
-                        }
-                        if r.double_clicked() && e.is_dir {
-                            act = Some(Act::Open(e.clone()));
-                        }
-                        Self::entry_menu(&r, e, &mut act);
+                        let wide = ui.available_width() > 280.0;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(m) = e.modified {
+                            if let Some(m) = e.modified.filter(|_| wide) {
                                 ui.weak(web::date(m));
                             }
                             if !e.is_dir {
                                 ui.weak(human(e.size));
                             }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                                    let r = ui.selectable_label(self.is_selected(&e.path), label);
+                                    if r.clicked() {
+                                        act = Some(Act::Select(e.clone()));
+                                    }
+                                    if r.double_clicked() && e.is_dir {
+                                        act = Some(Act::Open(e.clone()));
+                                    }
+                                    Self::entry_menu(&r, e, &mut act);
+                                },
+                            );
                         });
                     });
                 }
@@ -1170,10 +1444,15 @@ impl WebApp {
             .count();
         let grid = self.grid;
         let tile = self.tile;
+        #[cfg(feature = "e2e")]
+        let (mut rects, mut menu) = (Vec::new(), None);
         let out = egui::ScrollArea::vertical()
             .id_salt(("phone-pane", i))
             .auto_shrink(false)
             .show(ui, |ui| {
+                if self.panes[i].path.is_empty() {
+                    empty_note(ui, "Open a source under Library, or type a path above.");
+                }
                 if grid {
                     ui.horizontal_wrapped(|ui| {
                         for e in &self.panes[i].entries {
@@ -1181,6 +1460,13 @@ impl WebApp {
                             let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
                             if !ui.is_rect_visible(rect) {
                                 continue;
+                            }
+                            #[cfg(feature = "e2e")]
+                            {
+                                rects.push((e.name.clone(), rect));
+                                if r.context_menu_opened() {
+                                    menu = Some(e.name.clone());
+                                }
                             }
                             let key = image_key(e);
                             let img = egui::Rect::from_min_size(rect.min, egui::vec2(tile, tile));
@@ -1249,6 +1535,13 @@ impl WebApp {
                             [ui.available_width(), 44.0],
                             egui::SelectableLabel::new(self.is_selected(&e.path), label),
                         );
+                        #[cfg(feature = "e2e")]
+                        {
+                            rects.push((e.name.clone(), r.rect));
+                            if r.context_menu_opened() {
+                                menu = Some(e.name.clone());
+                            }
+                        }
                         if r.clicked() {
                             act = Some(if e.is_dir {
                                 Act::Open(e.clone())
@@ -1263,6 +1556,11 @@ impl WebApp {
                     ui.weak("(more entries not shown)");
                 }
             });
+        #[cfg(feature = "e2e")]
+        {
+            self.e2e_rects = rects;
+            self.e2e_menu = menu;
+        }
         for (path, key) in want {
             self.thumbs_asked.insert(key.clone());
             let params = json!({"path": path, "size": "thumb256"});
@@ -1333,6 +1631,9 @@ impl WebApp {
                         }
                     });
                 }
+                if let Some(q) = self.searched.as_deref().filter(|_| self.hits.is_empty()) {
+                    empty_note(ui, &format!("Nothing matches {q}."));
+                }
             });
         if phone {
             let (rect, offset) = (out.inner_rect, out.state.offset.y);
@@ -1343,7 +1644,8 @@ impl WebApp {
             ) && !self.query.trim().is_empty()
             {
                 let q = self.query.clone();
-                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+                let params = json!({"query": q, "max": 500});
+                self.call("search", params, Want::Search(q));
             }
         }
         if let Some(a) = act {
@@ -1381,17 +1683,53 @@ impl WebApp {
         if !e.is_dir {
             ui.label(human(e.size));
         }
+        let mut act = None;
         if let Some(info) = self.stat.as_ref().and_then(|s| s.indexed.as_ref()) {
             ui.label(format!("in {}", info.source_label));
-            if !info.tags.is_empty() {
-                ui.label(format!("tags: {}", info.tags.join(", ")));
-            }
+            // Favorite and each tag, as buttons that preview taking them off or putting on.
+            ui.horizontal_wrapped(|ui| {
+                let (star, hover) = match info.favorite {
+                    true => ("★ Favorite", "Remove from Favorites…"),
+                    false => ("☆ Favorite", "Add to Favorites…"),
+                };
+                if ui
+                    .selectable_label(info.favorite, star)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    act = Some(Act::Favorite {
+                        path: e.path.clone(),
+                        on: !info.favorite,
+                    });
+                }
+                for t in &info.tags {
+                    let r = ui.small_button(format!("{t} ×"));
+                    if r.on_hover_text(format!("Remove the tag {t}…")).clicked() {
+                        act = Some(Act::Untag {
+                            path: e.path.clone(),
+                            tag: t.clone(),
+                        });
+                    }
+                }
+            });
         }
         ui.separator();
-        let mut act = None;
         ui.horizontal_wrapped(|ui| {
             if !e.is_dir && ui.button("Download").clicked() {
                 act = Some(Act::Download(e.path.clone()));
+            }
+            if let Some(to) = self.copy_target() {
+                let hover = self.node_title(&to).unwrap_or_else(|| to.clone());
+                if ui
+                    .button("Copy to the other pane…")
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    act = Some(Act::Copy {
+                        path: e.path.clone(),
+                        to,
+                    });
+                }
             }
             if ui.button("Send to device…").clicked() {
                 act = Some(Act::Send(e.clone()));
@@ -1422,7 +1760,7 @@ impl WebApp {
             );
             if ui.button("Tag…").clicked() && !self.tag.trim().is_empty() {
                 let tag = self.tag.trim().to_owned();
-                self.plan("tags.add", json!({"tag": tag, "paths": [e.path]}));
+                self.act(self.active, Act::Tag { path: e.path, tag });
             }
         });
         ui.separator();
@@ -1483,14 +1821,14 @@ impl WebApp {
         if r.double_clicked() {
             self.zoom = if self.zoom > 1.0 { 1.0 } else { 2.0 };
         }
-        if r.drag_stopped() && zoom <= 1.0 {
-            let total = ui.input(|i| {
-                i.pointer
-                    .press_origin()
-                    .zip(i.pointer.interact_pos())
-                    .map(|(a, b)| b - a)
-            });
-            if let Some(d) = total {
+        // The drag is added up as it goes: once it stops, egui no longer knows where it
+        // started (the press origin is gone on release, so no swipe ever counted).
+        if r.dragged() {
+            self.swiped += r.drag_delta();
+        }
+        if r.drag_stopped() {
+            let d = std::mem::take(&mut self.swiped);
+            if zoom <= 1.0 {
                 let step = gesture::swipe(d.x, d.y);
                 if step != 0 {
                     let files = self.neighbours();
@@ -1604,12 +1942,7 @@ impl WebApp {
                 }
             });
         if open {
-            self.share.accept();
-            if self.conn.state == State::Online {
-                if let Some((method, params)) = self.share.claim() {
-                    self.call(method, params, Want::Claim);
-                }
-            }
+            self.share_open();
         }
         if let Some(id) = pick {
             self.share.pick(&id);
@@ -1623,9 +1956,9 @@ impl WebApp {
     }
 
     fn plan_window(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &mut self.plan else { return };
+        let Some(dialog) = &self.plan else { return };
         let mut close = false;
-        let mut execute = None;
+        let mut execute = false;
         let width = (ctx.screen_rect().width() - 24.0).max(200.0);
         egui::Window::new("Preview")
             .collapsible(false)
@@ -1670,10 +2003,7 @@ impl WebApp {
                     PlanState::Review => {
                         ui.horizontal(|ui| {
                             if ui.button("Execute").clicked() {
-                                execute = Some(json!({
-                                    "plan_id": p.plan_id,
-                                    "input_hash": p.input_hash,
-                                }));
+                                execute = true;
                             }
                             if ui.button("Cancel").clicked() {
                                 close = true;
@@ -1701,13 +2031,30 @@ impl WebApp {
                     }
                 }
             });
-        if let Some(params) = execute {
-            dialog.state = PlanState::Executing;
-            self.call("execute", params, Want::Execute);
+        if execute {
+            self.act(self.active, Act::Execute);
         }
         if close {
             self.act(self.active, Act::Cancel);
         }
+    }
+
+    /// Signed in but not connected (the daemon went away, or the first connection is
+    /// still being made): a strip under the top bar, so stale contents do not pass for
+    /// current ones.
+    fn offline_bar(&self, ctx: &egui::Context) {
+        let text = match self.conn.state {
+            State::Online | State::NeedToken | State::Refused(_) => return,
+            State::Retrying { .. } => {
+                "Offline: the daemon cannot be reached. Retrying… What you see may be out of date."
+            }
+            State::Connecting | State::Authenticating => "Connecting to the daemon…",
+        };
+        egui::TopBottomPanel::top("offline").show(ctx, |ui| {
+            shown(ctx, text);
+            let color = ui.visuals().warn_fg_color;
+            ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+        });
     }
 
     fn error_bar(&mut self, ctx: &egui::Context) {
@@ -1725,6 +2072,7 @@ impl WebApp {
 
     fn desktop(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| self.top(ui));
+        self.offline_bar(ctx);
         self.error_bar(ctx);
         egui::SidePanel::left("library")
             .resizable(true)
@@ -1733,13 +2081,28 @@ impl WebApp {
         egui::SidePanel::right("preview")
             .resizable(true)
             .default_width(360.0)
-            .show(ctx, |ui| self.preview(ui));
+            .show(ctx, |ui| {
+                // egui sizes a side panel to what it drew: one short line would shrink it.
+                ui.set_min_width(ui.available_width());
+                self.preview(ui);
+                #[cfg(feature = "e2e")]
+                {
+                    self.e2e_preview_width = ui.min_rect().width();
+                }
+            });
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Browse => {
+            // Two panes side by side only when each gets a usable width (a tablet in
+            // portrait has room for one).
+            Tab::Browse if ui.available_width() >= 2.0 * PANE_MIN => {
                 ui.columns(2, |cols| {
                     self.pane(&mut cols[0], 0);
                     self.pane(&mut cols[1], 1);
                 });
+                self.two_panes = true;
+            }
+            Tab::Browse => {
+                self.pane(ui, self.active);
+                self.two_panes = false;
             }
             Tab::Search => self.search(ui),
         });
@@ -1764,17 +2127,38 @@ impl WebApp {
             });
             self.insecure_banner(ui);
         });
+        self.offline_bar(ctx);
+        #[cfg(feature = "e2e")]
+        let mut cut = false;
         egui::TopBottomPanel::bottom("phone-tabs").show(ctx, |ui| {
+            // A quarter of a small phone is narrow for the finger-sized padding: the labels
+            // stay on one line (they broke mid-word at 320 points).
+            ui.spacing_mut().button_padding.x = 4.0;
             ui.columns(PhoneTab::ALL.len(), |cols| {
                 for (col, tab) in cols.iter_mut().zip(PhoneTab::ALL) {
                     let on = self.screen.tab == tab && !self.screen.sheet;
-                    let b = egui::Button::new(tab.label()).selected(on);
+                    #[cfg(feature = "e2e")]
+                    {
+                        let font = egui::TextStyle::Button.resolve(col.style());
+                        let text = tab.label().to_owned();
+                        let galley =
+                            col.fonts(|f| f.layout_no_wrap(text, font, egui::Color32::WHITE));
+                        let room = col.available_width() - 2.0 * col.spacing().button_padding.x;
+                        cut |= galley.size().x > room;
+                    }
+                    let b = egui::Button::new(tab.label())
+                        .selected(on)
+                        .wrap_mode(egui::TextWrapMode::Truncate);
                     if col.add_sized([col.available_width(), 48.0], b).clicked() {
                         self.screen.show(tab);
                     }
                 }
             });
         });
+        #[cfg(feature = "e2e")]
+        {
+            self.e2e_tabs_cut = cut;
+        }
         self.error_bar(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.screen.sheet {
@@ -1823,6 +2207,13 @@ impl WebApp {
 impl eframe::App for WebApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump();
+        if self
+            .history
+            .as_mut()
+            .is_some_and(web::History::back_pressed)
+        {
+            self.screen.back();
+        }
         #[cfg(feature = "e2e")]
         self.e2e();
         #[cfg(feature = "e2e")]
@@ -1847,5 +2238,8 @@ impl eframe::App for WebApp {
         }
         self.share_window(ctx);
         self.plan_window(ctx);
+        if let Some(h) = &mut self.history {
+            h.sync(self.screen.sheet);
+        }
     }
 }

@@ -358,10 +358,10 @@ fn web_serves_the_client_and_rpc_with_in_band_auth() {
     assert!(!matches!(ws.read(), Ok(Message::Text(_))));
     let (mut ws, _) = connect(None).unwrap();
     let wrong = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": "0".repeat(64)}});
-    assert_eq!(
-        send(&mut ws, wrong)["error"]["code"],
-        ApiError::UNAUTHORIZED
-    );
+    let refused = send(&mut ws, wrong);
+    assert_eq!(refused["error"]["code"], ApiError::UNAUTHORIZED);
+    // The web client shows the reason to whoever typed the token.
+    assert_eq!(refused["error"]["message"], "not the token in daemon.token");
 
     let (mut ws, _) = connect(Some(&format!("http://{host}"))).unwrap();
     let auth = json!({"jsonrpc":"2.0","id":1,"method":"auth","params":{"token": token}});

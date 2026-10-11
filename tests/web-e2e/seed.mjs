@@ -1,9 +1,9 @@
-// Adds the fixture folder as a library source through the daemon's JSON-RPC (a preview,
-// then the execute that confirms it) and waits until it is indexed.
-// usage: node seed.mjs <rpc url> <token file> <fixture dir>
+// Adds library sources through the daemon's JSON-RPC (a preview, then the execute that
+// confirms it) and waits until they are indexed.
+// usage: node seed.mjs <rpc url> <token file> <label>=<folder>...
 import { readFileSync } from "node:fs";
 
-const [, , url, tokenFile, root] = process.argv;
+const [, , url, tokenFile, ...roots] = process.argv;
 const token = readFileSync(tokenFile, "utf8").trim();
 const ws = new WebSocket(url);
 const pending = new Map();
@@ -29,13 +29,16 @@ await new Promise((resolve, reject) => {
   ws.onerror = () => reject(new Error("cannot connect to " + url));
 });
 await call("auth", { token });
-const added = await confirm("sources.add", { root, label: "Fixture" });
-await confirm("sources.index", { id: added.id });
-for (let i = 0; i < 120; i++) {
-  const s = (await call("sources.list")).find((x) => x.id === added.id);
-  if (s?.status === "online" && s.indexed_at) break;
-  if (i === 119) throw new Error("the fixture source was not indexed in time");
-  await sleep(500);
+for (const pair of roots) {
+  const [label, root] = [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)];
+  const added = await confirm("sources.add", { root, label });
+  await confirm("sources.index", { id: added.id });
+  for (let i = 0; i < 120; i++) {
+    const s = (await call("sources.list")).find((x) => x.id === added.id);
+    if (s?.status === "online" && s.indexed_at) break;
+    if (i === 119) throw new Error(`the ${label} source was not indexed in time`);
+    await sleep(500);
+  }
+  console.log("seeded source", label, added.id);
 }
-console.log("seeded source", added.id);
 ws.close();

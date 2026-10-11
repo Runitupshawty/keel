@@ -9,6 +9,23 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Signing-ready releases: CI signs the Windows binaries (Authenticode, timestamped), signs and notarizes the macOS binaries (Developer ID, hardened runtime) and signs `SHA256SUMS` with GPG (`SHA256SUMS.asc`, the public key as `SHA256SUMS.key.asc`) as soon as the certificates and keys are repository secrets; until then each step is skipped with a notice and releases are unsigned as before. The release job's summary lists the signatures made. [docs/releasing.md](docs/releasing.md) has the release procedure, the secret names, how to get the certificates and how to rotate them.
 - Signature checks in the installers: `install.ps1` checks the Authenticode signature of `keel.exe` and `keel-daemon.exe` when the build is signed (a broken signature, another signer or a partly signed build is refused) and shows the SmartScreen hint only for unsigned builds; `install.sh` checks `SHA256SUMS.asc` with gpg when the release has it and gpg is installed, and on macOS the code signature of the binaries (a signed build keeps its quarantine attribute). Each installer can pin the expected signer; an unsigned release only warns while none is pinned. `scripts/test-install.ps1` and `scripts/test-install.sh` test the checks in CI.
 - `keel --version` prints whether the running binary is signed (`signature: signed`, `unsigned`, `unsigned (ad-hoc)` on macOS, `not signed (Linux)`), and crash reports include the same line, so bug reports say which build they came from.
+- Web client: the preview panel shows **★ Favorite** and each tag as a button (`qa ×`) that previews adding to or removing from Favorites and taking the tag off, and, in the desktop layout with both panes in different folders, **Copy to the other pane…** (names that exist are skipped, and the preview warns about each). Each is previewed, then executed.
+
+### Fixed
+
+- Web client: PDF previews work. keel-daemon never loaded pdfium, so every PDF said "PDF previews need pdfium next to keel.exe", even with pdfium next to keel-daemon; that message now names the program that needs it.
+- Web client: a mistyped token is refused as "not the token in daemon.token"; it used to say "the first message must be auth with the daemon token".
+- Web client: swiping left or right in the phone's preview sheet shows the next or previous file; no swipe ever counted.
+- Web client: the phone's Back button or gesture closes the preview sheet; it left the app.
+- Web client: on a 320-point phone the bottom bar's labels stay on one line ("Brow/se", "Devic/es").
+- Web client: in a narrow window (a tablet in portrait) the desktop layout shows one pane, and a file's size and date are no longer drawn over its name.
+- Web client: the preview panel keeps its width; with nothing selected it shrank to about 140 points and then cut off a file's buttons.
+- Web client: a refresh (a finished job, another client's change, pull to refresh) no longer makes the second pane the active one, where the next source or search result then opened.
+- Web client: when the daemon cannot be reached a strip under the top bar says so and that what is shown may be out of date; only the small status dot changed.
+- Web client: a search that finds nothing says "Nothing matches …"; an empty pane says where the sources are; Devices shows this device's id and says when nothing is paired.
+- Web client: the jobs list names each job (File operation, Indexing, Hashing contents…) instead of "op", "index", "hash".
+- Web client: the sign-in box is light in the light theme.
+
 
 ## [0.17.0] - 2026-10-10
 

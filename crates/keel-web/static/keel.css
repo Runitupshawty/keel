@@ -7,3 +7,9 @@ canvas#keel { display: block; width: 100%; height: 100%; touch-action: none; }
   color: #ddd; background: #0e0e0e; border: 1px solid #4a4a4a; border-radius: 3px; outline: none; }
 #token:focus { border-color: #7aa7d9; }
 #token[hidden] { display: none; }
+/* The light theme (egui follows the system's): a light box, as egui's own fields. */
+@media (prefers-color-scheme: light) {
+  html, body { background: #f8f8f8; }
+  #token { color: #1b1b1b; background: #fff; border-color: #a0a0a0; }
+  #token:focus { border-color: #2a6fb5; }
+}
