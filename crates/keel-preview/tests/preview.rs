@@ -696,6 +696,19 @@ fn corpus_file(dir: &Path, name: &str, ext: &str) -> PathBuf {
     path
 }
 
+/// Fuzzing (fuzz/corpus/preview/docx-corrupt-deflate): docx-rs unwraps on a part whose
+/// deflate stream is corrupt; the preview says the document is not valid instead of
+/// "previewer panicked".
+#[test]
+fn damaged_docx_is_an_error_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = corpus_file(dir.path(), "docx-corrupt-deflate", "docx");
+    match preview(&temp_request(&path, "docx", 256)) {
+        Preview::Error(message) => assert_eq!(message, "not a valid Word document"),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Fuzzing (fuzz/corpus/preview/gif-frame-larger-than-screen): a 52-byte GIF with a 4x3
 /// screen and a 14693x14649 frame; the decoder is held to the screen's size.
 #[test]
