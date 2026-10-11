@@ -109,7 +109,7 @@ pub struct WebApp {
     ctx: egui::Context,
     wants: HashMap<u64, Want>,
     // sign-in
-    token_input: String,
+    token_field: Option<web::TokenField>,
     remember: bool,
     notice: Option<String>,
     /// Plain http to a non-loopback host: the token and files cross the network in the clear.
@@ -223,7 +223,7 @@ impl WebApp {
             gen: 0,
             ctx: cc.egui_ctx.clone(),
             wants: HashMap::new(),
-            token_input: String::new(),
+            token_field: web::TokenField::find(&cc.egui_ctx),
             remember: false,
             notice: None,
             insecure: web::insecure(),
@@ -698,17 +698,16 @@ impl WebApp {
             }
             ui.add_space(8.0);
             let width = (ui.available_width() - 16.0).min(360.0);
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut self.token_input)
-                    .password(true)
-                    .hint_text("token")
-                    .desired_width(width),
-            );
+            // The box itself is an HTML input over this space (see `web::TokenField`).
+            let height = ui.spacing().interact_size.y.max(30.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+            if let Some(field) = &self.token_field {
+                field.show(rect);
+            }
             ui.checkbox(&mut self.remember, "Remember on this device")
                 .on_hover_text("Keeps the token in this browser's local storage. Leave it off on a shared computer.");
-            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("Connect").clicked() || enter) && !self.token_input.trim().is_empty() {
-                let token = std::mem::take(&mut self.token_input).trim().to_owned();
+            let connect = ui.button("Connect").clicked();
+            if let Some(token) = self.token_field.as_ref().and_then(|f| f.take(connect)) {
                 web::remember_token(self.remember.then_some(token.as_str()));
                 self.notice = None;
                 self.sign_in(token);
@@ -1836,6 +1835,9 @@ impl eframe::App for WebApp {
         if matches!(self.conn.state, State::NeedToken | State::Refused(_)) {
             egui::CentralPanel::default().show(ctx, |ui| self.login(ui));
             return;
+        }
+        if let Some(field) = &self.token_field {
+            field.hide();
         }
         if self.screen.phone() {
             self.phone(ctx);

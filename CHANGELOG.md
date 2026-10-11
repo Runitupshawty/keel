@@ -28,6 +28,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Contrast: secondary text, links, warnings and errors reach 4.5:1 in both themes (the muted grey and the light theme's accent are slightly darker or lighter, warnings and errors are new colours, weak text is the muted colour), and a selected row draws its secondary text in the text colour.
 - Library search: a filter number too large for it (`w:9223372036854775807`, `size:<9223372036854775808`, `duration:>99999999999999999999`, a year such as `dm:99999999999999999`) is reported as a bad value; it used to wrap around and match the wrong files.
 - Previewing a damaged Word document says "not a valid Word document"; it used to show "previewer panicked".
+- Web client: the token could not be pasted on a phone, and password managers could not fill it, because the sign-in box was drawn on the canvas. It is now a real password box, so Paste, iOS Passwords and Bitwarden work, and focusing it no longer zooms the page on iOS.
 
 ### Security
 

@@ -67,17 +67,28 @@ await page.waitForFunction(() => typeof window.__keel?.state === "function", nul
 );
 await shot("1-login");
 
-// 2. Sign in with the token from daemon.token (typed, never in the address).
-await page.mouse.click(640, 600); // focus the canvas on blank space
-await page.keyboard.press("Tab"); // the token field is the first widget
-await page.keyboard.type(token, { delay: 5 });
-await page.keyboard.press("Enter");
+// 2. Sign in with the token from daemon.token (typed, never in the address), in the real
+// password box over the login form. A paste lands in it: eframe cancels pastes elsewhere.
+const box = page.locator("input#token[type=password]");
+await box.waitFor({ state: "visible" }).catch(() => fail("no visible password box for the token"));
+await box.focus();
+await page.evaluate(() => {
+  const data = new DataTransfer();
+  data.setData("text/plain", " pasted ");
+  document.getElementById("token").dispatchEvent(
+    new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+  );
+});
+if ((await box.inputValue()) !== "pasted") await fail("a paste did not land in the token box");
+await box.fill(token);
+await box.press("Enter");
 await until(
   "signed in",
   (s) => s.signed_in && s.sources.length > 0,
   () => sentCount((m) => m.method === "sources.list") > 0,
 );
 if (page.url().includes(token)) await fail("the token is in the address");
+if (await box.isVisible()) await fail("the token box is still shown after signing in");
 await shot("2-signed-in");
 
 // 3. Open the fixture source.
