@@ -307,6 +307,8 @@ fn observe_root(root: &VPath) -> Option<Observed> {
         let (kind, prefix) = match root.scheme.as_str() {
             "cloud" => (VolumeKind::Cloud, "cloud"),
             "sftp" => (VolumeKind::Network, "sftp"),
+            // Like SFTP: the host is a network volume, its own failure domain.
+            "ftp" => (VolumeKind::Network, "ftp"),
             other => (VolumeKind::Device, other),
         };
         // The account / host is the volume and its own failure domain.

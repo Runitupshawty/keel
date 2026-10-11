@@ -54,8 +54,9 @@ impl Router {
             prompt_listener: Arc::default(),
         }
     }
-    /// Paths with a `!/` archive boundary go to the archive provider, `sftp://<id>/...` to that
-    /// host's provider, `cloud://<id>/...` to that account's, the rest by scheme.
+    /// Paths with a `!/` archive boundary go to the archive provider, `sftp://<id>/...` and
+    /// `ftp://<id>/...` to that host's provider, `cloud://<id>/...` to that account's, the rest
+    /// by scheme.
     pub fn provider_for(&self, p: &VPath) -> Option<Arc<dyn Provider>> {
         find(&self.registry, p)
     }
@@ -66,19 +67,26 @@ impl Router {
             .retain(|existing| existing.scheme() != p.scheme());
         table.providers.push(p);
     }
-    /// Adds or replaces the SFTP provider for `host.id` (see the type docs for jobs that
-    /// are already running).
+    /// Adds or replaces the SFTP or FTP provider for `host.id` (see the type docs for jobs
+    /// that are already running).
     pub fn register_remote(&self, host: crate::RemoteHost) {
-        self.register_remote_provider(
+        let (id, events, listener) = (
             host.id.clone(),
-            Arc::new(crate::SftpProvider::with_prompt_listener(
-                host,
-                self.remote_events.clone(),
-                self.prompt_listener.clone(),
-            )),
+            self.remote_events.clone(),
+            self.prompt_listener.clone(),
         );
+        let provider: Arc<dyn Provider> = match host.protocol {
+            crate::RemoteProtocol::Sftp => Arc::new(crate::SftpProvider::with_prompt_listener(
+                host, events, listener,
+            )),
+            crate::RemoteProtocol::Ftp | crate::RemoteProtocol::Ftps => Arc::new(
+                crate::FtpProvider::with_prompt_listener(host, events, listener),
+            ),
+        };
+        self.register_remote_provider(id, provider);
     }
-    /// Adds or replaces the provider for `sftp://<id>/...` (callable through an `Arc<Router>`).
+    /// Adds or replaces the provider for `sftp://<id>/...` or `ftp://<id>/...` (callable
+    /// through an `Arc<Router>`).
     pub fn register_remote_provider(&self, id: String, provider: Arc<dyn Provider>) {
         self.registry.write().remotes.insert(id, provider);
     }
@@ -127,7 +135,7 @@ pub(crate) fn find(registry: &Registry, p: &VPath) -> Option<Arc<dyn Provider>> 
             .find(|provider| provider.scheme() == "archive")
             .cloned();
     }
-    if p.scheme == "sftp" {
+    if crate::is_remote_scheme(&p.scheme) {
         return table.remotes.get(&p.authority).cloned();
     }
     if p.scheme == "cloud" {

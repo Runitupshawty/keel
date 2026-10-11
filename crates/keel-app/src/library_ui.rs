@@ -648,7 +648,9 @@ fn lost_banner(ctx: &egui::Context, l: &LibraryUi, out: &mut Vec<Action>) {
 
 fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let (tx, ectx) = (s.tx.clone(), s.ctx.clone());
+    // FTP remotes cannot be library sources (no change times to poll, no ranged hashing).
     let remotes: Vec<(String, VPath)> = (s.settings.remotes.iter())
+        .filter(|h| h.protocol == keel_vfs::RemoteProtocol::Sftp)
         .map(|h| (h.label.clone(), crate::remotes::home_of(h)))
         .chain((s.settings.clouds.iter()).map(|c| (c.label.clone(), crate::clouds::root_of(&c.id))))
         .collect();

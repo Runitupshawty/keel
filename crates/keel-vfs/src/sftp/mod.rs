@@ -41,9 +41,54 @@ pub struct RemoteHost {
     /// here win: a nonempty `user`, a port other than 22, a key-file path.
     #[serde(default = "yes")]
     pub use_ssh_config: bool,
+    /// SFTP (the default, so remotes saved before FTP existed load unchanged), FTP or FTPS.
+    #[serde(default)]
+    pub protocol: RemoteProtocol,
 }
 fn yes() -> bool {
     true
+}
+
+/// How a remote host is reached. FTP and FTPS hosts sign in with a password from the
+/// credential store, or as `anonymous`; `auth` and `use_ssh_config` do not apply to them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteProtocol {
+    #[default]
+    Sftp,
+    /// Plain FTP: the password and the files cross the network unencrypted.
+    Ftp,
+    /// FTP over TLS: explicit (`AUTH TLS`), implicit TLS on port 990.
+    Ftps,
+}
+impl RemoteProtocol {
+    /// The `VPath` scheme of the host's paths: `sftp`, or `ftp` for FTP and FTPS.
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Self::Sftp => "sftp",
+            Self::Ftp | Self::Ftps => "ftp",
+        }
+    }
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Sftp => 22,
+            Self::Ftp | Self::Ftps => 21,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sftp => "SFTP",
+            Self::Ftp => "FTP",
+            Self::Ftps => "FTPS",
+        }
+    }
+}
+/// Shown where a plain FTP remote is added and on its sidebar row.
+pub const FTP_CLEAR_TEXT: &str =
+    "FTP sends the password and the files unencrypted. Prefer FTPS or SFTP.";
+/// Whether `scheme` is a remote host's (`sftp` or `ftp`), resolved by host id.
+pub fn is_remote_scheme(scheme: &str) -> bool {
+    matches!(scheme, "sftp" | "ftp")
 }
 
 /// One SSH session to open: a jump host or the target, after `~/.ssh/config` and the
@@ -218,6 +263,17 @@ pub enum RemoteEvent {
         fingerprint: String,
         reply: Sender<bool>,
     },
+    /// An FTPS server's certificate failed verification (self-signed, expired, another
+    /// name): trusting it pins its SHA-256 fingerprint for that `host:port`.
+    CertificatePrompt {
+        host_id: String,
+        /// `host:port`.
+        endpoint: String,
+        fingerprint: String,
+        /// Why the certificate was not accepted.
+        problem: String,
+        reply: Sender<bool>,
+    },
 }
 pub struct SftpProvider {
     host: RemoteHost,
@@ -277,8 +333,8 @@ fn valid_name(name: &str) -> bool {
 
 /// The SFTP library decodes names lossily: a name that is not UTF-8 on the server lists
 /// with U+FFFD and cannot be addressed. Such entries are refused with this message.
-const UNDECODABLE: char = '\u{FFFD}';
-fn undecodable(p: &VPath) -> anyhow::Error {
+pub(crate) const UNDECODABLE: char = '\u{FFFD}';
+pub(crate) fn undecodable(p: &VPath) -> anyhow::Error {
     anyhow::anyhow!(
         "{}: the name is not valid UTF-8 on the server (shown with \u{FFFD}); rename it on \
          the host to use it here",
@@ -1300,6 +1356,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: true,
+            protocol: Default::default(),
         }
     }
 
@@ -1353,6 +1410,7 @@ mod tests {
 
         let off = RemoteHost {
             use_ssh_config: false,
+            protocol: Default::default(),
             ..remote("nas")
         };
         let plan = super::plan(&off, Some(&config)).unwrap();
@@ -1427,6 +1485,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: false,
+            protocol: Default::default(),
         };
         let provider = SftpProvider::new(host, crossbeam_channel::unbounded().0);
         let bad = VPath::parse("sftp://offline/dir/bad\u{FFFD}name").unwrap();

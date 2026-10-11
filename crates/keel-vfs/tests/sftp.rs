@@ -34,6 +34,7 @@ fn live() -> Option<(RemoteHost, VPath)> {
         home: None,
         bookmarks: vec![],
         use_ssh_config: false,
+        protocol: Default::default(),
     };
     assert!(
         dir.starts_with('/') && dir != "/",
@@ -283,6 +284,7 @@ fn remote_config_roundtrip_and_path() {
         home: Some("/".into()),
         bookmarks: vec![("Files".into(), "/files".into())],
         use_ssh_config: true,
+        protocol: Default::default(),
     };
     for auth in [
         RemoteAuth::Agent,
@@ -617,6 +619,7 @@ fn live_ssh_config_alias() {
         port: 22,
         user: String::new(),
         use_ssh_config: true,
+        protocol: Default::default(),
         ..host
     };
     roundtrip_through(alias, &config, &base);
@@ -648,6 +651,7 @@ fn live_proxy_jump() {
         port: 22,
         user: String::new(),
         use_ssh_config: true,
+        protocol: Default::default(),
         ..host
     };
     let route = keel_vfs::sftp::describe(&target, Some(&config));

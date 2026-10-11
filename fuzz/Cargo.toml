@@ -42,6 +42,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ftp_list"
+path = "fuzz_targets/ftp_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ftp_mlsd"
+path = "fuzz_targets/ftp_mlsd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tiff"
 path = "fuzz_targets/tiff.rs"
 test = false

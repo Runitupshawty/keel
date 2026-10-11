@@ -1,6 +1,6 @@
 # Fuzzing
 
-Keel reads bytes it did not write: archives, photos, SSH configs, search queries, JSON-RPC
+Keel reads bytes it did not write: archives, photos, SSH configs, FTP listings, search queries, JSON-RPC
 and MCP messages, peers' keel-net messages, shared uploads, files it previews. Each such
 parser has a fuzz target: a function that must return, with a result or an error, for any
 input. It must never panic, never allocate by a size the input only declares (a header's
@@ -29,6 +29,8 @@ crate's `fuzzing` feature.
 |---|---|---|
 | `archive` | `keel_vfs::fuzz::archive` | zip (zip64), tar, tar.gz/.bz2/.xz/.zst, 7z, RAR: listing, every body, and the zip rewriter deleting, renaming and adding entries |
 | `ssh_config` | `keel_vfs::fuzz::ssh_config` | `~/.ssh/config` with `Include`s, resolved for the aliases it names |
+| `ftp_list` | `keel_vfs::fuzz::ftp_list` | an FTP `LIST` reply: bounded lines (8 KiB, a million entries), each parsed as a UNIX `ls -l` or a DOS (IIS) line |
+| `ftp_mlsd` | `keel_vfs::fuzz::ftp_mlsd` | an FTP `MLSD` reply and `MLST` answers: bounded lines of facts (type, size, modify) and names |
 | `tiff` | `keel_core::fuzz::tiff` | a TIFF's orientation (first IFD) and metadata |
 | `raw` | `keel_core::fuzz::raw` | camera RAW files: the walk of IFDs and SubIFDs to the embedded JPEG previews (bounded in count and depth), metadata, small previews |
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |

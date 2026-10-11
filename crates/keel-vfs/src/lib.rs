@@ -10,6 +10,8 @@ pub mod cloud;
 pub mod desktop;
 pub mod drag_out;
 // --- end Task 24 ---
+/// FTP and FTPS remotes (`ftp://<host id>/...`).
+pub mod ftp;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -45,13 +47,17 @@ pub use cloud::{
     CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore, WebDavConfig,
 };
 pub use entry::{Entry, Kind};
+pub use ftp::FtpProvider;
 pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
 pub use provider::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, FeedError, Provider, Quota,
     RemoveKind, ShareLink, Space,
 };
 pub use router::Router;
-pub use sftp::{ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, SftpProvider};
+pub use sftp::{
+    is_remote_scheme, ConnStatus, RemoteAuth, RemoteEvent, RemoteHost, RemoteProtocol,
+    SftpProvider, FTP_CLEAR_TEXT,
+};
 pub use trashbin::TrashProvider;
 pub mod ops;
 #[cfg(not(windows))]

@@ -1919,7 +1919,7 @@ fn remotes_add_edit_remove() {
     assert_eq!(s(&h).settings.remotes.len(), 1);
     let host = s(&h).settings.remotes[0].clone();
     assert_eq!((host.label.as_str(), host.port), ("NAS", 22));
-    assert!(has(&h, "demo@nas.example.com:22") && has(&h, "SSH agent"));
+    assert!(has(&h, "SFTP demo@nas.example.com:22") && has(&h, "SSH agent"));
     // The host is in the sidebar's Remotes section, not connected.
     assert!(
         h.query_all_by_label("NAS").count() >= 2,
@@ -1941,6 +1941,147 @@ fn remotes_add_edit_remove() {
     click(&mut h, "Really remove?");
     assert!(s(&h).settings.remotes.is_empty());
     assert!(has(&h, "No remote hosts yet."));
+}
+
+/// Settings → Remotes: an FTP host shows the clear-text warning where it is added, then
+/// lists with its protocol; FTPS drops the warning. Nothing connects.
+#[test]
+fn ftp_remote_warns_about_clear_text() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Remotes");
+    click(&mut h, "Add host…");
+    assert!(!has(&h, keel_vfs::FTP_CLEAR_TEXT));
+    click(&mut h, "FTP");
+    h.run_steps(2);
+    assert!(
+        has(&h, keel_vfs::FTP_CLEAR_TEXT),
+        "the warning next to the choice"
+    );
+    assert!(!has(&h, "Use ~/.ssh/config"), "no SSH settings for FTP");
+    let at = field(&h, "Label");
+    fill(&mut h, at, "Camera");
+    let at = field(&h, "Host");
+    fill(&mut h, at, "camera.example.com");
+    // Anonymous: no password goes anywhere.
+    click(&mut h, "Anonymously");
+    shot(&mut h, "remote-add-ftp");
+    click(&mut h, "Save");
+    let host = s(&h).settings.remotes[0].clone();
+    assert_eq!(
+        (host.protocol, host.port, host.user.as_str()),
+        (keel_vfs::RemoteProtocol::Ftp, 21, "anonymous")
+    );
+    assert!(has(&h, "FTP anonymous@camera.example.com:21") && has(&h, "Anonymous"));
+    let row = &s(&h).sidebar.remotes[0];
+    assert_eq!(
+        row.warning,
+        Some(keel_vfs::FTP_CLEAR_TEXT),
+        "repeated on the sidebar"
+    );
+    assert_eq!(
+        row.home,
+        VPath::parse(&format!("ftp://{}/", host.id)).unwrap()
+    );
+    click(&mut h, "Edit…");
+    click(&mut h, "FTPS");
+    h.run_steps(2);
+    assert!(!has(&h, keel_vfs::FTP_CLEAR_TEXT));
+    click(&mut h, "Save");
+    assert_eq!(
+        s(&h).settings.remotes[0].protocol,
+        keel_vfs::RemoteProtocol::Ftps
+    );
+    assert!(has(&h, "FTPS anonymous@camera.example.com:21"));
+    assert_eq!(s(&h).sidebar.remotes[0].warning, None);
+}
+
+/// Live, against a real FTP server (`KEEL_FTP_TEST=user@host:port`, `KEEL_FTP_TEST_PASS`):
+/// the host is added in Settings → Remotes like a user would, clicked in the sidebar, and
+/// a folder made on the server is listed and opened in the pane. The password reaches the
+/// provider through the in-memory store (`KEEL_NET_SECRET=memory`), never the keychain.
+#[test]
+#[ignore = "needs a live FTP server (KEEL_FTP_TEST)"]
+fn live_ftp_remote_in_the_window() {
+    let Ok(target) = std::env::var("KEEL_FTP_TEST") else {
+        return;
+    };
+    let (user, address) = target.split_once('@').expect("user@host:port");
+    let (server, port) = address.rsplit_once(':').expect("host:port");
+    std::env::set_var("KEEL_NET_SECRET", "memory");
+    let password = std::env::var("KEEL_FTP_TEST_PASS").unwrap_or_default();
+    keel_vfs::sftp::auth::store_secret("live-ftp", "password", &password).unwrap();
+    // A folder with a file on the server, made through the provider itself.
+    let host = keel_vfs::RemoteHost {
+        id: "live-ftp".into(),
+        label: "Live FTP".into(),
+        host: server.into(),
+        port: port.parse().unwrap(),
+        user: user.into(),
+        auth: keel_vfs::RemoteAuth::PasswordInKeyring,
+        home: None,
+        bookmarks: Vec::new(),
+        use_ssh_config: false,
+        protocol: keel_vfs::RemoteProtocol::Ftp,
+    };
+    let provider = keel_vfs::FtpProvider::new(host, crossbeam_channel::unbounded().0);
+    let folder = format!("keel-window-{}", std::process::id());
+    let dir = VPath::parse(&format!("ftp://live-ftp/{folder}")).unwrap();
+    use keel_vfs::Provider;
+    provider.mkdir(&dir).unwrap();
+    let mut w = provider.write(&dir.join("seen in the window.txt")).unwrap();
+    std::io::Write::write_all(&mut w, b"hello").unwrap();
+    std::io::Write::flush(&mut w).unwrap();
+    drop(w);
+
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Remotes");
+    click(&mut h, "Add host…");
+    click(&mut h, "FTP");
+    h.run_steps(2);
+    assert!(has(&h, keel_vfs::FTP_CLEAR_TEXT));
+    for (label, text) in [
+        ("Label", "Live FTP"),
+        ("Host", server),
+        ("Port", port),
+        ("User", user),
+    ] {
+        let at = field(&h, label);
+        fill(&mut h, at, text);
+    }
+    let secret = h
+        .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::PasswordInput))
+        .map(|n| center_of(&n))
+        .next()
+        .expect("the password field");
+    fill(&mut h, secret, "typed, not stored by tests");
+    click(&mut h, "Save");
+    assert_eq!(s(&h).settings.remotes[0].id, "live-ftp");
+    key(&mut h, NONE, Key::Escape);
+    h.run_steps(3);
+    // The sidebar row opens the host's root.
+    click(&mut h, "Live FTP");
+    let opened = |s: &AppState| {
+        s.tab(0).dir.scheme == "ftp" && !s.tab(0).loading && names(s, 0).contains(&folder)
+    };
+    assert!(
+        wait(&mut h, 30, &opened),
+        "{:?} {:?}",
+        s(&h).tab(0).error,
+        names(s(&h), 0)
+    );
+    assert_eq!(
+        s(&h).remotes.state("live-ftp"),
+        Some(keel_vfs::ConnStatus::Connected)
+    );
+    sm(&mut h).run(0, Action::Navigate(dir.clone()));
+    let inside = |s: &AppState| !s.tab(0).loading && names(s, 0) == ["seen in the window.txt"];
+    assert!(wait(&mut h, 30, &inside), "{:?}", names(s(&h), 0));
+    shot(&mut h, "remote-ftp-live");
+    provider.remove(&dir).unwrap();
 }
 
 // ---------------------------------------------------------------------------------------

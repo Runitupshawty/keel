@@ -1978,7 +1978,9 @@ impl AppState {
                     });
                     return;
                 }
-                let remote = paths.first().filter(|p| p.scheme == "sftp");
+                let remote = paths
+                    .first()
+                    .filter(|p| keel_vfs::is_remote_scheme(&p.scheme));
                 let cloud = paths.first().filter(|p| p.scheme == "cloud");
                 let cloud = cloud.map(|p| (p, self.clouds.account(&p.authority)));
                 if let Some((path, account)) = cloud {

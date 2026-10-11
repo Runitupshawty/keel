@@ -7,11 +7,27 @@ use russh::{
 use std::{path::PathBuf, sync::Arc};
 
 /// Keyring service shared with settings. Account is `<host id>:password` or `:passphrase`.
+/// SFTP and FTP remotes share it.
 pub const KEYRING_SERVICE: &str = "Keel SFTP";
+
+/// `KEEL_NET_SECRET=memory` (tests, trials): remote passwords live in this process only,
+/// like the device identity, and never reach the OS keychain.
+fn in_memory() -> Option<&'static parking_lot::Mutex<std::collections::HashMap<String, String>>> {
+    static MEMORY: std::sync::LazyLock<
+        parking_lot::Mutex<std::collections::HashMap<String, String>>,
+    > = std::sync::LazyLock::new(Default::default);
+    (std::env::var("KEEL_NET_SECRET").as_deref() == Ok("memory")).then(|| &*MEMORY)
+}
 
 /// Stores a password (`kind` "password") or key passphrase ("passphrase") for a host in the
 /// OS keychain. Blocks on the keychain: call off the UI thread.
 pub fn store_secret(host_id: &str, kind: &str, secret: &str) -> Result<()> {
+    if let Some(memory) = in_memory() {
+        memory
+            .lock()
+            .insert(format!("{host_id}:{kind}"), secret.to_owned());
+        return Ok(());
+    }
     keyring::Entry::new(KEYRING_SERVICE, &format!("{host_id}:{kind}"))?
         .set_password(secret)
         .context("could not write to the OS keychain")
@@ -20,10 +36,27 @@ pub fn store_secret(host_id: &str, kind: &str, secret: &str) -> Result<()> {
 /// Removes a host's stored password and passphrase, if any. Blocks: worker threads only.
 pub fn forget_secrets(host_id: &str) {
     for kind in ["password", "passphrase"] {
+        if let Some(memory) = in_memory() {
+            memory.lock().remove(&format!("{host_id}:{kind}"));
+            continue;
+        }
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &format!("{host_id}:{kind}")) {
             let _ = entry.delete_credential();
         }
     }
+}
+
+/// A stored secret (`kind` "password" or "passphrase"). Blocks on the keychain: workers only.
+pub fn load_secret(host_id: &str, kind: &str) -> Result<String> {
+    let account = format!("{host_id}:{kind}");
+    if let Some(memory) = in_memory() {
+        return memory.lock().get(&account).cloned().context(
+            "required credential unavailable in the in-memory keychain (KEEL_NET_SECRET=memory)",
+        );
+    }
+    keyring::Entry::new(KEYRING_SERVICE, &account)?
+        .get_password()
+        .map_err(|_| anyhow::anyhow!("required credential unavailable in OS keychain"))
 }
 
 /// `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, whichever exist, in that order.
@@ -39,13 +72,10 @@ pub fn default_key_files() -> Vec<PathBuf> {
 }
 
 async fn secret(host_id: &str, kind: &'static str) -> Result<String> {
-    let account = format!("{host_id}:{kind}");
-    tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(KEYRING_SERVICE, &account)?.get_password()
-    })
-    .await
-    .context("keychain worker failed")?
-    .map_err(|_| anyhow::anyhow!("required credential unavailable in OS keychain"))
+    let host_id = host_id.to_owned();
+    tokio::task::spawn_blocking(move || load_secret(&host_id, kind))
+        .await
+        .context("keychain worker failed")?
 }
 
 /// Signs in to one hop. `host_id` names the remote's keychain entries.

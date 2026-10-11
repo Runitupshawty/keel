@@ -1558,10 +1558,11 @@ fn record_provider(
     j.unfinished = Some(u.clone());
     j.flush()
 }
-/// Both paths on the same `sftp://<id>` host (one server, so a rename can move the data).
+/// Both paths on the same `sftp://<id>` or `ftp://<id>` host (one server, so a rename can
+/// move the data).
 fn same_remote(a: &crate::VPath, b: &crate::VPath) -> bool {
-    a.scheme == "sftp"
-        && b.scheme == "sftp"
+    crate::is_remote_scheme(&a.scheme)
+        && a.scheme == b.scheme
         && a.authority == b.authority
         && a.split_archive().is_none()
         && b.split_archive().is_none()

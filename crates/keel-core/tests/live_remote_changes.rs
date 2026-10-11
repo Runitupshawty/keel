@@ -45,6 +45,7 @@ fn live_sftp_source_finds_an_upload_within_the_poll() {
         home: None,
         bookmarks: vec![],
         use_ssh_config: false,
+        protocol: Default::default(),
     };
     let sftp = Arc::new(SftpProvider::new(host, crossbeam_channel::unbounded().0));
     let base = VPath {

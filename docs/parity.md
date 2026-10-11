@@ -163,7 +163,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Smooth animations | yes | [AT] | **Has**, with Reduce motion |
 | Searchable context menus | yes | [AT] | **Part**: every context action is in the searchable command palette; the native Windows shell menu is missing (README roadmap) |
 | Cloud drives: SFTP | yes | [AT] | **Has** ([remotes.md](remotes.md)) |
-| Cloud drives: FTP | yes | [AT] | **Lacks** |
+| Cloud drives: FTP | yes | [AT] | **Has**: FTP and FTPS remotes ([remotes.md](remotes.md#ftp-and-ftps)) |
 | Cloud drives: Google Drive | yes | [AT] | **Has** |
 | Cloud drives: OneDrive | yes | [AT] | **No (decision)** |
 | Cloud drives "without syncing everything" | yes | [AT] | **Has** inside Keel; as an OS drive only in the Linux release |
@@ -204,7 +204,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 3 | Previews of HEIC and AVIF photos, camera RAW, audio and fonts | Spacedrive Quick Preview; spec 2.3 | R: previews; iPhone photos are HEIC. Spec 2.3 lists HEIC, audio and fonts, none built | M |
 | 4 | Folder sizes and a Sizes view | Spacedrive Size view | D: there is no way to see what fills a disk | M |
 | 5 | Color themes beyond dark and light (built-ins plus VS Code color themes) | Atlas | R: section 1 asks for color themes | S-M |
-| 6 | FTP and FTPS remotes | Atlas | R: section 1 asks for "cloud and FTP mounts" | S |
+| 6 | FTP and FTPS remotes (**done**, Phase 11: [remotes.md](remotes.md#ftp-and-ftps); browsing and copies, not mounts) | Atlas | R: section 1 asks for "cloud and FTP mounts" | S |
 | 7 | Faster copying of many small files (a parallel queue) | Atlas | D: about 860 files/s against a claimed 3,800 | S-M |
 | 8 | **Done** (unreleased; not yet checked on a machine with WSL, see [Checking](wsl.md#checking)): WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window ([wsl.md](wsl.md)) | spec section 1 | R: CLI and WSL | S |
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |

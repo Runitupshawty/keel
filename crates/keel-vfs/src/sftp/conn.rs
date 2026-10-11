@@ -487,6 +487,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: false,
+            protocol: Default::default(),
         };
         let pool = ConnPool::new(host, tx);
         pool.set_timeout(Duration::from_millis(20));
@@ -515,6 +516,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: false,
+            protocol: Default::default(),
         };
         let pool = ConnPool::new(host, tx);
         pool.set_timeout(Duration::from_millis(300));
@@ -587,6 +589,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: false,
+            protocol: Default::default(),
         };
         let pool = ConnPool::with_prompt_listener(host, tx, Arc::new(AtomicBool::new(listener)));
         pool.set_timeout(Duration::from_secs(5));
@@ -725,6 +728,7 @@ mod tests {
             home: None,
             bookmarks: vec![],
             use_ssh_config: true,
+            protocol: Default::default(),
         };
         let pool = |listener: bool| {
             let (tx, rx) = crossbeam_channel::unbounded();

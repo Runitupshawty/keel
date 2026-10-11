@@ -107,6 +107,33 @@ pub fn ssh_config(data: &[u8]) {
     }
 }
 
+/// A fixed "now" for the listings' year-less dates (a run must reproduce).
+fn listing_now() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000)
+}
+
+/// An FTP `LIST` reply as it comes off the data connection: split into bounded lines, each
+/// parsed as a UNIX `ls -l` or a DOS (IIS) line.
+pub fn ftp_list(data: &[u8]) {
+    let Ok(lines) = crate::ftp::list::lines(data) else {
+        return;
+    };
+    for line in &lines {
+        let _ = crate::ftp::list::list(line, listing_now());
+    }
+}
+
+/// An FTP `MLSD` reply (and each line as an `MLST` answer): bounded lines of facts.
+pub fn ftp_mlsd(data: &[u8]) {
+    let Ok(lines) = crate::ftp::list::lines(data) else {
+        return;
+    };
+    for line in &lines {
+        let _ = crate::ftp::list::mlsd(line);
+        let _ = crate::ftp::list::mlst(line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fuzz_harness::{run, Capped};
@@ -121,5 +148,13 @@ mod tests {
     #[test]
     fn fuzz_ssh_config() {
         run("ssh_config", super::ssh_config);
+    }
+    #[test]
+    fn fuzz_ftp_list() {
+        run("ftp_list", super::ftp_list);
+    }
+    #[test]
+    fn fuzz_ftp_mlsd() {
+        run("ftp_mlsd", super::ftp_mlsd);
     }
 }
