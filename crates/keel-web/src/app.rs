@@ -1942,6 +1942,24 @@ impl WebApp {
         }
     }
 
+    /// Signed in but not connected (the daemon went away, or the first connection is
+    /// still being made): a strip under the top bar, so stale contents do not pass for
+    /// current ones.
+    fn offline_bar(&self, ctx: &egui::Context) {
+        let text = match self.conn.state {
+            State::Online | State::NeedToken | State::Refused(_) => return,
+            State::Retrying { .. } => {
+                "Offline: the daemon cannot be reached. Retrying… What you see may be out of date."
+            }
+            State::Connecting | State::Authenticating => "Connecting to the daemon…",
+        };
+        egui::TopBottomPanel::top("offline").show(ctx, |ui| {
+            shown(ctx, text);
+            let color = ui.visuals().warn_fg_color;
+            ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+        });
+    }
+
     fn error_bar(&mut self, ctx: &egui::Context) {
         if let Some(e) = self.error.clone() {
             egui::TopBottomPanel::bottom("error").show(ctx, |ui| {
@@ -1957,6 +1975,7 @@ impl WebApp {
 
     fn desktop(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| self.top(ui));
+        self.offline_bar(ctx);
         self.error_bar(ctx);
         egui::SidePanel::left("library")
             .resizable(true)
@@ -2017,6 +2036,7 @@ impl WebApp {
             });
             self.insecure_banner(ui);
         });
+        self.offline_bar(ctx);
         egui::TopBottomPanel::bottom("phone-tabs").show(ctx, |ui| {
             ui.columns(PhoneTab::ALL.len(), |cols| {
                 for (col, tab) in cols.iter_mut().zip(PhoneTab::ALL) {

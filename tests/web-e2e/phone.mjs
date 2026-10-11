@@ -87,10 +87,12 @@ export async function run({ browser, base, token, ids, daemon }) {
   await sleep(200);
   await tab.shot("28-tablet");
 
-  // The daemon goes away: the client says so and keeps retrying; once it is back the
-  // client signs in again and reads everything again.
+  // The daemon goes away: the client says so in a strip over the stale contents (it was
+  // only the small dot's label) and keeps retrying; once it is back the client signs in
+  // again and reads everything again.
+  const offline = (s) => s.notes.some((n) => n.startsWith("Offline: the daemon cannot be reached."));
   await daemon.stop();
-  await tab.until("offline", (s) => !s.signed_in && !s.login && /offline/.test(s.conn), () => true, 15000);
+  await tab.until("offline", (s) => !s.signed_in && !s.login && /offline/.test(s.conn) && offline(s), () => true, 15000);
   await sleep(300);
   await tab.shot("29-offline");
   const listed = tab.sentCount((m) => m.method === "list");
@@ -102,6 +104,7 @@ export async function run({ browser, base, token, ids, daemon }) {
     45000,
   );
   await sleep(300);
+  if (offline(await tab.state())) await tab.fail("the offline strip stayed after reconnecting");
   await tab.shot("30-reconnected");
   await tab.noLeak();
   await tab.close();
