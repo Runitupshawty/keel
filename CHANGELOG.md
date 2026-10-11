@@ -26,7 +26,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Web client: the jobs list names each job (File operation, Indexing, Hashing contents…) instead of "op", "index", "hash".
 - Web client: the sign-in box is light in the light theme.
 
-
 ## [0.17.0] - 2026-10-10
 
 ### Added
