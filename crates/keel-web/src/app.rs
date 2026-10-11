@@ -904,8 +904,22 @@ impl WebApp {
         match &self.devices {
             Ok(d) => {
                 ui.label(format!("{} (this device)", d.label));
+                let id = format!("id {}", d.id);
+                shown(ui.ctx(), &id);
+                // Cut to the width (the whole id on hover).
+                ui.add(egui::Label::new(egui::RichText::new(id).weak()).truncate())
+                    .on_hover_text(format!(
+                        "This device's id ({}): other devices' [devices] auto_accept lists it",
+                        d.id
+                    ));
                 for p in &d.peers {
                     ui.label(format!("{}: {}", p.label, p.link));
+                }
+                if d.peers.is_empty() {
+                    empty_note(
+                        ui,
+                        "No paired devices: pair one in the Keel window (Devices → Pair a device…).",
+                    );
                 }
             }
             Err(e) if e.is_empty() => {

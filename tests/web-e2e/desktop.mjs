@@ -156,6 +156,14 @@ export async function run({ browser, base, token, work, ids }) {
   const dev = await t.until("devices", (s) => s.devices.id && s.inbox.entries);
   if (dev.devices.peers.length) await t.fail("a fresh profile lists paired devices");
   if (dev.inbox.pending || dev.inbox.entries.length) await t.fail("the inbox of a fresh profile is not empty");
+  // This device's id shows, and the empty list says how to pair (it said nothing).
+  await t.until(
+    "devices notes",
+    (s) =>
+      s.notes.includes(`id ${dev.devices.id}`) &&
+      s.notes.some((n) => n.startsWith("No paired devices")) &&
+      s.notes.includes("Nothing received yet."),
+  );
   await t.shot("16-devices-inbox");
 
   // Nothing but the tag was executed; the fixture is as it was.
