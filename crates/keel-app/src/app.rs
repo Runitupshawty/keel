@@ -1136,6 +1136,97 @@ mod tests {
         assert!(job.done.as_ref().unwrap().is_ok(), "{:?}", job.done);
     }
 
+    /// Manual check of the photo, audio and font previews (GPU, ffmpeg):
+    /// `KEEL_SHOT=<folder> cargo test -p keel-app -- --ignored previews_live`. Previews a
+    /// HEIC, a RAW file, a generated FLAC tone and a font in the panel and renders each to
+    /// `<folder>/<file>.png`. Nothing is played.
+    #[test]
+    #[ignore]
+    fn previews_live() {
+        let Some(out) = std::env::var_os("KEEL_SHOT").map(PathBuf::from) else {
+            return;
+        };
+        let Some(ffmpeg) = keel_core::find_tool("ffmpeg") else {
+            eprintln!("skipped: ffmpeg is not installed");
+            return;
+        };
+        let dir = fixture("keel-previews-live");
+        let folder = dir.to_local_path().unwrap();
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../keel-preview/tests/fixtures");
+        for name in ["pattern-rot90.heic", "pattern.avif", "tiny.dng"] {
+            std::fs::copy(fixtures.join(name), folder.join(name)).unwrap();
+        }
+        std::fs::write(
+            folder.join("Hack-Regular.ttf"),
+            epaint_default_fonts::HACK_REGULAR,
+        )
+        .unwrap();
+        let tone = folder.join("tone.flac");
+        let made = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:duration=2")
+            .args(["-metadata", "title=Test Tone", "-metadata", "artist=Keel"])
+            .arg(&tone)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        std::fs::create_dir_all(&out).unwrap();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1280.0, 720.0))
+            .wgpu()
+            .build_eframe(|cc| App::new(cc, Boot::at(dir)));
+        wait_listed(&mut harness);
+        harness.press_key(Key::F3);
+        harness.run_steps(2);
+        for name in [
+            "pattern-rot90.heic",
+            "pattern.avif",
+            "tiny.dng",
+            "tone.flac",
+            "Hack-Regular.ttf",
+        ] {
+            harness.state_mut().state.tab_mut(0).cursor = Some(name.into());
+            for _ in 0..500 {
+                harness.step();
+                let p = &harness.state().state.preview;
+                let shown = p.key.as_ref().is_some_and(|k| k.path.name() == name);
+                if shown && p.current.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            harness.run_steps(4);
+            let current = harness.state().state.preview.current.clone();
+            eprintln!("{name}: {current:?}");
+            assert!(
+                !matches!(
+                    current,
+                    None | Some(
+                        keel_preview::Preview::Error(_) | keel_preview::Preview::Missing(_)
+                    )
+                ),
+                "{name}"
+            );
+            harness
+                .render()
+                .unwrap()
+                .save(out.join(format!("{name}.png")))
+                .unwrap();
+        }
+        // The media view: the HEIC, AVIF and RAW tiles from their sidecars.
+        harness.state_mut().state.panes[1].view = crate::pane::ViewMode::Media;
+        for _ in 0..300 {
+            harness.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        harness
+            .render()
+            .unwrap()
+            .save(out.join("media-view.png"))
+            .unwrap();
+    }
+
     /// GPU-dependent: run locally with `cargo test -p keel-app -- --ignored`
     /// (`UPDATE_SNAPSHOTS=1` to rewrite `tests/snapshots/main.png`).
     #[test]

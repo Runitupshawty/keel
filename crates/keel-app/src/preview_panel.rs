@@ -370,13 +370,12 @@ impl PreviewPanel {
                     if let Some(t) = &self.tex {
                         fit(ui, t);
                     }
-                    egui::Grid::new("audio-tags").show(ui, |ui| {
-                        for (label, value) in tags {
+                    for (label, value) in tags {
+                        ui.horizontal_wrapped(|ui| {
                             ui.weak(label);
-                            ui.add(egui::Label::new(value).wrap());
-                            ui.end_row();
-                        }
-                    });
+                            ui.label(value);
+                        });
+                    }
                     ui.weak(meta);
                     ui.add_space(6.0);
                     let resolve = || crate::video_player::resolve(router, path);
