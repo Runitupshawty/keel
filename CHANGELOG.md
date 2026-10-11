@@ -40,6 +40,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Linux: dragging files to other apps needs X11. In a Wayland session it works when Keel runs through XWayland (start it with `WAYLAND_DISPLAY` unset); from a native Wayland window a row drag stays inside Keel.
 - Linux: no drag image or drag cursor while dragging files out (the pointer keeps its shape), and a desktop that takes drops through a proxy window (icons on the desktop) is not a target.
+- Library search dates (`today`, `thisweek`, `2026-10`, ...) use the time zone offset the library was opened with; after a daylight saving change they follow the new one once the library is opened again.
 - *First seen* and *last hashed* are recorded from this version on: items indexed and hashed by an earlier Keel show *not recorded* until they are seen or hashed again, and tag changes made before it are not in the history.
 - An item's history lists the operations that named it (or, through moves and renames, its earlier paths); moving or renaming a folder that holds it is not in the item's own history.
 - The plan's "Show all" was to open the library's jobs view filtered to the item; Keel has no operation log view, so **Show all** lists up to 1,000 entries in the panel instead.
