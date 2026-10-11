@@ -2,7 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.21.0] - 2026-10-11
 
 ### Added
 
@@ -20,6 +20,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - An agent skill, [docs/agent-skill.md](docs/agent-skill.md), in the SKILL.md format agent runtimes load: when to use Keel, the preview-then-execute protocol, `keel op` and `keel mcp`, the safety rules (show every preview and its warnings before `execute`, never `--execute` past the user, never delete for good without the user's own words) and how to read each error code. Copy `skills/keel` into the agent's skills folder to install it (Claude Code: `~/.claude/skills/keel/SKILL.md`); a test keeps the copy identical to the doc.
 - Folder operations, each a previewed library plan: **Merge into…** (everything in the selected folders moves into the one you pick; the emptied folders are removed), **Flatten…** (every file in a folder's subfolders moves up into it; the emptied subfolders are removed), **Organize by…** (a folder's files move into subfolders by type, year or year and month of their modified date), **Attributes…** (hidden and read-only; on Linux and macOS the mode bits) and **Create link…** (a junction or a hard link, or a symbolic link). They are in the right-click menu under **Folder operations** and in the command palette. Merge, flatten and organize ask what happens to a taken name (Skip, Keep both, Overwrite); the preview lists every move with its target, every folder made or removed and every taken name, Enter runs it as a job with progress and cancel, a folder that changed since the preview refuses it and shows the new preview, and Ctrl+Z undoes it. On Windows a symbolic link needs Developer Mode or an elevated program; Keel never elevates, says so and offers a junction or a hard link instead. See [Folder operations](docs/files.md#folder-operations).
 - `plan.merge`, `plan.flatten`, `plan.organize`, `plan.set_attributes` and `plan.link` in the API (previews executed with `execute`, like `plan`; their changes include `make_folder`, `remove_folder`, `set_attributes` and `link`), and `keel plan merge|flatten|organize|attrs|link` on the command line. See [api.md](docs/api.md).
+
+### Changed
+
+- The library preview dialog runs the operation on Enter, as **Confirm** does (Esc still cancels).
 
 ### Fixed
 
@@ -54,10 +58,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Folder operations need the library on (Settings → Library), though not a library source. Links (symbolic links, junctions) inside the folders are neither moved nor followed, so a folder holding one is not removed. Organize looks at the files directly in the folder, not in its subfolders; by year or month it uses the modified date in local time, and files without one go to `Undated`.
 - Attributes and links work on this computer's files only, not on SFTP, FTP, cloud or device paths or inside archives. Hidden can be set on Windows and macOS only (on Linux a hidden file is one whose name starts with a dot), and mode bits on Linux and macOS only. Attributes are not set recursively.
 - A junction points to a folder on this computer (not on a share), and a hard link to a file on the same drive. Removing a link on undo removes the link only; a hard link goes to the trash.
-
-### Changed
-
-- The library preview dialog runs the operation on Enter, as **Confirm** does (Esc still cancels).
 
 ## [0.20.0] - 2026-10-11
 

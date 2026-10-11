@@ -2302,6 +2302,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gethostname"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+dependencies = [
+ "rustix",
+ "windows-link",
+]
+
+[[package]]
 name = "getopts"
 version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3398,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "keel-api"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3430,10 +3440,11 @@ dependencies = [
 
 [[package]]
 name = "keel-core"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "chrono",
  "crossbeam-channel",
  "directories",
  "getrandom 0.3.4",
@@ -3454,6 +3465,8 @@ dependencies = [
  "starship-battery",
  "tempfile",
  "tracing",
+ "unicode-properties",
+ "unicode-segmentation",
  "wait-timeout",
  "windows 0.58.0",
  "zip 2.4.2",
@@ -3461,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "keel-daemon"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3500,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "keel-mount"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "keel-core",
@@ -3512,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3543,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "keel-preview"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "ab_glyph",
  "calamine",
@@ -3568,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "keel-search"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -3585,7 +3598,7 @@ dependencies = [
 
 [[package]]
 name = "keel-vfs"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3605,6 +3618,8 @@ dependencies = [
  "natord",
  "notify",
  "notify-debouncer-mini",
+ "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "open",
  "opendal",
@@ -3643,6 +3658,7 @@ dependencies = [
  "walkdir",
  "windows 0.58.0",
  "windows-core 0.58.0",
+ "x11rb",
  "zip 2.4.2",
 ]
 
@@ -4656,6 +4672,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8"
 dependencies = [
  "objc2-encode",
+]
+
+[[package]]
+name = "objc2-app-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -8839,6 +8866,23 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
 ]
+
+[[package]]
+name = "x11rb"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
+dependencies = [
+ "gethostname",
+ "rustix",
+ "x11rb-protocol",
+]
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xattr"
