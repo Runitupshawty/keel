@@ -14,6 +14,7 @@ use keel_api::types::{
     ChildSize, FolderSizes, Hit, JobInfo, PlanPreview, RestoredLibrary, RestoredSourceInfo,
 };
 use keel_api::{ApiError, Backend};
+use keel_core::JobStatus;
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read, Write};
 use std::time::{Duration, Instant};
@@ -50,8 +51,23 @@ impl Backend for Local {
 
 impl Drop for Local {
     fn drop(&mut self) {
-        if !self.host.close() {
-            eprintln!("keel: a job was still busy; it resumes the next time the library opens");
+        // Jobs the command started that outlive it (the text job a walk starts, hashing)
+        // stop here and resume the next time the library opens: say which.
+        let running: Vec<String> = (self.host.ctx.lib.jobs().list().unwrap_or_default())
+            .into_iter()
+            .filter(|j| matches!(j.status, JobStatus::Running | JobStatus::Queued))
+            .map(|j| j.kind)
+            .collect();
+        let closed = self.host.close();
+        if !running.is_empty() || !closed {
+            let what = match running.is_empty() {
+                true => "a job".to_owned(),
+                false => format!("the {} job", running.join(", ")),
+            };
+            eprintln!(
+                "keel: {what} was still running; it resumes when Keel or keel-daemon next opens \
+                 the library"
+            );
         }
     }
 }

@@ -767,3 +767,24 @@ fn op_runs_any_operation_with_preview_then_execute() {
 fn doc_of(text: &str) -> Value {
     serde_json::from_str(text).unwrap()
 }
+
+/// Review of 0.22.0, minor 9: without a daemon the command ends when its walk does; the
+/// text job the walk started stops with it, and the command says it resumes later.
+#[test]
+fn a_job_cut_short_by_the_command_ending_is_named() {
+    let env = env();
+    for i in 0..1_500 {
+        std::fs::write(
+            env.files.path().join(format!("n{i:04}.txt")),
+            "harbour pilot",
+        )
+        .unwrap();
+    }
+    let out = env.run(&["sources", "add", &s(env.files.path())]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("text") && err.contains("was still running; it resumes"),
+        "{err}"
+    );
+}

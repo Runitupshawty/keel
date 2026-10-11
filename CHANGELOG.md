@@ -25,6 +25,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Turning off Index file contents (or a source's Contents switch) while a document was being read could leave that document's text indexed; the switch is now checked when the text is written.
 - A document holding the private-use characters U+E000 or U+E001 showed false highlights in its snippet (they are the snippet's own marks); they are taken out of the text read.
 - The copy of a remote document the text job reads was left in the source's store folder when Keel stopped while reading it; leftover copies are deleted when the job next starts.
+- Without keel-daemon, `keel sources index`, `keel sources add` and `keel op contents.set --execute` ended in the middle of the text job they started without a word; a `keel` command now names the jobs it leaves running ("the text job was still running; it resumes when Keel or keel-daemon next opens the library").
 
 ### Security
 
