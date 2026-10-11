@@ -565,6 +565,10 @@ fn column_view() {
     click_row(&mut h, "Projects", 0, NONE);
     assert!(wait(&mut h, 10, &|s| s.panes[0].tabs[0].columns.cols.len() == 1));
     assert!(wait(&mut h, 10, &|s| !s.tab(0).loading));
+    // The next column lists on its own worker.
+    assert!(wait(&mut h, 10, &|s| {
+        s.panes[0].tabs[0].columns.cols.iter().all(|c| !c.loading)
+    }));
     assert!(
         h.query_all_by_label_contains("shed, folder, ")
             .next()

@@ -1,8 +1,12 @@
 //! The desktop app's parsers of outside bytes under the in-tree fuzz runs (docs/fuzzing.md;
 //! keel-app is a binary, so these have no libFuzzer targets).
 
-use keel_vfs::fuzz_harness::run;
+use keel_vfs::fuzz_harness::{run, Capped};
 use std::path::PathBuf;
+
+/// The whole keel-app test binary's allocator, as in the other crates' fuzz tests.
+#[global_allocator]
+static ALLOC: Capped = Capped;
 
 #[test]
 fn fuzz_clipboard() {

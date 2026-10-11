@@ -898,7 +898,7 @@ impl IconThemes {
             ui.add(
                 egui::ProgressBar::new(fraction)
                     .text(text)
-                    .animate(total.is_none()),
+                    .animate(total.is_none() && crate::anim::duration(ui.ctx()) > 0.0),
             );
         }
         if self.busy {

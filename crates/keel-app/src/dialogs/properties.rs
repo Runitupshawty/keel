@@ -160,7 +160,7 @@ pub fn ui(
     let p = match info {
         None => {
             ui.horizontal(|ui| {
-                ui.spinner();
+                crate::anim::spinner(ui);
                 ui.label("Reading properties…");
             });
             return;

@@ -1,5 +1,5 @@
 //! Opt-in update check (Settings → General → "Check for updates", off by default; the
-//! first start asks once with a toast). When on: at most once every 24 hours, on a worker
+//! first start of each profile asks once with a toast). When on: at most once every 24 hours, on a worker
 //! thread, one `GET` of GitHub's "latest release" of this repository ([`LATEST_URL`]) with
 //! `User-Agent: keel/<version>` and nothing else: no identifiers, no settings, no
 //! telemetry. A newer release shows a banner (What's new, Install, Skip this version).
@@ -146,6 +146,105 @@ pub enum Install {
     Page,
 }
 
+/// How the installer registers the install it updates.
+#[derive(Debug, PartialEq)]
+pub enum Registration {
+    /// The Settings → Apps entry (and Start menu shortcut) of this name is this install's.
+    Entry(String),
+    /// No entry is this install's (it was installed with `-NoRegister`).
+    NoRegister,
+}
+
+/// This install's registration from the Settings → Apps entries `(key name,
+/// InstallLocation)`. None: no entry points at `dir` but the default one (`Keel`) belongs
+/// to another install, whose shortcut and entry the installer would take over; the banner
+/// opens the page instead.
+pub fn registration(entries: &[(String, String)], dir: &Path) -> Option<Registration> {
+    let norm = |p: &str| {
+        p.trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    let here = norm(&dir.to_string_lossy());
+    if let Some((name, _)) = entries.iter().find(|(_, at)| norm(at) == here) {
+        return Some(Registration::Entry(name.clone()));
+    }
+    let taken = entries
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("Keel"));
+    (!taken).then_some(Registration::NoRegister)
+}
+
+/// `(key name, InstallLocation)` from `reg query <Uninstall> /s /v InstallLocation`.
+pub fn parse_reg_query(out: &str) -> Vec<(String, String)> {
+    let mut key = None;
+    let mut found = Vec::new();
+    for line in out.lines() {
+        if line.starts_with("HKEY_") {
+            key = line.trim_end().rsplit('\\').next().map(str::to_owned);
+        } else if let Some((name, rest)) = line.trim_start().split_once(" REG_") {
+            // `REG_SZ` or `REG_EXPAND_SZ`, then the value.
+            let value = rest.trim_start_matches(|c: char| !c.is_whitespace()).trim();
+            if let (Some(key), "InstallLocation") = (&key, name.trim()) {
+                found.push((key.clone(), value.to_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// The Settings → Apps entries of this user that have an install folder.
+fn uninstall_entries() -> std::io::Result<Vec<(String, String)>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new("reg.exe")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                "/s",
+                "/v",
+                "InstallLocation",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()?;
+        Ok(parse_reg_query(&String::from_utf8_lossy(&out.stdout)))
+    }
+    #[cfg(not(windows))]
+    Ok(Vec::new())
+}
+
+/// `powershell.exe` arguments that run the installed `script` for `dir` with this install's
+/// registration, keep the console open on an error until Enter is pressed, and start
+/// keel.exe again afterwards (updated or not).
+pub fn install_args(script: &Path, dir: &Path, reg: &Registration) -> Vec<String> {
+    let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let path = |p: &Path| q(&p.to_string_lossy());
+    let reg = match reg {
+        Registration::Entry(name) => format!("-RegistryKeyName {}", q(name)),
+        Registration::NoRegister => "-NoRegister".to_owned(),
+    };
+    let command = format!(
+        "try {{ & {} -InstallDir {} {reg} }} catch {{ Write-Host $_ -ForegroundColor Red; \
+         Read-Host 'The update failed. Press Enter to start Keel again' | Out-Null }}; \
+         try {{ Start-Process -FilePath {} }} catch {{ Write-Host $_ -ForegroundColor Red; \
+         Read-Host 'Press Enter to close' | Out-Null }}",
+        path(script),
+        path(dir),
+        path(&dir.join("keel.exe")),
+    );
+    [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &command,
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
 pub fn install_plan(exe_dir: &Path) -> Install {
     let script = exe_dir.join("install.ps1");
     match cfg!(windows) && script.is_file() {
@@ -167,8 +266,9 @@ pub struct Updates {
 }
 
 impl Updates {
-    /// Starts a due check on a worker and takes its answer (errors are logged only).
-    pub fn tick(&mut self, s: &mut UpdateSettings, ctx: &egui::Context) {
+    /// Starts a due check of `url` ([`LATEST_URL`]) on a worker and takes its answer (errors
+    /// are logged only).
+    pub fn tick(&mut self, s: &mut UpdateSettings, ctx: &egui::Context, url: &str) {
         if let Some(rx) = &self.rx {
             match rx.try_recv() {
                 Ok(found) => {
@@ -183,9 +283,9 @@ impl Updates {
         if self.rx.is_none() && due(s, now) {
             s.last_check = now;
             let (tx, rx) = crossbeam_channel::bounded(1);
-            let (ctx, skip) = (ctx.clone(), s.skip.clone());
+            let (ctx, skip, url) = (ctx.clone(), s.skip.clone(), url.to_owned());
             crate::worker::spawn("keel-update", move || {
-                let found = check(LATEST_URL, VERSION, &skip)
+                let found = check(&url, VERSION, &skip)
                     .map_err(|e| tracing::info!("update check: {e:#}"))
                     .ok()
                     .flatten();
@@ -243,17 +343,20 @@ impl Updates {
             .ok()
             .and_then(|e| e.parent().map(Path::to_owned));
         if let Some(Install::Script { script, dir }) = exe_dir.as_deref().map(install_plan) {
-            // A console window shows the installer's progress; it stops Keel before it
-            // copies, so the window closes first (settings are saved on close).
-            let started = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-                .arg(&script)
-                .arg("-InstallDir")
-                .arg(&dir)
-                .spawn();
-            match started {
-                Ok(_) => return ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                Err(e) => tracing::warn!("run {}: {e}", script.display()),
+            let entries = uninstall_entries().map_err(|e| tracing::warn!("reg query: {e}"));
+            match entries.ok().and_then(|e| registration(&e, &dir)) {
+                Some(reg) => {
+                    // A console window shows the installer's progress; it stops Keel before
+                    // it copies, so the window closes first (settings are saved on close).
+                    let started = std::process::Command::new("powershell.exe")
+                        .args(install_args(&script, &dir, &reg))
+                        .spawn();
+                    match started {
+                        Ok(_) => return ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Err(e) => tracing::warn!("run {}: {e}", script.display()),
+                    }
+                }
+                None => tracing::info!("the default Start menu entry is another install's"),
             }
         }
         open_page(&r.page);
@@ -452,6 +555,121 @@ mod tests {
             ..Default::default()
         };
         assert!(!ask_once(&mut on), "already on: no question");
+    }
+
+    #[test]
+    fn tick_makes_no_request_while_off_and_checks_the_given_url_when_on() {
+        let idle = TcpListener::bind("127.0.0.1:0").unwrap();
+        idle.set_nonblocking(true).unwrap();
+        let idle_url = format!("http://{}/x", idle.local_addr().unwrap());
+        let ctx = egui::Context::default();
+        let mut updates = Updates::default();
+        let mut s = UpdateSettings::default();
+        for _ in 0..3 {
+            updates.tick(&mut s, &ctx, &idle_url);
+        }
+        assert!(updates.rx.is_none(), "no check started");
+        assert_eq!(s.last_check, 0);
+        let nothing = idle.accept().map(|_| ()).unwrap_err();
+        assert_eq!(
+            nothing.kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no request arrived"
+        );
+        // On: the one request goes to the URL given.
+        let (url, server) = serve("200 OK", &release("v9.0.0", false));
+        s.check = true;
+        updates.tick(&mut s, &ctx, &url);
+        assert!(server.join().unwrap().starts_with("GET /repos/"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while updates.banner.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            updates.tick(&mut s, &ctx, &url);
+        }
+        assert_eq!(updates.banner.map(|r| r.version).as_deref(), Some("9.0.0"));
+        assert!(idle.accept().is_err(), "still nothing at the first address");
+    }
+
+    #[test]
+    fn install_keeps_the_registration_of_the_install_it_updates() {
+        let dir = Path::new(r"C:\Apps\Keel");
+        let entry = |name: &str, at: &str| (name.to_owned(), at.to_owned());
+        assert_eq!(
+            registration(&[entry("Keel", r"c:\apps\keel\")], dir),
+            Some(Registration::Entry("Keel".into()))
+        );
+        assert_eq!(
+            registration(
+                &[
+                    entry("Keel", r"C:\Other"),
+                    entry("KeelTest", r"C:\Apps\Keel")
+                ],
+                dir
+            ),
+            Some(Registration::Entry("KeelTest".into())),
+            "a test install keeps its own name"
+        );
+        assert_eq!(
+            registration(&[entry("Other", r"C:\Other")], dir),
+            Some(Registration::NoRegister),
+            "installed with -NoRegister"
+        );
+        assert_eq!(
+            registration(&[entry("keel", r"C:\Other")], dir),
+            None,
+            "the default entry and shortcut are another install's"
+        );
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Keel\r\n    \
+                   InstallLocation    REG_SZ    C:\\Apps\\Keel\r\n\r\n\
+                   HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Other App\r\n    \
+                   InstallLocation    REG_EXPAND_SZ    C:\\Program Files\\Other App\r\n\r\n\
+                   End of search: 2 match(es) found.\r\n";
+        assert_eq!(
+            parse_reg_query(out),
+            [
+                entry("Keel", r"C:\Apps\Keel"),
+                entry("Other App", r"C:\Program Files\Other App")
+            ]
+        );
+        assert_eq!(parse_reg_query(""), []);
+    }
+
+    #[test]
+    fn install_args_pause_on_error_and_start_keel_again() {
+        let dir = Path::new(r"C:\Apps\Keel's copy");
+        let script = dir.join("install.ps1");
+        let args = install_args(&script, dir, &Registration::Entry("Keel".into()));
+        assert_eq!(
+            args[..4],
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        );
+        assert_eq!(args.len(), 5);
+        let command = &args[4];
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(
+            command.starts_with(&format!(
+                "try {{ & 'C:\\Apps\\Keel''s copy{sep}install.ps1' -InstallDir 'C:\\Apps\\Keel''s copy' \
+                 -RegistryKeyName 'Keel' }} catch {{ Write-Host $_"
+            )),
+            "{command}"
+        );
+        assert!(
+            command.contains("Read-Host 'The update failed."),
+            "{command}"
+        );
+        assert!(
+            command.contains(&format!(
+                "Start-Process -FilePath 'C:\\Apps\\Keel''s copy{sep}keel.exe'"
+            )),
+            "{command}"
+        );
+        assert!(
+            !command.contains('"'),
+            "no double quotes to escape: {command}"
+        );
+        let bare = install_args(&script, dir, &Registration::NoRegister);
+        assert!(bare[4].contains("' -NoRegister }"), "{}", bare[4]);
+        assert!(!bare[4].contains("RegistryKeyName"));
     }
 
     #[test]

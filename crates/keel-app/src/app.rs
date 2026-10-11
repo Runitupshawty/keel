@@ -257,7 +257,7 @@ impl App {
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
         if let Some(updates) = &mut self.updates {
-            updates.tick(&mut s.settings.updates, ctx);
+            updates.tick(&mut s.settings.updates, ctx, crate::update::LATEST_URL);
             updates.banner(ctx, &mut s.settings.updates);
         }
         // --- Task 23 ---
