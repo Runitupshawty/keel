@@ -6,6 +6,8 @@
 # file's GPG signature, SHA256SUMS.asc, when the release has one and gpg is installed; on macOS
 # also the binaries' code signature when they are signed), installs to ~/.local/share/keel and
 # links ~/.local/bin/keel. Linux gets a launcher entry, macOS a ~/Applications/Keel.app.
+# Inside WSL, `keel <folder>` then opens the folder in the Windows Keel (keel.exe on the
+# Windows PATH), and `keel --here <folder>` in this Linux window; see docs/wsl.md.
 # KEEL_PLATFORM (macos-arm64, macos-x64, linux-x64) overrides detection; --skip-verify installs
 # a release without SHA256SUMS, or an unsigned one while a signer is pinned below.
 set -euo pipefail
@@ -217,4 +219,5 @@ esac
 
 case "$plat" in linux-*) ldconfig -p 2>/dev/null | grep -q "libxkbcommon-x11.so.0" || echo "Note: libxkbcommon-x11 is not installed; the window needs it on an X11 session (Debian/Ubuntu: sudo apt install libxkbcommon-x11-0)." ;; esac
 echo "Keel $tag installed to $share."
+[ -n "${WSL_DISTRO_NAME:-}" ] && echo "WSL: 'keel <folder>' opens it in the Windows Keel when keel.exe is on the Windows PATH (or KEEL_EXE names it); 'keel --here <folder>' opens this Linux window. See docs/wsl.md."
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "Add \$HOME/.local/bin to your PATH to run 'keel' from a terminal." ;; esac
