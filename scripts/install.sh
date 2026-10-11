@@ -101,6 +101,8 @@ stop_daemons() {
   if pgrep -f "$1/keel-daemon" >/dev/null 2>&1; then
     "$1/keel" daemon stop >/dev/null 2>&1 || true
     pkill -f "$1/keel-daemon" >/dev/null 2>&1 || true
+    # Wait until they are gone: a daemon still unmounting or flushing keeps its files busy.
+    for _ in $(seq 1 75); do pgrep -f "$1/keel-daemon" >/dev/null 2>&1 || break; sleep 0.2; done
     echo 1
   else
     echo 0

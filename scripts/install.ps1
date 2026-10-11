@@ -49,9 +49,11 @@ function Test-Inside([string]$Path, [string]$Dir) {
 }
 
 function Stop-Keel {
-  Get-Process keel, keel-daemon -ErrorAction SilentlyContinue |
-    Where-Object { Test-Inside $_.Path $InstallDir } |
-    Stop-Process -Force
+  $procs = @(Get-Process keel, keel-daemon -ErrorAction SilentlyContinue | Where-Object { Test-Inside $_.Path $InstallDir })
+  $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+  # Wait until they are gone: a daemon that is still unmounting or flushing holds its exe,
+  # and the copy below fails with "being used by another process".
+  foreach ($p in $procs) { try { [void]$p.WaitForExit(15000) } catch {} }
   Start-Sleep -Milliseconds 300
 }
 
