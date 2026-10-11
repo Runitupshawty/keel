@@ -100,6 +100,12 @@ enum Act {
     },
     /// Close the plan dialog without executing.
     Cancel,
+    /// Execute the plan under review.
+    Execute,
+    Tag {
+        path: String,
+        tag: String,
+    },
 }
 
 pub struct WebApp {
@@ -156,6 +162,12 @@ pub struct WebApp {
     share: share::Flow,
     #[cfg(feature = "e2e")]
     hook: Option<crate::e2e::Hook>,
+    /// The phone pane's entries as last drawn (names and rectangles), for the `e2e` hook.
+    #[cfg(feature = "e2e")]
+    e2e_rects: Vec<(String, egui::Rect)>,
+    /// The phone pane's entry whose long-press menu is open.
+    #[cfg(feature = "e2e")]
+    e2e_menu: Option<String>,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -262,6 +274,10 @@ impl WebApp {
             // Before `take_query` clears the address.
             #[cfg(feature = "e2e")]
             hook: crate::e2e::Hook::install(&cc.egui_ctx),
+            #[cfg(feature = "e2e")]
+            e2e_rects: Vec::new(),
+            #[cfg(feature = "e2e")]
+            e2e_menu: None,
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -965,6 +981,27 @@ impl WebApp {
                 json!({"op": "rename", "paths": [path], "new_name": to}),
             ),
             Act::Cancel => self.plan = None,
+            Act::Tag { path, tag } => self.plan("tags.add", json!({"tag": tag, "paths": [path]})),
+            Act::Execute => {
+                let Some(d) = self.plan.as_mut() else { return };
+                if !matches!(d.state, PlanState::Review) {
+                    return;
+                }
+                let params =
+                    json!({"plan_id": d.preview.plan_id, "input_hash": d.preview.input_hash});
+                d.state = PlanState::Executing;
+                self.call("execute", params, Want::Execute);
+            }
+        }
+    }
+
+    /// The share window's Open: the upload is claimed now, or once signed in.
+    fn share_open(&mut self) {
+        self.share.accept();
+        if self.conn.state == State::Online {
+            if let Some((method, params)) = self.share.claim() {
+                self.call(method, params, Want::Claim);
+            }
         }
     }
 
@@ -975,6 +1012,57 @@ impl WebApp {
             return;
         };
         for (name, arg) in calls {
+            // What the user changes on screen without an `Act`.
+            let on = arg.as_deref() != Some("off");
+            match name.as_str() {
+                "phone-tab" => {
+                    let tab = PhoneTab::ALL
+                        .into_iter()
+                        .find(|t| Some(t.label()) == arg.as_deref());
+                    match tab {
+                        Some(t) => self.screen.show(t),
+                        None => self.error = Some(format!("e2e: no tab {arg:?}")),
+                    }
+                    continue;
+                }
+                "back" => {
+                    self.screen.back();
+                    continue;
+                }
+                "grid" => {
+                    self.grid = on;
+                    continue;
+                }
+                "remember" => {
+                    self.remember = on;
+                    continue;
+                }
+                "sign-out" => {
+                    self.sign_out();
+                    continue;
+                }
+                "share-open" => {
+                    self.share_open();
+                    continue;
+                }
+                "share-close" => {
+                    self.share.close();
+                    continue;
+                }
+                "pane" => {
+                    self.active = usize::from(arg.as_deref() == Some("1"));
+                    continue;
+                }
+                _ => {}
+            }
+            let folder = |path: String| EntryInfo {
+                name: String::new(),
+                path,
+                is_dir: true,
+                size: 0,
+                modified: None,
+                hidden: false,
+            };
             let named = |app: &Self, n: &str| {
                 let pane = app.panes[app.active].entries.iter().find(|e| e.name == n);
                 let hit = app.hits.iter().find(|h| h.name == n).map(hit_entry);
@@ -996,6 +1084,11 @@ impl WebApp {
                         })
                     }),
                 ("search", Some(q)) => Some(Act::Search(q)),
+                ("open", Some(n)) => named(self, &n).filter(|e| e.is_dir).map(Act::Open),
+                ("go", Some(path)) => Some(Act::Open(folder(path))),
+                ("up", _) => parent(&self.panes[self.active].path).map(|p| Act::Open(folder(p))),
+                ("execute", _) => Some(Act::Execute),
+                ("tag", Some(tag)) => selected.map(|e| Act::Tag { path: e.path, tag }),
                 ("open-preview", n) => n
                     .and_then(|n| named(self, &n))
                     .or(selected)
@@ -1024,10 +1117,57 @@ impl WebApp {
                 PlanState::Done(_) => "done",
                 PlanState::Failed(_) => "failed",
             };
-            json!({"operation": d.preview.operation, "summary": d.preview.summary, "state": state})
+            let changes = d.preview.changes.iter().map(
+                |c| json!({"action": c.action, "path": c.path, "to": c.to, "detail": c.detail}),
+            );
+            let warnings = d.preview.warnings.iter().map(|w| &w.message);
+            json!({
+                "operation": d.preview.operation,
+                "summary": d.preview.summary,
+                "state": state,
+                "changes": changes.collect::<Vec<_>>(),
+                "warnings": warnings.collect::<Vec<_>>(),
+            })
         });
+        let devices = match &self.devices {
+            Ok(d) => json!({
+                "id": d.id,
+                "label": d.label,
+                "peers": d.peers.iter().map(|p| format!("{}: {}", p.label, p.link)).collect::<Vec<_>>(),
+            }),
+            Err(e) => json!({ "error": e }),
+        };
+        let inbox = match &self.inbox {
+            Ok(i) => json!({"pending": i.pending.len(), "entries": names(&i.entries)}),
+            Err(e) => json!({ "error": e }),
+        };
+        let indexed = self.stat.as_ref().and_then(|s| s.indexed.as_ref());
+        let rects: serde_json::Map<String, Value> = (self.e2e_rects.iter())
+            .map(|(n, r)| (n.clone(), json!([r.min.x, r.min.y, r.width(), r.height()])))
+            .collect();
         json!({
             "signed_in": self.conn.state == State::Online,
+            "conn": self.conn.state.label(),
+            "login": matches!(self.conn.state, State::NeedToken | State::Refused(_)),
+            "notice": self.notice,
+            "remember": self.remember,
+            "layout": if self.screen.phone() { "phone" } else { "desktop" },
+            "phone_tab": self.screen.tab.label(),
+            "sheet": self.screen.sheet,
+            "tab": if self.tab == Tab::Browse { "browse" } else { "search" },
+            "dark": self.ctx.style().visuals.dark_mode,
+            "menu": self.e2e_menu,
+            "grid": self.grid,
+            "active": self.active,
+            "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
+            "pane_error": pane.error,
+            "devices": devices,
+            "inbox": inbox,
+            "jobs": self.jobs.iter().map(|j| json!({"kind": j.kind, "status": j.status})).collect::<Vec<_>>(),
+            "share": format!("{:?}", self.share.state).split([' ', '(', '{']).next().unwrap_or_default(),
+            "tags": indexed.map(|i| &i.tags),
+            "favorite": indexed.map(|i| i.favorite),
+            "rects": rects,
             "sources": self.sources.iter().map(|s| &s.label).collect::<Vec<_>>(),
             "path": pane.path,
             "entries": names(&pane.entries),
@@ -1170,6 +1310,8 @@ impl WebApp {
             .count();
         let grid = self.grid;
         let tile = self.tile;
+        #[cfg(feature = "e2e")]
+        let (mut rects, mut menu) = (Vec::new(), None);
         let out = egui::ScrollArea::vertical()
             .id_salt(("phone-pane", i))
             .auto_shrink(false)
@@ -1181,6 +1323,13 @@ impl WebApp {
                             let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
                             if !ui.is_rect_visible(rect) {
                                 continue;
+                            }
+                            #[cfg(feature = "e2e")]
+                            {
+                                rects.push((e.name.clone(), rect));
+                                if r.context_menu_opened() {
+                                    menu = Some(e.name.clone());
+                                }
                             }
                             let key = image_key(e);
                             let img = egui::Rect::from_min_size(rect.min, egui::vec2(tile, tile));
@@ -1249,6 +1398,13 @@ impl WebApp {
                             [ui.available_width(), 44.0],
                             egui::SelectableLabel::new(self.is_selected(&e.path), label),
                         );
+                        #[cfg(feature = "e2e")]
+                        {
+                            rects.push((e.name.clone(), r.rect));
+                            if r.context_menu_opened() {
+                                menu = Some(e.name.clone());
+                            }
+                        }
                         if r.clicked() {
                             act = Some(if e.is_dir {
                                 Act::Open(e.clone())
@@ -1263,6 +1419,11 @@ impl WebApp {
                     ui.weak("(more entries not shown)");
                 }
             });
+        #[cfg(feature = "e2e")]
+        {
+            self.e2e_rects = rects;
+            self.e2e_menu = menu;
+        }
         for (path, key) in want {
             self.thumbs_asked.insert(key.clone());
             let params = json!({"path": path, "size": "thumb256"});
@@ -1422,7 +1583,7 @@ impl WebApp {
             );
             if ui.button("Tag…").clicked() && !self.tag.trim().is_empty() {
                 let tag = self.tag.trim().to_owned();
-                self.plan("tags.add", json!({"tag": tag, "paths": [e.path]}));
+                self.act(self.active, Act::Tag { path: e.path, tag });
             }
         });
         ui.separator();
@@ -1604,12 +1765,7 @@ impl WebApp {
                 }
             });
         if open {
-            self.share.accept();
-            if self.conn.state == State::Online {
-                if let Some((method, params)) = self.share.claim() {
-                    self.call(method, params, Want::Claim);
-                }
-            }
+            self.share_open();
         }
         if let Some(id) = pick {
             self.share.pick(&id);
@@ -1623,9 +1779,9 @@ impl WebApp {
     }
 
     fn plan_window(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &mut self.plan else { return };
+        let Some(dialog) = &self.plan else { return };
         let mut close = false;
-        let mut execute = None;
+        let mut execute = false;
         let width = (ctx.screen_rect().width() - 24.0).max(200.0);
         egui::Window::new("Preview")
             .collapsible(false)
@@ -1670,10 +1826,7 @@ impl WebApp {
                     PlanState::Review => {
                         ui.horizontal(|ui| {
                             if ui.button("Execute").clicked() {
-                                execute = Some(json!({
-                                    "plan_id": p.plan_id,
-                                    "input_hash": p.input_hash,
-                                }));
+                                execute = true;
                             }
                             if ui.button("Cancel").clicked() {
                                 close = true;
@@ -1701,9 +1854,8 @@ impl WebApp {
                     }
                 }
             });
-        if let Some(params) = execute {
-            dialog.state = PlanState::Executing;
-            self.call("execute", params, Want::Execute);
+        if execute {
+            self.act(self.active, Act::Execute);
         }
         if close {
             self.act(self.active, Act::Cancel);

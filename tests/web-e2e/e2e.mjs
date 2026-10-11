@@ -1,162 +1,52 @@
 // Browser run of the Keel web client against a fixture keel-daemon (tests/web-e2e/run.sh
-// starts it). The client is an egui canvas without DOM elements to select, so the bundle is
-// built with the `e2e` feature (scripts/build-web.sh --features e2e) and the page opened
-// with ?e2e=1: `window.__keel = { select(name), act(name, arg), state() }` drives the app
-// through its own actions. The run checks what the page sends on its WebSocket (the
-// JSON-RPC methods), what the daemon holds, and the console. Screenshots of every step go
-// to ./out (uploaded by CI when the run fails).
-// usage: node e2e.mjs <base url> <token file> <fixture dir>
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+// prepares the fixture and the throwaway profile). It starts keel-daemon --web, adds the
+// fixture sources, then runs the flows of desktop.mjs and phone.mjs in Chromium (see
+// lib.mjs for how a flow drives the canvas). Screenshots of every flow go to ./out
+// (uploaded by CI when the run fails).
+// usage: node e2e.mjs <keel-daemon> <address> <work dir>      (SPEC=desktop|phone: one only)
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
+import { startDaemon, stopDaemon } from "./lib.mjs";
+import * as desktop from "./desktop.mjs";
+import * as phone from "./phone.mjs";
 
-const [, , base, tokenFile, fixture] = process.argv;
-const token = readFileSync(tokenFile, "utf8").trim(); // never printed
-const out = fileURLToPath(new URL("./out", import.meta.url));
-mkdirSync(out, { recursive: true });
-
-const sent = []; // {method, params} of every request the page sent (auth left out)
-const errors = [];
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const sentCount = (pred) => sent.filter(pred).length;
-
-const browser = await chromium.launch();
-const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-const page = await context.newPage();
-page.on("console", (m) => m.type() === "error" && errors.push("console: " + m.text()));
-page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-page.on("websocket", (ws) =>
-  ws.on("framesent", (f) => {
-    try {
-      const m = JSON.parse(f.payload);
-      if (m.method && m.method !== "auth") sent.push({ method: m.method, params: m.params ?? {} });
-    } catch {}
-  }),
-);
-const shot = (name) => page.screenshot({ path: `${out}/${name}.png` });
-const fail = async (msg) => {
-  await shot("failure").catch(() => {});
-  await browser.close().catch(() => {});
-  throw new Error(msg);
+const [, , bin, addr, work] = process.argv;
+const base = `http://${addr}`;
+const t0 = Date.now();
+let child = await startDaemon(bin, addr);
+// The disconnect flow stops the daemon and starts it again (same profile).
+const daemon = {
+  stop: () => stopDaemon(child),
+  start: async () => (child = await startDaemon(bin, addr)),
 };
-
-// The app's state (`__keel.state()`, refreshed every frame).
-const state = async () => JSON.parse(await page.evaluate(() => window.__keel.state()));
-// Waits until `pred(state)` holds (and the page sent what `sentPred` asks, when given).
-async function until(label, pred, sentPred = () => true, ms = 10000) {
-  const end = Date.now() + ms;
-  for (;;) {
-    const s = await state();
-    if (pred(s) && sentPred()) return s;
-    if (Date.now() > end) return fail(`${label}: not reached; state ${JSON.stringify({ ...s, error: s.error })}`);
-    await sleep(100);
-  }
-}
-const act = (name, arg) => page.evaluate(([n, a]) => window.__keel.act(n, a), [name, arg]);
-const select = (name) => page.evaluate((n) => window.__keel.select(n), name);
-
-// 1. The shell loads and is installable.
-const res = await page.goto(base + "/?e2e=1");
-if (!res?.ok()) await fail(`GET / answered ${res?.status()}`);
-if ((await page.title()) !== "Keel") await fail("the page title is not Keel");
-const manifest = await (await page.request.get(base + "/manifest.webmanifest")).json();
-if (manifest.name !== "Keel" || manifest.display !== "standalone") await fail("manifest.webmanifest is wrong");
-await page.waitForSelector("canvas#keel");
-await page.waitForFunction(() => typeof window.__keel?.state === "function", null, { timeout: 15000 }).catch(() =>
-  fail("no window.__keel: build the bundle with scripts/build-web.sh --features e2e"),
-);
-await shot("1-login");
-
-// 2. Sign in with the token from daemon.token (typed, never in the address), in the real
-// password box over the login form. A paste lands in it: eframe cancels pastes elsewhere.
-const box = page.locator("input#token[type=password]");
-await box.waitFor({ state: "visible" }).catch(() => fail("no visible password box for the token"));
-await box.focus();
-await page.evaluate(() => {
-  const data = new DataTransfer();
-  data.setData("text/plain", " pasted ");
-  document.getElementById("token").dispatchEvent(
-    new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+let browser;
+try {
+  const wasm = Buffer.from(await (await fetch(`${base}/keel_web_bg.wasm`)).arrayBuffer());
+  if (!wasm.includes("__keel"))
+    throw new Error("the served bundle has no e2e hook: scripts/build-web.sh --features e2e, then build keel-daemon");
+  const tokenFile = `${work}/config/daemon.token`;
+  const token = readFileSync(tokenFile, "utf8").trim(); // never printed
+  const seeded = execFileSync(
+    process.execPath,
+    ["seed.mjs", `ws://${addr}/rpc`, tokenFile, `Fixture=${work}/fixture`, `Media=${work}/media`],
+    { cwd: import.meta.dirname, encoding: "utf8" },
   );
-});
-if ((await box.inputValue()) !== "pasted") await fail("a paste did not land in the token box");
-await box.fill(token);
-await box.press("Enter");
-await until(
-  "signed in",
-  (s) => s.signed_in && s.sources.length > 0,
-  () => sentCount((m) => m.method === "sources.list") > 0,
-);
-if (page.url().includes(token)) await fail("the token is in the address");
-if (await box.isVisible()) await fail("the token box is still shown after signing in");
-await shot("2-signed-in");
-
-// 3. Open the fixture source.
-await act("open-source");
-await until(
-  "source listed",
-  (s) => s.entries.includes("alpha-notes.txt"),
-  () => sentCount((m) => m.method === "list" && String(m.params.path).startsWith("library://")) > 0,
-);
-await shot("3-source");
-
-// 4. Search for a file name.
-await act("search", "alpha");
-await until(
-  "search hits",
-  (s) => s.hits.includes("alpha-notes.txt"),
-  () => sentCount((m) => m.method === "search" && String(m.params.query).includes("alpha")) > 0,
-);
-await shot("4-search");
-
-// 5. A text preview of the hit.
-await select("alpha-notes.txt");
-await act("open-preview");
-await until(
-  "text preview",
-  (s) => s.selected === "alpha-notes.txt" && s.preview === "text",
-  () => sentCount((m) => m.method === "preview.render") > 0,
-);
-await shot("5-preview");
-
-// 6. A delete preview, then Cancel.
-await act("delete-preview");
-await until(
-  "delete preview",
-  (s) => s.plan?.state === "review",
-  () => sentCount((m) => m.method === "plan" && m.params.op === "delete") > 0,
-);
-await shot("6-delete-preview");
-await act("cancel");
-await until("delete preview cancelled", (s) => s.plan === null);
-
-// 7. A rename preview, then Cancel.
-await act("rename-preview", "renamed-notes.txt");
-await until(
-  "rename preview",
-  (s) => s.plan?.state === "review",
-  () => sentCount((m) => m.method === "plan" && m.params.op === "rename") > 0,
-);
-await act("cancel");
-await until("rename preview cancelled", (s) => s.plan === null);
-await shot("7-cancelled");
-
-// Nothing was executed; the fixture is as it was.
-await sleep(500);
-if (sentCount((m) => m.method === "execute") > 0) await fail("something was executed");
-if (!existsSync(`${fixture}/alpha-notes.txt`)) await fail("the fixture file is gone");
-if (existsSync(`${fixture}/renamed-notes.txt`)) await fail("the fixture file was renamed");
-const { error } = await state();
-if (error) await fail(`the app shows an error: ${error}`);
-
-// 8. The service worker is ready (the shell is installable offline).
-const sw = await page.evaluate(async () => {
-  const reg = await navigator.serviceWorker.ready;
-  return reg.active?.scriptURL ?? null;
-});
-if (!sw || !sw.endsWith("/sw.js")) await fail("the service worker is not active");
-
-// 9. Nothing went wrong in the page.
-if (errors.length) await fail("console errors:\n" + errors.join("\n"));
-await browser.close();
-console.log("web e2e ok:", sent.map((m) => m.method).join(" "));
+  const ids = Object.fromEntries([...seeded.matchAll(/seeded source (\S+) (\S+)/g)].map((m) => [m[1], m[2]]));
+  console.log(`daemon up and seeded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  browser = await chromium.launch();
+  const env = { browser, base, token, work, ids, daemon };
+  for (const [name, spec] of [
+    ["desktop", desktop],
+    ["phone", phone],
+  ]) {
+    if (process.env.SPEC && process.env.SPEC !== name) continue;
+    const t = Date.now();
+    await spec.run(env);
+    console.log(`web e2e ${name} ok in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  }
+} finally {
+  await browser?.close().catch(() => {});
+  await stopDaemon(child);
+}
+console.log(`web e2e done in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
