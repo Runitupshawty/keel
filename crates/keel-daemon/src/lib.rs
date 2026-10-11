@@ -2,6 +2,10 @@
 //! (the binary's `main`, and tests of clients such as the desktop app that start one in
 //! their own process).
 
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 pub mod server;
 mod share;
 mod web;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Text Editor
+Name[de]=Texteditor
+Exec=gedit %U
+NoDisplay=false
+[Desktop Action new]
+Exec=other

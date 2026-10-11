@@ -1,0 +1,3 @@
+﻿Host host
+	Port 65536
+	ServerAliveInterval -1

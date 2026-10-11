@@ -16,6 +16,10 @@ pub mod config;
 pub mod daemon_provider;
 pub mod error;
 pub mod files;
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 pub mod host;
 pub mod mcp;
 pub mod net;

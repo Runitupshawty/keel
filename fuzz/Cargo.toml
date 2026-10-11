@@ -1,0 +1,112 @@
+# libFuzzer targets (docs/fuzzing.md): `cargo +nightly fuzz run <target>` on Linux or macOS.
+# Each target calls a `fuzz::` entry point of a crate (feature `fuzzing`); `cargo test` runs
+# the same entry points on `corpus/<target>/` and seeded mutations of it.
+[package]
+name = "keel-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keel-vfs = { path = "../crates/keel-vfs", features = ["fuzzing"] }
+keel-core = { path = "../crates/keel-core", features = ["fuzzing"] }
+keel-api = { path = "../crates/keel-api", features = ["fuzzing"] }
+keel-net = { path = "../crates/keel-net", features = ["fuzzing"] }
+keel-daemon = { path = "../crates/keel-daemon", features = ["fuzzing"] }
+keel-preview = { path = "../crates/keel-preview", features = ["fuzzing"] }
+
+# Not a member of the Keel workspace: it needs nightly and libFuzzer.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssh_config"
+path = "fuzz_targets/ssh_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tiff"
+path = "fuzz_targets/tiff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_meta"
+path = "fuzz_targets/image_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "probe"
+path = "fuzz_targets/probe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "query"
+path = "fuzz_targets/query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpc"
+path = "fuzz_targets/rpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp"
+path = "fuzz_targets/mcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire"
+path = "fuzz_targets/wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pair_code"
+path = "fuzz_targets/pair_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multipart"
+path = "fuzz_targets/multipart.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "preview"
+path = "fuzz_targets/preview.rs"
+test = false
+doc = false
+bench = false

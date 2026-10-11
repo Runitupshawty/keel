@@ -1,0 +1,4 @@
+Match host x
+  User m
+Host !bad h* a
+  HostName %h.%%.%d.%u.%r.%z

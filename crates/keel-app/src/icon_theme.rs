@@ -527,7 +527,12 @@ pub fn install(v: &Vsix, root: &Path) -> Result<usize> {
     install_capped(v, root, MAX_THEME_BYTES, MAX_ICONS)
 }
 
-fn install_capped(v: &Vsix, root: &Path, max_bytes: u64, max_icons: usize) -> Result<usize> {
+pub(crate) fn install_capped(
+    v: &Vsix,
+    root: &Path,
+    max_bytes: u64,
+    max_icons: usize,
+) -> Result<usize> {
     ensure!(split_id(&v.id).is_some(), "invalid extension id {}", v.id);
     let mut zip = zip::ZipArchive::new(Cursor::new(&v.bytes[..]))?;
     let theme_entry = zip_join("extension", &v.theme_path).context("bad icon theme path")?;

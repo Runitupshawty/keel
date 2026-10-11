@@ -11,6 +11,8 @@ path = "src/lib.rs"
 
 [features]
 test-hooks = []
+# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`.
+fuzzing = ["dep:tempfile"]
 
 [dependencies]
 syntect.workspace = true
@@ -28,6 +30,8 @@ two-face = { version = "0.4", default-features = false, features = ["syntect-fan
 wait-timeout = "0.2"
 # Legacy (Windows-1252) text files.
 encoding_rs = "0.8"
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }

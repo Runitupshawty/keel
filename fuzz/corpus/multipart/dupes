@@ -1,0 +1,17 @@
+multipart/form-data; boundary=d
+--d
+Content-Disposition: form-data; name="f"; filename="same.txt"
+Content-Type: application/octet-stream
+
+1
+--d
+Content-Disposition: form-data; name="f"; filename="same.txt"
+Content-Type: application/octet-stream
+
+2
+--d
+Content-Disposition: form-data; name="f"; filename="same"
+Content-Type: application/octet-stream
+
+3
+--d--

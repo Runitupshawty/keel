@@ -1,0 +1,18 @@
+multipart/form-data; boundary=XyZ
+--XyZ
+Content-Disposition: form-data; name="title"
+Content-Type: application/octet-stream
+
+A title
+--XyZ
+Content-Disposition: form-data; name="files"; filename="a.txt"
+Content-Type: application/octet-stream
+
+hello
+--XyZ
+Content-Disposition: form-data; name="files"; filename="../evil:name?.txt"
+Content-Type: application/octet-stream
+
+x
+--Xy
+--XyZ--

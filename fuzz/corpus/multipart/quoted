@@ -1,0 +1,12 @@
+Multipart/Form-Data; boundary="a b"
+--a b
+Content-Disposition: form-data; filename="con.txt"; name="f"
+Content-Type: application/octet-stream
+
+
+--a b
+Content-Disposition: form-data; name="f"; filename=".keel-partial-1"
+Content-Type: application/octet-stream
+
+1
+--a b--

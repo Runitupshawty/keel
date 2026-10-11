@@ -1,6 +1,10 @@
 //! File preview dispatch and rendering types for Keel.
 
 mod docx;
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 mod hex;
 mod image;
 mod odf;
@@ -115,7 +119,7 @@ pub fn preview(req: &Request) -> Preview {
     }
 }
 
-fn preview_inner(req: &Request) -> Preview {
+pub(crate) fn preview_inner(req: &Request) -> Preview {
     let metadata = match std::fs::metadata(&req.bytes_path) {
         Ok(metadata) => metadata,
         Err(error) => return Preview::Error(error.to_string()),
