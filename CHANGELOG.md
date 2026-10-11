@@ -2,6 +2,16 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Copying many small files is about four times faster: 3,000 one-byte files pasted into a folder copy in about a second instead of 3.7 s, and through a library preview in 2.9 s instead of 3.7 s (the preview's own bookkeeping takes the rest). Files up to 1 MiB are copied by a pool of up to eight worker threads; bigger files are still copied one at a time with their progress. Every file still goes to a staging name first and lands in the order it was queued, so a cancel or an error leaves no half file, and what the job log, the undo list and a resumed library copy record is what one-at-a-time copying would have done. A selection of thousands of files also no longer spends seconds checking that no two of them overlap. `KEEL_COPY_THREADS` sets the number of workers (1 copies one file at a time). See [Performance](docs/performance.md).
+
+### Known limitations
+
+- A parallel copy makes folders ahead of the files queued for them: one stopped by a cancel or an error can leave such a folder empty. Undo removes it with the rest of the copy.
+
 ## [0.19.0] - 2026-10-11
 
 ### Added

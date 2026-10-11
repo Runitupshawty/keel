@@ -173,7 +173,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Media playback and galleries | yes | [AT] | **Has**: media view and viewer with playback |
 | A 5,000-file folder opens in 100 ms | benchmark claim | [AT] | **Has**: 100,000 files in 0.24 s warm ([performance.md](performance.md)) |
 | 128 MiB copy in 39 ms (CopyFile2) | benchmark claim | [AT] | **Part**: copies use CopyFileExW; not measured |
-| Small files: 2,000 x 4 KiB in 525 ms with 4 workers (3,800 files/s) | benchmark claim | [AT] | **Part**: 3,000 one-byte files take 3.5 s through a plan (about 860 files/s), one at a time |
+| Small files: 2,000 x 4 KiB in 525 ms with 4 workers (3,800 files/s) | benchmark claim | [AT] | **Has** (unreleased): a pool of up to eight workers copies 2,000 x 4 KiB in 0.62-0.74 s (2,700-3,250 files/s) and 3,000 one-byte files in 0.87-1.02 s; through a library plan 2.9 s ([performance.md](performance.md)) |
 | Startup in 300 ms | claim | [AT] | **Part**: first frame in 0.62 s in the test harness; not compared like for like |
 | Local-first, no telemetry | yes | [AT] | **Has** |
 | Keyboard-friendly workflow | yes | [AT-W11] | **Has**, including screen readers ([README](../README.md#accessibility)) |
@@ -205,7 +205,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 4 | Folder sizes and a Sizes view | Spacedrive Size view | D: there is no way to see what fills a disk | M |
 | 5 | Color themes beyond dark and light (built-ins plus VS Code color themes) | Atlas | R: section 1 asks for color themes | S-M |
 | 6 | FTP and FTPS remotes | Atlas | R: section 1 asks for "cloud and FTP mounts" | S |
-| 7 | Faster copying of many small files (a parallel queue) | Atlas | D: about 860 files/s against a claimed 3,800 | S-M |
+| 7 | Faster copying of many small files (a parallel queue) | Atlas | **Done** (unreleased): about 3,000 files/s, was 860, against a claimed 3,800 | S-M |
 | 8 | WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window | spec section 1 | R: CLI and WSL | S |
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |
 | 10 | Signed builds and package channels (winget, Scoop, Homebrew, Flatpak or AppImage) | both are commercial | F. Needs the owner (certificates, account submissions) | M |
