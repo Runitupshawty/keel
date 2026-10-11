@@ -106,9 +106,7 @@ mod linux {
         allow_move: bool,
         done: impl FnOnce(Result<DropEffect>) + Send + 'static,
     ) {
-        // winit picks Wayland exactly when one of these is set (and not empty).
-        let set = |name| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-        if set("WAYLAND_DISPLAY") || set("WAYLAND_SOCKET") {
+        if crate::drag_out::wayland() {
             return done(Err(anyhow!(
                 "dragging files to other apps needs X11 (XWayland) on this desktop"
             )));

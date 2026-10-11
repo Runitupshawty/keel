@@ -27,8 +27,17 @@ use x11 as imp;
 
 use std::path::{Path, PathBuf};
 
-/// Whether this OS can drag files out to other apps (on Linux: X11 sessions only).
-pub const SUPPORTED: bool = cfg!(any(windows, target_os = "macos", target_os = "linux"));
+/// Whether this session can drag files out to other apps: Windows, macOS, and Linux on X11
+/// or XWayland (a native Wayland window cannot, so a row drag stays inside Keel).
+pub fn supported() -> bool {
+    cfg!(any(windows, target_os = "macos")) || (cfg!(target_os = "linux") && !wayland())
+}
+
+/// winit opens a native Wayland window exactly when one of these is set (and not empty).
+pub(crate) fn wayland() -> bool {
+    let set = |name| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    set("WAYLAND_DISPLAY") || set("WAYLAND_SOCKET")
+}
 
 /// What the receiving app did with the files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,11 +74,11 @@ pub fn start(
     }
 }
 
-/// A target's move is believed only when the sources are gone: with every one still
-/// there, nothing was moved (and Keel never removes them itself).
+/// A target's move is believed only when every source is gone: with any one still there,
+/// it was not a move (and Keel never removes them itself).
 pub fn confirmed(effect: DropEffect, sources: &[PathBuf]) -> DropEffect {
     let there = |p: &PathBuf| Path::symlink_metadata(p).is_ok();
-    if effect == DropEffect::Move && sources.iter().all(there) {
+    if effect == DropEffect::Move && sources.iter().any(there) {
         DropEffect::None
     } else {
         effect
@@ -90,7 +99,13 @@ mod tests {
         assert_eq!(confirmed(DropEffect::Move, &both), DropEffect::None);
         assert_eq!(confirmed(DropEffect::Copy, &both), DropEffect::Copy);
         std::fs::remove_file(&a).unwrap();
-        assert_eq!(confirmed(DropEffect::Move, &both), DropEffect::Move);
+        assert_eq!(
+            confirmed(DropEffect::Move, &both),
+            DropEffect::None,
+            "one source is still there"
+        );
         assert!(b.exists(), "nothing is removed by the check");
+        std::fs::remove_file(&b).unwrap();
+        assert_eq!(confirmed(DropEffect::Move, &both), DropEffect::Move);
     }
 }

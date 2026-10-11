@@ -1,7 +1,8 @@
 //! Drag-out to the OS (Task 24; macOS and Linux Task 55): a row drag whose pointer leaves
 //! the window becomes an OS drag (`keel_vfs::drag_out`: its own thread on Windows and on
-//! Linux/X11, an AppKit dragging session on macOS; a Wayland window gets a toast saying it
-//! needs X11). When it ends, the source folder is refreshed (the receiving app may have
+//! Linux/X11, an AppKit dragging session on macOS; from a native Wayland window, which
+//! cannot, a row drag stays inside Keel). One at a time: a drag while one runs stays in
+//! Keel too (on X11 two would share `XdndSelection`). When it ends, the source folder is refreshed (the receiving app may have
 //! moved the files away; Keel never moves or deletes them itself) and egui is handed the
 //! button release it never saw (the OS drag held the mouse). Dropping the files back onto
 //! Keel itself does nothing (as in Explorer; it would only copy them onto themselves).
@@ -25,12 +26,12 @@ pub struct DragOut {
 impl DragOut {
     /// Once a frame, after the panes ran.
     pub fn check(&mut self, ctx: &egui::Context, s: &mut AppState) {
-        if !keel_vfs::drag_out::SUPPORTED {
-            return;
-        }
         let Some(drag) = DragAndDrop::payload::<DragPayload>(ctx) else {
             return;
         };
+        if self.busy.load(Ordering::Acquire) || !keel_vfs::drag_out::supported() {
+            return;
+        }
         let left = ctx.input(|i| {
             let pos = (i.pointer.latest_pos())
                 .or(i.pointer.interact_pos())
