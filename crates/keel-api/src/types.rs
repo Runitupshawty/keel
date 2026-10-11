@@ -1148,3 +1148,99 @@ pub struct RestoredSourceInfo {
     /// offline until their root is back.
     pub online: bool,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InspectParams {
+    /// A real path or a library path (`library://<source>/<rel>`).
+    pub path: String,
+    /// At most this many other copies and history entries (default 50, at most 1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<usize>,
+}
+
+/// One path as the inspector shows it (`library.inspect`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Inspection {
+    /// From the file system; from the index for a library path, or when the file system
+    /// cannot be reached (an offline source).
+    pub entry: EntryInfo,
+    /// What the library knows; absent when the path is in no source or not indexed yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library: Option<InspectedRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct InspectedRecord {
+    pub source: String,
+    pub source_label: String,
+    pub record: i64,
+    /// The volume its source is on, with its state and backup mark.
+    pub volume: VolumeInfo,
+    /// The content id (64 hex digits); absent before hashing, for a folder, or after drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
+    /// Unix seconds the index first saw it (absent when indexed by a Keel before 0.21).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen: Option<i64>,
+    /// Unix seconds its bytes were last hashed here (absent: not hashed here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_hashed: Option<i64>,
+    /// A file's protection count; `locations` are the OTHER files holding its content (at
+    /// most `max`, device claims last). Absent for a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copies: Option<Copies>,
+    /// More other copies exist than `max`.
+    #[serde(default)]
+    pub more_copies: bool,
+    /// Its tags (Favorites is `favorite`).
+    pub tags: Vec<TagInfo>,
+    pub favorite: bool,
+    /// The operations that touched it (copied, moved, renamed, deleted, tagged), newest
+    /// first, at most `max`; it is followed back through its moves and renames.
+    pub history: Vec<HistoryEntry>,
+    /// More history exists than `max`.
+    #[serde(default)]
+    pub more_history: bool,
+    /// A folder's totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FolderTotals>,
+}
+
+/// One operation log entry that touched an item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryEntry {
+    pub id: i64,
+    /// Unix seconds.
+    pub ts: i64,
+    /// `copy`, `move`, `rename`, `delete`, `tag` or `untag`.
+    pub kind: String,
+    /// Whether it completed (absent while it runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    /// The item came from here (moved, renamed or copied from it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The item went here (moved, renamed), or a copy of it was made here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// `tag` / `untag`: the tag's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// A folder's indexed totals.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FolderTotals {
+    /// Apparent bytes below it; absent until its source's first walk has finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// Files below it (absent with `bytes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<u64>,
+    /// Folders below it (links not counted).
+    pub folders: u64,
+    /// Its biggest child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biggest: Option<ChildSize>,
+}

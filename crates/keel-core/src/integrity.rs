@@ -161,6 +161,11 @@ fn check(ctx: &JobCtx, src: &Source, id: i64) -> Result<Option<Check>> {
         }
     };
     if full[..] == cas[..] {
+        // The inspector's "last hashed".
+        src.store.get()?.execute(
+            "UPDATE record SET hashed = ?2 WHERE id = ?1",
+            params![id, crate::now()],
+        )?;
         return Ok(Some(Check::Same));
     }
     // Written to while being read: metadata moved on, the indexer will see it.

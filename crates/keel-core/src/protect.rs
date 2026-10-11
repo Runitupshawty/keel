@@ -759,6 +759,11 @@ impl Library {
         recount(&self.shared)
     }
 
+    /// The volume `src` is on (a source never seen on one is its own volume).
+    pub(crate) fn volume_of(&self, src: &Source) -> Result<Volume> {
+        Ok(Volumes::load(&self.shared)?.of(src))
+    }
+
     /// Every record holding confirmed content `cas_id` (drifted ones and device claims
     /// excluded), with its volume.
     pub fn record_copies(&self, cas_id: &[u8]) -> Result<Vec<(RecordRef, Volume)>> {
