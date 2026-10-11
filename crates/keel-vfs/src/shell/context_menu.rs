@@ -112,11 +112,32 @@ unsafe fn pidl_path(pidl: *const ITEMIDLIST) -> Option<PathBuf> {
         })
 }
 
-/// Whether the shell's `got` is the `want` Keel asked for (NTFS names ignore case).
+/// Whether the shell's `got` is the `want` Keel asked for (NTFS names ignore case; a
+/// folder given by its 8.3 short name, `RUNNER~1`, is the same folder as its long name).
 fn same_path(got: &Path, want: &Path) -> bool {
-    let norm =
-        |p: &Path| (p.to_string_lossy().trim_end_matches('\\').to_lowercase()).replace('/', "\\");
+    let norm = |p: &Path| {
+        (long_form(p)
+            .to_string_lossy()
+            .trim_end_matches('\\')
+            .to_lowercase())
+        .replace('/', "\\")
+    };
     norm(got) == norm(want)
+}
+
+/// `p` with its parent folder in long form (short 8.3 components expanded), the file name
+/// kept exactly as given so a trailing dot or space still tells it apart from its sibling.
+fn long_form(p: &Path) -> PathBuf {
+    let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
+        return p.to_path_buf();
+    };
+    match std::fs::canonicalize(parent) {
+        Ok(long) => {
+            let long = long.to_string_lossy();
+            PathBuf::from(long.strip_prefix(r"\\?\").unwrap_or(&long)).join(name)
+        }
+        Err(_) => p.to_path_buf(),
+    }
 }
 
 fn wide(p: &Path) -> Result<Vec<u16>> {

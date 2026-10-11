@@ -12,7 +12,7 @@ The targets run two ways:
 - **In `cargo test`** (every platform, every CI run). Each target runs on its corpus
   (`fuzz/corpus/<target>/`) and then on seeded mutations of it: 2,000 cases per target, 500
   under CI (`CI` set), or `KEEL_FUZZ_CASES`. The mutations are seeded by the target's name,
-  so a failure reproduces. A case that panics or runs over 10 s fails the test and is saved
+  so a failure reproduces. A case that panics or runs over 10 s (30 s under CI) fails the test and is saved
   to `target/fuzz-failures/<target>-<hash>`; the test binaries' allocator refuses any single
   allocation over 512 MiB, so a size taken from a hostile header aborts the run. The
   harness is `keel_vfs::fuzz_harness`.

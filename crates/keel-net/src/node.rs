@@ -75,15 +75,21 @@ impl NodeOptions {
         };
         self
     }
-    /// No DNS, public relay, port mapping or non-loopback socket.
+    /// No DNS, public relay, port mapping or non-loopback socket. Requests get 3 s, or
+    /// 15 s under CI: a debug build on a loaded shared runner has missed 3 s while pairing.
     pub fn offline() -> Self {
+        let request_timeout = if std::env::var_os("CI").is_some() {
+            Duration::from_secs(15)
+        } else {
+            Duration::from_secs(3)
+        };
         Self {
             relay_mode: iroh::RelayMode::Disabled,
             discovery: false,
             local_discovery: false,
             bind_addr: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
             relay_only: false,
-            request_timeout: Duration::from_secs(3),
+            request_timeout,
             drop_answer_wait: crate::spacedrop::GIVE_UP,
             sync_every: crate::sync::SYNC_EVERY,
             sync_rate: crate::sync::SYNC_RATE,
