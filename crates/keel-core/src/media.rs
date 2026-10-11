@@ -163,10 +163,18 @@ fn is_avif(path: &Path) -> bool {
     has_ext(path, &["avif"])
 }
 
+/// Camera RAW files shown by their embedded JPEG preview (the TIFF-based ones).
+pub const RAW_EXTENSIONS: &[&str] = &["dng", "cr2", "nef", "arw", "orf", "rw2", "pef"];
+
+fn is_raw(path: &Path) -> bool {
+    has_ext(path, RAW_EXTENSIONS)
+}
+
 /// Photos the `image` crate cannot open, which [`decode_image`] converts: HEIC and HEIF
-/// (ffmpeg, or libheif with feature `heic`) and AVIF (ffmpeg).
+/// (ffmpeg, or libheif with feature `heic`), AVIF (ffmpeg) and camera RAW (the embedded
+/// preview).
 pub fn is_converted_photo(path: &Path) -> bool {
-    is_heif(path) || is_avif(path)
+    is_heif(path) || is_avif(path) || is_raw(path)
 }
 
 fn image_meta(path: &Path) -> Result<MediaMeta> {
@@ -284,7 +292,8 @@ pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
     };
     // (count field size, entry size, value offset in an entry, first IFD offset)
     let (count_len, entry_len, value_at, ifd) = match u16_at(&head[2..4]) {
-        42 => (2usize, 12usize, 8usize, u64::from(u32_at(&head[4..8]))),
+        // TIFF, and the TIFF-like headers of Olympus ("RO", "RS") and Panasonic RAW files.
+        42 | 0x4F52 | 0x5352 | 0x55 => (2usize, 12usize, 8usize, u64::from(u32_at(&head[4..8]))),
         43 => {
             if file.read_exact(&mut head[8..16]).is_err() {
                 return Ok(None);
@@ -317,10 +326,10 @@ pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
     Ok(None)
 }
 
-/// None when the file has no (readable) EXIF, or is a TIFF over [`TIFF_EXIF_MAX`].
+/// None when the file has no (readable) EXIF, or is a TIFF or RAW over [`TIFF_EXIF_MAX`].
 fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     let file = File::open(path)?;
-    if is_tiff(path) && file.metadata()?.len() > TIFF_EXIF_MAX {
+    if (is_tiff(path) || is_raw(path)) && file.metadata()?.len() > TIFF_EXIF_MAX {
         return Ok(None);
     }
     let mut r = BufReader::new(file);
@@ -636,6 +645,9 @@ pub fn decode_image(path: &Path, max: u32) -> Result<DynamicImage> {
     if is_avif(path) {
         return ffmpeg_still(path, max);
     }
+    if is_raw(path) {
+        return raw_image(path);
+    }
     let mut img = decode_bounded(|| Ok(ImageReader::open(path)?.with_guessed_format()?))?;
     img.apply_orientation(orientation_of(path)?);
     Ok(img)
@@ -733,7 +745,7 @@ pub(crate) fn parse_ffmpeg_major(line: &str) -> Option<u32> {
 }
 
 fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
-    if is_tiff(path) {
+    if is_tiff(path) || is_raw(path) {
         let o = tiff_orientation(path)?.unwrap_or(1);
         return Ok(image::metadata::Orientation::from_exif(o)
             .unwrap_or(image::metadata::Orientation::NoTransforms));
@@ -778,6 +790,224 @@ fn decode_heif(path: &Path, _max: u32) -> Result<DynamicImage> {
 #[cfg(not(feature = "heic"))]
 fn decode_heif(path: &Path, max: u32) -> Result<DynamicImage> {
     ffmpeg_still(path, max)
+}
+
+/// Directories, SubIFD depth and entries per directory the RAW walk reads at most.
+const RAW_MAX_IFDS: usize = 32;
+const RAW_MAX_DEPTH: u32 = 3;
+const RAW_IFD_ENTRIES: usize = 512;
+/// SubIFD offsets read from one directory.
+const RAW_MAX_SUBIFDS: u32 = 8;
+/// The largest embedded preview read (bytes).
+const RAW_PREVIEW_MAX: u64 = 64 << 20;
+/// JPEG segments skipped looking for the frame header.
+const JPEG_MAX_SEGMENTS: usize = 64;
+
+/// A JPEG preview inside a RAW file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawPreview {
+    pub(crate) offset: u64,
+    pub(crate) len: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+/// The JPEG previews embedded in a TIFF-based RAW file (DNG, CR2, NEF, ARW, ORF, RW2,
+/// PEF) that `image` can decode (baseline or progressive, at most [`MAX_PIXELS`]), largest
+/// picture first. Found through `JPEGInterchangeFormat` and its length, single JPEG strips
+/// (compression 6 or 7) and Panasonic's `JpgFromRaw`, walking IFD0's chain and the SubIFDs
+/// (at most [`RAW_MAX_IFDS`] directories, [`RAW_MAX_DEPTH`] deep, [`RAW_IFD_ENTRIES`]
+/// entries each). Reads the directories and the JPEG headers only. Empty for other files.
+pub(crate) fn raw_previews(path: &Path) -> Result<Vec<RawPreview>> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut head = [0u8; 8];
+    if file.read_exact(&mut head).is_err() {
+        return Ok(Vec::new());
+    }
+    let le = match &head[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Ok(Vec::new()),
+    };
+    let u16_of = |b: &[u8]| {
+        let b = [b[0], b[1]];
+        if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        }
+    };
+    let u32_of = |b: &[u8]| {
+        let b = [b[0], b[1], b[2], b[3]];
+        if le {
+            u32::from_le_bytes(b)
+        } else {
+            u32::from_be_bytes(b)
+        }
+    };
+    if !matches!(u16_of(&head[2..4]), 42 | 0x4F52 | 0x5352 | 0x55) {
+        return Ok(Vec::new());
+    }
+    let mut found: Vec<(u64, u64)> = Vec::new();
+    let mut todo = vec![(u64::from(u32_of(&head[4..8])), 0u32)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((ifd, depth)) = todo.pop() {
+        if seen.len() >= RAW_MAX_IFDS || ifd < 8 || ifd >= size || !seen.insert(ifd) {
+            continue;
+        }
+        file.seek(SeekFrom::Start(ifd))?;
+        let mut count = [0u8; 2];
+        if file.read_exact(&mut count).is_err() {
+            continue;
+        }
+        let n = usize::from(u16_of(&count)).min(RAW_IFD_ENTRIES);
+        let mut entries = vec![0u8; n * 12 + 4];
+        let got = file
+            .by_ref()
+            .take(entries.len() as u64)
+            .read(&mut entries)?;
+        let n = n.min(got / 12);
+        let next = (got >= n * 12 + 4).then(|| u32_of(&entries[n * 12..]));
+        let mut jpeg = (None, None);
+        let mut strip = (None, None, 0u32);
+        let mut compression = 0;
+        for e in entries[..n * 12].as_chunks::<12>().0 {
+            let (tag, kind, count) = (u16_of(&e[0..2]), u16_of(&e[2..4]), u32_of(&e[4..8]));
+            // The first value of a SHORT entry, else the 32-bit value or offset field.
+            let value = if kind == 3 {
+                u32::from(u16_of(&e[8..10]))
+            } else {
+                u32_of(&e[8..12])
+            };
+            match tag {
+                0x0103 => compression = value,
+                0x0111 => (strip.0, strip.2) = (Some(value), count),
+                0x0117 => strip.1 = Some(value),
+                0x0201 => jpeg.0 = Some(value),
+                0x0202 => jpeg.1 = Some(value),
+                // Panasonic's JpgFromRaw: the entry's data is a whole JPEG.
+                0x002E if kind == 7 => found.push((u64::from(value), u64::from(count))),
+                0x014A if depth < RAW_MAX_DEPTH && count == 1 => {
+                    todo.push((u64::from(value), depth + 1));
+                }
+                0x014A if depth < RAW_MAX_DEPTH => {
+                    let mut offsets = vec![0u8; count.min(RAW_MAX_SUBIFDS) as usize * 4];
+                    let here = file.stream_position()?;
+                    file.seek(SeekFrom::Start(u64::from(value)))?;
+                    if file.read_exact(&mut offsets).is_ok() {
+                        for o in offsets.as_chunks::<4>().0 {
+                            todo.push((u64::from(u32_of(o)), depth + 1));
+                        }
+                    }
+                    file.seek(SeekFrom::Start(here))?;
+                }
+                _ => {}
+            }
+        }
+        if let (Some(at), Some(len)) = jpeg {
+            found.push((u64::from(at), u64::from(len)));
+        }
+        if let (Some(at), Some(len), 1) = strip {
+            if matches!(compression, 6 | 7) {
+                found.push((u64::from(at), u64::from(len)));
+            }
+        }
+        if let Some(next) = next {
+            todo.push((u64::from(next), depth));
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    let mut previews = Vec::new();
+    for (offset, len) in found {
+        if !(2..=RAW_PREVIEW_MAX).contains(&len) || offset.saturating_add(len) > size {
+            continue;
+        }
+        if let Some((width, height)) = jpeg_frame(&mut file, offset, len)? {
+            if u64::from(width) * u64::from(height) <= MAX_PIXELS {
+                previews.push(RawPreview {
+                    offset,
+                    len,
+                    width,
+                    height,
+                });
+            }
+        }
+    }
+    previews.sort_by_key(|p| std::cmp::Reverse(u64::from(p.width) * u64::from(p.height)));
+    Ok(previews)
+}
+
+/// Width and height from the frame header of the JPEG at `offset`, when it is baseline,
+/// extended or progressive (SOF0 to SOF2, what `image` decodes; not lossless or
+/// arithmetic-coded ones, which RAW files use for their sensor data).
+fn jpeg_frame(file: &mut File, offset: u64, len: u64) -> Result<Option<(u32, u32)>> {
+    use std::io::{Seek, SeekFrom};
+    let end = offset + len;
+    let mut read_at = |at: u64, buf: &mut [u8]| -> Result<bool> {
+        if at + buf.len() as u64 > end {
+            return Ok(false);
+        }
+        file.seek(SeekFrom::Start(at))?;
+        Ok(file.read_exact(buf).is_ok())
+    };
+    let mut soi = [0u8; 2];
+    if !read_at(offset, &mut soi)? || soi != [0xFF, 0xD8] {
+        return Ok(None);
+    }
+    let mut at = offset + 2;
+    for _ in 0..JPEG_MAX_SEGMENTS {
+        let mut seg = [0u8; 9];
+        if !read_at(at, &mut seg[..4])? || seg[0] != 0xFF {
+            return Ok(None);
+        }
+        match seg[1] {
+            // A fill byte before the marker.
+            0xFF => at += 1,
+            0xC0..=0xC2 => {
+                if !read_at(at, &mut seg)? {
+                    return Ok(None);
+                }
+                let h = u32::from(u16::from_be_bytes([seg[5], seg[6]]));
+                let w = u32::from(u16::from_be_bytes([seg[7], seg[8]]));
+                return Ok((w > 0 && h > 0).then_some((w, h)));
+            }
+            // Other frame types, or the scan or the end before any frame.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xD9 | 0xDA => return Ok(None),
+            _ => at += 2 + u64::from(u16::from_be_bytes([seg[2], seg[3]])),
+        }
+    }
+    Ok(None)
+}
+
+/// The largest embedded preview of a RAW file that decodes, with the file's orientation
+/// applied.
+fn raw_image(path: &Path) -> Result<DynamicImage> {
+    use std::io::{Seek, SeekFrom};
+    let previews = raw_previews(path)?;
+    let mut last = corrupt("no embedded preview");
+    let mut file = File::open(path)?;
+    for p in previews.iter().take(3) {
+        let mut jpeg = vec![0u8; p.len as usize];
+        file.seek(SeekFrom::Start(p.offset))?;
+        file.read_exact(&mut jpeg)?;
+        let decoded = decode_bounded(|| {
+            Ok(ImageReader::with_format(
+                Cursor::new(jpeg.as_slice()),
+                ImageFormat::Jpeg,
+            ))
+        });
+        match decoded {
+            Ok(mut img) => {
+                img.apply_orientation(orientation_of(path)?);
+                return Ok(img);
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// Fits `img` within `max` x `max` (never enlarging) and encodes it as lossless WebP (the

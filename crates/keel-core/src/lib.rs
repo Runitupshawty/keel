@@ -52,7 +52,7 @@ pub use library::{
 };
 pub use media::{
     decode_image, ffmpeg_available, ffprobe_json, find_tool, is_converted_photo, parse_probe,
-    read_meta, MediaMeta, NeedsFfmpeg, TimedOutAt, MAX_PIXELS, STILL_MIN_FFMPEG,
+    read_meta, MediaMeta, NeedsFfmpeg, TimedOutAt, MAX_PIXELS, RAW_EXTENSIONS, STILL_MIN_FFMPEG,
 };
 pub use oplog::{OpDone, OpLogEntry};
 pub use plan::{

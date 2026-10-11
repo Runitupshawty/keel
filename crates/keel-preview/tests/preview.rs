@@ -757,3 +757,29 @@ fn heic_and_avif_preview_through_ffmpeg() {
         Preview::Error(_)
     ));
 }
+
+/// A RAW file shows its largest embedded JPEG, turned by its orientation; CR3 and RAF say
+/// they are not read.
+#[test]
+fn raw_files_preview_their_embedded_jpeg() {
+    let result = preview(&request("tiny.dng"));
+    let Preview::Image(image) = result else {
+        panic!("expected an image, got {result:?}");
+    };
+    assert_eq!((image.w, image.h), (20, 40));
+    let dir = tempfile::tempdir().unwrap();
+    for ext in ["cr3", "raf"] {
+        let path = dir.path().join(format!("photo.{ext}"));
+        std::fs::write(&path, b"....").unwrap();
+        assert!(matches!(
+            preview(&temp_request(&path, ext, 64)),
+            Preview::Missing(why) if why.contains("CR3")
+        ));
+    }
+    let bad = dir.path().join("bad.nef");
+    std::fs::write(&bad, b"II*\0garbage").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "nef", 64)),
+        Preview::Error(_)
+    ));
+}

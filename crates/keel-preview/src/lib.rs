@@ -67,7 +67,8 @@ pub enum Preview {
     },
     TooLarge(u64),
     Unsupported,
-    /// A helper this file type needs is not installed; the text says what to do.
+    /// A helper this file type needs is not installed, or Keel cannot read this kind of
+    /// file; the text says what to do or why.
     Missing(&'static str),
     Error(String),
 }
@@ -82,11 +83,11 @@ pub struct Request {
     pub fit_width: bool,
 }
 
-/// Formats whose renderer reads only what it needs (a PDF page, one video frame), so the
-/// `MAX_PREVIEW_BYTES` cap does not apply to them.
+/// Formats whose renderer reads only what it needs (a PDF page, one video frame, a RAW
+/// file's embedded preview), so the `MAX_PREVIEW_BYTES` cap does not apply to them.
 pub fn streams(ext: &str) -> bool {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();
-    pdf::accepts(&ext) || video::accepts(&ext)
+    pdf::accepts(&ext) || video::accepts(&ext) || image::is_raw(&ext)
 }
 
 pub fn accepts(ext: &str) -> bool {
@@ -199,8 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn only_pdf_and_video_skip_the_size_cap() {
-        for ext in ["pdf", "PDF", "mp4", ".mkv"] {
+    fn only_pdf_video_and_raw_skip_the_size_cap() {
+        for ext in ["pdf", "PDF", "mp4", ".mkv", "dng", "NEF", "cr3"] {
             assert!(streams(ext), "{ext}");
         }
         for ext in ["txt", "png", "csv", "docx", ""] {

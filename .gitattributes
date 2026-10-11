@@ -10,3 +10,6 @@
 *.docx binary
 *.xlsx binary
 *.ico binary
+*.heic binary
+*.avif binary
+*.dng binary

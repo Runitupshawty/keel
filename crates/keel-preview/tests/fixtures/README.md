@@ -20,3 +20,6 @@ Synthetic files only (no photos or recordings of anyone).
     on the right.
   - `pattern.avif`: `ffmpeg -i pattern.png -c:v libaom-av1 -still-picture 1 -crf 40
     -pix_fmt yuv420p pattern.avif`.
+- `tiny.dng`: a DNG-shaped TIFF (orientation 6) with an 8 x 6 JPEG thumbnail, a lossless
+  JPEG strip header and a 40 x 20 baseline JPEG strip, written by keel-core's
+  `media::tests::tiny_dng` (`cargo test -p keel-core --lib write_dng_fixture -- --ignored`).

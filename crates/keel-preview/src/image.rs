@@ -4,18 +4,29 @@ use resvg::usvg::{fontdb, Options, Tree};
 use std::sync::{Arc, OnceLock};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
-/// Photos keel-core converts (`keel_core::decode_image`): HEIC, HEIF and AVIF through ffmpeg.
+/// Photos keel-core converts (`keel_core::decode_image`): HEIC, HEIF and AVIF through
+/// ffmpeg; camera RAW files ([`keel_core::RAW_EXTENSIONS`]) by their embedded preview.
 const CONVERTED: &[&str] = &["heic", "heif", "avif"];
+/// RAW files that are not TIFF-based: no embedded preview is read from them.
+const OTHER_RAW: &[&str] = &["cr3", "raf"];
 const NEEDS_FFMPEG: &str = "Install ffmpeg to see HEIC and AVIF photos";
+const NO_RAW_PREVIEW: &str = "No preview: Keel reads the embedded preview of TIFF-based \
+    RAW files (DNG, CR2, NEF, ARW, ORF, RW2, PEF), not CR3 or RAF";
+
+pub(crate) fn is_raw(ext: &str) -> bool {
+    keel_core::RAW_EXTENSIONS.contains(&ext) || OTHER_RAW.contains(&ext)
+}
 
 pub(crate) fn accepts(ext: &str) -> bool {
-    IMAGE_EXTENSIONS.contains(&ext) || CONVERTED.contains(&ext)
+    IMAGE_EXTENSIONS.contains(&ext) || CONVERTED.contains(&ext) || is_raw(ext)
 }
 
 pub(crate) fn render(req: &Request, ext: &str) -> Preview {
     let result = if ext == "svg" {
         render_svg(req)
-    } else if CONVERTED.contains(&ext) {
+    } else if OTHER_RAW.contains(&ext) {
+        return Preview::Missing(NO_RAW_PREVIEW);
+    } else if CONVERTED.contains(&ext) || is_raw(ext) {
         // keel-core picks the decoder by the extension (local copies keep the file name).
         match keel_core::decode_image(&req.bytes_path, req.max_px.max(1)) {
             Ok(image) => Ok(downscale(image, req.max_px)),

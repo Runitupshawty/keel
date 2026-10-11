@@ -430,3 +430,160 @@ fn heic_and_avif_decode_through_ffmpeg() {
     std::fs::write(&bad, b"not a photo").unwrap();
     assert!(is_corrupt(&decode_image(&bad, 64).unwrap_err()));
 }
+
+/// A JPEG of `w` x `h`, left half red, right half blue.
+fn jpeg_bytes(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(w, h, |x, _| {
+        if x < w / 2 {
+            image::Rgb([255, 0, 0])
+        } else {
+            image::Rgb([0, 0, 255])
+        }
+    });
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
+        .encode_image(&img)
+        .unwrap();
+    out
+}
+
+/// One little-endian IFD: (tag, type, count, value) entries and the next IFD's offset.
+fn ifd(entries: &[(u16, u16, u32, u32)], next: u32) -> Vec<u8> {
+    let mut out = (entries.len() as u16).to_le_bytes().to_vec();
+    for (tag, kind, count, value) in entries {
+        out.extend(tag.to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(value.to_le_bytes());
+    }
+    out.extend(next.to_le_bytes());
+    out
+}
+
+/// A tiny DNG-shaped file: IFD0 (orientation 6) with an 8 x 6 JPEG thumbnail and two
+/// SubIFDs, one a "lossless JPEG" strip (a frame header only, 200 x 100) and one a 40 x 20
+/// baseline JPEG strip. The committed `tiny.dng` fixture is this file (`write_dng_fixture`).
+pub(crate) fn tiny_dng() -> Vec<u8> {
+    let (small, big) = (jpeg_bytes(8, 6), jpeg_bytes(40, 20));
+    let lossless = [
+        0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 0x08, 0x00, 0x64, 0x00, 0xC8, 0x01, 0x01, 0x11, 0x00,
+        0xFF, 0xD9,
+    ];
+    let mut buf = vec![0u8; 8];
+    let put = |buf: &mut Vec<u8>, data: &[u8]| {
+        let at = buf.len() as u32;
+        buf.extend_from_slice(data);
+        at
+    };
+    let small_at = put(&mut buf, &small);
+    let big_at = put(&mut buf, &big);
+    let lossless_at = put(&mut buf, &lossless);
+    let strip = |at: u32, len: usize| {
+        ifd(
+            &[
+                (0x0103, 3, 1, 7),
+                (0x0111, 4, 1, at),
+                (0x0117, 4, 1, len as u32),
+            ],
+            0,
+        )
+    };
+    let sub_a = put(&mut buf, &strip(lossless_at, lossless.len()));
+    let sub_b = put(&mut buf, &strip(big_at, big.len()));
+    let subs: Vec<u8> = [sub_a, sub_b]
+        .iter()
+        .flat_map(|o| o.to_le_bytes())
+        .collect();
+    let subs_at = put(&mut buf, &subs);
+    let ifd0 = ifd(
+        &[
+            (0x0112, 3, 1, 6),
+            (0x014A, 4, 2, subs_at),
+            (0x0201, 4, 1, small_at),
+            (0x0202, 4, 1, small.len() as u32),
+        ],
+        0,
+    );
+    let ifd0_at = put(&mut buf, &ifd0);
+    buf[..4].copy_from_slice(b"II*\0");
+    buf[4..8].copy_from_slice(&ifd0_at.to_le_bytes());
+    buf
+}
+
+#[test]
+fn raw_files_show_their_largest_decodable_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("photo.dng");
+    std::fs::write(&path, tiny_dng()).unwrap();
+    let found: Vec<(u32, u32)> = raw_previews(&path)
+        .unwrap()
+        .iter()
+        .map(|p| (p.width, p.height))
+        .collect();
+    assert_eq!(found, [(40, 20), (8, 6)], "the lossless strip is left out");
+    let img = decode_image(&path, 256).unwrap();
+    assert_eq!(
+        (img.width(), img.height()),
+        (20, 40),
+        "orientation 6 applied"
+    );
+    let [r, _, b] = rgb(&img, 10, 4);
+    assert!(r > 200 && b < 60, "red on top after the quarter turn");
+    let thumb = image::load_from_memory(&thumbnail(&path, 256).unwrap()).unwrap();
+    assert_eq!((thumb.width(), thumb.height()), (20, 40));
+
+    // The same bytes under an Olympus header ("IIRO") read the same.
+    let mut orf = tiny_dng();
+    orf[2..4].copy_from_slice(b"RO");
+    let orf_path = dir.path().join("photo.orf");
+    std::fs::write(&orf_path, orf).unwrap();
+    assert_eq!(raw_previews(&orf_path).unwrap().len(), 2);
+    assert_eq!(tiff_orientation(&orf_path).unwrap(), Some(6));
+
+    // No preview at all, or not a TIFF: a content error.
+    let empty = dir.path().join("empty.nef");
+    std::fs::write(
+        &empty,
+        [b"II*\0".as_slice(), &8u32.to_le_bytes(), &ifd(&[], 0)].concat(),
+    )
+    .unwrap();
+    assert!(is_corrupt(&decode_image(&empty, 64).unwrap_err()));
+    let text = dir.path().join("text.cr2");
+    std::fs::write(&text, b"not a raw file").unwrap();
+    assert!(raw_previews(&text).unwrap().is_empty());
+    assert!(is_corrupt(&decode_image(&text, 64).unwrap_err()));
+}
+
+/// Loops, huge counts and offsets past the end end the walk; nothing is read for them.
+#[test]
+fn hostile_raw_directories_are_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("loop.dng");
+    // IFD0 points at itself as its next IFD and claims 65,535 entries, a SubIFD array of
+    // a billion offsets, and a preview past the end of the file.
+    let mut buf = b"II*\0".to_vec();
+    buf.extend(8u32.to_le_bytes());
+    buf.extend(ifd(
+        &[
+            (0x014A, 4, 1_000_000_000, 8),
+            (0x0201, 4, 1, 4_000_000_000),
+            (0x0202, 4, 1, 4_000_000),
+        ],
+        8,
+    ));
+    buf[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+    std::fs::write(&path, &buf).unwrap();
+    assert!(raw_previews(&path).unwrap().is_empty());
+    assert!(decode_image(&path, 64).is_err());
+}
+
+/// Writes keel-preview's `tiny.dng` fixture and the `raw` fuzz seed: run it after changing
+/// [`tiny_dng`].
+#[test]
+#[ignore = "writes the tiny.dng fixture and corpus seed"]
+fn write_dng_fixture() {
+    std::fs::write(photo_fixture("tiny.dng"), tiny_dng()).unwrap();
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/raw");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(corpus.join("tiny.dng"), tiny_dng()).unwrap();
+}

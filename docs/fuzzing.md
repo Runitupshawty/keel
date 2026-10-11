@@ -30,6 +30,7 @@ crate's `fuzzing` feature.
 | `archive` | `keel_vfs::fuzz::archive` | zip (zip64), tar, tar.gz/.bz2/.xz/.zst, 7z, RAR: listing, every body, and the zip rewriter deleting, renaming and adding entries |
 | `ssh_config` | `keel_vfs::fuzz::ssh_config` | `~/.ssh/config` with `Include`s, resolved for the aliases it names |
 | `tiff` | `keel_core::fuzz::tiff` | a TIFF's orientation (first IFD) and metadata |
+| `raw` | `keel_core::fuzz::raw` | camera RAW files: the walk of IFDs and SubIFDs to the embedded JPEG previews (bounded in count and depth), metadata, small previews |
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |
 | `probe` | `keel_core::fuzz::probe` | ffprobe JSON as the video metadata reader takes it |
 | `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters) and the SQL it becomes |
