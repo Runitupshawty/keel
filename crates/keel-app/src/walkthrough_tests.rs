@@ -3252,6 +3252,7 @@ fn wsl_distributions_in_the_sidebar() {
     // The drive and WSL refresh has answered (it would replace the fake list).
     assert!(wait(&mut h, 30, &|s| s.sidebar.drives_pending.is_none()));
     assert!(!has(&h, "WSL"), "no section without distributions");
+    sm(&mut h).sidebar.wsl_frozen = true;
     sm(&mut h).sidebar.wsl = vec!["Ubuntu".into(), "Broken".into()];
     sm(&mut h).sidebar.wsl_open = fake_wsl_open;
     h.run_steps(2);

@@ -31,6 +31,8 @@ pub struct Sidebar {
     pub wsl_starting: Option<String>,
     /// Opens a distribution (`wsl::open`; tests stub it). Runs on a worker.
     pub wsl_open: fn(&str) -> anyhow::Result<VPath>,
+    /// Tests that stub `wsl` set this so the 30 s drives refresh does not replace the list.
+    pub wsl_frozen: bool,
     /// Configured SFTP hosts (`sidebar_remotes`), rebuilt each frame by the state.
     pub remotes: Vec<crate::sidebar_remotes::RemoteRow>,
     /// Configured cloud accounts, rebuilt each frame by the state.
@@ -75,6 +77,7 @@ impl Default for Sidebar {
             wsl: Vec::new(),
             wsl_starting: None,
             wsl_open: crate::wsl::open,
+            wsl_frozen: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
             devices: None,
