@@ -3,4 +3,4 @@ mod grid;
 mod session;
 mod shells;
 pub use session::Session;
-pub use shells::{available_shells, wslpath, Shell, ShellKind};
+pub use shells::{available_shells, wsl_distros, wslpath, Shell, ShellKind};

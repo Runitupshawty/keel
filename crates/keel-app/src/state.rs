@@ -92,6 +92,13 @@ pub enum Msg {
         watcher: Box<dyn Any + Send>,
     },
     Drives(Vec<Drive>),
+    /// Task 51: the installed WSL distributions, the default first.
+    WslDistros(Vec<String>),
+    /// Task 51: distribution `name` opened (its root) or could not be.
+    WslOpened {
+        name: String,
+        result: anyhow::Result<VPath>,
+    },
     Thumb {
         key: PreviewKey,
         preview: keel_preview::Preview,
@@ -683,6 +690,16 @@ impl AppState {
                 self.sidebar.drives = drives;
                 self.sidebar.drives_pending = None;
                 self.sidebar.drives_stuck = false;
+            }
+            Msg::WslDistros(names) => self.sidebar.wsl = names,
+            Msg::WslOpened { name, result } => {
+                if self.sidebar.wsl_starting.as_ref() == Some(&name) {
+                    self.sidebar.wsl_starting = None;
+                }
+                match result {
+                    Ok(root) => self.run(self.active, Action::Navigate(root)),
+                    Err(e) => self.toasts.error(format!("Could not open {name}: {e:#}")),
+                }
             }
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
@@ -1932,6 +1949,12 @@ impl AppState {
                         text: crate::remotes::delete_text(paths.len(), &label),
                         on_yes: Action::DeleteRemote(paths),
                     });
+                } else if let Some(distro) = crate::wsl::one_distro(&paths) {
+                    // Task 51: WSL folders have no Recycle Bin; say the delete is for good.
+                    self.dialog = Some(Dialog::Confirm {
+                        text: crate::wsl::delete_text(paths.len(), &distro),
+                        on_yes: Action::DeleteRemote(paths),
+                    });
                 } else if !paths.is_empty() {
                     self.dialog = Some(Dialog::Confirm {
                         text: format!("Move {} to the trash?", jobs::items(paths.len())),
@@ -1995,6 +2018,15 @@ impl AppState {
                 });
                 self.jobs
                     .delete(paths, self.router.clone(), self.tx.clone());
+            }
+            Action::OpenWsl(name) => {
+                // One at a time: a second click while one starts waits for it.
+                if self.sidebar.wsl_starting.is_none() {
+                    let open = self.sidebar.wsl_open;
+                    if worker::spawn_wsl(name.clone(), open, self.tx.clone(), self.ctx.clone()) {
+                        self.sidebar.wsl_starting = Some(name);
+                    }
+                }
             }
             Action::Remote { host, cmd } => self.remote_cmd(host, cmd),
             Action::Cloud { id, cmd } => self.cloud_cmd(id, cmd),

@@ -59,6 +59,7 @@ mod view_media;
 #[cfg(test)]
 mod walkthrough_tests; // the QA walkthrough (scripts/walkthrough.sh)
 mod worker;
+mod wsl; // Task 51: the sidebar's WSL section
 #[cfg(any(target_os = "linux", test))]
 mod x11_clipboard;
 // --- Task 24 ---

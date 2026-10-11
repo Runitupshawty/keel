@@ -2557,3 +2557,58 @@ fn undo_reports_from_before_a_profile_switch_are_dropped() {
     assert_eq!(s(&h).undo.label().as_deref(), Some("Undo copy"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------------------
+// WSL (Task 51)
+
+/// Stands in for `wsl::open`: "Ubuntu" is stopped (it takes a moment to start) and then
+/// opens on the fixture's Documents, as a started distribution's root would; "Broken"
+/// fails as an unreachable share does.
+fn fake_wsl_open(name: &str) -> anyhow::Result<VPath> {
+    match name {
+        "Ubuntu" => {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            Ok(VPath::local(demo().join("Documents")))
+        }
+        _ => anyhow::bail!("The network name cannot be found. (os error 67)"),
+    }
+}
+
+/// The sidebar's WSL section with a fake distribution list (default first): a click shows
+/// "starting…" while the distribution starts, then opens it in the active pane through the
+/// navigation path (the provider call is stubbed); a failure is an error toast; without
+/// distributions there is no section.
+#[test]
+fn wsl_distributions_in_the_sidebar() {
+    let mut h = app(demo(), demo());
+    // The drive and WSL refresh has answered (it would replace the fake list).
+    assert!(wait(&mut h, 30, &|s| s.sidebar.drives_pending.is_none()));
+    assert!(!has(&h, "WSL"), "no section without distributions");
+    sm(&mut h).sidebar.wsl = vec!["Ubuntu".into(), "Broken".into()];
+    sm(&mut h).sidebar.wsl_open = fake_wsl_open;
+    h.run_steps(2);
+    assert!(has(&h, "WSL"));
+    assert!(
+        pos(&h, "Ubuntu", 0).y < pos(&h, "Broken", 0).y,
+        "default first"
+    );
+    click(&mut h, "Ubuntu");
+    assert_eq!(s(&h).sidebar.wsl_starting.as_deref(), Some("Ubuntu"));
+    assert!(has_contains(&h, "starting…"), "shown while it starts");
+    // A second click while it starts does nothing.
+    click(&mut h, "Broken");
+    let docs = demo().join("Documents");
+    assert!(wait(&mut h, 10, &|s| dir_is(s, s.active, &docs)
+        && s.sidebar.wsl_starting.is_none()));
+    assert!(!has_contains(&h, "starting…"));
+    assert!(toast_texts(s(&h)).is_empty(), "{:?}", toast_texts(s(&h)));
+    shot(&mut h, "wsl-sidebar");
+    click(&mut h, "Broken");
+    assert!(wait(&mut h, 10, &|s| toast_texts(s).iter().any(
+        |t| t.starts_with("Could not open Broken: The network name")
+    )));
+    assert!(dir_is(s(&h), s(&h).active, &docs), "the pane stays");
+    sm(&mut h).sidebar.wsl.clear();
+    h.run_steps(2);
+    assert!(!has(&h, "WSL"));
+}

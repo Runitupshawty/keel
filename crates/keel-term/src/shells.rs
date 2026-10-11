@@ -44,31 +44,122 @@ pub fn wslpath(win: &Path) -> String {
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn parse_distros(bytes: &[u8], success: bool) -> Vec<String> {
-    if !success {
-        return Vec::new();
+/// Installed WSL distributions, the default one first; empty without WSL (and on other
+/// systems). Read from the registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss`:
+/// each `{guid}` subkey's `DistributionName`, and `DefaultDistribution`), never from
+/// `wsl.exe --list`, which is slow, answers in UTF-16 and starts the WSL service. The
+/// terminal's shell list and the sidebar's WSL section both use it.
+pub fn wsl_distros() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use windows::core::w;
+        use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+        let (default, entries) = read_subkeys(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss"),
+            w!("DefaultDistribution"),
+            w!("DistributionName"),
+        );
+        order_distros(default.as_deref(), entries)
     }
-    let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.contains(&0) {
-        String::from_utf16_lossy(
-            &bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|b| u16::from_le_bytes(*b))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// `entries`: (subkey name, `DistributionName`) per `Lxss` subkey; `default`: the
+/// `DefaultDistribution` value (a subkey name). Names WSL would not accept (it allows
+/// letters, digits, `-`, `_` and `.`) are dropped, so a name is safe as a `wsl -d`
+/// argument and as a UNC path segment. Default first, then by name.
+#[cfg(any(windows, test))]
+fn order_distros(default: Option<&str>, entries: Vec<(String, String)>) -> Vec<String> {
+    let is_default = |key: &str| default.is_some_and(|d| d.eq_ignore_ascii_case(key));
+    let mut found: Vec<(bool, String)> = entries
+        .into_iter()
+        .filter(|(_, name)| {
+            !name.is_empty()
+                && !name.starts_with('.')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
+        .map(|(key, name)| (!is_default(&key), name))
+        .collect();
+    found.sort_by_key(|(rest, name)| (*rest, name.to_lowercase()));
+    found.dedup_by(|a, b| a.1.eq_ignore_ascii_case(&b.1));
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
+/// The string value `default` of key `root\path`, and (subkey, its string value `value`)
+/// for each subkey that has one; nothing when the key is missing (`Lxss`: no WSL).
+#[cfg(windows)]
+fn read_subkeys(
+    root: windows::Win32::System::Registry::HKEY,
+    path: windows::core::PCWSTR,
+    default: windows::core::PCWSTR,
+    value: windows::core::PCWSTR,
+) -> (Option<String>, Vec<(String, String)>) {
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, KEY_READ, RRF_RT_REG_SZ,
     };
-    text.trim_start_matches('\u{feff}')
-        .lines()
-        .map(str::trim)
-        // WSL returns an installation hint on some builds even with exit status zero.
-        // Quiet output is one distro identifier per line, never prose or a URL.
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)))
-        .map(str::to_owned)
-        .collect()
+    // A REG_SZ value of at most 260 characters, or None.
+    let get = |key: HKEY, sub: PCWSTR, name: PCWSTR| {
+        let mut buf = [0u16; 261];
+        let mut size = (buf.len() * 2) as u32;
+        // SAFETY: `buf` holds `size` bytes; `sub` (or null) and `name` are NUL-terminated.
+        unsafe {
+            RegGetValueW(
+                key,
+                sub,
+                name,
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
+        }
+        .is_ok()
+        .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1)]))
+    };
+    let mut lxss = HKEY::default();
+    // SAFETY: `path` is NUL-terminated; `lxss` is written on success.
+    let opened = unsafe { RegOpenKeyExW(root, path, 0, KEY_READ, &mut lxss) };
+    if opened.is_err() {
+        return (None, Vec::new());
+    }
+    let default = get(lxss, PCWSTR::null(), default);
+    let mut entries = Vec::new();
+    // Bounded: a key with hundreds of subkeys is not a WSL install.
+    for index in 0..256 {
+        // Key names are at most 255 characters; one more for the NUL.
+        let mut name = [0u16; 256];
+        let mut len = 255u32;
+        // SAFETY: `name` holds `len` characters plus the NUL.
+        let rc = unsafe {
+            RegEnumKeyExW(
+                lxss,
+                index,
+                PWSTR(name.as_mut_ptr()),
+                &mut len,
+                None,
+                PWSTR::null(),
+                None,
+                None,
+            )
+        };
+        if rc.is_err() {
+            break;
+        }
+        let len = (len as usize).min(255);
+        name[len] = 0;
+        let key = String::from_utf16_lossy(&name[..len]);
+        if let Some(distro) = get(lxss, PCWSTR(name.as_ptr()), value) {
+            entries.push((key, distro));
+        }
+    }
+    // SAFETY: opened above, closed once.
+    let _ = unsafe { RegCloseKey(lxss) };
+    (default, entries)
 }
 
 fn add(shells: &mut Vec<Shell>, program: PathBuf, kind: ShellKind, label: &str) {
@@ -84,10 +175,6 @@ fn add(shells: &mut Vec<Shell>, program: PathBuf, kind: ShellKind, label: &str) 
 
 #[cfg(target_os = "windows")]
 fn platform_shells() -> Vec<Shell> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-    use std::time::Duration;
-    use wait_timeout::ChildExt;
     let root =
         PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()));
     let system = root.join("System32");
@@ -115,32 +202,13 @@ fn platform_shells() -> Vec<Shell> {
         let p = system.join("wsl.exe");
         p.is_file().then_some(p)
     }) {
-        if let Ok(mut child) = Command::new(&wsl)
-            .args(["-l", "-q"])
-            .creation_flags(0x08000000)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            match child.wait_timeout(Duration::from_secs(2)) {
-                Ok(Some(status)) => {
-                    if let Ok(out) = child.wait_with_output() {
-                        for distro in parse_distros(&out.stdout, status.success()) {
-                            shells.push(Shell {
-                                label: format!("WSL: {distro}"),
-                                program: wsl.clone(),
-                                args: vec!["-d".into(), distro],
-                                kind: ShellKind::Wsl,
-                            });
-                        }
-                    }
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-            }
+        for distro in wsl_distros() {
+            shells.push(Shell {
+                label: format!("WSL: {distro}"),
+                program: wsl.clone(),
+                args: vec!["-d".into(), distro],
+                kind: ShellKind::Wsl,
+            });
         }
     }
     if shells.is_empty() {
@@ -207,20 +275,70 @@ mod tests {
         assert_eq!(wslpath(Path::new("/home/user")), "/home/user");
     }
 
+    /// The `Lxss` values as the registry has them: the default first whatever its place,
+    /// the rest by name; empty, odd or duplicate names dropped.
     #[test]
-    fn captured_wsl_quiet_output_utf16_and_install_hint() {
-        let bytes: Vec<u8> = "\u{feff}Ubuntu\r\nDebian\r\n\r\n"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        assert_eq!(parse_distros(&bytes, true), ["Ubuntu", "Debian"]);
+    fn wsl_registry_values_default_first() {
+        let e = |k: &str, n: &str| (k.to_owned(), n.to_owned());
+        let entries = vec![
+            e("{0a}", "Ubuntu"),
+            e("{1b}", "debian"),
+            e("{2C}", "Alpine"),
+            e("{3d}", ""),
+            e("{4e}", "has space"),
+            e("{5f}", "../x"),
+            e("{6a}", "ubuntu"),
+            e("{7b}", "Ubuntu-24.04_x"),
+            e("{8c}", ".."),
+            e("{9d}", "Débian"),
+        ];
         assert_eq!(
-            parse_distros(b"Ubuntu\r\nDebian\r\n", true),
-            ["Ubuntu", "Debian"]
+            order_distros(Some("{2c}"), entries.clone()),
+            ["Alpine", "debian", "Ubuntu", "Ubuntu-24.04_x"]
         );
-        let hint = b"Windows Subsystem for Linux is not installed. You can install by running 'wsl.exe --install'.\r\n";
-        assert!(parse_distros(hint, false).is_empty());
-        assert!(parse_distros(hint, true).is_empty());
-        assert!(parse_distros(b"", true).is_empty());
+        assert_eq!(
+            order_distros(Some("{7B}"), entries.clone()),
+            ["Ubuntu-24.04_x", "Alpine", "debian", "Ubuntu"]
+        );
+        // A default that names no subkey, or none: by name only.
+        assert_eq!(
+            order_distros(Some("{99}"), entries.clone()),
+            ["Alpine", "debian", "Ubuntu", "Ubuntu-24.04_x"]
+        );
+        assert_eq!(order_distros(None, entries)[0], "Alpine");
+        assert!(order_distros(None, Vec::new()).is_empty());
+    }
+
+    /// The registry walk on a key every Windows has (installed programs), read only.
+    #[cfg(windows)]
+    #[test]
+    fn registry_subkeys_are_read() {
+        use windows::core::w;
+        use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+        let (_, found) = read_subkeys(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+            w!("NoSuchValue"),
+            w!("DisplayName"),
+        );
+        assert!(found
+            .iter()
+            .any(|(key, name)| !key.is_empty() && !name.is_empty()));
+        let missing = read_subkeys(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\NoSuchKeelKey"),
+            w!("x"),
+            w!("y"),
+        );
+        assert_eq!(missing, (None, Vec::new()));
+    }
+
+    /// Reads the live registry: never fails, whether or not WSL is installed.
+    #[test]
+    fn wsl_distros_reads_without_wsl() {
+        let found = wsl_distros();
+        assert!(found
+            .iter()
+            .all(|d| !d.is_empty() && !d.contains(['\\', '/', ' '])));
     }
 }

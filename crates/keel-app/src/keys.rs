@@ -57,8 +57,11 @@ pub enum Action {
     Delete,
     /// Confirmed: send these to the OS trash.
     Trash(Vec<VPath>),
-    /// Confirmed: delete these on their remote host (no trash there).
+    /// Confirmed: delete these for good (a remote host, a cloud, a WSL folder: no trash
+    /// there).
     DeleteRemote(Vec<VPath>),
+    /// Sidebar: open this WSL distribution (started first when stopped), on a worker.
+    OpenWsl(String),
     /// Sidebar command on a configured remote host (by id).
     Remote {
         host: String,

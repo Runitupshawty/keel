@@ -329,6 +329,8 @@ pub(crate) fn neutral_sidebar(s: &mut AppState, root: &Path) {
     // Never refreshed from the real drives while a harness runs (a flow longer than
     // `DRIVES_REFRESH` would show this machine's figures).
     s.sidebar.drives_requested = Some(Instant::now() + Duration::from_secs(86_400));
+    // Never this machine's WSL distributions.
+    s.sidebar.wsl.clear();
 }
 
 fn harness(

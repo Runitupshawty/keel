@@ -127,6 +127,26 @@ pub fn trash(p: &VPath) -> Result<Option<PathBuf>> {
     trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
 }
 
+/// Deletes local `p` for good: a folder with everything in it, a link itself (never what
+/// it points to). Only for places with no Recycle Bin or Trash (WSL folders), after the
+/// user was told it is permanent.
+pub fn delete_permanently(p: &VPath) -> Result<()> {
+    let path = local(p)?;
+    let kind = fs::symlink_metadata(&path)
+        .with_context(|| p.display())?
+        .file_type();
+    let removed = if kind.is_dir() {
+        fs::remove_dir_all(&path)
+    } else {
+        // A Windows link to a folder is removed as a folder.
+        fs::remove_file(&path).or_else(|e| match kind.is_symlink() {
+            true => fs::remove_dir(&path),
+            false => Err(e),
+        })
+    };
+    removed.with_context(|| format!("delete {}", p.display()))
+}
+
 /// macOS: NSFileManager's `trashItemAtURL`, keeping the resulting URL; None for a name
 /// that is not UTF-8 (trashed by the `trash` crate, which percent-encodes it).
 #[cfg(target_os = "macos")]
@@ -553,5 +573,40 @@ mod recycle_bin_tests {
         let err = trash_path(std::path::Path::new(&unc)).unwrap_err();
         assert!(err.to_string().contains("no Recycle Bin"), "{err}");
         assert!(file.exists(), "file must survive a refused delete");
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::delete_permanently;
+    use crate::VPath;
+
+    /// A folder goes with everything in it; a link goes, never what it points to.
+    #[test]
+    fn deletes_folders_files_and_links_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let (keep, gone) = (dir.path().join("keep"), dir.path().join("gone"));
+        std::fs::create_dir_all(gone.join("sub")).unwrap();
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(gone.join("sub").join("a.txt"), b"a").unwrap();
+        std::fs::write(keep.join("b.txt"), b"b").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&keep, gone.join("link")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&keep, gone.join("link")).is_ok();
+        delete_permanently(&VPath::local(&gone)).unwrap();
+        assert!(!gone.exists());
+        assert!(keep.join("b.txt").exists(), "a link's target stays");
+        if linked {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&keep, dir.path().join("l")).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(&keep, dir.path().join("l")).unwrap();
+            delete_permanently(&VPath::local(dir.path().join("l"))).unwrap();
+            assert!(!dir.path().join("l").exists() && keep.join("b.txt").exists());
+        }
+        delete_permanently(&VPath::local(keep.join("b.txt"))).unwrap();
+        assert!(!keep.join("b.txt").exists());
+        assert!(delete_permanently(&VPath::local(dir.path().join("none"))).is_err());
     }
 }

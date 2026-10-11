@@ -63,8 +63,43 @@ pub fn spawn_list(router: Arc<Router>, dir: VPath, req: u64, tx: Sender<Msg>, ct
 /// False when the thread could not start (the caller clears its in-flight flag).
 pub fn spawn_drives(tx: Sender<Msg>, ctx: egui::Context) -> bool {
     spawn("keel-drives", move || {
+        // Task 51: the WSL list is a registry read; it follows drives being added.
+        send(&tx, &ctx, Msg::WslDistros(keel_term::wsl_distros()));
         let drives = keel_vfs::drives();
         send(&tx, &ctx, Msg::Drives(drives));
+    })
+}
+
+/// Opens WSL distribution `name` with `open` (`wsl::open`, which starts a stopped one) and
+/// answers `Msg::WslOpened`; an `open` still busy after `wsl::OPEN_TIMEOUT` is left behind
+/// and answered as an error. False when the thread could not start.
+pub fn spawn_wsl(
+    name: String,
+    open: fn(&str) -> anyhow::Result<VPath>,
+    tx: Sender<Msg>,
+    ctx: egui::Context,
+) -> bool {
+    spawn("keel-wsl", move || {
+        let (answer, answered) = crossbeam_channel::bounded(1);
+        let distro = name.clone();
+        let result = if spawn("keel-wsl-open", move || {
+            let _ = answer.send(open(&distro));
+        }) {
+            answered
+                .recv_timeout(crate::wsl::OPEN_TIMEOUT)
+                .unwrap_or_else(|e| match e {
+                    crossbeam_channel::RecvTimeoutError::Timeout => Err(anyhow::anyhow!(
+                        "no answer after {} seconds",
+                        crate::wsl::OPEN_TIMEOUT.as_secs()
+                    )),
+                    crossbeam_channel::RecvTimeoutError::Disconnected => {
+                        Err(anyhow::anyhow!("opening it failed"))
+                    }
+                })
+        } else {
+            Err(anyhow::anyhow!("no thread to open it on"))
+        };
+        send(&tx, &ctx, Msg::WslOpened { name, result });
     })
 }
 
