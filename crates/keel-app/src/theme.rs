@@ -83,6 +83,15 @@ impl Theme {
             .unwrap_or_else(|| toml::from_str(BUILTIN[0].1).expect("built-in dark theme parses"))
     }
 
+    /// Keel's warning and error colors for a dark or light theme without its own.
+    pub fn warn_error(dark: bool) -> ([u8; 3], [u8; 3]) {
+        if dark {
+            ([255, 143, 0], [255, 107, 107])
+        } else {
+            ([155, 80, 0], [190, 0, 0])
+        }
+    }
+
     pub fn muted(&self) -> Color32 {
         rgb(self.muted)
     }
@@ -117,11 +126,7 @@ impl Theme {
             mix(text.g(), muted.g()),
             mix(text.b(), muted.b()),
         );
-        let (warn, error) = if self.dark {
-            ([255, 143, 0], [255, 107, 107])
-        } else {
-            ([155, 80, 0], [190, 0, 0])
-        };
+        let (warn, error) = Theme::warn_error(self.dark);
         v.warn_fg_color = rgb(self.warn.unwrap_or(warn));
         v.error_fg_color = rgb(self.error.unwrap_or(error));
         ctx.set_theme(if self.dark {

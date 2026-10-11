@@ -269,7 +269,9 @@ fn folder_sizes(b: &mut dyn Backend, path: &str) -> Result<FolderSizes, Fail> {
     }
 }
 
-/// Task 46: `keel du` outside the library: each child of `path` walked for its total.
+/// Task 46: `keel du` outside the library: each child of `path` walked for its total. A
+/// child folder that cannot be listed is unknown (no `bytes`) rather than an error, as is
+/// one below it counted in the app's job; the folder's own total counts what was read.
 fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
     use keel_vfs::Provider;
     let dir = keel_vfs::VPath::local(path);
@@ -280,14 +282,19 @@ fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
         let (bytes, files) = match e.kind {
             _ if e.is_link => (None, None),
             keel_vfs::Kind::Dir => {
-                let w = keel_vfs::sizes::folder_total(
+                match keel_vfs::sizes::folder_total(
                     &router,
                     &e.path,
                     None,
                     &never,
                     &mut |_, _, _| {},
-                )?;
-                (Some(w.bytes), Some(w.files))
+                ) {
+                    Ok(w) => (Some(w.bytes), Some(w.files)),
+                    Err(err) => {
+                        tracing::debug!("du: {}: {err:#}", e.path.display());
+                        (None, None)
+                    }
+                }
             }
             _ => (Some(e.size), Some(1)),
         };

@@ -158,19 +158,29 @@ pub fn size_text(lib: &LibraryUi, sizes: &Sizes, e: &Entry) -> String {
     }
 }
 
-/// Calculate sizes starts on its own in `dir` (a listing arrived, or the Sizes view shows
-/// it): never on network, cloud or device paths; in local folders outside the library
-/// only with the setting on.
+/// Whether a walk may start in `dir` without being asked: a folder on a fixed disk of this
+/// computer; never a network share (UNC or mapped), a removable drive, a cloud, remote or
+/// device path, or an archive. Elsewhere the Sizes view offers a Calculate sizes button.
+pub fn walks_on_its_own(dir: &VPath) -> bool {
+    dir.split_archive().is_none()
+        && dir
+            .to_local_path()
+            .is_some_and(|p| keel_vfs::is_fixed_disk(&p))
+}
+
+/// Calculate sizes starts on its own in `dir` when a listing arrives: in folders on a fixed
+/// disk outside the library, with the setting on.
 pub fn auto_start(dir: &VPath, lib: &LibraryUi, setting: bool) -> bool {
-    let local = dir.to_local_path().is_some() && dir.split_archive().is_none();
     let indexed = lib.is_open() && crate::library::source_of(&lib.sources, dir).is_some();
-    local && setting && !indexed
+    setting && !indexed && walks_on_its_own(dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tab::test_entry;
+
+    const UNC_DIR: &str = r"\\server\share\photos";
 
     #[test]
     fn walked_totals_go_stale_with_the_folder_time_and_pending_clears_with_its_job() {
@@ -208,5 +218,14 @@ mod tests {
         assert!(!auto_start(&local, &lib, false));
         let remote = VPath::parse("sftp://host/home").unwrap();
         assert!(!auto_start(&remote, &lib, true));
+        assert!(!walks_on_its_own(&remote));
+        // A network share never starts on its own, setting or not.
+        let share = VPath::local(if cfg!(windows) {
+            UNC_DIR
+        } else {
+            "/mnt/share/photos"
+        });
+        assert!(!auto_start(&share, &lib, true), "{}", share.display());
+        assert!(!walks_on_its_own(&share));
     }
 }

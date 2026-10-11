@@ -419,6 +419,8 @@ pub(crate) fn select(s: &mut AppState, p: usize, names: &[&str]) {
 #[ignore]
 fn docs_screenshots() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore =
+        crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"]);
     let root = root();
     write_fixture(&root);
     let keel = root.join(".keel");
@@ -430,9 +432,6 @@ fn docs_screenshots() {
     std::fs::create_dir_all(out_dir()).unwrap();
     let skipped = run(&root);
     let _ = std::fs::remove_dir_all(&root);
-    for var in ["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"] {
-        std::env::remove_var(var);
-    }
     if !skipped.is_empty() {
         println!("skipped: {}", skipped.join(", "));
     }
@@ -443,6 +442,8 @@ fn docs_screenshots() {
 #[ignore]
 fn docs_screenshots_themes() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore =
+        crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"]);
     let root = root();
     write_fixture(&root);
     let keel = root.join(".keel");
@@ -470,9 +471,6 @@ fn docs_screenshots_themes() {
     }
     drop(h);
     let _ = std::fs::remove_dir_all(&root);
-    for var in ["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"] {
-        std::env::remove_var(var);
-    }
 }
 
 fn run(root: &Path) -> Vec<&'static str> {

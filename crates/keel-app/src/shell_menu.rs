@@ -73,6 +73,18 @@ pub(crate) mod win {
     }
 
     impl AppState {
+        /// Adds the palette's "Shell: …" entries for pane `p`'s targets (asked for by the
+        /// first "shell" typed). Never in tests: a walkthrough runs every palette entry.
+        pub(crate) fn palette_shell(&mut self, p: usize) {
+            #[cfg(not(test))]
+            {
+                let extra = palette_items(self.panes[p].tab(), &mut self.palette.shell);
+                self.palette.add(extra);
+            }
+            #[cfg(test)]
+            let _ = p;
+        }
+
         /// Builds the menu for pane `p`'s targets, shows it, and runs what was picked.
         pub(crate) fn shell_menu(&mut self, p: usize, extended: bool, keyboard: bool) {
             let tab = self.tab(p);

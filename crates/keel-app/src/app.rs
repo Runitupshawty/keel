@@ -213,6 +213,10 @@ impl App {
         s.dialog = None;
         s.jump.open = false;
         s.palette.open = false;
+        #[cfg(windows)]
+        {
+            s.palette.shell = None;
+        }
         s.preview.reset();
         for p in 0..2 {
             s.panes[p].tabs = vec![Tab::new(s.home.clone())];
@@ -486,6 +490,10 @@ impl App {
         if s.palette.open {
             if let Some(action) = s.palette.ui(ctx) {
                 out.push((s.active, action));
+            }
+            #[cfg(windows)]
+            if std::mem::take(&mut s.palette.shell_asked) {
+                s.palette_shell(s.active);
             }
         }
         for (p, action) in out {

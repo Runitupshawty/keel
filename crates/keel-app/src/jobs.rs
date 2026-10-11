@@ -122,6 +122,8 @@ pub struct Jobs {
     ctx: egui::Context,
     /// Setting: local transfers touching the same drive run one after another.
     pub one_per_drive: bool,
+    /// The undo journal's generation, which jobs started now tag what they did with.
+    pub undo_generation: u64,
 }
 
 impl Jobs {
@@ -131,6 +133,7 @@ impl Jobs {
             next_id: 1,
             ctx,
             one_per_drive: false,
+            undo_generation: 0,
         }
     }
 
@@ -153,7 +156,7 @@ impl Jobs {
         let remote = t.src.iter().chain([&t.dst]).any(crate::remotes::is_network);
         let queue = self.one_per_drive;
         let record = crate::undo::transfer_refusal(&t, conflict).is_none();
-        let (utx, uctx) = (tx.clone(), self.ctx.clone());
+        let (utx, uctx, generation) = (tx.clone(), self.ctx.clone(), self.undo_generation);
         let id = self.spawn(title, tx, move |report, cancel| {
             let _drives = if queue {
                 let keys = t
@@ -189,7 +192,7 @@ impl Jobs {
             } else {
                 crate::undo::Op::Copy
             };
-            send(&utx, &uctx, Msg::Undoable(Ok((op, items))));
+            send(&utx, &uctx, Msg::Undoable(generation, Ok((op, items))));
             result
         });
         self.mark_remote(id, remote);
@@ -355,7 +358,7 @@ impl Jobs {
             }
         }
         let remote = paths.first().is_some_and(crate::remotes::is_network);
-        let (utx, uctx) = (tx.clone(), self.ctx.clone());
+        let (utx, uctx, generation) = (tx.clone(), self.ctx.clone(), self.undo_generation);
         let (title, did) = if remote {
             (format!("Deleting {}", items(paths.len())), "deleted")
         } else {
@@ -378,12 +381,10 @@ impl Jobs {
             let mut trashed = Vec::new();
             let journal = |trashed: &[(VPath, Option<PathBuf>)]| {
                 if !trashed.is_empty() {
-                    let items = crate::undo::trashed(trashed, since);
-                    send(
-                        &utx,
-                        &uctx,
-                        Msg::Undoable(Ok((crate::undo::Op::Trash, items))),
-                    );
+                    let stat = crate::undo::stat_fn(&router);
+                    let items = crate::undo::trashed(trashed, since, stat);
+                    let done = items.map(|items| (crate::undo::Op::Trash, items));
+                    send(&utx, &uctx, Msg::Undoable(generation, done));
                 }
             };
             for path in &paths {
@@ -1103,7 +1104,9 @@ mod tests {
                     assert_eq!(got, id);
                     jobs.progress(id, p);
                 }
-                Msg::Undoable(done) => undoable = Some(done.expect("a local copy can be undone")),
+                Msg::Undoable(_, done) => {
+                    undoable = Some(done.expect("a local copy can be undone"))
+                }
                 Msg::JobDone { id: got, result } => {
                     assert_eq!(got, id);
                     result.expect("copy ok");

@@ -16,6 +16,9 @@ const MB: u64 = 1024 * 1024;
 /// The UI scale's range (egui allows 0.2 to 5).
 pub const MIN_SCALE: f32 = 0.5;
 pub const MAX_SCALE: f32 = 3.0;
+/// The UI scale slider's suffix (×) and hint.
+const SCALE_SUFFIX: &str = "\u{d7}";
+const SCALE_HINT: &str = "Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0\u{d7})";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -215,6 +218,30 @@ impl Default for Settings {
 /// Tests that set `KEEL_CONFIG_DIR` or switch the profile hold this.
 #[cfg(test)]
 pub static TEST_ENV: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Puts environment variables back as they were when dropped (also when a test panics), so
+/// a test that sets them never leaves a later one on the real folders.
+#[cfg(test)]
+pub struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+#[cfg(test)]
+impl EnvRestore {
+    pub fn save(vars: &[&'static str]) -> Self {
+        Self(vars.iter().map(|v| (*v, std::env::var_os(v))).collect())
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (var, was) in &self.0 {
+            match was {
+                Some(v) => std::env::set_var(var, v),
+                None => std::env::remove_var(var),
+            }
+        }
+    }
+}
 
 /// `KEEL_CONFIG_DIR`, else `%APPDATA%\Keel`, `~/Library/Application Support/Keel`,
 /// `~/.config/keel` (spec 2.9).
@@ -652,11 +679,11 @@ pub fn window(
                         egui::Slider::new(&mut s.ui_scale, MIN_SCALE..=MAX_SCALE)
                             .step_by(0.1)
                             .fixed_decimals(1)
-                            .suffix("{d7}"),
+                            .suffix(SCALE_SUFFIX),
                     );
                     let _ = scale
                         .labelled_by(label.id)
-                        .on_hover_text("Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0{d7})");
+                        .on_hover_text(SCALE_HINT);
                     ui.end_row();
                     let label = ui.label("Max preview size");
                     let slider = ui.add(
@@ -713,6 +740,14 @@ pub fn window(
 #[cfg(test)]
 mod tests {
     use super::{ArchiveFormat, ArchiveSettings, OpenWith, Settings};
+
+    /// The scale slider says "1.0×", not the escape's text.
+    #[test]
+    fn scale_label_is_a_times_sign() {
+        assert_eq!(super::SCALE_SUFFIX, "×");
+        assert!(super::SCALE_HINT.ends_with("1.0×)"));
+        assert!(!super::SCALE_HINT.contains('{'));
+    }
 
     #[test]
     fn open_with_recents_order_cap_and_round_trip() {
@@ -806,6 +841,7 @@ label = "nas"
     #[test]
     fn round_trip_under_keel_config_dir() {
         let _env = super::TEST_ENV.lock();
+        let _restore = super::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
         let dir = std::env::temp_dir().join(format!("keel-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("KEEL_CONFIG_DIR", &dir);
@@ -860,7 +896,6 @@ label = "nas"
         assert!(path.with_file_name("config.toml.bad").exists());
         // session.json follows KEEL_CONFIG_DIR.
         assert_eq!(super::cache_dir(), Some(dir.clone()));
-        std::env::remove_var("KEEL_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -427,6 +427,7 @@ impl AppState {
         self.dropzone.set_items(session.stash);
         // Undo is per window and profile: the old profile's operations are not offered.
         self.undo.clear();
+        self.jobs.undo_generation = self.undo.generation();
         self.active = if self.dual { session.active } else { 0 };
         for notice in notices {
             self.toasts.error(notice);
@@ -469,6 +470,7 @@ mod tests {
     #[test]
     fn create_rename_delete_switch_round_trip() {
         let _env = crate::settings::TEST_ENV.lock();
+        let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
         let dir = std::env::temp_dir().join(format!("keel-profiles-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("KEEL_CONFIG_DIR", &dir);
@@ -554,7 +556,6 @@ mod tests {
         assert_eq!(list(), ["default"]);
         assert!(!dir.join("profiles").join("job").exists());
 
-        std::env::remove_var("KEEL_CONFIG_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

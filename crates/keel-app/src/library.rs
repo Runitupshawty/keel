@@ -1676,7 +1676,7 @@ impl AppState {
             let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
             worker::spawn("keel-library-undo", move || {
                 let done = u.done(crate::undo::stat_fn(&router));
-                worker::send(&tx, &ctx, Msg::Undoable(done));
+                worker::send(&tx, &ctx, Msg::Undoable(u.generation, done));
             });
         }
         if unknown {
@@ -2221,6 +2221,7 @@ impl AppState {
                         op,
                         existed,
                         since: std::time::SystemTime::now(),
+                        generation: self.undo.generation(),
                     }),
                 };
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());

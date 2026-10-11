@@ -202,6 +202,51 @@ fn install_writes_one_file_per_theme_and_remove_takes_them() {
         "the user's own file stays"
     );
     assert!(remove(dir.path(), "../x").is_err());
+    // A user's own file named like an installed theme is neither listed, replaced nor
+    // removed.
+    std::fs::write(dir.path().join("pub.themes~0.toml"), "name = \"Mine\"").unwrap();
+    std::fs::write(dir.path().join("pub.themes~x.toml"), "name = \"Mine too\"").unwrap();
+    assert!(installed(dir.path()).is_empty());
+    assert!(remove(dir.path(), "pub.themes").is_err());
+    let e = format!("{:#}", install(&one, dir.path()).unwrap_err());
+    assert!(e.contains("not installed by Keel"), "{e}");
+    for own in ["pub.themes~0.toml", "pub.themes~x.toml"] {
+        assert!(dir.path().join(own).exists(), "{own}");
+    }
+}
+
+/// A light theme whose selection the text is unreadable on (#616161 on #0060C0, 1.01:1)
+/// gets a readable selection; Keel's warning and error colors
+/// are made legible on a background they are not.
+#[test]
+fn selection_warnings_and_errors_are_made_legible() {
+    let mut c = HashMap::new();
+    for (k, v) in [
+        ("editor.background", "#FFFFFF"),
+        ("foreground", "#616161"),
+        ("list.activeSelectionBackground", "#0060C0"),
+    ] {
+        c.insert(k.to_owned(), v.to_owned());
+    }
+    let t = map("Light", &c, true);
+    assert!(t.adjusted);
+    let r = ratio(rgb(t.text), rgb(t.selection));
+    assert!(r >= 4.5, "text on the selection {:?}: {r:.2}", t.selection);
+    assert_ne!(t.selection, t.bg, "still a visible selection");
+    // A dark theme on a bright background: the default orange warning is unreadable.
+    let mut c = HashMap::new();
+    for k in ["editor.background", "sideBar.background"] {
+        c.insert(k.to_owned(), "#F0A040".to_owned());
+    }
+    let t = map("Bright", &c, false);
+    let (warn, error) = Theme::warn_error(true);
+    for (got, default) in [(t.warn, warn), (t.error, error)] {
+        let color = got.unwrap_or(default);
+        for bg in [t.bg, t.panel] {
+            let r = ratio(rgb(color), rgb(bg));
+            assert!(r >= 4.5, "{color:?} on {bg:?}: {r:.2}");
+        }
+    }
 }
 
 /// Live: downloads a color theme package (`KEEL_COLOR_THEME`, default an MIT-licensed one)

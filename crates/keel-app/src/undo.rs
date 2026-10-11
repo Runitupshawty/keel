@@ -58,6 +58,31 @@ pub struct Journal {
     next: u64,
     /// Why the newest operation cannot be undone, for the next Ctrl+Z to say.
     refused: Option<String>,
+    /// Bumped by each profile switch: an operation started before it is not recorded.
+    generation: u64,
+}
+
+/// Why an entry cannot be undone now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    pub why: String,
+    /// It may pass (a place taken, a folder that cannot be reached): the entry stays.
+    pub transient: bool,
+}
+
+impl Refusal {
+    fn lasting(why: String) -> Self {
+        Self {
+            why,
+            transient: false,
+        }
+    }
+    fn transient(why: String) -> Self {
+        Self {
+            why,
+            transient: true,
+        }
+    }
 }
 
 impl Journal {
@@ -105,12 +130,19 @@ impl Journal {
         self.entries.remove(i)
     }
 
-    /// Profile switch.
+    /// Profile switch: everything goes, and what operations still running report later
+    /// (tagged with the old [`generation`](Self::generation)) is not recorded.
     pub fn clear(&mut self) {
         *self = Self {
             next: self.next,
+            generation: self.generation + 1,
             ..Self::default()
         };
+    }
+
+    /// What operations started now are tagged with (`Msg::Undoable`).
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The palette's "Undo <what>" for the newest entry (plain "Undo" while the newest
@@ -213,10 +245,12 @@ impl Entry {
     }
 
     /// Why this cannot be undone now, or Ok. `stat` gives a path's stamp, None when it
-    /// is missing (items in the trash: Some when they are still there).
-    pub fn check(&self, stat: impl Fn(&VPath) -> Option<Stamp>) -> Result<(), String> {
+    /// is missing (items in the trash: Some when they are still there). An item that
+    /// changed, is gone or left the trash refuses for good; a taken place or a folder that
+    /// cannot be reached may pass (`transient`).
+    pub fn check(&self, stat: impl Fn(&VPath) -> Option<Stamp>) -> Result<(), Refusal> {
         if self.items.is_empty() {
-            return Err("nothing left to undo".into());
+            return Err(Refusal::lasting("nothing left to undo".into()));
         }
         let nows: HashSet<&VPath> = self.nows().collect();
         for it in &self.items {
@@ -227,14 +261,22 @@ impl Entry {
             };
             match stat(&it.now) {
                 None if self.op == Op::Trash => {
-                    return Err(format!(
+                    return Err(Refusal::lasting(format!(
                         "{shown} is no longer in the {}",
                         keel_vfs::trashbin::label()
-                    ))
+                    )))
                 }
-                None => return Err(format!("{shown} is gone")),
+                None => {
+                    // Its folder gone too: an unplugged drive or a share offline.
+                    return Err(match it.now.parent().filter(|d| stat(d).is_none()) {
+                        Some(dir) => {
+                            Refusal::transient(format!("{} can't be reached", dir.display()))
+                        }
+                        None => Refusal::lasting(format!("{shown} is gone")),
+                    });
+                }
                 Some(now) if it.stamp.is_some_and(|s| s != now) => {
-                    return Err(format!("{shown} changed since"))
+                    return Err(Refusal::lasting(format!("{shown} changed since")))
                 }
                 Some(_) => {}
             }
@@ -245,7 +287,7 @@ impl Entry {
                     && was.scheme == it.now.scheme
                     && was.path.eq_ignore_ascii_case(&it.now.path));
             if !vacated && stat(was).is_some() {
-                return Err(format!("{} is taken", was.display()));
+                return Err(Refusal::transient(format!("{} is taken", was.display())));
             }
             // Into its old folder, which must still be there (the Recycle Bin makes it).
             let into_folder = match self.op {
@@ -255,7 +297,7 @@ impl Entry {
             };
             if into_folder {
                 if let Some(dir) = was.parent().filter(|d| stat(d).is_none()) {
-                    return Err(format!("{} is gone", dir.display()));
+                    return Err(Refusal::transient(format!("{} is gone", dir.display())));
                 }
             }
         }
@@ -265,8 +307,9 @@ impl Entry {
 
 // ---- recording (workers: these touch the disk) ------------------------------------------
 
-/// A path's stamp through its provider; None when it is missing. Trash items are looked up
-/// in one listing of the Recycle Bin / Trash per call of `stat_fn`.
+/// A path's stamp through its provider, with the file's identity for local paths; None when
+/// it is missing. Trash items are looked up in one listing of the Recycle Bin / Trash per
+/// call of `stat_fn`.
 pub fn stat_fn(router: &Router) -> impl Fn(&VPath) -> Option<Stamp> + '_ {
     let bin = std::cell::OnceCell::<HashSet<VPath>>::new();
     move |p: &VPath| {
@@ -282,7 +325,11 @@ pub fn stat_fn(router: &Router) -> impl Fn(&VPath) -> Option<Stamp> + '_ {
             return listed.contains(p).then_some(Stamp::new(0, None));
         }
         let e = router.provider_for(p)?.stat(p).ok()?;
-        Some(Stamp::new(e.size, e.modified))
+        let stamp = Stamp::new(e.size, e.modified);
+        Some(match p.to_local_path() {
+            Some(local) => stamp.with_file_id(&local),
+            None => stamp,
+        })
     }
 }
 
@@ -340,11 +387,14 @@ pub fn created(path: &VPath, stat: impl Fn(&VPath) -> Option<Stamp>) -> Vec<Item
 }
 
 /// Items `deleted` (local paths moved to the trash at or after `since`): where each is in
-/// the trash, from what the trash call returned (`kept`, macOS) or the trash listing.
+/// the trash, from the trash listing or what the trash call returned (`kept`, macOS; with
+/// its stamp from `stat`, so a later file of the same name there is not taken for it). Err
+/// when fewer were found than deleted: the delete cannot be undone whole.
 pub fn trashed(
     deleted: &[(VPath, Option<std::path::PathBuf>)],
     since: std::time::SystemTime,
-) -> Vec<Item> {
+    stat: impl Fn(&VPath) -> Option<Stamp>,
+) -> Result<Vec<Item>, String> {
     let originals: Vec<std::path::PathBuf> = deleted
         .iter()
         .filter_map(|(p, _)| p.to_local_path())
@@ -356,18 +406,42 @@ pub fn trashed(
             vec![None; originals.len()]
         }
     };
-    deleted
+    let items: Vec<Item> = deleted
         .iter()
         .zip(found)
         .filter_map(|((was, kept), found)| {
-            let now = found.or_else(|| kept.as_ref().map(VPath::local))?;
+            let (now, stamp) = match (found, kept) {
+                (Some(now), _) => (now, None),
+                (None, Some(kept)) => {
+                    let now = VPath::local(kept);
+                    let stamp = stat(&now)?;
+                    (now, Some(stamp))
+                }
+                (None, None) => return None,
+            };
             Some(Item {
                 now,
                 was: Some(was.clone()),
-                stamp: None,
+                stamp,
             })
         })
-        .collect()
+        .collect();
+    if items.len() < deleted.len() {
+        let what = match deleted {
+            [(one, _)] => one.name().to_owned(),
+            _ => items_of(deleted.len() - items.len(), deleted.len()),
+        };
+        return Err(format!(
+            "couldn't find {what} in the {}",
+            keel_vfs::trashbin::label()
+        ));
+    }
+    Ok(items)
+}
+
+/// "2 of the 5 items".
+fn items_of(missing: usize, all: usize) -> String {
+    format!("{missing} of the {}", items(all))
 }
 
 /// A library operation started from its preview, kept until its job ends.
@@ -377,6 +451,8 @@ pub struct Planned {
     /// The targets that existed before (shown paths): a Skip left or merged them.
     pub existed: Vec<String>,
     pub since: std::time::SystemTime,
+    /// The journal's generation when it started.
+    pub generation: u64,
 }
 
 impl Planned {
@@ -385,7 +461,16 @@ impl Planned {
     pub fn done(&self, stat: impl Fn(&VPath) -> Option<Stamp>) -> Result<(Op, Vec<Item>), String> {
         use keel_core::Op as L;
         match &self.op {
-            L::Copy { src, dst_dir, .. } | L::Move { src, dst_dir, .. } => {
+            L::Copy {
+                src,
+                dst_dir,
+                on_conflict,
+            }
+            | L::Move {
+                src,
+                dst_dir,
+                on_conflict,
+            } => {
                 let mv = matches!(self.op, L::Move { .. });
                 let t = crate::jobs::Transfer {
                     src: src.clone(),
@@ -393,7 +478,7 @@ impl Planned {
                     mv,
                     extract: None,
                 };
-                if let Some(why) = transfer_refusal(&t, Conflict::Skip) {
+                if let Some(why) = transfer_refusal(&t, (*on_conflict).into()) {
                     return Err(why.into());
                 }
                 let reached: Vec<Landed> = src
@@ -426,7 +511,7 @@ impl Planned {
                     return Err("library deletes on macOS (restore them from the Trash)".into());
                 }
                 let deleted: Vec<_> = paths.iter().map(|p| (p.clone(), None)).collect();
-                Ok((Op::Trash, trashed(&deleted, self.since)))
+                Ok((Op::Trash, trashed(&deleted, self.since, stat)?))
             }
         }
     }
@@ -480,7 +565,7 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
     e.check(stat_fn(router))
-        .map_err(|why| anyhow::anyhow!("Can't undo: {why}"))?;
+        .map_err(|r| anyhow::anyhow!("Can't undo: {}", r.why))?;
     let mut p = Progress {
         total_items: e.items.len(),
         ..Progress::default()
@@ -506,16 +591,29 @@ pub fn run(
                 let was = it.was.as_ref().context("a move records where items were")?;
                 let dir = was.parent().context("moved from a folder")?;
                 if it.now.name() == was.name() {
-                    // Skip: a clash that appeared since the check is never overwritten.
-                    keel_vfs::ops::transfer(
-                        std::slice::from_ref(&it.now),
-                        &dir,
-                        true,
-                        Conflict::Skip,
-                        &|_| {},
-                        cancel,
-                        router,
-                    )?;
+                    // A no-replace rename first: on one volume it is atomic and never lands
+                    // in (or merges into) something that appeared at the old place since.
+                    let back = provider(router, was)?;
+                    if back.rename_noreplace(&it.now, was).is_err() {
+                        anyhow::ensure!(
+                            stat_fn(router)(was).is_none(),
+                            "Can't undo: {} is taken",
+                            was.display()
+                        );
+                        // Across volumes. Skip never overwrites a file, but would merge into
+                        // a folder made at the old place since the check just above.
+                        // ponytail: check-then-transfer window; a staged name and a
+                        // no-replace rename if it ever matters.
+                        keel_vfs::ops::transfer(
+                            std::slice::from_ref(&it.now),
+                            &dir,
+                            true,
+                            Conflict::Skip,
+                            &|_| {},
+                            cancel,
+                            router,
+                        )?;
+                    }
                 } else {
                     // Moved under a new name (Keep both): the same volume renames back.
                     provider(router, was)?.rename(&it.now, was)?;

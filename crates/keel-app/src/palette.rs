@@ -26,9 +26,23 @@ pub struct Palette {
     pub undo: Option<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
-    /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`).
+    /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`); dropped when
+    /// the palette closes, unless for the Shell command picked.
     #[cfg(windows)]
     pub shell: Option<keel_vfs::shell::context_menu::ShellMenu>,
+    /// The text began with "shell": `AppState` adds the "Shell: …" entries now. Loading the
+    /// shell extensions waits for that, never the palette's opening.
+    #[cfg(windows)]
+    pub shell_asked: bool,
+    #[cfg(windows)]
+    shell_built: bool,
+}
+
+/// Whether `text` asks for the Windows menu's "Shell: …" entries.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wants_shell(text: &str) -> bool {
+    let t = text.trim_start();
+    t.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("shell"))
 }
 
 /// Actions on the selection (shown first when something is selected).
@@ -132,9 +146,8 @@ fn global_items() -> Vec<Item> {
 }
 
 impl Palette {
-    /// Opens with the global actions, plus the context ones when something is selected,
-    /// then `extra` (the Windows menu's "Shell: …" entries).
-    pub fn show(&mut self, selection: bool, extra: Vec<Item>) {
+    /// Opens with the global actions, plus the context ones when something is selected.
+    pub fn show(&mut self, selection: bool) {
         let mut items = if selection {
             context_items()
         } else {
@@ -146,17 +159,37 @@ impl Palette {
             action: Action::Undo,
         }));
         items.extend(global_items());
-        items.extend(extra);
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
             shortcut: "",
             action: Action::SwitchProfile(name.clone()),
         }));
-        self.fuzzy = Some(Fuzzy::new(items.iter().map(|i| i.label.clone()).collect()));
         self.items = items;
         self.text.clear();
         self.open = true;
         self.focus = true;
+        #[cfg(windows)]
+        {
+            self.shell = None;
+            self.shell_asked = false;
+            self.shell_built = false;
+        }
+        self.reindex();
+    }
+
+    /// Adds entries to the open palette (the Windows menu's "Shell: …" ones).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn add(&mut self, extra: Vec<Item>) {
+        if !extra.is_empty() {
+            self.items.extend(extra);
+            self.reindex();
+        }
+    }
+
+    fn reindex(&mut self) {
+        self.fuzzy = Some(Fuzzy::new(
+            self.items.iter().map(|i| i.label.clone()).collect(),
+        ));
         self.filter();
     }
 
@@ -197,6 +230,11 @@ impl Palette {
             }
             if r.changed() {
                 self.filter();
+                #[cfg(windows)]
+                if !self.shell_built && wants_shell(&self.text) {
+                    self.shell_built = true;
+                    self.shell_asked = true;
+                }
             }
             if enter {
                 out = self
@@ -228,6 +266,11 @@ impl Palette {
         });
         if modal.should_close() || out.is_some() {
             self.open = false;
+            // The menu stays only for the Shell command that runs on it.
+            #[cfg(windows)]
+            if !matches!(out, Some(Action::ShellCommand(_))) {
+                self.shell = None;
+            }
         }
         out
     }
@@ -237,10 +280,32 @@ impl Palette {
 mod tests {
     use super::*;
 
+    /// The shell extensions load only once "shell" is typed; their entries join the open
+    /// palette and are found like the others.
+    #[test]
+    fn shell_entries_wait_for_shell_typed() {
+        assert!(wants_shell("Shell: Open") && wants_shell("  shell"));
+        assert!(!wants_shell("she") && !wants_shell("copy") && !wants_shell(""));
+        let mut p = Palette::default();
+        p.show(false);
+        let n = p.items.len();
+        p.add(vec![Item {
+            label: "Shell: Open with Notepad".into(),
+            shortcut: "",
+            action: Action::Undo,
+        }]);
+        assert_eq!(p.items.len(), n + 1);
+        p.text = "shell: notepad".into();
+        p.filter();
+        assert_eq!(p.items[p.shown[0]].label, "Shell: Open with Notepad");
+        p.show(false);
+        assert_eq!(p.items.len(), n, "a new opening starts without them");
+    }
+
     #[test]
     fn filter_dual_finds_toggle_dual() {
         let mut p = Palette::default();
-        p.show(false, Vec::new());
+        p.show(false);
         assert!(p.shown.len() > 20, "every action listed");
         p.text = "dual".into();
         p.filter();
@@ -253,7 +318,7 @@ mod tests {
     #[test]
     fn search_is_named_for_every_backend() {
         let mut p = Palette::default();
-        p.show(false, Vec::new());
+        p.show(false);
         let search = p.items.iter().find(|i| i.action == Action::Search).unwrap();
         assert_eq!(search.label, "Search files");
     }
@@ -264,7 +329,7 @@ mod tests {
             profiles: vec!["work".into()],
             ..Palette::default()
         };
-        p.show(false, Vec::new());
+        p.show(false);
         p.text = "switch profile".into();
         p.filter();
         assert_eq!(
@@ -277,7 +342,7 @@ mod tests {
     #[test]
     fn selection_adds_context_actions() {
         let mut p = Palette::default();
-        p.show(true, Vec::new());
+        p.show(true);
         p.text = "open location".into();
         p.filter();
         assert_eq!(p.items[p.shown[0]].action, Action::OpenLocation);

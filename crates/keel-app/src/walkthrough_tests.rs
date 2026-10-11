@@ -1559,6 +1559,7 @@ fn settings_every_page_renders() {
 #[test]
 fn settings_controls_persist_after_reopening() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
     let cfg = std::env::temp_dir().join(format!("keel-walk-{}-settings", std::process::id()));
     let _ = std::fs::remove_dir_all(&cfg);
     std::env::set_var("KEEL_CONFIG_DIR", &cfg);
@@ -1635,7 +1636,6 @@ fn settings_controls_persist_after_reopening() {
     assert!(!checked(&h, "Dual pane") && !checked(&h, "Reuse the running window"));
     shot(&mut h, "settings-reopened");
     drop(h);
-    std::env::remove_var("KEEL_CONFIG_DIR");
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
@@ -1670,6 +1670,7 @@ fn theme_switch_and_light_screens() {
 #[test]
 fn profile_switch() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
     let cfg = std::env::temp_dir().join(format!("keel-walk-{}-profiles", std::process::id()));
     let _ = std::fs::remove_dir_all(&cfg);
     std::env::set_var("KEEL_CONFIG_DIR", &cfg);
@@ -1702,7 +1703,6 @@ fn profile_switch() {
     assert!(wait(&mut h, 10, &|_| crate::profiles::current() == "default"));
     drop(h);
     crate::profiles::set_current("default");
-    std::env::remove_var("KEEL_CONFIG_DIR");
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
@@ -1754,6 +1754,7 @@ fn icon_package() -> Vec<u8> {
 #[test]
 fn icon_theme_install_from_a_fixture_package() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
     let cfg = std::env::temp_dir().join(format!("keel-walk-{}-icons", std::process::id()));
     let _ = std::fs::remove_dir_all(&cfg);
     std::env::set_var("KEEL_CONFIG_DIR", &cfg);
@@ -1791,7 +1792,6 @@ fn icon_theme_install_from_a_fixture_package() {
     assert!(wait(&mut h, 10, &|s| s.icon_themes.installed.is_empty()));
     assert!(!cfg.join("icons").join("walk.icons").exists());
     drop(h);
-    std::env::remove_var("KEEL_CONFIG_DIR");
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
@@ -2260,6 +2260,8 @@ fn search_tab_with_library_filters() {
 #[ignore]
 fn devices_pair_dialog_shows_a_code() {
     let _env = crate::settings::TEST_ENV.lock();
+    let _restore =
+        crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"]);
     let root = demo();
     let (mut h, base, lib) = with_library("devices", &root.join("Documents"), &root.join("Backup"));
     std::env::set_var("KEEL_CONFIG_DIR", base.join("config"));
@@ -2304,9 +2306,6 @@ fn devices_pair_dialog_shows_a_code() {
     sm(&mut h).devices.pair = None;
     sm(&mut h).devices.close_now();
     close_library(&mut h);
-    for var in ["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"] {
-        std::env::remove_var(var);
-    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2528,4 +2527,33 @@ fn tree_of(dir: &Path) -> Vec<(String, Vec<u8>)> {
         .collect();
     out.sort();
     out
+}
+
+/// An operation still running when the profile is switched reports into the old journal's
+/// generation: it is dropped, and the new profile's own operations are recorded.
+#[test]
+fn undo_reports_from_before_a_profile_switch_are_dropped() {
+    use crate::undo::{Item, Op};
+    let dir = scratch("undogen");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let mut h = build(boot(&a, &b, Default::default()), SIZE, false);
+    let old = s(&h).undo.generation();
+    // What the profile switch does to the journal and the jobs.
+    sm(&mut h).undo.clear();
+    sm(&mut h).jobs.undo_generation = s(&h).undo.generation();
+    let made = || {
+        let item = Item {
+            now: VPath::local(b.join("notes.md")),
+            was: None,
+            stamp: None,
+        };
+        Ok((Op::Copy, vec![item]))
+    };
+    sm(&mut h).apply(crate::state::Msg::Undoable(old, made()));
+    sm(&mut h).apply(crate::state::Msg::Undoable(old, Err("refused".into())));
+    assert_eq!(s(&h).undo.label(), None, "the old profile's operation");
+    let now = s(&h).undo.generation();
+    sm(&mut h).apply(crate::state::Msg::Undoable(now, made()));
+    assert_eq!(s(&h).undo.label().as_deref(), Some("Undo copy"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

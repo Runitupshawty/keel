@@ -160,8 +160,10 @@ pub fn theme_colors(
 
 /// Keel's colors from a VS Code theme's `colors` (`light`: `uiTheme` is `vs`): the first key
 /// present per color, else the built-in dark or light one; alpha flattened against the
-/// background. Text, muted text and the accent (links) under 4.5:1 on the background or
-/// panels are moved toward legibility (`Theme::adjusted`).
+/// background. Text, muted text, the accent (links) and Keel's warning and error colors
+/// under 4.5:1 on the background or panels are moved toward legibility, and a selection
+/// the text is not legible on is moved toward the background (`Theme::adjusted`). Muted
+/// text is never drawn on the selection: selected rows use the text colour.
 pub fn map(name: &str, colors: &HashMap<String, String>, light: bool) -> Theme {
     let base = Theme::load(if light { "light" } else { "dark" });
     let get = |keys: &[&str]| {
@@ -201,6 +203,27 @@ pub fn map(name: &str, colors: &HashMap<String, String>, light: bool) -> Theme {
             *c = [fixed.r(), fixed.g(), fixed.b()];
             theme.adjusted = true;
         }
+    }
+    let (warn, error) = Theme::warn_error(theme.dark);
+    for (slot, default) in [(&mut theme.warn, warn), (&mut theme.error, error)] {
+        let fixed = legible(rgb(default), &[bg, panel]);
+        if fixed != rgb(default) {
+            *slot = Some([fixed.r(), fixed.g(), fixed.b()]);
+            theme.adjusted = true;
+        }
+    }
+    // Selected rows draw their text, secondary text included, in the text colour.
+    let text = rgb(theme.text);
+    let readable = |s: Color32| ratio(text, s) >= MIN_CONTRAST;
+    let sel = rgb(theme.selection);
+    if !readable(sel) {
+        // The text is legible on the background, so this ends there at the latest.
+        let fixed = (1..=20)
+            .map(|step| sel.lerp_to_gamma(bg, step as f32 / 20.0))
+            .find(|s| readable(*s))
+            .unwrap_or(bg);
+        theme.selection = [fixed.r(), fixed.g(), fixed.b()];
+        theme.adjusted = true;
     }
     theme
 }
@@ -262,40 +285,62 @@ pub fn inspect(id: &str, bytes: Vec<u8>) -> Result<ColorVsix> {
     })
 }
 
-/// The theme files of package `id` in `dir`.
+/// The first line of every theme file [`install`] writes for package `id`.
+fn marker(id: &str) -> String {
+    format!("# {id} from the VS Code Marketplace, mapped by Keel.")
+}
+
+/// The package a theme file in `dir` was written for by [`install`]: named `<id>~<n>.toml`
+/// and starting with its [`marker`]. A user's own file of such a name is not one.
+fn package_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let (id, n) = name.strip_suffix(".toml")?.split_once('~')?;
+    if split_id(id).is_none() || n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut first = String::new();
+    let file = std::fs::File::open(path).ok()?;
+    let mut head = std::io::BufReader::new(std::io::Read::take(file, 512));
+    std::io::BufRead::read_line(&mut head, &mut first).ok()?;
+    (first.trim_end() == marker(id)).then(|| id.to_owned())
+}
+
+/// The theme files [`install`] wrote for package `id` in `dir`.
 fn files_of(dir: &Path, id: &str) -> Vec<PathBuf> {
-    let prefix = format!("{id}~");
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".toml"))
-        })
+        .filter(|p| package_of(p).as_deref() == Some(id))
         .collect()
 }
 
-/// Writes the package's themes to `<dir>/<id>~<n>.toml` (replacing an older install) and
-/// returns their theme names (file stems), in package order.
+/// Writes the package's themes to `<dir>/<id>~<n>.toml` (replacing an older install of it,
+/// never a file Keel did not write) and returns their theme names (file stems), in
+/// package order.
 pub fn install(v: &ColorVsix, dir: &Path) -> Result<Vec<String>> {
     ensure!(split_id(&v.id).is_some(), "invalid extension id {}", v.id);
     std::fs::create_dir_all(dir)?;
-    for old in files_of(dir, &v.id) {
-        std::fs::remove_file(old)?;
+    let old = files_of(dir, &v.id);
+    let stem = |n: usize| format!("{}~{n}", v.id);
+    for n in 0..v.themes.len() {
+        let path = dir.join(format!("{}.toml", stem(n)));
+        ensure!(
+            !path.exists() || old.contains(&path),
+            "{} exists and was not installed by Keel; nothing was changed",
+            path.display()
+        );
+    }
+    for f in old {
+        std::fs::remove_file(f)?;
     }
     let mut names = Vec::new();
     for (n, theme) in v.themes.iter().enumerate() {
-        let stem = format!("{}~{n}", v.id);
-        let text = format!(
-            "# {} from the VS Code Marketplace ({}), mapped by Keel.\n{}",
-            theme.name,
-            v.id,
-            toml::to_string(theme)?
-        );
-        crate::settings::write_atomic(&dir.join(format!("{stem}.toml")), text.as_bytes())?;
+        let stem = stem(n);
+        let path = dir.join(format!("{stem}.toml"));
+        let text = format!("{}\n{}", marker(&v.id), toml::to_string(theme)?);
+        crate::settings::write_atomic(&path, text.as_bytes())?;
         names.push(stem);
     }
     Ok(names)
@@ -316,11 +361,10 @@ pub fn remove(dir: &Path, id: &str) -> Result<()> {
 pub fn installed(dir: &Path) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Some((id, _)) = name.strip_suffix(".toml").and_then(|s| s.split_once('~')) else {
+        let Some(id) = package_of(&e.path()) else {
             continue;
         };
-        if split_id(id).is_none() || out.iter().any(|(i, _)| i == id) {
+        if out.iter().any(|(i, _)| *i == id) {
             continue;
         }
         let label = std::fs::read_to_string(e.path())

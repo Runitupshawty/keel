@@ -103,13 +103,20 @@ pub enum Msg {
         outcome: crate::bulk_rename::Outcome,
         total: usize,
         items: Vec<crate::undo::Item>,
+        /// The undo journal's generation when it started.
+        generation: u64,
     },
     /// An operation finished: what it left, for the undo journal; or why it cannot be undone.
-    Undoable(Result<(crate::undo::Op, Vec<crate::undo::Item>), String>),
+    /// Tagged with the journal's generation when it started: after a profile switch it is
+    /// dropped.
+    Undoable(
+        u64,
+        Result<(crate::undo::Op, Vec<crate::undo::Item>), String>,
+    ),
     /// The check before undoing entry `id`: Ok, or why it cannot be undone now.
     UndoChecked {
         id: u64,
-        result: Result<(), String>,
+        result: Result<(), crate::undo::Refusal>,
     },
     Preview {
         key: PreviewKey,
@@ -682,8 +689,12 @@ impl AppState {
             Msg::BulkDone {
                 outcome,
                 total,
-                items,
+                mut items,
+                generation,
             } => {
+                if generation != self.undo.generation() {
+                    items.clear(); // started in another profile
+                }
                 let (text, ok) = crate::bulk_rename::summary(&outcome, total, "Renamed");
                 let op = crate::undo::Op::Rename(outcome.done.clone());
                 let id = self.undo.record(op, items).map(|e| e.id);
@@ -705,8 +716,10 @@ impl AppState {
                     self.apply(Msg::Changed { dir });
                 }
             }
-            Msg::Undoable(Err(why)) => self.undo.refuse(why),
-            Msg::Undoable(Ok((op, items))) => {
+            // Started in the profile before a switch: not this journal's.
+            Msg::Undoable(generation, _) if generation != self.undo.generation() => {}
+            Msg::Undoable(_, Err(why)) => self.undo.refuse(why),
+            Msg::Undoable(_, Ok((op, items))) => {
                 if let Some(e) = self.undo.record(op, items) {
                     let (text, id) = (e.done_text(), e.id);
                     self.toasts.offer(text, "Undo", Action::UndoEntry(id));
@@ -719,11 +732,14 @@ impl AppState {
                     return;
                 };
                 match result {
-                    Err(why) => {
-                        // It cannot come back: it leaves the journal, nothing was touched.
-                        self.undo.take(id);
-                        self.toasts.drop_action(&Action::UndoEntry(id));
-                        self.toasts.error(format!("Can't undo: {why}"));
+                    Err(r) => {
+                        // Nothing was touched. What cannot come back leaves the journal;
+                        // what may pass (a place taken, a share offline) stays for later.
+                        if !r.transient {
+                            self.undo.take(id);
+                            self.toasts.drop_action(&Action::UndoEntry(id));
+                        }
+                        self.toasts.error(format!("Can't undo: {}", r.why));
                     }
                     Ok(()) if rename => {
                         let p = self.active;
@@ -1084,6 +1100,7 @@ impl AppState {
         f: impl FnOnce(&dyn keel_vfs::Provider, &VPath) -> anyhow::Result<()> + Send + 'static,
     ) {
         let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
+        let generation = self.undo.generation();
         worker::spawn("keel-io", move || {
             let target = dir.join(&name);
             let msg = match router
@@ -1100,7 +1117,7 @@ impl AppState {
                     crate::undo::Op::Rename(steps) => crate::undo::renamed(steps, stat),
                     _ => crate::undo::created(&target, stat),
                 };
-                worker::send(&tx, &ctx, Msg::Undoable(Ok((op, items))));
+                worker::send(&tx, &ctx, Msg::Undoable(generation, Ok((op, items))));
             }
             worker::send(&tx, &ctx, msg);
         });
@@ -1817,6 +1834,7 @@ impl AppState {
                 if let Some(why) = refused {
                     self.undo.refuse(why);
                 }
+                let generation = self.undo.generation();
                 worker::spawn("keel-bulk-rename", move || {
                     let rename = |a: &VPath, b: &VPath| {
                         router
@@ -1837,6 +1855,7 @@ impl AppState {
                             outcome,
                             total,
                             items,
+                            generation,
                         },
                     );
                 });
@@ -1852,7 +1871,7 @@ impl AppState {
             },
             Action::UndoEntry(id) => {
                 let Some(e) = self.undo.get(id).cloned() else {
-                    return self.toasts.info("That operation was undone already");
+                    return self.toasts.info("That operation can no longer be undone");
                 };
                 // Stats may block (a sleeping disk): the check runs on a worker, the
                 // preview (or a rename's undo) follows its answer.
@@ -2156,15 +2175,8 @@ impl AppState {
             Action::Palette => {
                 let selection = !self.tab(p).targets().is_empty();
                 self.palette.undo = self.undo.label();
-                // Never in tests: a walkthrough runs every palette entry.
-                #[cfg(all(windows, not(test)))]
-                let extra = crate::shell_menu::win::palette_items(
-                    self.panes[p].tab(),
-                    &mut self.palette.shell,
-                );
-                #[cfg(not(all(windows, not(test))))]
-                let extra = Vec::new();
-                self.palette.show(selection, extra);
+                // The "Shell: …" entries follow on the first "shell" typed (palette_shell).
+                self.palette.show(selection);
             }
             #[cfg(windows)]
             Action::ShellMenu { extended, keyboard } => self.shell_menu(p, extended, keyboard),

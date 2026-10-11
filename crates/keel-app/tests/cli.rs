@@ -496,3 +496,58 @@ fn du_from_the_index_and_by_walking() {
     );
     assert!(text.contains(" 1 file "), "{text}");
 }
+
+/// Task 46: one child folder that cannot be listed leaves `keel du` working: that child is
+/// unknown (no `bytes`), the rest is counted. Windows: a deny-list ACE on a temp folder,
+/// removed again; elsewhere mode 000 (skipped as root, who reads it anyway).
+#[test]
+fn du_reports_an_unreadable_folder_as_unknown() {
+    let env = env();
+    let locked = env.files.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("secret.bin"), b"0123456789").unwrap();
+    #[cfg(windows)]
+    let lock = |on: bool| {
+        let arg: &[&str] = if on {
+            &["/deny", "*S-1-1-0:(RD)"]
+        } else {
+            &["/remove:d", "*S-1-1-0"]
+        };
+        Command::new("icacls")
+            .arg(&locked)
+            .args(arg)
+            .stdout(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    #[cfg(unix)]
+    let lock = |on: bool| {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if on { 0o000 } else { 0o755 };
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(mode)).is_ok()
+    };
+    if !lock(true) {
+        return eprintln!("skipped: cannot lock a folder here");
+    }
+    if std::fs::read_dir(&locked).is_ok() {
+        lock(false);
+        return eprintln!("skipped: the locked folder is still readable");
+    }
+    let out = env.run(&["du", &s(env.files.path()), "--json"]);
+    lock(false);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let child = |name: &str| {
+        (v["children"].as_array().unwrap().iter())
+            .find(|c| c["name"] == name)
+            .cloned()
+            .unwrap()
+    };
+    assert!(child("locked").get("bytes").is_none(), "{v}");
+    assert_eq!(child("docs")["bytes"], 9, "{v}");
+    assert_eq!(v["bytes"], 14, "the readable part: {v}");
+}

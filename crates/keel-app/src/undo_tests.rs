@@ -113,7 +113,7 @@ fn check_refuses_gone_changed_and_taken_items() {
         vec![item("b/x", Some("a/x"), 5), item("b/y", Some("a/y"), 6)],
     );
     assert_eq!(mv.check(disk(&[("b/x", 5), ("b/y", 6)])), Ok(()));
-    let err = |e: &Entry, files: &[(&str, u64)]| e.check(disk(files)).unwrap_err();
+    let err = |e: &Entry, files: &[(&str, u64)]| e.check(disk(files)).unwrap_err().why;
     assert_eq!(err(&mv, &[("b/x", 5)]), "y is gone");
     assert_eq!(err(&mv, &[("b/x", 5), ("b/y", 7)]), "y changed since");
     assert!(err(&mv, &[("b/x", 5), ("b/y", 6), ("a/y", 1)]).ends_with("y is taken"));
@@ -152,14 +152,10 @@ fn check_refuses_gone_changed_and_taken_items() {
         move |x: &VPath| ((*x == bin && listed) || (*x == p("a/x") && taken)).then_some(st(0))
     };
     assert_eq!(del.check(fs(false, true)), Ok(()));
-    assert!(del
-        .check(fs(false, false))
-        .unwrap_err()
-        .contains("no longer in the"));
-    assert!(del
-        .check(fs(true, true))
-        .unwrap_err()
-        .ends_with("x is taken"));
+    let gone = del.check(fs(false, false)).unwrap_err();
+    assert!(gone.why.contains("no longer in the") && !gone.transient);
+    let taken = del.check(fs(true, true)).unwrap_err();
+    assert!(taken.why.ends_with("x is taken") && taken.transient);
     let none = entry(Op::Copy, Vec::new());
     assert!(none.check(disk(&[])).is_err());
 }
@@ -268,6 +264,7 @@ fn library_operations_record_what_their_job_did() {
         op,
         existed: existed.iter().map(|n| p(n).display()).collect(),
         since: std::time::SystemTime::now(),
+        generation: 0,
     };
     let copy = planned(
         L::Copy {
@@ -314,6 +311,52 @@ fn library_operations_record_what_their_job_did() {
         remote.done(disk(&[])),
         Err(crate::state::PERMANENT.to_owned())
     );
+    // Overwrite replaced files: never recorded, not even the targets that were new.
+    for mv in [false, true] {
+        let (src, dst_dir, on_conflict) = (vec![p("a/x")], p("b"), OnConflict::Overwrite);
+        let op = if mv {
+            L::Move {
+                src,
+                dst_dir,
+                on_conflict,
+            }
+        } else {
+            L::Copy {
+                src,
+                dst_dir,
+                on_conflict,
+            }
+        };
+        assert_eq!(
+            planned(op, &[]).done(disk(&[("b/x", 1)])),
+            Err("files were replaced by Overwrite".to_owned())
+        );
+    }
+}
+
+/// Taken places and unreachable folders may pass: the entry stays. A changed or missing
+/// item does not.
+#[test]
+fn transient_refusals_keep_the_entry() {
+    let mv = entry(Op::Move, vec![item("b/x", Some("a/x"), 5)]);
+    let check = |files: &[(&str, u64)]| mv.check(disk(files)).unwrap_err();
+    assert!(check(&[("b/x", 5), ("a/x", 1)]).transient, "taken");
+    assert!(!check(&[("b/x", 6)]).transient, "changed");
+    assert!(!check(&[]).transient, "gone, its folder is there");
+    let offline = entry(Op::Move, vec![item("share/x", Some("a/x"), 5)]);
+    let r = offline.check(disk(&[])).unwrap_err();
+    assert!(r.transient && r.why.ends_with("can't be reached"), "{r:?}");
+}
+
+/// A profile switch bumps the generation operations are tagged with.
+#[test]
+fn a_profile_switch_starts_a_new_generation() {
+    let mut j = Journal::default();
+    let first = j.generation();
+    j.record(Op::Copy, vec![item("a/1", None, 1)]);
+    j.clear();
+    assert_ne!(j.generation(), first);
+    assert_eq!(j.label(), None);
 }
 
 // ---- in a temporary folder ------------------------------------------------------------
@@ -443,7 +486,9 @@ fn trash_works(dir: &Path) -> bool {
     let since = std::time::SystemTime::now();
     match keel_vfs::local::trash(&VPath::local(&probe)) {
         Ok(kept) => {
-            let items = trashed(&[(VPath::local(&probe), kept)], since);
+            let router = Router::new();
+            let items = trashed(&[(VPath::local(&probe), kept)], since, stat_fn(&router))
+                .unwrap_or_default();
             purge(&items);
             if items.is_empty() {
                 eprintln!("skipped: a trashed file is not found again here");
@@ -494,7 +539,12 @@ fn a_copy_undone_goes_to_the_trash_and_the_originals_stay() {
     assert_eq!(std::fs::read_to_string(a.join(&name)).unwrap(), "copy me");
     // In the trash (found by its path where the trash records it).
     if keel_vfs::trashbin::KNOWS_ORIGIN {
-        let found = trashed(&[(VPath::local(b.join(&name)), None)], since);
+        let found = trashed(
+            &[(VPath::local(b.join(&name)), None)],
+            since,
+            stat_fn(&router),
+        )
+        .unwrap();
         assert_eq!(found.len(), 1, "the copy is in the trash");
         purge(&found);
     }
@@ -513,9 +563,9 @@ fn a_delete_undone_comes_back_from_the_trash() {
     let since = std::time::SystemTime::now();
     let kept = keel_vfs::local::trash(&VPath::local(&file)).unwrap();
     assert!(!file.exists());
-    let items = trashed(&[(VPath::local(&file), kept)], since);
-    let e = entry(Op::Trash, items.clone());
     let router = Router::new();
+    let items = trashed(&[(VPath::local(&file), kept)], since, stat_fn(&router)).unwrap();
+    let e = entry(Op::Trash, items.clone());
     // Taken meanwhile: refused, the trashed file stays where it is.
     std::fs::write(&file, "squatter").unwrap();
     let err = format!("{:#}", undo(&router, &e).unwrap_err());
@@ -530,4 +580,81 @@ fn a_delete_undone_comes_back_from_the_trash() {
         e.check(stat_fn(&router)).is_err(),
         "no longer in the trash: a second undo is refused"
     );
+}
+
+/// A delete whose items are not found in the trash again is refused, not recorded short:
+/// the next Ctrl+Z must not go on to the operation before.
+#[test]
+fn a_delete_not_found_in_the_trash_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let never = VPath::local(tmp.path().join(unique("never-trashed")));
+    let since = std::time::SystemTime::now();
+    let router = Router::new();
+    let err = trashed(&[(never.clone(), None)], since, stat_fn(&router)).unwrap_err();
+    assert!(
+        err.starts_with(&format!("couldn't find {} in the ", never.name())),
+        "{err}"
+    );
+    let two = [(never.clone(), None), (never, None)];
+    let err = trashed(&two, since, stat_fn(&router)).unwrap_err();
+    assert!(err.starts_with("couldn't find 2 of the 2 items"), "{err}");
+    assert_eq!(trashed(&[], since, stat_fn(&router)), Ok(Vec::new()));
+}
+
+/// A copy keeps its original's size and modified time; its stamp still tells them apart by
+/// the file's identity, so Undo copy refuses once the original took the copy's place.
+#[test]
+fn stamps_tell_a_copy_from_its_original() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (orig, copy) = (tmp.path().join("orig.txt"), tmp.path().join("copy.txt"));
+    std::fs::write(&orig, "same bytes").unwrap();
+    std::fs::copy(&orig, &copy).unwrap();
+    let mtime = std::fs::metadata(&orig).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let router = Router::new();
+    let stat = stat_fn(&router);
+    let (a, b) = (
+        stat(&VPath::local(&orig)).unwrap(),
+        stat(&VPath::local(&copy)).unwrap(),
+    );
+    assert_eq!((a.size, a.mtime), (b.size, b.mtime), "same size and time");
+    if a.id.is_none() {
+        return eprintln!("skipped: no file ids on this file system");
+    }
+    assert_ne!(a, b, "told apart by identity");
+    assert_eq!(stat(&VPath::local(&orig)), Some(a), "stable for one file");
+    let e = entry(
+        Op::Copy,
+        vec![Item {
+            now: VPath::local(&copy),
+            was: None,
+            stamp: Some(b),
+        }],
+    );
+    assert_eq!(e.check(stat_fn(&router)), Ok(()));
+    // The original moved onto the copy's path: same size and time, another file.
+    std::fs::remove_file(&copy).unwrap();
+    std::fs::rename(&orig, &copy).unwrap();
+    let r = e.check(stat_fn(&router)).unwrap_err();
+    assert_eq!(r.why, "copy.txt changed since");
+}
+
+/// Undoing a folder move never merges into a folder that appeared at the old place: it is
+/// refused and both folders keep what they hold.
+#[test]
+fn a_folder_move_back_onto_a_new_folder_is_refused() {
+    let (tmp, a, b) = fixture();
+    let router = Router::new();
+    let e = transfer(&router, &["folder"], &a, &b, true);
+    std::fs::create_dir(a.join("folder")).unwrap();
+    std::fs::write(a.join("folder/newer.txt"), "new").unwrap();
+    let before = tree(tmp.path());
+    let err = format!("{:#}", undo(&router, &e).unwrap_err());
+    assert!(err.ends_with("is taken"), "{err}");
+    assert_eq!(tree(tmp.path()), before, "nothing moved or merged");
 }

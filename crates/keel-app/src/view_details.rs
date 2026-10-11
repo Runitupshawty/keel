@@ -81,6 +81,18 @@ pub fn ui(
     // --- Task 33 ---: copies badge (library on).
     let copies_col = lib.is_open();
 
+    // Task 46: network, removable, remote and cloud folders are walked on request only.
+    if walk_wanted(tab, lib, walked) && !crate::sizes::walks_on_its_own(&tab.dir) {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Folder sizes here are only walked on request.").color(muted),
+            );
+            if ui.button("Calculate sizes").clicked() {
+                out.push(Action::CalculateSizes { fresh: false });
+            }
+        });
+    }
+
     // Column widths are remembered per table: a folder tab that becomes the Recycle Bin
     // (or a search) gets the wide Original location (Folder) column, not the Ext width.
     let mut table = TableBuilder::new(ui)
@@ -381,16 +393,25 @@ pub fn ui(
     if let Some(key) = sort_click {
         tab.sort = (key, if tab.sort.0 == key { !tab.sort.1 } else { true });
     }
-    // Task 46: the Sizes view walks a folder outside the library once per listing (being
-    // asked for it, also on a network folder).
-    let indexed = lib.is_open() && crate::library::source_of(&lib.sources, &tab.dir).is_some();
-    let unknown = || {
-        (tab.entries().iter()).any(|e| e.kind == Kind::Dir && !e.is_link && walked.get(e).is_none())
-    };
-    if sizes && !indexed && !tab.loading && !walked.started(&tab.dir) && unknown() {
+    // Task 46: the Sizes view walks a folder on a fixed disk outside the library once per
+    // listing; elsewhere (network shares, removable drives, remote and cloud folders, where
+    // a walk is slow or costs requests) it waits for the button above the table.
+    if walk_wanted(tab, lib, walked) && crate::sizes::walks_on_its_own(&tab.dir) {
         out.push(Action::CalculateSizes { fresh: false });
     }
     empty_area(ui, tab, out);
+}
+
+/// Whether the Sizes view of `tab` lacks folder totals that a walk would find: outside the
+/// library, listed, not walked since its listing, with a folder of unknown size.
+fn walk_wanted(tab: &Tab, lib: &crate::library::LibraryUi, walked: &crate::sizes::Sizes) -> bool {
+    let indexed = lib.is_open() && crate::library::source_of(&lib.sources, &tab.dir).is_some();
+    tab.sizes_view
+        && !indexed
+        && !tab.loading
+        && !walked.started(&tab.dir)
+        && (tab.entries().iter())
+            .any(|e| e.kind == Kind::Dir && !e.is_link && walked.get(e).is_none())
 }
 
 /// `part` of `whole`, 0..=1 (0 when the whole is 0).
