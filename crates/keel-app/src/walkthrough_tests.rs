@@ -2491,6 +2491,96 @@ fn library_folder_color_and_icon() {
     close_library(&mut h);
 }
 
+/// Task 58: Ctrl+Shift+A enters tag assign mode; 1 tags the two selected files with the
+/// first tag (the bar's count follows), 1 again untags them, Esc leaves; another folder
+/// leaves the mode too.
+#[test]
+#[ignore]
+fn library_tag_assign_mode() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, _base, lib) = with_library("assign", &docs, &root.join("Backup"));
+    add_source(&mut h, &docs);
+    for (name, color) in [("receipts", "#e5484d"), ("taxes", "#3b82f6")] {
+        lib.create_tag(name, Some(color), None).unwrap();
+    }
+    sm(&mut h).library.refresh_meta();
+    assert!(wait(&mut h, 10, &|s| s.library.tags.len() == 2), "tags");
+    click_row(&mut h, "notes.md", 0, NONE);
+    click_row(&mut h, "todo.txt", 0, CMD);
+    key(&mut h, CMD_SHIFT, Key::A);
+    assert!(s(&h).library.assign.is_some(), "assign mode");
+    assert!(has(&h, "Assign tags to 2 items:"), "{}", dump(&h, "Assign"));
+    assert!(has(&h, "1 receipts (0)"), "{}", dump(&h, "receipts"));
+    assert!(has(&h, "2 taxes (0)"));
+    assert!(has(&h, "0 or Esc leaves"));
+    let both = [docs.join("notes.md"), docs.join("todo.txt")].map(VPath::local);
+    let carry = |s: &AppState, on: bool| {
+        let tag = s.library.tags[0].id;
+        both.iter()
+            .all(|p| on == s.library.tagged.get(p).is_some_and(|t| t.contains(&tag)))
+    };
+    // As a keyboard sends it: the key, then its text (which must not start the filter).
+    for e in [
+        Event::Key {
+            key: Key::Num1,
+            physical_key: Some(Key::Num1),
+            pressed: true,
+            repeat: false,
+            modifiers: NONE,
+        },
+        Event::Text("1".into()),
+        Event::Key {
+            key: Key::Num1,
+            physical_key: Some(Key::Num1),
+            pressed: false,
+            repeat: false,
+            modifiers: NONE,
+        },
+    ] {
+        h.input_mut().events.push(e);
+    }
+    h.run_steps(2);
+    assert!(has(&h, "1 receipts (2)"), "{}", dump(&h, "receipts"));
+    assert!(has(&h, "2 taxes (0)"));
+    // What the library holds, read back (not the bar's own update).
+    assert!(wait(&mut h, 10, &|s| !s
+        .library
+        .jobs
+        .values()
+        .any(|j| j.active())));
+    sm(&mut h).library.tagged.clear();
+    sm(&mut h).library.refresh_meta();
+    assert!(
+        wait(&mut h, 10, &|s| carry(s, true)),
+        "tagged in the library"
+    );
+    assert!(
+        s(&h).tab(0).filter.is_empty(),
+        "the digit never reached the filter"
+    );
+    shot(&mut h, "library-tag-assign");
+    key(&mut h, NONE, Key::Num1);
+    assert!(has(&h, "1 receipts (0)"));
+    sm(&mut h).library.tagged.clear();
+    sm(&mut h).library.refresh_meta();
+    h.run_steps(3);
+    assert!(
+        wait(&mut h, 10, &|s| carry(s, false)),
+        "untagged in the library"
+    );
+    key(&mut h, NONE, Key::Escape);
+    assert!(s(&h).library.assign.is_none(), "Esc leaves");
+    assert!(!has(&h, "0 or Esc leaves"));
+    // Another folder ends the mode.
+    key(&mut h, CMD_SHIFT, Key::A);
+    assert!(s(&h).library.assign.is_some());
+    sm(&mut h).run(0, Action::Navigate(VPath::local(root.join("Backup"))));
+    assert!(wait(&mut h, 10, &listed));
+    assert!(s(&h).library.assign.is_none(), "navigation leaves");
+    close_library(&mut h);
+}
+
 /// Ctrl+F, the backend menu → Library, then `ext:`, `in:` and `tag:` queries.
 #[test]
 #[ignore]

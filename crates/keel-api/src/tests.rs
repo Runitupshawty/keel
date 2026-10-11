@@ -1911,3 +1911,33 @@ fn backup_and_restore_round_trip_through_the_api() {
     let e = call(&f.ctx, "library.restore", json!({"file": s(&junk)})).unwrap_err();
     assert!(e.message.starts_with("not a Keel backup"), "{}", e.message);
 }
+
+/// Task 58: the agent skill and its installable copy are the same file, it has the SKILL.md
+/// front matter, and every operation it names in backticks exists.
+#[test]
+fn agent_skill_copy_matches_and_names_real_operations() {
+    let doc = include_str!("../../../docs/agent-skill.md");
+    let copy = include_str!("../../../skills/keel/SKILL.md");
+    assert!(
+        doc == copy,
+        "skills/keel/SKILL.md differs from docs/agent-skill.md: copy it again"
+    );
+    let front = doc.strip_prefix("---\n").expect("front matter");
+    let (front, _) = front.split_once("\n---\n").expect("front matter end");
+    assert!(front.starts_with("name: keel\n"), "{front}");
+    assert!(front.contains("\ndescription: "), "{front}");
+    let named: Vec<&str> = (doc.split('`').skip(1).step_by(2))
+        .filter(|t| t.contains('.') && !t.starts_with('.') && !t.ends_with('.'))
+        .filter(|t| {
+            t.chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+        })
+        .collect();
+    assert!(named.contains(&"tags.set") && named.contains(&"jobs.info"));
+    for name in named {
+        assert!(
+            find(name).is_some(),
+            "the skill names {name}, no such operation"
+        );
+    }
+}

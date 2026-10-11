@@ -93,6 +93,10 @@ The guide covers everyday use; these pages hold the details.
 
 keel-daemon can serve a library source as a drive letter or folder that any program opens (`keel mount Photos K:`). The Linux release build includes the FUSE backend (install `fuse3`); on Windows and macOS build `keel-daemon` with `--features winfsp` or `--features fuse`. Without a backend or driver `keel mount` fails with error -32008. Details: [Mounts](docs/daemon.md#mounts).
 
+### AI agents
+
+`keel mcp` gives Claude Code, Codex and other MCP clients every operation as a tool ([MCP](docs/api.md#mcp-keel-mcp)). For an agent that works through a shell, [the agent skill](docs/agent-skill.md) teaches `keel op <name> --params '<json>'` and its rules (show the preview, execute only after a yes, never delete for good without the user's words): copy `skills/keel` into the agent's skills folder (Claude Code: `~/.claude/skills/keel/SKILL.md`).
+
 ### Cloud accounts: bring your own client id
 
 Google Drive and Dropbox sign-in uses OAuth with PKCE and a loopback redirect (`http://127.0.0.1:<port>/`). Keel ships no OAuth client ids: `assets/cloud-clients.toml` holds placeholders. Register your own free app (a Google Cloud "Desktop app" OAuth client with the Drive API enabled, or a Dropbox scoped app with redirect URI `http://127.0.0.1`) and enter its client id per account, or replace the placeholders in that file before building; the file explains each step. WebDAV (Nextcloud, ownCloud, Synology, Apache `mod_dav`, any `https://host/path/` collection URL) needs no client id: Settings → Cloud → Add account → WebDAV takes the address (for Nextcloud `https://host/remote.php/dav/files/<user>/`), user name, password (use an app password where the server offers one) and an optional root folder, and **Test connection** lists the root before you save. `https://` is required unless you tick the explicit plain-`http://` box; `webdav://` addresses are refused. Deletes on WebDAV are permanent unless the server has its own trash, and uploads are held in memory (limit 1 GiB per file). Tokens, S3 keys and WebDAV passwords are kept in the OS keychain, never in `config.toml`.

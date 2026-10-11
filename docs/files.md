@@ -10,6 +10,7 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+F2 | Bulk rename the selection (pattern, find/replace, case; Ctrl+Z undoes it) |
 | Ctrl+, | Settings |
 | Ctrl+Shift+T | Tag picker (library) |
+| Ctrl+Shift+A | Tag assign mode: 1–9 toggle tags on the selection, 0 or Esc leaves (library) |
 | Ctrl+D | Toggle favorite (library) |
 | Ctrl+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)) |
 | Ctrl+Shift+O | Open with… (pick an app for the selected files) |

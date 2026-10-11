@@ -289,6 +289,12 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
         Key::T,
         Action::Library(crate::library::LibCmd::TagPicker),
     ),
+    // Task 58: tag assign mode (number keys toggle tags); before Ctrl+A (Select all).
+    (
+        CMD_SHIFT,
+        Key::A,
+        Action::Library(crate::library::LibCmd::AssignMode),
+    ),
     (HIDDEN.0, HIDDEN.1, Action::ToggleHidden),
     (CMD, Key::P, Action::JumpFolder),
     (CMD, Key::Enter, Action::OpenLocation),
@@ -389,10 +395,7 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
     if !enabled {
         return Vec::new();
     }
-    let typing = ctx
-        .memory(|m| m.focused())
-        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-    if typing {
+    if typing(ctx) {
         // Window-level shortcuts still work from a text box (e.g. Ctrl+P from the search box).
         return ctx.input_mut(|i| {
             SHORTCUTS
@@ -444,6 +447,12 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
         out.push(Action::Paste);
     }
     out
+}
+
+/// A text box (rename, filter, path box) has the keyboard.
+pub fn typing(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused())
+        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
 }
 
 /// Ctrl+V (or Shift+Insert with text on the clipboard), once per key press. egui-winit

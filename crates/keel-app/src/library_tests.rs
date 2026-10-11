@@ -1076,3 +1076,44 @@ fn restore_offers_a_free_name_and_restores_beside_the_open_library() {
     let e = restore_offer(&junk).unwrap_err();
     assert!(format!("{e:#}").starts_with("not a Keel backup"), "{e:#}");
 }
+
+/// Task 58: the assign bar's labels with 0, 3, 9 and 12 tags.
+#[test]
+fn assign_bar_labels() {
+    let tags =
+        |n: usize| -> Vec<(String, usize)> { (1..=n).map(|i| (format!("t{i}"), i % 3)).collect() };
+    let labels = |n: usize, shift: bool| {
+        let owned = tags(n);
+        let named: Vec<(&str, usize)> = owned.iter().map(|(t, c)| (t.as_str(), *c)).collect();
+        assign_labels(&named, shift)
+    };
+    let (none, hint) = labels(0, false);
+    assert!(none.is_empty());
+    assert!(
+        hint.starts_with("No tags yet: create one with Tag…"),
+        "{hint}"
+    );
+    assert_eq!(
+        labels(3, false),
+        (
+            vec!["1 t1 (1)".to_owned(), "2 t2 (2)".into(), "3 t3 (0)".into()],
+            "0 or Esc leaves".to_owned()
+        )
+    );
+    // Shift changes nothing while every tag fits on the first page.
+    assert_eq!(labels(3, true), labels(3, false));
+    let (nine, hint) = labels(9, false);
+    assert_eq!(nine.len(), 9);
+    assert_eq!(nine[8], "9 t9 (0)");
+    assert_eq!(hint, "0 or Esc leaves");
+    let (twelve, hint) = labels(12, false);
+    assert_eq!(twelve.len(), 9, "the first nine by name");
+    assert_eq!(twelve[0], "1 t1 (1)");
+    assert_eq!(hint, "Shift+number for 10–18 · 0 or Esc leaves");
+    let (shifted, hint) = labels(12, true);
+    assert_eq!(
+        shifted,
+        ["Shift+1 t10 (1)", "Shift+2 t11 (2)", "Shift+3 t12 (0)"]
+    );
+    assert_eq!(hint, "Release Shift for 1–9 · 0 or Esc leaves");
+}

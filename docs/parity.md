@@ -64,7 +64,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | Nested, colored tags that follow the content to every copy | described; v1 tags | [SD-TAGS], [SD-B23] | **Has** ([library.md](library.md#library)) |
-| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Part**: tag picker (Ctrl+Shift+T); no number keys |
+| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Has** (unreleased): Ctrl+Shift+A, then 1–9 (Shift: 10–18) toggle tags on the selection ([library.md](library.md#library)) |
 | Favorites, recents | mockup; described | [SD-WEB] | **Has** |
 | Saved views | described | [SD-LIB] | **Has** |
 
@@ -134,9 +134,9 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
-| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Part**: all 60 operations are reachable over JSON-RPC and MCP; the CLI has a subset |
+| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has** (unreleased): `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
-| Agent skill | landed | [SD-STATUS] | **Lacks** (MCP only) |
+| Agent skill | landed | [SD-STATUS] | **Has** (unreleased): [agent-skill.md](agent-skill.md), installable from `skills/keel` |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
 | Self-update and a nightly channel | nightly | [SD-REL] | **Part**: opt-in update check and Windows self-install; no nightly channel |
 | Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Part**: `keel-daemon --web`; no container image |
@@ -217,13 +217,13 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
 | 17 | An icon or color per folder (**done**, unreleased: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
-| 19 | Tag assign mode with number keys | Spacedrive v1 | D | S |
+| 19 | Tag assign mode with number keys (**done**, unreleased: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
 | 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D. **Done** (unreleased, [files.md](files.md#inspector)) | S-M |
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
-| 25 | Agent skill, `keel op <name>`, generated SDK | Spacedrive | — | S |
+| 25 | Agent skill, `keel op <name>`, generated SDK (**done**, unreleased: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); no generated SDK) | Spacedrive | — | S |
 | 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | — | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |

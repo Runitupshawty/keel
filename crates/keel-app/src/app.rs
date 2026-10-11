@@ -252,7 +252,9 @@ impl App {
             && !self.crashed
             && s.viewer.is_none() // Task 32: the viewer reads its own keys
             && !ctx.is_context_menu_open();
-        for action in keys::actions_with_terminal(ctx, keys_on, s.terminal.focused(ctx)) {
+        let terminal = s.terminal.focused(ctx);
+        s.assign_keys(ctx, keys_on && !terminal); // Task 58
+        for action in keys::actions_with_terminal(ctx, keys_on, terminal) {
             s.run(s.active, action);
         }
         s.terminal.input(ctx, keys_on, &s.settings, &s.tx);

@@ -87,6 +87,8 @@ struct Usage(String);
 enum Fail {
     Api(ApiError),
     Usage(Usage),
+    /// Already printed (exit 1).
+    Reported,
 }
 
 impl From<ApiError> for Fail {
@@ -115,6 +117,25 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     match cmd {
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
         Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),
+        Command::Op {
+            name,
+            params,
+            params_file,
+            execute,
+        } => {
+            // Machine output unless a person reads it.
+            let json = json || !std::io::stdout().is_terminal();
+            let call = OpCall {
+                name,
+                params,
+                params_file,
+                execute,
+            };
+            return match op(&cfg, call, json, &mut out) {
+                Ok(()) => OK,
+                Err(e) => report(e, json, &mut out),
+            };
+        }
         _ => {}
     }
     // Read a piped plan before opening the library: `keel plan` (which holds it while it
@@ -188,6 +209,7 @@ fn report(e: Fail, json: bool, out: &mut Out) -> i32 {
             }
             FAILED
         }
+        Fail::Reported => FAILED,
     }
 }
 
@@ -454,25 +476,7 @@ fn command(
             no_wait,
         } => {
             let (plan_id, input_hash) = plan_and_hash(plan, hash)?;
-            let done = b.call(
-                "execute",
-                json!({"plan_id": plan_id, "input_hash": input_hash}),
-            )?;
-            match done["job"].as_i64() {
-                Some(job) if !no_wait => {
-                    let info = wait_job(b, job)?;
-                    Some(job_done(&info, json, out)?)
-                }
-                _ if json => Some(done),
-                Some(job) => {
-                    let _ = writeln!(out, "started job {job}");
-                    None
-                }
-                None => {
-                    print_json(&done["result"], out);
-                    None
-                }
-            }
+            execute_plan(b, &plan_id, &input_hash, no_wait, json, out)?
         }
         Command::Devices => {
             let d = b.call("devices.list", Value::Null)?;
@@ -608,9 +612,163 @@ fn command(
             }
             Some(done)
         }
-        Command::Daemon(_) | Command::Mcp { .. } => unreachable!("handled by run"),
+        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } => {
+            unreachable!("handled by run")
+        }
     };
     Ok(doc.filter(|_| json))
+}
+
+/// Applies a previewed plan, waiting for its job unless `no_wait`: the finished job (or the
+/// answer) with `json`, else printed.
+fn execute_plan(
+    b: &mut dyn Backend,
+    plan_id: &str,
+    input_hash: &str,
+    no_wait: bool,
+    json: bool,
+    out: &mut Out,
+) -> Result<Option<Value>, Fail> {
+    let done = b.call(
+        "execute",
+        json!({"plan_id": plan_id, "input_hash": input_hash}),
+    )?;
+    Ok(match done["job"].as_i64() {
+        Some(job) if !no_wait => {
+            let info = wait_job(b, job)?;
+            Some(job_done(&info, json, out)?)
+        }
+        _ if json => Some(done),
+        Some(job) => {
+            let _ = writeln!(out, "started job {job}");
+            None
+        }
+        None => {
+            print_json(&done["result"], out);
+            None
+        }
+    })
+}
+
+/// `keel op`'s arguments.
+struct OpCall {
+    name: Option<String>,
+    params: Option<String>,
+    params_file: Option<std::path::PathBuf>,
+    execute: bool,
+}
+
+/// What previews: every previewed operation, and `plan` (file operations).
+fn previews(op: &keel_api::Operation) -> bool {
+    op.previewed() || op.name == "plan"
+}
+
+/// Task 58: `keel op <name>`: any operation of the API. A read prints its result; an
+/// operation that previews prints its preview, and with `--execute` applies exactly that
+/// preview (its plan id and input hash) after printing it. With `json` one document: the
+/// result, the preview, or `{"preview", "executed"}`.
+fn op(cfg: &HostConfig, call: OpCall, json: bool, out: &mut Out) -> Result<(), Fail> {
+    let given = call.params.is_some() || call.params_file.is_some();
+    let name = match call.name.as_deref() {
+        Some("list") if !given => None,
+        name => name,
+    };
+    let Some(name) = name else {
+        op_list(json, out);
+        return Ok(());
+    };
+    let op = keel_api::find(name)
+        .ok_or_else(|| Usage(format!("no operation {name} (`keel op list` lists them)")))?;
+    let text = match (call.params, call.params_file) {
+        (Some(text), _) => text,
+        (None, Some(file)) => {
+            std::fs::read_to_string(&file).map_err(|e| Usage(format!("{}: {e}", file.display())))?
+        }
+        (None, None) => "{}".into(),
+    };
+    let params: Value = serde_json::from_str(&text)
+        .map_err(|e| Usage(format!("the parameters are not valid JSON: {e}")))?;
+    if !params.is_object() {
+        return Err(Usage("the parameters must be a JSON object".into()).into());
+    }
+    if call.execute && !previews(op) {
+        let what = if op.mutating {
+            "acts at once"
+        } else {
+            "only reads"
+        };
+        return Err(Usage(format!(
+            "{name} has no preview (it {what}); --execute is for operations that preview"
+        ))
+        .into());
+    }
+    let mut b =
+        connect(cfg, keel_api::client::request_wait(op.name)).map_err(|e| Fail::Api(e.into()))?;
+    // `execute` waits for the job it starts, as `keel execute` does.
+    let ids = (params["plan_id"].as_str()).zip(params["input_hash"].as_str());
+    if let (true, Some((id, hash))) = (op.name == "execute", ids) {
+        if let Some(doc) = execute_plan(&mut *b, id, hash, false, json, out)? {
+            print_json(&doc, out);
+        }
+        return Ok(());
+    }
+    let answer = b.call(op.name, params)?;
+    if !previews(op) {
+        print_json(&answer, out);
+        return Ok(());
+    }
+    let preview: PlanPreview = parse(answer.clone())?;
+    if !call.execute {
+        match json {
+            true => print_json(&answer, out),
+            false => print_preview(&preview, out),
+        }
+        return Ok(());
+    }
+    if !json {
+        let _ = write!(out, "{}", preview.describe(usize::MAX));
+        let _ = writeln!(out, "plan: {}", preview.plan_id);
+        let _ = writeln!(out, "hash: {}", preview.input_hash);
+        let _ = writeln!(out, "Executing…");
+        let _ = out.flush();
+    }
+    let (id, hash) = (&preview.plan_id, &preview.input_hash);
+    match execute_plan(&mut *b, id, hash, false, json, out) {
+        Ok(Some(done)) => print_json(&json!({"preview": answer, "executed": done}), out),
+        Ok(None) => {}
+        // The preview it failed on goes into the one document.
+        Err(Fail::Api(e)) if json => {
+            print_json(&json!({"error": e.to_value(), "preview": answer}), out);
+            eprintln!("keel: {}", e.message);
+            return Err(Fail::Reported);
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+/// `keel op list`: every operation, whether it previews, and what it does (with `json`
+/// also whether it changes anything, its parameters' schema and an example).
+fn op_list(json: bool, out: &mut Out) {
+    if json {
+        let list: Vec<Value> = (keel_api::OPS.iter())
+            .map(|op| {
+                json!({
+                    "name": op.name,
+                    "summary": op.summary,
+                    "previews": previews(op),
+                    "mutating": op.mutating,
+                    "params": (op.params)(),
+                    "example": (op.example)(),
+                })
+            })
+            .collect();
+        return print_json(&Value::Array(list), out);
+    }
+    for op in keel_api::OPS {
+        let mark = if previews(op) { "preview" } else { "" };
+        let _ = writeln!(out, "{:<22} {mark:<8} {}", op.name, op.summary);
+    }
 }
 
 /// A drive letter as given (`K`, `K:`), anything else made absolute.

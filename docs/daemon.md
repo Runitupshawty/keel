@@ -26,9 +26,12 @@ keel sources add ~/Photos --label photos
 keel library backup /media/backup
 keel library restore /media/backup/main-2026-10-11.keelbackup --as old-main
 keel daemon status
+keel op list
+keel op library.stats
+keel op tags.set --params '{"paths": ["/home/me/Docs/invoice-2026.pdf"], "tags": ["receipts"]}'
 ```
 
-`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel library backup|restore`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel library backup|restore`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel op <name> --params '<json>'` runs any operation of the [API](api.md#keel-op-any-operation-by-name): one that changes something stops at its preview unless `--execute` is given. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
 
 **MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
 
