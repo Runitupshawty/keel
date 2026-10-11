@@ -673,6 +673,7 @@ impl Library {
         if let Err(e) = lock.try_lock() {
             anyhow::bail!("library {name} is already open ({e})");
         }
+        crate::backup::sweep_scratch(root, &dir);
         let db = Pool::open(&dir.join("library.db"), Store::Library)?;
         let id = match db.meta("id")? {
             Some(id) => id,

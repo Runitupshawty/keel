@@ -1110,7 +1110,7 @@ fn backup_preview(ctx: &Ctx, p: &BackupParams) -> Result<Preview> {
 
 fn backup(ctx: &Ctx, p: BackupParams) -> Result<BackupWritten> {
     let path = backup_target(ctx, &p)?;
-    let m = ctx.lib.backup(&path)?;
+    let m = ctx.lib.backup_new(&path)?;
     Ok(BackupWritten {
         file: path.display().to_string(),
         bytes: std::fs::metadata(&path).map_or(0, |m| m.len()),

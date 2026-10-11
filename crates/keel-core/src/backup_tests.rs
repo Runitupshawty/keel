@@ -101,6 +101,53 @@ fn a_backup_never_holds_a_file_a_restore_refuses() {
     assert!(check_manifest(&m).is_err());
 }
 
+/// Nothing of a failed backup stays: no staging file when the final move fails, no file
+/// replaced by `backup_new`, and a crash's scratch folders go when the library opens.
+#[test]
+fn a_failed_backup_leaves_nothing_behind() {
+    let (data, files, out) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (lib, src) = library(data.path(), files.path(), 2);
+    let staging = || -> Vec<_> {
+        std::fs::read_dir(out.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("partial"))
+            .collect()
+    };
+    // A folder in the way: the final rename fails.
+    let blocked = out.path().join("blocked.keelbackup");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::write(blocked.join("x"), b"x").unwrap();
+    assert!(lib.backup(&blocked).is_err());
+    assert!(staging().is_empty(), "{:?}", staging());
+    let taken = out.path().join("taken.keelbackup");
+    std::fs::write(&taken, b"mine").unwrap();
+    assert!(lib.backup_new(&taken).is_err());
+    assert_eq!(std::fs::read(&taken).unwrap(), b"mine");
+    assert!(staging().is_empty(), "{:?}", staging());
+    let fresh = out.path().join("fresh.keelbackup");
+    lib.backup_new(&fresh).unwrap();
+    assert!(inspect(&fresh).is_ok());
+    assert!(staging().is_empty(), "{:?}", staging());
+
+    let left = lib.dir().join("backup-0123");
+    std::fs::create_dir_all(left.join("inner")).unwrap();
+    let restoring = data.path().join(".restore-0123");
+    std::fs::create_dir(&restoring).unwrap();
+    drop((src, lib));
+    let _lib = Library::open(data.path(), "main").unwrap();
+    assert!(!left.exists(), "a crashed backup's scratch folder is swept");
+    assert!(
+        restoring.exists(),
+        "a restore may still be running elsewhere"
+    );
+}
+
 #[test]
 fn a_restore_brings_back_files_tags_favorites_content_ids_and_sources() {
     let (data, files, other) = (
@@ -385,6 +432,11 @@ fn crafted_backups_are_refused_without_a_trace() {
                 )
             }),
             |k| matches!(k, BackupError::Damaged(_)),
+        ),
+        (
+            "a source whose root differs from the manifest's",
+            Box::new(|m, _| m["sources"][0]["root"]["path"] = "/elsewhere".into()),
+            |k| matches!(k, BackupError::Damaged(w) if w.contains("differs")),
         ),
         (
             "a source id that is a path",

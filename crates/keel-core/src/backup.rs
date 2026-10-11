@@ -188,11 +188,60 @@ fn has_table(conn: &Connection, name: &str) -> Result<bool> {
         .exists([name])?)
 }
 
+/// Moves the finished backup `from` to `to` unless a file is there, atomically where the
+/// file system has hard links.
+fn place_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(from, to) {
+        Ok(()) => std::fs::remove_file(from),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if to.try_exists()? => Err(std::io::ErrorKind::AlreadyExists.into()),
+        // ponytail: FAT and exFAT have no hard links; a file made between the check and
+        // this rename is replaced there.
+        Err(_) => std::fs::rename(from, to),
+    }
+}
+
+/// Scratch folders a crash left behind: `backup-*` in the library's folder (only the
+/// process holding the library backs it up, and the caller holds it now) and day-old
+/// `.restore-*` in the data folder (a restore may be running in another process).
+pub(crate) fn sweep_scratch(data_root: &Path, library_dir: &Path) {
+    let day_old = |p: &Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 86_400)
+    };
+    for (dir, prefix, any_age) in [
+        (library_dir, "backup-", true),
+        (data_root, ".restore-", false),
+    ] {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let ours = e
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(prefix));
+            if ours && e.file_type().is_ok_and(|t| t.is_dir()) && (any_age || day_old(&e.path())) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
 impl Library {
     /// Writes a backup of the library to `to` (replacing a file there once it is complete):
     /// `library.db` and every source store, each a consistent snapshot even while jobs
     /// write. Records the time (`LibraryStats::last_backup`).
     pub fn backup(&self, to: &Path) -> Result<Manifest> {
+        self.backup_to(to, true)
+    }
+
+    /// `backup` that never replaces a file at `to`, also one made while it ran.
+    pub fn backup_new(&self, to: &Path) -> Result<Manifest> {
+        self.backup_to(to, false)
+    }
+
+    fn backup_to(&self, to: &Path, replace: bool) -> Result<Manifest> {
         let created = crate::now();
         let scratch = Scratch(self.dir().join(format!("backup-{}", crate::random_id()?)));
         std::fs::create_dir_all(&scratch.0)?;
@@ -231,9 +280,9 @@ impl Library {
         for name in &names {
             fits(name, std::fs::metadata(scratch.0.join(name))?.len())?;
         }
-        let partial = to.with_extension(format!("{EXTENSION}.partial"));
+        let partial = to.with_extension(format!("{EXTENSION}.{}.partial", std::process::id()));
         let written = (|| -> Result<Manifest> {
-            let mut zip = zip::ZipWriter::new(std::fs::File::create(&partial)?);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create_new(&partial)?);
             let mut files = Vec::new();
             let mut buf = vec![0u8; 1 << 16];
             for name in names {
@@ -273,14 +322,20 @@ impl Library {
             zip.finish()?.sync_all()?;
             Ok(manifest)
         })();
-        let manifest = match written {
+        let placed = written.and_then(|m| {
+            match replace {
+                true => std::fs::rename(&partial, to),
+                false => place_new(&partial, to),
+            }?;
+            Ok(m)
+        });
+        let manifest = match placed {
             Ok(m) => m,
             Err(e) => {
                 let _ = std::fs::remove_file(&partial);
                 return Err(e.context(format!("writing {}", to.display())));
             }
         };
-        std::fs::rename(&partial, to).with_context(|| format!("writing {}", to.display()))?;
         self.shared.db.set_meta(LAST_BACKUP, &created.to_string())?;
         Ok(manifest)
     }
@@ -494,10 +549,26 @@ pub fn restore(data_root: &Path, file: &Path, name: Option<&str>) -> Result<Rest
     std::fs::create_dir_all(&lib)?;
     std::fs::rename(scratch.0.join(LIBRARY_DB), lib.join(LIBRARY_DB))?;
     std::fs::rename(scratch.0.join("sources"), lib.join("sources"))?;
-    if dest.exists() {
-        return Err(BackupError::NameTaken(name).into());
+    // Never over a library made meanwhile. Windows' rename refuses an existing folder; a
+    // Unix rename replaces an empty one, so the name is claimed first and only that claim
+    // is replaced.
+    let taken = |e: &std::io::Error| e.kind() == std::io::ErrorKind::AlreadyExists;
+    if cfg!(unix) {
+        if let Err(e) = std::fs::create_dir(&dest) {
+            return Err(match taken(&e) {
+                true => BackupError::NameTaken(name).into(),
+                false => anyhow::Error::from(e).context(format!("creating {}", dest.display())),
+            });
+        }
     }
-    std::fs::rename(&lib, &dest).with_context(|| format!("creating {}", dest.display()))?;
+    if let Err(e) = std::fs::rename(&lib, &dest) {
+        if cfg!(unix) {
+            let _ = std::fs::remove_dir(&dest);
+        } else if taken(&e) || dest.exists() {
+            return Err(BackupError::NameTaken(name).into());
+        }
+        return Err(anyhow::Error::from(e).context(format!("creating {}", dest.display())));
+    }
     Ok(Restored {
         name,
         dir: dest,
@@ -505,7 +576,8 @@ pub fn restore(data_root: &Path, file: &Path, name: Option<&str>) -> Result<Rest
     })
 }
 
-/// In the scratch folder: the library's sources must be the manifest's; it takes `name`;
+/// In the scratch folder: the library's sources must be the manifest's (ids, roots, labels
+/// and kinds); it takes `name`;
 /// its jobs go, an
 /// index job is queued for each source whose root is here; each store moves to
 /// `sources/<id>/source.db` with its search index rebuilt.
@@ -532,6 +604,12 @@ fn prepare(scratch: &Path, m: &Manifest, name: &str) -> Result<Vec<RestoredSourc
     for (id, def) in &rows {
         let def: SourceDef =
             serde_json::from_str(def).map_err(|e| damaged(format!("source {id}: {e}")))?;
+        // What the preview showed (the manifest) is what gets indexed.
+        let shown = m.sources.iter().find(|s| s.id == *id);
+        if !shown.is_some_and(|s| s.root == def.root && s.label == def.label && s.kind == def.kind)
+        {
+            return Err(damaged(format!("source {id} differs from the manifest")));
+        }
         let online = reachable(&def.root);
         if online {
             let state = serde_json::json!({ "source": id }).to_string();
