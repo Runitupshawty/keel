@@ -2144,3 +2144,68 @@ fn search_finds_the_text_inside_documents() {
     assert_eq!(stats["text"]["on"], false, "{stats}");
     assert_eq!(documents(), 0);
 }
+
+/// Every file under `dir` that holds `needle`.
+fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            found.extend(files_holding(&p, needle));
+        } else if std::fs::read(&p).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle)) {
+            found.push(p);
+        }
+    }
+    found
+}
+
+/// Review of 0.22.0, B1, B2, M1, M4: the crafted files of the review (20,000 nested Word
+/// tables, an xlsb with a cell at XFD1048576, a docx whose zip understates a 65 MiB part,
+/// an xlsx error cell holding a marker) read by the real text reader end failed (the xlsb
+/// is read), the process lives on, no reader panics, and the marker is nowhere: not in the
+/// job log, not in any file of the library (library.db, the stores), not in a backup.
+#[test]
+fn crafted_documents_fail_and_leave_no_trace() {
+    const MARKER: &str = "SECRETMARKER salary 98765";
+    let f = fixture(None);
+    f.ctx.lib.set_pause_on_battery(false);
+    f.ctx.lib.set_text_extractor(keel_preview::text_extractor());
+    keel_preview::probes::review_files(&f.files.path().join("docs"), MARKER);
+    add_and_index(&f);
+    let text = || call(&f.ctx, "library.stats", Value::Null).unwrap()["text"].clone();
+    let start = std::time::Instant::now();
+    // notes.txt and the xlsb indexed; the PDF skipped (no pdfium here); three failed.
+    while text()["failed"] != 3 || text()["documents"] != 2 {
+        assert!(start.elapsed() < Duration::from_secs(120), "{}", text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let jobs = f.ctx.lib.jobs().list().unwrap();
+    let log: String = jobs.iter().map(|j| j.log.clone()).collect();
+    for (file, why) in [
+        ("deep.docx", "nests too deeply"),
+        ("error.xlsx", "not a valid spreadsheet"),
+        ("liar.docx", ""),
+    ] {
+        assert!(log.contains(&format!("{file}: {why}")), "{log}");
+    }
+    assert!(!log.contains("crashed") && !log.contains(MARKER), "{log}");
+    let hits = call(&f.ctx, "search", json!({"query": "content:keel"})).unwrap();
+    assert_eq!(hits[0]["name"], "sparse.xlsb", "{hits}");
+
+    let out = tempfile::tempdir().unwrap();
+    let done = apply(&f.ctx, "library.backup", json!({"file": s(out.path())}));
+    let file = std::path::PathBuf::from(done["file"].as_str().unwrap());
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&file).unwrap()).unwrap();
+    for i in 0..zip.len() {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_index(i).unwrap(), &mut bytes).unwrap();
+        let name = zip.by_index(i).unwrap().name().to_owned();
+        assert!(
+            !bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()),
+            "{name}"
+        );
+    }
+    let data = f.ctx.data_dir.clone().unwrap();
+    assert!(files_holding(&data, MARKER.as_bytes()).is_empty());
+    assert!(files_holding(f.cfg.path(), MARKER.as_bytes()).is_empty());
+}

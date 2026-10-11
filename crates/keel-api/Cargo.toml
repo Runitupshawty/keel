@@ -51,5 +51,8 @@ windows = { workspace = true, features = ["Win32_Security", "Win32_Security_Auth
 
 [dev-dependencies]
 tempfile = "3"
+# The review's crafted files (`keel_preview::probes`) and a backup's entries.
+keel-preview = { path = "../keel-preview", features = ["probes"] }
+zip.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud", "test-util"] }
 jsonschema = { version = "0.58", default-features = false }

@@ -13,6 +13,8 @@ path = "src/lib.rs"
 test-hooks = []
 # `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`.
 fuzzing = ["dep:tempfile"]
+# `probes::*`, crafted files for tests (keel-api's and this crate's).
+probes = []
 
 [dependencies]
 syntect.workspace = true
@@ -40,6 +42,8 @@ encoding_rs = "0.8"
 tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
+# The probes in this crate's own integration tests.
+keel-preview = { path = ".", features = ["probes"] }
 tempfile = "3"
 # egui's bundled fonts, as font preview fixtures.
 epaint_default_fonts = "0.31"

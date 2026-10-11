@@ -2,6 +2,7 @@
 //! Document" wording), the caps, damaged files.
 
 use keel_core::{TextCaps, TextOutcome, TEXT_CAPS};
+use keel_preview::probes::{lie_about_sizes, nested_tables, replace_entry, sparse_xlsb, word};
 use keel_preview::{
     extract_text, extracts, init_pdfium, preview, text_extractor, Preview, Request, TextError,
 };
@@ -325,49 +326,6 @@ fn damaged_and_unknown_files_are_not_text() {
     );
 }
 
-/// A Word package (docx-rs writes it) whose body is `body`.
-fn word(dir: &Path, name: &str, body: &str) -> PathBuf {
-    use docx_rs::*;
-    let base = dir.join(format!("base-{name}"));
-    Docx::new()
-        .add_paragraph(Paragraph::new().add_run(Run::new().add_text("Keel")))
-        .build()
-        .pack(File::create(&base).unwrap())
-        .unwrap();
-    let document = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#
-    );
-    let path = dir.join(name);
-    replace_entry(&base, &path, "word/document.xml", &document);
-    path
-}
-
-/// `from` with the entry `name` (replaced or added) holding `body`, as `to`.
-fn replace_entry(from: &Path, to: &Path, name: &str, body: &str) {
-    let mut zip = zip::ZipArchive::new(File::open(from).unwrap()).unwrap();
-    let mut out = zip::ZipWriter::new(File::create(to).unwrap());
-    for i in 0..zip.len() {
-        if zip.by_index_raw(i).unwrap().name() != name {
-            out.raw_copy_file(zip.by_index_raw(i).unwrap()).unwrap();
-        }
-    }
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    out.start_file(name, options).unwrap();
-    out.write_all(body.as_bytes()).unwrap();
-    out.finish().unwrap();
-}
-
-/// `depth` tables one inside another around one paragraph.
-fn nested_tables(depth: usize) -> String {
-    format!(
-        "{}<w:p><w:r><w:t>Keel</w:t></w:r></w:p>{}",
-        "<w:tbl><w:tr><w:tc>".repeat(depth),
-        "</w:tc></w:tr></w:tbl>".repeat(depth)
-    )
-}
-
 /// The file's preview (the same readers, opened by hand or through the daemon).
 fn preview_of(path: &Path, ext: &str) -> Preview {
     preview(&Request {
@@ -433,21 +391,6 @@ fn deeply_nested_documents_fail_without_a_crash() {
     .unwrap();
 }
 
-/// Writes `size` over the uncompressed size of every entry, in the local headers and the
-/// central directory.
-fn lie_about_sizes(path: &Path, size: u32) {
-    let mut bytes = std::fs::read(path).unwrap();
-    for i in 0..bytes.len().saturating_sub(30) {
-        let at = match &bytes[i..i + 4] {
-            b"PK\x03\x04" => i + 22,
-            b"PK\x01\x02" => i + 24,
-            _ => continue,
-        };
-        bytes[at..at + 4].copy_from_slice(&size.to_le_bytes());
-    }
-    std::fs::write(path, bytes).unwrap();
-}
-
 /// Review of 0.22.0, M1: a zip that declares 1 KiB per part inflates through the 64 MiB
 /// budget, not to its end (docx-rs and calamine read a bounded copy).
 #[test]
@@ -486,82 +429,6 @@ fn zips_that_lie_about_sizes_stay_within_the_budget() {
         r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" uniqueCount="99999999999"><si><t>x</t></si></sst>"#,
     );
     assert_eq!(failed(&counted, "xlsx"), "not a valid spreadsheet");
-}
-
-/// An xlsb record: its type and size as 7-bit groups, then the data.
-fn record(typ: u16, data: &[u8]) -> Vec<u8> {
-    let mut out = if typ < 0x80 {
-        vec![typ as u8]
-    } else {
-        vec![(typ & 0x7F) as u8 | 0x80, (typ >> 7) as u8]
-    };
-    let mut len = data.len();
-    loop {
-        let b = (len & 0x7F) as u8;
-        len >>= 7;
-        out.push(if len > 0 { b | 0x80 } else { b });
-        if len == 0 {
-            break;
-        }
-    }
-    out.extend_from_slice(data);
-    out
-}
-
-fn wide(s: &str) -> Vec<u8> {
-    let units: Vec<u16> = s.encode_utf16().collect();
-    let mut out = (units.len() as u32).to_le_bytes().to_vec();
-    out.extend(units.iter().flat_map(|u| u.to_le_bytes()));
-    out
-}
-
-/// An xlsb workbook, made here, with one sheet: "Keel" at A1 and 2 at XFD1048576 (the
-/// last cell there is).
-fn sparse_xlsb(dir: &Path) -> PathBuf {
-    let mut sheet_entry = [0u32.to_le_bytes(), 1u32.to_le_bytes()].concat();
-    sheet_entry.extend(wide("rId1"));
-    sheet_entry.extend(wide("Sheet1"));
-    // The sheet, the end of the sheets, and a record that follows the defined names.
-    let workbook = [
-        record(0x009C, &sheet_entry),
-        record(0x0090, &[]),
-        record(0x009D, &[]),
-    ]
-    .concat();
-    let (last_row, last_col) = (1_048_575u32, 16_383u32);
-    let dim: Vec<u8> = [0u32, last_row, 0, last_col]
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect();
-    let cell = |col: u32, rest: &[u8]| [&col.to_le_bytes()[..], &[0; 4], rest].concat();
-    let sheet = [
-        record(0x0094, &dim),
-        record(0x0091, &[]),
-        record(0x0000, &0u32.to_le_bytes()),
-        record(0x0006, &cell(0, &wide("Keel"))),
-        record(0x0000, &last_row.to_le_bytes()),
-        record(0x0005, &cell(last_col, &2f64.to_le_bytes())),
-        record(0x0092, &[]),
-    ]
-    .concat();
-    let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.bin"/>
-</Relationships>"#;
-    let path = dir.join("sparse.xlsb");
-    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (name, body) in [
-        ("xl/workbook.bin", workbook),
-        ("xl/_rels/workbook.bin.rels", rels.as_bytes().to_vec()),
-        ("xl/worksheets/sheet1.bin", sheet),
-    ] {
-        zip.start_file(name, options).unwrap();
-        zip.write_all(&body).unwrap();
-    }
-    zip.finish().unwrap();
-    path
 }
 
 /// Review of 0.22.0, B2: one stray cell at XFD1048576 made calamine allocate the whole

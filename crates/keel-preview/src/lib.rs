@@ -14,6 +14,8 @@ mod odf;
 mod office;
 mod pdf;
 mod pptx;
+#[cfg(feature = "probes")]
+pub mod probes;
 mod table;
 mod text;
 mod video;

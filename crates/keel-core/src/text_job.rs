@@ -402,7 +402,7 @@ impl TextJob {
                 if let TextOutcome::Failed(why) = &outcome {
                     self.failed += 1;
                     if self.failed <= LOGGED_ERRORS {
-                        ctx.log(&format!("{}: {why}", rec.path))?;
+                        ctx.log(&format!("{}: {}", rec.path, short(why)))?;
                     }
                 }
                 match &outcome {
@@ -538,7 +538,9 @@ fn download(
     }
 }
 
-/// A reader's reason, short (it never holds much of the document).
+/// A reader's reason, short: whatever a reader says goes into the job log through this, so
+/// a reason that quotes the document (a reader's own error message) keeps at most a few
+/// words of it.
 fn short(why: &str) -> String {
     let mut s: String = why.chars().take(120).collect();
     if s.len() < why.len() {
