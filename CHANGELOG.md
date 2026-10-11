@@ -2,8 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
+## [0.20.0] - 2026-10-11
 
 ### Added
 
@@ -15,6 +14,11 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - FTP and FTPS remotes: **Settings → Remotes → Add host…** has a **Protocol** choice (SFTP, FTPS, FTP). FTP and FTPS hosts sit in the sidebar like SFTP hosts and are browsed, previewed, searched by name, copied to and from, renamed and deleted the same way; paths are `ftp://<host id>/…`. Sign in with a user name and password (kept in the OS keychain, like SFTP passwords) or **Anonymously**. FTPS uses explicit TLS (`AUTH TLS`) on port 21 and implicit TLS on port 990. Listings use `MLSD` where the server has it, else `LIST` in the UNIX or DOS (IIS) format; downloads can start mid-file (`REST`); uploads go to a staging name and are renamed into place when complete, and a stopped long copy continues where it stopped (`APPE`/`REST`) when the server reports the staging file's size. See [FTP and FTPS](docs/remotes.md#ftp-and-ftps).
 - `[[remotes]]` entries in `config.toml` take `protocol = "sftp"`, `"ftp"` or `"ftps"` (missing: SFTP, so saved remotes load unchanged); keel-daemon and the CLI register FTP hosts from it, and Settings → Remotes lists each host with its protocol.
 - Two fuzz targets, `ftp_list` and `ftp_mlsd`, for the FTP listing parsers.
+
+### Changed
+
+- The terminal's WSL shells come from the same registry list as the sidebar, instead of running `wsl.exe -l -q` (which started WSL and could take seconds); a distribution's entry no longer depends on that command's output.
+- Copying many small files is about four times faster: 3,000 one-byte files pasted into a folder copy in about a second instead of 3.7 s, and through a library preview in 2.9 s instead of 3.7 s (the preview's own bookkeeping takes the rest). Files up to 1 MiB are copied by a pool of up to eight worker threads; bigger files are still copied one at a time with their progress. Every file still goes to a staging name first and lands in the order it was queued, so a cancel or an error leaves no half file, and what the job log, the undo list and a resumed library copy record is what one-at-a-time copying would have done. A selection of thousands of files also no longer spends seconds checking that no two of them overlap. `KEEL_COPY_THREADS` sets the number of workers (1 copies one file at a time). See [Performance](docs/performance.md).
 
 ### Fixed
 
@@ -28,6 +32,15 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Restoring a crafted backup could index another folder than the one its preview showed: a restore now checks each source's root, label and kind against the manifest and refuses a backup where they differ ("damaged backup").
 - Installers and profiles: `install.sh` stopped only the default profile's `keel-daemon` before replacing the files, and `install.ps1` also counted programs in a sibling folder such as `...\Keel2` as its own. Both now stop every daemon of the install and start the default profile's again, and say how to start another profile's (`keel --profile <name> daemon start`).
 - `keel` inside WSL opened another folder in the Windows Keel when the path was not valid UTF-8 (the name was read lossily); it now refuses such a path and says that `keel --here` opens it in the Linux window.
+
+### Security
+
+- FTPS checks the server's certificate against the operating system's trust store. A certificate that fails (self-signed, expired, another name) is shown with its SHA-256 fingerprint and the reason, like an unknown SSH host key; trusting it pins that fingerprint for the host and port (`ftps_known_hosts` in the configuration folder), and a different failing certificate later is refused. Keel never falls back from FTPS to plain FTP and never continues a failed TLS handshake; keel-daemon and the CLI refuse certificates nobody trusted.
+- Plain FTP sends the password and the files unencrypted: the Add remote dialog says so next to the protocol choice, and the host's sidebar tooltip and its line in Settings → Remotes repeat it.
+- FTP data connections always go to the control connection's address, never to the address in a `PASV` reply, so a server cannot point them at another machine. Paths with line breaks are refused before anything is sent, and the server's reply text is never shown or logged (errors name the reply code and what it means).
+- `KEEL_NET_SECRET=memory` now also keeps SFTP and FTP passwords and passphrases in memory instead of the OS keychain (tests and trials).
+- Copying a folder from an SFTP or FTP host (or a cloud account) into a local folder could write outside that folder on Windows: a name in the server's listing such as `..\x` was read as a path, so the file landed beside or above the destination (and Overwrite replaced what was there), and a name with `:` wrote an alternate data stream. Such names are now refused before anything is written, with the entry named: on Windows any name with `\`, `:`, `<>"|?*` or a control character, a trailing dot or space, or a device name such as `CON` or `aux.txt`; on Linux and macOS a name with a control character. Every target is also checked to lie inside the destination folder before it is written.
+- With `RUST_LOG` at trace level, keel-daemon's log (`daemon.log`, and the last log lines a crash report keeps) recorded FTP passwords: the FTP library logs every command it sends, `PASS` included. Its log is now off in keel-daemon, the window and the CLI whatever `RUST_LOG` says.
 
 ### Known limitations
 
@@ -47,21 +60,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A parallel copy makes folders, and a move renames files and folders on the same drive, ahead of the files queued for the pool: one stopped by a cancel or an error can leave such a folder empty, or have moved items that come after the file that failed. Undo puts them back with the rest.
 - A library whose `library.db` or any one source's store is over 4 GiB cannot be backed up.
 - Library backup and restore run within their request rather than as jobs: they show no progress and cannot be cancelled, and through keel-daemon one that takes longer than 6 hours is reported as timed out while it goes on.
-
-### Changed
-
-- The terminal's WSL shells come from the same registry list as the sidebar, instead of running `wsl.exe -l -q` (which started WSL and could take seconds); a distribution's entry no longer depends on that command's output.
-- Copying many small files is about four times faster: 3,000 one-byte files pasted into a folder copy in about a second instead of 3.7 s, and through a library preview in 2.9 s instead of 3.7 s (the preview's own bookkeeping takes the rest). Files up to 1 MiB are copied by a pool of up to eight worker threads; bigger files are still copied one at a time with their progress. Every file still goes to a staging name first and lands in the order it was queued, so a cancel or an error leaves no half file, and what the job log, the undo list and a resumed library copy record is what one-at-a-time copying would have done. A selection of thousands of files also no longer spends seconds checking that no two of them overlap. `KEEL_COPY_THREADS` sets the number of workers (1 copies one file at a time). See [Performance](docs/performance.md).
-
-### Security
-
-- FTPS checks the server's certificate against the operating system's trust store. A certificate that fails (self-signed, expired, another name) is shown with its SHA-256 fingerprint and the reason, like an unknown SSH host key; trusting it pins that fingerprint for the host and port (`ftps_known_hosts` in the configuration folder), and a different failing certificate later is refused. Keel never falls back from FTPS to plain FTP and never continues a failed TLS handshake; keel-daemon and the CLI refuse certificates nobody trusted.
-- Plain FTP sends the password and the files unencrypted: the Add remote dialog says so next to the protocol choice, and the host's sidebar tooltip and its line in Settings → Remotes repeat it.
-- FTP data connections always go to the control connection's address, never to the address in a `PASV` reply, so a server cannot point them at another machine. Paths with line breaks are refused before anything is sent, and the server's reply text is never shown or logged (errors name the reply code and what it means).
-- `KEEL_NET_SECRET=memory` now also keeps SFTP and FTP passwords and passphrases in memory instead of the OS keychain (tests and trials).
-- Copying a folder from an SFTP or FTP host (or a cloud account) into a local folder could write outside that folder on Windows: a name in the server's listing such as `..\x` was read as a path, so the file landed beside or above the destination (and Overwrite replaced what was there), and a name with `:` wrote an alternate data stream. Such names are now refused before anything is written, with the entry named: on Windows any name with `\`, `:`, `<>"|?*` or a control character, a trailing dot or space, or a device name such as `CON` or `aux.txt`; on Linux and macOS a name with a control character. Every target is also checked to lie inside the destination folder before it is written.
-- With `RUST_LOG` at trace level, keel-daemon's log (`daemon.log`, and the last log lines a crash report keeps) recorded FTP passwords: the FTP library logs every command it sends, `PASS` included. Its log is now off in keel-daemon, the window and the CLI whatever `RUST_LOG` says.
-
 
 ## [0.19.0] - 2026-10-11
 
