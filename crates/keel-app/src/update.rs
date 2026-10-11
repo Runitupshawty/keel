@@ -159,6 +159,7 @@ pub enum Registration {
 /// InstallLocation)`. None: no entry points at `dir` but the default one (`Keel`) belongs
 /// to another install, whose shortcut and entry the installer would take over; the banner
 /// opens the page instead.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn registration(entries: &[(String, String)], dir: &Path) -> Option<Registration> {
     let norm = |p: &str| {
         p.trim_end_matches(['\\', '/'])
@@ -176,6 +177,7 @@ pub fn registration(entries: &[(String, String)], dir: &Path) -> Option<Registra
 }
 
 /// `(key name, InstallLocation)` from `reg query <Uninstall> /s /v InstallLocation`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn parse_reg_query(out: &str) -> Vec<(String, String)> {
     let mut key = None;
     let mut found = Vec::new();
@@ -218,6 +220,7 @@ fn uninstall_entries() -> std::io::Result<Vec<(String, String)>> {
 /// `powershell.exe` arguments that run the installed `script` for `dir` with this install's
 /// registration, keep the console open on an error until Enter is pressed, and start
 /// keel.exe again afterwards (updated or not).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn install_args(script: &Path, dir: &Path, reg: &Registration) -> Vec<String> {
     let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
     let path = |p: &Path| q(&p.to_string_lossy());
