@@ -75,14 +75,15 @@ export async function run({ browser, base, token, ids, daemon }) {
   await p.noLeak();
   await p.close();
 
-  // A tablet in portrait is wide enough for the desktop layout.
+  // A tablet in portrait is wide enough for the desktop layout, with one pane (two were
+  // squeezed to a few letters, names under their sizes and dates).
   const tab = await openPage(browser, base, token, { viewport: { width: 820, height: 1180 }, hasTouch: true, colorScheme: "dark" });
   await tab.signIn();
   await tab.until("tablet layout", (s) => s.layout === "desktop" && s.dark);
   await tab.act("open-source", "Fixture");
   await tab.until("tablet list", (s) => s.entries.includes("alpha-notes.txt"));
   await tab.act("open-preview", "alpha-notes.txt");
-  await tab.until("tablet preview", (s) => s.preview === "text");
+  await tab.until("tablet preview", (s) => s.preview === "text" && s.columns === 1);
   await sleep(200);
   await tab.shot("28-tablet");
 

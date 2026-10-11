@@ -27,6 +27,8 @@ const CACHE: usize = 64;
 const THUMBS: usize = 512;
 /// Grid thumbnails asked for at once.
 const THUMBS_IN_FLIGHT: usize = 6;
+/// The desktop layout shows the second pane only when both get this width.
+const PANE_MIN: f32 = 280.0;
 
 /// What an outstanding call was for.
 enum Want {
@@ -185,6 +187,9 @@ pub struct WebApp {
     /// The desktop preview panel's width as last drawn.
     #[cfg(feature = "e2e")]
     e2e_preview_width: f32,
+    /// How many panes the desktop layout showed last.
+    #[cfg(feature = "e2e")]
+    e2e_columns: u8,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -313,6 +318,8 @@ impl WebApp {
             e2e_menu: None,
             #[cfg(feature = "e2e")]
             e2e_preview_width: 0.0,
+            #[cfg(feature = "e2e")]
+            e2e_columns: 0,
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -1202,6 +1209,7 @@ impl WebApp {
             }),
             "searched": self.searched,
             "preview_width": self.e2e_preview_width,
+            "columns": self.e2e_columns,
             "grid": self.grid,
             "active": self.active,
             "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
@@ -1303,22 +1311,31 @@ impl WebApp {
                     } else {
                         e.name.clone()
                     };
+                    // Size and date from the right, then the name in what is left, cut short
+                    // rather than drawn under them; a narrow pane leaves the date out.
                     ui.horizontal(|ui| {
-                        let r = ui.selectable_label(self.is_selected(&e.path), label);
-                        if r.clicked() {
-                            act = Some(Act::Select(e.clone()));
-                        }
-                        if r.double_clicked() && e.is_dir {
-                            act = Some(Act::Open(e.clone()));
-                        }
-                        Self::entry_menu(&r, e, &mut act);
+                        let wide = ui.available_width() > 280.0;
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(m) = e.modified {
+                            if let Some(m) = e.modified.filter(|_| wide) {
                                 ui.weak(web::date(m));
                             }
                             if !e.is_dir {
                                 ui.weak(human(e.size));
                             }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                                    let r = ui.selectable_label(self.is_selected(&e.path), label);
+                                    if r.clicked() {
+                                        act = Some(Act::Select(e.clone()));
+                                    }
+                                    if r.double_clicked() && e.is_dir {
+                                        act = Some(Act::Open(e.clone()));
+                                    }
+                                    Self::entry_menu(&r, e, &mut act);
+                                },
+                            );
                         });
                     });
                 }
@@ -1944,11 +1961,24 @@ impl WebApp {
                 }
             });
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            Tab::Browse => {
+            // Two panes side by side only when each gets a usable width (a tablet in
+            // portrait has room for one).
+            Tab::Browse if ui.available_width() >= 2.0 * PANE_MIN => {
                 ui.columns(2, |cols| {
                     self.pane(&mut cols[0], 0);
                     self.pane(&mut cols[1], 1);
                 });
+                #[cfg(feature = "e2e")]
+                {
+                    self.e2e_columns = 2;
+                }
+            }
+            Tab::Browse => {
+                self.pane(ui, self.active);
+                #[cfg(feature = "e2e")]
+                {
+                    self.e2e_columns = 1;
+                }
             }
             Tab::Search => self.search(ui),
         });

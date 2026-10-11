@@ -57,7 +57,7 @@ export async function run({ browser, base, token, work, ids }) {
   if (await box.isVisible()) await t.fail("the token box is still shown after signing in");
   // The preview panel keeps its width with nothing selected (it shrank to its one line,
   // and then cut the buttons of a selected file).
-  await t.until("preview panel width", (s) => s.preview_width >= 340);
+  await t.until("preview panel width", (s) => s.preview_width >= 340 && s.columns === 2);
   await t.shot("03-signed-in");
   await t.load();
   await t.until("signed in from the remembered token", (s) => s.signed_in && s.remember);
