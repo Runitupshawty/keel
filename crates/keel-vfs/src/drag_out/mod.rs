@@ -1,10 +1,10 @@
-//! Dragging files out of Keel into other apps (spec 2.5, Task 24; macOS Task 55).
+//! Dragging files out of Keel into other apps (spec 2.5, Task 24; macOS and Linux Task 55).
 //!
 //! Windows: an OLE `DoDragDrop` with an `IDataObject` carrying `CF_HDROP` and
 //! `Preferred DropEffect`, run on its own STA thread so the UI never blocks.
 //! macOS: an AppKit dragging session on Keel's window with one file URL per item.
-//! Linux: not supported yet (`SUPPORTED` is false); rows dragged out of the window simply
-//! stay an in-app drag there.
+//! Linux: XDND on X11 (or XWayland) from a thread with its own X connection; a Wayland
+//! window reports that it cannot at once.
 //!
 //! Keel never moves or deletes a file here: a target that moves the files does so itself,
 //! and its "move" only counts once the sources are really gone (`confirmed`).
@@ -13,6 +13,8 @@
 mod mac;
 #[cfg(windows)]
 mod win;
+#[cfg(any(target_os = "linux", test))]
+pub mod x11;
 
 #[cfg(target_os = "macos")]
 use mac as imp;
@@ -20,11 +22,13 @@ use mac as imp;
 use win as imp;
 #[cfg(windows)]
 pub use win::{dropfiles, run};
+#[cfg(target_os = "linux")]
+use x11 as imp;
 
 use std::path::{Path, PathBuf};
 
-/// Whether this OS can drag files out to other apps.
-pub const SUPPORTED: bool = cfg!(any(windows, target_os = "macos"));
+/// Whether this OS can drag files out to other apps (on Linux: X11 sessions only).
+pub const SUPPORTED: bool = cfg!(any(windows, target_os = "macos", target_os = "linux"));
 
 /// What the receiving app did with the files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,21 +42,21 @@ pub enum DropEffect {
 
 /// Starts an OS drag of local `paths` from the UI thread (call it there, while the
 /// primary button that started the drag is held) and returns at once; `done` runs, on
-/// the drag thread (Windows) or the main thread (macOS), with what the target did.
+/// the drag thread (Windows, Linux) or the main thread (macOS), with what the target did.
 /// `allow_move` lets the target move the files (with the platform's move modifier held).
 pub fn start(
     paths: Vec<PathBuf>,
     allow_move: bool,
     done: impl FnOnce(anyhow::Result<DropEffect>) + Send + 'static,
 ) {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         let sources = paths.clone();
         imp::start(paths, allow_move, move |r| {
             done(r.map(|effect| confirmed(effect, &sources)))
         });
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = (paths, allow_move);
         done(Err(anyhow::anyhow!(

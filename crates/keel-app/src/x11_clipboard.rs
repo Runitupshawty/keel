@@ -5,7 +5,7 @@
 //! Caja, Thunar, PCManFM), `text/uri-list`, and `application/x-kde-cutselection` (Dolphin).
 //! Reading takes the same targets from whichever app owns the clipboard.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const GNOME: &str = "x-special/gnome-copied-files";
 pub const URI_LIST: &str = "text/uri-list";
@@ -22,45 +22,7 @@ pub fn payload(paths: &[PathBuf], cut: bool) -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-/// `file://` URI of an absolute path, every byte but `A-Z a-z 0-9 - . _ ~ /` escaped.
-pub fn file_uri(p: &Path) -> String {
-    let mut out = String::from("file://");
-    for b in path_bytes(p) {
-        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-/// The local path of a `file://` URI (`file:///p` or `file://localhost/p`).
-pub fn uri_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.trim().strip_prefix("file://")?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    if !rest.starts_with('/') {
-        return None;
-    }
-    let (mut bytes, mut it) = (Vec::new(), rest.bytes());
-    while let Some(b) = it.next() {
-        if b == b'%' {
-            let hex = [it.next()?, it.next()?];
-            bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
-        } else {
-            bytes.push(b);
-        }
-    }
-    Some(bytes_path(bytes))
-}
-
-/// The local paths in URI lines; comments, other schemes and other hosts are skipped.
-pub fn uri_paths<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<PathBuf> {
-    lines
-        .filter(|l| !l.starts_with('#'))
-        .filter_map(uri_path)
-        .collect()
-}
+pub use keel_vfs::file_uri::{file_uri, uri_paths};
 
 /// `x-special/gnome-copied-files`: the verb line, then one URI per line.
 pub fn parse_gnome(bytes: &[u8]) -> Option<(Vec<PathBuf>, bool)> {
@@ -72,24 +34,6 @@ pub fn parse_gnome(bytes: &[u8]) -> Option<(Vec<PathBuf>, bool)> {
     };
     let paths = uri_paths(lines);
     (!paths.is_empty()).then_some((paths, cut))
-}
-
-#[cfg(unix)]
-fn path_bytes(p: &Path) -> Vec<u8> {
-    std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str()).to_vec()
-}
-#[cfg(unix)]
-fn bytes_path(b: Vec<u8>) -> PathBuf {
-    <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(b).into()
-}
-// Tests on other systems: Unix-style paths as text.
-#[cfg(not(unix))]
-fn path_bytes(p: &Path) -> Vec<u8> {
-    p.to_string_lossy().replace('\\', "/").into_bytes()
-}
-#[cfg(not(unix))]
-fn bytes_path(b: Vec<u8>) -> PathBuf {
-    String::from_utf8_lossy(&b).into_owned().into()
 }
 
 /// The Linux clipboard's change count after an X event: one more each time another app
@@ -432,6 +376,7 @@ mod x11 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keel_vfs::file_uri::uri_path;
 
     #[test]
     fn payload_has_the_cut_verb_and_escaped_uris() {

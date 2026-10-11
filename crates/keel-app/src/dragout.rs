@@ -1,8 +1,10 @@
-//! Drag-out to the OS (Task 24): a row drag whose pointer leaves the window becomes an OS
-//! drag (`keel_vfs::drag_out`, its own thread on Windows). When it ends, the source folder
-//! is refreshed (the receiving app may have moved the files away) and egui is handed the
-//! button release it never saw (the drag thread held the mouse). Dropping the files back
-//! onto Keel itself does nothing (as in Explorer; it would only copy them onto themselves).
+//! Drag-out to the OS (Task 24; macOS and Linux Task 55): a row drag whose pointer leaves
+//! the window becomes an OS drag (`keel_vfs::drag_out`: its own thread on Windows and on
+//! Linux/X11, an AppKit dragging session on macOS; a Wayland window gets a toast saying it
+//! needs X11). When it ends, the source folder is refreshed (the receiving app may have
+//! moved the files away; Keel never moves or deletes them itself) and egui is handed the
+//! button release it never saw (the OS drag held the mouse). Dropping the files back onto
+//! Keel itself does nothing (as in Explorer; it would only copy them onto themselves).
 
 use crate::pane::DragPayload;
 use crate::state::{AppState, Msg};

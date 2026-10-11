@@ -148,6 +148,9 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSWorkspace",
 ] }
 
+# Drag-out over XDND (`drag_out::x11`); pure Rust, already in the tree through winit.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
 
 [dev-dependencies]
 # Host keys for the in-process SSH server in the SFTP tests (same rand as russh).
