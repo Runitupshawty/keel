@@ -53,7 +53,7 @@ pub enum SourceKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceDef {
     pub label: String,
-    /// `file://`, `sftp://`, `cloud://`; never inside an archive.
+    /// `file://`, `sftp://`, `cloud://`, `node://`; never inside an archive, never `ftp://`.
     pub root: VPath,
     pub kind: SourceKind,
     pub include_hidden: bool,
@@ -817,6 +817,13 @@ impl Library {
     /// also when one of them is reached through a junction, symlink or subst drive (their
     /// resolved paths are compared too; the walk refuses the aliases this cannot see).
     pub fn add_source(&self, def: SourceDef) -> Result<SourceId> {
+        // No change times to poll and no ranged reads to hash with: an FTP folder is browsed
+        // and copied, never indexed (so it is never hashed or mounted either).
+        anyhow::ensure!(
+            def.root.scheme != "ftp",
+            "library sources are not supported for FTP remotes: {}",
+            def.root.display()
+        );
         anyhow::ensure!(
             (def.kind == SourceKind::Device) == (def.root.scheme == "node"),
             "a device source is a node:// folder, and a node:// folder is a device source"
@@ -1285,6 +1292,21 @@ pub(crate) mod tests {
             },
             ..folder(label, Path::new(""))
         }
+    }
+
+    /// FTP folders are browsed and copied, never indexed (no hashing or mounts either).
+    #[test]
+    fn ftp_folders_are_refused_as_sources() {
+        let data = tempfile::tempdir().unwrap();
+        let lib = Library::open(data.path(), "t").unwrap();
+        let err = lib
+            .add_source(remote("cam", "ftp://cam/photos"))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not supported for FTP remotes"),
+            "{err:#}"
+        );
+        assert!(lib.sources().is_empty());
     }
 
     #[test]

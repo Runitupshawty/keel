@@ -491,6 +491,7 @@ fn run(root: &Path) -> Vec<&'static str> {
             home: Some("/volume1".into()),
             bookmarks: vec![("Photos".into(), "/volume1/photo".into())],
             use_ssh_config: false,
+            protocol: Default::default(),
         }],
         devices: crate::devices::DeviceSettings {
             enabled: true,

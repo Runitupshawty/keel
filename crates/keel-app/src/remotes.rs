@@ -528,6 +528,7 @@ impl Editor {
                 home: (!home.is_empty()).then(|| home.to_owned()),
                 bookmarks,
                 use_ssh_config: self.use_ssh_config,
+                protocol: Default::default(),
             },
             secret,
         ))
@@ -703,6 +704,7 @@ impl Editor {
             home: None,
             bookmarks: Vec::new(),
             use_ssh_config: self.use_ssh_config,
+            protocol: Default::default(),
         };
         if self.summary_of.as_ref() == Some(&draft) {
             return;
@@ -986,6 +988,10 @@ impl AppState {
                 reply,
                 since: Instant::now(),
             }),
+            // The window adds FTP hosts with their certificate prompt in the next change.
+            RemoteEvent::CertificatePrompt { reply, .. } => {
+                let _ = reply.send(false);
+            }
         }
     }
 
@@ -1098,6 +1104,7 @@ mod tests {
             home: Some("/srv/data".into()),
             bookmarks: vec![("Logs".into(), "/var/log".into())],
             use_ssh_config: false,
+            protocol: Default::default(),
         }
     }
 
