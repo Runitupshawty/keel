@@ -157,9 +157,10 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         },
         cmd => cmd,
     };
-    // A backup or restore runs within its request: wait as long as the daemon lets it.
+    // A backup or restore runs within its request: wait as long as the daemon lets it
+    // (also for the execute of one).
     let wait = match &cmd {
-        Command::Library(_) => keel_api::client::LONG_REQUEST_WAIT,
+        Command::Library(_) | Command::Execute { .. } => keel_api::client::LONG_REQUEST_WAIT,
         _ => keel_api::client::REQUEST_WAIT,
     };
     // A restore without a daemon needs no library open (on a new machine, opening the
@@ -706,7 +707,9 @@ fn execute_plan(
     Ok(match done["job"].as_i64() {
         Some(job) if !no_wait => {
             let info = wait_job(b, job)?;
-            Some(job_done(&info, json, out)?)
+            // In a terminal the job's line says it all.
+            let done = job_done(&info, json, out)?;
+            json.then_some(done)
         }
         _ if json => Some(done),
         Some(job) => {
@@ -767,8 +770,12 @@ fn op(cfg: &HostConfig, call: OpCall, json: bool, out: &mut Out) -> Result<(), F
         ))
         .into());
     }
-    let mut b =
-        connect(cfg, keel_api::client::request_wait(op.name)).map_err(|e| Fail::Api(e.into()))?;
+    // The execute of a backup or restore runs within its request, like the preview.
+    let wait = match op.name {
+        "execute" => keel_api::client::LONG_REQUEST_WAIT,
+        name => keel_api::client::request_wait(name),
+    };
+    let mut b = connect(cfg, wait).map_err(|e| Fail::Api(e.into()))?;
     // `execute` waits for the job it starts, as `keel execute` does.
     let ids = (params["plan_id"].as_str()).zip(params["input_hash"].as_str());
     if let (true, Some((id, hash))) = (op.name == "execute", ids) {
