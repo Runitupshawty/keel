@@ -182,6 +182,9 @@ pub struct WebApp {
     /// The phone pane's entry whose long-press menu is open.
     #[cfg(feature = "e2e")]
     e2e_menu: Option<String>,
+    /// The desktop preview panel's width as last drawn.
+    #[cfg(feature = "e2e")]
+    e2e_preview_width: f32,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -308,6 +311,8 @@ impl WebApp {
             e2e_rects: Vec::new(),
             #[cfg(feature = "e2e")]
             e2e_menu: None,
+            #[cfg(feature = "e2e")]
+            e2e_preview_width: 0.0,
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -1196,6 +1201,7 @@ impl WebApp {
                 std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("e2e-notes")))
             }),
             "searched": self.searched,
+            "preview_width": self.e2e_preview_width,
             "grid": self.grid,
             "active": self.active,
             "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
@@ -1928,7 +1934,15 @@ impl WebApp {
         egui::SidePanel::right("preview")
             .resizable(true)
             .default_width(360.0)
-            .show(ctx, |ui| self.preview(ui));
+            .show(ctx, |ui| {
+                // egui sizes a side panel to what it drew: one short line would shrink it.
+                ui.set_min_width(ui.available_width());
+                self.preview(ui);
+                #[cfg(feature = "e2e")]
+                {
+                    self.e2e_preview_width = ui.min_rect().width();
+                }
+            });
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Browse => {
                 ui.columns(2, |cols| {

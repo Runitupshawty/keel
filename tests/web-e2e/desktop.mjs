@@ -55,6 +55,9 @@ export async function run({ browser, base, token, work, ids }) {
     () => t.sentCount((m) => m.method === "sources.list") > 0,
   );
   if (await box.isVisible()) await t.fail("the token box is still shown after signing in");
+  // The preview panel keeps its width with nothing selected (it shrank to its one line,
+  // and then cut the buttons of a selected file).
+  await t.until("preview panel width", (s) => s.preview_width >= 340);
   await t.shot("03-signed-in");
   await t.load();
   await t.until("signed in from the remembered token", (s) => s.signed_in && s.remember);
@@ -100,7 +103,7 @@ export async function run({ browser, base, token, work, ids }) {
   await t.act("search", "alpha");
   await t.until("alpha hit", (s) => s.hits.includes("alpha-notes.txt"));
   await t.act("open-preview", "alpha-notes.txt");
-  await t.until("text preview", (s) => s.selected === "alpha-notes.txt" && s.preview === "text");
+  await t.until("text preview", (s) => s.selected === "alpha-notes.txt" && s.preview === "text" && s.preview_width >= 340);
   await t.shot("08-preview-text");
   await t.act("open-source", "Media");
   await t.until("media listed", (s) => s.entries.includes("keel.png"));
