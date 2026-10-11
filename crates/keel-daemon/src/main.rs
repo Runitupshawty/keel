@@ -71,6 +71,15 @@ fn main() -> ExitCode {
     if args.status {
         return status(&cfg);
     }
+    // PDF previews (`preview.render`, the web client): pdfium next to this executable,
+    // where the release archives and the build's deps step put it, as for the window.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(std::path::Path::parent)
+    {
+        keel_preview::init_pdfium(dir);
+    }
     if args.ws_allow_remote && args.ws.is_none() && args.web.is_none() {
         eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
         return ExitCode::FAILURE;

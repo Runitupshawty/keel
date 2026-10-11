@@ -75,6 +75,8 @@ jobs:
         run: cargo install --locked wasm-bindgen-cli --version "$(cargo pkgid wasm-bindgen | sed 's/.*@//')"
       - run: bash scripts/build-web.sh --features e2e
       - run: cargo build --locked -p keel-daemon
+      # pdfium next to keel-daemon: the PDF preview flow expects a page image then.
+      - run: bash scripts/fetch-deps.sh && cp target/deps/libpdfium.so target/debug/
       - name: Playwright
         working-directory: tests/web-e2e
         run: |

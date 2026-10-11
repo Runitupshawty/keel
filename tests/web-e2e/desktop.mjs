@@ -14,7 +14,7 @@ export function tree(dir, at = "") {
   return all;
 }
 
-export async function run({ browser, base, token, work, ids }) {
+export async function run({ browser, base, token, work, ids, pdfium }) {
   const fixture = `${work}/fixture`;
   const before = tree(fixture);
   const t = await openPage(browser, base, token);
@@ -115,8 +115,11 @@ export async function run({ browser, base, token, work, ids }) {
   await t.act("go", `library://${ids.Fixture}/docs`);
   await t.until("docs again", (s) => s.entries.includes("report.pdf"));
   await t.act("open-preview", "report.pdf");
-  const pdf = await t.until("pdf preview", (s) => s.selected === "report.pdf" && ["image", "message"].includes(s.preview));
-  console.log("  pdf preview:", pdf.preview);
+  // keel-daemon binds pdfium next to it (it never did: PDFs said pdfium was missing).
+  await t.until("pdf preview", (s) =>
+    s.selected === "report.pdf" && (pdfium ? s.preview === "image" : /pdfium/.test(s.message ?? "")),
+  );
+  console.log("  pdf preview:", pdfium ? "a page image" : "no pdfium next to keel-daemon");
   await t.shot("10-preview-pdf");
   await t.act("go", `${fixture}/docs/bundle.zip!/`);
   await t.until("inside the zip", (s) => s.entries.includes("a.txt"));

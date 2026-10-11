@@ -1223,6 +1223,7 @@ impl WebApp {
             }),
             "searched": self.searched,
             "preview_width": self.e2e_preview_width,
+            "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
             "columns": self.e2e_columns,
             "grid": self.grid,
             "active": self.active,

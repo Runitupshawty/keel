@@ -5,7 +5,8 @@
 // (uploaded by CI when the run fails).
 // usage: node e2e.mjs <keel-daemon> <address> <work dir>      (SPEC=desktop|phone: one only)
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { chromium } from "playwright";
 import { startDaemon, stopDaemon } from "./lib.mjs";
 import * as desktop from "./desktop.mjs";
@@ -35,7 +36,9 @@ try {
   const ids = Object.fromEntries([...seeded.matchAll(/seeded source (\S+) (\S+)/g)].map((m) => [m[1], m[2]]));
   console.log(`daemon up and seeded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   browser = await chromium.launch();
-  const env = { browser, base, token, work, ids, daemon };
+  // PDF pages render when pdfium sits next to keel-daemon (scripts/fetch-deps, copied there).
+  const pdfium = ["pdfium.dll", "libpdfium.so", "libpdfium.dylib"].some((f) => existsSync(`${dirname(bin)}/${f}`));
+  const env = { browser, base, token, work, ids, daemon, pdfium };
   for (const [name, spec] of [
     ["desktop", desktop],
     ["phone", phone],
