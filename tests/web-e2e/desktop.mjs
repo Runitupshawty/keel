@@ -117,7 +117,7 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   await t.act("open-preview", "report.pdf");
   // keel-daemon binds pdfium next to it (it never did: PDFs said pdfium was missing).
   await t.until("pdf preview", (s) =>
-    s.selected === "report.pdf" && (pdfium ? s.preview === "image" : /pdfium/.test(s.message ?? "")),
+    s.selected === "report.pdf" && (pdfium ? s.preview === "image" : /pdfium next to keel-daemon/.test(s.message ?? "")),
   );
   console.log("  pdf preview:", pdfium ? "a page image" : "no pdfium next to keel-daemon");
   await t.shot("10-preview-pdf");

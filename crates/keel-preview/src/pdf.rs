@@ -20,16 +20,24 @@ pub(crate) fn init(dll_dir: &Path) {
 
 pub(crate) fn render(req: &Request) -> Preview {
     let Some(pdfium) = PDFIUM.get().and_then(Option::as_ref) else {
-        return Preview::Missing(if cfg!(windows) {
-            "PDF previews need pdfium next to keel.exe (run scripts/fetch-deps)"
-        } else {
-            "PDF previews need pdfium next to keel (run scripts/fetch-deps)"
-        });
+        return Preview::Missing(missing());
     };
     match render_inner(req, pdfium) {
         Ok(preview) => preview,
         Err(error) => Preview::Error(error),
     }
+}
+
+/// Where pdfium belongs: next to the program that runs (keel, or keel-daemon for the web
+/// client, whose PDFs used to point at keel.exe).
+fn missing() -> &'static str {
+    static TEXT: OnceLock<String> = OnceLock::new();
+    TEXT.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let name = exe.as_deref().and_then(Path::file_name);
+        let name = name.map_or("keel".into(), |n| n.to_string_lossy());
+        format!("PDF previews need pdfium next to {name} (run scripts/fetch-deps)")
+    })
 }
 
 fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
@@ -64,4 +72,14 @@ fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
             data: image.into_raw(),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_pdfium_names_the_running_program() {
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_string_lossy();
+        assert!(super::missing().contains(&*name), "{}", super::missing());
+    }
 }
