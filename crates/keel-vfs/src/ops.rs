@@ -371,7 +371,7 @@ fn transfer_local(
     cancel: &AtomicBool,
     moving: bool,
     journal: Option<&mut Journal>,
-    mut landed: Option<&mut Vec<Landed>>,
+    landed: Option<&mut Vec<Landed>>,
 ) -> Result<()> {
     check_cancel(cancel)?;
     let dst = long(dst_dir)?;
@@ -383,8 +383,10 @@ fn transfer_local(
     let dst_key = canonical_key(&dst)?;
     // Preflight the entire selection before any writes.
     let sources = src.iter().map(|p| long(p)).collect::<Result<Vec<_>>>()?;
-    let mut keys: Vec<PathBuf> = Vec::new();
-    for path in &sources {
+    let mut keys: Vec<(PathBuf, usize)> = Vec::with_capacity(sources.len());
+    // Files are counted here; folders are walked below.
+    let (mut total_bytes, mut total_items, mut folders) = (0u64, 0usize, Vec::new());
+    for (i, path) in sources.iter().enumerate() {
         let metadata =
             fs::symlink_metadata(path).with_context(|| format!("source {}", path.display()))?;
         ensure_regular(path, &metadata)?;
@@ -395,15 +397,12 @@ fn transfer_local(
                 "cannot copy a folder into itself: {}",
                 path.display()
             );
+            folders.push(path.clone());
+        } else {
+            total_bytes += metadata.len();
+            total_items += 1;
         }
-        for previous in &keys {
-            anyhow::ensure!(
-                !key.starts_with(previous) && !previous.starts_with(&key),
-                "overlapping source selection: {}",
-                path.display()
-            );
-        }
-        keys.push(key);
+        keys.push((key, i));
         let target = dst.join(path.file_name().context("cannot copy a root")?);
         if target.try_exists()? {
             anyhow::ensure!(
@@ -413,51 +412,207 @@ fn transfer_local(
             );
         }
     }
-    let (total_bytes, total_items) = plan_size(&sources)?;
-    let mut job = Job {
-        state: Progress {
-            done_bytes: 0,
-            total_bytes,
-            current: String::new(),
-            done_items: 0,
-            total_items,
-            skipped: 0,
-        },
-        conflict,
-        progress,
-        cancel,
-        moving,
-        swept: Default::default(),
-        journal,
-        top: None,
-    };
-    let mut result = Ok(());
-    for (source, shown) in sources.iter().zip(src) {
-        job.top = None;
-        let done = check_cancel(cancel).and_then(|()| {
-            let destination = dst.join(source.file_name().context("source has no name")?);
-            job.node(source, &destination, false)
-        });
-        if let (Some(out), Some((target, new))) = (landed.as_deref_mut(), job.top.take()) {
-            // The paths as given, not their extended-length form.
-            out.push(Landed {
-                source: crate::VPath::local(shown),
-                target: crate::VPath::local(dst_dir.join(target.file_name().unwrap_or_default())),
-                new,
-                complete: matches!(done, Ok(true)),
+    // Sorted by components, the paths inside a path come right after it: checking
+    // neighbours finds every overlap without comparing each pair.
+    keys.sort_unstable();
+    for pair in keys.windows(2) {
+        let ((outer, _), (inner, i)) = (&pair[0], &pair[1]);
+        anyhow::ensure!(
+            !inner.starts_with(outer),
+            "overlapping source selection: {}",
+            sources[*i].display()
+        );
+    }
+    let (bytes, items) = plan_size(&folders)?;
+    let total_bytes = total_bytes.checked_add(bytes).context("size overflow")?;
+    let total_items = total_items + items;
+    let threads = copy_threads().min(total_items);
+    std::thread::scope(|scope| {
+        let mut job = Job {
+            state: Progress {
+                done_bytes: 0,
+                total_bytes,
+                current: String::new(),
+                done_items: 0,
+                total_items,
+                skipped: 0,
+            },
+            conflict,
+            progress,
+            cancel,
+            moving,
+            swept: Default::default(),
+            journal,
+            top: None,
+            pool: (threads > 1)
+                .then(|| Pool::start(scope, threads, cancel))
+                .flatten(),
+            source: 0,
+            unplaced: Vec::new(),
+        };
+        let mut reached = Vec::new();
+        let mut result = Ok(());
+        for (i, (source, shown)) in sources.iter().zip(src).enumerate() {
+            job.top = None;
+            job.source = i;
+            let done = check_cancel(cancel).and_then(|()| {
+                let destination = dst.join(source.file_name().context("source has no name")?);
+                job.node(source, &destination, false)
             });
+            if let Some((at, new)) = job.top.take() {
+                // The paths as given, not their extended-length form.
+                let target = dst_dir.join(at.file_name().unwrap_or_default());
+                let landed = Landed {
+                    source: crate::VPath::local(shown),
+                    target: crate::VPath::local(target),
+                    new,
+                    complete: matches!(done, Ok(true)),
+                };
+                reached.push((i, at, landed));
+            }
+            result = done.map(drop);
+            if result.is_err() {
+                break;
+            }
         }
-        result = done.map(drop);
-        if result.is_err() {
-            break;
+        // The pool's files were queued before anything the walk stopped at.
+        result = job.land(0).and(result);
+        job.close();
+        if let Some(out) = landed {
+            for (i, at, mut l) in reached {
+                l.complete &= !job.unplaced.contains(&i);
+                // Stopped before its file was placed: nothing of it is there.
+                if l.complete || fs::symlink_metadata(at).is_ok() {
+                    out.push(l);
+                }
+            }
         }
+        if let (Err(_), Some(j)) = (&result, job.journal.as_deref_mut()) {
+            if let Err(e) = j.flush() {
+                tracing::warn!("recording a transfer's progress: {e:#}");
+            }
+        }
+        result
+    })
+}
+
+/// Files up to this size are copied on the worker pool; bigger ones one at a time, each in
+/// one sequential stream that reports its progress as it goes.
+const POOL_MAX: u64 = 1 << 20;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the worker count for transfers started on this thread.
+    static TEST_THREADS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Workers that copy small files: `KEEL_COPY_THREADS` (1: one file at a time), else
+/// min(8, available parallelism).
+fn copy_threads() -> usize {
+    #[cfg(test)]
+    if let Some(n) = TEST_THREADS.get() {
+        return n;
     }
-    if let (Err(_), Some(j)) = (&result, job.journal) {
-        if let Err(e) = j.flush() {
-            tracing::warn!("recording a transfer's progress: {e:#}");
+    std::env::var("KEEL_COPY_THREADS")
+        .ok()
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 64))
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get().min(8)))
+}
+
+/// A small file the pool copies: (queue number, source, target, size).
+type Work = (u64, PathBuf, PathBuf, u64);
+
+/// Copies small files to their staging names on worker threads. The walking thread places
+/// them (`Job::land`) in the order it queued them, so what lands, the journal, the progress
+/// and where a failure stops read as in a copy of one file at a time.
+struct Pool {
+    work: crossbeam_channel::Sender<Work>,
+    done: crossbeam_channel::Receiver<(u64, Result<Staged>)>,
+    /// Workers skip what is still queued (the pool stopped).
+    halt: std::sync::Arc<AtomicBool>,
+    /// Queued and not placed yet, in order; the first has number `first`.
+    queued: std::collections::VecDeque<Queued>,
+    first: u64,
+    /// Copies done out of order, by number.
+    ready: HashMap<u64, Result<Staged>>,
+    /// The queued targets, case-folded: names about to be taken.
+    taken: std::collections::HashSet<PathBuf>,
+    /// At most this many queued (staging files on disk at once).
+    most: usize,
+}
+
+struct Queued {
+    source: PathBuf,
+    target: PathBuf,
+    key: crate::VPath,
+    size: u64,
+    /// The top-level source it belongs to.
+    top: usize,
+}
+
+impl Pool {
+    /// None when no worker thread could be started (the transfer then runs on its own).
+    fn start<'s>(
+        scope: &'s std::thread::Scope<'s, '_>,
+        threads: usize,
+        cancel: &'s AtomicBool,
+    ) -> Option<Pool> {
+        let (work, queue) = crossbeam_channel::unbounded::<Work>();
+        let (finished, done) = crossbeam_channel::unbounded();
+        let halt = std::sync::Arc::new(AtomicBool::new(false));
+        let mut started = 0;
+        for _ in 0..threads {
+            let (queue, finished, halt) = (queue.clone(), finished.clone(), halt.clone());
+            let worker = move || {
+                for (n, source, target, size) in queue {
+                    let staged = if halt.load(Ordering::Relaxed) {
+                        Err(anyhow::anyhow!("operation cancelled"))
+                    } else {
+                        // A panic must still answer: the walking thread waits for each file.
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            stage(&source, &target, size, &|_| {}, cancel)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!(
+                                "internal error copying {}",
+                                source.display()
+                            ))
+                        })
+                    };
+                    if finished.send((n, staged)).is_err() {
+                        break;
+                    }
+                }
+            };
+            let spawned = std::thread::Builder::new()
+                .name("keel-copy".into())
+                .spawn_scoped(scope, worker);
+            started += usize::from(spawned.is_ok());
         }
+        (started > 0).then(|| Pool {
+            work,
+            done,
+            halt,
+            queued: Default::default(),
+            first: 0,
+            ready: HashMap::new(),
+            taken: Default::default(),
+            most: 16 * started,
+        })
     }
-    result
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        // Copies still running finish or stop; their staging files go with their results.
+        self.halt.store(true, Ordering::Relaxed);
+    }
+}
+
+/// `p` as one key for the names a case-insensitive disk takes for the same file.
+fn folded(p: &Path) -> PathBuf {
+    PathBuf::from(p.to_string_lossy().to_lowercase())
 }
 
 struct Job<'a, 'j> {
@@ -472,6 +627,12 @@ struct Job<'a, 'j> {
     /// The target picked for the top-level source being transferred, and whether it was
     /// free (set by the first `node` of each source: the top level picks before it recurses).
     top: Option<(PathBuf, bool)>,
+    /// Small files go to the pool (copies and moves to another volume); None: one at a time.
+    pool: Option<Pool>,
+    /// The top-level source being walked (its index).
+    source: usize,
+    /// Top-level sources with a file the pool copied but never placed.
+    unplaced: Vec<usize>,
 }
 
 impl Job<'_, '_> {
@@ -503,14 +664,23 @@ impl Job<'_, '_> {
                 ours = true;
                 local_target(&target)?
             }
-            Settle::Normal => match destination(metadata.is_dir(), proposed, self.conflict)? {
-                Some(target) => target,
-                None => {
-                    self.state.skipped += 1;
-                    (self.progress)(self.state.clone());
-                    return Ok(false);
+            Settle::Normal => {
+                // A name a queued file is about to take: decided once it is placed.
+                let picked = loop {
+                    match destination(metadata.is_dir(), proposed, self.conflict)? {
+                        Some(t) if self.taken(&t) => self.land(0)?,
+                        picked => break picked,
+                    }
+                };
+                match picked {
+                    Some(target) => target,
+                    None => {
+                        self.state.skipped += 1;
+                        (self.progress)(self.state.clone());
+                        return Ok(false);
+                    }
                 }
-            },
+            }
         };
         let existing = fs::symlink_metadata(&target);
         if self.top.is_none() {
@@ -568,6 +738,7 @@ impl Job<'_, '_> {
                 complete &= self.node(&child.path(), &target.join(child.file_name()), ours)?;
             }
             if self.moving && complete {
+                self.land(0)?;
                 // remove_dir only removes an empty folder: every child has been moved.
                 fs::remove_dir(source)
                     .with_context(|| format!("remove moved folder {}", source.display()))?;
@@ -588,19 +759,117 @@ impl Job<'_, '_> {
                 || metadata.len() > RECORD_BYTES
                 || j.unfinished.as_ref().is_some_and(|u| u.source == key)
         });
-        if resumable {
-            self.copy_resumable(source, &target, &metadata, &key, picked)?;
-        } else {
-            self.copy_file(source, &target, metadata.len())?;
+        if !resumable && metadata.len() <= POOL_MAX && self.pool.is_some() {
+            let size = metadata.len();
+            let source = source.to_path_buf();
+            let top = self.source;
+            return self
+                .queue(Queued {
+                    source,
+                    target,
+                    key,
+                    size,
+                    top,
+                })
+                .map(|()| true);
         }
+        // One stream at a time: the pool's files are placed first.
+        self.land(0)?;
+        let stamp = if resumable {
+            self.copy_resumable(source, &target, &metadata, &key, picked)?;
+            None
+        } else {
+            Some(self.copy_file(source, &target, metadata.len())?)
+        };
+        self.placed_file(source, &target, key, metadata.len(), stamp)?;
+        Ok(true)
+    }
+
+    /// Whether a queued file is about to take `target`.
+    fn taken(&self, target: &Path) -> bool {
+        self.pool
+            .as_ref()
+            .is_some_and(|p| !p.taken.is_empty() && p.taken.contains(&folded(target)))
+    }
+
+    /// Hands a small file to the pool, then places what is done (waiting while too many
+    /// are queued).
+    fn queue(&mut self, q: Queued) -> Result<()> {
+        let pool = self.pool.as_mut().context("no copy pool")?;
+        let n = pool.first + pool.queued.len() as u64;
+        pool.work
+            .send((n, q.source.clone(), q.target.clone(), q.size))
+            .map_err(|_| anyhow::anyhow!("the copy workers stopped"))?;
+        pool.taken.insert(folded(&q.target));
+        pool.queued.push_back(q);
+        let most = pool.most;
+        self.land(most)
+    }
+
+    /// Places the pool's copies in the order they were queued: waiting for each until at
+    /// most `keep` are queued, then those done already. The first that fails (or a cancel)
+    /// stops the pool: the rest are not placed and their staging files are deleted.
+    fn land(&mut self, keep: usize) -> Result<()> {
+        while let Some(pool) = self.pool.as_mut().filter(|p| !p.queued.is_empty()) {
+            let Some(staged) = pool.ready.remove(&pool.first) else {
+                let next = if pool.queued.len() > keep {
+                    let next = pool.done.recv();
+                    Some(next.map_err(|_| anyhow::anyhow!("the copy workers stopped"))?)
+                } else {
+                    pool.done.try_recv().ok()
+                };
+                let Some((n, staged)) = next else {
+                    return Ok(());
+                };
+                pool.ready.insert(n, staged);
+                continue;
+            };
+            let q = pool.queued.pop_front().context("nothing queued")?;
+            pool.first += 1;
+            pool.taken.remove(&folded(&q.target));
+            let top = q.top;
+            let placed = check_cancel(self.cancel).and(staged).and_then(|staged| {
+                place(self.conflict, &q.source, &staged.partial.0, &q.target)?;
+                staged.partial.keep();
+                self.placed_file(&q.source, &q.target, q.key, q.size, Some(staged.stamp))
+            });
+            if let Err(e) = placed {
+                self.unplaced.push(top);
+                self.close();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops the pool: what is queued is not placed.
+    fn close(&mut self) {
+        if let Some(pool) = self.pool.take() {
+            self.unplaced.extend(pool.queued.iter().map(|q| q.top));
+        }
+    }
+
+    /// `source` is in place at `target` (now `stamp`, when known): a move drops the
+    /// source, the journal records the target, the progress counts it.
+    fn placed_file(
+        &mut self,
+        source: &Path,
+        target: &Path,
+        key: crate::VPath,
+        size: u64,
+        stamp: Option<Stamp>,
+    ) -> Result<()> {
         if self.moving {
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
         }
         if let Some(j) = self.journal.as_deref_mut() {
-            let file = Some(Stamp::of(&fs::symlink_metadata(&target)?));
-            let target = crate::VPath::local(&target);
+            let file = Some(match stamp {
+                Some(stamp) => stamp,
+                None => Stamp::of(&fs::symlink_metadata(target)?),
+            });
+            let target = crate::VPath::local(target);
             j.placed(
                 key,
                 Placed {
@@ -611,10 +880,11 @@ impl Job<'_, '_> {
                 false,
             )?;
         }
-        self.state.done_bytes += metadata.len();
+        self.state.current = source.to_string_lossy().into_owned();
+        self.state.done_bytes += size;
         self.state.done_items += 1;
         (self.progress)(self.state.clone());
-        Ok(true)
+        Ok(())
     }
 
     /// A file an earlier run placed at `target`: counted, and a move drops its source now.
@@ -652,34 +922,23 @@ impl Job<'_, '_> {
 
     /// Copies to a unique `<target>.keel-partial-<pid>-<n>`, then renames into place. On
     /// cancel or error the partial is deleted and an existing `target` is untouched.
-    fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<()> {
-        let name = target.file_name().context("target has no name")?;
-        let partial = target.with_file_name(partial_name(&name.to_string_lossy()));
-        anyhow::ensure!(
-            fs::symlink_metadata(&partial).is_err(),
-            "leftover partial copy exists: {}",
-            partial.display()
-        );
-        let partial = Partial(partial);
+    /// Returns the placed file's stamp.
+    fn copy_file(&self, source: &Path, target: &Path, size: u64) -> Result<Stamp> {
         let base = &self.state;
-        let result = sys::copy_file(
+        let staged = stage(
             source,
-            &partial.0,
+            target,
+            size,
             &|bytes| {
                 let mut state = base.clone();
                 state.done_bytes += bytes;
                 (self.progress)(state);
             },
             self.cancel,
-        );
-        check_cancel(self.cancel)?;
-        result?;
-        anyhow::ensure!(
-            fs::metadata(&partial.0)?.len() == size,
-            "source changed during copy: {}",
-            source.display()
-        );
-        place(self.conflict, source, &partial.0, target)
+        )?;
+        place(self.conflict, source, &staged.partial.0, target)?;
+        staged.partial.keep();
+        Ok(staged.stamp)
     }
 
     /// `copy_file` for a journaled transfer: the staging file is recorded every
@@ -794,6 +1053,44 @@ impl Job<'_, '_> {
     }
 }
 
+/// A complete copy of a file at its staging name, not placed yet.
+struct Staged {
+    partial: Partial,
+    /// The copy's size and modified time (the placed file keeps both).
+    stamp: Stamp,
+}
+
+/// Copies `source` (`size` bytes) to a unique staging name next to `target`.
+fn stage(
+    source: &Path,
+    target: &Path,
+    size: u64,
+    on_bytes: &dyn Fn(u64),
+    cancel: &AtomicBool,
+) -> Result<Staged> {
+    let name = target.file_name().context("target has no name")?;
+    let partial = target.with_file_name(partial_name(&name.to_string_lossy()));
+    anyhow::ensure!(
+        fs::symlink_metadata(&partial).is_err(),
+        "leftover partial copy exists: {}",
+        partial.display()
+    );
+    let partial = Partial(partial);
+    let result = sys::copy_file(source, &partial.0, on_bytes, cancel);
+    check_cancel(cancel)?;
+    result?;
+    let copied = fs::metadata(&partial.0)?;
+    anyhow::ensure!(
+        copied.len() == size,
+        "source changed during copy: {}",
+        source.display()
+    );
+    Ok(Staged {
+        stamp: Stamp::of(&copied),
+        partial,
+    })
+}
+
 /// Syncs a local staging file, then records it as `u` at `bytes`.
 fn record_local(j: &mut Journal, u: &mut Unfinished, out: &fs::File, bytes: u64) -> Result<()> {
     out.sync_data()?;
@@ -879,8 +1176,9 @@ pub struct Landed {
 }
 
 /// `transfer` that also tells, in `landed`, where each top-level source went (in order, the
-/// sources it reached; a skipped one is not listed). Only between local folders: anything
-/// else leaves `landed` empty.
+/// sources it reached; one that left nothing at its target, skipped or stopped before its
+/// file was placed, is not listed). Only between local folders: anything else leaves
+/// `landed` empty.
 #[allow(clippy::too_many_arguments)]
 pub fn transfer_landed(
     src: &[crate::VPath],
@@ -2576,3 +2874,7 @@ mod tests {
 #[cfg(all(test, feature = "zip"))]
 #[path = "extract_tests.rs"]
 mod extract_tests;
+
+#[cfg(test)]
+#[path = "pool_tests.rs"]
+mod pool_tests;

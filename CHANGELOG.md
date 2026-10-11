@@ -4,6 +4,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+
 ### Added
 
 - Ctrl+P finds files as well as folders: type a few letters of a file's name and press Enter to open its folder with the file selected and the preview shown (Ctrl+Enter: a new tab, Shift+Enter: the other pane, also for folders). Files come from a walk of the active pane's folder and everything below it, and from the library's indexed files; folders still come from the search index. Tab switches between **Folders**, **Files** and **Both** (the default, kept per profile), and each result shows its icon and, dimmed, its folder. The lists are read in the background, so typing never waits: the popup says what it is still indexing, with counts, and results fill in as files arrive. See [Finding folders and files](docs/files.md#finding-folders-and-files-ctrlp).
@@ -34,10 +35,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - FTP uses passive mode only (`PASV`, `EPSV` on IPv6); active mode is not supported. Free space is not shown for FTP hosts.
 - `LIST` dates are read as UTC to the minute (the server's time zone is unknown); a rename onto an existing name is checked first and refused, but a file that appears between the check and the rename is replaced on servers whose rename replaces.
 - An FTPS certificate pinned before can only be replaced by removing its line from `ftps_known_hosts`. Implicit FTPS (port 990) connects without Keel's own connect timeout (the system's applies).
+- A parallel copy makes folders ahead of the files queued for them: one stopped by a cancel or an error can leave such a folder empty. Undo removes it with the rest of the copy.
 
 ### Changed
 
 - The terminal's WSL shells come from the same registry list as the sidebar, instead of running `wsl.exe -l -q` (which started WSL and could take seconds); a distribution's entry no longer depends on that command's output.
+- Copying many small files is about four times faster: 3,000 one-byte files pasted into a folder copy in about a second instead of 3.7 s, and through a library preview in 2.9 s instead of 3.7 s (the preview's own bookkeeping takes the rest). Files up to 1 MiB are copied by a pool of up to eight worker threads; bigger files are still copied one at a time with their progress. Every file still goes to a staging name first and lands in the order it was queued, so a cancel or an error leaves no half file, and what the job log, the undo list and a resumed library copy record is what one-at-a-time copying would have done. A selection of thousands of files also no longer spends seconds checking that no two of them overlap. `KEEL_COPY_THREADS` sets the number of workers (1 copies one file at a time). See [Performance](docs/performance.md).
 
 ### Security
 

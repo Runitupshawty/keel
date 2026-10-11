@@ -550,6 +550,42 @@ fn a_copy_undone_goes_to_the_trash_and_the_originals_stay() {
     }
 }
 
+/// A copy of many small files (made on the copy worker pool) is undone exactly: every copy
+/// goes to the trash, the originals and what was in the destination before stay.
+#[test]
+fn a_parallel_copy_undone_trashes_exactly_the_copies() {
+    let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, a, b) = fixture();
+    if !trash_works(&b) {
+        return;
+    }
+    std::fs::write(b.join("kept.txt"), "mine").unwrap();
+    let names: Vec<String> = (0..40).map(|i| unique(&format!("pool{i}"))).collect();
+    for (i, name) in names.iter().enumerate() {
+        std::fs::write(a.join(name), format!("copy {i}")).unwrap();
+    }
+    let (a_before, b_before) = (tree(&a), tree(&b));
+    let mut sources: Vec<&str> = names.iter().map(String::as_str).collect();
+    sources.push("folder");
+    let router = Router::new();
+    let e = transfer(&router, &sources, &a, &b, false);
+    assert_eq!(e.items.len(), 41);
+    assert!(b.join("folder/sub/deep.bin").exists());
+    let since = std::time::SystemTime::now();
+    undo(&router, &e).unwrap();
+    assert_eq!(tree(&b), b_before, "only the copies left");
+    assert_eq!(tree(&a), a_before, "the originals stay");
+    if keel_vfs::trashbin::KNOWS_ORIGIN {
+        let copies: Vec<_> = sources
+            .iter()
+            .map(|n| (VPath::local(b.join(n)), None))
+            .collect();
+        let found = trashed(&copies, since, stat_fn(&router)).unwrap();
+        assert_eq!(found.len(), 41, "every copy is in the trash");
+        purge(&found);
+    }
+}
+
 #[test]
 fn a_delete_undone_comes_back_from_the_trash() {
     let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
