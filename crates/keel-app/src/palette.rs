@@ -126,6 +126,9 @@ fn global_items() -> Vec<Item> {
         ("Library overview", "", Library(LibCmd::Overview)),
         ("Add library source…", "", Library(LibCmd::AddSource)),
         ("Find duplicates", "", Library(LibCmd::Duplicates)),
+        // --- Task 53 ---
+        ("Back up library…", "", Library(LibCmd::Backup)),
+        ("Restore library…", "", Library(LibCmd::Restore)),
         (
             "Favorites",
             "",

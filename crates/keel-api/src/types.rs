@@ -889,6 +889,10 @@ pub struct LibraryStats {
     /// daemons before 0.12). Windows read it from here rather than from their settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashing: Option<RemoteHashing>,
+    /// When the last backup was written (`library.backup`; unix seconds), absent before the
+    /// first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_backup: Option<i64>,
 }
 
 /// The library's remote hashing policy (`hashing.set`'s remote, cloud, max_remote_bytes).
@@ -1096,4 +1100,51 @@ pub struct ChildSize {
     pub bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackupParams {
+    /// An absolute local path: a new `.keelbackup` file, or a folder to write
+    /// `<library>-<YYYY-MM-DD>.keelbackup` in. An existing file is never replaced.
+    pub file: String,
+}
+
+/// A backup written (`library.backup`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BackupWritten {
+    pub file: String,
+    pub bytes: u64,
+    /// Unix seconds.
+    pub created: i64,
+    pub sources: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreParams {
+    /// The backup file (an absolute local path).
+    pub file: String,
+    /// The new library's name (default: the backed-up library's). Never an existing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A library restored from a backup (`library.restore`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RestoredLibrary {
+    pub name: String,
+    /// Its folder.
+    pub dir: String,
+    pub sources: Vec<RestoredSourceInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RestoredSourceInfo {
+    pub id: String,
+    pub label: String,
+    pub root: String,
+    /// Its root is a local folder here: walked again when the library opens. Others stay
+    /// offline until their root is back.
+    pub online: bool,
 }

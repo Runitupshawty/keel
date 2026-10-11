@@ -1014,3 +1014,65 @@ fn the_library_remote_hashing_policy_wins_over_settings_toml() {
     );
     s.library.close_now();
 }
+
+/// Task 53: Restore library… offers what the backup holds and a free name, and restores a
+/// new library beside the open one (never over it); a file that is not a backup is a toast.
+#[test]
+fn restore_offers_a_free_name_and_restores_beside_the_open_library() {
+    let (tmp, lib, _) = fixture("restore", false);
+    let file = tmp.join("test.keelbackup");
+    lib.backup(&file).unwrap();
+    let mut s = state_with(&lib, &tmp);
+    let (about, name) = restore_offer(&file).unwrap();
+    assert!(
+        about.contains("1 source, 1 found on this machine"),
+        "{about}"
+    );
+    assert!(!name.is_empty());
+    s.library_msg(LibMsg::RestorePicked {
+        file: file.clone(),
+        about,
+        name,
+    });
+    assert!(matches!(
+        s.dialog,
+        Some(crate::dialogs::Dialog::RestoreLibrary { .. })
+    ));
+    s.dialog = None;
+    let name = format!("restored-{}", std::process::id());
+    s.library_cmd(
+        0,
+        LibCmd::RestoreAs {
+            file: file.clone(),
+            name: name.clone(),
+        },
+    );
+    pump_until(&mut s, "restored", |s| {
+        s.toasts
+            .list
+            .iter()
+            .any(|t| t.text.starts_with("Restored library"))
+    });
+    let data = crate::settings::data_dir().unwrap();
+    let dir = data.join("library").join(&name);
+    assert!(dir.join("library.db").is_file());
+    assert!(
+        s.library.libraries.iter().any(|l| l.name == name) || {
+            pump_until(&mut s, "listed", |s| {
+                s.library.libraries.iter().any(|l| l.name == name)
+            });
+            true
+        }
+    );
+    // Once more under that name: refused, nothing replaced.
+    s.toasts.list.clear();
+    s.library_cmd(0, LibCmd::RestoreAs { file, name });
+    pump_until(&mut s, "refused", |s| {
+        s.toasts.list.iter().any(|t| t.text.contains("exists"))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    let junk = tmp.join("junk.keelbackup");
+    std::fs::write(&junk, b"junk").unwrap();
+    let e = restore_offer(&junk).unwrap_err();
+    assert!(format!("{e:#}").starts_with("not a Keel backup"), "{e:#}");
+}

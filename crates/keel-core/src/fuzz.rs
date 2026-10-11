@@ -69,6 +69,16 @@ pub fn query(data: &[u8]) {
     }
 }
 
+/// A library backup (`.keelbackup`): the manifest and entry checks (`inspect`), then a
+/// restore into a scratch data folder (hashes, database checks, the library's layout).
+pub fn backup(data: &[u8]) {
+    with_file(data, "input.keelbackup", |path| {
+        let _ = crate::backup::inspect(path);
+        let root = tempfile::tempdir().unwrap();
+        let _ = crate::backup::restore(root.path(), path, None);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -95,5 +105,9 @@ mod tests {
     #[test]
     fn fuzz_query() {
         run("query", super::query);
+    }
+    #[test]
+    fn fuzz_backup() {
+        run("backup", super::backup);
     }
 }

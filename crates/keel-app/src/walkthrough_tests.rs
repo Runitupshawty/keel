@@ -1323,7 +1323,8 @@ fn fingerprint(s: &AppState) -> String {
 /// Every command in the palette (with a selection: the context ones too), picked by a
 /// click after typing its name, changes something the user can see. Three launch other
 /// programs and are only checked to be bound: Show in system file manager, Open terminal
-/// here, Toggle terminal; Extract to… opens the system folder picker.
+/// here, Toggle terminal; Extract to… opens the system folder picker, Back up library… and
+/// Restore library… the system file dialogs.
 #[test]
 fn command_palette_every_command() {
     let _clip = crate::clipboard::SYSTEM_CLIPBOARD.lock();
@@ -1346,6 +1347,8 @@ fn command_palette_every_command() {
         Action::OpenTerminal,
         Action::ToggleTerminal,
         Action::ExtractTo,
+        Action::Library(crate::library::LibCmd::Backup),
+        Action::Library(crate::library::LibCmd::Restore),
     ];
     let mut ran = 0;
     for (label, action) in items {

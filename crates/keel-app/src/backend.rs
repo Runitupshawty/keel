@@ -503,6 +503,7 @@ impl LibraryBackend {
                             offline: p.offline,
                         })
                         .collect(),
+                    last_backup: s.last_backup,
                 })
             }
         }
@@ -738,6 +739,31 @@ impl LibraryBackend {
             LibraryBackend::InProcess(lib) => lib.remove_source(id, true),
             LibraryBackend::Daemon(r) => {
                 r.apply("sources.remove", json!({"id": id.0, "delete_store": true}))?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Task 53: writes a backup to `file`, replacing one there (the save dialog asked). The
+    /// daemon refuses an existing file: it writes beside it, and the window moves it over.
+    pub fn backup(&self, file: &std::path::Path) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.backup(file).map(drop),
+            LibraryBackend::Daemon(r) if file.exists() => {
+                let ext = keel_core::backup::EXTENSION;
+                let fresh = file.with_extension(format!("{}.{ext}", std::process::id()));
+                r.apply(
+                    "library.backup",
+                    json!({"file": fresh.display().to_string()}),
+                )?;
+                std::fs::rename(&fresh, file)
+                    .with_context(|| format!("replacing {}", file.display()))
+            }
+            LibraryBackend::Daemon(r) => {
+                r.apply(
+                    "library.backup",
+                    json!({"file": file.display().to_string()}),
+                )?;
                 Ok(())
             }
         }

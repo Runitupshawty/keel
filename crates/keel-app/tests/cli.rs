@@ -551,3 +551,54 @@ fn du_reports_an_unreadable_folder_as_unknown() {
     assert_eq!(child("docs")["bytes"], 9, "{v}");
     assert_eq!(v["bytes"], 14, "the readable part: {v}");
 }
+
+/// Task 53: `keel library backup` and `keel library restore`, in-process: a restore never
+/// replaces a library (`--as` names another), and on a fresh data folder (another machine)
+/// it needs no `--as`; the tags come back.
+#[test]
+fn library_backup_and_restore_round_trip() {
+    let env = env();
+    env.ok(&["sources", "add", &s(env.files.path())]);
+    env.ok(&["tag", "add", "receipts", &env.file("docs/invoice-2026.pdf")]);
+    let out = tempfile::tempdir().unwrap();
+    let text = env.ok(&["library", "backup", &s(out.path())]);
+    assert!(text.contains("backed up to "), "{text}");
+    let file = std::fs::read_dir(out.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        file.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("main-"),
+        "{file:?}"
+    );
+    assert_eq!(file.extension().unwrap(), "keelbackup");
+    // The same library: refused (exit 1), with the way out in the message.
+    let refused = env.run(&["library", "restore", &s(&file)]);
+    assert_eq!(refused.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&refused.stderr);
+    assert!(err.contains("a library named main exists"), "{err}");
+    let copy: Value =
+        serde_json::from_str(&env.ok(&["library", "restore", &s(&file), "--as", "copy", "--json"]))
+            .unwrap();
+    assert_eq!(copy["name"], "copy", "{copy}");
+    assert_eq!(copy["sources"][0]["online"], true, "{copy}");
+    // Another machine: a fresh data folder, no library yet.
+    let other = crate::env();
+    let text = other.ok(&["library", "restore", &s(&file)]);
+    assert!(text.contains("restored library main"), "{text}");
+    let tagged: Value =
+        serde_json::from_str(&other.ok(&["search", "tag:receipts", "--json"])).unwrap();
+    assert_eq!(tagged[0]["name"], "invoice-2026.pdf", "{tagged}");
+    // Not a backup: exit 1, a message and no crash report.
+    let junk = out.path().join("junk.keelbackup");
+    std::fs::write(&junk, b"junk").unwrap();
+    let bad = other.run(&["library", "restore", &s(&junk), "--as", "x"]);
+    assert_eq!(bad.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(err.contains("not a Keel backup"), "{err}");
+}

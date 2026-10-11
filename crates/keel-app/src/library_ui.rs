@@ -1051,6 +1051,18 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
             ui.label("Details view");
             ui.checkbox(&mut lib_settings.tags_column, "Tags column");
             ui.end_row();
+            // --- Task 53 ---
+            ui.label("Last backup");
+            ui.horizontal(|ui| {
+                ui.label(crate::library::when(l.stats.last_backup));
+                if ui.button("Back up…").clicked() {
+                    l.pending.push(LibCmd::Backup);
+                }
+                if ui.button("Restore…").clicked() {
+                    l.pending.push(LibCmd::Restore);
+                }
+            });
+            ui.end_row();
             // --- Task 33 ---
             ui.label("Integrity check");
             ui.horizontal(|ui| {
