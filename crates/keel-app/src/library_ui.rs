@@ -883,17 +883,35 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let confirm = ui.add_enabled(!d.running, egui::Button::new("Confirm"));
-            // Enter confirms (Esc cancels), as the button says.
-            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            // Enter confirms (Esc cancels), as the button says: a fresh press only, never
+            // the key repeat of an Enter held since the palette or the dialog before (a held
+            // Enter would confirm a preview nobody read), and not on the frame it opened.
+            let enter = d.armed && ui.input(fresh_enter);
             if confirm.clicked() || (enter && !d.running) {
                 out.push(lib(LibCmd::Execute));
             }
             cancel |= ui.button("Cancel").clicked();
         });
     });
+    d.armed = true;
     if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         s.library.plan = None;
     }
+}
+
+/// Enter went down this frame (not a key repeat).
+fn fresh_enter(i: &egui::InputState) -> bool {
+    i.events.iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat: false,
+                ..
+            }
+        )
+    })
 }
 
 fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {

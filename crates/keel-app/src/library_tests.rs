@@ -353,6 +353,55 @@ fn preview_dialog_lists_changes_and_warnings() {
     assert!(tmp.join("docs").join("c.txt").exists());
 }
 
+/// A held Enter never confirms a library preview: not the press on the frame it opens,
+/// not key repeats; a fresh press after that does.
+#[test]
+fn a_held_enter_does_not_confirm_a_preview() {
+    use egui_kittest::Harness;
+    let (tmp, lib, _id) = fixture("held-enter", false);
+    let c = VPath::local(tmp.join("docs").join("c.txt"));
+    let plan = keel_core::validate_preview_execute(&lib, Op::Delete { paths: vec![c] }).unwrap();
+    let s = state_with(&lib, &tmp);
+    let mut h = Harness::new_state(
+        |ctx, (s, out): &mut (AppState, Vec<Action>)| crate::library_ui::windows(ctx, s, out),
+        (s, Vec::new()),
+    );
+    h.state_mut().0.library.plan = Some(PlanDialog {
+        plan: Planned::Local(plan),
+        changed: false,
+        running: false,
+        armed: false,
+    });
+    let key = |pressed, repeat| egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat,
+        modifiers: Default::default(),
+    };
+    let enter = |repeat| key(true, repeat);
+    let confirmed = |h: &Harness<(AppState, Vec<Action>)>| {
+        h.state().1.contains(&Action::Library(LibCmd::Execute))
+    };
+    // The press that opened it (still down), then its repeats.
+    h.input_mut().events.push(enter(false));
+    h.step();
+    assert!(!confirmed(&h), "Enter on the frame the preview opened");
+    for _ in 0..3 {
+        h.input_mut().events.push(enter(true));
+        h.step();
+    }
+    assert!(!confirmed(&h), "a key repeat confirmed the preview");
+    assert!(h.state().0.library.plan.is_some());
+    // Let go, then a fresh press.
+    h.input_mut().events.push(key(false, false));
+    h.step();
+    h.input_mut().events.push(enter(false));
+    h.step();
+    assert!(confirmed(&h), "a fresh Enter confirms");
+    assert!(tmp.join("docs").join("c.txt").exists(), "nothing ran here");
+}
+
 #[test]
 fn search_tab_switches_between_platform_and_library_backends() {
     struct Fixed;

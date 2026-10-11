@@ -29,6 +29,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Undo of a merge whose sources had subfolders of one name moved the whole merged folder back into the first source and left the second empty. Such subfolders now land side by side (`Vacation`, `Vacation (2)`) and each goes back; a folder that merged into one already there stays on undo, and the toast says so.
 - The agent skill said nothing changes without a preview: it now lists the operations that act at once (`shares.revoke`, `library.sync`, `recents.note`, `activity.note`) for the agent to ask about first, the `deletes_permanent` warning and error -32007. `library.sync` is marked as changing the library in `keel op list` and `keel mcp`.
 
+### Security
+
+- A held Enter could confirm a library preview nobody read, including a permanent delete on an SFTP host or S3: the key repeat of the Enter that opened the palette or a dialog before it went on to Confirm. The preview now takes only a fresh press of Enter, and not on the frame it opens.
+
 ### Known limitations
 
 - Linux: dragging files to other apps needs X11. In a Wayland session it works when Keel runs through XWayland (start it with `WAYLAND_DISPLAY` unset); a native Wayland window shows "dragging files to other apps needs X11 (XWayland) on this desktop" instead.

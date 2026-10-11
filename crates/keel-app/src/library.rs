@@ -840,6 +840,8 @@ pub struct PlanDialog {
     /// The sources changed since the first preview (this is the fresh one).
     pub changed: bool,
     pub running: bool,
+    /// Drawn once: Enter confirms only from the frame after the preview opened.
+    pub armed: bool,
 }
 
 enum Watch {
@@ -1753,6 +1755,7 @@ impl AppState {
                     plan,
                     changed: false,
                     running: false,
+                    armed: false,
                 })
             }
             LibMsg::Planned(Err(e)) => self.toasts.error(e),
@@ -1761,6 +1764,7 @@ impl AppState {
                     plan,
                     changed: true,
                     running: false,
+                    armed: false,
                 })
             }
             LibMsg::Dups(result) => {
