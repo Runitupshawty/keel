@@ -1,0 +1,5 @@
+Hots typo
+IgnoreUnknown Hots,Use*
+﻿User
+  ProxyCommand nc %h %p
+  Port 0

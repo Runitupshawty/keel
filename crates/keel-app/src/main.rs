@@ -14,6 +14,8 @@ mod crash;
 mod devices;
 mod dialogs;
 mod dropzone;
+#[cfg(test)]
+mod fuzz_tests;
 mod icon_theme;
 mod icons;
 mod jobs;

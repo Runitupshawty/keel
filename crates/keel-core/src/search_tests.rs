@@ -731,3 +731,25 @@ fn a_tag_with_a_common_word_ranks_as_without_its_narrow_path() {
     }
     assert!(paths("tag:big nosuchword", false).is_empty());
 }
+
+/// Fuzzing (fuzz/corpus/query/overflow-*): numbers at the edge of i64 in a filter were added
+/// to or subtracted from without a check (a panic in debug builds, a wrapped range in
+/// release builds). They are refused as bad values now.
+#[test]
+fn edge_numbers_are_refused_not_wrapped() {
+    for q in [
+        "duration:>99999999999999999999",
+        "w:9223372036854775807",
+        "h:<-9223372036854775808",
+        "size:<9223372036854775808",
+        "size:99999999999999999999tb",
+        "dm:99999999999999999",
+        "taken:-99999999999999999..2026",
+        "dm:100001",
+    ] {
+        assert!(LibraryQuery::parse_at(q, NOW, 0).is_err(), "{q}");
+    }
+    let q = LibraryQuery::parse_at("w:<=9223372036854775806 dm:99999", NOW, 0).unwrap();
+    assert_eq!(q.width.max, Some(i64::MAX - 1));
+    assert!(q.modified_before.is_some());
+}

@@ -37,6 +37,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`schemars`](https://crates.io/crates/schemars) 1.2 | JSON schemas of the API operations (`keel-api`: JSON-RPC, CLI, MCP tools) | MIT | Rust crate, compiled in |
 | [`global-hotkey`](https://crates.io/crates/global-hotkey) 0.8 | System-wide hotkey | Apache-2.0 OR MIT | Rust crate, compiled in |
 | [`rusqlite`](https://crates.io/crates/rusqlite) 0.37 | Search index and library stores, with FTS5 (bundled SQLite, which is public domain) | MIT | Rust crate, compiled in |
+| [`libfuzzer-sys`](https://crates.io/crates/libfuzzer-sys) 0.4 (with LLVM's libFuzzer and [`arbitrary`](https://crates.io/crates/arbitrary) 1) | The libFuzzer targets in `fuzz/` (docs/fuzzing.md) | MIT OR Apache-2.0; libFuzzer: Apache-2.0 WITH LLVM-exception | Rust crate, compiled into the fuzz targets only (development); never part of Keel |
 | [`blake3`](https://crates.io/crates/blake3) 1 | Content ids for the duplicate finder (pure-Rust build) | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Rust crate, compiled in |
 | [`notify`](https://crates.io/crates/notify) 6 | Live file watching for library sources | CC0-1.0 | Rust crate, compiled in |
 | [`ignore`](https://crates.io/crates/ignore) 0.4 | Directory walking | Unlicense OR MIT | Rust crate, compiled in |

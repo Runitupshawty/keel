@@ -1,0 +1,1 @@
+[{"jsonrpc": "2.0", "id": "a", "method": "search", "params": {"query": "x ext:pdf", "max": 5}}, {"jsonrpc": "2.0", "method": "note"}, {"jsonrpc": "2.0", "id": 2, "method": "list", "params": {"path": "C:/"}}]

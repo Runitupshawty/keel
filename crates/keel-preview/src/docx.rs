@@ -22,7 +22,7 @@ pub(crate) fn render(req: &Request) -> Preview {
             Ok(())
         })
         .and_then(|()| std::fs::read(&req.bytes_path).map_err(|error| error.to_string()))
-        .and_then(|bytes| docx_rs::read_docx(&bytes).map_err(|error| error.to_string()));
+        .and_then(|bytes| read_docx(&bytes));
     let docx = match result {
         Ok(docx) => docx,
         Err(error) => return Preview::Error(error),
@@ -31,6 +31,14 @@ pub(crate) fn render(req: &Request) -> Preview {
     let rich = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk(&docx, true)));
     let blocks = rich.unwrap_or_else(|_| walk(&docx, false));
     Preview::Doc { blocks }
+}
+
+/// docx-rs unwraps on some malformed packages (a corrupt deflate stream in a part): that is
+/// a broken file, not a previewer failure.
+fn read_docx(bytes: &[u8]) -> Result<docx_rs::Docx, String> {
+    std::panic::catch_unwind(|| docx_rs::read_docx(bytes))
+        .map_err(|_| "not a valid Word document".to_owned())?
+        .map_err(|error| error.to_string())
 }
 
 struct Ctx<'a> {

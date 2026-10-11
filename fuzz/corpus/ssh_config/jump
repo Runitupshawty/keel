@@ -1,0 +1,7 @@
+Host target
+  HostName target.invalid
+  ProxyJump bastion,user@second:2200,[v6.invalid]:22
+Host bastion
+  ProxyJump second
+Host second
+  HostName second.invalid

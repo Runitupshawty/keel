@@ -10,6 +10,13 @@ pub mod cloud;
 pub mod desktop;
 pub mod drag_out;
 // --- end Task 24 ---
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
+/// Corpus, mutator, watchdog and allocation cap for the in-tree fuzz runs of every crate.
+#[cfg(any(test, feature = "test-util"))]
+pub mod fuzz_harness;
 pub mod library;
 /// In-memory provider for tests.
 #[cfg(any(test, feature = "test-util"))]

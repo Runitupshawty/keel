@@ -314,7 +314,7 @@ impl Uploads {
 }
 
 /// The boundary of a `multipart/form-data` content type.
-fn boundary(content_type: &str) -> Option<String> {
+pub(crate) fn boundary(content_type: &str) -> Option<String> {
     let mut parts = content_type.split(';').map(str::trim);
     if !parts.next()?.eq_ignore_ascii_case("multipart/form-data") {
         return None;
@@ -373,7 +373,11 @@ fn param(head: &str, key: &str) -> Option<String> {
 /// Streams a `multipart/form-data` body into `dir`: one file per part with a file name
 /// (form fields without one, the shared title / text / url, are skipped). Returns the
 /// stored names and sizes.
-fn parse(mut body: impl Read, boundary: &str, dir: &Path) -> Result<Vec<(String, u64)>, String> {
+pub(crate) fn parse(
+    mut body: impl Read,
+    boundary: &str,
+    dir: &Path,
+) -> Result<Vec<(String, u64)>, String> {
     let first = format!("--{boundary}");
     let delim = format!("\r\n--{boundary}");
     let mut buf: Vec<u8> = Vec::new();

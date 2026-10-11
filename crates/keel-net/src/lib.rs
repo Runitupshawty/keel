@@ -1,6 +1,10 @@
 //! Keel's authenticated device transport. See the crate README for pairing,
 //! persistence, wire framing, offline configuration and Handler security contracts.
 #![doc = include_str!("../README.md")]
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 mod host;
 mod node;
 mod pairing;

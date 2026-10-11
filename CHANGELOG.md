@@ -14,6 +14,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **UI scale** in Settings → General, kept with the settings: Ctrl+= and Ctrl+- scale the window, Ctrl+0 resets it.
 - **Reduce motion** also stops the spinners.
 - `a11y_tests`: AccessKit checks on the fixture (every control named, rows, focus, live regions, dialogs) and a walk of the whole window with Tab and Shift+Tab; a WCAG contrast test of both built-in themes.
+- Fuzzing ([docs/fuzzing.md](docs/fuzzing.md)): every parser of outside bytes (archives, SSH configs, photos and their metadata, search queries, JSON-RPC and MCP, keel-net messages, pairing codes, shared uploads, previews) has a fuzz target, run on its corpus in every `cargo test` and with libFuzzer in CI on `main`. The fixes above came from it.
 
 ### Changed
 
@@ -25,7 +26,13 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Enter or Space on a focused button, checkbox or sidebar item presses it; they used to open or select the file under the cursor instead (the arrow keys moved the cursor too). Esc gives the keys back to the file list.
 - Dialogs open with the focus on their main button or first field (name conflicts on Keep both, Properties on Close, Open with on the first app), and Esc closes the Settings window and the library and devices windows.
 - Contrast: secondary text, links, warnings and errors reach 4.5:1 in both themes (the muted grey and the light theme's accent are slightly darker or lighter, warnings and errors are new colours, weak text is the muted colour), and a selected row draws its secondary text in the text colour.
+- Library search: a filter number too large for it (`w:9223372036854775807`, `size:<9223372036854775808`, `duration:>99999999999999999999`, a year such as `dm:99999999999999999`) is reported as a bad value; it used to wrap around and match the wrong files.
+- Previewing a damaged Word document says "not a valid Word document"; it used to show "previewer panicked".
 
+### Security
+
+- A tiny image could make Keel allocate close to a gigabyte: a 52-byte GIF whose 4x3 picture holds a 14693x14649 frame passed the 200-megapixel check and had the decoder reserve 860 MB while the library made its thumbnail (the preview panel up to 512 MB). Image decoding is now held to the size the file's header declares, and such a file is reported as damaged.
+- Changing a hostile zip (deleting, renaming or adding an entry) could hit an arithmetic overflow on an entry size near 2^64 (zip64): a crash in debug builds, a check that wrapped around in release builds. The zip is now refused as an unsupported layout and left as it was.
 
 ## [0.16.0] - 2026-10-10
 

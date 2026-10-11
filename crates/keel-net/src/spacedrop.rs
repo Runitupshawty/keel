@@ -150,6 +150,18 @@ fn short_name(part: &str) -> bool {
         && ext.len() <= 3
 }
 
+/// A drop offer a receiver may consider: a 32-hex-digit id and 1..=`MAX_FILES` distinct,
+/// valid relative paths (on Windows, none shaped like an 8.3 short name).
+pub(crate) fn offer_valid(id: &str, files: &[(String, u64)]) -> bool {
+    let names: HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    valid_id(id)
+        && !files.is_empty()
+        && files.len() <= MAX_FILES
+        && names.len() == files.len()
+        && files.iter().all(|(p, _)| valid_rel(p))
+        && !(cfg!(windows) && files.iter().any(|(p, _)| p.split('/').any(short_name)))
+}
+
 /// What a completed drop remembers of its file list.
 fn list_hash(files: &[(String, u64)]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
@@ -416,14 +428,7 @@ impl Node {
         id: &str,
         files: Vec<(String, u64)>,
     ) -> Result<Response> {
-        let names: HashSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-        let valid = valid_id(id)
-            && !files.is_empty()
-            && files.len() <= MAX_FILES
-            && names.len() == files.len()
-            && files.iter().all(|(p, _)| valid_rel(p))
-            && !(cfg!(windows) && files.iter().any(|(p, _)| p.split('/').any(short_name)));
-        if !valid {
+        if !offer_valid(id, &files) {
             let payload = json!({"drop": id, "files": files.len()});
             self.log_drop(ctx, "drop-offer", payload, false);
             return Ok(Response::Denied("invalid drop offer".into()));

@@ -1,0 +1,6 @@
+{"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {"elicitation": {}}, "clientInfo": {"name": "t", "version": "1"}}}
+{"jsonrpc": "2.0", "method": "notifications/initialized"}
+{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "tags_add", "arguments": {"tag": "t", "paths": ["a"]}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "execute", "arguments": {"plan_id": "p1", "input_hash": "h"}}}
+{"jsonrpc": "2.0", "id": "keel-confirm-1", "result": {"action": "accept", "content": {"confirm": true}}}

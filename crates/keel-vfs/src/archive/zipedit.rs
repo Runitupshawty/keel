@@ -476,7 +476,10 @@ pub fn stage(
     };
     let mut buffer = vec![0u8; 1 << 20];
     let mut copy = |out: &mut Writer, from: u64, len: u64, state: &mut Progress| -> Result<()> {
-        ensure!(from + len <= file_len, "the archive is truncated");
+        ensure!(
+            from.checked_add(len).is_some_and(|stop| stop <= file_len),
+            "the archive is truncated"
+        );
         source.seek(SeekFrom::Start(from))?;
         let mut left = len;
         while left > 0 {
@@ -513,8 +516,9 @@ pub fn stage(
                 );
                 let (n, m) = (le16(&head, 26) as u64, le16(&head, 28) as u64);
                 let data = old.header + 30 + n + m;
+                // A zip64 size near 2^64 must not wrap past the check.
                 ensure!(
-                    data + old.csize <= end,
+                    data.checked_add(old.csize).is_some_and(|stop| stop <= end),
                     "unsupported zip layout (overlapping entries)"
                 );
                 let central = central_at(&mut reader, old.central)?;
@@ -1588,6 +1592,26 @@ pub(crate) fn transfer_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fuzzing (fuzz/corpus/archive/zip64-csize-max.zip): a zip64 compressed size of 2^64-1
+    /// overflowed the overlap check while the entry was copied into a rewritten archive.
+    #[test]
+    fn a_zip64_size_near_the_limit_is_refused_not_wrapped() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("a.zip");
+        let corpus = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fuzz/corpus/archive/");
+        for name in ["zip64-csize-max.zip", "zip64-sizes-2e63.zip"] {
+            fs::copy(format!("{corpus}{name}"), &zip).unwrap();
+            let staged = stage(
+                &zip,
+                vec![Edit::Mkdir("new".into())],
+                &|_| {},
+                &AtomicBool::new(false),
+            );
+            let error = staged.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(error.contains("overlapping entries"), "{name}: {error}");
+        }
+    }
 
     #[test]
     fn central_records_move_offsets_into_zip64_and_keep_wide_fields() {

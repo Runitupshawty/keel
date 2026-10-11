@@ -14,6 +14,10 @@
 
 mod db;
 mod fsid;
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 mod hash;
 mod index;
 mod integrity;

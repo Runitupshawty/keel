@@ -1,0 +1,10 @@
+Host web
+    HostName example.invalid
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+
+Host *
+    User fallback

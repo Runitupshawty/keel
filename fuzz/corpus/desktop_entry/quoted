@@ -1,0 +1,3 @@
+[Desktop Entry]
+Exec="/opt/my app/run" --file=%f "a \"b\" \ \$ \`" %% %i %c %k
+Hidden=true

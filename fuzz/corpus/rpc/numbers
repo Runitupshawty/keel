@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1e999,"method":"tags.add","params":{"tag":"t","paths":["a"],"x":18446744073709551616}}

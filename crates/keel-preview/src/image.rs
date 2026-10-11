@@ -13,14 +13,27 @@ pub(crate) fn render(req: &Request, ext: &str) -> Preview {
     let result = if ext == "svg" {
         render_svg(req)
     } else {
-        image::open(&req.bytes_path)
-            .map_err(|error| error.to_string())
-            .map(|image| downscale(image, req.max_px))
+        decode(&req.bytes_path).map(|image| downscale(image, req.max_px))
     };
     match result {
         Ok(image) => Preview::Image(image),
         Err(error) => Preview::Error(error),
     }
+}
+
+/// Decoders allocate by what each frame declares, which can be far more than the header
+/// says (a GIF frame larger than its screen): they are held to the header's size, with room
+/// for 16 bytes a pixel (and never past the `image` crate's default 512 MiB).
+fn decode(path: &std::path::Path) -> Result<DynamicImage, String> {
+    let open = || image::ImageReader::open(path).map_err(|error| error.to_string());
+    let (w, h) = open()?
+        .into_dimensions()
+        .map_err(|error| error.to_string())?;
+    let mut reader = open()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some((u64::from(w) * u64::from(h) * 16).clamp(64 << 20, 512 << 20));
+    reader.limits(limits);
+    reader.decode().map_err(|error| error.to_string())
 }
 
 fn downscale(image: DynamicImage, max_px: u32) -> Rgba {
