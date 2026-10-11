@@ -13,7 +13,7 @@ use crate::layout::{Screen, Tab as PhoneTab};
 use crate::refresh::Refresh;
 use crate::share::{self, SharedFile};
 use crate::types::*;
-use crate::util::{ago, human, node_title, parent};
+use crate::util::{ago, human, job_title, node_title, parent};
 use crate::web::{self, Events, Socket};
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -910,7 +910,7 @@ impl WebApp {
         ui.heading("Jobs");
         for j in &self.jobs {
             ui.horizontal(|ui| {
-                ui.label(format!("#{} {}", j.id, j.kind));
+                ui.label(format!("#{} {}", j.id, job_title(&j.kind)));
                 if j.finished() {
                     ui.weak(&j.status);
                 } else {
@@ -1279,7 +1279,9 @@ impl WebApp {
             "pane_error": pane.error,
             "devices": devices,
             "inbox": inbox,
-            "jobs": self.jobs.iter().map(|j| json!({"kind": j.kind, "status": j.status})).collect::<Vec<_>>(),
+            "jobs": (self.jobs.iter())
+                .map(|j| json!({"kind": j.kind, "title": job_title(&j.kind), "status": j.status}))
+                .collect::<Vec<_>>(),
             "share": format!("{:?}", self.share.state).split([' ', '(', '{']).next().unwrap_or_default(),
             "tags": indexed.map(|i| &i.tags),
             "favorite": indexed.map(|i| i.favorite),

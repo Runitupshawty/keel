@@ -199,14 +199,15 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   await t.act("execute");
   await t.until("copied", (s) => s.plan?.state === "done", () => true, 20000);
   await t.act("cancel");
+  // The jobs list names the job ("File operation", not the raw kind "op").
   // The listings read again after the copy; the first pane stays the active one (every
   // refresh made the second pane active, so the next source or search opened there).
   const jobs = await t.until(
     "copy job listed",
-    (s) => s.jobs.some((j) => j.kind === "op" && j.status === "done") && s.panes[1].endsWith("/copies"),
+    (s) => s.jobs.some((j) => j.title === "File operation" && j.status === "done") && s.panes[1].endsWith("/copies"),
   );
   if (jobs.active !== 0) await t.fail(`the refresh after the copy made pane ${jobs.active} active`);
-  console.log("  jobs:", jobs.jobs.map((j) => `${j.kind} ${j.status}`).join(", "));
+  console.log("  jobs:", jobs.jobs.map((j) => `${j.title} ${j.status}`).join(", "));
   await t.shot("15c-jobs-after-copy");
 
   // Devices: this device (devices on, nothing paired), and the empty Spacedrop inbox.

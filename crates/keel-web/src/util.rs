@@ -85,6 +85,19 @@ pub fn node_title(
     })
 }
 
+/// A job's kind as the jobs list says it (keel-app's `JobRow::title`, shorter).
+pub fn job_title(kind: &str) -> &str {
+    match kind {
+        "index" => "Indexing",
+        "hash" => "Hashing contents",
+        "op" => "File operation",
+        "drop" => "Spacedrop: sending",
+        "sidecar" => "Media thumbnails",
+        "integrity" => "Checking integrity",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +121,14 @@ mod tests {
         // A forgotten device keeps its id; other paths are not node paths.
         assert_eq!(t("node://ffff/s1"), None);
         assert_eq!(t("library://s1/a"), None);
+    }
+
+    #[test]
+    fn job_kinds_read_as_titles() {
+        assert_eq!(job_title("op"), "File operation");
+        assert_eq!(job_title("index"), "Indexing");
+        assert_eq!(job_title("drop"), "Spacedrop: sending");
+        assert_eq!(job_title("something-new"), "something-new");
     }
 
     #[test]
