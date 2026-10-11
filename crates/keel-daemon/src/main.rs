@@ -60,12 +60,7 @@ fn main() -> ExitCode {
         )
         .init();
     // Panics write <data dir>/crashes/<time>.txt (scrubbed) and log where.
-    let profile = args.profile.clone();
-    keel_api::crash::install_panic_hook(
-        "keel-daemon",
-        move || profile.clone(),
-        keel_api::crash::dir(),
-    );
+    keel_api::crash::install_panic_hook("keel-daemon", keel_api::crash::dir());
     let cfg = match HostConfig::load(&args.profile) {
         Ok(cfg) => cfg,
         Err(e) => {

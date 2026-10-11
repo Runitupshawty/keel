@@ -387,7 +387,7 @@ impl AppState {
         // another Keel already runs is not opened twice.
         if let Some(server) = &mut self.instance {
             if let Err(e) = server.rebind(&crate::single_instance::name(&name)) {
-                tracing::info!("single instance for profile {name}: {e}");
+                tracing::info!("single instance for the new profile: {e}");
                 self.toasts.error(format!(
                     "Profile \"{name}\" is open in another Keel window: switch to that window"
                 ));

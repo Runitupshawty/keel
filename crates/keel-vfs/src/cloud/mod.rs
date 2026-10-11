@@ -410,11 +410,13 @@ fn init() -> Result<(), CloudError> {
         check_cpu()?;
         // graviola asserts its CPU features itself: should the check above miss one, the
         // panic must not take the app down.
-        std::panic::catch_unwind(|| {
-            // Err: another component installed a provider first; use that one.
-            let _ = rustls::crypto::CryptoProvider::install_default(
-                rustls_graviola::default_provider(),
-            );
+        crate::quiet_panic::quiet(|| {
+            std::panic::catch_unwind(|| {
+                // Err: another component installed a provider first; use that one.
+                let _ = rustls::crypto::CryptoProvider::install_default(
+                    rustls_graviola::default_provider(),
+                );
+            })
         })
         .map_err(|_| CloudError::UnsupportedCpu("a feature its TLS crypto needs".into()))?;
         // reqwest's rustls checks certificates with the platform verifier (OS store).
@@ -452,10 +454,18 @@ pub fn https_get(
 
 /// GET `url` sending no request headers beyond `User-Agent: <agent>` and reqwest's
 /// `Accept: */*` (no cookies, no credentials); the body of a 2xx answer, at most `max`
-/// bytes. For the update check. HTTPS only, except plain HTTP to `127.0.0.1` (tests' local
-/// servers). Blocking: call it on a worker thread.
+/// bytes. For the update check. HTTPS only, except in tests (`test-util`) plain HTTP to
+/// host `127.0.0.1` (their local servers). Blocking: call it on a worker thread.
 pub fn get_small(url: &str, agent: &str, max: u64) -> Result<Vec<u8>> {
-    let loopback = url.starts_with("http://127.0.0.1:");
+    #[cfg(any(test, feature = "test-util"))]
+    let loopback = reqwest::Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "http"
+            && u.host_str() == Some("127.0.0.1")
+            && u.username().is_empty()
+            && u.password().is_none()
+    });
+    #[cfg(not(any(test, feature = "test-util")))]
+    let loopback = false;
     anyhow::ensure!(
         loopback || url.starts_with("https://"),
         "not an HTTPS address: {url}"

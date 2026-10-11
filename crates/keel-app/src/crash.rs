@@ -1,5 +1,5 @@
 //! The crash report dialog. Reports are written by `keel_api::crash` (a panic on any thread
-//! writes `<data dir>/crashes/<time>.txt`, scrubbed of user paths and names). The dialog
+//! writes `<data dir>/crashes/<time>.txt`, scrubbed of user, server and profile names). The dialog
 //! comes up at start for a crash file not offered yet, and when a frame panicked (the app
 //! catches it in `App::update`, resets the panes and keeps running).
 
@@ -10,7 +10,7 @@ const NEW_ISSUE: &str = "https://github.com/Runitupshawty/keel/issues/new";
 
 /// Installs the crash report hook. Called once from `main` before the window opens.
 pub fn install_panic_hook() {
-    keel_api::crash::install_panic_hook("keel", crate::profiles::current, dir());
+    keel_api::crash::install_panic_hook("keel", dir());
 }
 
 /// `<data dir>/crashes` (`KEEL_DATA_DIR` moves it; a temp folder in tests).
@@ -103,8 +103,9 @@ pub fn modal(ctx: &egui::Context, prompt: &mut Option<Prompt>, ask: &mut bool) {
         ui.heading(p.title);
         ui.label(
             "A report was saved on this computer. It has the Keel version, the system, where \
-             the error happened and the last log lines, without your user name or the \
-             folders in your home folder. Nothing is sent unless you send it.",
+             the error happened and the last log lines. Your user name, server names and \
+             e-mail addresses are taken out, but file and folder names can appear: read it \
+             before you post it. Nothing is sent unless you send it.",
         );
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {

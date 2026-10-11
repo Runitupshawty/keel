@@ -1,11 +1,14 @@
 //! Crash reports for keel and keel-daemon: a panic writes `<data dir>/crashes/<time>.txt`
-//! (UTC) with the version, the OS, the panic message and location, a backtrace, the last
-//! [`LOG_LINES`] log lines ([`tee`]) and the profile name hashed. The text is [`scrub`]bed
-//! first: the home folder becomes `~`, user names in other users' folders, URLs and network
-//! paths become placeholders, and Rust source paths keep only `<crate>/src/<file>`. At most
-//! [`KEEP`] files are kept. Nothing is sent anywhere: the window offers the newest unseen
-//! report at the next start ([`unseen`]) for the user to copy or attach.
+//! (UTC, owner-only) with the version, the OS, the panic message and location, a backtrace
+//! and the last [`LOG_LINES`] log lines ([`tee`]). The text is [`scrub`]bed first: the home
+//! folder becomes `~`; user names in other users' folders, profile names, e-mail addresses,
+//! URL user names and hosts and network servers become placeholders; Rust source paths keep
+//! only `<crate>/src/<file>`. Other file and folder names stay. At most [`KEEP`] files are
+//! kept. Nothing is sent anywhere: the window offers the newest unseen report at the next
+//! start ([`unseen`]) for the user to read, then copy or attach. A panic the caller catches
+//! on purpose ([`quiet`]) is only logged.
 
+pub use keel_vfs::quiet_panic::quiet;
 use regex::Regex;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -90,16 +93,9 @@ pub fn log_lines() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The first 8 hex digits of the profile name's BLAKE3 hash: tells reports from one
-/// profile apart without naming it.
-pub fn profile_hash(profile: &str) -> String {
-    blake3::hash(profile.as_bytes()).to_hex()[..8].to_owned()
-}
-
 /// What happened, in the report's words.
 pub struct Panic<'a> {
     pub program: &'a str,
-    pub profile: &'a str,
     pub thread: &'a str,
     pub message: &'a str,
     pub location: &'a str,
@@ -118,7 +114,6 @@ pub fn report(p: &Panic) -> String {
          Program: {} {}\n\
          OS: {} {}\n\
          Time: {} UTC\n\
-         Profile: {} (hashed)\n\
          Thread: {}\n\
          Panic: {}\n\
          At: {}\n\
@@ -131,7 +126,6 @@ pub fn report(p: &Panic) -> String {
         std::env::consts::OS,
         std::env::consts::ARCH,
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        profile_hash(p.profile),
         p.thread,
         p.message,
         p.location,
@@ -139,10 +133,13 @@ pub fn report(p: &Panic) -> String {
     )
 }
 
-/// Removes what could name the user or their files: `home` (and anything under it) becomes
-/// `~`; Rust source paths keep `<crate>/src/<file>`; the user name in `C:\Users\<name>`,
-/// `/home/<name>` and `/Users/<name>` becomes `<user>`; URLs lose their user name, and
-/// their host too unless they are http(s); network paths `\\<server>\` lose the server.
+/// Removes what names the user, their machines or their profiles: `home` (and anything
+/// under it) becomes `~`; Rust source paths keep `<crate>/src/<file>`; the user name in
+/// `C:\Users\<name>`, `/home/<name>` and `/Users/<name>` becomes `<user>`; URLs lose their
+/// user name, and their host too unless they are http(s); network paths `\\<server>\` and
+/// `\\?\UNC\<server>\` lose the server; `profiles\<name>` loses the name; e-mail addresses
+/// and `user@host` become `<user>@<host>`. Other file and folder names are left: the user
+/// reads the report before posting it.
 pub fn scrub(text: &str, home: Option<&Path>) -> String {
     static SOURCE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"[^\s"'()<>]*[\\/][^\s"'()<>\\/]+\.rs\b"#).unwrap());
@@ -156,7 +153,16 @@ pub fn scrub(text: &str, home: Option<&Path>) -> String {
     });
     static URL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\b([A-Za-z][A-Za-z0-9+.-]*)://([^\s/]*)").unwrap());
-    static UNC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\\\\[^\\\s"']+\\"#).unwrap());
+    // `\\?\` (verbatim) and `\\.\` (device) prefixes name no server.
+    static UNC: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\\\\[^\\\s"'?.][^\\\s"']*\\"#).unwrap());
+    static VERBATIM_UNC: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)\\\\\?\\UNC\\[^\\\s"']+\\"#).unwrap());
+    static PROFILE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)([\\/]profiles[\\/])[^\\/\s"':]+"#).unwrap());
+    static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*").unwrap()
+    });
     let mut text = text.to_owned();
     if let Some(home) = home.and_then(home_pattern) {
         text = home.replace_all(&text, "~$1").into_owned();
@@ -184,7 +190,11 @@ pub fn scrub(text: &str, home: Option<&Path>) -> String {
     });
     let text = WIN_USER.replace_all(&text, "${1}<user>${2}");
     let text = UNIX_USER.replace_all(&text, "${1}${2}/<user>${3}");
-    UNC.replace_all(&text, r"\\<host>\").into_owned()
+    let text = VERBATIM_UNC.replace_all(&text, r"\\?\UNC\<host>\");
+    let text = UNC.replace_all(&text, r"\\<host>\");
+    let text = PROFILE.replace_all(&text, "${1}<profile>");
+    // After URLs: their `<user>@` is no address any more.
+    EMAIL.replace_all(&text, "<user>@<host>").into_owned()
 }
 
 /// `home` as a pattern: either separator, case-insensitive on Windows, ending at a
@@ -199,18 +209,19 @@ fn home_pattern(home: &Path) -> Option<Regex> {
     Regex::new(&format!(r#"{case}{}([\\/\s"':]|$)"#, parts.join(r"[\\/]"))).ok()
 }
 
-/// Writes `text` as a new `<dir>/<UTC time>.txt` and deletes all but the newest [`KEEP`].
+/// Writes `text` as a new `<dir>/<UTC time>.txt` (owner-only, like `dir` and its parent
+/// when this creates them) and deletes all but the newest [`KEEP`].
 pub fn write(dir: &Path, text: &str) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+    // The data folder too: a panic before anything else made it must not leave it open.
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        crate::private::create_dir_all(parent)?;
+    }
+    crate::private::create_dir_all(dir)?;
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
     let mut path = dir.join(format!("{stamp}.txt"));
     let mut n = 0;
     let mut file = loop {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
+        match crate::private::create_new(&path) {
             Ok(f) => break f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 100 => {
                 n += 1;
@@ -272,30 +283,29 @@ pub fn last() -> Option<(Option<PathBuf>, String)> {
 }
 
 /// Writes a crash file for each of the first panics of the run (any thread), logs where,
-/// then runs the default hook. `program` is `keel` or `keel-daemon`; `profile` is asked at
-/// panic time (the window can switch profiles).
-pub fn install_panic_hook(
-    program: &'static str,
-    profile: impl Fn() -> String + Send + Sync + 'static,
-    dir: Option<PathBuf>,
-) {
+/// then runs the default hook. A panic inside [`quiet`] is only logged: no file, not
+/// counted. `program` is `keel` or `keel-daemon`.
+pub fn install_panic_hook(program: &'static str, dir: Option<PathBuf>) {
     let home = directories::BaseDirs::new().map(|b| b.home_dir().to_owned());
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("(no message)");
+        let location = info
+            .location()
+            .map_or_else(|| "unknown".to_owned(), ToString::to_string);
+        if keel_vfs::quiet_panic::is_quiet() {
+            tracing::warn!("caught panic at {location}: {message}");
+            return;
+        }
         if PANICS.fetch_add(1, Ordering::Relaxed) < MAX_PER_RUN {
-            let message = info
-                .payload()
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("(no message)");
-            let location = info
-                .location()
-                .map_or_else(|| "unknown".to_owned(), ToString::to_string);
             let text = scrub(
                 &report(&Panic {
                     program,
-                    profile: &profile(),
                     thread: std::thread::current().name().unwrap_or("unnamed"),
                     message,
                     location: &location,
@@ -413,11 +423,49 @@ mod tests {
     }
 
     #[test]
-    fn report_has_the_facts_and_a_hashed_profile() {
+    fn scrub_removes_servers_profiles_and_addresses() {
+        let raw = [
+            r"open \\?\UNC\fileserver9\share\x.txt",
+            r"open \\?\unc\fileserver9\share\x.txt",
+            r"open \\?\C:\data\x.txt and \\.\pipe\keel-1",
+            r"read D:\Keel\profiles\work-secret\config.toml",
+            "read /srv/keel/profiles/work-secret/config.toml",
+            "mail jane.doe+keel@contoso.example failed",
+            "ssh jane@nas.local: refused",
+            "sftp://bob@nas.local/x and https://alice:pw@example.com/x",
+        ]
+        .join("\n");
+        let clean = scrub(&raw, None);
+        for gone in [
+            "fileserver9",
+            "work-secret",
+            "jane",
+            "contoso",
+            "nas.local",
+            "bob",
+        ] {
+            assert!(!clean.contains(gone), "{gone} left in:\n{clean}");
+        }
+        assert_eq!(
+            clean.lines().collect::<Vec<_>>(),
+            [
+                r"open \\?\UNC\<host>\share\x.txt",
+                r"open \\?\UNC\<host>\share\x.txt",
+                r"open \\?\C:\data\x.txt and \\.\pipe\keel-1",
+                r"read D:\Keel\profiles\<profile>\config.toml",
+                "read /srv/keel/profiles/<profile>/config.toml",
+                "mail <user>@<host> failed",
+                "ssh <user>@<host>: refused",
+                "sftp://<user>@<host>/x and https://<user>@example.com/x",
+            ]
+        );
+    }
+
+    #[test]
+    fn report_has_the_facts() {
         let log = vec!["INFO started".to_owned(), "WARN slow disk".to_owned()];
         let text = report(&Panic {
             program: "keel",
-            profile: "work",
             thread: "main",
             message: "index out of bounds",
             location: "crates/keel-app/src/pane.rs:1:2",
@@ -430,10 +478,7 @@ mod tests {
         assert!(text.contains("At: crates/keel-app/src/pane.rs:1:2"));
         assert!(text.contains("0: frame"));
         assert!(text.contains("INFO started\nWARN slow disk"));
-        assert!(text.contains(&format!("Profile: {} (hashed)", profile_hash("work"))));
-        assert!(!text.contains("work\n"));
-        assert_eq!(profile_hash("work").len(), 8);
-        assert_ne!(profile_hash("work"), profile_hash("home"));
+        assert!(!text.contains("Profile"), "no profile, not even hashed");
     }
 
     #[test]
@@ -474,13 +519,29 @@ mod tests {
             format!("report {}", KEEP + 3)
         );
         assert!(dir.join(SEEN).exists(), "only crash files rotate");
+        assert!(
+            crate::private::is_private_dir(&dir).unwrap(),
+            "owner-only folder"
+        );
+        let newest = crate::private::read(kept.last().unwrap()).unwrap();
+        assert!(newest.is_some(), "owner-only file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_panic_writes_a_scrubbed_report() {
+    fn a_panic_writes_a_scrubbed_report_and_a_caught_one_does_not() {
         let dir = tmp("hook");
-        install_panic_hook("keel-test", || "secret-profile".into(), Some(dir.clone()));
+        install_panic_hook("keel-test", Some(dir.clone()));
+        // More caught panics than the per-run budget: no file, and none counts.
+        for i in 0..=MAX_PER_RUN {
+            let caught = quiet(|| std::panic::catch_unwind(|| panic!("damaged file {i}")));
+            assert!(caught.is_err());
+        }
+        assert_eq!(
+            list(&dir),
+            Vec::<PathBuf>::new(),
+            "caught panics write nothing"
+        );
         let home = directories::BaseDirs::new().unwrap().home_dir().to_owned();
         let place = home.join("Documents").join("private.txt");
         let _ = std::thread::Builder::new()
@@ -505,7 +566,6 @@ mod tests {
         );
         assert!(text.contains("At: keel-api/src/crash.rs:"), "{text}");
         assert!(!text.contains(home.to_str().unwrap()), "{text}");
-        assert!(!text.contains("secret-profile"));
         assert_eq!(last().unwrap(), (Some(files[0].clone()), text));
         let _ = std::panic::take_hook();
         let _ = std::fs::remove_dir_all(&dir);

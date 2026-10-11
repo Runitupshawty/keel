@@ -3174,3 +3174,21 @@ fn s3_fingerprints_a_small_bucket_and_gives_up_on_a_big_one() {
         .unwrap_err();
     assert_eq!(feed_error(&err), Some(crate::FeedError::Unsupported));
 }
+
+#[test]
+fn get_small_allows_plain_http_only_to_the_loopback_host() {
+    // Rejected before any connection: no request leaves the machine.
+    for url in [
+        "http://example.invalid/x",
+        // reqwest reads the host as example.invalid (127.0.0.1 is a user name).
+        "http://127.0.0.1:@example.invalid/x",
+        "http://127.0.0.1.example.invalid/x",
+        "ftp://127.0.0.1/x",
+    ] {
+        let err = get_small(url, "keel-test", 1024).unwrap_err();
+        assert!(
+            err.to_string().contains("not an HTTPS address"),
+            "{url}: {err}"
+        );
+    }
+}

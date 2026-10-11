@@ -28,7 +28,9 @@ pub(crate) fn render(req: &Request) -> Preview {
         Err(error) => return Preview::Error(error),
     };
     // Lists and page breaks first; on any panic in that walk fall back to plain text.
-    let rich = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk(&docx, true)));
+    let rich = keel_vfs::quiet_panic::quiet(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| walk(&docx, true)))
+    });
     let blocks = rich.unwrap_or_else(|_| walk(&docx, false));
     Preview::Doc { blocks }
 }
@@ -36,7 +38,7 @@ pub(crate) fn render(req: &Request) -> Preview {
 /// docx-rs unwraps on some malformed packages (a corrupt deflate stream in a part): that is
 /// a broken file, not a previewer failure.
 fn read_docx(bytes: &[u8]) -> Result<docx_rs::Docx, String> {
-    std::panic::catch_unwind(|| docx_rs::read_docx(bytes))
+    keel_vfs::quiet_panic::quiet(|| std::panic::catch_unwind(|| docx_rs::read_docx(bytes)))
         .map_err(|_| "not a valid Word document".to_owned())?
         .map_err(|error| error.to_string())
 }

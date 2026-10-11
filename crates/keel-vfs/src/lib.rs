@@ -25,6 +25,7 @@ pub mod path;
 /// Per-user named pipe security (single instance, Windows).
 #[cfg(windows)]
 pub mod pipe;
+pub mod quiet_panic;
 pub use path::VPath;
 pub mod entry;
 pub mod local;

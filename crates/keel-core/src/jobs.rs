@@ -460,8 +460,10 @@ fn start(lib: &Arc<Shared>, id: JobId, mut job: Box<dyn Job>) -> Result<()> {
     let thread = std::thread::Builder::new()
         .name(format!("keel-job-{id}"))
         .spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&ctx)))
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("job panicked")));
+            let result = keel_vfs::quiet_panic::quiet(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&ctx)))
+            })
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("job panicked")));
             let (status, error) = match result {
                 Ok(()) => (JobStatus::Done, None),
                 // Closing the library: stays running, resumes on the next open.

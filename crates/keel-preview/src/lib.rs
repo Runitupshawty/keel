@@ -106,7 +106,10 @@ pub fn init_pdfium(dll_dir: &Path) {
 }
 
 pub fn preview(req: &Request) -> Preview {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| preview_inner(req))) {
+    let caught = keel_vfs::quiet_panic::quiet(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| preview_inner(req)))
+    });
+    match caught {
         Ok(result) => result,
         Err(payload) => {
             let message = payload

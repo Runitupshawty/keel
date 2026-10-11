@@ -100,7 +100,6 @@ pub(crate) struct Shared {
     pub(crate) hub: Hub,
     pub(crate) stop: AtomicBool,
     shutdown: Sender<()>,
-    pub(crate) profile: String,
     /// Where the profile's settings are read again (the integrity schedule).
     cfg: HostConfig,
     /// `--web` share-target uploads waiting for `share.claim`.
@@ -226,7 +225,6 @@ impl Daemon {
             hub: Hub::default(),
             stop: AtomicBool::new(false),
             shutdown,
-            profile: cfg.profile.clone(),
             cfg: cfg.clone(),
             uploads: crate::share::Uploads::open(cfg.data_dir.join("shares")),
         });
@@ -320,7 +318,7 @@ impl Daemon {
         if !self.shared.host.close() {
             tracing::warn!("a job was still busy when the library closed");
         }
-        tracing::info!("keel-daemon for profile {} stopped", self.shared.profile);
+        tracing::info!("keel-daemon stopped");
     }
 }
 

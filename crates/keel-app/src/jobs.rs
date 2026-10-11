@@ -351,15 +351,12 @@ impl Jobs {
                 }
             };
             // A panicking job still answers, so its Cancel button never hangs around.
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| work(&report, &cancel)))
-                .unwrap_or_else(|panic| {
-                    let why = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown panic".into());
-                    Err(anyhow::anyhow!("internal error: {why}"))
-                });
+            let result = keel_api::crash::quiet(|| {
+                std::panic::catch_unwind(AssertUnwindSafe(|| work(&report, &cancel)))
+            })
+            .unwrap_or_else(|panic| {
+                Err(anyhow::anyhow!("internal error: {}", panic_text(&*panic)))
+            });
             if let Some(p) = held.take() {
                 send(&tx, &ctx, Msg::JobProgress { id, p });
             }
@@ -745,19 +742,32 @@ pub fn spawn_plan(
                     ..
                 }
         );
-        let planned =
-            std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &router, &tx, &ctx)));
-        if planned.is_err() {
+        let planned = keel_api::crash::quiet(|| {
+            std::panic::catch_unwind(AssertUnwindSafe(|| plan(source, dst, &router, &tx, &ctx)))
+        });
+        if let Err(panic) = planned {
             send(
                 &tx,
                 &ctx,
                 Msg::PlanFailed {
-                    text: "Planning the transfer failed (see crash.log)".into(),
+                    text: format!(
+                        "Planning the transfer failed: internal error: {}",
+                        panic_text(&*panic)
+                    ),
                     from_clipboard,
                 },
             );
         }
     })
+}
+
+/// A caught panic's message.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
 }
 
 /// `spawn_plan`'s body, for callers already on a worker (the folder picker).
