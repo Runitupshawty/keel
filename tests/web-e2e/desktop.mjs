@@ -41,7 +41,8 @@ export async function run({ browser, base, token, work, ids }) {
 
   // A wrong token is refused and the form asks again; nothing is remembered.
   await t.enterToken("not-the-token");
-  await t.until("wrong token refused", (s) => s.login && /refused/.test(s.notice ?? ""));
+  // It says why (it used to say "the first message must be auth with the daemon token").
+  await t.until("wrong token refused", (s) => s.login && /refused.*not the token in daemon\.token/.test(s.notice ?? ""));
   await t.shot("02-wrong-token");
   if (await page.evaluate(() => localStorage.length)) await t.fail("a refused token was stored");
 
