@@ -88,6 +88,8 @@ The script and the tarball need the libraries the .deb depends on: GTK 3, libxkb
 sudo apt install libgtk-3-0 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libasound2
 ```
 
+Inside WSL, installing the Linux build makes `keel <folder>` open the folder in the Windows Keel (with `keel --here` for a Linux window); an alias `keel='keel.exe'` works too. See [WSL](wsl.md#keel-inside-wsl).
+
 (On Ubuntu 24.04 some of these have `t64` names, such as `libgtk-3-0t64` and `libasound2t64`.) To mount library sources as folders (see [Daemon, CLI and MCP](#daemon-cli-and-mcp)) also install `fuse3`; the .deb recommends it.
 
 ### Optional everywhere
@@ -101,7 +103,7 @@ sudo apt install libgtk-3-0 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 
 
 Keel opens on your home folder in both panes.
 
-- **Sidebar** (left): the **Library** section (Overview, ★ Favorites, Recents, your sources, tags and saved views), then **Quick access** (Home, Desktop, Documents, Downloads, Pictures and the Recycle Bin or Trash), **Drives** with a bar showing how full each one is, **Open archives** while you browse inside one, **Remotes**, **Cloud** and **Devices**. A click opens the folder in the active pane, a middle-click opens it in a new tab.
+- **Sidebar** (left): the **Library** section (Overview, ★ Favorites, Recents, your sources, tags and saved views), then **Quick access** (Home, Desktop, Documents, Downloads, Pictures and the Recycle Bin or Trash), **Drives** with a bar showing how full each one is, **WSL** with each installed WSL distribution on Windows ([WSL](wsl.md)), **Open archives** while you browse inside one, **Remotes**, **Cloud** and **Devices**. A click opens the folder in the active pane, a middle-click opens it in a new tab.
 - **Two panes**: click a pane, or press F6, to make it the active one. Ctrl+Shift+D switches between one and two panes.
 - **Tabs**: Ctrl+T opens a tab, Ctrl+W closes it, drag tabs to reorder them. Your tabs are restored the next time Keel starts.
 - **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start, nearest parent first), or press Ctrl+L to type a path. Backspace goes to the parent folder.
@@ -166,7 +168,7 @@ When the files are in a library source (see [The library](#the-library)), Keel f
 
 ![The copy preview: budget.csv already exists in Backup and is skipped](screenshots/copy-preview.png)
 
-**Delete** (Del, or Delete in the context menu) asks first and then moves the items to the Recycle Bin (Windows) or Trash (macOS, Linux); Keel never deletes local files for good on its own. Open **Recycle Bin** or **Trash** in the sidebar to see what was deleted and when, and right-click to **Restore**, **Delete permanently** or empty it. Deleting on an SFTP host or in an S3 bucket is permanent, because there is no trash there; Keel says so before it asks.
+**Delete** (Del, or Delete in the context menu) asks first and then moves the items to the Recycle Bin (Windows) or Trash (macOS, Linux); Keel never deletes local files for good on its own. Open **Recycle Bin** or **Trash** in the sidebar to see what was deleted and when, and right-click to **Restore**, **Delete permanently** or empty it. Deleting on an SFTP host, in an S3 bucket or in a WSL distribution's folder is permanent, because there is no trash there; Keel says so before it asks.
 
 On Windows, **More options** at the end of the right-click menu (or Shift+right-click, or Shift+F10) opens the menu Explorer shows for those files, with Send to, Open with and the commands your other apps add. See [Windows shell menu](files.md#windows-shell-menu).
 
@@ -201,7 +203,7 @@ Press Enter on a `.zip`, `.7z`, `.tar` (also `.tar.gz`, `.tgz`, `.tar.bz2`, `.ta
 
 ### The terminal pane
 
-Ctrl+` opens a terminal under the panes, started in the active folder. With **Follow pane** on it changes directory as you navigate. F6 or Shift+Esc goes back to the file panes; plain Esc stays in the terminal for programs such as vim or less. Ctrl+` again hides it and keeps the shell running; the × button ends it. **Open terminal here** in a folder's context menu starts it there. On Windows you can pick PowerShell, Windows PowerShell, cmd or an installed WSL distribution.
+Ctrl+` opens a terminal under the panes, started in the active folder. With **Follow pane** on it changes directory as you navigate. F6 or Shift+Esc goes back to the file panes; plain Esc stays in the terminal for programs such as vim or less. Ctrl+` again hides it and keeps the shell running; the × button ends it. **Open terminal here** in a folder's context menu starts it there. On Windows you can pick PowerShell, Windows PowerShell, cmd or an installed WSL distribution; the distributions' files are also in the sidebar's **WSL** section ([WSL](wsl.md)).
 
 ### Remote hosts over SFTP
 

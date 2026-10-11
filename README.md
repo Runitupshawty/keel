@@ -74,6 +74,7 @@ The guide covers everyday use; these pages hold the details.
 | --- | --- |
 | Every feature in one list, where settings are kept | [docs/features.md](docs/features.md) |
 | Keyboard shortcuts, columns view and drop zone, folder sizes, archives, Recycle Bin and Trash, terminal, search without Everything, command line, profiles, color and icon themes | [docs/files.md](docs/files.md) |
+| WSL distributions in the sidebar, `keel` inside WSL | [docs/wsl.md](docs/wsl.md) |
 | Library (sources, search syntax, hashing, resuming, the daemon), media view, protection | [docs/library.md](docs/library.md) |
 | Remotes over SSH, `~/.ssh/config` and jump hosts | [docs/remotes.md](docs/remotes.md) |
 | Devices and Spacedrop, library sync, web client, phones | [docs/devices.md](docs/devices.md) |
@@ -150,7 +151,7 @@ Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes
 What is next, from the known limitations still open:
 
 - Signed and notarized builds, and Windows and macOS release builds with a mount backend (Windows: blocked by winfsp-rs being GPL-3.0; macOS: macFUSE cannot be installed on the build machines).
-- Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and of WSL shells.
+- Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and on a machine with WSL of WSL shells, the sidebar's WSL section and `keel` inside WSL ([Checking](docs/wsl.md#checking)).
 - Drag-out to other apps on macOS and Linux.
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
 - Library and protection: disks without a serial or cloned with one (their failure domain is set by hand today).

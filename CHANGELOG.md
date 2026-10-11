@@ -2,6 +2,24 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- WSL distributions in the sidebar (Windows): a **WSL** section under **Drives** lists each installed distribution, the default one first, read from the registry (never from `wsl.exe --list`); without WSL the section is hidden. A click opens `\\wsl.localhost\<name>` (or `\\wsl$\<name>`) in the active pane through the local provider, like a network share; a stopped distribution shows **starting…** while Windows starts it, and one that does not answer within 30 seconds gives a toast "Could not open <name>: ...". Deleting in a WSL folder is permanent, since there is no Recycle Bin there, and the prompt says so ("Delete 3 items in Ubuntu (WSL) permanently? ..."). See [WSL](docs/wsl.md).
+- `keel` inside WSL: the Linux build, run in a WSL distribution with a folder or file, opens it in the Windows Keel instead of a Linux window. The path is translated (`/mnt/c/...` to `C:\...`, any other path to `\\wsl.localhost\<distribution>\...`, relative paths from the current folder), `keel.exe` is found on the Windows `PATH` or through `KEEL_EXE`, and `keel` exits with its exit code once a running window took the folder (when `keel.exe` opens the window itself, `keel` returns after 10 seconds and leaves it open); `--new-window`, `--profile` and `--search` are passed on. `keel --here <folder>` (or `KEEL_WSL_NATIVE=1`) keeps the Linux window; subcommands still run in Linux. `keel.exe .` started inside a distribution opens that folder too, also through the single-instance hand-off. The install script mentions this when it runs inside WSL. See [`keel` inside WSL](docs/wsl.md#keel-inside-wsl).
+
+### Changed
+
+- The terminal's WSL shells come from the same registry list as the sidebar, instead of running `wsl.exe -l -q` (which started WSL and could take seconds); a distribution's entry no longer depends on that command's output.
+
+### Known limitations
+
+- WSL support is not yet checked on a machine with WSL: it is covered by tests that run without WSL (the registry values, the path translation, the window flow with a stand-in for the distribution, the UNC hand-off). [Checking](docs/wsl.md#checking) lists the live steps.
+- WSL folders have no Recycle Bin: deletes there are permanent and cannot be undone. A selection mixing WSL items with other places is offered the Recycle Bin, which refuses the WSL items.
+- The folder watcher may not report changes made inside a distribution: press F5 to refresh a WSL folder. Search (Everything, Keel's NTFS index) does not cover WSL folders, and Properties shows what Windows reports, not Linux owners or mode bits.
+- `keel` inside WSL treats `/mnt/<letter>` as drives, the WSL default; a distribution with another `automount` root in `/etc/wsl.conf` is not translated. Opening `\\wsl.localhost` paths from `keel` inside WSL needs Windows 11 or Windows 10 21H2 or later (the sidebar also tries `\\wsl$`). When `keel.exe` opens a new window, `keel` waits 10 seconds before it returns.
+
 ## [0.19.0] - 2026-10-11
 
 ### Added
