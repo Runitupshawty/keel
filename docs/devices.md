@@ -40,7 +40,7 @@ Developer note: `KEEL_NET_SECRET=memory` keeps the device identity in memory ins
 
 ## Web client
 
-`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag, rename and delete (preview first, then execute, exactly as in the window), follow jobs, see your devices and the Spacedrop inbox, send files to a device, and download files. Narrower than 700 px (a phone) it switches to a phone layout; it installs as an app (see Phones).
+`keel-daemon --web` serves Keel in a browser: browse sources (offline ones from the index), search, preview text, images and PDF pages, tag and untag, mark favorites, copy a file into the other pane's folder, rename and delete (preview first, then execute, exactly as in the window; a copy skips names that exist, and its preview says which), follow jobs, see your devices and the Spacedrop inbox, send files to a device, and download files. Narrower than 700 px (a phone) it switches to a phone layout; it installs as an app (see Phones).
 
 ```sh
 scripts/build-web.sh                # once, or scripts\build-web.ps1: builds crates/keel-web/dist
