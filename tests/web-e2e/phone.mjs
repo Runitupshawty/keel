@@ -53,6 +53,14 @@ export async function run({ browser, base, token, ids, daemon }) {
   await p.until("sheet for the swipe", (s) => s.sheet && s.selected === "alpha-notes.txt");
   await touch(page, Array.from({ length: 12 }, (_, i) => [320 - i * 20, 600]));
   await p.until("swiped to the next file", (s) => s.sheet && s.selected === "bravo-readme.txt");
+  // A double tap zooms in, another one back out.
+  for (const want of [2, 1]) {
+    await touch(page, [[200, 600]]);
+    await sleep(80);
+    await touch(page, [[200, 600]]);
+    await p.until(`double tap to ${want}x`, (s) => s.zoom === want);
+    await sleep(600);
+  }
   await p.act("back");
   s = await p.until("sheet closed after the swipe", (s) => !s.sheet && s.rects["bravo-readme.txt"]);
 

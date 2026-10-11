@@ -1276,6 +1276,7 @@ impl WebApp {
             "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
             "columns": if self.two_panes { 2 } else { 1 },
             "tabs_cut": self.e2e_tabs_cut,
+            "zoom": self.zoom,
             "grid": self.grid,
             "active": self.active,
             "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
