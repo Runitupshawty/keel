@@ -153,6 +153,8 @@ jobs:
         with:
           workspaces: fuzz
           key: fuzz
+      # The other Linux jobs' packages (eframe, cpal), plus D-Bus for keyring's libdbus-sys.
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libasound2-dev libdbus-1-dev pkg-config
       - run: cargo install --locked cargo-fuzz
       - run: cargo +nightly fuzz build -a
       - name: Each target for 60 s
