@@ -182,6 +182,8 @@ pub struct WebApp {
     thumbs_asked: HashSet<String>,
     pull: Pull,
     zoom: f32,
+    /// The viewer's drag so far (a swipe once it stops).
+    swiped: egui::Vec2,
     // preview
     selected: Option<EntryInfo>,
     stat: Option<StatInfo>,
@@ -319,6 +321,7 @@ impl WebApp {
             thumbs_asked: HashSet::new(),
             pull: Pull::default(),
             zoom: 1.0,
+            swiped: egui::Vec2::ZERO,
             selected: None,
             stat: None,
             shown: Shown::Nothing,
@@ -1817,14 +1820,14 @@ impl WebApp {
         if r.double_clicked() {
             self.zoom = if self.zoom > 1.0 { 1.0 } else { 2.0 };
         }
-        if r.drag_stopped() && zoom <= 1.0 {
-            let total = ui.input(|i| {
-                i.pointer
-                    .press_origin()
-                    .zip(i.pointer.interact_pos())
-                    .map(|(a, b)| b - a)
-            });
-            if let Some(d) = total {
+        // The drag is added up as it goes: once it stops, egui no longer knows where it
+        // started (the press origin is gone on release, so no swipe ever counted).
+        if r.dragged() {
+            self.swiped += r.drag_delta();
+        }
+        if r.drag_stopped() {
+            let d = std::mem::take(&mut self.swiped);
+            if zoom <= 1.0 {
                 let step = gesture::swipe(d.x, d.y);
                 if step != 0 {
                     let files = self.neighbours();

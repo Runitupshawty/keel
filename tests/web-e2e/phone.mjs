@@ -47,6 +47,14 @@ export async function run({ browser, base, token, ids, daemon }) {
   await page.goBack();
   s = await p.until("Back closed the sheet", (s) => !s.sheet && s.rects["bravo-readme.txt"]);
   if (!page.url().startsWith(base)) await p.fail(`Back left the app: ${page.url()}`);
+  // In the sheet a swipe to the left shows the next file (no swipe ever counted: the
+  // viewer looked for where the drag started only after egui had forgotten it).
+  await touch(page, [centre(s, "alpha-notes.txt")]);
+  await p.until("sheet for the swipe", (s) => s.sheet && s.selected === "alpha-notes.txt");
+  await touch(page, Array.from({ length: 12 }, (_, i) => [320 - i * 20, 600]));
+  await p.until("swiped to the next file", (s) => s.sheet && s.selected === "bravo-readme.txt");
+  await p.act("back");
+  s = await p.until("sheet closed after the swipe", (s) => !s.sheet && s.rects["bravo-readme.txt"]);
 
   // A long-press opens the entry's menu (and changes nothing).
   await touch(page, [centre(s, "bravo-readme.txt")], 900);
