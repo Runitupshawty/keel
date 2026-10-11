@@ -286,6 +286,8 @@ pub struct AppState {
     pub viewer: Option<crate::media_viewer::Viewer>,
     /// Task 46: folder totals walked this session (Calculate sizes).
     pub sizes: crate::sizes::Sizes,
+    /// Task 47: the VS Code color theme installer (Settings → General).
+    pub color_themes: crate::color_theme::ColorThemes,
 }
 
 impl AppState {
@@ -386,6 +388,7 @@ impl AppState {
             themes,
             profiles: crate::profiles::Profiles::new(ctx.clone()),
             icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
+            color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -425,6 +428,17 @@ impl AppState {
         self.mount_tick();
         self.icon_themes.tick(&mut self.settings, &mut self.toasts);
         self.icon_themes.license_modal(ctx);
+        // Task 47: a color theme installed or removed: the picker lists what is on disk,
+        // and an install switches to its first theme.
+        let before = self.settings.theme.clone();
+        if let Some(themes) = self.color_themes.tick(&mut self.settings, &mut self.toasts) {
+            self.themes = themes;
+            if before != self.settings.theme {
+                self.theme = self.themes.get(&self.settings.theme);
+                self.theme.apply(&self.ctx);
+            }
+        }
+        self.color_themes.license_modal(ctx);
         let s = &mut self.settings;
         s.show_hidden = self.show_hidden;
         s.dual = self.dual;
@@ -445,6 +459,7 @@ impl AppState {
             &mut self.library,
             &self.devices,
             &self.themes.list(),
+            &mut self.color_themes,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;

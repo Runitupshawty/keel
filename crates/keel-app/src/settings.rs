@@ -578,6 +578,7 @@ pub fn window(
     library: &mut crate::library::LibraryUi, // Task 29
     devices: &crate::devices::Devices, // Task 36
     themes: &[(String, String)], // Task 47: (name, label)
+    color_themes: &mut crate::color_theme::ColorThemes,
 ) -> bool {
     let mut theme_changed = false;
     crate::a11y::esc_closes(ctx, "Settings", open);
@@ -630,6 +631,8 @@ pub fn window(
                             }
                         });
                     let _ = combo.response.named("Theme");
+                    ui.end_row();
+                    color_themes.settings_rows(ui, &s.theme);
                     ui.end_row();
                     ui.label("Hidden files");
                     ui.checkbox(&mut s.show_hidden, "Show");

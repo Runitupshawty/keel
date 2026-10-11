@@ -1,0 +1,13 @@
+{
+    // a hand-written theme
+    "name": "Night",
+    "include": "../sibling.json",
+    "colors": {
+        "editor.background": "#101820",
+        "sideBar.background": "#18202a80",
+        "foreground": "#e0e0e0",
+        "focusBorder": "#39f",
+        "list.activeSelectionBackground": "#ffffff40", /* alpha */
+        "descriptionForeground": "#8899aa",
+    },
+}

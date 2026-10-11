@@ -417,7 +417,7 @@ pub fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>> {
 
 /// `rel` (a theme's `./../icons/x.svg`) resolved against the zip folder `base`; None when it
 /// climbs out of the archive.
-fn zip_join(base: &str, rel: &str) -> Option<String> {
+pub(crate) fn zip_join(base: &str, rel: &str) -> Option<String> {
     let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
     for part in rel.split(['/', '\\']) {
         match part {
@@ -441,6 +441,125 @@ fn read_entry(zip: &mut Zip, name: &str) -> Result<Vec<u8>> {
     entry.take(MAX_ENTRY + 1).read_to_end(&mut out)?;
     ensure!(out.len() as u64 <= MAX_ENTRY, "{name} is too large");
     Ok(out)
+}
+
+/// A Marketplace package (.vsix, gzip-wrapped or not): its `extension/package.json`, a
+/// label (its display name, else the id) and its license text (or a note when it has none).
+/// Icon and color themes both start here.
+pub struct Package {
+    pub json: serde_json::Value,
+    pub label: String,
+    pub license: String,
+    bytes: Arc<Vec<u8>>,
+}
+
+impl Package {
+    pub fn open(id: &str, bytes: Vec<u8>) -> Result<Package> {
+        let bytes = gunzip_if_needed(bytes)?;
+        let mut zip =
+            zip::ZipArchive::new(Cursor::new(&bytes[..])).context("not a .vsix package")?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&read_entry(&mut zip, "extension/package.json")?)
+                .context("extension/package.json")?;
+        // Labels may be `%placeholders%` for package.nls.json.
+        let label = json["displayName"]
+            .as_str()
+            .filter(|l| !l.starts_with('%'))
+            .unwrap_or(id)
+            .to_owned();
+        let license_file = zip
+            .file_names()
+            .filter(|n| {
+                n.strip_prefix("extension/").is_some_and(|f| {
+                    !f.contains('/') && f.to_ascii_lowercase().starts_with("license")
+                })
+            })
+            .min_by_key(|n| n.len())
+            .map(str::to_owned);
+        let license = match license_file.map(|f| read_entry(&mut zip, &f)) {
+            Some(Ok(text)) => String::from_utf8_lossy(&text).into_owned(),
+            _ => match json["license"].as_str() {
+                Some(l) => format!(
+                    "The package declares the license \"{l}\" but includes no license text. \
+                     See the extension's Marketplace page for its terms."
+                ),
+                None => "The package includes no license text. See the extension's Marketplace \
+                         page for its terms."
+                    .into(),
+            },
+        };
+        drop(zip);
+        Ok(Package {
+            json,
+            label,
+            license: truncated(license, MAX_LICENSE),
+            bytes: Arc::new(bytes),
+        })
+    }
+
+    /// One file of the package (at most `MAX_ENTRY` bytes).
+    pub fn entry(&self, name: &str) -> Result<Vec<u8>> {
+        let mut zip = zip::ZipArchive::new(Cursor::new(&self.bytes[..]))?;
+        read_entry(&mut zip, name)
+    }
+}
+
+/// Downloads extension `id` (`publisher.name`) from the Marketplace, at most
+/// `MAX_DOWNLOAD` bytes; `progress` gets (bytes so far, total) at most every 100 ms.
+pub fn download(id: &str, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Vec<u8>> {
+    let (publisher, name) = split_id(id).with_context(|| format!("invalid extension id {id}"))?;
+    let mut last = std::time::Instant::now();
+    let mut throttled = |n: u64, total: Option<u64>| {
+        if last.elapsed() >= std::time::Duration::from_millis(100) {
+            last = std::time::Instant::now();
+            progress(n, total);
+        }
+    };
+    keel_vfs::cloud::https_get(
+        &marketplace_url(publisher, name),
+        MAX_DOWNLOAD,
+        &mut throttled,
+    )
+    .with_context(|| format!("download {id}"))
+}
+
+/// The license dialog of a downloaded package: Some(true) on **I accept**, Some(false) on
+/// Cancel or Esc, None while it is open.
+pub fn license_dialog(
+    ctx: &egui::Context,
+    salt: &str,
+    label: &str,
+    id: &str,
+    license: &str,
+) -> Option<bool> {
+    let mut answer = None;
+    let modal = egui::Modal::new(egui::Id::new(salt)).show(ctx, |ui| {
+        ui.set_width(560.0);
+        ui.heading(format!("License: {label}"));
+        ui.label(format!(
+            "{id} from the VS Code Marketplace. It is installed for you only; Keel does not \
+             redistribute it."
+        ));
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .max_height(360.0)
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(license).monospace()).wrap());
+            });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("I accept").clicked() {
+                answer = Some(true);
+            }
+            if ui.button("Cancel").clicked() {
+                answer = Some(false);
+            }
+        });
+    });
+    if modal.should_close() && answer.is_none() {
+        answer = Some(false);
+    }
+    answer
 }
 
 /// A downloaded extension package, waiting for the license to be accepted.
@@ -469,11 +588,8 @@ fn truncated(mut text: String, max: usize) -> String {
 
 /// Reads `extension/package.json` and the license of a .vsix (gzip-wrapped or not).
 pub fn inspect(id: &str, bytes: Vec<u8>) -> Result<Vsix> {
-    let bytes = gunzip_if_needed(bytes)?;
-    let mut zip = zip::ZipArchive::new(Cursor::new(&bytes[..])).context("not a .vsix package")?;
-    let pkg: serde_json::Value =
-        serde_json::from_slice(&read_entry(&mut zip, "extension/package.json")?)
-            .context("extension/package.json")?;
+    let package = Package::open(id, bytes)?;
+    let pkg = &package.json;
     let theme = pkg
         .pointer("/contributes/iconThemes/0")
         .context("this extension contributes no icon theme")?;
@@ -482,39 +598,17 @@ pub fn inspect(id: &str, bytes: Vec<u8>) -> Result<Vsix> {
         .context("the icon theme has no path")?
         .to_owned();
     // Labels may be `%placeholders%` for package.nls.json.
-    let label = [&theme["label"], &pkg["displayName"]]
-        .into_iter()
-        .filter_map(|v| v.as_str())
-        .find(|l| !l.starts_with('%'))
-        .unwrap_or(id)
+    let label = theme["label"]
+        .as_str()
+        .filter(|l| !l.starts_with('%'))
+        .unwrap_or(&package.label)
         .to_owned();
-    let license_file = zip
-        .file_names()
-        .filter(|n| {
-            n.strip_prefix("extension/")
-                .is_some_and(|f| !f.contains('/') && f.to_ascii_lowercase().starts_with("license"))
-        })
-        .min_by_key(|n| n.len())
-        .map(str::to_owned);
-    let license = match license_file.map(|f| read_entry(&mut zip, &f)) {
-        Some(Ok(text)) => String::from_utf8_lossy(&text).into_owned(),
-        _ => match pkg["license"].as_str() {
-            Some(l) => format!(
-                "The package declares the license \"{l}\" but includes no license text. \
-                 See the extension's Marketplace page for its terms."
-            ),
-            None => "The package includes no license text. See the extension's Marketplace \
-                     page for its terms."
-                .into(),
-        },
-    };
-    drop(zip);
     Ok(Vsix {
         id: id.to_owned(),
         label,
-        license: truncated(license, MAX_LICENSE),
+        license: package.license,
         theme_path,
-        bytes: Arc::new(bytes),
+        bytes: package.bytes,
     })
 }
 
@@ -792,23 +886,16 @@ impl IconThemes {
     }
 
     fn start_download(&mut self, id: String) {
-        let Some((publisher, name)) = split_id(&id) else {
+        if split_id(&id).is_none() {
             return;
-        };
-        let url = marketplace_url(publisher, name);
+        }
         self.download = Some((id.clone(), 0, None));
         self.spawn(move |tx| {
-            let mut last = std::time::Instant::now();
-            let mut progress = |n: u64, total: Option<u64>| {
-                if last.elapsed() >= std::time::Duration::from_millis(100) {
-                    last = std::time::Instant::now();
-                    let _ = tx.send(Done::Progress(n, total));
-                }
-            };
-            let result = keel_vfs::cloud::https_get(&url, MAX_DOWNLOAD, &mut progress)
-                .with_context(|| format!("download {id}"))
-                .and_then(|bytes| inspect(&id, bytes))
-                .map(Box::new);
+            let result = download(&id, &mut |n, total| {
+                let _ = tx.send(Done::Progress(n, total));
+            })
+            .and_then(|bytes| inspect(&id, bytes))
+            .map(Box::new);
             Done::Downloaded(result.map_err(|e| format!("{e:#}")))
         });
     }
@@ -913,35 +1000,7 @@ impl IconThemes {
     /// The license dialog of a downloaded package (shown whatever page is open).
     pub fn license_modal(&mut self, ctx: &egui::Context) {
         let Some(v) = &self.license else { return };
-        let mut answer = None;
-        let modal = egui::Modal::new(egui::Id::new("keel-icon-license")).show(ctx, |ui| {
-            ui.set_width(560.0);
-            ui.heading(format!("License: {}", v.label));
-            ui.label(format!(
-                "{} from the VS Code Marketplace. It is installed for you only; Keel does \
-                 not redistribute it.",
-                v.id
-            ));
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical()
-                .max_height(360.0)
-                .show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(&v.license).monospace()).wrap());
-                });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("I accept").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    answer = Some(false);
-                }
-            });
-        });
-        if modal.should_close() && answer.is_none() {
-            answer = Some(false);
-        }
-        match answer {
+        match license_dialog(ctx, "keel-icon-license", &v.label, &v.id, &v.license) {
             Some(true) => {
                 let v = self.license.take().expect("shown above");
                 self.busy = true;

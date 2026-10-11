@@ -41,6 +41,25 @@ pub(crate) const BUILTIN: &[(&str, &str)] = &[
     ),
 ];
 
+/// WCAG 2.x relative luminance of an sRGB colour.
+pub(crate) fn luminance(c: Color32) -> f64 {
+    let lin = |v: u8| {
+        let s = v as f64 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio of two colours (1 to 21).
+pub(crate) fn ratio(a: Color32, b: Color32) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 pub fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
@@ -173,26 +192,7 @@ impl Themes {
 
 #[cfg(test)]
 mod tests {
-    use super::{Theme, Themes};
-
-    /// WCAG 2.x relative luminance of an sRGB colour.
-    fn luminance(c: egui::Color32) -> f64 {
-        let lin = |v: u8| {
-            let s = v as f64 / 255.0;
-            if s <= 0.04045 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-    }
-
-    /// WCAG contrast ratio of two colours (1 to 21).
-    fn ratio(a: egui::Color32, b: egui::Color32) -> f64 {
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
+    use super::{ratio, Theme, Themes};
 
     /// Every non-ASCII character in a string or char literal of the non-test code under
     /// `src` (test modules, `*_tests.rs` and the screenshot harness are skipped), with a

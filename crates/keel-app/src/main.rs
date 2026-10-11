@@ -10,6 +10,7 @@ mod backend; // the library in-process or in keel-daemon
 mod bulk_rename;
 mod clipboard;
 mod clouds;
+mod color_theme; // Task 47: VS Code color themes
 mod crash;
 mod devices;
 mod dialogs;
