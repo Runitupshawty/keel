@@ -700,7 +700,13 @@ impl AppState {
                 }
             }
             Msg::Drives(drives) => {
-                self.sidebar.drives = drives;
+                // A harness that set `drives_requested` into the future keeps its own list: the
+                // boot's scan can land after the fixture under load (the CI runner's real
+                // drives then broke the Tab walk).
+                let frozen = (self.sidebar.drives_requested).is_some_and(|at| at > Instant::now());
+                if !frozen {
+                    self.sidebar.drives = drives;
+                }
                 self.sidebar.drives_pending = None;
                 self.sidebar.drives_stuck = false;
             }
