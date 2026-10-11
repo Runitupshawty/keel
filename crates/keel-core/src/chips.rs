@@ -266,14 +266,20 @@ pub fn is_on(query: &str, chip: &Chip) -> bool {
 }
 
 /// The query with the chip's term taken out (on) or put in (off: replacing the group's
-/// term for Kind, Size and Modified). Every other term stays as typed.
+/// term for Kind, Size and Modified). Every other term stays as typed, also an earlier
+/// term of the chip's group typed by hand when the chip goes off.
 pub fn toggle(query: &str, chip: &Chip) -> String {
     let on = is_on(query, chip);
     let (group, want) = chip.value();
     let mut out: Vec<String> = Vec::new();
     for tok in tokens(query) {
         match classify(&tok) {
-            Some((g, _)) if g == group && group.exclusive() => {}
+            // On: the group's terms make way for the chip's; off: its own value goes.
+            Some((g, v)) if g == group && group.exclusive() => {
+                if on && !same(group, &want, &v) {
+                    out.push(tok);
+                }
+            }
             Some((Group::Type, v)) if group == Group::Type => {
                 let all: Vec<String> = exts(&v).collect();
                 let rest: Vec<&str> = (all.iter().map(String::as_str))

@@ -963,6 +963,11 @@ fn chips_keep_the_terms_they_cannot_show() {
         chips::toggle(foreign, &today),
         foreign.replace(" dm:2026-10", "") + " dm:today"
     );
+    // Off takes out only the chip's own term: an earlier one typed by hand stays.
+    assert_eq!(
+        chips::toggle("dm:2026-10 x dm:today", &today),
+        "dm:2026-10 x"
+    );
     // Kind replaces the kind; other chips add.
     let image = Chip::kinds().remove(0);
     let doc = Chip::kinds().remove(3);
