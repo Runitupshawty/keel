@@ -19,6 +19,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Updating Keel (the update banner, `install.ps1` or `install.sh`) left a running `keel-daemon` stopped until the next sign-in, so the phone web client, mounts and attached windows went away; the installers now start the new daemon again when they stopped one.
+- An FTP server that kept sending empty listing lines held the folder being opened (or copied) for as long as it kept sending, reading gigabytes. A listing now stops at a million lines, empty ones included, and at 64 MiB.
+- FTP entries dated before 1601 were left out of listings on Windows (and listed with that date elsewhere); they are now listed without a date on every system.
 
 ### Known limitations
 

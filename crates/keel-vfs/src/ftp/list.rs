@@ -8,8 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A listing line longer than this is an error (names are at most a few hundred bytes).
 pub const MAX_LINE: usize = 8 * 1024;
-/// A folder with more entries than this is refused rather than held in memory.
+/// A listing with more lines than this (empty ones included) is refused rather than held
+/// in memory.
 pub const MAX_ENTRIES: usize = 1_000_000;
+/// A listing larger than this is refused: a server sending endless (or endless empty)
+/// lines stops being read after a few seconds instead of hanging the worker.
+pub const MAX_BYTES: u64 = 64 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Type {
@@ -28,15 +32,36 @@ pub struct Item {
 }
 
 /// The lines of a listing (CR LF or LF, empty lines dropped), decoded lossily: a name
-/// that is not UTF-8 keeps U+FFFD and is refused when used.
-pub fn lines(mut r: impl BufRead) -> io::Result<Vec<String>> {
+/// that is not UTF-8 keeps U+FFFD and is refused when used. At most [`MAX_ENTRIES`] lines
+/// and [`MAX_BYTES`] bytes are read.
+pub fn lines(r: impl BufRead) -> io::Result<Vec<String>> {
+    lines_within(r, MAX_BYTES, MAX_ENTRIES)
+}
+
+fn lines_within(r: impl BufRead, max_bytes: u64, max_lines: usize) -> io::Result<Vec<String>> {
+    let mut r = io::Read::take(r, max_bytes + 1);
     let mut out = Vec::new();
     let mut buf = Vec::new();
+    let mut seen = 0usize;
     loop {
         buf.clear();
-        let n = io::Read::take(r.by_ref(), MAX_LINE as u64 + 1).read_until(b'\n', &mut buf)?;
+        let n = io::Read::take(io::Read::by_ref(&mut r), MAX_LINE as u64 + 1)
+            .read_until(b'\n', &mut buf)?;
         if n == 0 {
+            if r.limit() == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("the folder listing is larger than {} MiB", max_bytes >> 20),
+                ));
+            }
             return Ok(out);
+        }
+        seen += 1;
+        if seen > max_lines {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the folder has more than {max_lines} entries"),
+            ));
         }
         if buf.last() != Some(&b'\n') && buf.len() > MAX_LINE {
             return Err(io::Error::new(
@@ -49,12 +74,6 @@ pub fn lines(mut r: impl BufRead) -> io::Result<Vec<String>> {
         }
         if buf.is_empty() {
             continue;
-        }
-        if out.len() >= MAX_ENTRIES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the folder has more than {MAX_ENTRIES} entries"),
-            ));
         }
         out.push(String::from_utf8_lossy(&buf).into_owned());
     }
@@ -114,9 +133,12 @@ fn mlsd_time(v: &str) -> Option<SystemTime> {
     system_time(t)
 }
 
-/// `t` (UTC) as a `SystemTime`; None outside what the platform can hold (Windows: before
-/// 1601), where chrono's conversion would panic.
+/// `t` (UTC) as a `SystemTime`; None before 1601 on every OS (what Windows can hold, and
+/// where chrono's conversion would panic there).
 fn system_time(t: NaiveDateTime) -> Option<SystemTime> {
+    if t.year() < 1601 {
+        return None;
+    }
     let secs = Utc.from_utc_datetime(&t).timestamp();
     match u64::try_from(secs) {
         Ok(after) => UNIX_EPOCH.checked_add(Duration::from_secs(after)),
@@ -165,7 +187,7 @@ fn unix(line: &str, now: SystemTime) -> Option<Item> {
     // The first `size month day time-or-year` run after the permissions and link count
     // (an owner named like a month does not match: the words after it are no date).
     let (m, modified) = (3..w.len().saturating_sub(2)).find_map(|i| {
-        let t = unix_time(month(w[i].0)?, w[i + 1].0, w[i + 2].0, now)?;
+        let t = unix_date(month(w[i].0)?, w[i + 1].0, w[i + 2].0, now)?;
         w[i - 1].0.parse::<u64>().ok()?;
         Some((i, t))
     })?;
@@ -175,7 +197,7 @@ fn unix(line: &str, now: SystemTime) -> Option<Item> {
         Type::Link => name.split_once(" -> ").map_or(name, |(n, _)| n),
         _ => name,
     };
-    let modified = Some(modified);
+    let modified = system_time(modified);
     let item = Item {
         name: name.to_owned(),
         kind,
@@ -192,7 +214,7 @@ fn month(w: &str) -> Option<u32> {
 
 /// `Jan 1 12:00` (within the last year: the year is now's, or the one before when that
 /// date would be more than a day ahead) or `Jan 1 2020`; server time taken as UTC.
-fn unix_time(month: u32, day: &str, at: &str, now: SystemTime) -> Option<SystemTime> {
+fn unix_date(month: u32, day: &str, at: &str, now: SystemTime) -> Option<NaiveDateTime> {
     let day: u32 = day.parse().ok()?;
     let t = match at.split_once(':') {
         Some((h, m)) => {
@@ -207,7 +229,7 @@ fn unix_time(month: u32, day: &str, at: &str, now: SystemTime) -> Option<SystemT
         }
         None => NaiveDate::from_ymd_opt(at.parse().ok()?, month, day)?.and_hms_opt(0, 0, 0)?,
     };
-    system_time(t)
+    Some(t)
 }
 
 /// `01-15-24  03:04PM  <DIR>  name` or `01-15-2024  15:04  1234 name` (IIS).
@@ -244,7 +266,7 @@ fn dos(line: &str) -> Option<Item> {
         name: line[end..].trim_start().to_owned(),
         kind,
         size,
-        modified: Some(system_time(t)?),
+        modified: system_time(t),
     };
     usable(&item.name).then_some(item)
 }
@@ -287,9 +309,20 @@ mod tests {
         // Leading spaces in a name survive (one space separates it from the date).
         let spaced = list("-rw-r--r-- 1 u g 1 Jan 1 2020   lead", now).unwrap();
         assert_eq!(spaced.name, "  lead");
-        // Before 1601 (Windows' SystemTime) or past chrono's range: skipped, no panic.
-        assert_eq!(list("-rw-r--r-- 1 u g 1 Jan 1 1000 old", now), None);
-        assert_eq!(list("01-01-1000  01:00AM  1 old", now), None);
+        // Before 1601 (Windows' SystemTime): listed without a time on every OS, no panic.
+        for old in [
+            "-rw-r--r-- 1 u g 1 Jan 1 1000 old",
+            "01-01-1000  01:00AM  1 old",
+        ] {
+            let item = list(old, now).unwrap();
+            assert_eq!((item.name.as_str(), item.modified), ("old", None), "{old}");
+        }
+        assert_eq!(
+            mlsd("type=file;modify=10000101000000; old")
+                .unwrap()
+                .modified,
+            None
+        );
         for skipped in [
             "total 12",
             "drwxr-xr-x 2 u g 4096 Jan 1 2020 .",
@@ -360,5 +393,18 @@ mod tests {
         assert_eq!(lines(&fits[..]).unwrap().len(), 1);
         let bad = lines(&b"\xff\xfe name\n"[..]).unwrap();
         assert!(bad[0].contains('\u{FFFD}'));
+        // Empty lines count: a server sending nothing but line ends is cut off.
+        let blank = vec![b'\n'; MAX_ENTRIES + 1];
+        let e = lines(&blank[..]).unwrap_err();
+        assert!(e.to_string().contains("entries"), "{e}");
+        assert!(lines(&blank[..MAX_ENTRIES]).unwrap().is_empty());
+        // And so do bytes, whatever the lines hold.
+        let big = b"x\n\n".repeat(1 << 10);
+        let e = lines_within(&big[..], 1 << 10, MAX_ENTRIES).unwrap_err();
+        assert!(e.to_string().contains("larger"), "{e}");
+        assert_eq!(
+            lines_within(&big[..], 3 << 10, MAX_ENTRIES).unwrap().len(),
+            1 << 10
+        );
     }
 }
