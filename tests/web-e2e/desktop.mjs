@@ -89,13 +89,10 @@ export async function run({ browser, base, token, work, ids }) {
   await t.act("search", "ext:pdf");
   await t.until("ext: search", (s) => s.tab === "search" && s.hits.join() === "report.pdf");
   await t.shot("06-search-ext");
-  await t.act("search", "zzqx-nothing-like-this");
-  await t.until(
-    "empty search",
-    (s) => s.hits.length === 0,
-    () => t.sentCount((m) => m.method === "search" && m.params.query === "zzqx-nothing-like-this") > 0,
-  );
-  await sleep(300);
+  // An empty result says so (the tab used to stay blank).
+  const none = "zzqx-nothing-like-this";
+  await t.act("search", none);
+  await t.until("empty search", (s) => s.searched === none && s.hits.length === 0 && s.notes.includes(`Nothing matches ${none}.`));
   await t.shot("07-search-empty");
 
   // Previews: text, image, PDF (an image of the page, or the previewer's message when the

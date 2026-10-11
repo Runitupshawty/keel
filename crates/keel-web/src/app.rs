@@ -36,12 +36,24 @@ enum Want {
     Devices,
     Inbox,
     Jobs,
-    List { pane: usize, path: String },
+    List {
+        pane: usize,
+        path: String,
+    },
     Stat(String),
-    Preview { path: String, key: String },
-    Thumb { path: String, key: String },
-    GridThumb { key: String },
-    Search,
+    Preview {
+        path: String,
+        key: String,
+    },
+    Thumb {
+        path: String,
+        key: String,
+    },
+    GridThumb {
+        key: String,
+    },
+    /// The query.
+    Search(String),
     Plan,
     Execute,
     Job,
@@ -142,6 +154,8 @@ pub struct WebApp {
     active: usize,
     query: String,
     hits: Vec<Hit>,
+    /// The query `hits` answer.
+    searched: Option<String>,
     // phone
     grid: bool,
     tile: f32,
@@ -202,6 +216,21 @@ fn image_key(e: &EntryInfo) -> String {
     format!("{}|{}|{:?}", e.path, e.size, e.modified)
 }
 
+/// Records a message drawn this frame for the `e2e` hook's `notes` (nothing without it).
+fn shown(_ctx: &egui::Context, _text: &str) {
+    #[cfg(feature = "e2e")]
+    _ctx.data_mut(|d| {
+        let notes: &mut Vec<String> = d.get_temp_mut_or_default(egui::Id::new("e2e-notes"));
+        notes.push(_text.to_owned());
+    });
+}
+
+/// A weak line saying why a list is empty.
+fn empty_note(ui: &mut egui::Ui, text: &str) {
+    shown(ui.ctx(), text);
+    ui.weak(text);
+}
+
 fn hit_entry(h: &Hit) -> EntryInfo {
     EntryInfo {
         name: h.name.clone(),
@@ -256,6 +285,7 @@ impl WebApp {
             active: 0,
             query: String::new(),
             hits: Vec::new(),
+            searched: None,
             grid: false,
             tile: 128.0,
             thumbs: HashMap::new(),
@@ -526,8 +556,11 @@ impl WebApp {
                     Err(e) => Shown::Message(e),
                 };
             }
-            Want::Search => match parse::<Vec<Hit>>(r.result) {
-                Ok(h) => self.hits = h,
+            Want::Search(q) => match parse::<Vec<Hit>>(r.result) {
+                Ok(h) => {
+                    self.hits = h;
+                    self.searched = Some(q);
+                }
                 Err(e) => self.error = Some(e),
             },
             Want::Plan => match parse::<PlanPreview>(r.result) {
@@ -784,7 +817,7 @@ impl WebApp {
             }
         }
         if self.sources.is_empty() {
-            ui.weak("No sources yet.");
+            empty_note(ui, "No sources yet.");
         }
         self.counts_ui(ui);
     }
@@ -913,7 +946,7 @@ impl WebApp {
                     });
                 }
                 if inbox.pending.is_empty() && inbox.entries.is_empty() {
-                    ui.weak("Nothing received yet.");
+                    empty_note(ui, "Nothing received yet.");
                 }
             }
             Err(e) if e.is_empty() => {
@@ -974,7 +1007,8 @@ impl WebApp {
                 self.tab = Tab::Search;
                 self.screen.show(PhoneTab::Search);
                 self.query = q.clone();
-                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+                let params = json!({"query": q, "max": 500});
+                self.call("search", params, Want::Search(q));
             }
             Act::Rename { path, to } => self.plan(
                 "plan",
@@ -1157,6 +1191,11 @@ impl WebApp {
             "tab": if self.tab == Tab::Browse { "browse" } else { "search" },
             "dark": self.ctx.style().visuals.dark_mode,
             "menu": self.e2e_menu,
+            // The empty-list notes and banners of the last frame.
+            "notes": self.ctx.data_mut(|d| {
+                std::mem::take(d.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("e2e-notes")))
+            }),
+            "searched": self.searched,
             "grid": self.grid,
             "active": self.active,
             "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
@@ -1494,6 +1533,9 @@ impl WebApp {
                         }
                     });
                 }
+                if let Some(q) = self.searched.as_deref().filter(|_| self.hits.is_empty()) {
+                    empty_note(ui, &format!("Nothing matches {q}."));
+                }
             });
         if phone {
             let (rect, offset) = (out.inner_rect, out.state.offset.y);
@@ -1504,7 +1546,8 @@ impl WebApp {
             ) && !self.query.trim().is_empty()
             {
                 let q = self.query.clone();
-                self.call("search", json!({"query": q, "max": 500}), Want::Search);
+                let params = json!({"query": q, "max": 500});
+                self.call("search", params, Want::Search(q));
             }
         }
         if let Some(a) = act {
