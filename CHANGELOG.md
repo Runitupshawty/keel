@@ -2,6 +2,22 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Fuzzing ([docs/fuzzing.md](docs/fuzzing.md)): every parser of outside bytes (archives, SSH configs, photos and their metadata, search queries, JSON-RPC and MCP, keel-net messages, pairing codes, shared uploads, previews) has a fuzz target, run on its corpus in every `cargo test` and with libFuzzer in CI on `main`. The fixes above came from it.
+
+### Fixed
+
+- Library search: a filter number too large for it (`w:9223372036854775807`, `size:<9223372036854775808`, `duration:>99999999999999999999`, a year such as `dm:99999999999999999`) is reported as a bad value; it used to wrap around and match the wrong files.
+- Previewing a damaged Word document says "not a valid Word document"; it used to show "previewer panicked".
+
+### Security
+
+- A tiny image could make Keel allocate close to a gigabyte: a 52-byte GIF whose 4x3 picture holds a 14693x14649 frame passed the 200-megapixel check and had the decoder reserve 860 MB while the library made its thumbnail (the preview panel up to 512 MB). Image decoding is now held to the size the file's header declares, and such a file is reported as damaged.
+- Changing a hostile zip (deleting, renaming or adding an entry) could hit an arithmetic overflow on an entry size near 2^64 (zip64): a crash in debug builds, a check that wrapped around in release builds. The zip is now refused as an unsupported layout and left as it was.
+
 ## [0.16.0] - 2026-10-10
 
 ### Changed

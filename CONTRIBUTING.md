@@ -15,6 +15,8 @@ Thank you for helping improve Keel.
 
 5. Explain the problem, the solution, and how you verified it in the pull request description.
 
+Code that parses bytes from outside (archives, images, configs, network messages, uploads) gets a fuzz target; see [docs/fuzzing.md](docs/fuzzing.md) for the targets, running libFuzzer and the corpus policy.
+
 Do not commit machine-specific configuration, hostnames, IP addresses, usernames, credentials, access tokens, or OAuth client secrets. Personal profiles belong under `%APPDATA%\Keel`, outside the repository.
 
 ## Screenshots
