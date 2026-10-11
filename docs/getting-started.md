@@ -167,6 +167,10 @@ When the files are in a library source (see [The library](#the-library)), Keel f
 
 **Delete** (Del, or Delete in the context menu) asks first and then moves the items to the Recycle Bin (Windows) or Trash (macOS, Linux); Keel never deletes local files for good on its own. Open **Recycle Bin** or **Trash** in the sidebar to see what was deleted and when, and right-click to **Restore**, **Delete permanently** or empty it. Deleting on an SFTP host or in an S3 bucket is permanent, because there is no trash there; Keel says so before it asks.
 
+### Folder sizes
+
+Folders in a library source show their total size in the Size column. Elsewhere, right-click the folder's background and choose **Calculate sizes** (or turn on Settings → General → **Folder sizes: In local folders**). The **Sizes** button shows what fills a folder or a drive, biggest first; Enter goes down, Backspace up. See [Folder sizes and the Sizes view](files.md#folder-sizes-and-the-sizes-view).
+
 ### Rename and bulk rename
 
 F2 renames the selected item in place, with the name before its extension selected so that typing replaces it; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; **Undo bulk rename** in the command palette reverses it.

@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Folder sizes: the Details **Size** column shows a folder's total size (`…` while it is computed, empty while unknown), sorting by size puts folders in order of their totals (unknown ones last), and the status bar adds up the selected folders' totals. Inside a library source the totals are kept with the index: filled at the end of each walk and kept current from every watcher batch and remote check, they cost under 10 % of a first walk. Elsewhere **Calculate sizes** (context menu, palette) walks the folder's subfolders as a cancellable job and keeps the totals for the session by path and modified time; it starts on its own only in local folders outside the library, with Settings → General → **Folder sizes: In local folders** on (off by default), never on hosts, cloud accounts or devices. Apparent sizes; links are neither counted nor followed. See [Folder sizes and the Sizes view](docs/files.md#folder-sizes-and-the-sizes-view).
+- The **Sizes** view (next to **Media**): a folder's children biggest first, folders and files together, each with a bar for its share of the folder, its file count and its share of the space used on the drive; Enter goes down, Backspace up.
+- `library.folder_sizes` (read-only) in the API, for the web client and agents, and `keel du <path>` on the command line (from the index inside a source, else by walking the folder). See [api.md](docs/api.md).
+
 ## [0.18.0] - 2026-10-11
 
 ### Added

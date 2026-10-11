@@ -14,6 +14,7 @@ Everything the library can do is also a typed operation (54 of them: search, rea
 
 ```sh
 keel search "invoice ext:pdf" --max 20
+keel du ~/Photos
 keel tag add receipts ~/Docs/invoice-2026.pdf
 keel plan move ~/Downloads/old.iso --to /mnt/archive | keel execute
 keel plan delete ~/old-photos --json
@@ -23,7 +24,7 @@ keel sources add ~/Photos --label photos
 keel daemon status
 ```
 
-`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`), else by walking the folder. `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
 
 **MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
 

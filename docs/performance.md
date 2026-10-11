@@ -12,6 +12,7 @@ One desktop PC, release build, 2026-10-10 (0.15.0 plus the changes listed under 
 | --- | --- | --- | --- |
 | Index a folder source (`perf_index_200k_files`) | 200,000 files in 20,200 folders on disk | first walk 9.1 s warm (24,300 records/s), 17.3 s cold; unchanged re-walk 1.7-1.9 s; `source.db` 115 MB, `library.db` 0.15 MB; peak memory 94 MB | 60 s |
 | The same tree, generated (`perf_index_small_folders_generated`) | 220,201 records, no disk | 5.1 s (42,800 records/s) | 9 s |
+| Folder totals (`perf_folder_totals`, 2026-10-11, the machine busy with other builds), first walk without the totals triggers / with them and the fill at the end | 220,201 generated records in 20,201 folders; 2,002,001 in 2,001 | 4.7 s / 5.0 s (+5 %), the fill alone 0.05 s; 58.4 s / 51.4 s (within the noise of a busy machine), the fill alone 0.62 s | under 10 % (asserted at 25 %) |
 | Index a generated tree (`two_million_entries_index_fast_in_bounded_memory`) | 2,002,001 records, 2,000 folders of 1,000 | 41-51 s; unchanged re-walk 7.8-10.7 s; peak memory 153 MB; FTS queries 0.2-1.2 ms | 90 s, 400 MB, 50 ms |
 | Index and search realistic paths (`realistic_paths_search_is_fast`) | 2,000,000 files five folders deep | index 57 s; 12 ranked queries 1.1-26.7 ms | 50 ms a query |
 | Watcher burst (`perf_watcher_burst_10k`) | 10,000 new files in a watched source | all indexed 3.5 s after the first write (1.1 s of it writing the files, 0.5 s the debounce) | 5 s |

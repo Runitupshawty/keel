@@ -18,6 +18,7 @@ Everything Keel does, with links to the reference for each part. New to Keel? St
 - **SFTP remotes**: browse, preview and copy to and from any SSH host. See [Remotes over SSH](remotes.md#remotes-over-ssh).
 - **Cloud accounts** (Google Drive, Dropbox, S3-compatible buckets, WebDAV) as folders; Drive and Dropbox sign in with your own OAuth client id, S3 and WebDAV with keys or a password; all secrets stay in the OS keychain; storage quota (Drive, Dropbox) and Copy link. See [Cloud accounts](../README.md#cloud-accounts-bring-your-own-client-id).
 - **Columns view**: Miller columns per pane, plus a **drop zone** strip that carries files across navigation. See [Columns view and drop zone](files.md#columns-view-and-drop-zone).
+- **Folder sizes and a Sizes view**: folders show their total size (kept with the library index, or walked on request with **Calculate sizes**), sort by it, and the Sizes view shows what fills a folder or a drive with share bars; `keel du` from a terminal. See [Folder sizes and the Sizes view](files.md#folder-sizes-and-the-sizes-view).
 - **Profiles**: separate settings and sessions you can switch at runtime. See [Profiles](files.md#profiles).
 - **Icon themes**: install VS Code icon themes from the Marketplace. See [Icon themes](files.md#icon-themes).
 - **Command line, single instance and a global hotkey**: `keel <folder>` opens in the running window; Ctrl+Shift+Alt+K brings Keel forward. See [Command line](files.md#command-line).
