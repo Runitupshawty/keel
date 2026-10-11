@@ -170,6 +170,26 @@ pub enum LinkKind {
 /// Why a symbolic link cannot be made on Windows without the privilege.
 pub const SYMLINK_PRIVILEGE: &str = "Windows makes symbolic links only with Developer Mode on (Settings → System → For developers) or for an elevated program, and Keel never elevates: make a junction (folders) or a hard link (files) instead, which need neither";
 
+/// Whether `a` and `b` are on one volume (a hard link needs it); None when either cannot be
+/// read. On Windows by drive or share of the resolved paths (a volume mounted in a folder
+/// counts as its drive's).
+pub fn same_volume(a: &Path, b: &Path) -> Option<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(fs::metadata(a).ok()?.dev() == fs::metadata(b).ok()?.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let root = |p: &Path| -> Option<String> {
+            let real = fs::canonicalize(p).ok()?;
+            let first = real.components().next()?;
+            Some(first.as_os_str().to_string_lossy().to_lowercase())
+        };
+        Some(root(a)? == root(b)?)
+    }
+}
+
 /// Whether this process can make symbolic links (always on Unix; on Windows with Developer
 /// Mode or elevation), probed with a link in Keel's own cache folder.
 pub fn symlinks_allowed() -> bool {
@@ -319,6 +339,15 @@ fn mount_point_data(target: &str) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_volume_of_a_file_and_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.txt");
+        fs::write(&file, "f").unwrap();
+        assert_eq!(same_volume(&file, dir.path()), Some(true));
+        assert_eq!(same_volume(&dir.path().join("missing"), dir.path()), None);
+    }
 
     #[test]
     fn mount_point_data_has_both_names() {

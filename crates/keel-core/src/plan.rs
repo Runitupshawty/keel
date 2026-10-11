@@ -512,7 +512,13 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                     anyhow::ensure!(
                         meta.is_file(),
                         "a hard link is made to a file, not a folder"
-                    )
+                    );
+                    let dir = l.parent().unwrap_or(&l);
+                    anyhow::ensure!(
+                        keel_vfs::fsattr::same_volume(&t, dir) != Some(false),
+                        "a hard link must be on the same drive as its file: {}",
+                        target.display()
+                    );
                 }
                 keel_vfs::LinkKind::Symlink => anyhow::ensure!(
                     keel_vfs::fsattr::symlinks_allowed(),
