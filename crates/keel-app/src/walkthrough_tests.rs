@@ -1104,6 +1104,32 @@ fn zip_compress_and_extract() {
     assert!(!has_contains(&h, "Add to \"") && !has(&h, "Compress to zip…"));
 }
 
+/// More options (the Windows shell menu, Task 43): offered on local files, greyed with its
+/// reason inside an archive. The Windows menu itself is never opened here.
+#[cfg(windows)]
+#[test]
+fn more_options_only_on_local_files() {
+    let dir = scratch("shell");
+    let a = dir.join("a");
+    let mut h = app(&a, &dir.join("b"));
+    let disabled = |h: &H| {
+        h.query_all_by_label("More options")
+            .map(|n| n.is_disabled())
+            .collect::<Vec<_>>()
+    };
+    right_click_row(&mut h, "todo.txt");
+    assert_eq!(disabled(&h), [false], "offered on a local file");
+    key(&mut h, NONE, Key::Escape);
+
+    let zip = VPath::local(a.join("site.zip"));
+    sm(&mut h).run(0, Action::Navigate(VPath::join_archive(&zip, "recipes")));
+    assert!(wait(&mut h, 10, &listed));
+    right_click_row(&mut h, "bread.md");
+    assert_eq!(disabled(&h), [true], "greyed inside an archive");
+    assert!(has(&h, crate::shell_menu::NOT_LOCAL), "with its reason");
+    shot(&mut h, "more-options-greyed");
+}
+
 // ---------------------------------------------------------------------------------------
 // Command palette and keys
 

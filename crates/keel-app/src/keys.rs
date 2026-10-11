@@ -113,6 +113,16 @@ pub enum Action {
     Properties,
     /// Explorer's own Properties sheet (Windows).
     ShellProperties(PathBuf),
+    /// "More options": the Windows shell menu for the targets (`shell_menu`). `extended`:
+    /// the Shift verbs too; `keyboard`: at the cursor row instead of the pointer.
+    #[cfg(windows)]
+    ShellMenu {
+        extended: bool,
+        keyboard: bool,
+    },
+    /// A palette "Shell: …" entry: command `id` of the menu the palette built.
+    #[cfg(windows)]
+    ShellCommand(u32),
     RevealInSystem,
     OpenTerminal,
     ToggleTerminal,
@@ -275,6 +285,15 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::NONE, Key::F3, Action::TogglePreview),
     (Modifiers::NONE, Key::F5, Action::Refresh),
     (Modifiers::NONE, Key::F6, Action::SwitchPane),
+    #[cfg(windows)]
+    (
+        Modifiers::SHIFT,
+        Key::F10,
+        Action::ShellMenu {
+            extended: true,
+            keyboard: true,
+        },
+    ),
     (Modifiers::NONE, Key::Delete, Action::Delete),
     (Modifiers::NONE, Key::Enter, Action::Enter),
     (Modifiers::NONE, Key::Space, Action::ToggleSelect),

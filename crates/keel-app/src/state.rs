@@ -2025,8 +2025,20 @@ impl AppState {
             Action::ReindexFolders => self.index_folders(),
             Action::Palette => {
                 let selection = !self.tab(p).targets().is_empty();
-                self.palette.show(selection);
+                // Never in tests: a walkthrough runs every palette entry.
+                #[cfg(all(windows, not(test)))]
+                let extra = crate::shell_menu::win::palette_items(
+                    self.panes[p].tab(),
+                    &mut self.palette.shell,
+                );
+                #[cfg(not(all(windows, not(test))))]
+                let extra = Vec::new();
+                self.palette.show(selection, extra);
             }
+            #[cfg(windows)]
+            Action::ShellMenu { extended, keyboard } => self.shell_menu(p, extended, keyboard),
+            #[cfg(windows)]
+            Action::ShellCommand(id) => self.shell_command(id),
             Action::TogglePreview => self.preview.open = !self.preview.open,
             Action::ExtractHere
             | Action::ExtractToFolder

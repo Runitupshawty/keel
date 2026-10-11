@@ -38,6 +38,7 @@ mod screenshots; // docs/screenshots (ignored: needs a GPU)
 mod search_tab;
 mod session;
 mod settings;
+mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
 mod sidebar_remotes;
 mod state;

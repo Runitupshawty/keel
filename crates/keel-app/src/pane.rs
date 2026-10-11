@@ -588,6 +588,19 @@ pub fn context_menu(
         return crate::trash_ui::context_menu(ui, entry, out);
     }
     let on_item = entry.is_some();
+    // Shift+right-click on an item opens the Windows menu itself, as in Explorer.
+    #[cfg(windows)]
+    if on_item
+        && ui.input(|i| i.modifiers.shift && i.pointer.secondary_clicked())
+        && crate::shell_menu::targets(tab).is_ok()
+    {
+        out.push(Action::ShellMenu {
+            extended: true,
+            keyboard: false,
+        });
+        ui.close_menu();
+        return;
+    }
     let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
         let button = egui::Button::new(text).shortcut_text(crate::keys::shortcut_label(shortcut));
@@ -687,6 +700,23 @@ pub fn context_menu(
     );
     item(ui, "Open terminal here", "", Action::OpenTerminal);
     item(ui, "Properties", "", Action::Properties);
+    #[cfg(windows)]
+    if on_item {
+        ui.separator();
+        let shell = Action::ShellMenu {
+            extended: false,
+            keyboard: false,
+        };
+        match crate::shell_menu::targets(tab) {
+            Ok(_) => item(ui, "More options", "Shift+F10", shell),
+            Err(why) => {
+                // Shown, not a tooltip: egui shows none on a disabled menu item.
+                let b = egui::Button::new("More options").shortcut_text("Shift+F10");
+                ui.add_enabled(false, b);
+                ui.add(egui::Label::new(egui::RichText::new(why).small().weak()).wrap());
+            }
+        }
+    }
 }
 
 /// Keeps the inline rename box focused. The frame it takes the focus the name's stem is
@@ -742,7 +772,13 @@ pub fn a11y_item(ui: &egui::Ui, r: &egui::Response, tab: &Tab, e: &keel_vfs::Ent
     let date = view_details::date_text(e);
     let parts = [tab.shown_name(e), size.as_str(), date.as_str()];
     let label: Vec<&str> = parts.into_iter().filter(|s| !s.is_empty()).collect();
-    let cursor = keys && tab.cursor.as_deref() == Some(e.name.as_str());
+    let at_cursor = tab.cursor.as_deref() == Some(e.name.as_str());
+    if at_cursor {
+        // Where Shift+F10 opens the Windows menu.
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(crate::shell_menu::row_id(tab), r.rect));
+    }
+    let cursor = keys && at_cursor;
     crate::a11y::item(
         ui,
         r,

@@ -24,6 +24,9 @@ pub struct Palette {
     pub profiles: Vec<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
+    /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`).
+    #[cfg(windows)]
+    pub shell: Option<keel_vfs::shell::context_menu::ShellMenu>,
 }
 
 /// Actions on the selection (shown first when something is selected).
@@ -124,14 +127,16 @@ fn global_items() -> Vec<Item> {
 }
 
 impl Palette {
-    /// Opens with the global actions, plus the context ones when something is selected.
-    pub fn show(&mut self, selection: bool) {
+    /// Opens with the global actions, plus the context ones when something is selected,
+    /// then `extra` (the Windows menu's "Shell: …" entries).
+    pub fn show(&mut self, selection: bool, extra: Vec<Item>) {
         let mut items = if selection {
             context_items()
         } else {
             Vec::new()
         };
         items.extend(global_items());
+        items.extend(extra);
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
             shortcut: "",
@@ -225,7 +230,7 @@ mod tests {
     #[test]
     fn filter_dual_finds_toggle_dual() {
         let mut p = Palette::default();
-        p.show(false);
+        p.show(false, Vec::new());
         assert!(p.shown.len() > 20, "every action listed");
         p.text = "dual".into();
         p.filter();
@@ -238,7 +243,7 @@ mod tests {
     #[test]
     fn search_is_named_for_every_backend() {
         let mut p = Palette::default();
-        p.show(false);
+        p.show(false, Vec::new());
         let search = p.items.iter().find(|i| i.action == Action::Search).unwrap();
         assert_eq!(search.label, "Search files");
     }
@@ -249,7 +254,7 @@ mod tests {
             profiles: vec!["work".into()],
             ..Palette::default()
         };
-        p.show(false);
+        p.show(false, Vec::new());
         p.text = "switch profile".into();
         p.filter();
         assert_eq!(
@@ -262,7 +267,7 @@ mod tests {
     #[test]
     fn selection_adds_context_actions() {
         let mut p = Palette::default();
-        p.show(true);
+        p.show(true, Vec::new());
         p.text = "open location".into();
         p.filter();
         assert_eq!(p.items[p.shown[0]].action, Action::OpenLocation);
