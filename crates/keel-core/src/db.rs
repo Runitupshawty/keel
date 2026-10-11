@@ -448,6 +448,87 @@ mod tests {
         assert_eq!(counts, (2, 1), "counters follow");
     }
 
+    /// Task 62: a version-11 store (0.21.0) gains the text tables; its records stay, and a
+    /// record leaving the index takes its text along (body, index and status row).
+    #[test]
+    fn a_version_11_store_gains_text_inside_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(Store::Source)
+                .into_iter()
+                .filter(|(v, _)| *v <= 11)
+            {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO record(id, parent, name, path, kind, size, fs_id, gen)
+                     VALUES (1, NULL, 'r', '', 1, 0, 'r', 1),
+                            (2, 1, 'a.txt', 'a.txt', 0, 5, 'f', 1),
+                            (3, 1, 'b.txt', 'b.txt', 0, 5, 'g', 1);",
+            )
+            .unwrap();
+        }
+        let pool = Pool::open(&path, Store::Source).unwrap();
+        let c = pool.get().unwrap();
+        let version: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 12);
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM record", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+        for (id, text) in [(2, "Keel Test Document"), (3, "another Keel page")] {
+            c.execute(
+                "INSERT INTO record_text(record, mtime, size, chars, status) VALUES (?1, 0, 5, 9, 0)",
+                [id],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO record_text_body(record, text) VALUES (?1, ?2)",
+                rusqlite::params![id, text],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO record_content(rowid, text) VALUES (?1, ?2)",
+                rusqlite::params![id, text],
+            )
+            .unwrap();
+        }
+        let hits = |w: &str| -> i64 {
+            c.query_row(
+                "SELECT count(*) FROM record_content WHERE record_content MATCH ?1",
+                [w],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(hits("keel"), 2);
+        c.execute("DELETE FROM record WHERE id = 2", []).unwrap();
+        assert_eq!(hits("keel"), 1);
+        assert_eq!(hits("document"), 0);
+        let left: (i64, i64) = c
+            .query_row(
+                "SELECT (SELECT count(*) FROM record_text), (SELECT count(*) FROM record_text_body)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(left, (1, 1));
+        let ok: String = c
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ok, "ok");
+        c.execute(
+            "INSERT INTO record_content(record_content, rank) VALUES ('integrity-check', 1)",
+            [],
+        )
+        .unwrap();
+    }
+
     /// Stores written by v0.7.0 (library v6, source v7; migrations never change once released)
     /// reach the newest versions with their rows intact.
     #[test]

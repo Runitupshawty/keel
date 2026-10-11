@@ -220,6 +220,7 @@ impl Searcher for EverythingSearcher {
                     is_dir,
                     size,
                     modified,
+                    snippet: None,
                 });
             }
             Ok(hits)

@@ -353,6 +353,7 @@ impl Searcher for NtfsSearcher {
                 is_dir: f.is_dir,
                 size: 0,
                 modified: None,
+                snippet: None,
             })
             .collect();
         // Size and date come from the file system: a few hundred lookups, in parallel.

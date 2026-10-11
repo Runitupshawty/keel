@@ -412,6 +412,7 @@ fn search_tab_switches_between_platform_and_library_backends() {
                 is_dir: false,
                 size: 1,
                 modified: None,
+                snippet: None,
             }])
         }
         fn available(&self) -> bool {
@@ -677,6 +678,8 @@ fn per_source_table_model() {
         hashed_files: hashed,
         last_walk,
         offline,
+        contents: true,
+        text: Default::default(),
     };
     let rows = source_count_rows(&[
         stats("Photos", 12_345, 9_876, Some(1_700_000_000), false),

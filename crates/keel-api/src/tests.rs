@@ -136,6 +136,7 @@ fn registry_is_preview_first() {
         "integrity.check",
         "hashing.set",
         "media.index",
+        "contents.set",
         "activity.note",
         "devices.settings",
         "devices.settings_set",

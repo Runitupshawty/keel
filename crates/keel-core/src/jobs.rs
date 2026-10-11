@@ -637,6 +637,7 @@ impl Job for IndexJob {
         }
         crate::protect::after_walk(&ctx.lib, &src);
         crate::hash::after_walk(&ctx.lib, &src);
+        crate::text_job::after_walk(&ctx.lib, &src);
         Ok(())
     }
     fn checkpoint(&self) -> serde_json::Value {

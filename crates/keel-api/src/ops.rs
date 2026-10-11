@@ -76,7 +76,7 @@ pub static OPS: &[Operation] = &[
         ThumbParams => Thumb, crate::files::thumb, json!({"path": example_file(), "size": "thumb256"})),
     now!("file.get", "A one-time download link (/file/<token> on keel-daemon's --web address, valid 60 s) for a file.",
         PathParams => FileLink, crate::files::file_get, json!({"path": example_file()})),
-    now!("search", "Searches the library index across all sources (words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:).",
+    now!("search", "Searches the library index across all sources (words, \"phrases\", kind:, ext:, size:, dm:, source:, tag:); words also match the text inside documents (content:, -content:, name:, contents:off), and such hits carry a snippet of it.",
         SearchParams => Vec<Hit>, search, json!({"query": "invoice ext:pdf", "max": 20})),
     now!("files.names", "The full paths of indexed files in the online sources, each source's newest first, for a fuzzy file finder (at most `max`, default and largest 100000; `truncated` when there were more); read-only.",
         FileNamesParams => FileNames, files_names, json!({"max": 1000})),
@@ -136,6 +136,8 @@ pub static OPS: &[Operation] = &[
         IntegrityParams => MaybeJob, integrity_preview, integrity_check, json!({"sample_pct": 1.0})),
     previewed!("hashing.set", "Turns content hashing after walks on or off (off cancels a running hash job; on starts one); remote, cloud and max_remote_bytes choose which remote files it downloads (omitted: unchanged).",
         HashingParams => MaybeJob, hashing_preview, hashing_set, json!({"on": true, "idle_only": true, "remote": true, "cloud": false, "max_remote_bytes": 1073741824})),
+    previewed!("contents.set", "Turns indexing the text inside documents on or off for the library (Index file contents) or one source (id; default: back to its kind's default, local folders and drives on, shares, SFTP, cloud and devices off). On reads the text at idle priority; off deletes the text read so far.",
+        ContentsParams => MaybeJob, contents_preview, contents_set, json!({"on": true, "id": "0123456789abcdef0123456789abcdef"})),
     previewed!("media.index", "Makes thumbnails and reads metadata of a source's photos and videos as an idle-priority job.",
         SourceIdParams => JobStarted, media_index_preview, media_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
     now!("activity.note", "Notes that the user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s; acts directly.",
@@ -256,6 +258,10 @@ fn hit(h: &LibraryHit) -> Hit {
         source_label: h.source_label.clone(),
         record: h.record.id,
         score: h.score,
+        snippet: h.snippet.as_ref().map(|s| Snippet {
+            text: s.text.clone(),
+            marks: s.marks.iter().map(|&(a, b)| [a, b]).collect(),
+        }),
     }
 }
 
@@ -661,6 +667,11 @@ fn search(ctx: &Ctx, p: SearchParams) -> Result<Vec<Hit>> {
     let mut q = LibraryQuery::parse(&p.query, ctx.utc_offset)
         .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
     q.max = p.max.unwrap_or(100).clamp(1, 10_000);
+    if p.contents == Some(false) {
+        q.contents = false;
+    }
+    // Snippets for the first page only, whatever `max` is.
+    q.snippets = q.max.min(keel_core::SNIPPET_PAGE);
     Ok(hits(ctx.lib.search(&q)?))
 }
 
@@ -1453,8 +1464,10 @@ fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
                 hashed_files: p.hashed_files,
                 last_walk: p.last_walk,
                 offline: p.offline,
+                text: Some(text_stats(p.contents, &p.text)),
             })
             .collect(),
+        text: Some(text_stats(s.index_contents, &s.text)),
         hashing: Some(RemoteHashing {
             remote: hashing.hash_remote,
             cloud: hashing.hash_cloud,
@@ -1462,6 +1475,16 @@ fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
         }),
         last_backup: s.last_backup,
     })
+}
+
+fn text_stats(on: bool, t: &keel_core::TextCounts) -> TextStats {
+    TextStats {
+        on,
+        documents: t.documents,
+        skipped: t.skipped,
+        failed: t.failed,
+        chars: t.chars,
+    }
 }
 
 fn protection_summary(ctx: &Ctx, _: NoParams) -> Result<Protection> {
@@ -1677,6 +1700,36 @@ fn hashing_set(ctx: &Ctx, p: HashingParams) -> Result<MaybeJob> {
             ctx.lib.jobs().cancel(j.id)?;
         }
     }
+    Ok(MaybeJob { job: None })
+}
+
+fn contents_preview(ctx: &Ctx, p: &ContentsParams) -> Result<Preview> {
+    let what = match &p.id {
+        Some(id) => format!("in {}", find_source(ctx, id)?.label),
+        None => "in every source".to_owned(),
+    };
+    let summary = match (p.id.is_some() && p.default, p.on) {
+        (true, _) => format!("Index file contents {what} as its kind does by default (local folders and drives on; shares, SFTP, cloud and devices off)"),
+        (false, true) => format!("Index file contents {what}: their text is read at idle priority (on a remote source every document is downloaded once)"),
+        (false, false) => format!("Stop indexing file contents {what}: the text read so far is deleted"),
+    };
+    Ok(Preview {
+        pin: None,
+        summary: summary.clone(),
+        changes: vec![change("contents", None, Some(summary))],
+        warnings: Vec::new(),
+    })
+}
+
+fn contents_set(ctx: &Ctx, p: ContentsParams) -> Result<MaybeJob> {
+    let Some(id) = p.id else {
+        ctx.lib.set_index_contents(p.on)?;
+        return Ok(MaybeJob { job: None });
+    };
+    find_source(ctx, &id)?;
+    let id = SourceId(id);
+    ctx.lib
+        .set_source_contents(&id, (!p.default).then_some(p.on))?;
     Ok(MaybeJob { job: None })
 }
 

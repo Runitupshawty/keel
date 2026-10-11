@@ -18,6 +18,8 @@ pub enum Group {
     Size,
     Modified,
     Favorites,
+    /// Task 62: the Contents chip (`contents:off` while it is off).
+    Contents,
 }
 
 impl Group {
@@ -30,12 +32,16 @@ impl Group {
             Group::Size => "Size",
             Group::Modified => "Modified",
             Group::Favorites => "Favorites",
+            Group::Contents => "Contents",
         }
     }
 
     /// The parser keeps only the last such term: one chip of the group at a time.
     fn exclusive(self) -> bool {
-        matches!(self, Group::Kind | Group::Size | Group::Modified)
+        matches!(
+            self,
+            Group::Kind | Group::Size | Group::Modified | Group::Contents
+        )
     }
 }
 
@@ -148,6 +154,14 @@ fn classify(tok: &str) -> Option<(Group, String)> {
         "tag" if value.eq_ignore_ascii_case(FAVORITES) => Group::Favorites,
         "tag" if !value.is_empty() => Group::Tag,
         "in" | "source" if !value.is_empty() => Group::Source,
+        "contents" => {
+            let v = match value.to_ascii_lowercase().as_str() {
+                "off" | "no" | "false" | "0" => "off",
+                "on" | "yes" | "true" | "1" => "on",
+                _ => return None,
+            };
+            return Some((Group::Contents, v.to_owned()));
+        }
         _ => return None,
     };
     Some((group, value))
@@ -208,6 +222,12 @@ impl Chip {
         )
     }
 
+    /// The Contents chip (Task 62). Its term is `contents:off`, so it reads the other way
+    /// round: the row shows it on while the query does not have the term ([`contents_on`]).
+    pub fn contents() -> Chip {
+        Chip::new(Group::Contents, "Contents", "contents:off".to_owned())
+    }
+
     /// `ext:<e>` (lowercase, without a dot); None when the parser could not read it back.
     pub fn ext(e: &str) -> Option<Chip> {
         let e = e.trim().trim_start_matches('.').to_lowercase();
@@ -244,9 +264,16 @@ impl Chip {
     pub fn name(&self) -> String {
         match self.group {
             Group::Favorites => "Only favorites".to_owned(),
+            Group::Contents => "Search file contents".to_owned(),
             g => format!("{}: {}", g.label(), self.label),
         }
     }
+}
+
+/// Whether words in `query` also match the text inside documents: no `contents:off` (or a
+/// later `contents:on`).
+pub fn contents_on(query: &str) -> bool {
+    !is_on(query, &Chip::contents())
 }
 
 /// The query has the chip's term (any case, any spelling of its key), and for Kind, Size

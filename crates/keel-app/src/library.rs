@@ -1561,6 +1561,7 @@ impl Searcher for LibSearch {
                 is_dir: h.is_dir,
                 size: h.size,
                 modified: entry_of_time(h.modified),
+                snippet: None,
             })
             .collect())
     }

@@ -66,6 +66,7 @@ pub fn query(data: &[u8]) {
     chips.push(crate::chips::Chip::favorites());
     chips.extend(crate::chips::Chip::ext("pdf"));
     chips.extend(crate::chips::Chip::tag("two words"));
+    chips.push(crate::chips::Chip::contents());
     for c in &chips {
         let on = crate::chips::is_on(&text, c);
         assert_ne!(crate::chips::is_on(&crate::chips::toggle(&text, c), c), on);
@@ -74,10 +75,38 @@ pub fn query(data: &[u8]) {
     for offset in [0, -36_000, 50_400] {
         if let Ok(q) = crate::search::LibraryQuery::parse_at(&text, 1_760_000_000, offset) {
             let _ = q.filters();
-            let _ = q.text_parts(true);
             let _ = q.ext_match();
+            // Whatever was typed, the MATCH strings are valid FTS5 (no operator from the
+            // user's text errors or scans everything).
+            let names = q.text_parts(true).into_iter().map(|m| ("n", m));
+            let content = q.content_match().into_iter().map(|m| ("c", m));
+            MATCH.with(|c| {
+                for (table, m) in names.chain(content) {
+                    let hits = c.query_row(
+                        &format!("SELECT count(*) FROM {table} WHERE {table} MATCH ?1"),
+                        [&m],
+                        |r| r.get::<_, i64>(0),
+                    );
+                    assert!(hits.is_ok(), "{m}: {hits:?}");
+                }
+            });
         }
     }
+}
+
+thread_local! {
+    /// FTS5 tables shaped like `record_fts` and `record_content`, one row each.
+    static MATCH: rusqlite::Connection = {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE VIRTUAL TABLE n USING fts5(name, path, tokenize='unicode61 remove_diacritics 2', prefix='2 3');
+             CREATE VIRTUAL TABLE c USING fts5(text, tokenize='unicode61 remove_diacritics 2');
+             INSERT INTO n VALUES ('Keel report.pdf', 'docs/Keel report.pdf');
+             INSERT INTO c VALUES ('Keel Test Document near the end');",
+        )
+        .unwrap();
+        c
+    };
 }
 
 /// A library backup (`.keelbackup`): the manifest and entry checks (`inspect`), then a

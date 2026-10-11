@@ -1052,6 +1052,7 @@ pub fn search_names(
                     is_dir: e.kind == Kind::Dir,
                     size: e.size,
                     modified: e.modified,
+                    snippet: None,
                 });
             }
             if e.kind == Kind::Dir && !e.is_link {

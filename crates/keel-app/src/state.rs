@@ -3498,6 +3498,7 @@ mod tests {
                 is_dir: false,
                 size: 1,
                 modified: None,
+                snippet: None,
             }]));
         state.tab_mut(0).visible(false);
         state.tab_mut(0).cursor = Some(dir.join("f40.txt").display());

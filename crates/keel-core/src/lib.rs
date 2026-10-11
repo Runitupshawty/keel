@@ -42,6 +42,7 @@ mod sidecars;
 mod styles;
 mod sync;
 mod tags;
+mod text_job;
 mod totals;
 
 pub use arrange::{attributes_text, FolderOp, OrganizeBy};
@@ -74,7 +75,8 @@ pub use plan::{
 };
 pub use protect::{CopyAt, ProtectionSummary, Redundancy, Volume, VolumeKind, VolumeState};
 pub use search::{
-    KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, DEFAULT_MAX, FILE_NAMES_MAX,
+    KindFilter, LibraryHit, LibraryQuery, LibrarySearcher, Snippet, DEFAULT_MAX, FILE_NAMES_MAX,
+    SNIPPET_CHARS, SNIPPET_PAGE,
 };
 pub use sidecar_job::SidecarJob;
 pub use sidecars::{
@@ -87,6 +89,9 @@ pub use sync::{
     SyncTarget, FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
 };
 pub use tags::{Tag, TagId, View, FAVORITES};
+pub use text_job::{
+    ExtractFn, TextCaps, TextCounts, TextExtractor, TextJob, TextOutcome, TEXT_CAPS,
+};
 pub use totals::{ChildSize, FolderSizes, Total};
 
 use std::path::PathBuf;

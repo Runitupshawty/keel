@@ -63,6 +63,16 @@ pub struct Hit {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// The library's hits found by the text inside the document: a snippet of it.
+    pub snippet: Option<Snippet>,
+}
+
+/// A line of a document's text around the words that matched (the library's content
+/// search): `marks` are byte ranges of those words in `text`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snippet {
+    pub text: String,
+    pub marks: Vec<(usize, usize)>,
 }
 
 /// What a backend can do right now, for the status bar.
@@ -291,6 +301,7 @@ fn hit_for_path(path: &Path) -> Option<Hit> {
         is_dir: metadata.is_dir(),
         size: if metadata.is_dir() { 0 } else { metadata.len() },
         modified: metadata.modified().ok(),
+        snippet: None,
     })
 }
 
@@ -464,6 +475,7 @@ mod tests {
             is_dir,
             size: 0,
             modified: None,
+            snippet: None,
         };
         let mut hits = vec![
             hit(dir.join("five.txt"), false),

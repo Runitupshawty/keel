@@ -171,13 +171,24 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// `VACUUM INTO` `to` (a consistent snapshot, also of a store being written), then a single
-/// file (no WAL) without the search index (`strip_fts`: a source store's `record_fts`).
+/// file (no WAL) without the search indexes (`strip_fts`: a source store's `record_fts`,
+/// and the text read from its documents, which the text job reads again after a restore).
 fn snapshot(conn: &Connection, to: &Path, strip_fts: bool) -> Result<()> {
     conn.execute("VACUUM INTO ?1", [to.to_string_lossy()])?;
     let copy = Connection::open(to)?;
     copy.query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))?;
     if strip_fts && has_table(&copy, "record_fts")? {
-        copy.execute_batch("INSERT INTO record_fts(record_fts) VALUES ('delete-all'); VACUUM;")?;
+        copy.execute_batch("INSERT INTO record_fts(record_fts) VALUES ('delete-all');")?;
+    }
+    if strip_fts && has_table(&copy, "record_content")? {
+        copy.execute_batch(
+            "INSERT INTO record_content(record_content) VALUES ('delete-all');
+             DELETE FROM record_text_body;
+             DELETE FROM record_text;",
+        )?;
+    }
+    if strip_fts {
+        copy.execute_batch("VACUUM;")?;
     }
     Ok(())
 }

@@ -142,6 +142,8 @@ pub struct Source {
     held: RwLock<Option<OfflineReason>>,
     /// The volume the root was last seen on (`library.db` `source.volume_id`).
     pub(crate) volume_id: RwLock<Option<String>>,
+    /// Task 62: the source's **Index file contents** switch (None: by its kind).
+    pub(crate) contents: RwLock<Option<bool>>,
     /// The library's sources (this one included), for checks across sources.
     peers: Weak<RwLock<Vec<Arc<Source>>>>,
     dir: PathBuf,
@@ -163,6 +165,7 @@ impl Source {
             .unwrap_or(0);
         let indexed_at = store.meta("last_full_walk")?.and_then(|t| t.parse().ok());
         let held = store.meta(HELD)?.as_deref().and_then(OfflineReason::parse);
+        let contents = crate::text_job::load_switch(&store)?;
         // Built after a first walk; a walk that never ended left them out.
         store.get()?.execute_batch(crate::index::FILTER_INDEXES)?;
         let status = match held {
@@ -184,6 +187,7 @@ impl Source {
             write: Mutex::new(()),
             held: RwLock::new(held),
             volume_id: RwLock::new(volume_id),
+            contents: RwLock::new(contents),
             peers,
             dir,
         })
@@ -434,6 +438,11 @@ pub struct LibraryStats {
     /// When the last backup was written (unix seconds; `Library::backup`).
     #[serde(default)]
     pub last_backup: Option<i64>,
+    /// Task 62: **Index file contents**, and the text counts over every source.
+    #[serde(default)]
+    pub index_contents: bool,
+    #[serde(default)]
+    pub text: crate::TextCounts,
 }
 
 /// One source's counts (`LibraryStats::per_source`), from its store as last indexed.
@@ -450,6 +459,11 @@ pub struct SourceStats {
     /// The last completed full walk (unix seconds).
     pub last_walk: Option<i64>,
     pub offline: bool,
+    /// Task 62: whether its documents' text is read now, and its text counts.
+    #[serde(default)]
+    pub contents: bool,
+    #[serde(default)]
+    pub text: crate::TextCounts,
 }
 
 /// Unix milliseconds.
@@ -500,6 +514,16 @@ pub(crate) struct Shared {
     /// `Jobs::subscribe` receivers.
     pub(crate) job_events: Mutex<Vec<crossbeam_channel::Sender<crate::JobEvent>>>,
     pub(crate) jobs: JobState,
+    // --- Task 62 ---
+    /// The program's text reader (`Library::set_text_extractor`).
+    pub(crate) text_extractor: RwLock<Option<crate::TextExtractor>>,
+    /// **Index file contents** (`library.db` meta `index_contents`).
+    pub(crate) index_contents: AtomicBool,
+    /// Sources whose text job runs, and whether it goes round once more.
+    pub(crate) text_jobs: Mutex<HashMap<SourceId, bool>>,
+    /// Text readers past their time and still running.
+    pub(crate) text_abandoned: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) text_caps: RwLock<crate::TextCaps>,
     /// Sources kept current by `Library::watch` (None: not armed, the root was away).
     watchers: Mutex<HashMap<SourceId, Option<WatchHandle>>>,
     _lock: std::fs::File,
@@ -559,6 +583,7 @@ impl Shared {
             if let Some(lib) = Weak::upgrade(&weak) {
                 crate::protect::after_walk(&lib, s);
                 crate::hash::after_walk(&lib, s);
+                crate::text_job::after_walk(&lib, s);
             }
         };
         let router = self.router.read().clone();
@@ -706,6 +731,7 @@ impl Library {
             .meta("remote_hash_settings")?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        let index_contents = crate::text_job::load_setting(&db)?;
         let shared = Arc::new(Shared {
             db,
             sources,
@@ -729,6 +755,11 @@ impl Library {
             remote_poll: AtomicU64::new(crate::POLL_INTERVAL.as_secs()),
             job_events: Mutex::new(Vec::new()),
             jobs: JobState::default(),
+            text_extractor: RwLock::new(None),
+            index_contents: AtomicBool::new(index_contents),
+            text_jobs: Mutex::default(),
+            text_abandoned: Arc::default(),
+            text_caps: RwLock::new(crate::TEXT_CAPS),
             watchers: Mutex::new(HashMap::new()),
             _lock: lock,
         });
@@ -750,6 +781,10 @@ impl Library {
         lib.jobs.register(
             crate::SidecarJob::KIND,
             <crate::SidecarJob as crate::Job>::restore,
+        );
+        lib.jobs.register(
+            crate::TextJob::KIND,
+            <crate::TextJob as crate::Job>::restore,
         );
         lib.jobs.register(
             crate::IntegrityJob::KIND,
@@ -1144,6 +1179,7 @@ impl Library {
                 .filter(|s| matches!(*s.status.read(), SourceStatus::Offline { .. }))
                 .count(),
             running_jobs: self.jobs.running(),
+            index_contents: self.index_contents(),
             ..LibraryStats::default()
         };
         // From the trigger-kept `counts` row and two partial indexes (no table scan).
@@ -1178,6 +1214,8 @@ impl Library {
                     hashed_files: hashed,
                     last_walk: walked.and_then(|t| t.parse().ok()),
                     offline: matches!(*s.status.read(), SourceStatus::Offline { .. }),
+                    contents: crate::text_job::contents_on(&self.shared, s),
+                    text: crate::text_job::counts(s)?,
                 },
             ))
         };
@@ -1187,6 +1225,7 @@ impl Library {
                     stats.records += records;
                     stats.files += one.files;
                     stats.bytes += one.bytes;
+                    stats.text.add(&one.text);
                     stats.per_source.push(one);
                 }
                 Err(e) => tracing::warn!("stats for source {}: {e:#}", s.def.label),

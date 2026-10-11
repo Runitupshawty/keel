@@ -534,3 +534,54 @@ fn write_fuzz_seeds() {
         e.truncate(1);
     });
 }
+
+/// Task 62: the text read from documents stays out of a backup (like the name index);
+/// after a restore the walk reads it again.
+#[test]
+fn a_backup_leaves_the_text_out_and_the_restore_reads_it_again() {
+    let (data, files, other) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (lib, src) = library(data.path(), files.path(), 5);
+    lib.set_text_extractor(crate::text_job::tests::extractor());
+    let job = lib.index_text(&src.id).unwrap().unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    let text_rows = |s: &Source| -> (i64, i64) {
+        s.store
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT count(*) FROM record_text), (SELECT count(*) FROM record_text_body)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(text_rows(&src), (5, 5));
+    assert_eq!(crate::text_job::tests::names(&lib, "content:file").len(), 5);
+
+    let file = other.path().join(file_name("main", crate::now()));
+    lib.backup(&file).unwrap();
+    let fresh = tempfile::tempdir().unwrap();
+    restore(fresh.path(), &file, None).unwrap();
+    let back = Library::open(fresh.path(), "main").unwrap();
+    back.set_pause_on_battery(false);
+    back.set_hash_after_walk(false);
+    back.set_text_extractor(crate::text_job::tests::extractor());
+    let bsrc = back.source(&src.id).unwrap();
+    assert_eq!(text_rows(&bsrc), (0, 0), "no text in the backup");
+    assert!(crate::text_job::tests::names(&back, "content:file").is_empty());
+    let resumed = back.jobs().resume_all().unwrap();
+    assert_eq!(
+        back.jobs().wait(resumed[0]).unwrap().status,
+        JobStatus::Done
+    );
+    crate::index::tests::eventually("text read again", || text_rows(&bsrc) == (5, 5));
+    crate::index::tests::eventually("its job ended", || back.shared.text_jobs.lock().is_empty());
+    assert_eq!(
+        crate::text_job::tests::names(&back, "content:file").len(),
+        5
+    );
+}

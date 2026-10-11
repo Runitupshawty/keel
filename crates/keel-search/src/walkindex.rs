@@ -935,6 +935,7 @@ impl Searcher for WalkIndexSearcher {
                     size: m.size,
                     modified: (m.mtime != NO_TIME)
                         .then(|| UNIX_EPOCH + Duration::from_millis(m.mtime as u64)),
+                    snippet: None,
                 }
             })
             .collect())

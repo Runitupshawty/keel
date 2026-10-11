@@ -161,11 +161,16 @@ pub struct StatInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchParams {
-    /// Library query: words, "phrases", `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:`.
+    /// Library query: words, "phrases", `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:`,
+    /// `content:`, `-content:`, `name:`.
     pub query: String,
     /// At most this many hits (default 100).
     #[serde(default)]
     pub max: Option<usize>,
+    /// Words also match the text inside documents (default true; false: names only, as
+    /// `contents:off` in the query).
+    #[serde(default)]
+    pub contents: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -180,6 +185,19 @@ pub struct Hit {
     pub source_label: String,
     pub record: i64,
     pub score: f64,
+    /// A hit found by the text inside the document: at most 160 characters of it around
+    /// the words (the first 100 such hits only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<Snippet>,
+}
+
+/// A line of a document's text; `marks` are the byte ranges (UTF-8) of the words that
+/// matched.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Snippet {
+    pub text: String,
+    #[serde(default)]
+    pub marks: Vec<[usize; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -975,6 +993,24 @@ pub struct LibraryStats {
     /// first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_backup: Option<i64>,
+    /// Text inside documents (`contents.set`), absent from daemons before 0.22.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextStats>,
+}
+
+/// The text read from documents (library-wide, or one source's).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TextStats {
+    /// Index file contents: the library's setting, or whether this source's are read now.
+    pub on: bool,
+    /// Documents whose text is indexed.
+    pub documents: u64,
+    /// Files skipped: no reader for their kind, or over the size cap.
+    pub skipped: u64,
+    /// Damaged files, and readers that ran out of time.
+    pub failed: u64,
+    /// Characters indexed.
+    pub chars: u64,
 }
 
 /// The library's remote hashing policy (`hashing.set`'s remote, cloud, max_remote_bytes).
@@ -1003,6 +1039,9 @@ pub struct SourceStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_walk: Option<i64>,
     pub offline: bool,
+    /// Text inside its documents (absent from daemons before 0.22).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextStats>,
 }
 
 /// The protection card: how safe the library's contents are.
@@ -1109,6 +1148,20 @@ pub struct HashingParams {
     /// Maximum bytes per remote file (default 1 GiB); omitted keeps the setting.
     #[serde(default)]
     pub max_remote_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContentsParams {
+    /// Read and search the text inside documents.
+    pub on: bool,
+    /// One source's switch (omitted: the library's Index file contents setting).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// With `id`: back to the source's default (local folders and drives on; shares,
+    /// SFTP, cloud and paired devices off); `on` is then ignored.
+    #[serde(default)]
+    pub default: bool,
 }
 
 /// A job, when one was started.

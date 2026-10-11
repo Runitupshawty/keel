@@ -200,6 +200,7 @@ mod tests {
             is_dir: false,
             size: 7,
             modified: None,
+            snippet: None,
         };
         if let TabKind::Search { req, .. } = &mut state.tab_mut(0).kind {
             *req = 99;

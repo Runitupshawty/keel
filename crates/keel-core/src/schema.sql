@@ -361,3 +361,28 @@ CREATE TABLE folder_style(
 CREATE TRIGGER record_style_ad AFTER DELETE ON record BEGIN
     DELETE FROM folder_style WHERE record = old.id;
 END;
+
+-- @source 12
+-- Text inside documents (Task 62): one `record_text` row per file the text job tried, with
+-- the size and mtime it read (a change re-extracts), the characters kept and the status
+-- (0 done, 1 skipped: no reader, 2 skipped: over the size cap, 3 failed). The text is in
+-- `record_text_body` (rows with text only), indexed by `record_content`, an FTS5 table over
+-- it (external content: the text is stored once; `snippet()` reads it from the body). The
+-- text job keeps the index in step with the body; a record leaving the index drops all three.
+CREATE TABLE record_text(
+    record INTEGER PRIMARY KEY,
+    mtime INTEGER,
+    size INTEGER NOT NULL,
+    chars INTEGER NOT NULL DEFAULT 0,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    status INTEGER NOT NULL);
+CREATE TABLE record_text_body(record INTEGER PRIMARY KEY, text TEXT NOT NULL);
+CREATE VIRTUAL TABLE record_content USING fts5(
+    text, content=record_text_body, content_rowid=record,
+    tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER record_text_ad AFTER DELETE ON record BEGIN
+    INSERT INTO record_content(record_content, rowid, text)
+        SELECT 'delete', record, text FROM record_text_body WHERE record = old.id;
+    DELETE FROM record_text_body WHERE record = old.id;
+    DELETE FROM record_text WHERE record = old.id;
+END;

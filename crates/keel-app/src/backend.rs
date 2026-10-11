@@ -570,9 +570,13 @@ impl LibraryBackend {
                             hashed_files: p.hashed_files,
                             last_walk: p.last_walk,
                             offline: p.offline,
+                            contents: p.text.is_some_and(|t| t.on),
+                            text: counts(p.text),
                         })
                         .collect(),
                     last_backup: s.last_backup,
+                    index_contents: s.text.is_some_and(|t| t.on),
+                    text: counts(s.text),
                 })
             }
         }
@@ -1234,6 +1238,10 @@ impl LibraryBackend {
                 is_dir: h.is_dir,
                 size: h.size,
                 modified: crate::library::entry_of_time(h.modified),
+                snippet: h.snippet.map(|s| keel_search::Snippet {
+                    text: s.text,
+                    marks: s.marks.into_iter().map(|[a, b]| (a, b)).collect(),
+                }),
             })
             .collect())
     }
@@ -1469,6 +1477,16 @@ fn log_tail(log: &std::path::Path) -> String {
         Some((i, _)) => format!("{}...", &tail[..i]),
         None => tail,
     }
+}
+
+/// A daemon's text counts (none from one before 0.22).
+fn counts(t: Option<api::TextStats>) -> keel_core::TextCounts {
+    t.map_or_else(Default::default, |t| keel_core::TextCounts {
+        documents: t.documents,
+        skipped: t.skipped,
+        failed: t.failed,
+        chars: t.chars,
+    })
 }
 
 #[cfg(test)]

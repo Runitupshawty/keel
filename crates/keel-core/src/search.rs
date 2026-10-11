@@ -25,6 +25,17 @@ const RANK_CAP: usize = 50_000;
 const DIRECT: i64 = 5_000;
 /// Score bonus for each query word found in the name (not only in the path).
 const NAME_BOOST: f64 = 2.0;
+/// Rank of a hit from the text inside a document: after every name or path hit (its bm25
+/// over the text moves it at most 1 within that).
+const CONTENT_RANK: f64 = 100.0;
+/// Hits (best first) that get a snippet of their text by default: the page a list shows.
+pub const SNIPPET_PAGE: usize = 100;
+/// A snippet's length at most, in characters.
+pub const SNIPPET_CHARS: usize = 160;
+/// Emphasis markers in FTS5 `snippet()` output (private-use characters, so a document's
+/// own text never reads as one).
+pub(crate) const MARK_ON: char = '\u{E000}';
+pub(crate) const MARK_OFF: char = '\u{E001}';
 /// Filter-only queries narrow through an index (extension, size) when it yields at most
 /// this many records; broader filters walk the records newest first instead.
 const NARROW_CAP: i64 = 20_000;
@@ -115,7 +126,9 @@ impl Span {
 /// `camera:canon`, `taken:2024` (same dates as `dm:`; no capture time, no match),
 /// `w:>4000` / `h:<=1080` (pixels, `size:` comparisons), `duration:>30s` / `duration:<2m`
 /// (videos), `has:gps`, `kind:photo`. Dates are local days for the UTC offset passed to
-/// `parse`.
+/// `parse`. Text inside documents (Task 62): bare words and phrases also match it unless
+/// `contents:off`; `content:word` (or `content:"a phrase"`) only in it, `-content:word`
+/// not in it, `name:word` only in names.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryQuery {
     pub terms: Vec<String>,
@@ -151,6 +164,31 @@ pub struct LibraryQuery {
     #[serde(default)]
     pub photo: bool,
     pub max: usize,
+    // --- Task 62 ---
+    /// Bare words and phrases also match the text inside documents (`contents:off`: names
+    /// only).
+    #[serde(default = "yes")]
+    pub contents: bool,
+    /// `content:` words and phrases: in the text inside documents only.
+    #[serde(default)]
+    pub content: Vec<String>,
+    /// `-content:`: not in the text inside documents.
+    #[serde(default)]
+    pub not_content: Vec<String>,
+    /// `name:`: in names only (prefix match on their words).
+    #[serde(default)]
+    pub name: Vec<String>,
+    /// The first this many hits (best first) found by their text carry a snippet of it.
+    #[serde(default = "snippet_page")]
+    pub snippets: usize,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn snippet_page() -> usize {
+    SNIPPET_PAGE
 }
 
 impl Default for LibraryQuery {
@@ -174,6 +212,11 @@ impl Default for LibraryQuery {
             has_gps: false,
             photo: false,
             max: DEFAULT_MAX,
+            contents: true,
+            content: Vec::new(),
+            not_content: Vec::new(),
+            name: Vec::new(),
+            snippets: SNIPPET_PAGE,
         }
     }
 }
@@ -342,7 +385,7 @@ impl LibraryQuery {
         for tok in tokens(s) {
             if tok.starts_with('"') {
                 let phrase = unquote(&tok);
-                if !phrase.trim().is_empty() {
+                if wordy(&phrase) {
                     q.phrases.push(phrase);
                 }
                 continue;
@@ -415,6 +458,14 @@ impl LibraryQuery {
                 "file" if value.is_empty() => q.kind = Some(KindFilter::File),
                 "folder" if value.is_empty() => q.kind = Some(KindFilter::Folder),
                 "tag" if !value.is_empty() => q.tags.push(value),
+                "content" if wordy(&value) => q.content.push(value),
+                "-content" if wordy(&value) => q.not_content.push(value),
+                "name" if wordy(&value) => q.name.push(value),
+                "contents" => match value.to_ascii_lowercase().as_str() {
+                    "off" | "no" | "false" | "0" => q.contents = false,
+                    "on" | "yes" | "true" | "1" => q.contents = true,
+                    _ => anyhow::bail!("contents: is on or off, not {value}"),
+                },
                 "in" | "source" if !value.is_empty() => q.sources.push(value),
                 _ => {
                     let term = unquote(&tok);
@@ -445,7 +496,37 @@ impl LibraryQuery {
             })
             .collect();
         parts.extend(self.phrases.iter().map(|p| quote(p)));
+        parts.extend(self.name.iter().map(|n| format!("name : {}*", quote(n))));
         parts
+    }
+
+    /// The words `text_parts` matches, in its order (names last).
+    fn text_words(&self) -> Vec<&String> {
+        self.terms
+            .iter()
+            .chain(&self.phrases)
+            .chain(&self.name)
+            .collect()
+    }
+
+    /// The FTS5 MATCH expression over the text inside documents: the bare words and
+    /// phrases (unless `contents:off`; the last word a prefix when it has 3 characters or
+    /// more) and the `content:` terms, each quoted so no user text is an FTS5 operator;
+    /// None when it has none.
+    pub(crate) fn content_match(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if self.contents {
+            let last = self.terms.len().saturating_sub(1);
+            parts.extend(self.terms.iter().enumerate().map(|(i, t)| {
+                match i == last && t.chars().filter(|c| c.is_alphanumeric()).count() >= 3 {
+                    true => format!("{}*", quote(t)),
+                    false => quote(t),
+                }
+            }));
+            parts.extend(self.phrases.iter().map(|p| quote(p)));
+        }
+        parts.extend(self.content.iter().map(|c| quote(c)));
+        (!parts.is_empty()).then(|| parts.join(" AND "))
     }
 
     /// The extensions a match must have (`ext:`, narrowed by `kind:`); empty for any, None
@@ -485,6 +566,8 @@ impl LibraryQuery {
             || self.modified_before.is_some()
             || !self.tags.is_empty()
             || self.has_media_filters()
+            || !self.content.is_empty()
+            || !self.not_content.is_empty()
     }
 
     fn has_media_filters(&self) -> bool {
@@ -574,6 +657,16 @@ impl LibraryQuery {
             sql.push_str(&format!(" AND r.id IN ({TAGGED})"));
             args.push(Value::Text(tag.clone()));
         }
+        // Task 62: `content:` and `-content:` (quoted words: never FTS5 operators).
+        if !self.content.is_empty() {
+            sql.push_str(&format!(" AND r.id IN ({IN_CONTENT})"));
+            let all: Vec<String> = self.content.iter().map(|c| quote(c)).collect();
+            args.push(Value::Text(all.join(" AND ")));
+        }
+        for c in &self.not_content {
+            sql.push_str(&format!(" AND r.id NOT IN ({IN_CONTENT})"));
+            args.push(Value::Text(quote(c)));
+        }
         Some((sql, args))
     }
 
@@ -601,11 +694,73 @@ pub struct LibraryHit {
     pub modified: Option<i64>,
     /// Lower ranks first.
     pub score: f64,
+    /// Task 62: a hit found by the text inside the document: a bounded snippet of it
+    /// around the words (only for the first `LibraryQuery::snippets` hits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<Snippet>,
 }
 
-fn quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
+/// A snippet of a document's text (at most [`SNIPPET_CHARS`] characters, on one line) and
+/// the byte ranges in it of the words that matched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    pub text: String,
+    pub marks: Vec<(usize, usize)>,
 }
+
+impl Snippet {
+    /// From FTS5 `snippet()` output with [`MARK_ON`] / [`MARK_OFF`]: whitespace runs become
+    /// one space, cut to [`SNIPPET_CHARS`] characters (an ellipsis after a cut).
+    pub(crate) fn from_marked(raw: &str) -> Snippet {
+        let mut out = Snippet::default();
+        let (mut chars, mut open, mut space) = (0usize, None, false);
+        for c in raw.trim().chars() {
+            match c {
+                MARK_ON => open = Some(out.text.len() + usize::from(space && chars > 0)),
+                MARK_OFF => {
+                    if let Some(start) = open.take().filter(|s| *s < out.text.len()) {
+                        out.marks.push((start, out.text.len()));
+                    }
+                }
+                c if c.is_whitespace() || c.is_control() => space = true,
+                c => {
+                    if chars + usize::from(space) + 1 >= SNIPPET_CHARS {
+                        out.text.push('\u{2026}');
+                        break;
+                    }
+                    if space && chars > 0 {
+                        out.text.push(' ');
+                        chars += 1;
+                    }
+                    space = false;
+                    out.text.push(c);
+                    chars += 1;
+                }
+            }
+        }
+        if let Some(start) = open {
+            let end = out.text.trim_end_matches('\u{2026}').len();
+            if start < end {
+                out.marks.push((start, end));
+            }
+        }
+        out
+    }
+}
+
+/// An FTS5 string: the quotes doubled, a NUL (which would end the query text early, so
+/// the string would never close) a space.
+fn quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\"").replace('\0', " "))
+}
+
+/// Has a letter or digit (words without one match nothing and are dropped).
+fn wordy(s: &str) -> bool {
+    s.chars().any(char::is_alphanumeric)
+}
+
+/// The records whose text matches the one parameter.
+const IN_CONTENT: &str = "SELECT rowid FROM record_content WHERE record_content MATCH ?";
 
 fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -631,6 +786,7 @@ pub(crate) fn hit_of(src: &Source, r: &rusqlite::Row, score: f64) -> rusqlite::R
         size: r.get::<_, i64>(4)? as u64,
         modified: r.get::<_, Option<i64>>(5)?.map(|ns| ns.div_euclid(NS)),
         score,
+        snippet: None,
     })
 }
 
@@ -775,9 +931,41 @@ const TAGGED: &str = "SELECT record FROM record_tag WHERE tag IN (
 /// Rank of a media-only (camera or keyword) hit: worse than any name or path hit.
 const MEDIA_RANK: f64 = 10.0;
 
-fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<LibraryHit>> {
+/// One source's hits: by name and path (or the filters alone), then (Task 62) by the text
+/// inside its documents when `contents` (its contents are indexed and it has text), each
+/// record once. Content hits come back with an empty snippet (`Library::search` fills it).
+pub(crate) fn search_source(
+    src: &Source,
+    q: &LibraryQuery,
+    now: i64,
+    contents: bool,
+) -> Result<Vec<LibraryHit>> {
+    let by_content = q.content_match().filter(|_| contents);
+    let mut hits = search_names(src, q, now, by_content.is_some())?;
+    let Some(m) = by_content else {
+        return Ok(hits);
+    };
+    let seen: std::collections::HashSet<i64> = hits.iter().map(|h| h.record.id).collect();
+    let more = search_content(src, q, now, &m)?;
+    hits.extend(more.into_iter().filter(|h| !seen.contains(&h.record.id)));
+    hits.sort_by(|a, b| a.score.total_cmp(&b.score));
+    hits.truncate(q.max);
+    Ok(hits)
+}
+
+/// Hits by name and path, or by the filters alone when the query has no words (none
+/// when the text inside documents is all it asks for: `content:` alone).
+fn search_names(
+    src: &Source,
+    q: &LibraryQuery,
+    now: i64,
+    by_content: bool,
+) -> Result<Vec<LibraryHit>> {
     let parts = q.text_parts(false);
     if parts.is_empty() {
+        if by_content {
+            return Ok(Vec::new());
+        }
         return search_filters(src, q, now);
     }
     let mut hits = search_text(src, q, now, parts)?;
@@ -785,7 +973,7 @@ fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Library
         // Nothing with whole earlier words: every word as a prefix.
         hits = search_text(src, q, now, q.text_parts(true))?;
     }
-    if hits.is_empty() {
+    if hits.is_empty() && q.name.is_empty() {
         // No name or path hit: the words may be a camera or XMP keywords (`media_fts`).
         let m = q.text_parts(true).join(" AND ");
         let cand = format!(
@@ -794,6 +982,78 @@ fn search_source(src: &Source, q: &LibraryQuery, now: i64) -> Result<Vec<Library
         return run(src, q, now, &cand, vec![Value::Text(m)], &[]);
     }
     Ok(hits)
+}
+
+/// Hits by the text inside documents (`m`, from `content_match`), `name:` words checked in
+/// the name index: the best `max * 4` (at least 1,000) by bm25, or the first ones by
+/// record id when more than [`RANK_CAP`] documents match, scored after every name hit.
+fn search_content(src: &Source, q: &LibraryQuery, now: i64, m: &str) -> Result<Vec<LibraryHit>> {
+    let candidates = (q.max * 4).max(1_000) as i64;
+    let matches: i64 = src.store.get()?.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM record_content WHERE record_content MATCH ?1 LIMIT ?2)",
+        rusqlite::params![m, RANK_CAP as i64 + 1],
+        |r| r.get(0),
+    )?;
+    if matches == 0 {
+        return Ok(Vec::new());
+    }
+    let mut args = vec![Value::Text(m.to_owned())];
+    let mut names = String::new();
+    if !q.name.is_empty() {
+        names.push_str(" AND rowid IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)");
+        let all: Vec<String> = q
+            .name
+            .iter()
+            .map(|n| format!("name : {}*", quote(n)))
+            .collect();
+        args.push(Value::Text(all.join(" AND ")));
+    }
+    args.push(Value::Integer(candidates));
+    // bm25 is negative: x / (1 - x) keeps it within (-1, 0].
+    let (rank, order) = match matches as usize > RANK_CAP {
+        true => (format!("{CONTENT_RANK}"), ""),
+        false => (
+            format!("{CONTENT_RANK} + bm25(record_content) / (1.0 - bm25(record_content))"),
+            " ORDER BY rank",
+        ),
+    };
+    let cand = format!(
+        "SELECT rowid AS id, {rank} AS rank FROM record_content
+         WHERE record_content MATCH ?{names}{order} LIMIT ?"
+    );
+    let mut hits = run(src, q, now, &cand, args, &[])?;
+    for h in &mut hits {
+        h.snippet = Some(Snippet::default());
+    }
+    Ok(hits)
+}
+
+/// The snippet of record `id`'s text around the words of `m` (`content_match`).
+fn snippet(src: &Source, id: i64, m: &str) -> Result<Option<Snippet>> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<String> = src
+        .store
+        .get()?
+        .prepare_cached(&format!(
+            "SELECT snippet(record_content, 0, '{MARK_ON}', '{MARK_OFF}', '', 24)
+             FROM record_content WHERE record_content MATCH ?1 AND rowid = ?2"
+        ))?
+        .query_row(rusqlite::params![m, id], |r| r.get(0))
+        .optional()?;
+    Ok(raw
+        .map(|r| Snippet::from_marked(&r))
+        .filter(|s| !s.text.is_empty()))
+}
+
+/// Whether `src`'s documents are searched by their text: contents are on for it and it
+/// has some.
+fn has_text(lib: &crate::library::Shared, src: &Source) -> bool {
+    crate::text_job::contents_on(lib, src)
+        && src.store.get().is_ok_and(|c| {
+            c.prepare_cached("SELECT 1 FROM record_text_body LIMIT 1")
+                .and_then(|mut s| s.exists([]))
+                .unwrap_or(false)
+        })
 }
 
 /// SQLITE_SCHEMA: the store's schema changed since this connection read it.
@@ -891,7 +1151,7 @@ fn search_text(
     // nothing: rank by the rarer words and check the common ones in the candidates' paths
     // (ponytail: as substrings, so `client` also passes `subclient`; a word that common
     // matches nearly everything anyway).
-    let words: Vec<&String> = q.terms.iter().chain(&q.phrases).collect();
+    let words = q.text_words();
     let (mut rare, mut common, mut common_words) = (Vec::new(), Vec::new(), Vec::new());
     for (part, word) in parts.into_iter().zip(words) {
         if count(src, &part)? as usize > RANK_CAP {
@@ -931,13 +1191,15 @@ impl Library {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         let mut hits = Vec::new();
         for src in sources.iter().filter(|s| q.wants(s)) {
+            let contents = has_text(&self.shared, src);
             // A walk rebuilds the filter indexes (a schema change); FTS5 reports that from
             // its constructor on a connection that read the old schema instead of preparing
             // again, so the search would come back empty: once more on the fresh schema.
-            let found = search_source(src, q, now).or_else(|e| match schema_changed(&e) {
-                true => search_source(src, q, now),
-                false => Err(e),
-            });
+            let found =
+                search_source(src, q, now, contents).or_else(|e| match schema_changed(&e) {
+                    true => search_source(src, q, now, contents),
+                    false => Err(e),
+                });
             match found {
                 Ok(h) => hits.extend(h),
                 Err(e) => tracing::warn!("search in {}: {e:#}", src.def.label),
@@ -945,6 +1207,20 @@ impl Library {
         }
         hits.sort_by(|a, b| a.score.total_cmp(&b.score));
         hits.truncate(q.max);
+        // Snippets for the page shown only (content hits carry an empty one until here).
+        let m = q.content_match();
+        for (i, h) in hits.iter_mut().enumerate() {
+            if h.snippet.is_none() {
+                continue;
+            }
+            h.snippet = match (&m, i < q.snippets) {
+                (Some(m), true) => sources
+                    .iter()
+                    .find(|s| s.id == h.record.source)
+                    .and_then(|s| snippet(s, h.record.id, m).ok().flatten()),
+                _ => None,
+            };
+        }
         Ok(hits)
     }
 
@@ -1003,6 +1279,10 @@ impl keel_search::Searcher for LibrarySearcher {
                 path: h.path,
                 is_dir: h.is_dir,
                 size: h.size,
+                snippet: h.snippet.map(|s| keel_search::Snippet {
+                    text: s.text,
+                    marks: s.marks,
+                }),
                 modified: h.modified.map(|t| {
                     let d = std::time::Duration::from_secs(t.unsigned_abs());
                     if t >= 0 {
