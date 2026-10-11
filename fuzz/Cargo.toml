@@ -49,6 +49,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "raw"
+path = "fuzz_targets/raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "image_meta"
 path = "fuzz_targets/image_meta.rs"
 test = false
@@ -93,6 +100,13 @@ bench = false
 [[bin]]
 name = "pair_code"
 path = "fuzz_targets/pair_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font"
+path = "fuzz_targets/font.rs"
 test = false
 doc = false
 bench = false

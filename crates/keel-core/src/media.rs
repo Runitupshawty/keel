@@ -30,7 +30,8 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 const FALLBACK_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", r"C:\ffmpeg\bin"];
 
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif",
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", "dng",
+    "cr2", "nef", "arw", "orf", "rw2", "pef",
 ];
 pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "wmv", "webm", "m4v", "mpg", "mpeg", "flv", "3gp",
@@ -148,10 +149,33 @@ pub fn read_meta(path: &Path) -> Result<MediaMeta> {
     }
 }
 
-fn is_heif(path: &Path) -> bool {
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("heic") || e.eq_ignore_ascii_case("heif"))
+        .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+fn is_heif(path: &Path) -> bool {
+    has_ext(path, &["heic", "heif"])
+}
+
+/// AVIF: decoded by ffmpeg (the `image` crate's AVIF decoder needs dav1d, a C library).
+fn is_avif(path: &Path) -> bool {
+    has_ext(path, &["avif"])
+}
+
+/// Camera RAW files shown by their embedded JPEG preview (the TIFF-based ones).
+pub const RAW_EXTENSIONS: &[&str] = &["dng", "cr2", "nef", "arw", "orf", "rw2", "pef"];
+
+fn is_raw(path: &Path) -> bool {
+    has_ext(path, RAW_EXTENSIONS)
+}
+
+/// Photos the `image` crate cannot open, which [`decode_image`] converts: HEIC and HEIF
+/// (ffmpeg, or libheif with feature `heic`), AVIF (ffmpeg) and camera RAW (the embedded
+/// preview).
+pub fn is_converted_photo(path: &Path) -> bool {
+    is_heif(path) || is_avif(path) || is_raw(path)
 }
 
 fn image_meta(path: &Path) -> Result<MediaMeta> {
@@ -163,20 +187,27 @@ fn image_meta(path: &Path) -> Result<MediaMeta> {
     if let Some(exif) = &exif {
         apply_exif(&mut meta, exif);
     }
-    if is_tiff(path) {
+    if is_tiff(path) || is_raw(path) {
         if let Some(o) = tiff_orientation(path)? {
             meta.orientation = o;
         }
     }
-    let dims = match ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-    {
-        Ok(d) => Some(d),
-        Err(_) if is_heif(path) => heif_dimensions(path, exif.as_ref())?,
-        Err(e) => return Err(image_error(e)),
+    let (w, h) = if is_raw(path) {
+        let p = raw_previews(path)?.first().copied();
+        let p = p.ok_or_else(|| corrupt("no embedded preview"))?;
+        (p.width, p.height)
+    } else if is_heif(path) || is_avif(path) {
+        let dims = converted_dimensions(path, exif.as_ref(), meta.orientation)?;
+        // Decoded upright (ffmpeg and libheif turn the picture by the file's own rotation):
+        // the size is as shown and no orientation applies on top.
+        meta.orientation = 1;
+        dims
+    } else {
+        ImageReader::open(path)?
+            .with_guessed_format()?
+            .into_dimensions()
+            .map_err(image_error)?
     };
-    let (w, h) = dims.context("no dimensions")?;
     (meta.width, meta.height) = if meta.orientation >= 5 {
         (h, w)
     } else {
@@ -189,29 +220,66 @@ fn image_meta(path: &Path) -> Result<MediaMeta> {
     Ok(meta)
 }
 
-/// HEIF dimensions: from libheif with feature `heic`, else from EXIF (None: unknown, an
-/// error that is not recorded so a build with `heic` retries it).
-#[cfg(not(feature = "heic"))]
-fn heif_dimensions(_path: &Path, exif: Option<&exif::Exif>) -> Result<Option<(u32, u32)>> {
+/// The size as shown of a HEIC, HEIF or AVIF file: from libheif (HEIC with feature
+/// `heic`), else from EXIF (turned by the EXIF `orientation`), else from ffprobe (the
+/// picture less its cropping, turned by its rotation). Without any of them it is unknown,
+/// an error that is not recorded (installing ffmpeg brings it).
+// ponytail: a tiled HEIF without EXIF sizes would report one tile's size from ffprobe
+// (phone photos carry EXIF sizes); read ffprobe's tile-grid stream group if that shows up.
+fn converted_dimensions(
+    path: &Path,
+    exif: Option<&exif::Exif>,
+    orientation: u8,
+) -> Result<(u32, u32)> {
+    #[cfg(feature = "heic")]
+    if is_heif(path) {
+        let ctx =
+            libheif_rs::HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
+        let handle = ctx.primary_image_handle().map_err(corrupt)?;
+        return Ok((handle.width(), handle.height()));
+    }
     let dim = |tag| {
         exif?
             .get_field(tag, exif::In::PRIMARY)
             .and_then(|f| f.value.get_uint(0))
+            .filter(|v| *v > 0)
     };
-    match (
+    if let (Some(w), Some(h)) = (
         dim(exif::Tag::PixelXDimension),
         dim(exif::Tag::PixelYDimension),
     ) {
-        (Some(w), Some(h)) => Ok(Some((w, h))),
-        _ => anyhow::bail!("HEIC needs Keel built with feature `heic`"),
+        return Ok(if orientation >= 5 { (h, w) } else { (w, h) });
     }
+    if find_tool("ffprobe").is_none() {
+        return Err(NeedsFfmpeg.into());
+    }
+    displayed_size(&ffprobe_json(path)?).ok_or_else(|| corrupt("no picture in the file"))
 }
 
-#[cfg(feature = "heic")]
-fn heif_dimensions(path: &Path, _exif: Option<&exif::Exif>) -> Result<Option<(u32, u32)>> {
-    let ctx = libheif_rs::HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
-    let handle = ctx.primary_image_handle().map_err(corrupt)?;
-    Ok(Some((handle.width(), handle.height())))
+/// A still picture's size as shown, from ffprobe JSON: the coded size less the cropping
+/// (HEIF pictures are coded in whole blocks), turned by the rotation.
+pub(crate) fn displayed_size(v: &serde_json::Value) -> Option<(u32, u32)> {
+    let s = v["streams"]
+        .as_array()?
+        .iter()
+        .find(|s| s["codec_type"] == "video")?;
+    let side = s["side_data_list"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let crop = |k: &str| side.iter().find_map(|d| d[k].as_u64()).unwrap_or(0);
+    let w = s["width"]
+        .as_u64()?
+        .checked_sub(crop("crop_left").saturating_add(crop("crop_right")))?;
+    let h = s["height"]
+        .as_u64()?
+        .checked_sub(crop("crop_top").saturating_add(crop("crop_bottom")))?;
+    let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+    let turned = side
+        .iter()
+        .find_map(|d| d["rotation"].as_i64())
+        .is_some_and(|r| r.rem_euclid(180) == 90);
+    (w > 0 && h > 0).then_some(if turned { (h, w) } else { (w, h) })
 }
 
 /// TIFFs bigger than this are not searched for EXIF: kamadak-exif reads a whole TIFF
@@ -269,7 +337,8 @@ pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
     };
     // (count field size, entry size, value offset in an entry, first IFD offset)
     let (count_len, entry_len, value_at, ifd) = match u16_at(&head[2..4]) {
-        42 => (2usize, 12usize, 8usize, u64::from(u32_at(&head[4..8]))),
+        // TIFF, and the TIFF-like headers of Olympus ("RO", "RS") and Panasonic RAW files.
+        42 | 0x4F52 | 0x5352 | 0x55 => (2usize, 12usize, 8usize, u64::from(u32_at(&head[4..8]))),
         43 => {
             if file.read_exact(&mut head[8..16]).is_err() {
                 return Ok(None);
@@ -302,10 +371,10 @@ pub(crate) fn tiff_orientation(path: &Path) -> Result<Option<u8>> {
     Ok(None)
 }
 
-/// None when the file has no (readable) EXIF, or is a TIFF over [`TIFF_EXIF_MAX`].
+/// None when the file has no (readable) EXIF, or is a TIFF or RAW over [`TIFF_EXIF_MAX`].
 fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     let file = File::open(path)?;
-    if is_tiff(path) && file.metadata()?.len() > TIFF_EXIF_MAX {
+    if (is_tiff(path) || is_raw(path)) && file.metadata()?.len() > TIFF_EXIF_MAX {
         return Ok(None);
     }
     let mut r = BufReader::new(file);
@@ -611,35 +680,117 @@ fn iso6709(s: &str) -> Option<(f64, f64)> {
     }
 }
 
-/// Decodes an image with its EXIF orientation applied, refusing ones over [`MAX_PIXELS`].
-pub(crate) fn decode_image(path: &Path) -> Result<DynamicImage> {
+/// Decodes an image with its orientation applied, refusing ones over [`MAX_PIXELS`]. The
+/// [converted](is_converted_photo) kinds come at most `max` px on the longer side (ffmpeg
+/// scales them); the others come full size.
+pub fn decode_image(path: &Path, max: u32) -> Result<DynamicImage> {
     if is_heif(path) {
-        return decode_heif(path);
+        return decode_heif(path, max);
     }
-    let (w, h) = ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-        .map_err(image_error)?;
+    if is_avif(path) {
+        return ffmpeg_still(path, max);
+    }
+    if is_raw(path) {
+        return raw_image(path);
+    }
+    let mut img = decode_bounded(|| Ok(ImageReader::open(path)?.with_guessed_format()?))?;
+    img.apply_orientation(orientation_of(path)?);
+    Ok(img)
+}
+
+/// Decodes what `open` reads, refusing pictures over [`MAX_PIXELS`] by their header.
+fn decode_bounded<R: std::io::BufRead + std::io::Seek>(
+    open: impl Fn() -> Result<ImageReader<R>>,
+) -> Result<DynamicImage> {
+    let (w, h) = open()?.into_dimensions().map_err(image_error)?;
     if u64::from(w) * u64::from(h) > MAX_PIXELS {
         return Err(corrupt(format!(
             "{w}x{h} is over {} MP: not decoded",
             MAX_PIXELS / 1_000_000
         )));
     }
-    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    let mut reader = open()?;
     let mut limits = Limits::default();
     // Decoders allocate by what each frame declares, which can be far more than the header
     // says (a 52-byte GIF with a 4x3 screen and a 14693x14649 frame): hold them to the
     // header's size, with room for 16 bytes a pixel.
     limits.max_alloc = Some((u64::from(w) * u64::from(h) * 16).clamp(64 << 20, MAX_PIXELS * 8));
     reader.limits(limits);
-    let mut img = reader.decode().map_err(image_error)?;
-    img.apply_orientation(orientation_of(path)?);
-    Ok(img)
+    reader.decode().map_err(image_error)
+}
+
+/// The oldest ffmpeg major version that reads HEIF still images (with the tile grids of
+/// phone photos) and AVIF image items.
+pub const STILL_MIN_FFMPEG: u32 = 7;
+/// The longest side ffmpeg is asked for (a photo is never decoded bigger than this).
+const STILL_MAX_SIDE: u32 = 8192;
+
+/// No ffmpeg on PATH for a photo only ffmpeg can decode. Not the file's fault.
+#[derive(Debug)]
+pub struct NeedsFfmpeg;
+impl std::fmt::Display for NeedsFfmpeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Install ffmpeg to see HEIC and AVIF photos")
+    }
+}
+impl std::error::Error for NeedsFfmpeg {}
+
+/// The picture of a HEIC, HEIF or AVIF file through ffmpeg, with the file's rotation and
+/// mirroring applied (ffmpeg turns the frame by its `irot`/`imir`), at most `max` px on the
+/// longer side (never enlarged). A failure with an ffmpeg older than [`STILL_MIN_FFMPEG`]
+/// says so and is not recorded against the file (a newer ffmpeg may read it).
+fn ffmpeg_still(path: &Path, max: u32) -> Result<DynamicImage> {
+    let ffmpeg = find_tool("ffmpeg").ok_or(NeedsFfmpeg)?;
+    let max = max.clamp(1, STILL_MAX_SIDE);
+    let mut command = Command::new(&ffmpeg);
+    command
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-vf"])
+        .arg(format!(
+            "scale=w='min(iw,{max})':h='min(ih,{max})':force_original_aspect_ratio=decrease"
+        ))
+        .args(["-f", "image2pipe", "-vcodec", "png", "-"]);
+    let (status, stdout, stderr) = run(command)?;
+    if status.success() && !stdout.is_empty() {
+        return decode_bounded(|| {
+            Ok(ImageReader::with_format(
+                Cursor::new(stdout.as_slice()),
+                ImageFormat::Png,
+            ))
+        });
+    }
+    let kind = if is_avif(path) { "AVIF" } else { "HEIC" };
+    if let Some(v) = ffmpeg_major(&ffmpeg).filter(|v| *v < STILL_MIN_FFMPEG) {
+        anyhow::bail!("{kind} photos need ffmpeg {STILL_MIN_FFMPEG} or newer (this one is {v})");
+    }
+    let err = String::from_utf8_lossy(&stderr).trim().to_owned();
+    Err(corrupt(if err.is_empty() {
+        format!("ffmpeg could not read this {kind} file")
+    } else {
+        err
+    }))
+}
+
+/// The major version of `ffmpeg` (None for a git build or an unreadable answer).
+fn ffmpeg_major(ffmpeg: &Path) -> Option<u32> {
+    let mut command = Command::new(ffmpeg);
+    command.arg("-version");
+    let (_, stdout, _) = run(command).ok()?;
+    parse_ffmpeg_major(String::from_utf8_lossy(&stdout).lines().next()?)
+}
+
+/// `ffmpeg version 6.1.1-3ubuntu5 ...` or `ffmpeg version n7.1 ...` as 6 or 7; None for a
+/// git build (`N-113-g...`), which is newer than any release.
+pub(crate) fn parse_ffmpeg_major(line: &str) -> Option<u32> {
+    let v = line.strip_prefix("ffmpeg version ")?;
+    let v = v.strip_prefix('n').unwrap_or(v);
+    let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
-    if is_tiff(path) {
+    if is_tiff(path) || is_raw(path) {
         let o = tiff_orientation(path)?.unwrap_or(1);
         return Ok(image::metadata::Orientation::from_exif(o)
             .unwrap_or(image::metadata::Orientation::NoTransforms));
@@ -657,7 +808,7 @@ fn orientation_of(path: &Path) -> Result<image::metadata::Orientation> {
 /// libheif applies the file's own rotation/mirroring, so EXIF orientation is not applied
 /// again.
 #[cfg(feature = "heic")]
-fn decode_heif(path: &Path) -> Result<DynamicImage> {
+fn decode_heif(path: &Path, _max: u32) -> Result<DynamicImage> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let ctx = HeifContext::read_from_file(&path.to_string_lossy()).map_err(corrupt)?;
     let handle = ctx.primary_image_handle().map_err(corrupt)?;
@@ -680,9 +831,229 @@ fn decode_heif(path: &Path) -> Result<DynamicImage> {
     Ok(DynamicImage::ImageRgb8(rgb))
 }
 
+/// Without libheif: ffmpeg.
 #[cfg(not(feature = "heic"))]
-fn decode_heif(_path: &Path) -> Result<DynamicImage> {
-    anyhow::bail!("HEIC needs Keel built with feature `heic`")
+fn decode_heif(path: &Path, max: u32) -> Result<DynamicImage> {
+    ffmpeg_still(path, max)
+}
+
+/// Directories, SubIFD depth and entries per directory the RAW walk reads at most.
+const RAW_MAX_IFDS: usize = 32;
+const RAW_MAX_DEPTH: u32 = 3;
+const RAW_IFD_ENTRIES: usize = 512;
+/// SubIFD offsets read from one directory.
+const RAW_MAX_SUBIFDS: u32 = 8;
+/// The largest embedded preview read (bytes).
+const RAW_PREVIEW_MAX: u64 = 64 << 20;
+/// JPEG segments skipped looking for the frame header.
+const JPEG_MAX_SEGMENTS: usize = 64;
+
+/// A JPEG preview inside a RAW file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawPreview {
+    pub(crate) offset: u64,
+    pub(crate) len: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+/// The JPEG previews embedded in a TIFF-based RAW file (DNG, CR2, NEF, ARW, ORF, RW2,
+/// PEF) that `image` can decode (baseline or progressive, at most [`MAX_PIXELS`]), largest
+/// picture first. Found through `JPEGInterchangeFormat` and its length, single JPEG strips
+/// (compression 6 or 7) and Panasonic's `JpgFromRaw`, walking IFD0's chain and the SubIFDs
+/// (at most [`RAW_MAX_IFDS`] directories, [`RAW_MAX_DEPTH`] deep, [`RAW_IFD_ENTRIES`]
+/// entries each). Reads the directories and the JPEG headers only. Empty for other files.
+pub(crate) fn raw_previews(path: &Path) -> Result<Vec<RawPreview>> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut head = [0u8; 8];
+    if file.read_exact(&mut head).is_err() {
+        return Ok(Vec::new());
+    }
+    let le = match &head[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Ok(Vec::new()),
+    };
+    let u16_of = |b: &[u8]| {
+        let b = [b[0], b[1]];
+        if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        }
+    };
+    let u32_of = |b: &[u8]| {
+        let b = [b[0], b[1], b[2], b[3]];
+        if le {
+            u32::from_le_bytes(b)
+        } else {
+            u32::from_be_bytes(b)
+        }
+    };
+    if !matches!(u16_of(&head[2..4]), 42 | 0x4F52 | 0x5352 | 0x55) {
+        return Ok(Vec::new());
+    }
+    let mut found: Vec<(u64, u64)> = Vec::new();
+    let mut todo = vec![(u64::from(u32_of(&head[4..8])), 0u32)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((ifd, depth)) = todo.pop() {
+        if seen.len() >= RAW_MAX_IFDS || ifd < 8 || ifd >= size || !seen.insert(ifd) {
+            continue;
+        }
+        file.seek(SeekFrom::Start(ifd))?;
+        let mut count = [0u8; 2];
+        if file.read_exact(&mut count).is_err() {
+            continue;
+        }
+        let n = usize::from(u16_of(&count)).min(RAW_IFD_ENTRIES);
+        // A truncated directory keeps the entries that are there (a read may come short).
+        let mut entries = Vec::with_capacity(n * 12 + 4);
+        let got = file
+            .by_ref()
+            .take((n * 12 + 4) as u64)
+            .read_to_end(&mut entries)?;
+        let n = n.min(got / 12);
+        let next = (got >= n * 12 + 4).then(|| u32_of(&entries[n * 12..]));
+        let mut jpeg = (None, None);
+        let mut strip = (None, None, 0u32);
+        let mut compression = 0;
+        for e in entries[..n * 12].as_chunks::<12>().0 {
+            let (tag, kind, count) = (u16_of(&e[0..2]), u16_of(&e[2..4]), u32_of(&e[4..8]));
+            // The first value of a SHORT entry, else the 32-bit value or offset field.
+            let value = if kind == 3 {
+                u32::from(u16_of(&e[8..10]))
+            } else {
+                u32_of(&e[8..12])
+            };
+            match tag {
+                0x0103 => compression = value,
+                0x0111 => (strip.0, strip.2) = (Some(value), count),
+                0x0117 => strip.1 = Some(value),
+                0x0201 => jpeg.0 = Some(value),
+                0x0202 => jpeg.1 = Some(value),
+                // Panasonic's JpgFromRaw: the entry's data is a whole JPEG.
+                0x002E if kind == 7 => found.push((u64::from(value), u64::from(count))),
+                0x014A if depth < RAW_MAX_DEPTH && count == 1 => {
+                    todo.push((u64::from(value), depth + 1));
+                }
+                0x014A if depth < RAW_MAX_DEPTH => {
+                    let mut offsets = vec![0u8; count.min(RAW_MAX_SUBIFDS) as usize * 4];
+                    let here = file.stream_position()?;
+                    file.seek(SeekFrom::Start(u64::from(value)))?;
+                    if file.read_exact(&mut offsets).is_ok() {
+                        for o in offsets.as_chunks::<4>().0 {
+                            todo.push((u64::from(u32_of(o)), depth + 1));
+                        }
+                    }
+                    file.seek(SeekFrom::Start(here))?;
+                }
+                _ => {}
+            }
+        }
+        if let (Some(at), Some(len)) = jpeg {
+            found.push((u64::from(at), u64::from(len)));
+        }
+        if let (Some(at), Some(len), 1) = strip {
+            if matches!(compression, 6 | 7) {
+                found.push((u64::from(at), u64::from(len)));
+            }
+        }
+        if let Some(next) = next {
+            todo.push((u64::from(next), depth));
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    let mut previews = Vec::new();
+    for (offset, len) in found {
+        if !(2..=RAW_PREVIEW_MAX).contains(&len) || offset.saturating_add(len) > size {
+            continue;
+        }
+        if let Some((width, height)) = jpeg_frame(&mut file, offset, len)? {
+            if u64::from(width) * u64::from(height) <= MAX_PIXELS {
+                previews.push(RawPreview {
+                    offset,
+                    len,
+                    width,
+                    height,
+                });
+            }
+        }
+    }
+    previews.sort_by_key(|p| std::cmp::Reverse(u64::from(p.width) * u64::from(p.height)));
+    Ok(previews)
+}
+
+/// Width and height from the frame header of the JPEG at `offset`, when it is baseline,
+/// extended or progressive (SOF0 to SOF2, what `image` decodes; not lossless or
+/// arithmetic-coded ones, which RAW files use for their sensor data).
+fn jpeg_frame(file: &mut File, offset: u64, len: u64) -> Result<Option<(u32, u32)>> {
+    use std::io::{Seek, SeekFrom};
+    let end = offset + len;
+    let mut read_at = |at: u64, buf: &mut [u8]| -> Result<bool> {
+        if at + buf.len() as u64 > end {
+            return Ok(false);
+        }
+        file.seek(SeekFrom::Start(at))?;
+        Ok(file.read_exact(buf).is_ok())
+    };
+    let mut soi = [0u8; 2];
+    if !read_at(offset, &mut soi)? || soi != [0xFF, 0xD8] {
+        return Ok(None);
+    }
+    let mut at = offset + 2;
+    for _ in 0..JPEG_MAX_SEGMENTS {
+        let mut seg = [0u8; 9];
+        if !read_at(at, &mut seg[..4])? || seg[0] != 0xFF {
+            return Ok(None);
+        }
+        match seg[1] {
+            // A fill byte before the marker.
+            0xFF => at += 1,
+            0xC0..=0xC2 => {
+                if !read_at(at, &mut seg)? {
+                    return Ok(None);
+                }
+                let h = u32::from(u16::from_be_bytes([seg[5], seg[6]]));
+                let w = u32::from(u16::from_be_bytes([seg[7], seg[8]]));
+                return Ok((w > 0 && h > 0).then_some((w, h)));
+            }
+            // Other frame types, or the scan or the end before any frame.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xD9 | 0xDA => return Ok(None),
+            _ => at += 2 + u64::from(u16::from_be_bytes([seg[2], seg[3]])),
+        }
+    }
+    Ok(None)
+}
+
+/// The largest embedded preview of a RAW file that decodes, with the file's orientation
+/// applied.
+fn raw_image(path: &Path) -> Result<DynamicImage> {
+    use std::io::{Seek, SeekFrom};
+    let previews = raw_previews(path)?;
+    let mut last = corrupt("no embedded preview");
+    let mut file = File::open(path)?;
+    for p in previews.iter().take(3) {
+        let mut jpeg = vec![0u8; p.len as usize];
+        file.seek(SeekFrom::Start(p.offset))?;
+        file.read_exact(&mut jpeg)?;
+        let decoded = decode_bounded(|| {
+            Ok(ImageReader::with_format(
+                Cursor::new(jpeg.as_slice()),
+                ImageFormat::Jpeg,
+            ))
+        });
+        match decoded {
+            Ok(mut img) => {
+                img.apply_orientation(orientation_of(path)?);
+                return Ok(img);
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// Fits `img` within `max` x `max` (never enlarging) and encodes it as lossless WebP (the
@@ -707,7 +1078,7 @@ pub(crate) fn webp(img: DynamicImage, max: u32) -> Result<Vec<u8>> {
 pub(crate) fn thumbnail(path: &Path, max: u32) -> Result<Vec<u8>> {
     let img = match media_type(path) {
         Some(MediaType::Video) => video_frame(path)?,
-        _ => decode_image(path)?,
+        _ => decode_image(path, max)?,
     };
     webp(img, max)
 }

@@ -57,8 +57,8 @@ impl KindFilter {
         match self {
             KindFilter::File | KindFilter::Folder => &[],
             KindFilter::Image => &[
-                "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "svg",
-                "ico", "raw", "cr2", "nef", "arw", "dng",
+                "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif",
+                "svg", "ico", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "raf",
             ],
             KindFilter::Video => &[
                 "mp4", "mkv", "mov", "avi", "wmv", "webm", "m4v", "mpg", "mpeg", "flv", "3gp",

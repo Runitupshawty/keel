@@ -6,6 +6,11 @@ pub const EXTENSIONS: &[&str] = &[
     "pptx", "svg", "png", "gif", "bmp", "ico", "webp", "jpg", "bin",
 ];
 
+/// A font file's sample and names (`font::sample`).
+pub fn font(data: &[u8]) {
+    let _ = crate::font::sample(data, 256);
+}
+
 /// One file previewed as the panel previews it (panics are not caught here).
 pub fn preview(data: &[u8]) {
     let Some((&pick, body)) = data.split_first() else {
@@ -45,5 +50,9 @@ mod tests {
     #[test]
     fn fuzz_preview() {
         run("preview", super::preview);
+    }
+    #[test]
+    fn fuzz_font() {
+        run("font", super::font);
     }
 }

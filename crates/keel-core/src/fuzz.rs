@@ -17,6 +17,21 @@ pub fn tiff(data: &[u8]) {
     });
 }
 
+/// A camera RAW file: the walk to its embedded previews, its metadata and, when the largest
+/// preview is small, its pixels.
+pub fn raw(data: &[u8]) {
+    with_file(data, "input.dng", |path| {
+        let small = crate::media::raw_previews(path)
+            .ok()
+            .and_then(|p| p.first().copied())
+            .is_some_and(|p| u64::from(p.width) * u64::from(p.height) <= 1 << 16);
+        let _ = crate::media::read_meta(path);
+        if small {
+            let _ = crate::media::thumbnail(path, 64);
+        }
+    });
+}
+
 /// A photo's metadata (EXIF, XMP, dimensions by content) and, when it is small, its pixels.
 pub fn image_meta(data: &[u8]) {
     with_file(data, "input.jpg", |path| {
@@ -64,6 +79,10 @@ mod tests {
     #[test]
     fn fuzz_tiff() {
         run("tiff", super::tiff);
+    }
+    #[test]
+    fn fuzz_raw() {
+        run("raw", super::raw);
     }
     #[test]
     fn fuzz_image_meta() {

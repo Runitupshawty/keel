@@ -8,7 +8,10 @@
 //! closing the viewer kills both processes (reaped on a thread: the UI never waits for a
 //! process stuck in I/O) and cancels a download that is still running; a remote file is
 //! downloaded once per player, seeks before it is there wait for it. Nothing here decodes
-//! on the UI thread; it only uploads the due frame into one reused texture.
+//! on the UI thread; it only uploads the due frame into one reused texture. An audio file
+//! (no picture) plays the same way with the sound process alone; the preview panel uses
+//! that. Test builds never open a sound device: their sound goes to a sink that takes it
+//! in real time and plays nothing.
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use egui::{ColorImage, TextureHandle, TextureOptions, Vec2};
@@ -46,6 +49,23 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// says a download starts.
 pub type Resolve =
     Arc<dyn Fn(&AtomicBool, &dyn Fn(u64, u64)) -> anyhow::Result<PathBuf> + Send + Sync>;
+
+/// A [`Resolve`] for `real`: the file itself when it is local, else a download through
+/// `router` (cancellable, with progress).
+pub fn resolve(router: Option<Arc<keel_vfs::Router>>, real: keel_vfs::VPath) -> Resolve {
+    Arc::new(move |cancel, progress| {
+        if let Some(local) = real.to_local_path() {
+            return Ok(local);
+        }
+        let provider = router
+            .as_ref()
+            .and_then(|r| r.provider_for(&real))
+            .ok_or_else(|| anyhow::anyhow!("no provider"))?;
+        progress(0, 0);
+        let report = |p: keel_vfs::Progress| progress(p.done_bytes, p.total_bytes);
+        provider.local_copy_cancellable(&real, &report, cancel)
+    })
+}
 
 // ---------------------------------------------------------------- pure parts
 
@@ -632,8 +652,9 @@ fn video_worker(job: Job) {
         }
     };
     let p = &known.probe;
-    if p.width == 0 || p.height == 0 {
-        return fail("no video stream".into());
+    let picture = p.width > 0 && p.height > 0;
+    if !picture && !p.audio {
+        return fail("no video or audio stream".into());
     }
     let Some(ffmpeg) = keel_core::find_tool("ffmpeg") else {
         return fail("ffmpeg not found".into());
@@ -651,6 +672,14 @@ fn video_worker(job: Job) {
         });
     } else {
         job.audio.done.store(true, Ordering::Release);
+    }
+    if !picture {
+        // Sound only: no frames ever come (the queue is already disconnected), so the end
+        // is the sound's end.
+        let (_, rx) = bounded::<Frame>(1);
+        let _ = job.msgs.send(Msg::Frames(rx));
+        job.ctx.request_repaint();
+        return;
     }
     let [w, h] = decode_size([p.width, p.height], job.area);
     let mut cmd = Command::new(&ffmpeg);
@@ -693,8 +722,7 @@ fn video_worker(job: Job) {
 
 /// Runs the output stream while the player plays and pauses it while it does not (a
 /// paused stream does not keep the device running).
-fn follow(stream: &cpal::Stream, audio: &Audio, on: &mut bool) -> anyhow::Result<()> {
-    use cpal::traits::StreamTrait;
+fn follow(stream: &Output, audio: &Audio, on: &mut bool) -> anyhow::Result<()> {
     let want = !audio.paused.load(Ordering::Relaxed);
     if want == *on {
         return Ok(());
@@ -711,16 +739,40 @@ fn follow(stream: &cpal::Stream, audio: &Audio, on: &mut bool) -> anyhow::Result
     Ok(())
 }
 
-/// Opens the default output device, starts the PCM decoder and feeds the device until the
-/// sound ends (then waits for it to drain) or the session stops. Owns the stream: it is
-/// dropped on this thread.
-fn audio_worker(
-    path: &Path,
-    ffmpeg: &Path,
-    start: f64,
+/// Where the sound goes: the default output device; in test builds a sink that takes the
+/// samples in real time and plays nothing, so tests never use the speakers.
+#[cfg(not(test))]
+type Output = cpal::Stream;
+#[cfg(test)]
+type Output = NullOutput;
+
+/// The output format: (rate, channels).
+type Format = (u32, u16);
+
+/// The output callback: fills a buffer of interleaved samples, told the device latency.
+type Fill = Box<dyn FnMut(&mut [f32], Duration) + Send>;
+
+trait Playback {
+    fn play(&self) -> anyhow::Result<()>;
+    fn pause(&self) -> anyhow::Result<()>;
+}
+
+#[cfg(not(test))]
+impl Playback for cpal::Stream {
+    fn play(&self) -> anyhow::Result<()> {
+        Ok(cpal::traits::StreamTrait::play(self)?)
+    }
+    fn pause(&self) -> anyhow::Result<()> {
+        Ok(cpal::traits::StreamTrait::pause(self)?)
+    }
+}
+
+/// Opens the default output device with `make(format)` as its callback.
+#[cfg(not(test))]
+fn open_output(
     audio: &Arc<Audio>,
-    procs: &Procs,
-) -> anyhow::Result<()> {
+    make: impl FnOnce(Format) -> Fill,
+) -> anyhow::Result<(Output, Format)> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let device = cpal::default_host()
         .default_output_device()
@@ -728,16 +780,106 @@ fn audio_worker(
     // ponytail: f32 output only (WASAPI and CoreAudio mix in f32; ALSA's default device
     // converts); an i16-only device plays silently on the wall clock.
     let config = device.default_output_config()?.config();
-    let (rate, channels) = (config.sample_rate, config.channels);
-    let (tx, rx) = bounded::<Vec<f32>>(AUDIO_CHUNKS);
-    let shared = audio.clone();
-    let (mut cur, mut pos) = (Vec::<f32>::new(), 0usize);
+    let format = (config.sample_rate, config.channels);
+    let mut fill = make(format);
     let stream = device.build_output_stream::<f32, _, _>(
         config,
         move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
-            let a = &shared;
             let ts = info.timestamp();
-            let latency = ts.playback.duration_since(ts.callback).min(MAX_LATENCY);
+            fill(out, ts.playback.duration_since(ts.callback));
+        },
+        {
+            let audio = audio.clone();
+            move |e| {
+                tracing::info!("sound output: {e}");
+                audio.done.store(true, Ordering::Release);
+            }
+        },
+        None,
+    )?;
+    Ok((stream, format))
+}
+
+/// Test builds' output: a thread that runs the callback in real time (48 kHz stereo)
+/// while playing, and discards what it fills.
+#[cfg(test)]
+pub struct NullOutput {
+    on: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl Playback for NullOutput {
+    fn play(&self) -> anyhow::Result<()> {
+        self.on.store(true, Ordering::Release);
+        Ok(())
+    }
+    fn pause(&self) -> anyhow::Result<()> {
+        self.on.store(false, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for NullOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+fn open_output(
+    _audio: &Arc<Audio>,
+    make: impl FnOnce(Format) -> Fill,
+) -> anyhow::Result<(Output, Format)> {
+    let format = (48_000, 2);
+    let mut fill = make(format);
+    let (on, stop) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (run_on, run_stop) = (on.clone(), stop.clone());
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        // Frames due since playing started (or resumed), and those handed over.
+        let (mut since, mut fed) = (None::<Instant>, 0u64);
+        while !run_stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+            if !run_on.load(Ordering::Acquire) {
+                since = None;
+                continue;
+            }
+            let start = *since.get_or_insert_with(|| {
+                fed = 0;
+                Instant::now()
+            });
+            let due = (start.elapsed().as_secs_f64() * f64::from(format.0)) as u64;
+            let frames = due.saturating_sub(fed).min(u64::from(format.0)) as usize;
+            fed += frames as u64;
+            buf.resize(frames * usize::from(format.1), 0.0);
+            fill(&mut buf, Duration::ZERO);
+        }
+    });
+    Ok((NullOutput { on, stop }, format))
+}
+
+/// Opens the output, starts the PCM decoder and feeds the output until the sound ends
+/// (then waits for it to drain) or the session stops. Owns the stream: it is dropped on
+/// this thread.
+fn audio_worker(
+    path: &Path,
+    ffmpeg: &Path,
+    start: f64,
+    audio: &Arc<Audio>,
+    procs: &Procs,
+) -> anyhow::Result<()> {
+    let (tx, rx) = bounded::<Vec<f32>>(AUDIO_CHUNKS);
+    let shared = audio.clone();
+    let (mut cur, mut pos) = (Vec::<f32>::new(), 0usize);
+    let (stream, (rate, channels)) = open_output(audio, |(_, channels)| {
+        Box::new(move |out: &mut [f32], latency: Duration| {
+            let a = &shared;
+            let latency = latency.min(MAX_LATENCY);
             a.latency_us
                 .store(latency.as_micros() as u64, Ordering::Release);
             if a.paused.load(Ordering::Relaxed) || a.done.load(Ordering::Relaxed) {
@@ -770,16 +912,8 @@ fn audio_worker(
             if ended {
                 a.done.store(true, Ordering::Release);
             }
-        },
-        {
-            let audio = audio.clone();
-            move |e| {
-                tracing::info!("sound output: {e}");
-                audio.done.store(true, Ordering::Release);
-            }
-        },
-        None,
-    )?;
+        })
+    })?;
     audio.rate.store(rate, Ordering::Release);
     let mut on = false;
     follow(&stream, audio, &mut on)?;

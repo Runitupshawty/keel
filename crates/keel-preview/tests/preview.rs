@@ -720,3 +720,168 @@ fn gif_frame_larger_than_its_screen_is_refused() {
         Preview::Error(_)
     ));
 }
+
+fn has_ffmpeg() -> bool {
+    let found = keel_core::find_tool("ffmpeg").is_some();
+    if !found {
+        eprintln!("skipping: ffmpeg is missing");
+    }
+    found
+}
+
+/// HEIC and AVIF photos (committed synthetic fixtures) preview through ffmpeg, upright and
+/// within the fit box.
+#[test]
+fn heic_and_avif_preview_through_ffmpeg() {
+    if !has_ffmpeg() {
+        return;
+    }
+    for (name, w, h) in [
+        ("pattern.heic", 32, 24),
+        ("pattern.avif", 32, 24),
+        ("pattern-rot90.heic", 24, 32),
+    ] {
+        let mut req = request(name);
+        req.max_px = 32;
+        let result = preview(&req);
+        let Preview::Image(image) = result else {
+            panic!("{name}: expected an image, got {result:?}");
+        };
+        assert_eq!((image.w, image.h), (w, h), "{name}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.heic");
+    std::fs::write(&bad, b"not a photo").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "heic", 64)),
+        Preview::Error(_)
+    ));
+}
+
+/// A RAW file shows its largest embedded JPEG, turned by its orientation; CR3 and RAF say
+/// they are not read.
+#[test]
+fn raw_files_preview_their_embedded_jpeg() {
+    let result = preview(&request("tiny.dng"));
+    let Preview::Image(image) = result else {
+        panic!("expected an image, got {result:?}");
+    };
+    assert_eq!((image.w, image.h), (20, 40));
+    let dir = tempfile::tempdir().unwrap();
+    for ext in ["cr3", "raf"] {
+        let path = dir.path().join(format!("photo.{ext}"));
+        std::fs::write(&path, b"....").unwrap();
+        assert!(matches!(
+            preview(&temp_request(&path, ext, 64)),
+            Preview::Missing(why) if why.contains("CR3")
+        ));
+    }
+    let bad = dir.path().join("bad.nef");
+    std::fs::write(&bad, b"II*\0garbage").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "nef", 64)),
+        Preview::Error(_)
+    ));
+}
+
+/// A 1 s 440 Hz tone with tags and a 64 x 48 cover, made by ffmpeg (None when this
+/// ffmpeg cannot encode `codec`).
+fn tone(dir: &Path, name: &str, codec: &str) -> Option<PathBuf> {
+    let cover = dir.join("cover.png");
+    image::RgbImage::from_pixel(64, 48, image::Rgb([200, 40, 40]))
+        .save(&cover)
+        .unwrap();
+    let out = dir.join(name);
+    let ok = std::process::Command::new(keel_core::find_tool("ffmpeg")?)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:duration=1")
+        .arg("-i")
+        .arg(&cover)
+        .args(["-map", "0:a", "-map", "1:v", "-c:a", codec, "-c:v", "png"])
+        .args(["-id3v2_version", "3", "-disposition:v", "attached_pic"])
+        .args(["-metadata", "title=Test Tone", "-metadata", "artist=Keel"])
+        .args(["-metadata", "album=Fixtures"])
+        .arg(&out)
+        .status()
+        .unwrap()
+        .success();
+    ok.then_some(out)
+}
+
+/// FLAC and MP3 tones show their tags, format, cover and waveform.
+#[test]
+fn audio_files_show_tags_cover_and_waveform() {
+    if !has_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let flac = tone(dir.path(), "tone.flac", "flac").expect("ffmpeg encodes FLAC");
+    let mp3 = tone(dir.path(), "tone.mp3", "libmp3lame");
+    if mp3.is_none() {
+        eprintln!("this ffmpeg has no MP3 encoder: MP3 skipped");
+    }
+    for (path, codec) in [(Some(flac), "flac"), (mp3, "mp3")] {
+        let Some(path) = path else { continue };
+        let result = preview(&temp_request(&path, codec, 320));
+        let Preview::Audio {
+            cover,
+            wave,
+            duration_s,
+            tags,
+            meta,
+        } = result
+        else {
+            panic!("{codec}: expected an audio preview, got {result:?}");
+        };
+        let tags: Vec<(&str, &str)> = tags.iter().map(|(k, v)| (&**k, &**v)).collect();
+        assert_eq!(
+            tags,
+            [
+                ("Title", "Test Tone"),
+                ("Artist", "Keel"),
+                ("Album", "Fixtures")
+            ],
+            "{codec}"
+        );
+        assert!((0.9..1.2).contains(&duration_s), "{codec}: {duration_s}");
+        assert!(meta.starts_with(codec), "{codec}: {meta}");
+        assert!(meta.contains("kHz") && meta.contains("kb/s"), "{meta}");
+        let cover = cover.expect("the cover");
+        assert_eq!((cover.w, cover.h), (64, 48), "{codec}: never enlarged");
+        let wave = wave.expect("the waveform");
+        assert_eq!((wave.w, wave.h), (320, 64), "{codec}");
+        assert!(
+            wave.data.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+            "something is drawn"
+        );
+    }
+    // Not audio at all: an error, not a crash.
+    let bad = dir.path().join("bad.mp3");
+    std::fs::write(&bad, b"not audio").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "mp3", 64)),
+        Preview::Error(_)
+    ));
+}
+
+/// TrueType files show a sample with their names; woff and woff2 are not previewed.
+#[test]
+fn fonts_show_a_sample() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Hack-Regular.ttf");
+    std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let result = preview(&temp_request(&path, "ttf", 480));
+    let Preview::Font { sample, name, .. } = result else {
+        panic!("expected a font preview, got {result:?}");
+    };
+    assert_eq!(name, "Hack Regular");
+    assert_eq!(sample.w, 480);
+    assert!(accepts("otf") && accepts("TTC"));
+    assert!(!accepts("woff") && !accepts("woff2"));
+    let bad = dir.path().join("bad.otf");
+    std::fs::write(&bad, b"OTTO and then nothing").unwrap();
+    assert!(matches!(
+        preview(&temp_request(&bad, "otf", 64)),
+        Preview::Error(_)
+    ));
+}

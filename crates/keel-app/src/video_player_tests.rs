@@ -484,8 +484,8 @@ fn a_seek_before_ready_plays_from_there() {
     let _ = std::fs::remove_dir_all(clip.parent().unwrap());
 }
 
-/// Review 44 minor 1: the output stream runs only while the video plays (skipped without
-/// an output device; the sound is muted).
+/// Review 44 minor 1: the output stream runs only while the video plays (test builds play
+/// into a sink, never a sound device).
 #[test]
 fn the_sound_output_pauses_with_the_video() {
     let Some(clip) = test_clip("pause") else {
@@ -498,10 +498,7 @@ fn the_sound_output_pauses_with_the_video() {
         let a = p.audio();
         on(p) || (a.done.load(Ordering::Acquire) && a.rate.load(Ordering::Acquire) == 0)
     });
-    if !on(&p) {
-        eprintln!("skipped: no sound output device");
-        return;
-    }
+    assert!(on(&p), "the test sink runs while playing");
     p.command(Cmd::Toggle);
     run_until(&mut p, 5, |p| !on(p));
     p.command(Cmd::Toggle);
@@ -545,5 +542,41 @@ fn unreadable_file_fails() {
     let mut p = player(&bad, 0.0);
     p.command(Cmd::Toggle);
     run_until(&mut p, 15, |p| p.error.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sound-only file plays to its end on the sound clock (into the test sink, never a
+/// device), and its process is reaped.
+#[test]
+fn plays_a_sound_only_file() {
+    let Some(ffmpeg) = keel_core::find_tool("ffmpeg") else {
+        eprintln!("skipped: ffmpeg is not installed");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("keel-audio-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let tone = dir.join("tone.flac");
+    let ok = Command::new(ffmpeg)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:duration=1")
+        .arg(&tone)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "ffmpeg could not make the tone");
+    let mut p = player(&tone, 0.0);
+    run_until(&mut p, 15, |p| p.duration().is_some());
+    assert_eq!(p.known.get().unwrap().probe.width, 0, "no picture stream");
+    p.command(Cmd::Toggle);
+    let started = Instant::now();
+    run_until(&mut p, 20, |p| p.transport.ended);
+    assert!(p.error.is_none(), "{:?}", p.error);
+    assert!(p.tex.is_none(), "no picture");
+    assert!(started.elapsed() >= Duration::from_millis(800), "real time");
+    assert!(p.sound_played() >= 0.9, "{}", p.sound_played());
+    let procs = p.procs();
+    drop(p);
+    all_reaped(&procs);
     let _ = std::fs::remove_dir_all(&dir);
 }

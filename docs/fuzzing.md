@@ -30,6 +30,7 @@ crate's `fuzzing` feature.
 | `archive` | `keel_vfs::fuzz::archive` | zip (zip64), tar, tar.gz/.bz2/.xz/.zst, 7z, RAR: listing, every body, and the zip rewriter deleting, renaming and adding entries |
 | `ssh_config` | `keel_vfs::fuzz::ssh_config` | `~/.ssh/config` with `Include`s, resolved for the aliases it names |
 | `tiff` | `keel_core::fuzz::tiff` | a TIFF's orientation (first IFD) and metadata |
+| `raw` | `keel_core::fuzz::raw` | camera RAW files: the walk of IFDs and SubIFDs to the embedded JPEG previews (bounded in count and depth), metadata, small previews |
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |
 | `probe` | `keel_core::fuzz::probe` | ffprobe JSON as the video metadata reader takes it |
 | `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters) and the SQL it becomes |
@@ -39,6 +40,7 @@ crate's `fuzzing` feature.
 | `pair_code` | `keel_net::fuzz::pair_code` | pairing codes and tickets as typed or scanned, device ids |
 | `multipart` | `keel_daemon::fuzz::multipart` | a Web Share Target upload: `Content-Type` line, then the `multipart/form-data` body |
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images) |
+| `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,

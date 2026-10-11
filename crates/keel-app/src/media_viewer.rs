@@ -100,6 +100,14 @@ pub fn zoom_about(
 /// only.
 pub fn decode_full(path: &std::path::Path, max_side: u32) -> anyhow::Result<egui::ColorImage> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
+    // HEIC, HEIF, AVIF (ffmpeg, scaled by it) and RAW (the embedded preview), upright.
+    if keel_core::is_converted_photo(path) {
+        let mut img = keel_core::decode_image(path, max_side)?;
+        if img.width().max(img.height()) > max_side {
+            img = img.resize(max_side, max_side, image::imageops::FilterType::Triangle);
+        }
+        return Ok(media::color_image(img, 0));
+    }
     let mut decoder = ImageReader::open(path)?
         .with_guessed_format()?
         .into_decoder()?;
@@ -766,18 +774,8 @@ impl AppState {
             }
             return;
         }
-        let (real, router) = (req.real.clone(), self.media.sh.router.clone());
-        let resolve: crate::video_player::Resolve = std::sync::Arc::new(move |cancel, progress| {
-            if let Some(local) = real.to_local_path() {
-                return Ok(local);
-            }
-            let provider = router
-                .provider_for(&real)
-                .ok_or_else(|| anyhow::anyhow!("no provider"))?;
-            progress(0, 0);
-            let report = |p: keel_vfs::Progress| progress(p.done_bytes, p.total_bytes);
-            provider.local_copy_cancellable(&real, &report, cancel)
-        });
+        let resolve =
+            crate::video_player::resolve(Some(self.media.sh.router.clone()), req.real.clone());
         let mut p = VideoPlayer::new(ctx.clone(), resolve, &v.prefs, at, v.area_px);
         if c == Cmd::Toggle {
             p.command(Cmd::Toggle);

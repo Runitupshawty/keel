@@ -319,6 +319,31 @@ pub(crate) fn render(ctx: &Ctx, p: RenderParams) -> Result<Rendered> {
             pages, image: rgba, ..
         } => image(rgba, max_px, Some(pages))?,
         Preview::Video { thumb, .. } => image(thumb, max_px, None)?,
+        Preview::Audio {
+            cover: Some(picture),
+            ..
+        }
+        | Preview::Font {
+            sample: picture, ..
+        } => image(picture, max_px, None)?,
+        Preview::Audio {
+            tags,
+            meta,
+            duration_s,
+            ..
+        } => {
+            let mut lines: Vec<String> =
+                tags.into_iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            let s = duration_s.max(0.0) as u64;
+            lines.push(format!("{}:{:02} · {meta}", s / 60, s % 60));
+            text(
+                lines.join(
+                    "
+",
+                ),
+                false,
+            )
+        }
         Preview::TooLarge(n) => none(format!("too large to preview ({n} bytes)")),
         Preview::Unsupported => none("no preview for this kind of file".into()),
         Preview::Missing(why) => none(why.into()),

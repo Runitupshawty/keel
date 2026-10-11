@@ -86,6 +86,8 @@ x11rb = "0.13"
 [dev-dependencies]
 # tests/cli.rs: temp library folders, unique profile names.
 tempfile = "3"
+# The font in the `previews_live` check (egui's bundled Hack).
+epaint_default_fonts = "0.31"
 # backend tests: a keel-daemon in the test process for the window to attach to.
 keel-daemon = { path = "../keel-daemon" }
 getrandom.workspace = true
