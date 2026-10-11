@@ -3,11 +3,13 @@
 //! address, the plain-http check, downloads, and start-up.
 
 use crate::conn::{Event, Transport};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{CloseEvent, MessageEvent, WebSocket};
+use web_sys::{
+    ClipboardEvent, CloseEvent, HtmlInputElement, KeyboardEvent, MessageEvent, WebSocket,
+};
 
 /// Socket events, tagged with the socket's generation (events of a replaced socket are
 /// dropped).
@@ -114,6 +116,92 @@ pub(crate) fn remember_token(token: Option<&str>) {
             Some(t) => s.set_item(TOKEN_KEY, t),
             None => s.remove_item(TOKEN_KEY),
         };
+    }
+}
+
+/// The sign-in box: the real `<input type=password id=token>` of index.html, laid over the
+/// login form. egui's own text field is drawn on the canvas, so a phone offers no Paste for
+/// it and password managers cannot fill it.
+pub(crate) struct TokenField {
+    input: HtmlInputElement,
+    enter: Rc<Cell<bool>>,
+    _key: Closure<dyn FnMut(KeyboardEvent)>,
+    _paste: Closure<dyn FnMut(ClipboardEvent)>,
+}
+
+impl TokenField {
+    /// `ctx` repaints when Enter is pressed in the box.
+    pub(crate) fn find(ctx: &egui::Context) -> Option<TokenField> {
+        let input = web_sys::window()?
+            .document()?
+            .get_element_by_id("token")?
+            .dyn_into::<HtmlInputElement>()
+            .ok()?;
+        let enter = Rc::new(Cell::new(false));
+        let (pressed, ctx) = (enter.clone(), ctx.clone());
+        let key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+            if e.key() == "Enter" {
+                pressed.set(true);
+                ctx.request_repaint();
+            }
+        });
+        // eframe cancels every paste on the page (its handler is on the document), so the
+        // box takes the pasted text itself and keeps the event away from eframe. A token is
+        // pasted whole: it replaces what was in the box.
+        let target = input.clone();
+        let paste = Closure::<dyn FnMut(ClipboardEvent)>::new(move |e: ClipboardEvent| {
+            e.stop_propagation();
+            if let Some(text) = e.clipboard_data().and_then(|d| d.get_data("text").ok()) {
+                e.prevent_default();
+                target.set_value(text.trim());
+            }
+        });
+        input
+            .add_event_listener_with_callback("keydown", key.as_ref().unchecked_ref())
+            .ok()?;
+        input
+            .add_event_listener_with_callback("paste", paste.as_ref().unchecked_ref())
+            .ok()?;
+        Some(TokenField {
+            input,
+            enter,
+            _key: key,
+            _paste: paste,
+        })
+    }
+
+    /// Shows the box over `rect` (egui points are CSS pixels here: Keel sets no zoom).
+    pub(crate) fn show(&self, rect: egui::Rect) {
+        let style = self.input.style();
+        for (name, px) in [
+            ("left", rect.left()),
+            ("top", rect.top()),
+            ("width", rect.width()),
+            ("height", rect.height()),
+        ] {
+            let _ = style.set_property(name, &format!("{px}px"));
+        }
+        self.input.set_hidden(false);
+    }
+
+    /// Hides and empties the box (signed in, or no longer asking).
+    pub(crate) fn hide(&self) {
+        if !self.input.hidden() {
+            self.input.set_value("");
+            self.input.set_hidden(true);
+        }
+    }
+
+    /// The token in the box once Enter was pressed there or `submit` is true (the Connect
+    /// button); the box is emptied.
+    pub(crate) fn take(&self, submit: bool) -> Option<String> {
+        let entered = self.enter.replace(false);
+        let token = self.input.value().trim().to_owned();
+        if !(submit || entered) || token.is_empty() {
+            return None;
+        }
+        self.input.set_value("");
+        Some(token)
     }
 }
 

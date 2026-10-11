@@ -30,6 +30,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Previewing a damaged Word document says "not a valid Word document" and writes no crash report; it used to show "previewer panicked".
 - A transfer whose planning hits a bug shows the error; it pointed to `crash.log`, which crash reports replace.
 - Web client: arrows and symbols drew as empty boxes, in its own text ("← Back", the pull-to-refresh hint, the connection dot) and in the daemon's messages ("turn on Settings → Devices"). It now uses the window's fonts, where the built-in monospace font fills in what the interface font lacks (the window was fixed in 0.15.0), and its error bar closes with "×" like the window's. The glyph test now checks the strings of every crate, not only the window's.
+- Previewing a damaged Word document says "not a valid Word document"; it used to show "previewer panicked".
+- Web client: the token could not be pasted on a phone, and password managers could not fill it, because the sign-in box was drawn on the canvas. It is now a real password box, so Paste, iOS Passwords and Bitwarden work, and focusing it no longer zooms the page on iOS.
 
 
 ### Security
