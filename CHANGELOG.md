@@ -2,6 +2,27 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Web client: the preview panel shows **★ Favorite** and each tag as a button (`qa ×`) that previews adding to or removing from Favorites and taking the tag off, and, in the desktop layout with both panes in different folders, **Copy to the other pane…** (names that exist are skipped, and the preview warns about each). Each is previewed, then executed.
+
+### Fixed
+
+- Web client: PDF previews work. keel-daemon never loaded pdfium, so every PDF said "PDF previews need pdfium next to keel.exe", even with pdfium next to keel-daemon; that message now names the program that needs it.
+- Web client: a mistyped token is refused as "not the token in daemon.token"; it used to say "the first message must be auth with the daemon token".
+- Web client: swiping left or right in the phone's preview sheet shows the next or previous file; no swipe ever counted.
+- Web client: the phone's Back button or gesture closes the preview sheet; it left the app.
+- Web client: on a 320-point phone the bottom bar's labels stay on one line ("Brow/se", "Devic/es").
+- Web client: in a narrow window (a tablet in portrait) the desktop layout shows one pane, and a file's size and date are no longer drawn over its name.
+- Web client: the preview panel keeps its width; with nothing selected it shrank to about 140 points and then cut off a file's buttons.
+- Web client: a refresh (a finished job, another client's change, pull to refresh) no longer makes the second pane the active one, where the next source or search result then opened.
+- Web client: when the daemon cannot be reached a strip under the top bar says so and that what is shown may be out of date; only the small status dot changed.
+- Web client: a search that finds nothing says "Nothing matches …"; an empty pane says where the sources are; Devices shows this device's id and says when nothing is paired.
+- Web client: the jobs list names each job (File operation, Indexing, Hashing contents…) instead of "op", "index", "hash".
+- Web client: the sign-in box is light in the light theme.
+
 ## [0.17.0] - 2026-10-10
 
 ### Added
