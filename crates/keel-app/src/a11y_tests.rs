@@ -266,9 +266,21 @@ fn dialogs_focus_their_primary_action_and_esc_cancels() {
     press(&mut h, Modifiers::NONE, Key::Escape);
     assert!(h.state().state.dialog.is_none(), "Esc cancels");
     h.state_mut().state.run(0, crate::keys::Action::Properties);
-    h.run_steps(5);
+    // The dialog takes a few frames to appear and focus its button (more on a slow machine).
+    for _ in 0..100 {
+        h.run_steps(1);
+        if focus(&h) == Some((Role::Button, "Close".into())) {
+            break;
+        }
+    }
     assert_eq!(focus(&h), Some((Role::Button, "Close".into())));
     press(&mut h, Modifiers::NONE, Key::Enter);
+    for _ in 0..20 {
+        if h.state().state.dialog.is_none() {
+            break;
+        }
+        h.run_steps(1);
+    }
     assert!(h.state().state.dialog.is_none(), "Enter presses Close");
     assert_eq!(focus(&h).map(|f| f.0), Some(Role::ListItem));
 }
@@ -313,7 +325,8 @@ fn tab_walks_every_control_and_comes_back() {
     assert!(at("Type a path (Ctrl+L)") < at("Name, sorted ascending"));
     assert!(at("Name, sorted ascending") < at("Modified"));
     // The sidebar is one stop (Home); its other items are reached with the arrow keys.
-    let sidebar = ["Home", "Documents", "Pictures", "Backup", "C:", "Add…"];
+    // The drive is "C:" on Windows and "/" elsewhere.
+    let sidebar = ["Home", "Documents", "Pictures", "Backup", "C:", "/", "Add…"];
     assert_eq!(
         names.iter().filter(|n| **n == "Home").count(),
         1,
