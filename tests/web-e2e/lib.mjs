@@ -132,6 +132,22 @@ export async function touch(page, points, holdMs = 0, stepMs = 16) {
   await cdp.detach();
 }
 
+/// Two fingers moving apart from `[x, y]` (a pinch to zoom in).
+export async function pinch(page, [x, y], from = 20, to = 120, steps = 10) {
+  const cdp = await page.context().newCDPSession(page);
+  const at = (d) => [
+    { x: x - d, y, id: 1 },
+    { x: x + d, y, id: 2 },
+  ];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(from) });
+  for (let i = 1; i <= steps; i++) {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(from + ((to - from) * i) / steps) });
+    await sleep(16);
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await cdp.detach();
+}
+
 /// The centre of a named entry the phone pane drew.
 export function centre(state, name) {
   const r = state.rects[name];

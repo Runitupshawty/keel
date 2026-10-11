@@ -1,6 +1,6 @@
 // The phone layout (390×844, touch, dark), a tablet (820×1180), the light theme, and a
 // daemon that goes away and comes back.
-import { centre, openPage, sleep, touch } from "./lib.mjs";
+import { centre, openPage, pinch, sleep, touch } from "./lib.mjs";
 
 // Device scale 1: headless Chromium's ResizeObserver reports `devicePixelContentBoxSize`
 // without the emulated scale, so eframe would draw at twice the size (a real phone's
@@ -96,7 +96,10 @@ export async function run({ browser, base, token, ids, daemon }) {
   await p.until("phone search", (s) => s.phone_tab === "Search" && s.hits.join() === "keel.png");
   await p.shot("26-phone-search");
   await p.act("open-preview", "keel.png");
-  await p.until("image sheet", (s) => s.sheet && s.preview === "image");
+  await p.until("image sheet", (s) => s.sheet && s.preview === "image" && s.zoom === 1);
+  // Two fingers apart zoom the image in.
+  await pinch(page, [195, 600]);
+  await p.until("pinched in", (s) => s.zoom > 1.5);
   await sleep(200);
   await p.shot("27-phone-image-sheet");
   await p.act("back");
