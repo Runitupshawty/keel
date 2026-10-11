@@ -7,6 +7,7 @@ How a release is made today, and how its builds get signed. Signing is ready in 
 - [Windows: Authenticode](#windows-authenticode)
 - [macOS: Developer ID and notarization](#macos-developer-id-and-notarization)
 - [Checksums: GPG](#checksums-gpg)
+- [Pinned downloads](#pinned-downloads)
 - [Pinning the signer in the installers](#pinning-the-signer-in-the-installers)
 - [Rotating a certificate or key](#rotating-a-certificate-or-key)
 - [What cannot be tested without certificates](#what-cannot-be-tested-without-certificates)
@@ -37,7 +38,7 @@ The secrets live in the repository's **Settings → Secrets and variables → Ac
 | Where | What | Secrets | Without them |
 | --- | --- | --- | --- |
 | `package`, Windows | `keel.exe` and `keel-daemon.exe` (not the vendors' DLLs): `signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com`, then `signtool verify /pa` | `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD` | unsigned |
-| `package`, macOS (both) | `keel`, `keel-daemon` and `libpdfium.dylib`: `codesign --options runtime --timestamp` with the Developer ID Application identity, then `notarytool submit --wait` | `APPLE_CERT_P12_BASE64`, `APPLE_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | unsigned (the linker's ad-hoc signature only) |
+| `package`, macOS (both) | `keel`, `keel-daemon` and `libpdfium.dylib`: `codesign --options runtime --timestamp` with the Developer ID Application identity (the two programs with `assets/keel.entitlements`), then `notarytool submit --wait` | `APPLE_CERT_P12_BASE64`, `APPLE_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | unsigned (the linker's ad-hoc signature only) |
 | `release` | `SHA256SUMS`, which lists every archive and the .deb: `gpg --armor --detach-sign` gives `SHA256SUMS.asc`; the public key is published as `SHA256SUMS.key.asc` | `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE` (empty for a key without one) | no `.asc` |
 
 Linux binaries and the .deb carry no signature of their own: `SHA256SUMS.asc` covers them through their checksum lines (apt verifies signatures of repositories, not of single .deb files).
@@ -86,6 +87,8 @@ gh secret set APPLE_APP_PASSWORD      # the app-specific password
 
 - The release ships bare binaries in a tarball, and only an app bundle, a disk image or an installer package can have its notarization ticket stapled. Gatekeeper therefore looks the ticket up online the first time a quarantined copy starts; the first start of a browser download needs the network.
 - The hardened runtime (`--options runtime`, which notarization requires) only loads libraries signed by the same team, which is why `libpdfium.dylib` is signed too. A future library that Keel loads at run time and CI does not sign needs the `com.apple.security.cs.disable-library-validation` entitlement.
+- The hardened runtime also refuses Apple Events (error -1743) to an app without the `com.apple.security.automation.apple-events` entitlement, even when a child process such as `osascript` sends them. `keel` and `keel-daemon` are signed with `assets/keel.entitlements`, which grants it. Keel's own Move to Trash sends none: on macOS it calls NSFileManager instead of asking Finder (`DeleteMethod::NsFileManager` in `crates/keel-vfs/src/local.rs`), so it needs neither the entitlement nor the Automation permission. Try both on a pre-release tag before the first signed release: Move to Trash, and that `codesign -d --entitlements - keel` lists the entitlement.
+- When notarization fails or Apple refuses the files, the step prints Apple's answer and, when there is a submission id, `notarytool log` with the reasons, then fails the job.
 - `install.sh` checks the code signature of `keel`, `keel-daemon` and `libpdfium.dylib` (`codesign --verify --strict`, and the Team ID when pinned). It removes the quarantine attribute only for unsigned builds; a signed build is left as it is. Downloads made by `curl` carry no quarantine anyway.
 
 ## Checksums: GPG
@@ -112,6 +115,18 @@ sha256sum --check --ignore-missing SHA256SUMS  # macOS: shasum -a 256 --check --
 
 On Windows, `install.ps1` does not check `SHA256SUMS.asc` (Windows has no gpg by default); it checks the checksum and the Authenticode signature of the programs instead.
 
+## Pinned downloads
+
+`scripts/fetch-deps.sh` and `scripts/fetch-deps.ps1` download the libraries that ship next to Keel and that CI signs on macOS. Each download is refused unless its SHA-256 is the one written in the script:
+
+| Download | Pinned to | Where |
+| --- | --- | --- |
+| pdfium (`bblanchon/pdfium-binaries`) | the release tag `chromium/7543` (`pdfium-render` 0.8.37's target) and one SHA-256 per asset: `pdfium-mac-arm64`, `pdfium-mac-x64`, `pdfium-linux-x64` | `fetch-deps.sh` |
+| pdfium for Windows | the same tag, `pdfium-win-x64` | `fetch-deps.ps1` |
+| Everything SDK (voidtools) | the SHA-256 of `Everything-SDK.zip`, which voidtools serves at one unversioned address | `fetch-deps.ps1` |
+
+The hashes are GitHub's digests of the release assets, checked against a download. Moving to another pdfium tag is a deliberate edit of both scripts in one commit: the tag and all four hashes (download each asset of the new tag and run `sha256sum`, or read the digest on the release page). When voidtools replaces its SDK zip, `fetch-deps.ps1` fails until its new hash is checked and pinned the same way.
+
 ## Pinning the signer in the installers
 
 Each installer has an empty constant for the signer it expects. While it is empty, the installer verifies whatever signature a release has, reports it and installs; an unsigned release gets a warning (and on Windows the SmartScreen hint). Once it is set, a release signed by anyone else is refused, and so is an unsigned one (unless `-SkipVerify` / `--skip-verify`).
@@ -136,7 +151,7 @@ Set a pin only after a release signed that way is out: the one-liners fetch the 
 These run only when the secrets exist, so the first tagged release after adding them is their first real run; a pre-release tag (`vX.Y.Z-rc1`) is a cheap way to try them:
 
 - `signtool` signing and verification, the PFX decoding and the timestamp server.
-- The temporary keychain, `codesign` with the Developer ID identity and notarization (Apple's answer, and its log when it refuses).
+- The temporary keychain, `codesign` with the Developer ID identity and the entitlements, and notarization (Apple's answer, and its log when it refuses).
 - GPG signing in the `release` job (the installer's side is tested with a throwaway key; see below).
 - The installers against a real signed release: `Signature OK.` from `install.ps1`, `Code signature OK.` from `install.sh` on macOS, and `keel --version` printing `signature: signed`.
 

@@ -333,20 +333,27 @@ jobs:
           security import "$p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
-          identity="$(security find-identity -v -p codesigning "$kc" | grep -o '"Developer ID Application: [^"]*"' | head -n1 | tr -d '"')"
+          # `|| true`: no match is the error below, not a silent exit at this line (pipefail).
+          identity="$(security find-identity -v -p codesigning "$kc" | grep -o '"Developer ID Application: [^"]*"' | head -n1 | tr -d '"' || true)"
           [ -n "$identity" ] || { echo "::error::APPLE_CERT_P12_BASE64 holds no Developer ID Application identity"; exit 1; }
           # The dylib too: the hardened runtime only loads libraries signed by the same team.
+          # The programs get assets/keel.entitlements (Apple Events, docs/releasing.md).
           files=("target/deps/libpdfium.dylib" "$BIN/keel" "$BIN/keel-daemon")
-          codesign --force --options runtime --timestamp --keychain "$kc" --sign "$identity" "${files[@]}"
+          codesign --force --options runtime --timestamp --keychain "$kc" --sign "$identity" "${files[0]}"
+          codesign --force --options runtime --timestamp --keychain "$kc" --sign "$identity" --entitlements assets/keel.entitlements "${files[@]:1}"
           codesign --verify --strict --verbose=2 "${files[@]}"
           zip -j "$zip" "${files[@]}"
-          out="$(xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --output-format json)"
+          # `|| true`: a refused or failed submission still prints Apple's answer and log below.
+          out="$(xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait --output-format json)" || true
           echo "$out"
-          field() { printf '%s' "$out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$1',''))"; }
-          if [ "$(field status)" != Accepted ]; then
+          field() { printf '%s' "$out" | python3 -c "import json,sys
+          try: print(json.load(sys.stdin).get('$1',''))
+          except Exception: pass"; }
+          status="$(field status)"
+          if [ "$status" != Accepted ]; then
             id="$(field id)"
             [ -z "$id" ] || xcrun notarytool log "$id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" || true
-            echo "::error::notarization ended as '$(field status)'"; exit 1
+            echo "::error::notarization ended as '${status:-no answer}'"; exit 1
           fi
           echo "KEEL_SIGNATURE=Developer ID, notarized ($identity)" >> "$GITHUB_ENV"
       - name: Package release
@@ -374,9 +381,9 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
           # Debian/Ubuntu package from the same tree (dpkg-deb only, see scripts/make-deb.sh).
           if [ "$RUNNER_OS" = Linux ]; then bash ../scripts/make-deb.sh "$name" "$GITHUB_REF_NAME" .; fi
-          # For the release job's summary, not a release asset. Linux binaries are not signed:
-          # the release job signs SHA256SUMS, which covers every archive and the .deb.
-          echo "${{ matrix.name }}: ${KEEL_SIGNATURE:-binaries not signed (SHA256SUMS.asc covers the downloads)}" > "signature-${{ matrix.name }}.txt"
+          # For the release job's summary, not a release asset. Linux binaries are not signed;
+          # the release job's checksums line says whether SHA256SUMS.asc covers the downloads.
+          echo "${{ matrix.name }}: ${KEEL_SIGNATURE:-binaries not signed}" > "signature-${{ matrix.name }}.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: keel-${{ matrix.name }}

@@ -27,6 +27,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Web client: the jobs list names each job (File operation, Indexing, Hashing contents…) instead of "op", "index", "hash".
 - Web client: the sign-in box is light in the light theme.
 
+### Security
+
+- The build scripts check what they download: `scripts/fetch-deps.sh` and `scripts/fetch-deps.ps1` refuse a pdfium or Everything SDK download whose SHA-256 is not the one pinned in the script, so a replaced upstream file cannot end up in a release, or be signed into one with Keel's certificate. Moving to a new pdfium release is a deliberate edit of both scripts ([docs/releasing.md](docs/releasing.md#pinned-downloads)).
+
 ## [0.17.0] - 2026-10-10
 
 ### Added
