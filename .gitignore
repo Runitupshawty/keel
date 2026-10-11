@@ -10,3 +10,5 @@ target/deps/
 crates/keel-app/tests/snapshots/*.png
 tmp/
 crates/keel-web/dist/
+# Fuzz inputs are committed whatever their extension (docs/fuzzing.md).
+!fuzz/corpus/**
