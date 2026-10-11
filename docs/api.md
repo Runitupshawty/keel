@@ -69,6 +69,7 @@ also act directly: they change no file.
 | `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed (`content_id` in the answer); made on first request, served from earlier sidecars when the source is offline. `make: false` answers only from a sidecar that exists (NOT_FOUND otherwise); `content_id` (64 hex digits) answers from a sidecar made earlier for that content, before `path` (which may then be left out) is looked at. An attached window asks with `make: true`, at most four at a time, visible tiles first |
 | `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
 | `search` | read | Library search: words, `"phrases"`, `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:` |
+| `files.names` | read | The full paths of indexed files (no folders) in the online sources, each source's newest first: `{paths, truncated}`, for a fuzzy file finder (the desktop app's Ctrl+P when attached). At most `max` (default and largest 100000); `truncated` says there were more |
 | `tags.list` | read | All tags, or the tags on one path |
 | `tags.tagged` | read | Every tagged path with its tag ids (Favorites is id 1) |
 | `views.list` | read | Saved views: `id`, `name`, `query` (a `search` query), `layout` |

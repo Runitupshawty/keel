@@ -150,7 +150,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 
 | Feature | Atlas claim | Source | Keel |
 | --- | --- | --- | --- |
-| Fuzzy finder for files and folders | "Fast Fuzzy Finder" | [AT], [AT-W11] | **Part**: Ctrl+P is fuzzy over folders only; files go through Ctrl+F search |
+| Fuzzy finder for files and folders | "Fast Fuzzy Finder" | [AT], [AT-W11] | **Has**: Ctrl+P over folders, the current folder's files and the library's files ([files.md](files.md#finding-folders-and-files-ctrlp)) |
 | Miller columns | yes | [AT] | **Has**: Columns view ([files.md](files.md#columns-view-and-drop-zone)) |
 | Tabs and split panes | "flexible tabbed and split-pane" | [AT] | **Has**: two panes with tabs; no tiling beyond two |
 | Drop zone | yes | [AT] | **Has** ([files.md](files.md#columns-view-and-drop-zone)) |
@@ -210,7 +210,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |
 | 10 | Signed builds and package channels (winget, Scoop, Homebrew, Flatpak or AppImage) | both are commercial | F. Needs the owner (certificates, account submissions) | M |
 | 11 | Text inside documents in library search (OCR later) | Spacedrive; spec 2.10 Search | D | M-L |
-| 12 | Fuzzy finder over files, not only folders | Atlas | D | S |
+| 12 | Fuzzy finder over files, not only folders (**done**: Ctrl+P finds files, [files.md](files.md#finding-folders-and-files-ctrlp)) | Atlas | D | S |
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping | S |
 | 15 | Drag-out on macOS and Linux | Spacedrive v1; README roadmap | F | M |

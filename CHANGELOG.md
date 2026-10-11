@@ -2,6 +2,18 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Ctrl+P finds files as well as folders: type a few letters of a file's name and press Enter to open its folder with the file selected and the preview shown (Ctrl+Enter: a new tab, Shift+Enter: the other pane, also for folders). Files come from a walk of the active pane's folder and everything below it, and from the library's indexed files; folders still come from the search index. Tab switches between **Folders**, **Files** and **Both** (the default, kept per profile), and each result shows its icon and, dimmed, its folder. The lists are read in the background, so typing never waits: the popup says what it is still indexing, with counts, and results fill in as files arrive. See [Finding folders and files](docs/files.md#finding-folders-and-files-ctrlp).
+- `files.names` (read-only) in the API: the full paths of indexed files in the online sources, each source's newest first, at most `max` (default and largest 100,000; `truncated` when there were more). The desktop app's Ctrl+P reads it when attached to keel-daemon. See [api.md](docs/api.md).
+
+### Known limitations
+
+- Ctrl+P's file lists are bounded: the walk of the current folder keeps its first 50,000 files ("first 50,000 files here") and skips hidden and git-ignored files, and the library list keeps the first 100,000 files ("first 100,000 library files"), each source's newest first. A file outside both is not found; Ctrl+F searches everything. Only folders on this computer are walked (not SFTP, cloud, device or archive folders), and offline library sources are left out.
+- The lists are kept for 10 minutes: files added since then appear after F5 in the popup.
+
 ## [0.19.0] - 2026-10-11
 
 ### Added
