@@ -28,7 +28,12 @@ pub enum Conflict {
 
 /// Includes directories in the item count. Links and junctions are refused, not followed.
 pub fn plan_size(src: &[PathBuf]) -> Result<(u64, usize)> {
-    let (mut bytes, mut items) = (0u64, 0usize);
+    plan_counts(src).map(|(bytes, items, _)| (bytes, items))
+}
+
+/// `plan_size` and the number of files among the items.
+fn plan_counts(src: &[PathBuf]) -> Result<(u64, usize, usize)> {
+    let (mut bytes, mut items, mut files) = (0u64, 0usize, 0usize);
     for root in src {
         for item in walkdir::WalkDir::new(long(root)?)
             .follow_links(false)
@@ -40,10 +45,11 @@ pub fn plan_size(src: &[PathBuf]) -> Result<(u64, usize)> {
             items = items.checked_add(1).context("too many items")?;
             if metadata.is_file() {
                 bytes = bytes.checked_add(metadata.len()).context("size overflow")?;
+                files += 1;
             }
         }
     }
-    Ok((bytes, items))
+    Ok((bytes, items, files))
 }
 
 fn ensure_regular(path: &Path, metadata: &fs::Metadata) -> Result<()> {
@@ -423,10 +429,12 @@ fn transfer_local(
             sources[*i].display()
         );
     }
-    let (bytes, items) = plan_size(&folders)?;
+    let top_files = total_items;
+    let (bytes, items, files) = plan_counts(&folders)?;
     let total_bytes = total_bytes.checked_add(bytes).context("size overflow")?;
     let total_items = total_items + items;
-    let threads = copy_threads().min(total_items);
+    // Workers only for two files or more (a folder holding one file copies it here).
+    let threads = copy_threads().min(top_files + files);
     std::thread::scope(|scope| {
         let mut job = Job {
             state: Progress {
@@ -749,7 +757,7 @@ impl Job<'_, '_> {
             return Ok(complete);
         }
         if let Some(parent) = target.parent() {
-            if self.swept.insert(parent.to_path_buf()) {
+            if self.swept.insert(folded(parent)) {
                 sweep_local(parent);
             }
         }
@@ -2007,6 +2015,16 @@ pub fn is_partial(name: &str) -> bool {
                     .is_some_and(|(pid, n)| number(pid) && number(n)))
     })
 }
+/// A day-old staging file another process left: this process's own (`<pid>` is ours) may
+/// be in flight in another job or under another spelling of the folder, whatever its time
+/// (staging files keep their source's modified time).
+fn sweepable(name: &str, modified: Option<std::time::SystemTime>) -> bool {
+    let ours = name
+        .rsplit_once(PARTIAL)
+        .and_then(|(_, rest)| rest.strip_prefix('-')?.split_once('-'))
+        .is_some_and(|(pid, _)| pid == std::process::id().to_string());
+    is_partial(name) && !ours && stale(modified)
+}
 fn stale(modified: Option<std::time::SystemTime>) -> bool {
     modified
         .and_then(|t| t.elapsed().ok())
@@ -2018,7 +2036,11 @@ pub(crate) fn sweep_local(dir: &Path) {
         // `DirEntry::metadata` does not follow links.
         let Ok(meta) = item.metadata() else { continue };
         let name = item.file_name();
-        if meta.is_file() && name.to_str().is_some_and(is_partial) && stale(meta.modified().ok()) {
+        if meta.is_file()
+            && name
+                .to_str()
+                .is_some_and(|n| sweepable(n, meta.modified().ok()))
+        {
             let _ = fs::remove_file(item.path());
         }
     }
@@ -2029,11 +2051,7 @@ fn sweep_provider(provider: &dyn crate::Provider, dir: &crate::VPath) {
         return sweep_local(&local);
     }
     for item in provider.list(dir).into_iter().flatten() {
-        if item.kind == crate::Kind::File
-            && !item.is_link
-            && is_partial(&item.name)
-            && stale(item.modified)
-        {
+        if item.kind == crate::Kind::File && !item.is_link && sweepable(&item.name, item.modified) {
             let _ = provider.remove(&item.path);
         }
     }
@@ -2911,7 +2929,7 @@ fn zip_time(time: std::time::SystemTime) -> Option<zip::DateTime> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_partial, partial_name};
+    use super::{is_partial, partial_name, sweep_local};
     #[test]
     fn partial_names_are_unique_bounded_and_recognised() {
         let (a, b) = (partial_name("report.pdf"), partial_name("report.pdf"));
@@ -2935,6 +2953,24 @@ mod tests {
         ] {
             assert!(!is_partial(not), "{not}");
         }
+    }
+
+    /// A sweep deletes another process's day-old staging files, never this process's own
+    /// (in flight in another job, or under another spelling of the folder): staging files
+    /// keep their source's modified time, so their age says nothing.
+    #[test]
+    fn a_sweep_leaves_this_process_staging_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86_400);
+        let ours = partial_name("a.txt");
+        let theirs = format!("b.txt.keel-partial-{}-0", std::process::id() + 1);
+        for name in [&ours, &theirs] {
+            let f = std::fs::File::create(dir.path().join(name)).unwrap();
+            f.set_modified(old).unwrap();
+        }
+        sweep_local(dir.path());
+        assert!(dir.path().join(&ours).exists());
+        assert!(!dir.path().join(&theirs).exists());
     }
 
     /// Entry names from a server (the in-memory provider stands in for SFTP) cannot leave a

@@ -23,6 +23,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - FTP entries dated before 1601 were left out of listings on Windows (and listed with that date elsewhere); they are now listed without a date on every system.
 - A library with a database over 4 GiB was backed up into a file that restore then refused. The backup now refuses such a library before it writes anything (an older backup file stays as it was) and names the database that is too large.
 - A library backup or restore through keel-daemon that took more than two minutes was reported as failed while it went on: the restore finished anyway and a retry said the name was taken, and replacing an existing backup file from the window left a `<name>.<number>.keelbackup` file beside it. keel-daemon, the window, `keel library` and `keel mcp` now wait up to 6 hours for these two operations, and the window removes the new file when a replace fails.
+- A copy could delete another copy's files waiting to be placed: a second copy into the same folder, or the same folder spelt with other capitals, swept the first one's staging files as day-old leftovers (they keep their source's modified time), and the first copy then failed. Staging files made by the running Keel are never swept now.
 
 ### Known limitations
 
@@ -39,7 +40,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - FTP uses passive mode only (`PASV`, `EPSV` on IPv6); active mode is not supported. Free space is not shown for FTP hosts.
 - `LIST` dates are read as UTC to the minute (the server's time zone is unknown); a rename onto an existing name is checked first and refused, but a file that appears between the check and the rename is replaced on servers whose rename replaces.
 - An FTPS certificate pinned before can only be replaced by removing its line from `ftps_known_hosts`. Implicit FTPS (port 990) connects without Keel's own connect timeout (the system's applies).
-- A parallel copy makes folders ahead of the files queued for them: one stopped by a cancel or an error can leave such a folder empty. Undo removes it with the rest of the copy.
+- A parallel copy makes folders, and a move renames files and folders on the same drive, ahead of the files queued for the pool: one stopped by a cancel or an error can leave such a folder empty, or have moved items that come after the file that failed. Undo puts them back with the rest.
 - A library whose `library.db` or any one source's store is over 4 GiB cannot be backed up.
 - Library backup and restore run within their request rather than as jobs: they show no progress and cannot be cancelled, and through keel-daemon one that takes longer than 6 hours is reported as timed out while it goes on.
 
