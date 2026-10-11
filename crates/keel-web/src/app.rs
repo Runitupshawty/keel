@@ -209,6 +209,10 @@ pub struct WebApp {
     /// A phone tab's label did not fit on one line in its button (last frame).
     #[cfg(feature = "e2e")]
     e2e_tabs_cut: bool,
+    /// The active desktop pane's rows as last drawn: the name, whether it was cut short,
+    /// and whether it reached under the size and date.
+    #[cfg(feature = "e2e")]
+    e2e_rows: Vec<(String, bool, bool)>,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -342,6 +346,8 @@ impl WebApp {
             e2e_preview_width: 0.0,
             #[cfg(feature = "e2e")]
             e2e_tabs_cut: false,
+            #[cfg(feature = "e2e")]
+            e2e_rows: Vec::new(),
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -1276,6 +1282,8 @@ impl WebApp {
             "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
             "columns": if self.two_panes { 2 } else { 1 },
             "tabs_cut": self.e2e_tabs_cut,
+            "names_cut": self.e2e_rows.iter().filter(|r| r.1).map(|r| &r.0).collect::<Vec<_>>(),
+            "names_under": self.e2e_rows.iter().filter(|r| r.2).map(|r| &r.0).collect::<Vec<_>>(),
             "zoom": self.zoom,
             "grid": self.grid,
             "active": self.active,
@@ -1370,6 +1378,8 @@ impl WebApp {
     fn pane(&mut self, ui: &mut egui::Ui, i: usize) {
         self.path_bar(ui, i);
         let mut act = None;
+        #[cfg(feature = "e2e")]
+        let mut rows = Vec::new();
         egui::ScrollArea::vertical()
             .id_salt(("pane", i))
             .auto_shrink(false)
@@ -1394,11 +1404,31 @@ impl WebApp {
                             if !e.is_dir {
                                 ui.weak(human(e.size));
                             }
+                            #[cfg(feature = "e2e")]
+                            let meta_left = ui.min_rect().min.x;
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                                    #[cfg(feature = "e2e")]
+                                    let full = label.clone();
                                     let r = ui.selectable_label(self.is_selected(&e.path), label);
+                                    #[cfg(feature = "e2e")]
+                                    {
+                                        let font = egui::TextStyle::Button.resolve(ui.style());
+                                        let width = ui.fonts(|f| {
+                                            f.layout_no_wrap(full, font, egui::Color32::WHITE)
+                                                .size()
+                                                .x
+                                        });
+                                        let room =
+                                            r.rect.width() - 2.0 * ui.spacing().button_padding.x;
+                                        rows.push((
+                                            e.name.clone(),
+                                            width > room + 0.5,
+                                            r.rect.max.x > meta_left + 0.5,
+                                        ));
+                                    }
                                     if r.clicked() {
                                         act = Some(Act::Select(e.clone()));
                                     }
@@ -1415,6 +1445,10 @@ impl WebApp {
                     ui.weak("(more entries not shown)");
                 }
             });
+        #[cfg(feature = "e2e")]
+        if i == self.active {
+            self.e2e_rows = rows;
+        }
         if let Some(a) = act {
             self.act(i, a);
         }

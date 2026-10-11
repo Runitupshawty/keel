@@ -187,6 +187,14 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   await t.act("copy-preview");
   const conflict = await t.until("copy preview", (s) => s.plan?.state === "review");
   console.log("  copy conflict preview:", conflict.plan.summary, JSON.stringify(conflict.plan.changes), conflict.plan.warnings);
+  // The name that exists is skipped, and the preview says so (the change list still names
+  // the copy: the plan decides per file when it runs).
+  if (!conflict.plan.warnings.some((w) => /copies[\\/]alpha-notes\.txt exists already \(Skip\)$/.test(w))) {
+    await t.fail(`the copy preview does not warn that copies/alpha-notes.txt exists and is skipped: ${JSON.stringify(conflict.plan.warnings)}`);
+  }
+  if (!conflict.plan.changes.some((c) => c.action === "copy" && /alpha-notes\.txt$/.test(c.path ?? ""))) {
+    await t.fail(`the copy preview does not list the copy: ${JSON.stringify(conflict.plan.changes)}`);
+  }
   await t.shot("15b-copy-conflict");
   await t.act("cancel");
   await t.until("copy preview cancelled", (s) => s.plan === null);

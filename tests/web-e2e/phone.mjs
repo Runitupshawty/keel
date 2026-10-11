@@ -114,6 +114,7 @@ export async function run({ browser, base, token, ids, daemon }) {
   await sleep(200);
   await small.shot("27b-phone-320");
   if ((await small.state()).tabs_cut) await small.fail("a bottom bar label does not fit its button at 320 wide");
+  await small.noLeak();
   await small.close();
 
   // A tablet in portrait is wide enough for the desktop layout, with one pane (two were
@@ -125,6 +126,12 @@ export async function run({ browser, base, token, ids, daemon }) {
   await tab.until("tablet list", (s) => s.entries.includes("alpha-notes.txt"));
   await tab.act("open-preview", "alpha-notes.txt");
   await tab.until("tablet preview", (s) => s.preview === "text" && s.columns === 1);
+  // The long name is cut short, and no name runs under a size or a date.
+  const long = "zulu-a-file-name-much-too-long-for-a-narrow-pane-to-show-in-full.txt";
+  const rows = await tab.until("tablet rows", (s) => s.entries.includes(long));
+  if (!rows.names_cut.includes(long)) await tab.fail(`the long name is not cut short: ${JSON.stringify(rows.names_cut)}`);
+  if (rows.names_cut.includes("alpha-notes.txt")) await tab.fail("a short name is cut short on the tablet");
+  if (rows.names_under.length) await tab.fail(`names drawn under their sizes or dates: ${rows.names_under}`);
   await sleep(200);
   await tab.shot("28-tablet");
 

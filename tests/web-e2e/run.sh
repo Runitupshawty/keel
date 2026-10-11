@@ -24,6 +24,8 @@ mkdir -p "$fx/docs/deep" "$fx/copies" "$work/media"
 printf 'alpha notes: the quick brown fox\n' > "$fx/alpha-notes.txt"
 printf 'bravo readme\n' > "$fx/bravo-readme.txt"
 printf 'charlie log\n' > "$fx/charlie-log.txt"
+# A name a narrow pane must cut short (the tablet check).
+printf 'zulu\n' > "$fx/zulu-a-file-name-much-too-long-for-a-narrow-pane-to-show-in-full.txt"
 printf 'delta\n' > "$fx/docs/deep/delta.txt"
 printf 'an older alpha\n' > "$fx/copies/alpha-notes.txt"
 cp "$root/crates/keel-preview/tests/fixtures/sample.pdf" "$fx/docs/report.pdf"
