@@ -22,6 +22,20 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 **Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview.
 
+### Searching
+
+Ctrl+F opens a search tab; the menu at the left of the box switches it to **Library**. A row of **filter chips** then sits under the box, so you can narrow a search without learning the syntax:
+
+- **Kind**: Image, Video, Audio, Document, Archive or Folder (one at a time).
+- **Type**: the extensions most common among your newest indexed files, plus a small box: type an extension (`heic`) and press Enter. Several types match any of them.
+- **Tag**: your tags (the first 12; type `tag:name` for the others). Several tags must all match.
+- **Source**: each library source.
+- **Size**: under 1 MB, 1–100 MB, over 100 MB or over 1 GB.
+- **Modified**: today, this week (from Monday), this month or this year.
+- **★ Favorites**: only your favorites.
+
+A chip writes its term into the query box (Kind → Document adds `kind:document`) and runs the search; clicking it again takes the term out. Hover a chip to see its term. The box stays the truth: a term you type lights its chip (`ext:.PDF` lights **pdf**, `type:docs` lights **Document**), and terms no chip shows (words, phrases, `camera:`, `dm:2026-10`) are left as you typed them; a Kind, Size or Modified chip replaces the term of its row that you typed. A tag or extension you typed that the row does not offer gets a lit chip of its own. From the keyboard, Tab moves from the query box into the chips, Space toggles the chip with the focus, and screen readers read each chip as its row and label ("Kind: Document"). The [web client](devices.md#web-client) has the same chips on its Search page.
+
 **Search syntax.** Several terms must all match; results are ranked.
 
 | Term | Meaning |
@@ -30,7 +44,7 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `"annual report"` | exact phrase |
 | `ext:pdf` | extension |
 | `size:>1mb`, `size:<10kb` | size comparison |
-| `dm:2026-10` | modified in that month (ranges and `today` work too) |
+| `dm:2026-10` | modified in that month (ranges, `today`, `yesterday`, `thisweek`, `thismonth` and `thisyear` work too) |
 | `kind:image` | file kind (`file:`, `folder:`) |
 | `camera:canon` | media: camera starts with the word (`camera:"canon eos"`) |
 | `taken:2024`, `taken:2023-06..2023-08` | media: capture date (same dates as `dm:`; never the modified time) |
@@ -38,7 +52,7 @@ The library is an index of the files in your **sources** (a local folder or driv
 | `duration:>30s`, `duration:<2m` | media: video length (`ms`, `s`, `m`, `h`) |
 | `has:gps` | media: has a GPS position |
 | `kind:photo` | media: images (not videos) with media metadata |
-| `tag:taxes` | has the tag |
+| `tag:taxes` | has the tag (`tag:Favorites`: a favorite) |
 | `in:photos` | under a path or source |
 
 Words that match no name or path also search camera and photo keywords, ranked below name hits. The media filters need the sidecar job to have run on the source.

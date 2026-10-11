@@ -75,7 +75,7 @@ The guide covers everyday use; these pages hold the details.
 | Every feature in one list, where settings are kept | [docs/features.md](docs/features.md) |
 | Keyboard shortcuts, columns view and drop zone, folder sizes, archives, Recycle Bin and Trash, terminal, search without Everything, command line, profiles, color and icon themes | [docs/files.md](docs/files.md) |
 | WSL distributions in the sidebar, `keel` inside WSL | [docs/wsl.md](docs/wsl.md) |
-| Library (sources, search syntax, hashing, resuming, the daemon), media view, protection | [docs/library.md](docs/library.md) |
+| Library (sources, search chips and syntax, hashing, resuming, the daemon), media view, protection | [docs/library.md](docs/library.md) |
 | Remotes over SSH, `~/.ssh/config` and jump hosts | [docs/remotes.md](docs/remotes.md) |
 | Devices and Spacedrop, library sync, web client, phones | [docs/devices.md](docs/devices.md) |
 | Daemon, CLI and MCP, mounts | [docs/daemon.md](docs/daemon.md) |

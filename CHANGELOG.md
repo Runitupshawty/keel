@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Filter chips for library search: with **Library** chosen in the search tab, a row of chips under the box narrows the search without the query syntax: **Kind** (Image, Video, Audio, Document, Archive, Folder), **Type** (the most common extensions among the newest indexed files, and a box for another), **Tag**, **Source**, **Size** (under 1 MB, 1–100 MB, over 100 MB, over 1 GB), **Modified** (today, this week, this month, this year) and **★ Favorites**. A chip adds its term to the query (hover it to see the term) and runs the search; clicking it again takes the term out. The query box stays the truth: a term typed by hand lights its chip, and terms no chip shows stay as typed. Tab reaches the chips from the query box, Space toggles one, and each has a name for screen readers ("Kind: Document"). The web client's Search page has the same chips. See [Searching](docs/library.md#searching).
+- Library search dates take `thisweek` (from Monday), `thismonth` and `thisyear`: `dm:thisweek`, `taken:thisyear`, also in ranges (`dm:>=thismonth`), in the window, `keel search`, the API and the web client.
+
 ## [0.20.0] - 2026-10-11
 
 ### Added

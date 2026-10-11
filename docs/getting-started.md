@@ -189,7 +189,7 @@ Ctrl+F opens a search tab. On Windows Keel uses Everything when it runs, and oth
 
 Queries are parts of names, `*.pdf` globs or `regex:`, with `folder:` for folders only and `in:<path>` to search under a folder; with Everything its own syntax works, such as `ext:pdf`, `dm:today` and `"exact phrase"`.
 
-The menu at the left of the search box switches between the system search and **Library**, which searches the library index across all your sources, also the offline ones. The library takes filters such as `ext:pdf`, `in:photos` (under a path or source), `size:>1mb`, `dm:2026-10`, `kind:image` and `tag:taxes`; the full list is in [Library search syntax](library.md#library).
+The menu at the left of the search box switches between the system search and **Library**, which searches the library index across all your sources, also the offline ones. With Library a row of filter chips appears under the box: click **Kind → Document**, a **Tag**, a **Size** or **Modified** range, a **Source** or **★ Favorites** and the search narrows at once, without any syntax. Each chip writes its term into the box (hover it to see which), so you pick the syntax up as you go and can type it later. The library takes filters such as `ext:pdf`, `in:photos` (under a path or source), `size:>1mb`, `dm:2026-10`, `kind:image` and `tag:taxes`; the chips and the full list are in [Searching](library.md#searching).
 
 ![A library search for ext:pdf across three sources](screenshots/search.png)
 

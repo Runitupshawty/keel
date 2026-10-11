@@ -216,7 +216,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 15 | Drag-out on macOS and Linux | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
 | 17 | An icon or color per folder | Atlas | D | S-M |
-| 18 | Filter chips for library search | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
+| 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
 | 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D | S-M |
