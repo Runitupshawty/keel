@@ -134,7 +134,17 @@ fn trash_path(path: &Path) -> Result<()> {
         is_fixed_disk(path),
         "This location has no Recycle Bin; nothing deleted"
     );
-    trash::delete(path)?;
+    #[allow(unused_mut)]
+    let mut bin = trash::TrashContext::default();
+    // macOS: NSFileManager, not the default of asking Finder over Apple Events, which a
+    // signed (hardened runtime) build may be refused, and which needs the Automation
+    // permission and plays Finder's sound. The cost: Finder offers no "Put Back".
+    #[cfg(target_os = "macos")]
+    trash::macos::TrashContextExtMacos::set_delete_method(
+        &mut bin,
+        trash::macos::DeleteMethod::NsFileManager,
+    );
+    bin.delete(path)?;
     anyhow::ensure!(!path.try_exists()?, "still present after trash");
     Ok(())
 }

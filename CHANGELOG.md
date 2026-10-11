@@ -13,6 +13,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Fixed
 
+- macOS: Move to Trash moves the files itself (NSFileManager) instead of asking Finder over Apple Events, which a signed build with the hardened runtime can be refused; it also needs no Automation permission and makes no sound. Finder's **Put Back** does not offer itself for items Keel trashed: use **Restore to…** in Keel's Trash, or drag them out.
 - Web client: PDF previews work. keel-daemon never loaded pdfium, so every PDF said "PDF previews need pdfium next to keel.exe", even with pdfium next to keel-daemon; that message now names the program that needs it.
 - Web client: a mistyped token is refused as "not the token in daemon.token"; it used to say "the first message must be auth with the daemon token".
 - Web client: swiping left or right in the phone's preview sheet shows the next or previous file; no swipe ever counted.
