@@ -1167,3 +1167,44 @@ fn perf_list_1000_requests() {
     );
     assert!(took < Duration::from_secs(10), "{took:?}");
 }
+
+/// Task 53: the daemon holds the databases, so a client's backup and restore run there, and
+/// the files are where the client asked.
+#[test]
+fn backup_and_restore_run_in_the_daemon() {
+    let env = env();
+    let daemon = start(&env, None);
+    let mut c = Client::connect(daemon.name()).unwrap();
+    let id = add_source(&mut c, &env);
+    let job = apply(&mut c, "sources.index", json!({ "id": id }))["job"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(wait_job(&mut c, job)["status"], "done");
+    let out = tempfile::tempdir().unwrap();
+    let file = out.path().join("main.keelbackup");
+    let done = apply(
+        &mut c,
+        "library.backup",
+        json!({"file": file.display().to_string()}),
+    );
+    assert_eq!(done["sources"], 1);
+    assert!(file.is_file());
+    // The daemon's own library is never replaced; another name is restored beside it.
+    let e = c
+        .call(
+            "library.restore",
+            json!({"file": file.display().to_string()}),
+        )
+        .unwrap_err();
+    assert!(e.message.contains("exists"), "{}", e.message);
+    let restored = apply(
+        &mut c,
+        "library.restore",
+        json!({"file": file.display().to_string(), "name": "copy"}),
+    );
+    assert_eq!(restored["sources"][0]["id"], id.as_str());
+    assert!(env.data.path().join("library/copy/library.db").is_file());
+    // The daemon still serves its library.
+    let hits = c.call("search", json!({"query": "invoice"})).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 1, "{hits}");
+}

@@ -431,6 +431,9 @@ pub struct LibraryStats {
     pub running_jobs: usize,
     /// Each source's own counts, in the library's order.
     pub per_source: Vec<SourceStats>,
+    /// When the last backup was written (unix seconds; `Library::backup`).
+    #[serde(default)]
+    pub last_backup: Option<i64>,
 }
 
 /// One source's counts (`LibraryStats::per_source`), from its store as last indexed.
@@ -644,7 +647,7 @@ pub struct Library {
     jobs: Jobs,
 }
 
-fn check_name(name: &str) -> Result<()> {
+pub(crate) fn check_name(name: &str) -> Result<()> {
     anyhow::ensure!(
         !name.is_empty()
             && name != "."
@@ -1169,6 +1172,13 @@ impl Library {
             .flatten()
             .and_then(|n| n.parse().ok())
             .unwrap_or(0);
+        stats.last_backup = (self
+            .shared
+            .db
+            .meta(crate::backup::LAST_BACKUP)
+            .ok()
+            .flatten())
+        .and_then(|t| t.parse().ok());
         stats
     }
 

@@ -34,6 +34,9 @@ regex.workspace = true
 notify.workspace = true
 tracing.workspace = true
 blake3.workspace = true
+# Library backups (`backup.rs`): a zip with a SHA-256 per file.
+zip.workspace = true
+sha2.workspace = true
 battery = { workspace = true, optional = true }
 image.workspace = true
 kamadak-exif.workspace = true

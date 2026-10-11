@@ -136,6 +136,8 @@ fn registry_is_preview_first() {
         "devices.settings",
         "devices.settings_set",
         "library.sync",
+        "library.backup",
+        "library.restore",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -1586,4 +1588,93 @@ fn library_folder_sizes_reads_the_index() {
     )
     .unwrap_err();
     assert_eq!(err.code, ApiError::NOT_FOUND, "{err:?}");
+}
+
+/// Task 53: `library.backup` writes a new `.keelbackup` (never over a file), and
+/// `library.restore` previews what the file holds, refuses an existing library and restores
+/// under another name.
+#[test]
+fn backup_and_restore_round_trip_through_the_api() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let pdf = s(&f.files.path().join("docs/invoice-2026.pdf"));
+    apply(
+        &f.ctx,
+        "tags.add",
+        json!({"tag": "receipts", "paths": [pdf]}),
+    );
+    let out = tempfile::tempdir().unwrap();
+    // Local absolute paths only, ending in .keelbackup.
+    for bad in ["relative.keelbackup", "sftp://host/x.keelbackup"] {
+        let e = call(&f.ctx, "library.backup", json!({ "file": bad })).unwrap_err();
+        assert_eq!(e.code, ApiError::INVALID_PARAMS, "{bad}: {}", e.message);
+    }
+    let txt = s(&out.path().join("b.txt"));
+    assert!(call(&f.ctx, "library.backup", json!({ "file": txt })).is_err());
+    // A folder gets a dated name.
+    let preview = call(&f.ctx, "library.backup", json!({"file": s(out.path())})).unwrap();
+    assert!(
+        preview["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Back up library test"),
+        "{preview}"
+    );
+    assert_eq!(
+        std::fs::read_dir(out.path()).unwrap().count(),
+        0,
+        "a preview writes nothing"
+    );
+    let done = apply(&f.ctx, "library.backup", json!({"file": s(out.path())}));
+    let file = done["file"].as_str().unwrap().to_owned();
+    assert!(
+        file.ends_with(".keelbackup") && file.contains("test-"),
+        "{file}"
+    );
+    assert_eq!(done["sources"], 1);
+    assert!(done["bytes"].as_u64().unwrap() > 0);
+    assert!(call(&f.ctx, "library.stats", Value::Null).unwrap()["last_backup"].is_i64());
+    // Never over an existing file.
+    let e = call(&f.ctx, "library.backup", json!({ "file": file })).unwrap_err();
+    assert!(e.message.contains("exists"), "{}", e.message);
+
+    // The open library's name is refused at the preview.
+    let e = call(&f.ctx, "library.restore", json!({ "file": file })).unwrap_err();
+    assert!(
+        e.message.contains("a library named test exists"),
+        "{}",
+        e.message
+    );
+    let preview = call(
+        &f.ctx,
+        "library.restore",
+        json!({"file": file, "name": "restored"}),
+    )
+    .unwrap();
+    assert_eq!(preview["changes"][0]["action"], "library.restore");
+    assert_eq!(preview["changes"][1]["action"], "source.restore");
+    assert!(
+        preview["changes"][1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("walked again"),
+        "{preview}"
+    );
+    let restored = apply(
+        &f.ctx,
+        "library.restore",
+        json!({"file": file, "name": "restored"}),
+    );
+    assert_eq!(restored["name"], "restored");
+    assert_eq!(restored["sources"][0]["id"], id);
+    assert_eq!(restored["sources"][0]["online"], true);
+    let back = keel_core::Library::open(f._data.path(), "restored").unwrap();
+    let tags: Vec<String> = back.tags().unwrap().into_iter().map(|t| t.name).collect();
+    assert_eq!(tags, ["receipts"]);
+    assert_eq!(back.stats().files, f.ctx.lib.stats().files);
+    // Not a backup: a typed message, not a crash.
+    let junk = out.path().join("junk.keelbackup");
+    std::fs::write(&junk, b"junk").unwrap();
+    let e = call(&f.ctx, "library.restore", json!({"file": s(&junk)})).unwrap_err();
+    assert!(e.message.starts_with("not a Keel backup"), "{}", e.message);
 }

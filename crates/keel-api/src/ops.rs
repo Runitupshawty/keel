@@ -114,6 +114,10 @@ pub static OPS: &[Operation] = &[
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
         FolderSizesParams => FolderSizes, library_folder_sizes, json!({"path": example_dir()})),
+    previewed!("library.backup", "Writes a backup of the library (its index with tags, favorites and content ids, and its sources) to a new .keelbackup file on the host; thumbnails and the search index are rebuilt after a restore.",
+        BackupParams => BackupWritten, backup_preview, backup, json!({"file": example_backup()})),
+    previewed!("library.restore", "Restores a .keelbackup file on the host as a new library (never replacing one: `name` picks another name); sources whose folder exists there are walked again when it opens, the others are offline.",
+        RestoreParams => RestoredLibrary, restore_preview, restore, json!({"file": example_backup(), "name": "restored"})),
     now!("protection.summary", "How safe the library's contents are: single copies, one failure domain, not backed up, drift, files not checked yet.",
         NoParams => Protection, protection_summary, json!({})),
     now!("volumes.list", "The drive inventory: volumes holding sources, their failure domain, state and backup mark.",
@@ -179,6 +183,14 @@ fn example_mount() -> &'static str {
         "K:"
     } else {
         "/home/me/Keel"
+    }
+}
+
+fn example_backup() -> &'static str {
+    if cfg!(windows) {
+        r"D:\Backups\main-2026-10-11.keelbackup"
+    } else {
+        "/media/backup/main-2026-10-11.keelbackup"
     }
 }
 
@@ -1007,6 +1019,163 @@ impl From<keel_core::Redundancy> for Copies {
 
 // --- protection, volumes, background work ---
 
+// --- backup ---
+
+/// A backup file's path: absolute and local (the host's working folder is not the
+/// caller's; nothing remote).
+fn local_file(s: &str) -> Result<std::path::PathBuf> {
+    let s = s.trim();
+    let path = std::path::PathBuf::from(s);
+    if s.contains("://") || !path.is_absolute() {
+        return Err(ApiError::invalid_params(format!(
+            "not an absolute local path: {s}"
+        )));
+    }
+    Ok(path)
+}
+
+/// The data folder holding the open library (`<data>/library/<name>/`).
+fn data_root(ctx: &Ctx) -> Result<std::path::PathBuf> {
+    (ctx.lib.dir().parent().and_then(std::path::Path::parent))
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| ApiError::failed("no data folder"))
+}
+
+/// Where `library.backup` writes: the file, or a dated name in the folder; never an
+/// existing file, always `.keelbackup`.
+fn backup_target(ctx: &Ctx, p: &BackupParams) -> Result<std::path::PathBuf> {
+    let mut path = local_file(&p.file)?;
+    if path.is_dir() {
+        path = path.join(keel_core::backup::file_name(&ctx.lib.name, unix_now()));
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some(keel_core::backup::EXTENSION) {
+        return Err(ApiError::invalid_params(format!(
+            "a backup file ends in .{}",
+            keel_core::backup::EXTENSION
+        )));
+    }
+    if path.exists() {
+        return Err(ApiError::failed(format!(
+            "{} exists: choose another file",
+            path.display()
+        )));
+    }
+    if !path.parent().is_some_and(std::path::Path::is_dir) {
+        return Err(ApiError::failed(format!(
+            "no folder {}",
+            path.parent().unwrap_or(&path).display()
+        )));
+    }
+    Ok(path)
+}
+
+fn unix_now() -> i64 {
+    unix(Some(std::time::SystemTime::now())).unwrap_or(0)
+}
+
+fn backup_preview(ctx: &Ctx, p: &BackupParams) -> Result<Preview> {
+    let path = backup_target(ctx, p)?;
+    let stats = ctx.lib.stats();
+    Ok(Preview {
+        pin: None,
+        summary: format!(
+            "Back up library {} ({} source(s), {} files) to {}",
+            ctx.lib.name,
+            stats.sources,
+            stats.files,
+            path.display()
+        ),
+        changes: vec![change(
+            "library.backup",
+            Some(path.display().to_string()),
+            Some(format!(
+                "library.db and {} source store(s); thumbnails and the search index are not included",
+                stats.sources
+            )),
+        )],
+        warnings: Vec::new(),
+    })
+}
+
+fn backup(ctx: &Ctx, p: BackupParams) -> Result<BackupWritten> {
+    let path = backup_target(ctx, &p)?;
+    let m = ctx.lib.backup(&path)?;
+    Ok(BackupWritten {
+        file: path.display().to_string(),
+        bytes: std::fs::metadata(&path).map_or(0, |m| m.len()),
+        created: m.created,
+        sources: m.sources.len(),
+    })
+}
+
+fn restore_preview(ctx: &Ctx, p: &RestoreParams) -> Result<Preview> {
+    let file = local_file(&p.file)?;
+    let m = keel_core::backup::inspect(&file)?;
+    let name = p.name.clone().unwrap_or_else(|| m.library.clone());
+    let root = data_root(ctx)?;
+    if keel_core::backup::exists(&root, &name) {
+        return Err(ApiError::failed(
+            keel_core::BackupError::NameTaken(name).to_string(),
+        ));
+    }
+    let mut changes = vec![change(
+        "library.restore",
+        Some(root.join("library").join(&name).display().to_string()),
+        Some(format!(
+            "library {name} from {} (backed up by Keel {})",
+            m.library, m.keel_version
+        )),
+    )];
+    for s in &m.sources {
+        let state = match keel_core::backup::reachable(&s.root) {
+            true => "walked again when the library opens",
+            false => "offline until its folder is back",
+        };
+        changes.push(change(
+            "source.restore",
+            Some(s.root.display()),
+            Some(format!("{}: {state}", s.label)),
+        ));
+    }
+    Ok(Preview {
+        pin: None,
+        summary: format!(
+            "Restore library {} ({} source(s)) from {} as a new library {name}",
+            m.library,
+            m.sources.len(),
+            file.display()
+        ),
+        changes,
+        warnings: vec![warning(
+            "not_opened",
+            None,
+            format!(
+                "Library {} stays open here: switch to {name} in Settings → Library",
+                ctx.lib.name
+            ),
+        )],
+    })
+}
+
+fn restore(ctx: &Ctx, p: RestoreParams) -> Result<RestoredLibrary> {
+    let file = local_file(&p.file)?;
+    let r = keel_core::backup::restore(&data_root(ctx)?, &file, p.name.as_deref())?;
+    Ok(RestoredLibrary {
+        name: r.name,
+        dir: r.dir.display().to_string(),
+        sources: r
+            .sources
+            .into_iter()
+            .map(|s| RestoredSourceInfo {
+                id: s.id,
+                label: s.label,
+                root: s.root.display(),
+                online: s.online,
+            })
+            .collect(),
+    })
+}
+
 fn library_folder_sizes(ctx: &Ctx, p: FolderSizesParams) -> Result<FolderSizes> {
     let dir = vpath(&p.path)?;
     let (source, rel) = locate(ctx, &dir)?;
@@ -1069,6 +1238,7 @@ fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {
             cloud: hashing.hash_cloud,
             max_remote_bytes: hashing.remote_hash_max_bytes,
         }),
+        last_backup: s.last_backup,
     })
 }
 

@@ -110,6 +110,37 @@ fn migrate(conn: &Connection, store: Store) -> Result<()> {
     Ok(())
 }
 
+/// The newest schema version of `store` this Keel knows.
+pub(crate) fn newest(store: Store) -> u32 {
+    migrations(store).last().map_or(0, |(v, _)| *v)
+}
+
+/// A trigger or view: `(type, name, sql)`.
+pub(crate) type CodeObject = (String, String, Option<String>);
+
+/// The triggers and views in `conn`, by name.
+pub(crate) fn code_objects(conn: &Connection) -> Result<Vec<CodeObject>> {
+    let mut stmt = conn.prepare(
+        "SELECT type, name, sql FROM sqlite_master WHERE type IN ('trigger', 'view') ORDER BY name",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The triggers and views (`code_objects`) a store of `store` holds at `version`, made by
+/// this Keel's migrations up to it in memory; None for a version it never had.
+pub(crate) fn reference_objects(store: Store, version: u32) -> Result<Option<Vec<CodeObject>>> {
+    let all = migrations(store);
+    if !all.iter().any(|(v, _)| *v == version) {
+        return Ok(None);
+    }
+    let conn = Connection::open_in_memory()?;
+    for (_, sql) in all.iter().filter(|(v, _)| *v <= version) {
+        conn.execute_batch(sql)?;
+    }
+    code_objects(&conn).map(Some)
+}
+
 /// A mutex-guarded set of connections to one database (WAL, synchronous=NORMAL, 5 s busy
 /// timeout). Cheap to clone; `get` never waits for other users (SQLite does the locking).
 #[derive(Clone)]

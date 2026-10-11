@@ -12,6 +12,8 @@
 //! `Jobs::subscribe` return at once. Protection calls (`volumes`, `redundancy`,
 //! `protection_summary`, …) may also look at a source's root.
 
+/// Library backup and restore (`keel library backup` / `restore`).
+pub mod backup;
 mod db;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
@@ -36,6 +38,9 @@ mod sync;
 mod tags;
 mod totals;
 
+pub use backup::{
+    BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
+};
 pub use fsid::unix_ns;
 pub use hash::{
     on_battery, DupGroup, HashJob, HashResult, RemoteHashSettings, SkipReason, SkippedSource,

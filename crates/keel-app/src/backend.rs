@@ -503,6 +503,7 @@ impl LibraryBackend {
                             offline: p.offline,
                         })
                         .collect(),
+                    last_backup: s.last_backup,
                 })
             }
         }
