@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- The inspector: the preview panel has a second tab, **Inspector** (Ctrl+I, or **Show inspector** in the command palette; F3 still shows the preview). For the selected item it shows the Overview (name, kind, size, modified date, the path with a Copy button), and what the library knows: its source, the volume with its state and backup mark, the content id with a Copy button, when the index first saw it and last hashed it, and its protection count; **Copies**, each other file with the same content in any source or on a device, a click opening its folder with the copy selected ("not hashed yet" when its copies are not known); **History**, the operations that touched it, newest first, followed back through its moves and renames (50, **Show all** for up to 1,000); **Tags**, its chips and the tag picker; and for a folder its size, files, folders and biggest child. It follows the selection like the preview and asks the library 150 ms after the selection settles, on a background thread, through keel-daemon when the window is attached to one. Outside the library the Overview still works and the other sections say "Not in the library". It only reads. See [Inspector](docs/files.md#inspector).
+- `library.inspect` (read-only) in the API, `keel mcp` and keel-daemon: everything the inspector shows for one path, with the copies and the history bounded by `max` (default 50, at most 1000). See [api.md](docs/api.md).
+- The library records when the index first saw each file or folder and when its bytes were last hashed (by hashing or an integrity check), and the operation log records tag and favorite changes (`tag` / `untag`, with the paths and the tag's name), for the inspector's history.
+
+### Known limitations
+
+- *First seen* and *last hashed* are recorded from this version on: items indexed and hashed by an earlier Keel show *not recorded* until they are seen or hashed again, and tag changes made before it are not in the history.
+- An item's history lists the operations that named it (or, through moves and renames, its earlier paths); moving or renaming a folder that holds it is not in the item's own history.
+- The plan's "Show all" was to open the library's jobs view filtered to the item; Keel has no operation log view, so **Show all** lists up to 1,000 entries in the panel instead.
+- Source stores are now at version 10: a store a 0.21 Keel opened (on a drive that travels between machines) is refused by an older Keel ("newer than this Keel").
+
 ## [0.20.0] - 2026-10-11
 
 ### Added
