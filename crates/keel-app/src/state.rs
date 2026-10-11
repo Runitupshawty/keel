@@ -108,6 +108,8 @@ pub enum Msg {
         id: u64,
         result: anyhow::Result<()>,
     },
+    /// Task 46: folder totals a Calculate sizes job found (path, modified time, total).
+    FolderSizes(Vec<(VPath, Option<std::time::SystemTime>, keel_core::Total)>),
     /// Sources resolved and `dst` scanned for name clashes; start or ask.
     Planned {
         op: Transfer,
@@ -282,6 +284,8 @@ pub struct AppState {
     pub media: crate::media::Media,
     /// The full-window media viewer, while open.
     pub viewer: Option<crate::media_viewer::Viewer>,
+    /// Task 46: folder totals walked this session (Calculate sizes).
+    pub sizes: crate::sizes::Sizes,
 }
 
 impl AppState {
@@ -400,6 +404,7 @@ impl AppState {
             mount: Default::default(),
             media,
             viewer: None,
+            sizes: Default::default(),
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -671,7 +676,9 @@ impl AppState {
                 }
             }
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
+            Msg::FolderSizes(totals) => self.sizes.got(totals),
             Msg::JobDone { id, result } => {
+                self.sizes.job_done(id);
                 if let Some((job, src)) = self.cut_job.take() {
                     if job != id {
                         self.cut_job = Some((job, src));
@@ -1019,6 +1026,28 @@ impl AppState {
         });
     }
 
+    /// Task 46: walks the subfolders of pane `p`'s folder for their totals, as a job (only
+    /// those without one unless `fresh`).
+    fn calculate_sizes(&mut self, p: usize, fresh: bool) {
+        let tab = self.panes[p].tab();
+        if tab.is_search() || tab.is_trash() || tab.kind != TabKind::Dir {
+            if fresh {
+                self.toasts.info("Calculate sizes works in a folder");
+            }
+            return;
+        }
+        let dir = tab.dir.clone();
+        let folders = self.sizes.wanted(tab.entries(), fresh);
+        if folders.is_empty() {
+            self.sizes.walking(&dir, &[], 0);
+            return;
+        }
+        let id =
+            self.jobs
+                .folder_sizes(&dir, folders.clone(), self.router.clone(), self.tx.clone());
+        self.sizes.walking(&dir, &folders, id);
+    }
+
     fn listed(&mut self, dir: VPath, req: u64, gone: bool, result: anyhow::Result<Listing>) {
         if self.inflight.get(&dir).map(|(r, _)| *r) == Some(req) {
             self.inflight.remove(&dir);
@@ -1064,6 +1093,14 @@ impl AppState {
                 }
                 // 100k entries: the last (usually only) tab takes the listing itself.
                 fill(last, listing);
+                // Task 46: a local folder outside the library gets its folder sizes on its
+                // own with the setting on.
+                self.sizes.listed(&dir);
+                if crate::sizes::auto_start(&dir, &self.library, self.settings.folder_sizes_local) {
+                    if let Some(&(p, _)) = hits.iter().find(|&&(p, t)| self.panes[p].active == t) {
+                        self.calculate_sizes(p, false);
+                    }
+                }
                 let show_hidden = self.show_hidden;
                 for &(p, t) in &hits {
                     let tab = &mut self.panes[p].tabs[t];
@@ -1654,6 +1691,8 @@ impl AppState {
                 }
             }
             Action::LeaveTerminal => self.terminal.leave(&self.ctx),
+            Action::CalculateSizes { fresh } => self.calculate_sizes(p, fresh),
+            Action::View(mode) => self.panes[p].view = mode,
             Action::ToggleTheme => {
                 let name = if self.theme.dark { "light" } else { "dark" };
                 self.settings.theme = name.to_owned();

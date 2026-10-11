@@ -1,5 +1,6 @@
 //! Details view: a virtual-row table (Name / Ext / Size / Modified; search results show
-//! Name / Folder / Size / Modified).
+//! Name / Folder / Size / Modified). Task 46: the Sizes view is this table with a Share bar
+//! in place of Ext, plus Files and Of used columns, biggest first.
 
 use crate::a11y::Named;
 use crate::keys::Action;
@@ -41,6 +42,7 @@ pub fn ui(
     cx: &mut ViewCx,
     out: &mut Vec<Action>,
 ) {
+    crate::sizes::sync_tab(tab, cx.library, cx.sizes);
     tab.visible(cx.show_hidden);
     tab.row_step = 1;
     tab.page_rows = ((ui.available_height() / ROW_H) as usize)
@@ -49,6 +51,19 @@ pub fn ui(
     let muted = cx.theme.muted();
     let search = tab.is_search();
     let trash = tab.is_trash();
+    // --- Task 46 ---: the Sizes view: shares of the folder and of the volume's used space.
+    let sizes = tab.sizes_view;
+    let (lib, walked) = (cx.library, cx.sizes);
+    let folder_sum: u64 = if sizes {
+        tab.entries()
+            .iter()
+            .filter_map(|e| crate::sizes::bytes_of(lib, walked, e))
+            .sum()
+    } else {
+        0
+    };
+    let used = crate::sidebar::drive_in(cx.drives, &tab.dir).map(|d| d.3.saturating_sub(d.2));
+    let accent = cx.theme.accent();
     let mut renaming = tab.renaming.take();
     let mut rename_done = false;
     let mut sort_click = None;
@@ -62,7 +77,6 @@ pub fn ui(
     let text = ui.visuals().text_color();
     let selection = ui.visuals().selection.bg_fill;
     // --- Task 29 ---: tags and favorites (library on), offline badges.
-    let lib = cx.library;
     let tags_col = cx.tags_column && lib.is_open();
     // --- Task 33 ---: copies badge (library on).
     let copies_col = lib.is_open();
@@ -70,7 +84,7 @@ pub fn ui(
     // Column widths are remembered per table: a folder tab that becomes the Recycle Bin
     // (or a search) gets the wide Original location (Folder) column, not the Ext width.
     let mut table = TableBuilder::new(ui)
-        .id_salt((id, search, trash))
+        .id_salt((id, search, trash, sizes))
         .striped(true)
         .resizable(true)
         .sense(crate::a11y::NO_TAB)
@@ -79,12 +93,21 @@ pub fn ui(
         .cell_layout(Layout::left_to_right(Align::Center))
         .column(Column::remainder().at_least(120.0).clip(true))
         .column(
-            Column::initial(if search || trash { 180.0 } else { 56.0 })
-                .at_least(30.0)
-                .clip(true),
+            Column::initial(if search || trash || sizes {
+                180.0
+            } else {
+                56.0
+            })
+            .at_least(30.0)
+            .clip(true),
         )
         .column(Column::initial(80.0).at_least(50.0))
         .column(Column::initial(124.0).at_least(60.0).clip(true));
+    if sizes {
+        table = table
+            .column(Column::initial(70.0).at_least(40.0).clip(true))
+            .column(Column::initial(70.0).at_least(40.0).clip(true));
+    }
     if copies_col {
         table = table.column(Column::initial(64.0).at_least(40.0).clip(true));
     }
@@ -106,6 +129,16 @@ pub fn ui(
                 header.col(|ui| {
                     if search && key == SortKey::Ext {
                         ui.strong("Folder");
+                        return;
+                    }
+                    if sizes {
+                        // Always biggest first.
+                        let label = match key {
+                            SortKey::Ext => "Share",
+                            SortKey::Size => "Size ⏷",
+                            _ => label,
+                        };
+                        ui.strong(label);
                         return;
                     }
                     if trash && key == SortKey::Ext {
@@ -132,6 +165,16 @@ pub fn ui(
                     if r.named(&name).clicked() {
                         sort_click = Some(key);
                     }
+                });
+            }
+            if sizes {
+                header.col(|ui| {
+                    ui.strong("Files");
+                });
+                header.col(|ui| {
+                    ui.strong("Of used").on_hover_text(
+                        "Share of the space used on this drive (the drive's own numbers)",
+                    );
                 });
             }
             if copies_col {
@@ -236,6 +279,11 @@ pub fn ui(
                         let from = crate::trash_ui::original_location(e);
                         ui.add(egui::Label::new(cell(&from, Some(muted))).truncate())
                             .on_hover_text(from);
+                    } else if sizes {
+                        let bytes = crate::sizes::bytes_of(lib, walked, e);
+                        if let Some(share) = bytes.map(|b| fraction(b, folder_sum)) {
+                            share_bar(ui, share, accent, muted);
+                        }
                     } else {
                         ui.label(cell(&e.ext, Some(muted)));
                     }
@@ -243,13 +291,41 @@ pub fn ui(
                 row.col(|ui| {
                     tint(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(cell(&size_text(e), color));
+                        let text = crate::sizes::size_text(lib, walked, e);
+                        ui.label(cell(&text, color));
                     });
                 });
                 row.col(|ui| {
                     tint(ui);
                     ui.label(cell(&date_text(e), Some(muted)));
                 });
+                if sizes {
+                    let total = match crate::sizes::size_of(lib, walked, e) {
+                        Some(crate::sizes::Size::Known(t)) => Some(t),
+                        _ if e.kind != Kind::Dir => Some(keel_core::Total {
+                            bytes: e.size,
+                            files: 1,
+                        }),
+                        _ => None,
+                    };
+                    row.col(|ui| {
+                        tint(ui);
+                        if let Some(t) = total {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(cell(&t.files.to_string(), Some(muted)));
+                            });
+                        }
+                    });
+                    row.col(|ui| {
+                        tint(ui);
+                        if let (Some(t), Some(used)) = (total, used) {
+                            let pct = 100.0 * fraction(t.bytes, used);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(cell(&format!("{pct:.1} %"), Some(muted)));
+                            });
+                        }
+                    });
+                }
                 if copies_col {
                     row.col(|ui| {
                         tint(ui);
@@ -305,7 +381,37 @@ pub fn ui(
     if let Some(key) = sort_click {
         tab.sort = (key, if tab.sort.0 == key { !tab.sort.1 } else { true });
     }
+    // Task 46: the Sizes view walks a folder outside the library once per listing (being
+    // asked for it, also on a network folder).
+    let indexed = lib.is_open() && crate::library::source_of(&lib.sources, &tab.dir).is_some();
+    let unknown = || {
+        (tab.entries().iter()).any(|e| e.kind == Kind::Dir && !e.is_link && walked.get(e).is_none())
+    };
+    if sizes && !indexed && !tab.loading && !walked.started(&tab.dir) && unknown() {
+        out.push(Action::CalculateSizes { fresh: false });
+    }
     empty_area(ui, tab, out);
+}
+
+/// `part` of `whole`, 0..=1 (0 when the whole is 0).
+fn fraction(part: u64, whole: u64) -> f32 {
+    if whole == 0 {
+        0.0
+    } else {
+        (part as f64 / whole as f64).clamp(0.0, 1.0) as f32
+    }
+}
+
+/// The Sizes view's bar: the share filled in the accent colour, and the percentage.
+fn share_bar(ui: &mut egui::Ui, share: f32, fill: egui::Color32, text: egui::Color32) {
+    let width = (ui.available_width() - 44.0).max(12.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 8.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 2.0, text.gamma_multiply(0.2));
+    let mut done = rect;
+    done.set_width(rect.width() * share);
+    ui.painter().rect_filled(done, 2.0, fill);
+    ui.label(cell(&format!("{:.0} %", 100.0 * share), Some(text)));
 }
 
 fn cell(text: &str, color: Option<egui::Color32>) -> egui::RichText {

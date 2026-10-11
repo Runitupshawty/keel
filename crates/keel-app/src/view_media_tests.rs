@@ -230,6 +230,7 @@ fn media_view_draws_tiles_and_requests_visible_sidecars() {
                     searcher: None,
                     tags_column: false,
                     media: &mut media,
+                    sizes: &Default::default(),
                     keys: true,
                 };
                 super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
@@ -393,6 +394,7 @@ fn media_grid_perf() {
                         searcher: None,
                         tags_column: false,
                         media: &mut s.media,
+                        sizes: &Default::default(),
                         keys: true,
                     };
                     super::ui(ui, (0, 0), &mut s.tab, &mut cx, &mut Vec::new());

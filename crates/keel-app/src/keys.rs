@@ -118,6 +118,14 @@ pub enum Action {
     ToggleTerminal,
     LeaveTerminal,
     ToggleTheme,
+    /// Task 46: walk the shown folder's subfolders for their totals (a job). `fresh`:
+    /// asked by the user (totals walked before are walked again); else only folders without
+    /// a total, once per listing.
+    CalculateSizes {
+        fresh: bool,
+    },
+    /// Switch the pane's view (palette).
+    View(crate::pane::ViewMode),
     Navigate(VPath),
     /// Path box: a folder navigates; a file opens its folder with the file selected.
     OpenPath(VPath),

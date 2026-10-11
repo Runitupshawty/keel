@@ -592,6 +592,87 @@ fn grid_view() {
     shot(&mut h, "grid-view");
 }
 
+/// Task 46: the Sizes view walks a folder outside the library on its own, shows its
+/// children biggest first with share bars, Enter goes down (the walk already knows the
+/// totals below) and Backspace up; the Size column and the status bar show folder totals;
+/// Calculate sizes can be cancelled.
+#[test]
+fn sizes_view_and_calculate_sizes() {
+    let dir = std::env::temp_dir().join(format!("keel-walk-{}-sizes", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let put = |rel: &str, n: usize| {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, vec![b'x'; n]).unwrap();
+    };
+    put("big/one.bin", 2_000);
+    put("big/inner/two.bin", 1_000);
+    put("small/s.txt", 10);
+    put("mid.bin", 500);
+    let mut h = app(&dir, &demo().join("Documents"));
+    click_nth(&mut h, "Sizes", 0);
+    assert_eq!(s(&h).panes[0].view, ViewMode::Sizes);
+    assert!(
+        wait(&mut h, 20, &|s| job_done(s) && s.sizes.gen > 1),
+        "walked"
+    );
+    h.run_steps(3);
+    assert_eq!(
+        names(s(&h), 0),
+        ["big", "mid.bin", "small"],
+        "biggest first"
+    );
+    assert!(has(&h, "Share") && has(&h, "Of used"), "the Sizes columns");
+    assert!(has_contains(&h, "3 kB"), "big's total in the Size column");
+    shot(&mut h, "sizes-view");
+    sm(&mut h).tab_mut(0).click("big", false, false);
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir.join("big")) && listed(s)));
+    h.run_steps(3);
+    assert_eq!(names(s(&h), 0), ["one.bin", "inner"]);
+    let inner = s(&h)
+        .tab(0)
+        .entries()
+        .iter()
+        .find(|e| e.name == "inner")
+        .unwrap()
+        .clone();
+    assert!(
+        matches!(s(&h).sizes.get(&inner), Some(crate::sizes::Size::Known(t)) if t.bytes == 1_000),
+        "known from the walk above"
+    );
+    key(&mut h, NONE, Key::Backspace);
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir) && listed(s)));
+    // Back in Details, the status bar counts a selected folder's total.
+    click_nth(&mut h, "Details", 0);
+    sm(&mut h).tab_mut(0).click("big", false, false);
+    h.run_steps(3);
+    assert!(has_contains(&h, "3 kB"), "the selected folder's total");
+
+    // Calculate sizes over many folders, cancelled at once.
+    for i in 0..400 {
+        put(&format!("many/d{i}/f.bin"), 10);
+    }
+    sm(&mut h).run(0, Action::Navigate(VPath::local(dir.join("many"))));
+    assert!(wait(&mut h, 10, &listed));
+    sm(&mut h).run(0, Action::CalculateSizes { fresh: true });
+    let job = s(&h).jobs.list.last().unwrap();
+    assert!(job.title.starts_with("Calculating sizes"), "{}", job.title);
+    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(wait(&mut h, 20, &job_done));
+    let cancelled = s(&h).jobs.list.last().unwrap();
+    assert!(
+        matches!(&cancelled.done, Some(Err(e)) if crate::jobs::is_cancel(e)),
+        "cancelled"
+    );
+    let tab = s(&h).tab(0);
+    let pending = (tab.entries().iter())
+        .filter(|e| s(&h).sizes.get(e) == Some(crate::sizes::Size::Pending))
+        .count();
+    assert_eq!(pending, 0, "nothing left computing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The status bar counts items with the right plural.
 #[test]
 fn status_bar_counts() {

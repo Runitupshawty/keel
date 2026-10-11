@@ -40,6 +40,7 @@ mod session;
 mod settings;
 mod sidebar;
 mod sidebar_remotes;
+mod sizes; // Task 46: folder sizes
 mod state;
 mod tab;
 mod term_pane;

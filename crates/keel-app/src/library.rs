@@ -296,6 +296,8 @@ pub enum LibMsg {
     Protection(ProtectionSummary, Vec<Volume>),
     /// Copies badges of the files in some folders (by real path).
     Badges(HashMap<VPath, Badge>),
+    /// Task 46: indexed folder totals (by real path) of the folders asked for.
+    Sizes(HashMap<VPath, keel_core::Total>),
 }
 
 /// An opened library: where it is, its running jobs and their events, and why a wanted
@@ -760,6 +762,13 @@ pub struct LibraryUi {
     pub badges: HashMap<VPath, Badge>,
     badge_wanted: parking_lot::Mutex<HashSet<VPath>>,
     badge_asked: HashSet<VPath>,
+    // --- Task 46 ---
+    /// Indexed folder totals by real path; parent folders wanted, and asked for.
+    pub sizes: HashMap<VPath, keel_core::Total>,
+    size_wanted: parking_lot::Mutex<HashSet<VPath>>,
+    size_asked: HashSet<VPath>,
+    /// Bumped whenever `sizes` changes (tabs sort again).
+    pub sizes_gen: u64,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -817,6 +826,10 @@ impl LibraryUi {
             badges: HashMap::new(),
             badge_wanted: parking_lot::Mutex::new(HashSet::new()),
             badge_asked: HashSet::new(),
+            sizes: HashMap::new(),
+            size_wanted: parking_lot::Mutex::new(HashSet::new()),
+            size_asked: HashSet::new(),
+            sizes_gen: 0,
             tx,
             ctx,
         }
@@ -1557,6 +1570,10 @@ impl AppState {
                 l.volumes = v;
             }
             LibMsg::Badges(b) => l.badges.extend(b),
+            LibMsg::Sizes(sizes) => {
+                l.sizes.extend(sizes);
+                l.sizes_gen += 1;
+            }
             LibMsg::Closed => {
                 if self.settings.library.enabled && !l.is_open() {
                     let name = self.settings.library.name.clone();
@@ -1707,6 +1724,7 @@ impl AppState {
             }
         }
         l.ask_badges();
+        l.ask_sizes();
         l.sync_watchers(poll);
         let indexing = l
             .sources
@@ -2399,10 +2417,41 @@ impl LibraryUi {
         });
     }
 
+    /// Badges and folder totals are read again (after watcher changes, job ends and
+    /// volume changes).
     fn forget_badges(&mut self) {
         self.badges.clear();
         self.badge_asked.clear();
         self.badge_wanted.lock().clear();
+        // Totals stay shown until the new ones arrive.
+        self.size_asked.clear();
+    }
+
+    /// Task 46: the indexed total of a folder (real path); asks for its parent's children
+    /// when not asked yet.
+    pub fn folder_total(&self, real: &VPath) -> Option<keel_core::Total> {
+        if let Some(dir) = real.parent().filter(|d| !self.size_asked.contains(d)) {
+            if source_of(&self.sources, &dir).is_some() {
+                self.size_wanted.lock().insert(dir);
+            }
+        }
+        self.sizes.get(real).copied()
+    }
+
+    /// Reads the folder totals the views asked for, on a worker.
+    fn ask_sizes(&mut self) {
+        let wanted: Vec<VPath> = self.size_wanted.lock().drain().collect();
+        let dirs: Vec<VPath> = wanted
+            .into_iter()
+            .filter(|d| self.size_asked.insert(d.clone()))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        let sources = self.sources.clone();
+        self.spawn("keel-library-sizes", move |b| {
+            Some(LibMsg::Sizes(b.folder_sizes(&sources, &dirs)))
+        });
     }
 
     /// A recount keel-core ran on its own thread (after watcher changes): counts and badges

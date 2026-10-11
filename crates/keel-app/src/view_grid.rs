@@ -407,6 +407,7 @@ mod tests {
                             searcher: None,
                             tags_column: false,
                             media: &mut media,
+                            sizes: &Default::default(),
                             keys: true,
                         };
                         super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());

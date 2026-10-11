@@ -39,6 +39,8 @@ pub struct Settings {
     pub remote_thumbnails: bool,
     /// Local copies and moves that touch the same drive run one after another.
     pub one_transfer_per_drive: bool,
+    /// Task 46: Calculate sizes starts on its own in local folders outside the library.
+    pub folder_sizes_local: bool,
     /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
@@ -193,6 +195,7 @@ impl Default for Settings {
             terminal_height: 220.0,
             remote_thumbnails: false,
             one_transfer_per_drive: false,
+            folder_sizes_local: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
             hotkey: "Ctrl+Shift+Alt+K".into(),
@@ -664,6 +667,12 @@ pub fn window(
                     ui.label("Transfers");
                     ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
                         .on_hover_text("Copies and moves on the same drive wait for each other");
+                    ui.end_row();
+                    ui.label("Folder sizes");
+                    ui.checkbox(&mut s.folder_sizes_local, "In local folders")
+                        .on_hover_text(
+                            "Walk each local folder you open for its subfolders' sizes (library folders always have them)",
+                        );
                     ui.end_row();
                     // --- Task 24 ---
                     let label = ui.label("Global hotkey");

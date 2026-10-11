@@ -236,6 +236,62 @@ impl Jobs {
         })
     }
 
+    /// Task 46: walks each of `folders` (subfolders of `dir`) for its total; every folder
+    /// below one arrives as `Msg::FolderSizes` when that one is done (also after a cancel,
+    /// for what was finished). Folders that cannot be read count as empty, and say so.
+    pub fn folder_sizes(
+        &mut self,
+        dir: &VPath,
+        folders: Vec<(VPath, Option<std::time::SystemTime>)>,
+        router: Arc<Router>,
+        tx: Sender<Msg>,
+    ) -> u64 {
+        let title = format!("Calculating sizes in {}", dir.display());
+        let remote = crate::remotes::is_network(dir);
+        let (out, ctx) = (tx.clone(), self.ctx.clone());
+        let id = self.spawn(title, tx, move |report, cancel| {
+            let mut p = Progress {
+                total_items: folders.len(),
+                ..Progress::default()
+            };
+            let mut unreadable = 0;
+            for (folder, mtime) in &folders {
+                p.current = folder.name().to_owned();
+                report(p.clone());
+                let mut found = Vec::new();
+                let walked = keel_vfs::sizes::folder_total(
+                    &router,
+                    folder,
+                    *mtime,
+                    cancel,
+                    &mut |at, t, w| {
+                        let total = keel_core::Total {
+                            bytes: w.bytes,
+                            files: w.files,
+                        };
+                        found.push((at.clone(), t, total));
+                    },
+                );
+                send(&out, &ctx, Msg::FolderSizes(found));
+                match walked {
+                    Ok(w) => unreadable += w.unreadable,
+                    Err(e) if is_cancel(&e) => return Err(e),
+                    Err(_) => unreadable += 1,
+                }
+                p.done_items += 1;
+            }
+            report(p);
+            anyhow::ensure!(
+                unreadable == 0,
+                "{} could not be read: the totals count what could",
+                folders_text(unreadable)
+            );
+            Ok(())
+        });
+        self.mark_remote(id, remote);
+        id
+    }
+
     fn mark_remote(&mut self, id: u64, remote: bool) {
         if let Some(job) = self.list.iter_mut().find(|j| j.id == id) {
             job.remote = remote;
@@ -547,6 +603,15 @@ pub enum TrashOp {
     RestoreTo(Vec<VPath>, std::path::PathBuf),
     Purge(Vec<VPath>),
     Empty,
+}
+
+/// "1 folder" / "N folders".
+fn folders_text(n: u64) -> String {
+    if n == 1 {
+        "1 folder".into()
+    } else {
+        format!("{n} folders")
+    }
 }
 
 pub fn items(n: usize) -> String {
