@@ -309,7 +309,7 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             what, on_conflict, ..
         } => {
             let router = lib.router.read().clone();
-            let (planned, prune) = crate::arrange::generate(&router, &what)?;
+            let (planned, mut prune) = crate::arrange::generate(&router, &what)?;
             anyhow::ensure!(
                 !planned.is_empty(),
                 "nothing to {}: no files to move",
@@ -318,6 +318,12 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             sizes = planned.iter().map(|p| (p.files, p.bytes)).collect();
             let renamed;
             (landing, renamed) = land(lib, &planned, on_conflict, what.verb())?;
+            // A file Skip leaves where it is keeps its folder.
+            let skipped: Vec<&VPath> = (planned.iter().zip(&landing))
+                .filter(|(p, (_, existed))| *existed && !p.dir && on_conflict == OnConflict::Skip)
+                .map(|(p, _)| &p.item)
+                .collect();
+            prune.retain(|d| !skipped.iter().any(|i| relative(d, i).is_some()));
             let moves = planned.into_iter().map(|p| (p.item, p.into)).collect();
             Op::Arrange {
                 what,

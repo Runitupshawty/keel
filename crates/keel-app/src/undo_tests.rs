@@ -704,6 +704,14 @@ fn a_folder_move_back_onto_a_new_folder_is_refused() {
 
 /// Runs a library plan as the app does (`Planned` read before, recorded when it ends).
 fn run_plan(lib: &keel_core::Library, op: keel_core::Op) -> Entry {
+    let (u, id) = start_plan(lib, op);
+    let info = lib.jobs().wait(id).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    recorded(&u)
+}
+
+/// Previews `op` and starts its job, with what undo reads before it runs.
+fn start_plan(lib: &keel_core::Library, op: keel_core::Op) -> (Planned, keel_core::JobId) {
     let plan = keel_core::validate_preview_execute(lib, op.clone()).unwrap();
     let pick = |a: keel_core::Action| -> Vec<VPath> {
         (plan.changes.iter())
@@ -725,14 +733,70 @@ fn run_plan(lib: &keel_core::Library, op: keel_core::Op) -> Entry {
         taken: Vec::new(),
         before: Vec::new(),
     };
-    let router = Router::new();
-    u.read_before(stat_fn(&router));
+    u.read_before(stat_fn(&Router::new()));
     let id = plan.execute(lib, true).unwrap();
-    let info = lib.jobs().wait(id).unwrap();
-    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
-    let (op, items) = u.done(stat_fn(&router)).unwrap();
+    (u, id)
+}
+
+/// The journal entry of a plan whose job ended.
+fn recorded(u: &Planned) -> Entry {
+    let (op, items) = u.done(stat_fn(&Router::new())).unwrap();
     let mut j = Journal::default();
     j.record(op, items).unwrap().clone()
+}
+
+/// A flatten cancelled part way is undone for what it moved: every file back in its
+/// folder, byte for byte.
+#[test]
+fn a_flatten_cancelled_part_way_is_undone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("f");
+    for i in 0..300 {
+        let dir = root.join(format!("d{}", i % 7));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("f{i}.txt")), i.to_string()).unwrap();
+    }
+    let before = tree(tmp.path());
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Flatten {
+            folder: VPath::local(&root),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let (u, id) = start_plan(&lib, op);
+    // Cancel once something moved up (or the job is over: then it is undone whole).
+    let moved = || {
+        std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|e| e.path().is_file())
+    };
+    let running = || {
+        lib.jobs().info(id).is_ok_and(|i| {
+            matches!(
+                i.status,
+                keel_core::JobStatus::Queued | keel_core::JobStatus::Running
+            )
+        })
+    };
+    while !moved() && running() {
+        std::thread::yield_now();
+    }
+    let _ = lib.jobs().cancel(id);
+    let info = lib.jobs().wait(id).unwrap();
+    assert!(
+        matches!(
+            info.status,
+            keel_core::JobStatus::Cancelled | keel_core::JobStatus::Done
+        ),
+        "{:?}",
+        info.status
+    );
+    let e = recorded(&u);
+    assert!(!e.items.is_empty());
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(tree(tmp.path()), before, "every file back where it was");
 }
 
 fn library() -> (tempfile::TempDir, keel_core::Library) {

@@ -102,7 +102,6 @@ fn merge_moves_everything_into_one_folder_and_removes_the_emptied_ones() {
             (Action::Move, at("c/same.txt")),
             (Action::Move, at("c/two.txt")),
             (Action::RemoveFolder, at("a")),
-            (Action::RemoveFolder, at("b")),
         ]
     );
     assert_eq!(plan.changes[1].files, 1, "a folder counts its files");
@@ -304,6 +303,16 @@ fn flatten_with_skip_keeps_the_clashing_file_and_its_folder() {
     write(&root.join("s/b.txt"), "b");
     let (_data, lib, _src) = library_with(folder("f", root));
     let op = Op::arrange(FolderOp::Flatten { folder: v(root) }, OnConflict::Skip);
+    // The preview does not say the folder goes: the skipped file keeps it.
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    assert!(
+        !plan
+            .changes
+            .iter()
+            .any(|c| c.action == Action::RemoveFolder),
+        "{:?}",
+        plan.changes
+    );
     assert_eq!(run(&lib, op).status, JobStatus::Done);
     assert_eq!(
         tree(root),

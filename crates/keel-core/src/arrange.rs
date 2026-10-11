@@ -77,6 +77,8 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
         Ok(pr)
     };
     let (mut moves, mut prune) = (Vec::new(), Vec::new());
+    // Links stay where they are, and so do the folders holding them.
+    let mut links: Vec<VPath> = Vec::new();
     match what {
         FolderOp::Merge { folders, into } => {
             folder(into)?;
@@ -95,7 +97,10 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                         f.display()
                     );
                 }
-                for e in pr.list(f)?.into_iter().filter(|e| !e.is_link) {
+                let (linked, entries): (Vec<_>, Vec<_>) =
+                    pr.list(f)?.into_iter().partition(|e| e.is_link);
+                links.extend(linked.into_iter().map(|e| e.path));
+                for e in entries {
                     let (bytes, files) = match e.kind {
                         Kind::Dir => tree_size(&*pr, &e.path, 0),
                         _ => (e.size, 1),
@@ -120,7 +125,11 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                 .map(|e| e.path)
                 .collect();
             while let Some(d) = dirs.pop() {
-                for e in pr.list(&d)?.into_iter().filter(|e| !e.is_link) {
+                for e in pr.list(&d)? {
+                    if e.is_link {
+                        links.push(e.path);
+                        continue;
+                    }
                     match e.kind {
                         Kind::Dir => dirs.push(e.path),
                         _ => moves.push(Planned {
@@ -154,6 +163,11 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
             }
         }
     }
+    prune.retain(|d| {
+        !links
+            .iter()
+            .any(|l| crate::library::relative(d, l).is_some())
+    });
     moves.sort_by(|a, b| key(&a.item).cmp(&key(&b.item)));
     Ok((moves, prune))
 }
