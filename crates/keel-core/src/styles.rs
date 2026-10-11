@@ -3,7 +3,7 @@
 //! A folder of a library source can carry a color (`#rrggbb`) and an icon: one emoji, or
 //! `theme:<name>`, the icon theme's folder icon for folders named `<name>` (the app falls
 //! back to its own folder icon when no theme has that name). Styles live in the source's
-//! store next to the tag links, keyed by record (`folder_style`, source schema 10): a move
+//! store next to the tag links, keyed by record (`folder_style`, source schema 11): a move
 //! or rename the index records keeps the record, so the style follows the folder; a folder
 //! that leaves the index, or a source deleted with its store, drops it. They sync between
 //! devices like path-keyed tag assignments (`SyncOp::Style`). Nothing here touches a file.

@@ -58,7 +58,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - The library preview dialog runs the operation on Enter, as **Confirm** does (Esc still cancels).
 
-
 ## [0.20.0] - 2026-10-11
 
 ### Added

@@ -130,8 +130,8 @@ reflink-copy = "0.1"
 # the same version the `trash` crate uses.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSFileManager", "NSGeometry", "NSString", "NSURL"] }
-# Drag-out (`drag_out::mac`): a dragging session on Keel's window; the versions winit and
-# arboard already use.
+# Drag-out (`drag_out::mac`): a dragging session on Keel's window; the versions arboard,
+# rfd and trash already use (winit is on objc2 0.5 / objc2-app-kit 0.2).
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",

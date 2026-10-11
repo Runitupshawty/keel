@@ -13,8 +13,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | `tokio-util` 0.7 | Network cancellation and task tracking | MIT | Rust crate, compiled in |
 | `serde_bytes` 0.11 | Content ids as CBOR byte strings in the network protocol | MIT OR Apache-2.0 | Rust crate, compiled in |
 | `x11rb` 0.13 (already used by `arboard` and `winit`) | Linux file clipboard with the cut flag (X11 selection owner) and drag-out to other apps (XDND) | MIT OR Apache-2.0 | Rust crate, compiled in (Linux only) |
-| `objc2` 0.6, `objc2-foundation` and `objc2-app-kit` 0.3 (already used by `winit`, `arboard` and `trash`) | macOS Trash through NSFileManager and drag-out to other apps (an AppKit dragging session) | MIT | Rust crates, compiled in (macOS only) |
-| `x11rb` 0.13 (already used by `arboard` and `winit`) | Linux file clipboard with the cut flag (X11 selection owner) | MIT OR Apache-2.0 | Rust crate, compiled in (Linux only) |
+| `objc2` 0.6, `objc2-foundation` and `objc2-app-kit` 0.3 (already used by `arboard`, `rfd` and `trash`; `winit` uses the older 0.5 and 0.2) | macOS Trash through NSFileManager and drag-out to other apps (an AppKit dragging session) | MIT | Rust crates, compiled in (macOS only) |
 | `unicode-segmentation` 1.13 and `unicode-properties` 0.1 (already used by `nucleo-matcher`, `winit` and `rustybuzz`) | Checking that a folder icon is one emoji (`keel-core`) | MIT OR Apache-2.0 | Rust crates, compiled in |
 | `qrcode` 0.14 | Device pairing QR codes (no image renderers) | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [Everything SDK](https://www.voidtools.com/support/everything/sdk/) by voidtools | Fast Windows file search | MIT | Downloaded by `scripts/fetch-deps.ps1`; `Everything64.dll` is placed in `target/deps/` and the SDK license text in `target/deps/licenses/everything/` (the `Everything.h` header, which carries the MIT notice, when the SDK zip has no separate license file) |
