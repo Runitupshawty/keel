@@ -8,6 +8,17 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Filter chips for library search: with **Library** chosen in the search tab, a row of chips under the box narrows the search without the query syntax: **Kind** (Image, Video, Audio, Document, Archive, Folder), **Type** (the most common extensions among the newest indexed files, and a box for another), **Tag**, **Source**, **Size** (under 1 MB, 1–100 MB, over 100 MB, over 1 GB), **Modified** (today, this week, this month, this year) and **★ Favorites**. A chip adds its term to the query (hover it to see the term) and runs the search; clicking it again takes the term out. The query box stays the truth: a term typed by hand lights its chip, and terms no chip shows stay as typed. Tab reaches the chips from the query box, Space toggles one, and each has a name for screen readers ("Kind: Document"). The web client's Search page has the same chips. See [Searching](docs/library.md#searching).
 - Library search dates take `thisweek` (from Monday), `thismonth` and `thisyear`: `dm:thisweek`, `taken:thisyear`, also in ranges (`dm:>=thismonth`), in the window, `keel search`, the API and the web client.
+- Dragging files out of Keel onto other apps works on macOS and Linux, as on Windows: drag rows out of the window onto Finder, a file manager, a mail draft or an editor. The other app copies the files; holding Command (macOS) or Shift (Linux) while dropping lets it move them. Keel never moves or deletes them itself: it refreshes the folder when the drop is over, and counts a move only once the files are really gone. On macOS each file's icon follows the pointer; on Linux the files are offered as `text/uri-list` over XDND. See [Dragging files to other apps](docs/files.md#dragging-files-to-other-apps).
+
+### Fixed
+
+- Dragging rows out of the window on macOS and Linux did nothing (a known limitation since 0.5.0); it now starts a file drag to the app under the pointer.
+
+### Known limitations
+
+- Linux: dragging files to other apps needs X11. In a Wayland session it works when Keel runs through XWayland (start it with `WAYLAND_DISPLAY` unset); a native Wayland window shows "dragging files to other apps needs X11 (XWayland) on this desktop" instead.
+- Linux: no drag image or drag cursor while dragging files out (the pointer keeps its shape), and a desktop that takes drops through a proxy window (icons on the desktop) is not a target.
+
 
 ## [0.20.0] - 2026-10-11
 

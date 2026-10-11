@@ -9,6 +9,8 @@ pub mod cloud;
 #[cfg(windows)]
 pub mod desktop;
 pub mod drag_out;
+/// `file://` URIs and `text/uri-list` (Linux clipboard and drag-out).
+pub mod file_uri;
 // --- end Task 24 ---
 /// FTP and FTPS remotes (`ftp://<host id>/...`).
 pub mod ftp;
