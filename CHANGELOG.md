@@ -29,6 +29,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Security
 
+- Windows: the release zip contains `install.ps1` (covered by `SHA256SUMS`), and the installer keeps that copy next to `keel.exe`, so an install that updates through Keel's banner gets the new release's installer, with its signature checks and pins, for its next update. It used to keep the script it was first installed with for good. An install of 0.17.0 updates once with its old script, then has the new one.
 - The build scripts check what they download: `scripts/fetch-deps.sh` and `scripts/fetch-deps.ps1` refuse a pdfium or Everything SDK download whose SHA-256 is not the one pinned in the script, so a replaced upstream file cannot end up in a release, or be signed into one with Keel's certificate. Moving to a new pdfium release is a deliberate edit of both scripts ([docs/releasing.md](docs/releasing.md#pinned-downloads)).
 
 ## [0.17.0] - 2026-10-10

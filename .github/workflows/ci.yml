@@ -377,6 +377,9 @@ jobs:
           cp -R target/deps/licenses "dist/$name/licenses"
           cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY.md README.md CHANGELOG.md "dist/$name/"
           if [ "$RUNNER_OS" = Linux ]; then cp assets/keel.desktop assets/keel.png "dist/$name/"; fi
+          # The installer itself, so SHA256SUMS covers it and an install updated from Keel's
+          # banner gets this release's checks (install.ps1 keeps the zip's copy).
+          if [ "$RUNNER_OS" = Windows ]; then cp scripts/install.ps1 "dist/$name/"; fi
           cd dist
           if [ "$RUNNER_OS" = Windows ]; then 7z a -tzip "$name.zip" "$name" >/dev/null; else tar czf "$name.tar.gz" "$name"; fi
           # Debian/Ubuntu package from the same tree (dpkg-deb only, see scripts/make-deb.sh).

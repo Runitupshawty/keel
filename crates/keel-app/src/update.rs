@@ -140,7 +140,9 @@ pub fn cli() -> i32 {
 pub enum Install {
     /// Windows, installed by `install.ps1` (which keeps a copy next to keel.exe): run that
     /// local copy again, as the README says to update. It downloads the latest zip and
-    /// checks it against the release's `SHA256SUMS` before it replaces anything.
+    /// checks it against the release's `SHA256SUMS` before it replaces anything, then
+    /// keeps the zip's own `install.ps1` (releases from 0.18.0 ship it), so the next update
+    /// runs the new release's installer.
     Script { script: PathBuf, dir: PathBuf },
     /// Anything else: open the release page and show the install one-liner.
     Page,

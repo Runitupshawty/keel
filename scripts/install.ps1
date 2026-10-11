@@ -107,6 +107,25 @@ function Test-KeelSignature([string[]]$Paths, [string]$Expected) {
   return [bool]$signed
 }
 
+# Keeps a copy of the installer at $Self, next to the app: the Settings -> Apps entry runs it
+# with -Uninstall and Keel's update banner runs it to update. A release ships its own copy in
+# the zip (covered by SHA256SUMS), which wins, so an install updated from the banner gets the
+# new release's checks and pins. A release without one gets the running script ($Running), or,
+# run via `irm | iex` with no file, the one on main. Returns which: release, running or main.
+function Save-Installer([string]$Unpacked, [string]$Self, [string]$Running) {
+  $shipped = Join-Path $Unpacked 'install.ps1'
+  if (Test-Path -LiteralPath $shipped) {
+    Copy-Item -LiteralPath $shipped $Self -Force
+    return 'release'
+  }
+  if ($Running -and (Test-Path -LiteralPath $Running)) {
+    if ((Resolve-Path -LiteralPath $Running).Path -ne $Self) { Copy-Item -LiteralPath $Running $Self -Force }
+    return 'running'
+  }
+  Invoke-WebRequest $RawUrl -OutFile $Self -UseBasicParsing
+  return 'main'
+}
+
 # scripts/test-install.ps1 dot-sources this file for the functions above, with this set.
 if ($env:KEEL_INSTALL_FUNCTIONS_ONLY) { return }
 
@@ -164,14 +183,8 @@ try {
   Copy-Item (Join-Path $src.FullName '*') $InstallDir -Recurse -Force
   $exe = Join-Path $InstallDir 'keel.exe'
 
-  # Keep a copy of this installer next to the app: the Settings -> Apps entry runs it with -Uninstall.
-  # Run via `irm | iex` there is no file, so fetch it.
   $self = Join-Path $InstallDir 'install.ps1'
-  if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
-    if ((Resolve-Path $PSCommandPath).Path -ne $self) { Copy-Item $PSCommandPath $self -Force }
-  } else {
-    Invoke-WebRequest $RawUrl -OutFile $self -UseBasicParsing
-  }
+  $null = Save-Installer $src.FullName $self $PSCommandPath
 
   New-Shortcut $Lnk $exe
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }

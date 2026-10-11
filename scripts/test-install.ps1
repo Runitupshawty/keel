@@ -73,6 +73,25 @@ try {
       Throws { Test-KeelSignature @($copy) '' } '*does not accept*'
     }
   } else { Write-Host 'skip signature: a tampered file is refused (no embedded-signed driver found)' }
+
+  # The installer kept next to the app (the update banner runs it).
+  $unpacked = Join-Path $dir 'unpacked'; $app = Join-Path $dir 'app'
+  New-Item -ItemType Directory $unpacked, $app | Out-Null
+  $self = Join-Path $app 'install.ps1'
+  $running = Join-Path $dir 'running.ps1'; Set-Content $running 'running'
+  Check 'installer: an older release without one keeps the running script' {
+    if ((Save-Installer $unpacked $self $running) -ne 'running') { throw 'not the running script' }
+    if ((Get-Content $self) -ne 'running') { throw "kept '$(Get-Content $self)'" }
+  }
+  Check 'installer: the running copy next to the app stays' {
+    if ((Save-Installer $unpacked $self $self) -ne 'running') { throw 'not the running script' }
+    if ((Get-Content $self) -ne 'running') { throw "kept '$(Get-Content $self)'" }
+  }
+  Check "installer: the release's own copy wins over the running script" {
+    Set-Content (Join-Path $unpacked 'install.ps1') 'release'
+    if ((Save-Installer $unpacked $self $self) -ne 'release') { throw "not the release's" }
+    if ((Get-Content $self) -ne 'release') { throw "kept '$(Get-Content $self)'" }
+  }
 } finally {
   Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
 }

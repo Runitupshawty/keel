@@ -28,7 +28,7 @@ How a release is made today, and how its builds get signed. Signing is ready in 
    - The installer prints `Checksum OK.`, and for a signed release `Signature OK.` (and `Code signature OK.` on macOS). An unsigned release prints a warning instead.
    - `keel --version` prints the version and a `signature:` line (`signed` once Windows and macOS builds are signed; `unsigned`, `unsigned (ad-hoc)` or `not signed (Linux)` otherwise).
    - The window opens; a folder lists; a PDF and an image preview; `keel daemon start` then `keel search <word>` answer.
-   - On Windows, the update banner of the previous release installs the new one.
+   - On Windows, the update banner of the previous release installs the new one, and `install.ps1` next to `keel.exe` is then the new release's.
    - The release page lists the zip, three tarballs, the .deb and `SHA256SUMS` (with `SHA256SUMS.asc` and `SHA256SUMS.key.asc` once checksums are signed).
 
 ## What gets signed, and with which secrets
@@ -137,7 +137,7 @@ Each installer has an empty constant for the signer it expects. While it is empt
 | `scripts/install.sh` | `KEEL_GPG_FINGERPRINT` | the release key's fingerprint, 40 hex digits, upper case, no spaces |
 | `scripts/install.sh` | `KEEL_APPLE_TEAM_ID` | the Developer ID's Team ID |
 
-Set a pin only after a release signed that way is out: the one-liners fetch the installers from `main`, so a pinned installer refuses older, unsigned releases. Installs that update through Keel's banner on Windows run the copy of `install.ps1` made at install time, so they pick up a new pin when the one-liner runs again.
+Set a pin only after a release signed that way is out: the one-liners fetch the installers from `main`, so a pinned installer refuses older, unsigned releases. Installs that update through Keel's banner on Windows run the copy of `install.ps1` next to `keel.exe`. The Windows zip contains `install.ps1` (so `SHA256SUMS` covers it) and the installer keeps the zip's copy, so each banner update runs the installer of the release installed before it, and leaves the new release's installer, with its checks and pins, for the next one. An install of 0.17.0, whose zip had no installer, makes its update to 0.18.0 with its 0.17.0 script (no signature check) and has 0.18.0's from then on. A pin therefore reaches banner installs one release after it is set; the one-liner applies it at once.
 
 ## Rotating a certificate or key
 
@@ -155,4 +155,4 @@ These run only when the secrets exist, so the first tagged release after adding 
 - GPG signing in the `release` job (the installer's side is tested with a throwaway key; see below).
 - The installers against a real signed release: `Signature OK.` from `install.ps1`, `Code signature OK.` from `install.sh` on macOS, and `keel --version` printing `signature: signed`.
 
-What is tested without them: `scripts/test-install.ps1` and `scripts/test-install.sh` (both run in CI's `build` job) check the checksum code, the Authenticode checks against Windows' own signed files (valid, pinned by thumbprint and by Subject, another signer, partly signed, tampered), the GPG check with a fake `gpg` and with a real one on a throwaway key, and the macOS code-signature check with a fake `codesign`. The Rust tests check the Mach-O signature reader on synthetic files, WinVerifyTrust on a signed Windows driver, and that `keel --version` and crash reports report a test build as unsigned.
+What is tested without them: `scripts/test-install.ps1` and `scripts/test-install.sh` (both run in CI's `build` job) check the checksum code, which installer copy `install.ps1` keeps next to the app, the Authenticode checks against Windows' own signed files (valid, pinned by thumbprint and by Subject, another signer, partly signed, tampered), the GPG check with a fake `gpg` and with a real one on a throwaway key, and the macOS code-signature check with a fake `codesign`. The Rust tests check the Mach-O signature reader on synthetic files, WinVerifyTrust on a signed Windows driver, and that `keel --version` and crash reports report a test build as unsigned.
