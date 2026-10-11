@@ -218,6 +218,11 @@ pub enum LibCmd {
         file: std::path::PathBuf,
         name: String,
     },
+    // --- Task 60 ---
+    /// A folder operation's dialog for the selection (else the folder shown).
+    FolderOp(crate::folder_ops::Kind),
+    /// Preview this operation (a folder operation dialog's answer).
+    Plan(Op),
 }
 
 /// How `LibraryUi::open` reaches the library.
@@ -2289,6 +2294,28 @@ impl AppState {
                     });
                 self.library.refresh_meta_soon();
             }
+            LibCmd::FolderOp(kind) => {
+                let tab = self.tab(p);
+                let picked: Vec<(VPath, bool)> = match tab.targets() {
+                    t if t.is_empty() => vec![(tab.dir.clone(), true)],
+                    t => (t.iter())
+                        .map(|e| (e.path.clone(), e.kind == keel_vfs::Kind::Dir))
+                        .collect(),
+                };
+                let sources = &self.library.sources;
+                let Some(paths) = (picked.iter())
+                    .map(|(x, _)| real_of(sources, x))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return self.toasts.error("That source is no longer in the library");
+                };
+                let dirs: Vec<bool> = picked.iter().map(|(_, d)| *d).collect();
+                match crate::folder_ops::FolderDialog::new(kind, paths, &dirs) {
+                    Ok(d) => self.dialog = Some(crate::dialogs::Dialog::FolderOp(Box::new(d))),
+                    Err(why) => self.toasts.error(why),
+                }
+            }
+            LibCmd::Plan(op) => self.plan(op),
             LibCmd::Duplicates => {
                 self.library.dups = Some(DupFinder { groups: None });
                 self.library.refresh_dups();

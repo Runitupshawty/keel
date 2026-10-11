@@ -47,6 +47,7 @@ fn wants_shell(text: &str) -> bool {
 
 /// Actions on the selection (shown first when something is selected).
 fn context_items() -> Vec<Item> {
+    use crate::folder_ops::Kind;
     use Action::*;
     [
         ("Open", "Enter", Enter),
@@ -66,6 +67,20 @@ fn context_items() -> Vec<Item> {
         ("Compress to zip…", "", CompressToZip),
         ("Tag…", "Ctrl+Shift+T", Library(LibCmd::TagPicker)),
         ("Toggle favorite", "Ctrl+D", Library(LibCmd::ToggleFavorite)),
+        // --- Task 60 ---
+        ("Merge into…", "", Library(LibCmd::FolderOp(Kind::Merge))),
+        ("Flatten…", "", Library(LibCmd::FolderOp(Kind::Flatten))),
+        (
+            "Organize by…",
+            "",
+            Library(LibCmd::FolderOp(Kind::Organize)),
+        ),
+        (
+            "Attributes…",
+            "",
+            Library(LibCmd::FolderOp(Kind::Attributes)),
+        ),
+        ("Create link…", "", Library(LibCmd::FolderOp(Kind::Link))),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),

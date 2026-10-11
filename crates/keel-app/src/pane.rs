@@ -674,6 +674,20 @@ pub fn context_menu(
         item(ui, "Rename", "F2", Action::Rename);
         item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
         item(ui, "Delete", "Del", Action::Delete);
+        // Task 60: folder operations, as library plans (local folders and library views).
+        if tab.dir.to_local_path().is_some() || tab.dir.scheme == "library" {
+            use crate::folder_ops::Kind;
+            let op = |k| Action::Library(crate::library::LibCmd::FolderOp(k));
+            ui.menu_button("Folder operations", |ui| {
+                if entry.is_some_and(|e| e.kind == keel_vfs::Kind::Dir) {
+                    item(ui, "Merge into…", "", op(Kind::Merge));
+                    item(ui, "Flatten…", "", op(Kind::Flatten));
+                    item(ui, "Organize by…", "", op(Kind::Organize));
+                }
+                item(ui, "Attributes…", "", op(Kind::Attributes));
+                item(ui, "Create link…", "", op(Kind::Link));
+            });
+        }
         ui.separator();
         item(
             ui,

@@ -2824,3 +2824,52 @@ fn wsl_distributions_in_the_sidebar() {
     h.run_steps(2);
     assert!(!has(&h, "WSL"));
 }
+
+/// Task 60: Organize by… on a folder: the dialog, the preview listing the groups it makes,
+/// Enter runs it, Ctrl+Z puts every file back and the group folders go.
+#[test]
+fn organize_by_type_then_undo() {
+    use crate::folder_ops::Kind;
+    use crate::library::LibCmd;
+    let dir = scratch("organize");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    let before = tree_of(&a);
+    let (mut h, _base, _lib) = with_library("organize-lib", &a, &b);
+    sm(&mut h).run(0, Action::Library(LibCmd::FolderOp(Kind::Organize)));
+    h.run_steps(3);
+    assert!(has(&h, "Organize by"), "the dialog");
+    assert!(has(&h, "Year and month"));
+    key(&mut h, NONE, Key::Enter);
+    assert!(
+        wait(&mut h, 20, &|s| s.library.plan.is_some()),
+        "the preview"
+    );
+    h.run_steps(3);
+    let headline = format!(
+        "Organize {} by type: 5 files into 3 folders",
+        VPath::local(&a).display()
+    );
+    assert!(has(&h, &headline), "{}", dump(&h, "Organize"));
+    for group in ["Documents", "Other", "Archives"] {
+        let made = format!("Make folder {}", VPath::local(a.join(group)).display());
+        assert!(has(&h, &made), "{}", dump(&h, "Make folder"));
+    }
+    shot(&mut h, "organize-preview");
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 30, &|_| a.join("Other/garden.rs").exists()));
+    assert!(a.join("Documents/notes.md").exists() && a.join("Archives/site.zip").exists());
+    assert!(wait(&mut h, 20, &|s| s.undo.label().as_deref()
+        == Some("Undo organize")));
+    key(&mut h, CMD, Key::Z);
+    let asked = |s: &AppState| {
+        matches!(&s.dialog, Some(crate::dialogs::Dialog::Confirm { text, .. })
+            if text.starts_with("Undo organize: move 5 items back"))
+    };
+    assert!(wait(&mut h, 20, &asked), "{:?}", toast_texts(s(&h)));
+    shot(&mut h, "organize-undo-preview");
+    // Enter presses the focused button, which starts on Undo.
+    key(&mut h, NONE, Key::Enter);
+    let back = wait(&mut h, 30, &|_| tree_of(&a) == before);
+    assert!(back, "everything is back: {:?}", tree_of(&a));
+    close_library(&mut h);
+}
