@@ -37,7 +37,7 @@ pub(crate) fn render(req: &Request) -> Preview {
 
 /// docx-rs unwraps on some malformed packages (a corrupt deflate stream in a part): that is
 /// a broken file, not a previewer failure.
-fn read_docx(bytes: &[u8]) -> Result<docx_rs::Docx, String> {
+pub(crate) fn read_docx(bytes: &[u8]) -> Result<docx_rs::Docx, String> {
     keel_vfs::quiet_panic::quiet(|| std::panic::catch_unwind(|| docx_rs::read_docx(bytes)))
         .map_err(|_| "not a valid Word document".to_owned())?
         .map_err(|error| error.to_string())
@@ -50,7 +50,7 @@ struct Ctx<'a> {
     counters: HashMap<(usize, usize), usize>,
 }
 
-fn walk(docx: &docx_rs::Docx, rich: bool) -> Vec<DocBlock> {
+pub(crate) fn walk(docx: &docx_rs::Docx, rich: bool) -> Vec<DocBlock> {
     let mut ctx = Ctx {
         docx,
         rich,

@@ -86,6 +86,8 @@ impl Host {
         let router = Arc::new(router(cfg));
         lib.set_router(router.clone());
         lib.set_remote_poll(std::time::Duration::from_secs(cfg.remote_poll_secs));
+        // Task 62: the text inside documents, read by the library's text job.
+        lib.set_text_extractor(keel_preview::text_extractor());
         let lib = Arc::new(lib);
         let mut ctx = Ctx::new(lib.clone(), router);
         ctx.config_dir = Some(cfg.config_dir.clone());
@@ -99,6 +101,7 @@ impl Host {
         }
         if resume {
             lib.jobs().resume_all()?;
+            lib.start_text_jobs();
         }
         Ok(host)
     }

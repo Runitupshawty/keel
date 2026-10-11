@@ -133,3 +133,58 @@ fn xlsx_streamed<R: std::io::Read + std::io::Seek>(
     let headers = rows.next().unwrap_or_default();
     Ok((headers, rows.collect(), truncated))
 }
+
+/// Every sheet's cells as text (Task 62), sheet by sheet: the sheet's name, then each row's
+/// cells separated by tabs. xlsx streams its cells; xls and xlsb read a sheet's range.
+pub(crate) fn workbook_text(
+    path: &std::path::Path,
+    out: &mut crate::extract::Sink,
+) -> Result<(), String> {
+    let mut workbook = open_workbook_auto(path).map_err(|error| error.to_string())?;
+    for name in workbook.sheet_names() {
+        if !out.line(&name) {
+            return Ok(());
+        }
+        let mut row = String::new();
+        let mut at = None;
+        let mut cell = |r: u32, value: String, out: &mut crate::extract::Sink| -> bool {
+            if at.is_some_and(|a| a != r) && !out.line(&std::mem::take(&mut row)) {
+                return false;
+            }
+            at = Some(r);
+            if !value.is_empty() {
+                if !row.is_empty() {
+                    row.push('\t');
+                }
+                row.push_str(&value);
+            }
+            true
+        };
+        if let Sheets::Xlsx(xlsx) = &mut workbook {
+            let mut cells = xlsx
+                .worksheet_cells_reader(&name)
+                .map_err(|error| error.to_string())?;
+            while let Some(c) = cells.next_cell().map_err(|error| error.to_string())? {
+                let value = Data::from(c.get_value().clone()).to_string();
+                if !cell(c.get_position().0, value, out) {
+                    return Ok(());
+                }
+            }
+        } else {
+            let range = workbook
+                .worksheet_range(&name)
+                .map_err(|error| error.to_string())?;
+            for (r, line) in range.rows().enumerate() {
+                for value in line.iter().take(MAX_COLS) {
+                    if !cell(r as u32, value.to_string(), out) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if !out.line(&row) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}

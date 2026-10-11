@@ -74,6 +74,26 @@ fn render_inner(req: &Request, pdfium: &Pdfium) -> Result<Preview, String> {
     })
 }
 
+/// A PDF's text, page by page, until the sink is full or out of time (Task 62). Without
+/// pdfium the PDF has no reader here.
+pub(crate) fn text(path: &Path, out: &mut crate::extract::Sink) -> Result<(), crate::TextError> {
+    let Some(pdfium) = PDFIUM.get().and_then(Option::as_ref) else {
+        return Err(crate::TextError::Kind);
+    };
+    let document = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|error| crate::TextError::Failed(error.to_string()))?;
+    for page in document.pages().iter() {
+        let text = page
+            .text()
+            .map_err(|error| crate::TextError::Failed(error.to_string()))?;
+        if !out.line(&text.all()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -29,7 +29,7 @@ struct Table {
     cell: Option<String>,
 }
 
-fn parse(xml: &[u8], ext: &str) -> Result<Vec<DocBlock>, quick_xml::Error> {
+pub(crate) fn parse(xml: &[u8], ext: &str) -> Result<Vec<DocBlock>, quick_xml::Error> {
     let mut reader = Reader::from_reader(xml);
     let mut blocks: Vec<DocBlock> = Vec::new();
     let mut table = Table::default();

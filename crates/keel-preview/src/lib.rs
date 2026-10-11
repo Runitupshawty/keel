@@ -2,6 +2,7 @@
 
 mod audio;
 mod docx;
+mod extract; // Task 62: text inside documents
 mod font;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -17,6 +18,7 @@ mod table;
 mod text;
 mod video;
 
+pub use extract::{extract_text, extracts, text_extractor, Extracted, TextError, TEXT_EXTENSIONS};
 use std::path::{Path, PathBuf};
 
 pub const MAX_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;

@@ -6,7 +6,7 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
-const TEXT_EXTENSIONS: &[&str] = &[
+pub(crate) const TEXT_EXTENSIONS: &[&str] = &[
     "rs", "c", "h", "cpp", "hpp", "cs", "go", "java", "js", "jsx", "ts", "tsx", "py", "rb", "php",
     "swift", "kt", "kts", "sh", "ps1", "psm1", "bat", "cmd", "html", "htm", "css", "scss", "xml",
     "json", "toml", "yaml", "yml", "ini", "cfg", "log", "txt", "md",
@@ -102,7 +102,7 @@ pub(crate) fn render(req: &Request, ext: &str, size: u64) -> Preview {
 /// UTF-16 with BOM, UTF-8, or (mostly printable) legacy text read as Windows-1252 (the
 /// Western ANSI codepage; its printable range covers Latin-1).
 /// `None` means binary: show hex instead.
-fn decode(bytes: &[u8]) -> Option<String> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<String> {
     if let Some(units) = utf16_units(bytes) {
         return Some(
             char::decode_utf16(units)

@@ -38,6 +38,8 @@ pub fn preview(data: &[u8]) {
         fit_width: false,
     };
     let _ = crate::preview_inner(&req);
+    // The library's text reader over the same file (Task 62).
+    let _ = crate::extract_text(&path, ext, &keel_core::TEXT_CAPS);
 }
 
 #[cfg(test)]

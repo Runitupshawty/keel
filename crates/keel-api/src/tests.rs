@@ -2072,3 +2072,75 @@ fn folder_operations_preview_then_execute() {
     );
     assert!(refused.is_err());
 }
+
+/// Task 62: words find the text inside documents (a hit with a snippet), `contents: false`
+/// searches names only, `contents.set` turns a source off and back to its default, and
+/// `library.stats` counts the text.
+#[test]
+fn search_finds_the_text_inside_documents() {
+    let f = fixture(None);
+    f.ctx.lib.set_pause_on_battery(false);
+    f.ctx.lib.set_text_extractor(keel_preview::text_extractor());
+    std::fs::write(
+        f.files.path().join("docs/letter.md"),
+        "# Keel\n\nThe harbour pilot boards at dawn.",
+    )
+    .unwrap();
+    let id = add_and_index(&f);
+    let documents = || -> u64 {
+        let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
+        stats["text"]["documents"].as_u64().unwrap()
+    };
+    let wait_for = |n: u64| {
+        let start = std::time::Instant::now();
+        while documents() != n {
+            assert!(start.elapsed() < Duration::from_secs(60), "{}", documents());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // The walk started the text job: notes.txt and letter.md (no pdfium here: the PDF is
+    // skipped).
+    wait_for(2);
+    let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
+    assert_eq!(stats["text"]["on"], true, "{stats}");
+    assert_eq!(stats["per_source"][0]["text"]["documents"], 2, "{stats}");
+
+    let hits = call(&f.ctx, "search", json!({"query": "harbour"})).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 1, "{hits}");
+    assert_eq!(hits[0]["name"], "letter.md");
+    let text = hits[0]["snippet"]["text"].as_str().unwrap();
+    let [a, b] = [0, 1].map(|i| hits[0]["snippet"]["marks"][0][i].as_u64().unwrap() as usize);
+    assert_eq!(&text[a..b], "harbour", "{hits}");
+    let names_only = call(
+        &f.ctx,
+        "search",
+        json!({"query": "harbour", "contents": false}),
+    )
+    .unwrap();
+    assert!(names_only.as_array().unwrap().is_empty(), "{names_only}");
+
+    // Off for the source: previewed, then its text is gone.
+    let off = json!({"on": false, "id": id});
+    let preview = call(&f.ctx, "contents.set", off.clone()).unwrap();
+    assert!(
+        preview["summary"].as_str().unwrap().contains("deleted"),
+        "{preview}"
+    );
+    assert_eq!(documents(), 2, "a preview changes nothing");
+    apply(&f.ctx, "contents.set", off);
+    assert_eq!(documents(), 0);
+    let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
+    assert_eq!(stats["per_source"][0]["text"]["on"], false, "{stats}");
+    // Back to its default (a local folder: on), read again.
+    apply(
+        &f.ctx,
+        "contents.set",
+        json!({"on": false, "id": id, "default": true}),
+    );
+    wait_for(2);
+    // The library's setting off.
+    apply(&f.ctx, "contents.set", json!({"on": false}));
+    let stats = call(&f.ctx, "library.stats", Value::Null).unwrap();
+    assert_eq!(stats["text"]["on"], false, "{stats}");
+    assert_eq!(documents(), 0);
+}

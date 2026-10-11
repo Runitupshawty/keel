@@ -8,14 +8,14 @@ pub(crate) fn accepts(ext: &str) -> bool {
 }
 
 pub(crate) fn render(req: &Request) -> Preview {
-    match build(req) {
+    match build(&req.bytes_path) {
         Ok(blocks) => Preview::Doc { blocks },
         Err(error) => Preview::Error(error),
     }
 }
 
-fn build(req: &Request) -> Result<Vec<DocBlock>, String> {
-    let mut pkg = Package::open(&req.bytes_path)?;
+pub(crate) fn build(path: &std::path::Path) -> Result<Vec<DocBlock>, String> {
+    let mut pkg = Package::open(path)?;
     // ponytail: slide file order, not the order in presentation.xml (they match unless
     // slides were reordered and the file never renumbered).
     let mut slides: Vec<(u32, String)> = pkg
