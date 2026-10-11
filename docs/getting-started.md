@@ -137,6 +137,7 @@ Keel opens on your home folder in both panes.
 | F2 / Ctrl+F2 | Rename / bulk rename |
 | Ctrl+C, Ctrl+X, Ctrl+V | Copy, cut, paste (also with other apps) |
 | Del | Move to the Recycle Bin or Trash |
+| Ctrl+Z | Undo the last file operation (see [Undo](#copy-move-and-delete)) |
 | Ctrl+Shift+N | New folder |
 | Ctrl+H (Cmd+Shift+. on macOS) | Show or hide hidden files |
 | Ctrl+` | Terminal pane |
@@ -169,9 +170,13 @@ When the files are in a library source (see [The library](#the-library)), Keel f
 
 On Windows, **More options** at the end of the right-click menu (or Shift+right-click, or Shift+F10) opens the menu Explorer shows for those files, with Send to, Open with and the commands your other apps add. See [Windows shell menu](files.md#windows-shell-menu).
 
+**Undo.** Ctrl+Z (Cmd+Z on macOS) in the file list undoes the last file operation: a rename or bulk rename, a move (the items go back), a copy (the copies go to the trash), a new folder or file (to the trash) and a delete (the items come back from the Recycle Bin or Trash). Press it again for the one before; the window keeps the last 20. Each operation's toast has an **Undo** button too, and the command palette lists **Undo** with what it undoes ("Undo move"). A rename goes back at once; anything that moves or deletes first shows what it will do, for example "Undo move: 3 items back to D:Photos?", and runs as a job when you press **Undo**. Keel checks first: if an item changed since (its size or modified time), is gone, or something now has its old name, nothing is touched and the toast says why. Undo never overwrites a file. Ctrl+Z in a text box (the path box, a rename) stays the text box's own undo.
+
+Some operations cannot be undone: deleting for good (SFTP, S3, WebDAV without a trash, **Delete permanently**), files replaced with **Overwrite**, changes inside archives, extracting and adding to archives, copies and moves on SSH hosts, cloud accounts and other devices, and tags and favorites (set them again). The first Ctrl+Z after one says so ("Can't undo: deleted permanently"); the next goes on to the operation before. The list is per window and is lost when Keel closes or you switch profiles.
+
 ### Rename and bulk rename
 
-F2 renames the selected item in place, with the name before its extension selected so that typing replaces it; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; **Undo bulk rename** in the command palette reverses it.
+F2 renames the selected item in place, with the name before its extension selected so that typing replaces it; Enter saves, Esc cancels. Select several items and press Ctrl+F2 (or **Bulk rename…** in the context menu) for the bulk rename dialog: a **Pattern** such as `{name}-{n:3}.{ext}` (also `{n}`, `{date}`, `{parent}`) with a **Counter** start and step, **Find** and **Replace with** (optionally a regex, case-insensitive) and a **Case** change. The list shows each old and new name before you press **Apply**; Ctrl+Z (or the toast's **Undo**) reverses it.
 
 ### Search
 

@@ -7,6 +7,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Windows: **More options** at the end of the right-click menu, Shift+right-click on files, and Shift+F10 open the Windows shell menu for the selection, the one Explorer shows: installed handlers (archivers, editors, version control), Send to, Open with, Share. Shift+right-click and Shift+F10 add the extended commands, such as Copy as path. The same commands are searchable in the command palette as `Shell: <menu path>` entries (for example `Shell: Send to > Documents`) while local files are selected. See [Windows shell menu](docs/files.md#windows-shell-menu).
+- Undo for file operations: Ctrl+Z (Cmd+Z) in the file list undoes the last rename, bulk rename, move, copy, new folder or file and delete to the Recycle Bin or Trash, then the one before (the window keeps the last 20). A move goes back, copies and new items go to the trash, deleted items come back from the Recycle Bin or Trash (on macOS from where NSFileManager put them, recorded when Keel trashed them). Each operation's toast has an **Undo** button (bulk rename's became this one) and the palette lists "Undo <what>". A rename is undone at once; an undo that moves or deletes shows what it will do first ("Undo move: 3 items back to D:Photos?") and runs as a job. It checks every item first and does nothing but say why when one changed since (size or modified time), is gone, or its old place is taken; it never overwrites and never picks a new name. Operations through the library preview are recorded too, by what their job did. Ctrl+Z in a text box stays the box's own undo. The palette's "Undo bulk rename" is now "Undo rename".
 
 ### Known limitations
 
@@ -14,6 +15,11 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Keel removes the shell menu's Delete, Rename, Cut, Copy, Paste, Paste shortcut, Create shortcut and Properties, so its own versions (Recycle Bin with a prompt, conflict prompts, its Properties dialog) always apply.
 - Shell extensions run inside Keel's process, as they do in Explorer: a crashing handler closes the window (Keel's crash safety cannot catch it) and a hanging one freezes it until it returns. The menu is built only when asked for, never in advance.
 - Palette entries list only menu items with text; items an app draws itself are only in the popup. The palette entries are built when the palette opens with local files selected, which can take a moment while the handlers load.
+- Not undoable, and the next Ctrl+Z says so once before going on to the operation before: permanent deletes (SFTP, S3, WebDAV without a trash, Delete permanently), files replaced by Overwrite, changes inside archives, extracting and adding to archives, restoring from or emptying the Recycle Bin, copies, moves and new items on SSH hosts, cloud accounts and other devices' `node://` folders, tags and favorites, and deletes made through the library preview on macOS.
+- The undo list lives in the window: it is not kept across a restart and is cleared on a profile switch. There is no redo.
+- An undo runs in the window, also when the operation went through the library or keel-daemon; the sources' watchers pick the change up.
+- Only what an operation made is undone: files a copy merged into a folder that was already there stay, and a folder whose move stopped partway stays where it is.
+
 
 ## [0.18.0] - 2026-10-11
 

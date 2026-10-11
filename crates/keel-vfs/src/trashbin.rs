@@ -209,6 +209,40 @@ fn find(paths: &[VPath]) -> Result<Vec<TrashItem>> {
     Ok(out)
 }
 
+/// Where `originals` (local paths deleted at or after `since`) are in the trash: for each,
+/// the newest item deleted from that path since then (a `trash://` path), None when there
+/// is none. One listing. Always None on macOS, whose Trash does not record origins: keep
+/// the path [`crate::local::trash`] returns there instead.
+pub fn find_trashed(originals: &[PathBuf], since: SystemTime) -> Result<Vec<Option<VPath>>> {
+    if !KNOWS_ORIGIN || originals.is_empty() {
+        return Ok(vec![None; originals.len()]);
+    }
+    let items = sys::list()?;
+    // Deletion times are whole seconds.
+    let since = since
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64 - 1);
+    let key = |p: &Path| {
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            s.to_lowercase()
+        } else {
+            s.into_owned()
+        }
+    };
+    Ok(originals
+        .iter()
+        .map(|o| {
+            let o = key(o);
+            items
+                .iter()
+                .filter(|i| i.time_deleted >= since && key(&i.original_path()) == o)
+                .max_by_key(|i| i.time_deleted)
+                .map(path_of)
+        })
+        .collect())
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TrashProvider;
 
@@ -835,6 +869,40 @@ mod tests {
         assert!(err.to_string().contains("already exists"), "{err}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
         assert!(find_ours(&name).is_some(), "still in the bin");
+    }
+
+    /// `local::trash` as the app's delete does it, then the item is found again: by its
+    /// original path (Windows, Linux) or at the URL returned (macOS), and goes back.
+    #[test]
+    fn a_trashed_file_is_found_and_restored() {
+        let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
+        if trash_unobservable() || !SUPPORTED || sys::list().is_err() {
+            return;
+        }
+        let name = unique("find");
+        let _clean = Cleanup(name.clone());
+        let dir = test_dir();
+        let file = dir.path().join(&name);
+        std::fs::write(&file, "hello").unwrap();
+        let since = SystemTime::now();
+        let kept = match crate::local::trash(&VPath::local(&file)) {
+            Ok(kept) => kept,
+            Err(e) => return eprintln!("skipped: cannot trash a file here: {e:#}"),
+        };
+        assert!(!file.exists());
+        let found = find_trashed(std::slice::from_ref(&file), since).unwrap();
+        if KNOWS_ORIGIN {
+            assert!(kept.is_none());
+            let item = found[0].clone().expect("found by its original path");
+            TrashProvider.restore_paths(&[item]).unwrap();
+        } else {
+            assert_eq!(found, [None]);
+            let kept = kept.expect("NSFileManager says where it went");
+            crate::sys::rename_noreplace(&kept, &file).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+        let later = SystemTime::now() + Duration::from_secs(5);
+        assert_eq!(find_trashed(&[file], later).unwrap(), [None]);
     }
 
     #[test]

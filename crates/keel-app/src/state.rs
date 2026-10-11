@@ -43,6 +43,13 @@ pub fn archive_refusal(dir: &VPath) -> Option<String> {
         None => why,
     })
 }
+/// Why the newest operation cannot be undone, for the toast after "Can't undo: ".
+pub const PERMANENT: &str = "deleted permanently";
+
+fn restore_refusal() -> String {
+    format!("restoring from the {}", keel_vfs::trashbin::label())
+}
+
 /// A listing that has not answered after this long stops its spinner and says so (a
 /// late answer still fills the tab).
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,11 +97,19 @@ pub enum Msg {
         preview: keel_preview::Preview,
     },
     Toast(String),
-    /// A bulk rename (or its undo) finished.
+    /// A bulk rename finished; `items`: what it renamed, for undo (empty when it cannot be
+    /// undone).
     BulkDone {
         outcome: crate::bulk_rename::Outcome,
         total: usize,
-        undo: bool,
+        items: Vec<crate::undo::Item>,
+    },
+    /// An operation finished: what it left, for the undo journal; or why it cannot be undone.
+    Undoable(Result<(crate::undo::Op, Vec<crate::undo::Item>), String>),
+    /// The check before undoing entry `id`: Ok, or why it cannot be undone now.
+    UndoChecked {
+        id: u64,
+        result: Result<(), String>,
     },
     Preview {
         key: PreviewKey,
@@ -233,8 +248,8 @@ pub struct AppState {
     /// here or, on Windows, in another app).
     pub archive_clip: Option<ArchiveSrc>,
     pub dialog: Option<Dialog>,
-    /// Steps of the last bulk rename, undone by `UndoBulkRename` until the next operation.
-    pub bulk_undo: Vec<(VPath, VPath)>,
+    /// The last finished file operations, for Ctrl+Z (`undo.rs`).
+    pub undo: crate::undo::Journal,
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
@@ -372,7 +387,7 @@ impl AppState {
             cut_job: None,
             archive_clip: None,
             dialog: None,
-            bulk_undo: Vec::new(),
+            undo: Default::default(),
             settings,
             settings_open: false,
             remotes,
@@ -645,20 +660,18 @@ impl AppState {
             Msg::BulkDone {
                 outcome,
                 total,
-                undo,
+                items,
             } => {
-                let verb = if undo { "Restored" } else { "Renamed" };
-                let (text, ok) = crate::bulk_rename::summary(&outcome, total, verb);
-                if !undo && outcome.renamed > 0 {
-                    self.bulk_undo = crate::bulk_rename::undo_steps(&outcome.done);
-                }
-                match (ok, undo || outcome.renamed == 0) {
-                    (true, false) => self.toasts.offer(text, "Undo", Action::UndoBulkRename),
-                    (true, true) => self.toasts.info(text),
-                    (false, false) => self
-                        .toasts
-                        .with_action(text, "Undo", Action::UndoBulkRename),
-                    (false, true) => self.toasts.error(text),
+                let (text, ok) = crate::bulk_rename::summary(&outcome, total, "Renamed");
+                let op = crate::undo::Op::Rename(outcome.done.clone());
+                let id = self.undo.record(op, items).map(|e| e.id);
+                match (ok, id) {
+                    (true, Some(id)) => self.toasts.offer(text, "Undo", Action::UndoEntry(id)),
+                    (true, None) => self.toasts.info(text),
+                    (false, Some(id)) => {
+                        self.toasts.with_action(text, "Undo", Action::UndoEntry(id))
+                    }
+                    (false, None) => self.toasts.error(text),
                 }
                 let dirs: std::collections::HashSet<VPath> = outcome
                     .done
@@ -668,6 +681,41 @@ impl AppState {
                     .collect();
                 for dir in dirs {
                     self.apply(Msg::Changed { dir });
+                }
+            }
+            Msg::Undoable(Err(why)) => self.undo.refuse(why),
+            Msg::Undoable(Ok((op, items))) => {
+                if let Some(e) = self.undo.record(op, items) {
+                    let (text, id) = (e.done_text(), e.id);
+                    self.toasts.offer(text, "Undo", Action::UndoEntry(id));
+                }
+            }
+            Msg::UndoChecked { id, result } => {
+                let Some((rename, preview)) = (self.undo.get(id))
+                    .map(|e| (matches!(e.op, crate::undo::Op::Rename(_)), e.preview()))
+                else {
+                    return;
+                };
+                match result {
+                    Err(why) => {
+                        // It cannot come back: it leaves the journal, nothing was touched.
+                        self.undo.take(id);
+                        self.toasts.drop_action(&Action::UndoEntry(id));
+                        self.toasts.error(format!("Can't undo: {why}"));
+                    }
+                    Ok(()) if rename => {
+                        let p = self.active;
+                        self.run(p, Action::UndoRun(id));
+                    }
+                    Ok(()) if self.dialog.is_some() => self
+                        .toasts
+                        .error("Another dialog is open; nothing was undone"),
+                    Ok(()) => {
+                        self.dialog = Some(Dialog::Confirm {
+                            text: preview,
+                            on_yes: Action::UndoRun(id),
+                        })
+                    }
                 }
             }
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
@@ -730,6 +778,7 @@ impl AppState {
             }
             Msg::StashMoved(paths) => self.dropzone.remove_all(&paths),
             Msg::RestoreTrashTo(paths, dst) => {
+                self.undo.refuse(restore_refusal());
                 self.jobs
                     .trash_op(jobs::TrashOp::RestoreTo(paths, dst), self.tx.clone());
             }
@@ -980,6 +1029,10 @@ impl AppState {
             self.clipboard.set(Vec::new(), false);
         }
         let stashed = self.dropzone.claim(&op, from_clipboard); // Task 23
+                                                                // `Jobs::start` records the transfers that can be undone.
+        if let Some(why) = crate::undo::transfer_refusal(&op, conflict) {
+            self.undo.refuse(why);
+        }
         let id = self
             .jobs
             .start(op, conflict, self.router.clone(), self.tx.clone());
@@ -997,11 +1050,13 @@ impl AppState {
             .collect()
     }
 
-    /// Runs a provider call for `dir` off the UI thread; success selects `name`.
+    /// Runs a provider call for `dir` off the UI thread; success selects `name` and, with
+    /// `undo`, records what it did (a rename, or the new item at `name`).
     fn spawn_in_dir(
         &self,
         dir: VPath,
         name: String,
+        undo: Option<crate::undo::Op>,
         f: impl FnOnce(&dyn keel_vfs::Provider, &VPath) -> anyhow::Result<()> + Send + 'static,
     ) {
         let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
@@ -1015,6 +1070,14 @@ impl AppState {
                 Ok(()) => Msg::Select { dir, name },
                 Err(e) => Msg::Toast(format!("{e:#}")),
             };
+            if let (Msg::Select { .. }, Some(op)) = (&msg, undo) {
+                let stat = crate::undo::stat_fn(&router);
+                let items = match &op {
+                    crate::undo::Op::Rename(steps) => crate::undo::renamed(steps, stat),
+                    _ => crate::undo::created(&target, stat),
+                };
+                worker::send(&tx, &ctx, Msg::Undoable(Ok((op, items))));
+            }
             worker::send(&tx, &ctx, msg);
         });
     }
@@ -1392,24 +1455,6 @@ impl AppState {
         let Some(action) = self.library_intercept(p, action) else {
             return;
         };
-        // The undo is only good until the next operation.
-        if matches!(
-            action,
-            Action::Copy
-                | Action::Cut
-                | Action::Paste
-                | Action::Delete
-                | Action::Trash(_)
-                | Action::DeleteRemote(_)
-                | Action::StartTransfer { .. }
-                | Action::Drop { .. }
-                | Action::Create { .. }
-                | Action::RenameTo { .. }
-                | Action::ZipTo { .. }
-                | Action::AddToZip
-        ) {
-            self.bulk_undo.clear();
-        }
         match action {
             Action::Backspace if self.tab(p).is_search() => {
                 if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
@@ -1667,7 +1712,14 @@ impl AppState {
                     return self.toasts.error(why);
                 }
                 let Some(dir) = from.parent() else { return };
-                self.spawn_in_dir(dir, to, move |p, target| p.rename(&from, target));
+                let undo = match crate::undo::place_refusal(&dir, true) {
+                    Some(why) => {
+                        self.undo.refuse(why);
+                        None
+                    }
+                    None => Some(crate::undo::Op::Rename(vec![(from.clone(), dir.join(&to))])),
+                };
+                self.spawn_in_dir(dir, to, undo, move |p, target| p.rename(&from, target));
             }
             Action::BulkRename => {
                 let tab = self.tab(p);
@@ -1704,6 +1756,11 @@ impl AppState {
                 }
                 let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
                 let total = renames.len();
+                let refused = (renames.iter())
+                    .find_map(|(f, _)| crate::undo::place_refusal(&f.parent()?, true));
+                if let Some(why) = refused {
+                    self.undo.refuse(why);
+                }
                 worker::spawn("keel-bulk-rename", move || {
                     let rename = |a: &VPath, b: &VPath| {
                         router
@@ -1713,13 +1770,17 @@ impl AppState {
                     };
                     let fold = cfg!(any(windows, target_os = "macos"));
                     let outcome = crate::bulk_rename::execute(&renames, fold, rename);
+                    let items = match refused {
+                        Some(_) => Vec::new(),
+                        None => crate::undo::renamed(&outcome.done, crate::undo::stat_fn(&router)),
+                    };
                     worker::send(
                         &tx,
                         &ctx,
                         Msg::BulkDone {
                             outcome,
                             total,
-                            undo: false,
+                            items,
                         },
                     );
                 });
@@ -1729,30 +1790,27 @@ impl AppState {
                 self.toasts
                     .info("Keel checks for updates once a day (Settings → General)");
             }
-            Action::UndoBulkRename => {
-                let steps = std::mem::take(&mut self.bulk_undo);
-                if steps.is_empty() {
-                    return self.toasts.info("Nothing to undo");
-                }
+            Action::Undo => match self.undo.next() {
+                Ok(id) => self.run(p, Action::UndoEntry(id)),
+                Err(text) => self.toasts.info(text),
+            },
+            Action::UndoEntry(id) => {
+                let Some(e) = self.undo.get(id).cloned() else {
+                    return self.toasts.info("That operation was undone already");
+                };
+                // Stats may block (a sleeping disk): the check runs on a worker, the
+                // preview (or a rename's undo) follows its answer.
                 let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
-                worker::spawn("keel-bulk-undo", move || {
-                    let total = steps.len();
-                    let outcome = crate::bulk_rename::run_steps(&steps, |a, b| {
-                        router
-                            .provider_for(a)
-                            .ok_or_else(|| anyhow::anyhow!("no provider for {}", a.display()))
-                            .and_then(|p| p.rename(a, b))
-                    });
-                    worker::send(
-                        &tx,
-                        &ctx,
-                        Msg::BulkDone {
-                            outcome,
-                            total,
-                            undo: true,
-                        },
-                    );
+                worker::spawn("keel-undo-check", move || {
+                    let result = e.check(crate::undo::stat_fn(&router));
+                    worker::send(&tx, &ctx, Msg::UndoChecked { id, result });
                 });
+            }
+            Action::UndoRun(id) => {
+                self.toasts.drop_action(&Action::UndoEntry(id));
+                if let Some(e) = self.undo.take(id) {
+                    self.jobs.undo(e, self.router.clone(), self.tx.clone());
+                }
             }
             Action::Delete => {
                 let paths = self.target_paths(p);
@@ -1827,11 +1885,13 @@ impl AppState {
             Action::RestoreTrash => {
                 let paths = self.target_paths(p);
                 if !paths.is_empty() {
+                    self.undo.refuse(restore_refusal());
                     self.jobs
                         .trash_op(jobs::TrashOp::Restore(paths), self.tx.clone());
                 }
             }
             Action::PurgeTrash(paths) => {
+                self.undo.refuse(PERMANENT);
                 self.jobs
                     .trash_op(jobs::TrashOp::Purge(paths), self.tx.clone());
             }
@@ -1848,9 +1908,16 @@ impl AppState {
                 }
             }
             Action::EmptyTrashNow => {
+                self.undo.refuse(PERMANENT);
                 self.jobs.trash_op(jobs::TrashOp::Empty, self.tx.clone());
             }
             Action::DeleteRemote(paths) => {
+                let zip = paths.iter().any(|p| p.split_archive().is_some());
+                self.undo.refuse(if zip {
+                    "changes inside archives"
+                } else {
+                    PERMANENT
+                });
                 self.jobs
                     .delete(paths, self.router.clone(), self.tx.clone());
             }
@@ -1959,8 +2026,15 @@ impl AppState {
                 if let Some(why) = dialogs::invalid_name(&name) {
                     return self.toasts.error(why);
                 }
+                let undo = match crate::undo::place_refusal(&dir, false) {
+                    Some(why) => {
+                        self.undo.refuse(why);
+                        None
+                    }
+                    None => Some(crate::undo::Op::Create(folder)),
+                };
                 // Both fail when the name exists; nothing is ever truncated.
-                self.spawn_in_dir(dir, name, move |p, target| {
+                self.spawn_in_dir(dir, name, undo, move |p, target| {
                     if folder {
                         p.mkdir(target)
                     } else {
@@ -2025,6 +2099,7 @@ impl AppState {
             Action::ReindexFolders => self.index_folders(),
             Action::Palette => {
                 let selection = !self.tab(p).targets().is_empty();
+                self.palette.undo = self.undo.label();
                 // Never in tests: a walkthrough runs every palette entry.
                 #[cfg(all(windows, not(test)))]
                 let extra = crate::shell_menu::win::palette_items(
@@ -2092,6 +2167,7 @@ impl AppState {
                 if let Some(why) = dialogs::invalid_name(&name.unwrap_or_default()) {
                     return self.toasts.error(why);
                 }
+                self.undo.refuse("adding to an archive");
                 self.jobs.add_to_zip(zip, src, self.tx.clone());
             }
             Action::CompressTo { zip, src, format } => {

@@ -136,6 +136,8 @@ impl Jobs {
 
     /// Copy or move through `ops::transfer`: local to local takes the OS fast path, anything
     /// involving a remote host streams with staged writes. Extractions go through `extract`.
+    /// What a transfer that can be undone did goes to the undo journal when it ends
+    /// (`Msg::Undoable`).
     pub fn start(
         &mut self,
         t: Transfer,
@@ -150,6 +152,8 @@ impl Jobs {
         let title = format!("{verb} {} to {}", items(t.src.len()), t.dst.display());
         let remote = t.src.iter().chain([&t.dst]).any(crate::remotes::is_network);
         let queue = self.one_per_drive;
+        let record = crate::undo::transfer_refusal(&t, conflict).is_none();
+        let (utx, uctx) = (tx.clone(), self.ctx.clone());
         let id = self.spawn(title, tx, move |report, cancel| {
             let _drives = if queue {
                 let keys = t
@@ -162,7 +166,42 @@ impl Jobs {
             } else {
                 None
             };
-            keel_vfs::ops::transfer(&t.src, &t.dst, t.mv, conflict, report, cancel, &router)
+            if !record {
+                return keel_vfs::ops::transfer(
+                    &t.src, &t.dst, t.mv, conflict, report, cancel, &router,
+                );
+            }
+            let mut landed = Vec::new();
+            let result = keel_vfs::ops::transfer_landed(
+                &t.src,
+                &t.dst,
+                t.mv,
+                conflict,
+                report,
+                cancel,
+                &router,
+                &mut landed,
+            );
+            // What was done, also when the job stopped partway.
+            let items = crate::undo::landed(&landed, t.mv, crate::undo::stat_fn(&router));
+            let op = if t.mv {
+                crate::undo::Op::Move
+            } else {
+                crate::undo::Op::Copy
+            };
+            send(&utx, &uctx, Msg::Undoable(Ok((op, items))));
+            result
+        });
+        self.mark_remote(id, remote);
+        id
+    }
+
+    /// Undoes a journal entry (already checked once and confirmed): `undo::run`.
+    pub fn undo(&mut self, e: crate::undo::Entry, router: Arc<Router>, tx: Sender<Msg>) -> u64 {
+        let title = format!("Undo {}: {}", e.noun(), items(e.items.len()));
+        let remote = e.items.iter().any(|i| crate::remotes::is_network(&i.now));
+        let id = self.spawn(title, tx, move |report, cancel| {
+            crate::undo::run(&e, &router, report, cancel)
         });
         self.mark_remote(id, remote);
         id
@@ -260,6 +299,7 @@ impl Jobs {
             }
         }
         let remote = paths.first().is_some_and(crate::remotes::is_network);
+        let (utx, uctx) = (tx.clone(), self.ctx.clone());
         let (title, did) = if remote {
             (format!("Deleting {}", items(paths.len())), "deleted")
         } else {
@@ -277,18 +317,37 @@ impl Jobs {
                 total_items: paths.len(),
                 skipped: 0,
             };
+            // Local items go to the trash, and where each went is kept for undo.
+            let since = std::time::SystemTime::now();
+            let mut trashed = Vec::new();
+            let journal = |trashed: &[(VPath, Option<PathBuf>)]| {
+                if !trashed.is_empty() {
+                    let items = crate::undo::trashed(trashed, since);
+                    send(
+                        &utx,
+                        &uctx,
+                        Msg::Undoable(Ok((crate::undo::Op::Trash, items))),
+                    );
+                }
+            };
             for path in &paths {
                 if cancel.load(Ordering::Relaxed) {
+                    journal(&trashed);
                     anyhow::ensure!(p.done_items > 0, "operation cancelled");
                     anyhow::bail!("Cancelled: {} of {} {did}", p.done_items, paths.len());
                 }
                 p.current = path.display();
                 report(p.clone());
-                let removed = router
-                    .provider_for(path)
-                    .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))
-                    .and_then(|provider| provider.remove(path));
+                let removed = if path.to_local_path().is_some() {
+                    keel_vfs::local::trash(path).map(|kept| trashed.push((path.clone(), kept)))
+                } else {
+                    router
+                        .provider_for(path)
+                        .ok_or_else(|| anyhow::anyhow!("no provider for {}", path.display()))
+                        .and_then(|provider| provider.remove(path))
+                };
                 if let Err(e) = removed {
+                    journal(&trashed);
                     if p.done_items == 0 {
                         return Err(e);
                     }
@@ -303,6 +362,7 @@ impl Jobs {
                 }
                 p.done_items += 1;
             }
+            journal(&trashed);
             report(p);
             Ok(())
         });
@@ -968,6 +1028,7 @@ mod tests {
             extract: None,
         };
         let id = jobs.start(op, Conflict::Skip, Arc::new(Router::new()), tx);
+        let mut undoable = None;
         loop {
             match rx
                 .recv_timeout(Duration::from_secs(10))
@@ -977,6 +1038,7 @@ mod tests {
                     assert_eq!(got, id);
                     jobs.progress(id, p);
                 }
+                Msg::Undoable(done) => undoable = Some(done.expect("a local copy can be undone")),
                 Msg::JobDone { id: got, result } => {
                     assert_eq!(got, id);
                     result.expect("copy ok");
@@ -985,6 +1047,11 @@ mod tests {
                 _ => panic!("unexpected message"),
             }
         }
+        // Recorded before the job ends: the copy it made, for undo.
+        let (op, items) = undoable.expect("recorded");
+        assert_eq!(op, crate::undo::Op::Copy);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].now, VPath::local(root.join("dst/src")));
         for f in ["a.txt", "b.txt", "sub/c.txt"] {
             let copied = root.join("dst/src").join(f);
             assert_eq!(std::fs::read_to_string(copied).unwrap(), format!("src/{f}"));

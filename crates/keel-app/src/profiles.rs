@@ -425,6 +425,8 @@ impl AppState {
         // else the old ones would be saved into its session.json.
         crate::view_columns::restore_session(&mut self.panes, &session.views, &session.columns);
         self.dropzone.set_items(session.stash);
+        // Undo is per window and profile: the old profile's operations are not offered.
+        self.undo.clear();
         self.active = if self.dual { session.active } else { 0 };
         for notice in notices {
             self.toasts.error(notice);

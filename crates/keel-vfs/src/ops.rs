@@ -63,7 +63,16 @@ pub fn copy_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer_local(src, dst_dir, on_conflict, progress, cancel, false, None)
+    transfer_local(
+        src,
+        dst_dir,
+        on_conflict,
+        progress,
+        cancel,
+        false,
+        None,
+        None,
+    )
 }
 
 /// Same volume: rename. Other volume: per file, copy with progress, then delete that source
@@ -75,7 +84,16 @@ pub fn move_local(
     progress: &dyn Fn(Progress),
     cancel: &AtomicBool,
 ) -> Result<()> {
-    transfer_local(src, dst_dir, on_conflict, progress, cancel, true, None)
+    transfer_local(
+        src,
+        dst_dir,
+        on_conflict,
+        progress,
+        cancel,
+        true,
+        None,
+        None,
+    )
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
@@ -324,6 +342,7 @@ fn local_stat(t: &crate::VPath) -> Result<Option<(bool, Stamp)>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transfer_local(
     src: &[PathBuf],
     dst_dir: &Path,
@@ -332,6 +351,7 @@ fn transfer_local(
     cancel: &AtomicBool,
     moving: bool,
     journal: Option<&mut Journal>,
+    mut landed: Option<&mut Vec<Landed>>,
 ) -> Result<()> {
     check_cancel(cancel)?;
     let dst = long(dst_dir)?;
@@ -389,13 +409,25 @@ fn transfer_local(
         moving,
         swept: Default::default(),
         journal,
+        top: None,
     };
     let mut result = Ok(());
-    for source in sources {
-        result = check_cancel(cancel).and_then(|()| {
+    for (source, shown) in sources.iter().zip(src) {
+        job.top = None;
+        let done = check_cancel(cancel).and_then(|()| {
             let destination = dst.join(source.file_name().context("source has no name")?);
-            job.node(&source, &destination, false).map(drop)
+            job.node(source, &destination, false)
         });
+        if let (Some(out), Some((target, new))) = (landed.as_deref_mut(), job.top.take()) {
+            // The paths as given, not their extended-length form.
+            out.push(Landed {
+                source: crate::VPath::local(shown),
+                target: crate::VPath::local(dst_dir.join(target.file_name().unwrap_or_default())),
+                new,
+                complete: matches!(done, Ok(true)),
+            });
+        }
+        result = done.map(drop);
         if result.is_err() {
             break;
         }
@@ -417,6 +449,9 @@ struct Job<'a, 'j> {
     /// Folders already swept for stale staging files.
     swept: std::collections::HashSet<PathBuf>,
     journal: Option<&'a mut Journal<'j>>,
+    /// The target picked for the top-level source being transferred, and whether it was
+    /// free (set by the first `node` of each source: the top level picks before it recurses).
+    top: Option<(PathBuf, bool)>,
 }
 
 impl Job<'_, '_> {
@@ -457,7 +492,11 @@ impl Job<'_, '_> {
                 }
             },
         };
-        if let Ok(target_metadata) = fs::symlink_metadata(&target) {
+        let existing = fs::symlink_metadata(&target);
+        if self.top.is_none() {
+            self.top = Some((target.clone(), existing.is_err()));
+        }
+        if let Ok(target_metadata) = existing {
             ensure_regular(&target, &target_metadata)?;
             anyhow::ensure!(
                 !same_file::is_same_file(source, &target)?,
@@ -800,6 +839,49 @@ pub fn transfer(
         cancel,
         router,
         None,
+        None,
+    )
+}
+
+/// What a transfer did with one top-level source ([`transfer_landed`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub source: crate::VPath,
+    /// Where it went: `source`'s name in the destination, or the free name `RenameNew`
+    /// picked.
+    pub target: crate::VPath,
+    /// `target` did not exist before: the transfer made it. Else it merged into a folder
+    /// that was there, or replaced a file (`Overwrite`).
+    pub new: bool,
+    /// Everything under `source` was placed (a move removed `source`). False when the
+    /// source was partly skipped or the transfer stopped inside it.
+    pub complete: bool,
+}
+
+/// `transfer` that also tells, in `landed`, where each top-level source went (in order, the
+/// sources it reached; a skipped one is not listed). Only between local folders: anything
+/// else leaves `landed` empty.
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_landed(
+    src: &[crate::VPath],
+    dst_dir: &crate::VPath,
+    mv: bool,
+    on_conflict: Conflict,
+    progress: &dyn Fn(Progress),
+    cancel: &AtomicBool,
+    router: &crate::Router,
+    landed: &mut Vec<Landed>,
+) -> Result<()> {
+    transfer_with(
+        src,
+        dst_dir,
+        mv,
+        on_conflict,
+        progress,
+        cancel,
+        router,
+        None,
+        Some(landed),
     )
 }
 
@@ -827,6 +909,7 @@ pub fn transfer_resumable(
         cancel,
         router,
         Some(journal),
+        None,
     )
 }
 
@@ -840,6 +923,7 @@ fn transfer_with(
     cancel: &AtomicBool,
     router: &crate::Router,
     journal: Option<&mut Journal>,
+    landed: Option<&mut Vec<Landed>>,
 ) -> Result<()> {
     // Into a folder inside a zip: one rewrite of the archive (atomic; the journal gets
     // what it places before it runs).
@@ -862,7 +946,16 @@ fn transfer_with(
         .map(crate::VPath::to_local_path)
         .collect::<Option<Vec<_>>>();
     if let (Some(paths), Some(dst)) = (local_paths, dst_dir.to_local_path()) {
-        return transfer_local(&paths, &dst, on_conflict, progress, cancel, mv, journal);
+        return transfer_local(
+            &paths,
+            &dst,
+            on_conflict,
+            progress,
+            cancel,
+            mv,
+            journal,
+            landed,
+        );
     }
     check_cancel(cancel)?;
     if mv {

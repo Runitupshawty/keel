@@ -6,7 +6,8 @@ Reference for the file panes and everything around them. The [getting-started gu
 
 | Key | Action |
 | --- | --- |
-| Ctrl+F2 | Bulk rename the selection (pattern, find/replace, case; Undo bulk rename in the palette) |
+| Ctrl+Z | Undo the last file operation (rename, move, copy, new item, delete to the trash); see [Undo](getting-started.md#copy-move-and-delete) |
+| Ctrl+F2 | Bulk rename the selection (pattern, find/replace, case; Ctrl+Z undoes it) |
 | Ctrl+, | Settings |
 | Ctrl+Shift+T | Tag picker (library) |
 | Ctrl+D | Toggle favorite (library) |

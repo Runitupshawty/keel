@@ -122,6 +122,11 @@ libc.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 reflink-copy = "0.1"
 
+# Trashing through NSFileManager keeps the item's URL in the Trash (undo puts it back);
+# the same version the `trash` crate uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
+
 [dev-dependencies]
 # Host keys for the in-process SSH server in the SFTP tests (same rand as russh).
 rand = "0.10"

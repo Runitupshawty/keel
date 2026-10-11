@@ -428,3 +428,62 @@ fn skip_reports_skipped_count() {
     assert_eq!(last.borrow().as_ref().unwrap().skipped, 1);
     assert_eq!(fs::read_to_string(dst.join("sub/c.txt")).unwrap(), "old");
 }
+
+/// `transfer_landed` says where each top-level source went, whether the transfer made the
+/// target, and whether everything under it arrived; skipped sources are not listed.
+#[test]
+fn transfer_landed_reports_each_top_level_source() {
+    use keel_vfs::ops::{transfer_landed, Landed};
+    use keel_vfs::{Router, VPath};
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, dst) = (tmp.path().join("src"), tmp.path().join("dst"));
+    fs::create_dir_all(src.join("dir")).unwrap();
+    fs::create_dir_all(dst.join("dir")).unwrap();
+    fs::write(src.join("new.txt"), b"n").unwrap();
+    fs::write(src.join("same.txt"), b"s").unwrap();
+    fs::write(dst.join("same.txt"), b"old").unwrap();
+    fs::write(src.join("dir/inner.txt"), b"i").unwrap();
+    fs::write(dst.join("dir/inner.txt"), b"keep").unwrap();
+    let router = Router::new();
+    fn v(p: impl AsRef<std::path::Path>) -> VPath {
+        VPath::local(p)
+    }
+    let run = |names: &[&str], mv: bool, conflict: Conflict| {
+        let paths: Vec<VPath> = names.iter().map(|n| v(src.join(n))).collect();
+        let mut landed = Vec::new();
+        let cancel = AtomicBool::new(false);
+        transfer_landed(
+            &paths,
+            &v(&dst),
+            mv,
+            conflict,
+            &|_| {},
+            &cancel,
+            &router,
+            &mut landed,
+        )
+        .unwrap();
+        landed
+    };
+    let landed = run(&["new.txt", "same.txt", "dir"], false, Conflict::Skip);
+    let at = |n: &str, to: &str, new, complete| Landed {
+        source: v(src.join(n)),
+        target: v(dst.join(to)),
+        new,
+        complete,
+    };
+    // same.txt was skipped; dir merged into the folder there, its file skipped.
+    assert_eq!(
+        landed,
+        [
+            at("new.txt", "new.txt", true, true),
+            at("dir", "dir", false, false)
+        ]
+    );
+    let landed = run(&["same.txt"], false, Conflict::RenameNew);
+    assert_eq!(landed, [at("same.txt", "same (2).txt", true, true)]);
+    fs::remove_file(dst.join("new.txt")).unwrap();
+    let landed = run(&["new.txt"], true, Conflict::Skip);
+    assert_eq!(landed, [at("new.txt", "new.txt", true, true)]);
+    assert!(!src.join("new.txt").exists() && dst.join("new.txt").exists());
+}

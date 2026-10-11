@@ -3583,6 +3583,7 @@ dependencies = [
  "natord",
  "notify",
  "notify-debouncer-mini",
+ "objc2-foundation",
  "open",
  "opendal",
  "opendal-http-transport-reqwest",

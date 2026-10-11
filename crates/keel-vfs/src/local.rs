@@ -119,8 +119,34 @@ fn entry(path: VPath, local: &Path, metadata: fs::Metadata) -> Entry {
 
 const TRASH_FAILED: &str = "Could not move to trash; nothing deleted";
 
+/// Sends local `p` to the OS trash like the local provider's `remove`, and returns where
+/// the trash keeps it when the OS says: on macOS the URL NSFileManager answers with (the
+/// Trash there does not record where an item came from). Elsewhere None: the Recycle Bin
+/// or Trash lists the original path (`trashbin::find_trashed`).
+pub fn trash(p: &VPath) -> Result<Option<PathBuf>> {
+    trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
+}
+
+/// macOS: NSFileManager's `trashItemAtURL`, keeping the resulting URL; None for a name
+/// that is not UTF-8 (trashed by the `trash` crate, which percent-encodes it).
+#[cfg(target_os = "macos")]
+fn trash_with_url(path: &Path) -> Result<Option<PathBuf>> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let Some(text) = path.to_str() else {
+        return Ok(None);
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+    let mut out = None;
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut out))
+        .map_err(|e| anyhow::anyhow!("{}", e.localizedDescription()))?;
+    Ok(out
+        .and_then(|u| u.path())
+        .map(|p| PathBuf::from(p.to_string())))
+}
+
 /// Sends `path` to the OS trash. Never deletes permanently.
-fn trash_path(path: &Path) -> Result<()> {
+fn trash_path(path: &Path) -> Result<Option<PathBuf>> {
     // The Shell resolves non-`\\?\` names, which drops trailing dots/spaces and could hit a
     // different file. Refuse rather than risk trashing the wrong thing.
     #[cfg(windows)]
@@ -144,9 +170,21 @@ fn trash_path(path: &Path) -> Result<()> {
         &mut bin,
         trash::macos::DeleteMethod::NsFileManager,
     );
-    bin.delete(path)?;
+    #[cfg(target_os = "macos")]
+    let kept = match trash_with_url(path)? {
+        Some(url) => Some(url),
+        None => {
+            bin.delete(path)?;
+            None
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let kept = {
+        bin.delete(path)?;
+        None
+    };
     anyhow::ensure!(!path.try_exists()?, "still present after trash");
-    Ok(())
+    Ok(kept)
 }
 
 /// True only for fixed local drives. The Shell silently deletes *permanently* on UNC shares,
@@ -270,7 +308,7 @@ impl Provider for LocalProvider {
             .with_context(|| format!("rename {} to {}", from.display(), to.display()))
     }
     fn remove(&self, p: &VPath) -> Result<()> {
-        trash_path(&local(p)?).with_context(|| format!("{TRASH_FAILED}: {}", p.display()))
+        trash(p).map(drop)
     }
     fn space(&self, p: &VPath) -> Option<crate::Space> {
         let s = fs4::statvfs(local(p).ok()?).ok()?;

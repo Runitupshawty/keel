@@ -77,6 +77,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         Action::PurgeTrash(_) => "Delete permanently",
                         Action::EmptyTrashNow => "Empty",
                         Action::Mount(_) => "OK",
+                        Action::UndoRun(_) => "Undo",
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");

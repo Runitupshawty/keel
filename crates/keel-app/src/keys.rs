@@ -47,8 +47,12 @@ pub enum Action {
     BulkRenameApply {
         renames: Vec<(VPath, String)>,
     },
-    /// Reverse the last bulk rename.
-    UndoBulkRename,
+    /// Ctrl+Z, the palette's "Undo <what>": undo the newest file operation (`undo.rs`).
+    Undo,
+    /// A toast's Undo: undo this operation (`undo::Entry::id`), checked first.
+    UndoEntry(u64),
+    /// The undo's preview was confirmed (or a rename's check passed): run it.
+    UndoRun(u64),
     /// Asks before trashing the targets.
     Delete,
     /// Confirmed: send these to the OS trash.
@@ -254,6 +258,9 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::N, Action::NewFolder),
     (CMD_SHIFT, Key::O, Action::OpenWith),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
+    // After Ctrl+Shift+Z: egui ignores an unrequested Shift. In a text field Ctrl+Z stays
+    // the field's own undo (not in WHILE_TYPING).
+    (CMD, Key::Z, Action::Undo),
     (CMD_SHIFT, Key::S, Action::StashSelection),
     // Task 29: Ctrl+T stays New tab; the tag picker is Ctrl+Shift+T.
     (

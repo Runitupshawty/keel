@@ -22,6 +22,8 @@ pub struct Palette {
     pub cursor: usize,
     /// Other profiles: "Switch profile: <name>" entries (kept by `AppState::profiles_tick`).
     pub profiles: Vec<String>,
+    /// "Undo <what>" for the newest file operation, set before `show`.
+    pub undo: Option<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
     /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`).
@@ -94,7 +96,6 @@ fn global_items() -> Vec<Item> {
         ("Select all", "Ctrl+A", SelectAll),
         ("Invert selection", "", InvertSelection),
         ("Paste", "Ctrl+V", Paste),
-        ("Undo bulk rename", "", UndoBulkRename),
         ("Copy path", "", CopyPath),
         ("New folder", "Ctrl+Shift+N", NewFolder),
         ("New file", "", NewFile),
@@ -135,6 +136,11 @@ impl Palette {
         } else {
             Vec::new()
         };
+        items.extend(self.undo.clone().map(|label| Item {
+            label,
+            shortcut: "Ctrl+Z",
+            action: Action::Undo,
+        }));
         items.extend(global_items());
         items.extend(extra);
         items.extend(self.profiles.iter().map(|name| Item {
