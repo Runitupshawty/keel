@@ -650,6 +650,18 @@ fn op_runs_any_operation_with_preview_then_execute() {
     assert_eq!(done["preview"]["operation"], "tags.set", "{done}");
     assert_eq!(done["executed"]["result"]["records"], 1, "{done}");
     assert_eq!(tagged(&env).as_array().unwrap().len(), 2);
+    // `plan` previews too, and `execute` waits for the copy's job.
+    let dst = tempfile::tempdir().unwrap();
+    let params = json!({"op": "copy", "paths": [notes], "to": s(dst.path())}).to_string();
+    let preview = doc(&["op", "plan", "--params", &params]);
+    assert!(
+        !dst.path().join("notes.txt").exists(),
+        "a preview copies nothing"
+    );
+    let ids = json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]});
+    let job = doc(&["op", "execute", "--params", &ids.to_string()]);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(dst.path().join("notes.txt").exists());
     // Usage: an unknown name, JSON that does not parse or is no object, --execute on a
     // read, both --params and --params-file.
     for args in [

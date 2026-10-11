@@ -704,6 +704,14 @@ fn op(cfg: &HostConfig, call: OpCall, json: bool, out: &mut Out) -> Result<(), F
     }
     let mut b =
         connect(cfg, keel_api::client::request_wait(op.name)).map_err(|e| Fail::Api(e.into()))?;
+    // `execute` waits for the job it starts, as `keel execute` does.
+    let ids = (params["plan_id"].as_str()).zip(params["input_hash"].as_str());
+    if let (true, Some((id, hash))) = (op.name == "execute", ids) {
+        if let Some(doc) = execute_plan(&mut *b, id, hash, false, json, out)? {
+            print_json(&doc, out);
+        }
+        return Ok(());
+    }
     let answer = b.call(op.name, params)?;
     if !previews(op) {
         print_json(&answer, out);
