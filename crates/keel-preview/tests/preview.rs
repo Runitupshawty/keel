@@ -686,3 +686,24 @@ fn docx_lists_page_breaks_and_tables() {
         ]
     );
 }
+
+/// A fuzz corpus file without its first byte (the target's extension pick).
+fn corpus_file(dir: &Path, name: &str, ext: &str) -> PathBuf {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/preview");
+    let bytes = std::fs::read(corpus.join(name)).unwrap();
+    let path = dir.join(format!("input.{ext}"));
+    std::fs::write(&path, &bytes[1..]).unwrap();
+    path
+}
+
+/// Fuzzing (fuzz/corpus/preview/gif-frame-larger-than-screen): a 52-byte GIF with a 4x3
+/// screen and a 14693x14649 frame; the decoder is held to the screen's size.
+#[test]
+fn gif_frame_larger_than_its_screen_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = corpus_file(dir.path(), "gif-frame-larger-than-screen", "gif");
+    assert!(matches!(
+        preview(&temp_request(&path, "gif", 256)),
+        Preview::Error(_)
+    ));
+}

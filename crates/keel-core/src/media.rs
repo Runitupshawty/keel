@@ -628,7 +628,10 @@ pub(crate) fn decode_image(path: &Path) -> Result<DynamicImage> {
     }
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     let mut limits = Limits::default();
-    limits.max_alloc = Some(MAX_PIXELS * 8);
+    // Decoders allocate by what each frame declares, which can be far more than the header
+    // says (a 52-byte GIF with a 4x3 screen and a 14693x14649 frame): hold them to the
+    // header's size, with room for 16 bytes a pixel.
+    limits.max_alloc = Some((u64::from(w) * u64::from(h) * 16).clamp(64 << 20, MAX_PIXELS * 8));
     reader.limits(limits);
     let mut img = reader.decode().map_err(image_error)?;
     img.apply_orientation(orientation_of(path)?);

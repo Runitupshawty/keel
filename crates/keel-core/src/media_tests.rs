@@ -260,6 +260,21 @@ fn corrupt_and_oversized_images_are_content_errors() {
     );
 }
 
+/// Fuzzing (fuzz/corpus/image_meta/gif-frame-larger-than-screen.gif): a 52-byte GIF whose
+/// 4x3 screen holds a 14693x14649 frame passed the pixel limit (it checks the screen) and
+/// had the decoder allocate 860 MB for the frame. Decoding is held to the declared size.
+#[test]
+fn a_gif_frame_larger_than_its_screen_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let gif = dir.path().join("frame.gif");
+    let corpus = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fuzz/corpus/image_meta/");
+    std::fs::copy(format!("{corpus}gif-frame-larger-than-screen.gif"), &gif).unwrap();
+    assert!(is_corrupt(&thumbnail(&gif, 64).unwrap_err()));
+    let small = dir.path().join("small.gif");
+    DynamicImage::new_rgb8(4, 3).save(&small).unwrap();
+    assert!(thumbnail(&small, 64).is_ok());
+}
+
 #[test]
 fn xmp_rating_as_element_and_odd_packets() {
     let x = parse_xmp(
