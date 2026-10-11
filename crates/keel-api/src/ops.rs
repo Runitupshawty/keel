@@ -142,6 +142,16 @@ pub static OPS: &[Operation] = &[
         true, NoParams => Done, activity_note, json!({})),
     now!("plan", "Previews a file operation (copy, move, delete, rename) from the index without touching anything. Returns a preview; call execute with the plan id and input hash to apply.",
         PlanParams => PlanPreview, plan, json!({"op": "copy", "paths": [example_file()], "to": example_dir(), "on_conflict": "skip"})),
+    now!("plan.merge", "Previews merging folders: everything in `paths` (but `into`) moves into `into` with the conflict rule, then the folders left empty are removed. Links stay. Call execute to apply.",
+        MergeParams => PlanPreview, plan_merge, json!({"paths": [example_dir(), format!("{}2", example_dir())], "into": example_dir(), "on_conflict": "rename_new"})),
+    now!("plan.flatten", "Previews flattening a folder: every file in its subfolders, at any depth, moves up into it with the conflict rule, then the subfolders left empty are removed. Links stay. Call execute to apply.",
+        FlattenParams => PlanPreview, plan_flatten, json!({"path": example_dir(), "on_conflict": "skip"})),
+    now!("plan.organize", "Previews organizing a folder's files into subfolders by type (Images, Videos, Audio, Documents, Archives, Other), year or year-month of the modified date; missing subfolders are made. Call execute to apply.",
+        OrganizeParams => PlanPreview, plan_organize, json!({"path": example_dir(), "by": "year"})),
+    now!("plan.set_attributes", "Previews setting attributes on files or folders on the host: hidden (Windows, macOS), read-only, or the Unix mode bits (octal). Not recursive. Call execute to apply.",
+        AttributesParams => PlanPreview, plan_set_attributes, json!({"paths": [example_file()], "readonly": true})),
+    now!("plan.link", "Previews making a link on the host: a symbolic link (on Windows only with Developer Mode or elevation), a junction to a folder (Windows) or a hard link to a file. Call execute to apply.",
+        LinkParams => PlanPreview, plan_link, json!({"target": example_dir(), "link": format!("{}-link", example_dir()), "kind": if cfg!(windows) { "junction" } else { "symlink" }})),
     now!("execute", "Applies a previewed plan: pass the plan_id and input_hash of the preview being confirmed. Refuses expired, tampered or changed plans.",
         true, ExecuteParams => Executed, execute, json!({"plan_id": "0123456789abcdef0123456789abcdef", "input_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"})),
     now!("library.sync", "Pulls tag, favorite and content-id changes now from one paired device, or every device library sync is on with (both sides must turn it on); applies them to the library.",
@@ -1743,9 +1753,91 @@ fn plan(ctx: &Ctx, p: PlanParams) -> Result<PlanPreview> {
             keel_core::Op::Rename { path, new_name }
         }
     };
+    file_plan(ctx, op)
+}
+
+fn file_plan(ctx: &Ctx, op: keel_core::Op) -> Result<PlanPreview> {
     let plan = keel_core::validate_preview_execute(&ctx.lib, op)
         .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
     store_file_plan(ctx, plan)
+}
+
+fn conflict(c: Option<OnConflict>) -> keel_core::OnConflict {
+    match c.unwrap_or(OnConflict::Skip) {
+        OnConflict::Skip => keel_core::OnConflict::Skip,
+        OnConflict::Overwrite => keel_core::OnConflict::Overwrite,
+        OnConflict::RenameNew => keel_core::OnConflict::RenameNew,
+    }
+}
+
+/// A path the caller gave, as the real path (library paths resolved), refused where the
+/// read operations are (Keel's configuration folder: no link to the daemon token, no
+/// attribute change there).
+fn real_path(ctx: &Ctx, s: &str) -> Result<VPath> {
+    let p = crate::files::real(ctx, &vpath(s)?)?;
+    crate::files::readable(ctx, &p)?;
+    Ok(p)
+}
+
+fn plan_merge(ctx: &Ctx, p: MergeParams) -> Result<PlanPreview> {
+    let folders = (p.paths.iter())
+        .map(|s| real_path(ctx, s))
+        .collect::<Result<Vec<_>>>()?;
+    let what = keel_core::FolderOp::Merge {
+        folders,
+        into: real_path(ctx, &p.into)?,
+    };
+    file_plan(ctx, keel_core::Op::arrange(what, conflict(p.on_conflict)))
+}
+
+fn plan_flatten(ctx: &Ctx, p: FlattenParams) -> Result<PlanPreview> {
+    let what = keel_core::FolderOp::Flatten {
+        folder: real_path(ctx, &p.path)?,
+    };
+    file_plan(ctx, keel_core::Op::arrange(what, conflict(p.on_conflict)))
+}
+
+fn plan_organize(ctx: &Ctx, p: OrganizeParams) -> Result<PlanPreview> {
+    let what = keel_core::FolderOp::Organize {
+        folder: real_path(ctx, &p.path)?,
+        by: match p.by {
+            OrganizeBy::Type => keel_core::OrganizeBy::Type,
+            OrganizeBy::Year => keel_core::OrganizeBy::Year,
+            OrganizeBy::Month => keel_core::OrganizeBy::Month,
+        },
+    };
+    file_plan(ctx, keel_core::Op::arrange(what, conflict(p.on_conflict)))
+}
+
+fn plan_set_attributes(ctx: &Ctx, p: AttributesParams) -> Result<PlanPreview> {
+    let mode = match p.mode.as_deref() {
+        None => None,
+        Some(m) => Some(u32::from_str_radix(m.trim(), 8).map_err(|_| {
+            ApiError::invalid_params(format!("mode {m:?} is not octal digits (\"755\")"))
+        })?),
+    };
+    let paths = (p.paths.iter())
+        .map(|s| real_path(ctx, s))
+        .collect::<Result<Vec<_>>>()?;
+    let attrs = keel_vfs::Attributes {
+        hidden: p.hidden,
+        readonly: p.readonly,
+        mode,
+    };
+    file_plan(ctx, keel_core::Op::SetAttributes { paths, attrs })
+}
+
+fn plan_link(ctx: &Ctx, p: LinkParams) -> Result<PlanPreview> {
+    let op = keel_core::Op::Link {
+        target: real_path(ctx, &p.target)?,
+        link: real_path(ctx, &p.link)?,
+        kind: match p.kind {
+            LinkKind::Symlink => keel_vfs::LinkKind::Symlink,
+            LinkKind::Junction => keel_vfs::LinkKind::Junction,
+            LinkKind::Hardlink => keel_vfs::LinkKind::Hardlink,
+        },
+    };
+    file_plan(ctx, op)
 }
 
 fn store_file_plan(ctx: &Ctx, plan: keel_core::Plan) -> Result<PlanPreview> {
@@ -1765,6 +1857,9 @@ fn store_file_plan(ctx: &Ctx, plan: keel_core::Plan) -> Result<PlanPreview> {
 }
 
 fn file_summary(plan: &keel_core::Plan) -> String {
+    if let Some(headline) = plan.headline() {
+        return headline;
+    }
     let files: u64 = plan.changes.iter().map(|c| c.files).sum();
     let bytes: u64 = plan.changes.iter().map(|c| c.bytes).sum();
     // The first three paths, so a summary echoed for approval says what it touches.
@@ -1789,12 +1884,25 @@ fn file_summary(plan: &keel_core::Plan) -> String {
         keel_core::Op::Rename { path, new_name } => {
             format!("Rename {} to {new_name}", path.display())
         }
+        // Worded by `headline`.
+        _ => what,
     }
 }
 
 fn file_change(c: &keel_core::Change) -> Change {
+    use keel_core::Action as A;
+    let action = match c.action {
+        A::Copy => "copy",
+        A::Move => "move",
+        A::Delete => "delete",
+        A::Rename => "rename",
+        A::MakeFolder => "make_folder",
+        A::RemoveFolder => "remove_folder",
+        A::SetAttributes => "set_attributes",
+        A::Link => "link",
+    };
     Change {
-        action: format!("{:?}", c.action).to_lowercase(),
+        action: action.into(),
         path: Some(c.from.display()),
         to: c.to.as_ref().map(VPath::display),
         detail: None,

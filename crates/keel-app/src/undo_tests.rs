@@ -265,6 +265,11 @@ fn library_operations_record_what_their_job_did() {
         existed: existed.iter().map(|n| p(n).display()).collect(),
         since: std::time::SystemTime::now(),
         generation: 0,
+        moves: Vec::new(),
+        made: Vec::new(),
+        prune: Vec::new(),
+        taken: Vec::new(),
+        before: Vec::new(),
     };
     let copy = planned(
         L::Copy {
@@ -693,4 +698,159 @@ fn a_folder_move_back_onto_a_new_folder_is_refused() {
     let err = format!("{:#}", undo(&router, &e).unwrap_err());
     assert!(err.ends_with("is taken"), "{err}");
     assert_eq!(tree(tmp.path()), before, "nothing moved or merged");
+}
+
+// ---- folder operations, attributes and links (library plans) -------------------------
+
+/// Runs a library plan as the app does (`Planned` read before, recorded when it ends).
+fn run_plan(lib: &keel_core::Library, op: keel_core::Op) -> Entry {
+    let plan = keel_core::validate_preview_execute(lib, op.clone()).unwrap();
+    let pick = |a: keel_core::Action| -> Vec<VPath> {
+        (plan.changes.iter())
+            .filter(|c| c.action == a)
+            .map(|c| c.from.clone())
+            .collect()
+    };
+    let mut u = Planned {
+        op,
+        existed: Vec::new(),
+        since: std::time::SystemTime::now(),
+        generation: 0,
+        moves: (plan.changes.iter())
+            .filter(|c| c.action == keel_core::Action::Move)
+            .filter_map(|c| Some((c.from.clone(), c.to.clone()?)))
+            .collect(),
+        made: pick(keel_core::Action::MakeFolder),
+        prune: pick(keel_core::Action::RemoveFolder),
+        taken: Vec::new(),
+        before: Vec::new(),
+    };
+    let router = Router::new();
+    u.read_before(stat_fn(&router));
+    let id = plan.execute(lib, true).unwrap();
+    let info = lib.jobs().wait(id).unwrap();
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    let (op, items) = u.done(stat_fn(&router)).unwrap();
+    let mut j = Journal::default();
+    j.record(op, items).unwrap().clone()
+}
+
+fn library() -> (tempfile::TempDir, keel_core::Library) {
+    let data = tempfile::tempdir().unwrap();
+    let lib = keel_core::Library::open(data.path(), "t").unwrap();
+    (data, lib)
+}
+
+#[test]
+fn a_flatten_undone_makes_its_folders_again_and_puts_every_file_back() {
+    let (tmp, a, _b) = fixture();
+    std::fs::write(a.join("folder/sub/one.txt"), "clash").unwrap();
+    std::fs::write(a.join("folder/two.txt"), "two").unwrap();
+    let before = tree(tmp.path());
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Flatten {
+            folder: VPath::local(&a),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    // one.txt clashed and stayed (with its folder); the other two moved up.
+    assert!(a.join("deep.bin").exists() && a.join("two.txt").exists());
+    assert!(a.join("folder/sub/one.txt").exists());
+    assert_eq!(e.items.len(), 2);
+    assert_eq!(e.noun(), "flatten");
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(tree(tmp.path()), before, "byte-identical");
+}
+
+#[test]
+fn an_organize_undone_removes_the_folders_it_made() {
+    let (tmp, a, _b) = fixture();
+    std::fs::write(a.join("photo.jpg"), "jpg").unwrap();
+    let before = tree(tmp.path());
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Organize {
+            folder: VPath::local(&a),
+            by: keel_core::OrganizeBy::Type,
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    assert!(a.join("Images/photo.jpg").exists() && a.join("Documents/one.txt").exists());
+    assert_eq!(e.done_text(), "Organized 2 items into folders");
+    // A place taken since refuses, and the entry stays for later.
+    std::fs::write(a.join("photo.jpg"), "new").unwrap();
+    let refused = e.check(stat_fn(&Router::new())).unwrap_err();
+    assert!(
+        refused.transient && refused.why.contains("is taken"),
+        "{refused:?}"
+    );
+    std::fs::remove_file(a.join("photo.jpg")).unwrap();
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(tree(tmp.path()), before);
+}
+
+#[test]
+fn a_merge_undone_moves_the_items_back_into_the_folders_it_removed() {
+    let (tmp, a, b) = fixture();
+    std::fs::write(b.join("mine.txt"), "b").unwrap();
+    let before = tree(tmp.path());
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::Merge {
+            folders: vec![VPath::local(&a), VPath::local(&b)],
+            into: VPath::local(&b),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    assert!(!a.exists(), "the emptied folder went");
+    assert!(b.join("folder/sub/deep.bin").exists());
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(tree(tmp.path()), before);
+}
+
+#[test]
+fn attributes_and_links_undone() {
+    let (tmp, a, _b) = fixture();
+    let (_data, lib) = library();
+    let one = VPath::local(a.join("one.txt"));
+    let op = keel_core::Op::SetAttributes {
+        paths: vec![one.clone()],
+        attrs: keel_vfs::Attributes {
+            readonly: Some(true),
+            ..Default::default()
+        },
+    };
+    let e = run_plan(&lib, op);
+    let local = a.join("one.txt");
+    assert_eq!(
+        keel_vfs::fsattr::attributes(&local).unwrap().readonly,
+        Some(true)
+    );
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!(
+        keel_vfs::fsattr::attributes(&local).unwrap().readonly,
+        Some(false)
+    );
+
+    let before = tree(tmp.path());
+    let kind = if cfg!(windows) {
+        keel_vfs::LinkKind::Junction
+    } else {
+        keel_vfs::LinkKind::Symlink
+    };
+    let op = keel_core::Op::Link {
+        target: VPath::local(a.join("folder")),
+        link: VPath::local(tmp.path().join("link")),
+        kind,
+    };
+    let e = run_plan(&lib, op);
+    assert!(tmp.path().join("link/sub/deep.bin").exists());
+    assert_eq!(e.preview(), "Undo link: remove link?");
+    undo(&Router::new(), &e).unwrap();
+    assert!(!tmp.path().join("link").exists());
+    assert_eq!(tree(tmp.path()), before, "what it pointed to stays");
 }

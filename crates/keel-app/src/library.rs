@@ -233,6 +233,11 @@ pub enum LibCmd {
         file: std::path::PathBuf,
         name: String,
     },
+    // --- Task 60 ---
+    /// A folder operation's dialog for the selection (else the folder shown).
+    FolderOp(crate::folder_ops::Kind),
+    /// Preview this operation (a folder operation dialog's answer).
+    Plan(Op),
 }
 
 /// How `LibraryUi::open` reaches the library.
@@ -745,6 +750,9 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
 
 /// The dialog's headline: "Delete 3 files (1.2 MB)".
 pub fn plan_summary(plan: &Plan) -> String {
+    if let Some(headline) = plan.headline() {
+        return headline;
+    }
     let (files, bytes) = plan
         .changes
         .iter()
@@ -754,6 +762,8 @@ pub fn plan_summary(plan: &Plan) -> String {
         Op::Move { .. } => "Move",
         Op::Delete { .. } => "Delete",
         Op::Rename { .. } => "Rename",
+        // Worded by `headline`.
+        _ => "Change",
     };
     let what = if files == 1 {
         "1 file".to_owned()
@@ -2446,6 +2456,28 @@ impl AppState {
                     });
                 self.library.refresh_meta_soon();
             }
+            LibCmd::FolderOp(kind) => {
+                let tab = self.tab(p);
+                let picked: Vec<(VPath, bool)> = match tab.targets() {
+                    t if t.is_empty() => vec![(tab.dir.clone(), true)],
+                    t => (t.iter())
+                        .map(|e| (e.path.clone(), e.kind == keel_vfs::Kind::Dir))
+                        .collect(),
+                };
+                let sources = &self.library.sources;
+                let Some(paths) = (picked.iter())
+                    .map(|(x, _)| real_of(sources, x))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return self.toasts.error("That source is no longer in the library");
+                };
+                let dirs: Vec<bool> = picked.iter().map(|(_, d)| *d).collect();
+                match crate::folder_ops::FolderDialog::new(kind, paths, &dirs) {
+                    Ok(d) => self.dialog = Some(crate::dialogs::Dialog::FolderOp(Box::new(d))),
+                    Err(why) => self.toasts.error(why),
+                }
+            }
+            LibCmd::Plan(op) => self.plan(op),
             LibCmd::Duplicates => {
                 self.library.dups = Some(DupFinder { groups: None });
                 self.library.refresh_dups();
@@ -2468,7 +2500,8 @@ impl AppState {
                 dialog.running = true;
                 let plan = dialog.plan.clone();
                 let (existed, permanent) = plan.undo_facts();
-                let undo = match self.library.undo_op.take() {
+                let (moves, made, prune) = plan.arranged();
+                let mut undo = match self.library.undo_op.take() {
                     _ if permanent => {
                         self.undo.refuse(crate::state::PERMANENT);
                         None
@@ -2478,18 +2511,28 @@ impl AppState {
                         existed,
                         since: std::time::SystemTime::now(),
                         generation: self.undo.generation(),
+                        moves,
+                        made,
+                        prune,
+                        taken: Vec::new(),
+                        before: Vec::new(),
                     }),
                 };
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                self.library
-                    .spawn("keel-library-execute", move |b| match b.execute(plan) {
+                let router = self.router.clone();
+                self.library.spawn("keel-library-execute", move |b| {
+                    if let Some(u) = &mut undo {
+                        u.read_before(crate::undo::stat_fn(&router));
+                    }
+                    match b.execute(plan) {
                         Ok(Executed::Job(id)) => Some(LibMsg::OpStarted { id, undo }),
                         Ok(Executed::Changed(fresh)) => Some(LibMsg::Changed(fresh)),
                         Err(e) => {
                             worker::send(&tx, &ctx, Msg::Toast(format!("{e:#}")));
                             None
                         }
-                    });
+                    }
+                });
                 // The dialog closes; a refused plan comes back as `Changed`.
                 self.library.plan = None;
             }

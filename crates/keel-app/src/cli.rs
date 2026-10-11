@@ -175,6 +175,68 @@ pub enum PlanCmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+    /// Merge folders: everything in FOLDERS moves into --into (one of them or another
+    /// folder); the folders left empty are removed.
+    Merge {
+        #[arg(required = true)]
+        folders: Vec<String>,
+        #[arg(long, value_name = "DIR")]
+        into: String,
+        #[arg(long, value_enum)]
+        on_conflict: Option<Conflict>,
+    },
+    /// Flatten a folder: every file in its subfolders moves up into it; the subfolders
+    /// left empty are removed.
+    Flatten {
+        folder: String,
+        #[arg(long, value_enum)]
+        on_conflict: Option<Conflict>,
+    },
+    /// Organize a folder's files into subfolders by type, year or year-month.
+    Organize {
+        folder: String,
+        #[arg(long, value_enum)]
+        by: OrganizeBy,
+        #[arg(long, value_enum)]
+        on_conflict: Option<Conflict>,
+    },
+    /// Set attributes (hidden, read-only, Unix mode bits in octal).
+    Attrs {
+        #[arg(required = true)]
+        paths: Vec<String>,
+        #[arg(long)]
+        hidden: Option<bool>,
+        #[arg(long)]
+        readonly: Option<bool>,
+        #[arg(long, value_name = "OCTAL")]
+        mode: Option<String>,
+    },
+    /// Make a link at LINK pointing to TARGET.
+    Link {
+        target: String,
+        link: String,
+        #[arg(long, value_enum)]
+        kind: LinkKind,
+    },
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq)]
+pub enum OrganizeBy {
+    /// Images, Videos, Audio, Documents, Archives, Other.
+    Type,
+    Year,
+    /// Year and month (2024-03).
+    Month,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq)]
+pub enum LinkKind {
+    /// A symbolic link (Windows: needs Developer Mode or elevation).
+    Symlink,
+    /// Windows: a junction to a folder.
+    Junction,
+    /// A second name for a file on the same drive.
+    Hardlink,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq)]
@@ -626,6 +688,39 @@ mod tests {
             })
         );
         assert_eq!(
+            cmd(&["plan", "merge", "a", "b", "--into", "b"]),
+            Command::Plan(PlanCmd::Merge {
+                folders: vec!["a".into(), "b".into()],
+                into: "b".into(),
+                on_conflict: None
+            })
+        );
+        assert_eq!(
+            cmd(&["plan", "organize", "d", "--by", "month"]),
+            Command::Plan(PlanCmd::Organize {
+                folder: "d".into(),
+                by: OrganizeBy::Month,
+                on_conflict: None
+            })
+        );
+        assert_eq!(
+            cmd(&["plan", "attrs", "a", "--readonly", "true", "--mode", "644"]),
+            Command::Plan(PlanCmd::Attrs {
+                paths: vec!["a".into()],
+                hidden: None,
+                readonly: Some(true),
+                mode: Some("644".into())
+            })
+        );
+        assert_eq!(
+            cmd(&["plan", "link", "t", "l", "--kind", "hardlink"]),
+            Command::Plan(PlanCmd::Link {
+                target: "t".into(),
+                link: "l".into(),
+                kind: LinkKind::Hardlink
+            })
+        );
+        assert_eq!(
             cmd(&["execute", "abc", "--hash", "def"]),
             Command::Execute {
                 plan: Some("abc".into()),
@@ -737,6 +832,9 @@ mod tests {
             &["unmount"],
             &["plan", "copy", "a", "--to", "d", "--on-conflict", "maybe"],
             &["op", "search", "--params", "{}", "--params-file", "p.json"],
+            &["plan", "merge", "a"],
+            &["plan", "organize", "d"],
+            &["plan", "link", "t", "l"],
         ] {
             let err = parse(bad).unwrap_err();
             assert_eq!(err.exit_code(), 2, "{bad:?}");

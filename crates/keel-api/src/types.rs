@@ -386,10 +386,92 @@ pub struct PlanParams {
     pub on_conflict: Option<OnConflict>,
 }
 
+/// `plan.merge`: everything in the folders `paths` (but `into`) moves into `into`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MergeParams {
+    /// The folders to merge; `into` may be one of them.
+    pub paths: Vec<String>,
+    /// The folder they merge into.
+    pub into: String,
+    /// What to do with names that exist in `into` (default skip).
+    #[serde(default)]
+    pub on_conflict: Option<OnConflict>,
+}
+
+/// `plan.flatten`: every file in the folder's subfolders moves up into it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FlattenParams {
+    pub path: String,
+    /// What to do with names taken in the folder, or by an earlier file (default skip).
+    #[serde(default)]
+    pub on_conflict: Option<OnConflict>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OrganizeBy {
+    /// Images, Videos, Audio, Documents, Archives, Other (by extension).
+    Type,
+    /// `2024`, from the modified date (local time).
+    Year,
+    /// `2024-03`.
+    Month,
+}
+
+/// `plan.organize`: the folder's files move into subfolders by type, year or month.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizeParams {
+    pub path: String,
+    pub by: OrganizeBy,
+    /// What to do with names that exist in a subfolder (default skip).
+    #[serde(default)]
+    pub on_conflict: Option<OnConflict>,
+}
+
+/// `plan.set_attributes`: the attributes given are set on each path (not recursive).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttributesParams {
+    pub paths: Vec<String>,
+    /// Windows and macOS.
+    #[serde(default)]
+    pub hidden: Option<bool>,
+    #[serde(default)]
+    pub readonly: Option<bool>,
+    /// Unix permission bits in octal (`"755"`, `"0640"`).
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    /// A symbolic link (on Windows: needs Developer Mode or an elevated host).
+    Symlink,
+    /// Windows: a junction to a folder.
+    Junction,
+    /// A second name for a file on the same drive.
+    Hardlink,
+}
+
+/// `plan.link`: a new link at `link` pointing to `target`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LinkParams {
+    pub target: String,
+    /// The new link's full path (it must not exist).
+    pub link: String,
+    pub kind: LinkKind,
+}
+
 /// One projected change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Change {
-    /// `copy`, `move`, `delete`, `rename`, or the operation's own (`tag.add`, `source.add`…).
+    /// `copy`, `move`, `delete`, `rename`, `make_folder`, `remove_folder`, `set_attributes`,
+    /// `link`, or the operation's own (`tag.add`, `source.add`…).
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,

@@ -883,7 +883,9 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let confirm = ui.add_enabled(!d.running, egui::Button::new("Confirm"));
-            if confirm.clicked() {
+            // Enter confirms (Esc cancels), as the button says.
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if confirm.clicked() || (enter && !d.running) {
                 out.push(lib(LibCmd::Execute));
             }
             cancel |= ui.button("Cancel").clicked();

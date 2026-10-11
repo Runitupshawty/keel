@@ -3,6 +3,7 @@
 //! paths the index does not know; execution re-validates, runs as a durable job and writes a
 //! (redacted) op_log entry.
 
+use crate::arrange::FolderOp;
 use crate::index::resolve;
 use crate::jobs::{Job, JobCtx, JobId};
 use crate::library::{relative, OfflineReason, Shared, Source, SourceStatus};
@@ -54,15 +55,51 @@ pub enum Op {
         path: VPath,
         new_name: String,
     },
+    /// Merge, flatten or organize ([`Op::arrange`]): the preview generates `moves` (each
+    /// item and the folder it moves into, made when missing; sorted by item) and `prune`
+    /// (folders removed at the end when left empty, deepest first) from `what` and the
+    /// disk, so a preview made again on a changed disk has another op and is refused.
+    Arrange {
+        what: FolderOp,
+        on_conflict: OnConflict,
+        #[serde(default)]
+        moves: Vec<(VPath, VPath)>,
+        #[serde(default)]
+        prune: Vec<VPath>,
+    },
+    /// Hidden, read-only or Unix mode bits on local files and folders (not recursive).
+    SetAttributes {
+        paths: Vec<VPath>,
+        attrs: keel_vfs::Attributes,
+    },
+    /// A new link at `link` (which must not exist) to the local `target`.
+    Link {
+        target: VPath,
+        link: VPath,
+        kind: keel_vfs::LinkKind,
+    },
 }
 
 impl Op {
+    /// A folder operation to preview (the preview fills in its moves).
+    pub fn arrange(what: FolderOp, on_conflict: OnConflict) -> Op {
+        Op::Arrange {
+            what,
+            on_conflict,
+            moves: Vec::new(),
+            prune: Vec::new(),
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Op::Copy { .. } => "copy",
             Op::Move { .. } => "move",
             Op::Delete { .. } => "delete",
             Op::Rename { .. } => "rename",
+            Op::Arrange { what, .. } => what.verb(),
+            Op::SetAttributes { .. } => "attributes",
+            Op::Link { .. } => "link",
         }
     }
 
@@ -70,8 +107,10 @@ impl Op {
     fn items(&self) -> Vec<VPath> {
         match self {
             Op::Copy { src, .. } | Op::Move { src, .. } => src.clone(),
-            Op::Delete { paths } => paths.clone(),
+            Op::Delete { paths } | Op::SetAttributes { paths, .. } => paths.clone(),
             Op::Rename { path, .. } => vec![path.clone()],
+            Op::Arrange { moves, .. } => moves.iter().map(|(item, _)| item.clone()).collect(),
+            Op::Link { target, .. } => vec![target.clone()],
         }
     }
 
@@ -98,6 +137,24 @@ impl Op {
                 "path": path.display(),
                 "new_name": new_name,
             }),
+            Op::Arrange {
+                what,
+                on_conflict,
+                moves,
+                ..
+            } => serde_json::json!({
+                "folders": what.roots().into_iter().map(VPath::display).collect::<Vec<_>>(),
+                "moves": moves.len(),
+                "on_conflict": on_conflict,
+            }),
+            Op::SetAttributes { paths, attrs } => {
+                serde_json::json!({ "paths": shown(paths), "attributes": attrs })
+            }
+            Op::Link { target, link, kind } => serde_json::json!({
+                "target": target.display(),
+                "link": link.display(),
+                "kind": kind,
+            }),
         }
     }
 }
@@ -108,6 +165,13 @@ pub enum Action {
     Move,
     Delete,
     Rename,
+    /// A folder a folder operation makes (organize's groups).
+    MakeFolder,
+    /// A folder a merge or flatten removes when it is left empty.
+    RemoveFolder,
+    SetAttributes,
+    /// `from` is the target, `to` the new link.
+    Link,
 }
 
 /// One projected change per top-level path.
@@ -232,6 +296,30 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
     let mut warnings = Vec::new();
     let mut changes = Vec::new();
     archive_writes(lib, &op, &mut warnings)?;
+    // A folder operation's moves, from the disk as it is now.
+    let mut sizes = Vec::new();
+    let op = match op {
+        Op::Arrange {
+            what, on_conflict, ..
+        } => {
+            let router = lib.router.read().clone();
+            let (planned, prune) = crate::arrange::generate(&router, &what)?;
+            anyhow::ensure!(
+                !planned.is_empty(),
+                "nothing to {}: no files to move",
+                what.verb()
+            );
+            sizes = planned.iter().map(|p| (p.files, p.bytes)).collect();
+            let moves = planned.into_iter().map(|p| (p.item, p.into)).collect();
+            Op::Arrange {
+                what,
+                on_conflict,
+                moves,
+                prune,
+            }
+        }
+        op => op,
+    };
     match &op {
         Op::Copy {
             src,
@@ -320,6 +408,105 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                 bytes: p.bytes,
             });
         }
+        Op::Arrange {
+            what,
+            on_conflict,
+            moves,
+            prune,
+        } => {
+            for root in what.roots() {
+                probe(lib, root, &mut warnings)?;
+            }
+            let router = lib.router.read().clone();
+            let mut seen: Vec<&VPath> = Vec::new();
+            for (_, into) in moves {
+                if seen.contains(&into) {
+                    continue;
+                }
+                seen.push(into);
+                match router.provider_for(into).map(|p| p.stat(into)) {
+                    Some(Ok(e)) => anyhow::ensure!(
+                        e.kind == Kind::Dir,
+                        "{} is a file: rename it so a folder can take its name",
+                        into.display()
+                    ),
+                    _ => {
+                        check_name(into.name())?;
+                        changes.push(change(Action::MakeFolder, into, None));
+                    }
+                }
+            }
+            // Names taken now, or by an earlier move of this plan.
+            let mut taken = HashSet::new();
+            for ((item, into), (files, bytes)) in moves.iter().zip(sizes) {
+                let to = into.join(item.name());
+                let fold = if cfg!(windows) {
+                    to.path.to_lowercase()
+                } else {
+                    to.path.clone()
+                };
+                if !taken.insert(fold) || exists(lib, &to) {
+                    warnings.push(Warning::Exists {
+                        path: to.clone(),
+                        on_conflict: *on_conflict,
+                    });
+                }
+                changes.push(Change {
+                    action: Action::Move,
+                    from: item.clone(),
+                    to: Some(to),
+                    files,
+                    bytes,
+                });
+            }
+            for d in prune {
+                changes.push(change(Action::RemoveFolder, d, None));
+            }
+        }
+        Op::SetAttributes { paths, attrs } => {
+            anyhow::ensure!(!paths.is_empty(), "nothing to change");
+            attrs.check()?;
+            for p in paths {
+                let local = local_only(p, "attributes")?;
+                keel_vfs::fsattr::attributes(&local)
+                    .with_context(|| format!("{} does not exist", p.display()))?;
+                changes.push(change(Action::SetAttributes, p, None));
+            }
+        }
+        Op::Link { target, link, kind } => {
+            let (t, l) = (local_only(target, "links")?, local_only(link, "links")?);
+            let meta =
+                std::fs::metadata(&t).with_context(|| format!("{} does not exist", t.display()))?;
+            check_name(link.name())?;
+            anyhow::ensure!(
+                std::fs::symlink_metadata(&l).is_err(),
+                "{} already exists",
+                link.display()
+            );
+            let parent = l.parent().map(std::path::Path::is_dir);
+            anyhow::ensure!(
+                parent == Some(true),
+                "{} is not in a folder",
+                link.display()
+            );
+            match kind {
+                keel_vfs::LinkKind::Junction => {
+                    anyhow::ensure!(cfg!(windows), "junctions are made on Windows only");
+                    anyhow::ensure!(meta.is_dir(), "a junction points to a folder");
+                }
+                keel_vfs::LinkKind::Hardlink => {
+                    anyhow::ensure!(
+                        meta.is_file(),
+                        "a hard link is made to a file, not a folder"
+                    )
+                }
+                keel_vfs::LinkKind::Symlink => anyhow::ensure!(
+                    keel_vfs::fsattr::symlinks_allowed(),
+                    keel_vfs::fsattr::SYMLINK_PRIVILEGE
+                ),
+            }
+            changes.push(change(Action::Link, target, Some(link.clone())));
+        }
     }
     let mut seen = Vec::new();
     warnings.retain(|w| {
@@ -339,6 +526,19 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
 /// that is rewritten.
 fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<()> {
     let outer = |p: &VPath| p.split_archive().map(|(o, _)| o);
+    let elsewhere: Vec<&VPath> = match op {
+        Op::Arrange { what, .. } => what.roots(),
+        Op::SetAttributes { paths, .. } => paths.iter().collect(),
+        Op::Link { target, link, .. } => vec![target, link],
+        _ => Vec::new(),
+    };
+    if let Some(p) = elsewhere.iter().find(|p| outer(p).is_some()) {
+        anyhow::bail!(
+            "{} is inside an archive: {} works on folders, not archives",
+            p.display(),
+            op.kind()
+        );
+    }
     let written: Vec<&VPath> = match op {
         Op::Copy { dst_dir, .. } => vec![dst_dir],
         Op::Move { src, dst_dir, .. } => {
@@ -353,6 +553,7 @@ fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<
         }
         Op::Delete { paths } => paths.iter().collect(),
         Op::Rename { path, .. } => vec![path],
+        Op::Arrange { .. } | Op::SetAttributes { .. } | Op::Link { .. } => Vec::new(),
     };
     for p in written {
         let Some(archive) = outer(p) else { continue };
@@ -371,18 +572,25 @@ fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<
     Ok(())
 }
 
-/// Files and bytes under a folder inside an archive (its listing is cached).
-fn archive_tree(provider: &dyn keel_vfs::Provider, dir: &VPath, depth: usize) -> (u64, u64) {
-    let mut total = (0, 0);
-    for e in provider.list(dir).unwrap_or_default() {
-        let (bytes, files) = if e.kind == Kind::Dir && depth < 256 {
-            archive_tree(provider, &e.path, depth + 1)
-        } else {
-            (e.size, 1)
-        };
-        total = (total.0 + bytes, total.1 + files);
+/// A change without files (folders made or removed, attributes, links).
+fn change(action: Action, from: &VPath, to: Option<VPath>) -> Change {
+    Change {
+        action,
+        from: from.clone(),
+        to,
+        files: 0,
+        bytes: 0,
     }
-    total
+}
+
+/// `p` as a local path: `what` (attributes, links) are only changed on this computer.
+fn local_only(p: &VPath, what: &str) -> Result<std::path::PathBuf> {
+    p.to_local_path().with_context(|| {
+        format!(
+            "{what} are changed on this computer's files only: {}",
+            p.display()
+        )
+    })
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -425,7 +633,7 @@ fn probe(lib: &Shared, p: &VPath, warnings: &mut Vec<Warning>) -> Result<Probe> 
         (false, _) => (entry.size, 1),
         // Counts folders too; good enough for a preview of an unindexed folder.
         (true, Some(local)) => keel_vfs::plan_size(&[local]).map_or((0, 0), |(b, n)| (b, n as u64)),
-        (true, None) if p.split_archive().is_some() => archive_tree(&*provider, p, 0),
+        (true, None) if p.split_archive().is_some() => crate::arrange::tree_size(&*provider, p, 0),
         (true, None) => (0, 0),
     };
     Ok(Probe {
@@ -650,12 +858,17 @@ struct Started {
     target_existed: bool,
 }
 
-/// Where `item` ends up (copy, move, rename), None for a delete.
+/// Where `item` ends up (copy, move, rename, folder operations; a link: the link), None
+/// for a delete or attributes.
 fn target(op: &Op, item: &VPath) -> Option<VPath> {
     match op {
         Op::Copy { dst_dir, .. } | Op::Move { dst_dir, .. } => Some(dst_dir.join(item.name())),
         Op::Rename { new_name, .. } => item.parent().map(|p| p.join(new_name)),
-        Op::Delete { .. } => None,
+        Op::Arrange { moves, .. } => {
+            crate::arrange::into_of(moves, item).map(|d| d.join(item.name()))
+        }
+        Op::Link { link, .. } => Some(link.clone()),
+        Op::Delete { .. } | Op::SetAttributes { .. } => None,
     }
 }
 
@@ -713,6 +926,9 @@ fn ran(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> bool {
     let appeared = !s.target_existed && target(op, item).is_some_and(|t| live(ctx, &t));
     match op {
         Op::Copy { .. } => appeared && !is_dir(ctx, item),
+        Op::Link { link, .. } => live(ctx, link),
+        // Setting attributes again changes nothing.
+        Op::SetAttributes { .. } => false,
         _ => !live(ctx, item),
     }
 }
@@ -1045,7 +1261,9 @@ impl Job for ExecJob {
                 id
             }
         };
-        let result = self.steps(ctx, &items, marked);
+        let result = self
+            .steps(ctx, &items, marked)
+            .map(|()| prune(ctx, &self.op));
         let summary = match &result {
             Ok(()) if self.skipped == 0 => "ok".to_owned(),
             Ok(()) => format!("{} skipped", self.skipped),
@@ -1121,14 +1339,66 @@ fn delete_entries(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
     Ok(ran)
 }
 
-/// One delete or rename of a top-level path; false when it no longer exists (skipped).
+/// A merge or flatten removes the folders it emptied, deepest first; one left with
+/// something in it (an item skipped, a link) stays.
+fn prune(ctx: &JobCtx, op: &Op) {
+    let Op::Arrange { prune, .. } = op else {
+        return;
+    };
+    let router = ctx.router();
+    let removed: Vec<VPath> = prune
+        .iter()
+        .filter(|d| {
+            router
+                .provider_for(d)
+                .is_some_and(|p| p.remove_empty_dir(d).is_ok())
+        })
+        .cloned()
+        .collect();
+    reindex(ctx, &removed, false);
+}
+
+/// One step of a top-level path that is not a copy or move; false when it no longer exists
+/// (skipped).
 fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
     if !present(ctx, item)? {
         return Ok(false);
     }
     let router = ctx.router();
+    let local = |p: &VPath| {
+        p.to_local_path()
+            .with_context(|| format!("not on this computer: {}", p.display()))
+    };
     match op {
         Op::Copy { .. } | Op::Move { .. } => anyhow::bail!("copies and moves run in batches"),
+        Op::Arrange {
+            moves, on_conflict, ..
+        } => {
+            let into = crate::arrange::into_of(moves, item)
+                .with_context(|| format!("no folder planned for {}", item.display()))?;
+            let provider = router
+                .provider_for(into)
+                .with_context(|| format!("no provider for {}", into.display()))?;
+            if provider.stat(into).is_err() {
+                provider.mkdir(into)?;
+                reindex(ctx, std::slice::from_ref(into), false);
+            }
+            // ponytail: one transfer per item (a rename on one volume); batch per folder if
+            // folder operations across volumes get slow.
+            keel_vfs::ops::transfer(
+                std::slice::from_ref(item),
+                into,
+                true,
+                (*on_conflict).into(),
+                &|_| {},
+                ctx.stop_flag(),
+                &router,
+            )?;
+        }
+        Op::SetAttributes { attrs, .. } => keel_vfs::fsattr::set_attributes(&local(item)?, attrs)?,
+        Op::Link { link, kind, .. } => {
+            keel_vfs::fsattr::make_link(&local(item)?, &local(link)?, *kind)?
+        }
         Op::Delete { .. } => router
             .provider_for(item)
             .with_context(|| format!("no provider for {}", item.display()))?
@@ -1150,6 +1420,10 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
 /// then found by identity; a folder copied into an existing one is walked whole), then the
 /// paths that went away.
 fn after(ctx: &JobCtx, op: &Op, items: &[VPath]) {
+    if let Op::Link { link, .. } = op {
+        // The link itself, never what it points to.
+        return reindex(ctx, std::slice::from_ref(link), false);
+    }
     let targets: Vec<VPath> = items.iter().filter_map(|i| target(op, i)).collect();
     reindex(ctx, &targets, true);
     if !matches!(op, Op::Copy { .. }) {

@@ -47,6 +47,9 @@ wait-timeout = "0.2"
 # Folder icons (`styles.rs`): one emoji is one grapheme of emoji characters.
 unicode-segmentation = "1.13"
 unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"] }
+
+# Organize by year or month: the local date of a modified time (already in the tree).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = { version = "3", optional = true }
 
 [target.'cfg(unix)'.dependencies]

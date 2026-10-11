@@ -342,13 +342,24 @@ impl Planned {
                 .changes
                 .iter()
                 .map(|c| {
+                    use keel_core::Action as A;
                     let verb = match c.action {
-                        keel_core::Action::Copy => "Copy",
-                        keel_core::Action::Move => "Move",
-                        keel_core::Action::Delete => "Delete",
-                        keel_core::Action::Rename => "Rename",
+                        A::Copy => "Copy",
+                        A::Move => "Move",
+                        A::Delete => "Delete",
+                        A::Rename => "Rename",
+                        A::MakeFolder => "Make folder",
+                        A::RemoveFolder => "Remove when empty",
+                        A::SetAttributes => "Set attributes of",
+                        A::Link => "Link to",
                     };
                     let to = c.to.as_ref().map(|t| format!(" → {}", t.display()));
+                    if matches!(
+                        c.action,
+                        A::MakeFolder | A::RemoveFolder | A::SetAttributes | A::Link
+                    ) {
+                        return format!("{verb} {}{}", c.from.display(), to.unwrap_or_default());
+                    }
                     format!(
                         "{verb} {}{}  ({}, {})",
                         c.from.display(),
@@ -376,10 +387,51 @@ impl Planned {
                         _ => String::new(),
                     };
                     let path = c.path.as_deref().unwrap_or_default();
+                    let verb = match c.action.as_str() {
+                        "make_folder" => "Make folder".to_owned(),
+                        "remove_folder" => "Remove when empty".to_owned(),
+                        "set_attributes" => "Set attributes of".to_owned(),
+                        "link" => "Link to".to_owned(),
+                        _ => verb,
+                    };
                     format!("{verb} {path}{}{size}", to.unwrap_or_default())
                 })
                 .collect(),
         }
+    }
+
+    /// For undo of a folder operation: its moves (item, target) in order, the folders it
+    /// makes and the folders it removes when emptied.
+    pub fn arranged(&self) -> (Vec<(VPath, VPath)>, Vec<VPath>, Vec<VPath>) {
+        let (mut moves, mut made, mut prune) = (Vec::new(), Vec::new(), Vec::new());
+        let mut add = |action: &str, from: VPath, to: Option<VPath>| match (action, to) {
+            ("move", Some(to)) => moves.push((from, to)),
+            ("make_folder", _) => made.push(from),
+            ("remove_folder", _) => prune.push(from),
+            _ => {}
+        };
+        match self {
+            Planned::Local(p) => {
+                for c in &p.changes {
+                    let action = match c.action {
+                        keel_core::Action::Move => "move",
+                        keel_core::Action::MakeFolder => "make_folder",
+                        keel_core::Action::RemoveFolder => "remove_folder",
+                        _ => continue,
+                    };
+                    add(action, c.from.clone(), c.to.clone());
+                }
+            }
+            Planned::Daemon(p) => {
+                for c in &p.changes {
+                    let Some(from) = c.path.as_deref() else {
+                        continue;
+                    };
+                    add(&c.action, vpath_of(from), c.to.as_deref().map(vpath_of));
+                }
+            }
+        }
+        (moves, made, prune)
     }
 
     /// For undo: the targets that existed before (shown paths: a Skip leaves or merges
@@ -864,7 +916,10 @@ impl LibraryBackend {
             LibraryBackend::InProcess(lib) => Ok(Planned::Local(
                 keel_core::validate_preview_execute(lib, op)?,
             )),
-            LibraryBackend::Daemon(r) => Ok(Planned::Daemon(r.call("plan", plan_params(&op))?)),
+            LibraryBackend::Daemon(r) => {
+                let (method, params) = plan_params(&op);
+                Ok(Planned::Daemon(r.call(method, params)?))
+            }
         }
     }
 
@@ -1290,15 +1345,15 @@ pub fn volume_state(s: api::VolumeStateName) -> VolumeState {
     }
 }
 
-/// An `Op` as `plan` parameters.
-fn plan_params(op: &Op) -> Value {
+/// The API operation that previews `op`, and its parameters.
+fn plan_params(op: &Op) -> (&'static str, Value) {
     let conflict = |c: &keel_core::OnConflict| match c {
         keel_core::OnConflict::Skip => "skip",
         keel_core::OnConflict::Overwrite => "overwrite",
         keel_core::OnConflict::RenameNew => "rename_new",
     };
     let paths = |v: &[VPath]| v.iter().map(VPath::display).collect::<Vec<_>>();
-    match op {
+    let params = match op {
         Op::Copy {
             src,
             dst_dir,
@@ -1315,7 +1370,41 @@ fn plan_params(op: &Op) -> Value {
         Op::Rename { path, new_name } => {
             json!({"op": "rename", "paths": [path.display()], "new_name": new_name})
         }
-    }
+        Op::Arrange {
+            what, on_conflict, ..
+        } => {
+            let c = conflict(on_conflict);
+            let (method, params) = match what {
+                keel_core::FolderOp::Merge { folders, into } => (
+                    "plan.merge",
+                    json!({"paths": paths(folders), "into": into.display(), "on_conflict": c}),
+                ),
+                keel_core::FolderOp::Flatten { folder } => (
+                    "plan.flatten",
+                    json!({"path": folder.display(), "on_conflict": c}),
+                ),
+                keel_core::FolderOp::Organize { folder, by } => (
+                    "plan.organize",
+                    json!({"path": folder.display(), "by": by, "on_conflict": c}),
+                ),
+            };
+            return (method, params);
+        }
+        Op::SetAttributes { paths: p, attrs } => {
+            return (
+                "plan.set_attributes",
+                json!({"paths": paths(p), "hidden": attrs.hidden, "readonly": attrs.readonly,
+                    "mode": attrs.mode.map(|m| format!("{m:o}"))}),
+            )
+        }
+        Op::Link { target, link, kind } => {
+            return (
+                "plan.link",
+                json!({"target": target.display(), "link": link.display(), "kind": kind}),
+            )
+        }
+    };
+    ("plan", params)
 }
 
 /// Starts `keel-daemon --profile=<name>` detached (it outlives the window), logging to

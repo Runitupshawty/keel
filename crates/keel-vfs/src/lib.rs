@@ -61,6 +61,8 @@ pub use sftp::{
     SftpProvider, FTP_CLEAR_TEXT,
 };
 pub use trashbin::TrashProvider;
+pub mod fsattr;
+pub use fsattr::{Attributes, LinkKind};
 pub mod ops;
 #[cfg(not(windows))]
 mod ops_unix;

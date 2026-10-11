@@ -1941,3 +1941,121 @@ fn agent_skill_copy_matches_and_names_real_operations() {
         );
     }
 }
+
+/// Runs a previewed file plan to its end.
+fn run_file_plan(f: &Fixture, preview: &Value) -> keel_core::JobInfo {
+    let done = call(
+        &f.ctx,
+        "execute",
+        json!({"plan_id": preview["plan_id"], "input_hash": preview["input_hash"]}),
+    )
+    .unwrap();
+    let job = done["job"].as_i64().unwrap();
+    f.ctx.lib.jobs().wait(job).unwrap()
+}
+
+/// Task 60: the folder operations preview every move (and folder made or removed) and
+/// run through `execute` like any file plan; a changed folder refuses the preview.
+#[test]
+fn folder_operations_preview_then_execute() {
+    let f = fixture(None);
+    let root = f.files.path();
+    std::fs::create_dir_all(root.join("docs/old")).unwrap();
+    std::fs::write(root.join("docs/old/a.txt"), b"a").unwrap();
+    let docs = s(&root.join("docs"));
+    let flat = call(&f.ctx, "plan.flatten", json!({"path": docs})).unwrap();
+    assert_eq!(flat["operation"], "plan");
+    let actions: Vec<&str> = (flat["changes"].as_array().unwrap().iter())
+        .map(|c| c["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["move", "remove_folder"]);
+    assert!(
+        flat["summary"].as_str().unwrap().starts_with("Flatten"),
+        "{flat}"
+    );
+    // A file appears: the confirmed preview no longer matches.
+    std::fs::write(root.join("docs/old/b.txt"), b"b").unwrap();
+    let err = call(
+        &f.ctx,
+        "execute",
+        json!({"plan_id": flat["plan_id"], "input_hash": flat["input_hash"]}),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiError::PLAN_CHANGED);
+    let fresh = err.data.unwrap();
+    assert_eq!(fresh["changes"].as_array().unwrap().len(), 3);
+    let info = run_file_plan(&f, &fresh);
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert!(root.join("docs/b.txt").is_file() && !root.join("docs/old").exists());
+
+    let org = call(&f.ctx, "plan.organize", json!({"path": docs, "by": "type"})).unwrap();
+    assert!(org["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["action"] == "make_folder"));
+    let info = run_file_plan(&f, &org);
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert!(root.join("docs/Documents/invoice-2026.pdf").is_file());
+
+    std::fs::create_dir_all(root.join("more")).unwrap();
+    std::fs::write(root.join("more/c.txt"), b"c").unwrap();
+    let merge = call(
+        &f.ctx,
+        "plan.merge",
+        json!({"paths": [s(&root.join("more")), docs], "into": docs, "on_conflict": "rename_new"}),
+    )
+    .unwrap();
+    let info = run_file_plan(&f, &merge);
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert!(root.join("docs/c.txt").is_file() && !root.join("more").exists());
+
+    let pdf = s(&root.join("docs/Documents/invoice-2026.pdf"));
+    let attrs = call(
+        &f.ctx,
+        "plan.set_attributes",
+        json!({"paths": [pdf], "readonly": true}),
+    )
+    .unwrap();
+    assert!(attrs["summary"].as_str().unwrap().contains("read-only on"));
+    run_file_plan(&f, &attrs);
+    let local = root.join("docs/Documents/invoice-2026.pdf");
+    assert_eq!(
+        keel_vfs::fsattr::attributes(&local).unwrap().readonly,
+        Some(true)
+    );
+    let bad = call(
+        &f.ctx,
+        "plan.set_attributes",
+        json!({"paths": [pdf], "mode": "9x"}),
+    );
+    assert_eq!(bad.unwrap_err().code, ApiError::INVALID_PARAMS);
+    let link = call(
+        &f.ctx,
+        "plan.link",
+        json!({"target": pdf, "link": s(&root.join("invoice-link.pdf")), "kind": "hardlink"}),
+    )
+    .unwrap();
+    run_file_plan(&f, &link);
+    assert_eq!(
+        std::fs::read(root.join("invoice-link.pdf")).unwrap(),
+        b"pdf bytes"
+    );
+    keel_vfs::fsattr::set_attributes(
+        &local,
+        &keel_vfs::Attributes {
+            readonly: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // Nothing in Keel's configuration folder.
+    let token = s(&f.cfg.path().join("token"));
+    std::fs::write(f.cfg.path().join("token"), b"t").unwrap();
+    let refused = call(
+        &f.ctx,
+        "plan.link",
+        json!({"target": token, "link": s(&root.join("t")), "kind": "hardlink"}),
+    );
+    assert!(refused.is_err());
+}

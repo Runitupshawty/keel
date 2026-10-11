@@ -60,6 +60,8 @@ pub enum Dialog {
         error: Option<String>,
         focus: bool,
     },
+    /// Task 60: a folder operation (`folder_ops`).
+    FolderOp(Box<crate::folder_ops::FolderDialog>),
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -283,6 +285,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 cancel |= close.clicked();
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
+            Dialog::FolderOp(d) => out = crate::folder_ops::ui(ui, d, &mut cancel),
             Dialog::BulkRename(m) => {
                 if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
                     out = Some(Action::BulkRenameApply { renames });

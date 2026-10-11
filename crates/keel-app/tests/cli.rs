@@ -232,6 +232,72 @@ fn plan_piped_into_execute() {
     assert!(dst.path().join("notes.txt").exists());
 }
 
+/// Task 60: `keel plan flatten|organize|merge|attrs|link`, each piped into `keel execute`.
+#[test]
+fn folder_operations_from_the_command_line() {
+    let env = env();
+    let root = env.files.path();
+    std::fs::create_dir_all(root.join("box/inner")).unwrap();
+    std::fs::write(root.join("box/inner/deep.txt"), b"deep").unwrap();
+    std::fs::write(root.join("box/photo.jpg"), b"jpg").unwrap();
+    let run = |args: &[&str]| {
+        let mut plan = env.keel(args).stdout(Stdio::piped()).spawn().unwrap();
+        let exec = env
+            .keel(&["execute"])
+            .stdin(plan.stdout.take().unwrap())
+            .output()
+            .unwrap();
+        assert!(plan.wait().unwrap().success(), "{args:?}");
+        assert!(
+            exec.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&exec.stderr)
+        );
+    };
+    let boxed = s(&root.join("box"));
+    let preview = env.ok(&["plan", "flatten", &boxed]);
+    assert!(preview.contains("Flatten"), "{preview}");
+    assert!(
+        root.join("box/inner/deep.txt").exists(),
+        "a preview moves nothing"
+    );
+    run(&["plan", "flatten", &boxed]);
+    assert!(root.join("box/deep.txt").exists() && !root.join("box/inner").exists());
+    run(&["plan", "organize", &boxed, "--by", "type"]);
+    assert!(root.join("box/Images/photo.jpg").exists());
+    assert!(root.join("box/Documents/deep.txt").exists());
+    run(&[
+        "plan",
+        "merge",
+        &s(&root.join("box/Images")),
+        &s(&root.join("box/Documents")),
+        "--into",
+        &s(&root.join("box/Documents")),
+    ]);
+    assert!(root.join("box/Documents/photo.jpg").exists() && !root.join("box/Images").exists());
+    let notes = env.file("notes.txt");
+    run(&["plan", "attrs", &notes, "--readonly", "true"]);
+    assert!(std::fs::metadata(&notes).unwrap().permissions().readonly());
+    run(&["plan", "attrs", &notes, "--readonly", "false"]);
+    run(&[
+        "plan",
+        "link",
+        &notes,
+        &s(&root.join("notes-link.txt")),
+        "--kind",
+        "hardlink",
+    ]);
+    assert_eq!(
+        std::fs::read(root.join("notes-link.txt")).unwrap(),
+        b"notes"
+    );
+    // Nothing to organize: exit 1 with the reason.
+    let empty = tempfile::tempdir().unwrap();
+    let out = env.run(&["plan", "organize", &s(empty.path()), "--by", "year"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to organize"));
+}
+
 struct Mcp {
     child: std::process::Child,
     out: BufReader<std::process::ChildStdout>,

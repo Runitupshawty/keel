@@ -48,6 +48,30 @@ written again, the file it was writing is continued on local and SFTP targets, a
 placed file changed since makes the job fail (`… changed since the preview …`) rather
 than be overwritten. `jobs.info` keeps its shape.
 
+The folder operations (`plan.merge`, `plan.flatten`, `plan.organize`) read the folders
+when they preview and list every move (`move`, with `to`), every folder they make
+(`make_folder`) and every folder they remove when it is left empty (`remove_folder`), and
+an `exists` warning for each target name that is taken, now or by an earlier move of the
+plan. `execute` runs them as file plans; when the folder no longer gives the same moves (a
+file added, removed or renamed), it answers `PLAN_CHANGED` with the new preview. For
+example, `plan.organize` with `{"path": "D:\\Inbox", "by": "type"}` previews
+
+```json
+{"operation": "plan", "summary": "Organize D:\\Inbox by type: 2 files into 2 folders",
+ "changes": [{"action": "make_folder", "path": "D:\\Inbox\\Documents", "files": 0, "bytes": 0},
+   {"action": "make_folder", "path": "D:\\Inbox\\Images", "files": 0, "bytes": 0},
+   {"action": "move", "path": "D:\\Inbox\\a.pdf", "to": "D:\\Inbox\\Documents\\a.pdf", "files": 1, "bytes": 5120},
+   {"action": "move", "path": "D:\\Inbox\\b.jpg", "to": "D:\\Inbox\\Images\\b.jpg", "files": 1, "bytes": 81920}],
+ "warnings": [{"kind": "not_indexed", "path": "D:\\Inbox", "message": "…"}], "…": "…"}
+```
+
+and `plan.set_attributes` with `{"paths": ["D:\\Inbox\\a.pdf"], "readonly": true}`
+previews `"summary": "Set the attributes of 1 item: read-only on"` with one `set_attributes` change;
+`plan.link` with `{"target": "D:\\Photos", "link": "D:\\Desk\\Photos - link", "kind":
+"junction"}` previews one `link` change from the target to the link. Attributes and links
+work on this computer's files only, and none of these takes a path inside an archive or
+Keel's configuration folder.
+
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). Only `shares.revoke` (taking access away) acts directly; it returns what it
 revoked. `recents.note` (a file was opened) and `activity.note` (the user is working)
@@ -99,6 +123,11 @@ also act directly: they change no file.
 | `media.index` | preview | Thumbnails and metadata for a source's photos and videos, as an idle-priority job |
 | `activity.note` | direct | The user is working: idle-only hashing and integrity jobs pause for the next 5 s, sidecar jobs for 1 s (an attached window sends it on input, at most every 4 s) |
 | `plan` | preview | Preview copy / move / delete / rename (`op`, `paths`, `to`, `new_name`, `on_conflict`). Paths inside a zip or jar on the host (`D:\x.zip!/dir/a.txt`) can be deleted, renamed and copied or moved into: the preview warns `rewrites_archive` with the archive's size (each execution rewrites it once, entries that stay copied byte for byte) and refuses 7z, tar and RAR archives, archives inside archives or on other providers, and moves out of an archive |
+| `plan.merge` | preview | Merge folders: everything in the folders `paths` (but `into`, which may be one of them) moves into `into` with `on_conflict` (default `skip`), then the folders left empty are removed. Links stay where they are |
+| `plan.flatten` | preview | Every file in the subfolders of `path`, at any depth, moves up into it with `on_conflict`, then the subfolders left empty are removed |
+| `plan.organize` | preview | The files directly in `path` move into subfolders by `by`: `type` (Images, Videos, Audio, Documents, Archives, Other), `year` (`2024`) or `month` (`2024-03`) of the modified date, local time; missing subfolders are made |
+| `plan.set_attributes` | preview | On each of `paths` (local, not recursive): `hidden` (Windows, macOS), `readonly`, `mode` (Unix, octal string such as `"755"`); omitted ones stay |
+| `plan.link` | preview | A new `link` (a full path that must not exist) to `target`, of `kind` `symlink`, `junction` (Windows, a folder) or `hardlink` (a file, same drive). A symbolic link on Windows without Developer Mode or elevation is refused at the preview with that reason |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `library.sync` | direct | Pull tag, favorite, folder style and content-id changes now from `peer` (a paired device id), or from every device library sync is on with; answers `[{peer, label, applied, error?}]` (`applied`: changes newer than this library's, applied; `error`: the device is offline, or its switch for this device is off). Refused for a `peer` sync is off with here. Reads from the other device and writes only the library's tags and favorites |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline); each device's `sync` (library sync is on with it here) and `last_sync` (unix seconds of the last completed pull from it, absent before the first) |
@@ -394,6 +423,11 @@ keel du <path> [--json]
 keel tag add|remove <tag> <paths…>
 keel plan copy|move <src…> --to <dir> [--on-conflict skip|overwrite|rename] [--json]
 keel plan delete <paths…> [--json]
+keel plan merge <folders…> --into <dir> [--on-conflict skip|overwrite|rename] [--json]
+keel plan flatten <folder> [--on-conflict …] [--json]
+keel plan organize <folder> --by type|year|month [--on-conflict …] [--json]
+keel plan attrs <paths…> [--hidden true|false] [--readonly true|false] [--mode 755] [--json]
+keel plan link <target> <link> --kind symlink|junction|hardlink [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel library backup <file or folder>
