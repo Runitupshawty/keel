@@ -528,7 +528,7 @@ fn column(
         ui.colored_label(ui.visuals().error_fg_color, err);
     }
     if col.loading && col.listed_dir.is_none() {
-        ui.centered_and_justified(|ui| ui.spinner());
+        ui.centered_and_justified(crate::anim::spinner);
         take_drop(ui, col, out);
         return clicked || out.len() > asked;
     }
@@ -621,7 +621,7 @@ fn column(
                             }
                         }
                         _ => {
-                            let color = if e.hidden {
+                            let color = if e.hidden && !selected {
                                 muted
                             } else {
                                 ui.visuals().text_color()
@@ -645,7 +645,11 @@ fn column(
                             egui::Align2::CENTER_CENTER,
                             "›",
                             egui::TextStyle::Body.resolve(ui.style()),
-                            muted,
+                            if selected {
+                                ui.visuals().text_color()
+                            } else {
+                                muted
+                            },
                         );
                     }
                     r.context_menu(|ui| context_menu(ui, col, Some(e), out));

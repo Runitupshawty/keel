@@ -639,7 +639,7 @@ fn lost_banner(ctx: &egui::Context, l: &LibraryUi, out: &mut Vec<Action>) {
                         out.push(lib(LibCmd::OpenHere));
                     }
                     if l.opening {
-                        ui.spinner();
+                        crate::anim::spinner(ui);
                     }
                 });
             });
@@ -882,7 +882,7 @@ fn dup_finder(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         .default_size([620.0, 420.0])
         .show(ctx, |ui| match &finder.groups {
             None => {
-                ui.spinner();
+                crate::anim::spinner(ui);
                 ui.weak("Finding duplicates (only hashed files are compared)…");
             }
             Some(Err(e)) => {

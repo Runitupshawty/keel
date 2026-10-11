@@ -842,7 +842,7 @@ impl IconThemes {
         ui.horizontal(|ui| {
             ui.weak("Preview");
             if self.applied.as_deref() != Some(s.icon_theme.as_str()) {
-                ui.spinner();
+                crate::anim::spinner(ui);
             }
             let size = egui::vec2(20.0, 20.0);
             let folders = [
@@ -898,7 +898,7 @@ impl IconThemes {
         }
         if self.busy {
             ui.horizontal(|ui| {
-                ui.spinner();
+                crate::anim::spinner(ui);
                 ui.weak("Working…");
             });
         }

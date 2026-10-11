@@ -72,6 +72,8 @@ pub struct App {
     seen_session: Option<(Session, u64)>,
     /// Panel widths seen last frame; a change after the first frame is the user's resize.
     seen_widths: (Option<f32>, Option<f32>),
+    /// The UI scale applied last (`sync_zoom`).
+    seen_zoom: f32,
     // --- Task 24 ---
     drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
@@ -142,6 +144,7 @@ impl App {
             save_session: true,
             seen_session: None,
             seen_widths: (None, None),
+            seen_zoom: 0.0,
             drag_out: Default::default(),
             hotkey,
             #[cfg(test)]
@@ -202,6 +205,7 @@ impl App {
         }
         let s = &mut self.state;
         crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
+        sync_zoom(ctx, &mut s.settings.ui_scale, &mut self.seen_zoom);
         s.drain();
         s.tick();
         s.jobs.tick();
@@ -522,6 +526,27 @@ fn drag_verb(drag: &DragPayload, over: Option<usize>, shift: bool) -> &'static s
 /// Below this width the status bar's left group (counts, size, filter) is one line that
 /// truncates, so it never runs under the right group.
 const NARROW_STATUS: f32 = 800.0;
+
+/// The UI scale follows Ctrl+= / Ctrl+- / Ctrl+0 (egui zooms) into the setting, and the
+/// setting (Settings slider, a loaded profile) into egui's zoom factor.
+fn sync_zoom(ctx: &egui::Context, setting: &mut f32, seen: &mut f32) {
+    use crate::settings::{MAX_SCALE, MIN_SCALE};
+    let zoom = ctx.zoom_factor();
+    if zoom != *seen && *seen != 0.0 {
+        *setting = zoom;
+    }
+    if !(MIN_SCALE..=MAX_SCALE).contains(setting) {
+        *setting = if setting.is_finite() {
+            setting.clamp(MIN_SCALE, MAX_SCALE)
+        } else {
+            1.0
+        };
+    }
+    if zoom != *setting {
+        ctx.set_zoom_factor(*setting);
+    }
+    *seen = *setting;
+}
 
 fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)>) {
     let narrow = ui.available_width() < NARROW_STATUS;

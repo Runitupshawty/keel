@@ -413,3 +413,61 @@ fn tab_walks_every_control_and_comes_back() {
         "Esc: back to the list"
     );
 }
+
+/// Ctrl+= / Ctrl+- / Ctrl+0 scale the UI and the scale is a setting (saved like the
+/// others); the setting scales the UI too. Reduce motion stops every transition and the
+/// spinners.
+#[test]
+fn ui_scale_and_reduce_motion() {
+    let mut h = app("ui_scale_and_reduce_motion");
+    let scale = |h: &H| (h.ctx.zoom_factor(), h.state().state.settings.ui_scale);
+    press(&mut h, Modifiers::COMMAND, Key::Equals);
+    assert_eq!(scale(&h), (1.1, 1.1));
+    press(&mut h, Modifiers::COMMAND, Key::Equals);
+    press(&mut h, Modifiers::COMMAND, Key::Minus);
+    assert_eq!(scale(&h), (1.1, 1.1));
+    press(&mut h, Modifiers::COMMAND, Key::Num0);
+    assert_eq!(scale(&h), (1.0, 1.0));
+    h.state_mut().state.settings.ui_scale = 1.5;
+    h.run_steps(3);
+    assert_eq!(scale(&h), (1.5, 1.5), "the setting scales the UI");
+    h.state_mut().state.settings.ui_scale = 99.0;
+    h.run_steps(3);
+    assert_eq!(scale(&h).1, crate::settings::MAX_SCALE, "kept in range");
+    let s = crate::settings::Settings {
+        ui_scale: 1.3,
+        reduce_motion: true,
+        ..Default::default()
+    };
+    let text = toml::to_string(&s).unwrap();
+    let back: crate::settings::Settings = toml::from_str(&text).unwrap();
+    assert_eq!((back.ui_scale, back.reduce_motion), (1.3, true));
+    let old: crate::settings::Settings = toml::from_str("theme = \"dark\"").unwrap();
+    assert_eq!(
+        (old.ui_scale, old.reduce_motion),
+        (1.0, false),
+        "older files"
+    );
+    h.state_mut().state.settings.reduce_motion = true;
+    h.run_steps(2);
+    assert_eq!(h.ctx.style().animation_time, 0.0);
+    // A spinning spinner asks for the next frame at once; the still one does not.
+    let repaint = |reduce: bool| {
+        let ctx = egui::Context::default();
+        let frame = |ctx: &egui::Context| {
+            crate::anim::apply(ctx, reduce);
+            egui::CentralPanel::default().show(ctx, crate::anim::spinner);
+        };
+        let _ = ctx.run(egui::RawInput::default(), frame);
+        let out = ctx.run(egui::RawInput::default(), frame);
+        out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+    };
+    assert_eq!(repaint(false), std::time::Duration::ZERO);
+    assert!(
+        repaint(true) > std::time::Duration::from_secs(1),
+        "a still spinner"
+    );
+    h.state_mut().state.settings.reduce_motion = false;
+    h.run_steps(2);
+    assert_eq!(h.ctx.style().animation_time, crate::anim::DURATION);
+}

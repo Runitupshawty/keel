@@ -59,6 +59,7 @@ pub fn ui(
         egui::Id::new(("keel-fade", id)),
         tab.cursor.as_deref(),
     );
+    let text = ui.visuals().text_color();
     let selection = ui.visuals().selection.bg_fill;
     // --- Task 29 ---: tags and favorites (library on), offline badges.
     let lib = cx.library;
@@ -152,6 +153,8 @@ pub fn ui(
                 let e = &tab.entries()[vis[row.index()]];
                 let shown = tab.shown_name(e);
                 let selected = tab.selected.contains(&e.name);
+                // Secondary text on a selected row is in the text colour (contrast).
+                let muted = if selected { text } else { muted };
                 let fading = selected && fade < 1.0 && tab.cursor.as_deref() == Some(&e.name);
                 row.set_selected(selected && !fading);
                 let tint = |ui: &mut egui::Ui| {
@@ -255,7 +258,7 @@ pub fn ui(
                             .filter(|_| source.is_some() && e.kind != Kind::Dir)
                             .and_then(|r| lib.badge(r));
                         if let Some(b) = badge {
-                            let color = if b.risk {
+                            let color = if b.risk && !selected {
                                 ui.visuals().warn_fg_color
                             } else {
                                 muted

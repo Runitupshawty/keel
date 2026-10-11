@@ -1660,7 +1660,7 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             }
             Pair::Requesting => {
                 ui.horizontal(|ui| {
-                    ui.spinner();
+                    crate::anim::spinner(ui);
                     ui.label("Making a code…");
                 });
             }
@@ -1684,7 +1684,7 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 }
                 ui.weak("The code works once, for ten minutes, also on the same network without internet. Anyone who has it can pair.");
                 ui.horizontal(|ui| {
-                    ui.spinner();
+                    crate::anim::spinner(ui);
                     ui.label("Waiting for the other device…");
                 });
             }
@@ -1707,7 +1707,7 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             }
             Pair::Joining { .. } => {
                 ui.horizontal(|ui| {
-                    ui.spinner();
+                    crate::anim::spinner(ui);
                     ui.label("Pairing…");
                 });
             }

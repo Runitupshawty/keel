@@ -16,6 +16,9 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 pub const THEMES: &[&str] = &["dark", "light"];
 
 const MB: u64 = 1024 * 1024;
+/// The UI scale's range (egui allows 0.2 to 5).
+pub const MIN_SCALE: f32 = 0.5;
+pub const MAX_SCALE: f32 = 3.0;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -52,6 +55,8 @@ pub struct Settings {
     pub column_widths: Vec<f32>,
     /// No transitions (panels, pane split, highlight, toasts).
     pub reduce_motion: bool,
+    /// UI scale (egui's zoom factor): Ctrl+= / Ctrl+- / Ctrl+0 and the Settings slider.
+    pub ui_scale: f32,
     // --- Task 29 ---
     /// `[library]`: the library layer (on by default).
     pub library: crate::library::LibrarySettings,
@@ -190,6 +195,7 @@ impl Default for Settings {
             single_instance: true,
             column_widths: Vec::new(),
             reduce_motion: false,
+            ui_scale: 1.0,
             media_tile: Default::default(),
             media_dates: false,
             library: Default::default(),
@@ -627,6 +633,17 @@ pub fn window(
                     // --- Task 23 ---
                     ui.label("Motion");
                     ui.checkbox(&mut s.reduce_motion, "Reduce motion");
+                    ui.end_row();
+                    let label = ui.label("UI scale");
+                    let scale = ui.add(
+                        egui::Slider::new(&mut s.ui_scale, MIN_SCALE..=MAX_SCALE)
+                            .step_by(0.1)
+                            .fixed_decimals(1)
+                            .suffix("{d7}"),
+                    );
+                    let _ = scale
+                        .labelled_by(label.id)
+                        .on_hover_text("Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0{d7})");
                     ui.end_row();
                     let label = ui.label("Max preview size");
                     let slider = ui.add(

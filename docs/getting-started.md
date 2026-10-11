@@ -142,6 +142,16 @@ Keel opens on your home folder in both panes.
 | Ctrl+` | Terminal pane |
 | Ctrl+, | Settings |
 | Ctrl+Shift+Alt+K | Bring Keel to the front from any app (Settings → General) |
+| Tab / Shift+Tab | Next / previous control (Enter or Space presses it, Esc returns to the files) |
+| Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / normal UI scale |
+
+### Keyboard only and screen readers
+
+Everything in Keel can be done without a mouse. Tab and Shift+Tab move through the window: the status bar, the sidebar, each pane's tabs, arrows, view buttons, path bar and column headers, and the file list itself. The sidebar is one Tab stop; inside it the arrow keys move between its items. In the file list the arrow keys, Page Up, Page Down, Home and End move the cursor, Space selects, Enter opens. While a button or sidebar item has the focus, Enter or Space presses it and the arrow keys move between controls; Esc gives the keys back to the file list. A ring marks the focused control while you use the keyboard. Dialogs open with the focus on their main button or first field and Esc cancels them; Esc also closes the Settings window and the library and devices windows. Context menu actions are in the command palette (Ctrl+Shift+P), which lists the actions for the selection first.
+
+Screen readers see every control with its name and role through AccessKit. A file row reads as its name, its size (or "folder") and its modified date, and says whether it is selected; the row under the cursor has the focus, so it is read as the cursor moves. After you open a folder the status bar announces its name and item count, and notifications are announced as they appear (errors interrupt).
+
+Ctrl+= and Ctrl+- make the whole window larger or smaller and Ctrl+0 resets it; the scale is kept in Settings → General → **UI scale**. **Reduce motion** in the same page turns off every animation, the spinners included. Both built-in themes keep text, secondary text, links, warnings and errors at a contrast of at least 4.5:1 against their backgrounds.
 
 ## Everyday tasks
 

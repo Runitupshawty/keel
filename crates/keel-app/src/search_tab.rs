@@ -122,7 +122,7 @@ pub fn bar(
             ui.ctx().request_repaint();
         }
         if busy {
-            ui.spinner();
+            crate::anim::spinner(ui);
         }
         let n = count;
         ui.weak(match n {

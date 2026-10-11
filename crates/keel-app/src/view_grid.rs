@@ -267,7 +267,8 @@ pub fn ui(
                                     }
                                 }
                                 _ => {
-                                    let color = if e.hidden {
+                                    let selected = tab.selected.contains(&e.name);
+                                    let color = if e.hidden && !selected {
                                         muted
                                     } else {
                                         ui.visuals().text_color()

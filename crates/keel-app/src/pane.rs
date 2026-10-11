@@ -216,7 +216,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     if let Some(banner) = &cx.banner {
         ui.horizontal(|ui| {
             if tab.loading {
-                ui.spinner();
+                crate::anim::spinner(ui);
             }
             ui.weak(banner);
         });
@@ -230,7 +230,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         });
     }
     if tab.loading && tab.listed_dir.is_none() {
-        ui.centered_and_justified(|ui| ui.spinner());
+        ui.centered_and_justified(crate::anim::spinner);
         return;
     }
     match pane.view {
@@ -367,7 +367,7 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 }
             }
             if pane.tab().loading {
-                ui.spinner();
+                crate::anim::spinner(ui);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 path_box(ui, pane, out)
