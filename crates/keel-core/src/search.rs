@@ -987,6 +987,9 @@ fn search_names(
 /// Hits by the text inside documents (`m`, from `content_match`), `name:` words checked in
 /// the name index: the best `max * 4` (at least 1,000) by bm25, or the first ones by
 /// record id when more than [`RANK_CAP`] documents match, scored after every name hit.
+/// When the filters (`ext:`, `tag:`, `size:`, ...) leave fewer than `max` of those, the
+/// candidates are taken again among the matches that pass them, so documents the filters
+/// ask for are not crowded out by better-ranked ones they drop.
 fn search_content(src: &Source, q: &LibraryQuery, now: i64, m: &str) -> Result<Vec<LibraryHit>> {
     let candidates = (q.max * 4).max(1_000) as i64;
     let matches: i64 = src.store.get()?.query_row(
@@ -1000,7 +1003,9 @@ fn search_content(src: &Source, q: &LibraryQuery, now: i64, m: &str) -> Result<V
     let mut args = vec![Value::Text(m.to_owned())];
     let mut names = String::new();
     if !q.name.is_empty() {
-        names.push_str(" AND rowid IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)");
+        names.push_str(
+            " AND record_content.rowid IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)",
+        );
         let all: Vec<String> = q
             .name
             .iter()
@@ -1008,7 +1013,6 @@ fn search_content(src: &Source, q: &LibraryQuery, now: i64, m: &str) -> Result<V
             .collect();
         args.push(Value::Text(all.join(" AND ")));
     }
-    args.push(Value::Integer(candidates));
     // bm25 is negative: x / (1 - x) keeps it within (-1, 0].
     let (rank, order) = match matches as usize > RANK_CAP {
         true => (format!("{CONTENT_RANK}"), ""),
@@ -1017,11 +1021,27 @@ fn search_content(src: &Source, q: &LibraryQuery, now: i64, m: &str) -> Result<V
             " ORDER BY rank",
         ),
     };
-    let cand = format!(
-        "SELECT rowid AS id, {rank} AS rank FROM record_content
-         WHERE record_content MATCH ?{names}{order} LIMIT ?"
-    );
-    let mut hits = run(src, q, now, &cand, args, &[])?;
+    let cand = |filters: &str| {
+        format!(
+            "SELECT record_content.rowid AS id, {rank} AS rank FROM record_content{}
+             WHERE record_content MATCH ?{names}{filters}{order} LIMIT ?",
+            match filters.is_empty() {
+                true => "",
+                false => " JOIN record r ON r.id = record_content.rowid",
+            }
+        )
+    };
+    let mut first = args.clone();
+    first.push(Value::Integer(candidates));
+    let mut hits = run(src, q, now, &cand(""), first, &[])?;
+    if hits.len() < q.max && q.has_filters() {
+        let Some((filters, filter_args)) = q.filters() else {
+            return Ok(Vec::new());
+        };
+        args.extend(filter_args);
+        args.push(Value::Integer(candidates));
+        hits = run(src, q, now, &cand(&filters), args, &[])?;
+    }
     for h in &mut hits {
         h.snippet = Some(Snippet::default());
     }

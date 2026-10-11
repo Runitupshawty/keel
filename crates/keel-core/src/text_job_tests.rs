@@ -516,3 +516,34 @@ fn a_record_whose_reader_took_the_process_down_is_not_read_again() {
     assert_eq!(names(&lib, "lagoon"), ["new.txt"]);
     assert_eq!(src.store.meta(READING).unwrap(), None);
 }
+
+/// Review of 0.22.0, M2: filters (`ext:`, `kind:`, `tag:`, `dm:`, `size:`) applied after
+/// the best `max * 4` content candidates starved the documents they ask for: 1,200 .txt
+/// with the word three times outranked the five .md with it once, and `invoice ext:md`
+/// found nothing.
+#[test]
+fn filters_do_not_starve_content_hits() {
+    let data = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let f = files.path();
+    for i in 0..1_200 {
+        write(&f.join(format!("t/{i:04}.txt")), "invoice invoice invoice");
+    }
+    for i in 0..300 {
+        write(&f.join(format!("u/{i:03}.txt")), "unrelated words");
+    }
+    for i in 0..5 {
+        write(&f.join(format!("m{i}.md")), "one invoice here");
+    }
+    let (lib, id) = library(data.path(), f);
+    run(&lib, &id);
+    let hits = |s: &str| {
+        let mut q = LibraryQuery::parse(s, 0).unwrap();
+        q.max = 100;
+        lib.search(&q).unwrap().len()
+    };
+    assert_eq!(hits("invoice"), 100);
+    assert_eq!(hits("invoice ext:md"), 5);
+    assert_eq!(hits("content:invoice ext:md"), 5);
+    assert_eq!(hits("content:invoice size:<20"), 5);
+}

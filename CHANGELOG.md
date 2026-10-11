@@ -20,6 +20,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - A NUL character typed into a library search word ended the search's query early, so that source's search failed and returned nothing; it is now read as a space.
+- A search by the text inside documents with a filter (`ext:md`, `kind:`, `tag:`, `size:`, `dm:`) could find nothing: the filters were applied to the 1,000 best-matching documents only, so when more than that matched the words better (1,200 `.txt` files saying "invoice" three times), the five `.md` files asked for were never among them. The filters now pick the candidates.
 
 ### Security
 
