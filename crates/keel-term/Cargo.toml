@@ -11,4 +11,6 @@ anyhow.workspace = true
 parking_lot.workspace = true
 portable-pty.workspace = true
 vt100.workspace = true
-wait-timeout = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

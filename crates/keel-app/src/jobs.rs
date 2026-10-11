@@ -357,7 +357,9 @@ impl Jobs {
                 });
             }
         }
-        let remote = paths.first().is_some_and(crate::remotes::is_network);
+        // Task 51: WSL folders have no Recycle Bin; the prompt said this is for good.
+        let wsl = crate::wsl::one_distro(&paths).is_some();
+        let remote = wsl || paths.first().is_some_and(crate::remotes::is_network);
         let (utx, uctx, generation) = (tx.clone(), self.ctx.clone(), self.undo_generation);
         let (title, did) = if remote {
             (format!("Deleting {}", items(paths.len())), "deleted")
@@ -395,7 +397,9 @@ impl Jobs {
                 }
                 p.current = path.display();
                 report(p.clone());
-                let removed = if path.to_local_path().is_some() {
+                let removed = if wsl {
+                    keel_vfs::local::delete_permanently(path)
+                } else if path.to_local_path().is_some() {
                     keel_vfs::local::trash(path).map(|kept| trashed.push((path.clone(), kept)))
                 } else {
                     router

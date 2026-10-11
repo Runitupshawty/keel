@@ -51,7 +51,7 @@ Open **Recycle Bin** (Windows) or **Trash** (macOS; Linux, any freedesktop-compl
 
 ## Terminal
 
-A terminal pane sits under the file panes. It starts in the active pane's folder and, with "Follow pane" on, changes directory when you navigate. Shells: PowerShell, Windows PowerShell, cmd and each installed WSL distribution on Windows; `$SHELL`, zsh or bash on macOS; `$SHELL`, bash or sh on Linux.
+A terminal pane sits under the file panes. It starts in the active pane's folder and, with "Follow pane" on, changes directory when you navigate. Shells: PowerShell, Windows PowerShell, cmd and each installed WSL distribution on Windows (the same list as the sidebar's WSL section, see [WSL](wsl.md)); `$SHELL`, zsh or bash on macOS; `$SHELL`, bash or sh on Linux.
 
 | Key | Action |
 | --- | --- |
@@ -98,7 +98,7 @@ Sizes are apparent sizes (a file's length, not the space it takes on disk). A fi
 ## Command line
 
 ```
-keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update]
+keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] [--here]
 ```
 
 | Flag | Meaning |
@@ -108,7 +108,10 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update]
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
+| `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |
+
+Inside a WSL distribution, the Linux build hands FOLDER to the Windows `keel.exe` (`/mnt/c/...` becomes `C:\...`, other paths `\\wsl.localhost\<distribution>\...`), and `keel.exe .` started there opens the distribution's folder: [WSL](wsl.md#keel-inside-wsl).
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
 

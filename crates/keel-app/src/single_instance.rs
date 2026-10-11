@@ -280,6 +280,30 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// Task 51: `keel.exe .` started inside WSL asks for a `\\wsl.localhost\...` folder; the
+    /// hand-off and the check before opening keep it as it is.
+    #[cfg(windows)]
+    #[test]
+    fn wsl_unc_folder_is_handed_over() {
+        let name = test_name("wsl");
+        let folder = std::path::PathBuf::from(r"\\wsl.localhost\NoSuchDistro\home\me");
+        let req = Request {
+            folder: Some(folder.clone()),
+            search: None,
+            select: None,
+        };
+        let (_server, rx) = served(&name);
+        assert!(matches!(claim(&name, &req, true), Claim::Handed));
+        let got = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(got, req);
+        let checked = got.checked().expect("a UNC path is absolute");
+        assert_eq!(checked.folder, Some(folder.clone()));
+        assert_eq!(
+            keel_vfs::VPath::local(&folder).display(),
+            r"\\wsl.localhost\NoSuchDistro\home\me"
+        );
+    }
+
     /// A client that connects and never writes (or writes no newline) holds nobody off, and
     /// its connection is dropped after `READ_WAIT`.
     #[test]

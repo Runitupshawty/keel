@@ -1,4 +1,5 @@
-//! Left sidebar: Quick access, Drives, Open archives, Remotes (Phase 3), Cloud (Phase 4).
+//! Left sidebar: Quick access, Drives, WSL (Task 51), Open archives, Remotes (Phase 3),
+//! Cloud (Phase 4).
 
 use crate::keys::Action;
 use crate::theme::Theme;
@@ -23,6 +24,13 @@ pub struct Sidebar {
     pub drives_pending: Option<Instant>,
     /// The running request passed `DRIVES_TIMEOUT`.
     pub drives_stuck: bool,
+    /// Installed WSL distributions, the default first (refreshed with the drives); the
+    /// section is hidden while empty.
+    pub wsl: Vec<String>,
+    /// The distribution being opened (`Action::OpenWsl`), shown as starting.
+    pub wsl_starting: Option<String>,
+    /// Opens a distribution (`wsl::open`; tests stub it). Runs on a worker.
+    pub wsl_open: fn(&str) -> anyhow::Result<VPath>,
     /// Configured SFTP hosts (`sidebar_remotes`), rebuilt each frame by the state.
     pub remotes: Vec<crate::sidebar_remotes::RemoteRow>,
     /// Configured cloud accounts, rebuilt each frame by the state.
@@ -64,6 +72,9 @@ impl Default for Sidebar {
             drives_requested: None,
             drives_pending: None,
             drives_stuck: false,
+            wsl: Vec::new(),
+            wsl_starting: None,
+            wsl_open: crate::wsl::open,
             remotes: Vec::new(),
             clouds: Vec::new(),
             devices: None,
@@ -150,6 +161,28 @@ impl Sidebar {
                         format_size(*free, DECIMAL),
                         format_size(*total, DECIMAL)
                     ));
+                }
+            }
+            if !self.wsl.is_empty() {
+                ui.add_space(8.0);
+                section(ui, "WSL", theme);
+            }
+            for name in &self.wsl {
+                let root = VPath::local(format!(r"\\wsl.localhost\{name}"));
+                let starting = self.wsl_starting.as_ref() == Some(name);
+                let r = ui
+                    .horizontal(|ui| {
+                        let r = item(ui, &root, name);
+                        if starting {
+                            ui.spinner();
+                            ui.weak("starting…");
+                        }
+                        r
+                    })
+                    .inner
+                    .on_hover_text(root.display());
+                if r.clicked() {
+                    out.push(Action::OpenWsl(name.clone()));
                 }
             }
             if !archives.is_empty() {

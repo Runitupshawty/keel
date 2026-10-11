@@ -36,6 +36,9 @@ pub struct Cli {
     /// Check once whether a newer Keel release is out (one request to GitHub) and exit.
     #[arg(long)]
     pub check_update: bool,
+    /// Linux inside WSL: open FOLDER in this Linux window, not in the Windows Keel.
+    #[arg(long)]
+    pub here: bool,
     /// Subcommands: print machine-readable JSON.
     #[arg(long, global = true)]
     pub json: bool,
@@ -373,6 +376,7 @@ mod tests {
                 search: None,
                 index_service: None,
                 check_update: false,
+                here: false,
                 json: false,
                 command: None,
             }

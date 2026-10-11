@@ -59,6 +59,7 @@ mod view_media;
 #[cfg(test)]
 mod walkthrough_tests; // the QA walkthrough (scripts/walkthrough.sh)
 mod worker;
+mod wsl; // Task 51: the sidebar's WSL section, `keel` inside WSL
 #[cfg(any(target_os = "linux", test))]
 mod x11_clipboard;
 // --- Task 24 ---
@@ -101,6 +102,11 @@ fn main() -> eframe::Result<()> {
         #[cfg(windows)]
         keel_vfs::desktop::attach_parent_console();
         std::process::exit(update::cli());
+    }
+    // Task 51: inside WSL, `keel <folder>` opens it in the Windows Keel.
+    #[cfg(target_os = "linux")]
+    if let Some(code) = wsl::hand_off(&cli) {
+        std::process::exit(code);
     }
     tracing_subscriber::fmt()
         .with_env_filter(format!("info,{}", keel_vfs::cloud::LOG_FILTER_HINT))

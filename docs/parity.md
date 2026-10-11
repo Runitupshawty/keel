@@ -182,7 +182,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 
 ## What Keel has that neither reference offers
 
-- An embedded terminal that follows the pane, with PowerShell, cmd and WSL shells.
+- An embedded terminal that follows the pane, with PowerShell, cmd and WSL shells; WSL distributions' files in the sidebar, and `keel` inside WSL opening the Windows window.
 - Archives as folders: zip, 7z, tar and RAR, nested too, and zips editable in place.
 - Everything, Spotlight and `locate` as search backends, plus its own NTFS index.
 - Browsing and restoring the Recycle Bin or Trash.
@@ -206,7 +206,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 5 | Color themes beyond dark and light (built-ins plus VS Code color themes) | Atlas | R: section 1 asks for color themes | S-M |
 | 6 | FTP and FTPS remotes | Atlas | R: section 1 asks for "cloud and FTP mounts" | S |
 | 7 | Faster copying of many small files (a parallel queue) | Atlas | D: about 860 files/s against a claimed 3,800 | S-M |
-| 8 | WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window | spec section 1 | R: CLI and WSL | S |
+| 8 | **Done** (unreleased; not yet checked on a machine with WSL, see [Checking](wsl.md#checking)): WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window ([wsl.md](wsl.md)) | spec section 1 | R: CLI and WSL | S |
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |
 | 10 | Signed builds and package channels (winget, Scoop, Homebrew, Flatpak or AppImage) | both are commercial | F. Needs the owner (certificates, account submissions) | M |
 | 11 | Text inside documents in library search (OCR later) | Spacedrive; spec 2.10 Search | D | M-L |
