@@ -35,14 +35,14 @@ crate's `fuzzing` feature.
 | `raw` | `keel_core::fuzz::raw` | camera RAW files: the walk of IFDs and SubIFDs to the embedded JPEG previews (bounded in count and depth), metadata, small previews |
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |
 | `probe` | `keel_core::fuzz::probe` | ffprobe JSON as the video metadata reader takes it |
-| `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters) and the SQL it becomes |
+| `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters, `content:` terms) and the SQL it becomes; every FTS5 MATCH string it builds (names and the text inside documents) must run without an error |
 | `backup` | `keel_core::fuzz::backup` | a library backup (`.keelbackup`): the zip, the manifest and its bounds (`inspect`), then a restore into a scratch data folder (hashes, database checks) |
 | `rpc` | `keel_api::fuzz::rpc` | JSON-RPC lines from the daemon socket, each request's params decoded by its operation |
 | `mcp` | `keel_api::fuzz::mcp` | an MCP stdio session, with and without `--allow-execute` |
 | `wire` | `keel_net::fuzz::wire` | keel-net messages (CBOR): requests, Spacedrop offers, sync pages (applied to a library), pairing tickets |
 | `pair_code` | `keel_net::fuzz::pair_code` | pairing codes and tickets as typed or scanned, device ids |
 | `multipart` | `keel_daemon::fuzz::multipart` | a Web Share Target upload: `Content-Type` line, then the `multipart/form-data` body |
-| `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images) |
+| `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images), then the same file through `extract_text`, the library's text reader |
 | `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
