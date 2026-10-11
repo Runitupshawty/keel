@@ -153,6 +153,12 @@ fn inner(path: &Path, ext: &str, cap: &TextCaps) -> Result<Extracted, TextError>
             let source = text::decode(&bytes).ok_or(TextError::Kind)?;
             if ext == "md" {
                 markdown(&source, &mut out);
+            } else if matches!(ext.as_str(), "html" | "htm" | "xml") {
+                for line in without_markup(&source).lines() {
+                    if !out.line(line) {
+                        break;
+                    }
+                }
             } else {
                 for line in source.lines() {
                     if !out.line(line) {
@@ -228,6 +234,73 @@ fn markdown(source: &str, out: &mut Sink) {
         }
     }
     out.line(&line);
+}
+
+/// HTML and XML without their markup: the text between the tags, with comments and script
+/// and style blocks left out and entities decoded (the XML ones, `&nbsp;`, numbers); a tag
+/// is a space. An unclosed tag ends the text.
+fn without_markup(source: &str) -> String {
+    // ASCII lowercase keeps every byte offset.
+    let lower = source.to_ascii_lowercase();
+    let mut text = String::with_capacity(source.len() / 2);
+    let mut at = 0;
+    while let Some(open) = source[at..].find('<').map(|i| at + i) {
+        text.push_str(&source[at..open]);
+        let tail = &lower[open..];
+        let close = if tail.starts_with("<!--") {
+            tail.find("-->").map(|i| i + 3)
+        } else if let Some(block) = ["<script", "<style"].iter().find(|b| tail.starts_with(**b)) {
+            let end = format!("</{}", &block[1..]);
+            (tail.find(&end)).and_then(|i| tail[i..].find('>').map(|j| i + j + 1))
+        } else {
+            tail.find('>').map(|i| i + 1)
+        };
+        let Some(close) = close else {
+            return entities(&text);
+        };
+        text.push(' ');
+        at = open + close;
+    }
+    text.push_str(&source[at..]);
+    entities(&text)
+}
+
+/// `&amp;`, `&#233;`, `&#xE9;`, `&nbsp;` decoded; any other `&` stays.
+fn entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let name = rest[1..]
+            .find(';')
+            .filter(|&n| n <= 10)
+            .map(|n| &rest[1..n + 1]);
+        let c = name.and_then(|n| match n.strip_prefix('#') {
+            Some(num) => match num.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None => num.parse().ok(),
+            }
+            .and_then(char::from_u32),
+            None if n == "nbsp" => Some(' '),
+            None => quick_xml::escape::resolve_predefined_entity(n).and_then(|e| e.chars().next()),
+        });
+        match (c, name) {
+            (Some(c), Some(n)) => {
+                out.push(c);
+                rest = &rest[n.len() + 2..];
+            }
+            _ => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `extract_text` as the library's text reader (`Library::set_text_extractor`).

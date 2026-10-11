@@ -159,6 +159,26 @@ fn every_format_reads_its_text() {
     );
     let csv = write("table.csv", b"name,value\nKeel,1\n");
     assert!(text_of(&csv).contains("Keel,1"));
+    // HTML and XML: the text, not the markup (review of 0.22.0, minor 8).
+    let html = write(
+        "page.html",
+        b"<html><head><style>p { color: red }</style><script>var tag = '<b>';</script></head>\n\
+          <body><p class=\"lead\">Keel &amp; Test&nbsp;Document &#233;</p><!-- hidden --></body></html>",
+    );
+    let words: Vec<String> = text_of(&html)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(words, ["Keel", "&", "Test", "Document", "\u{e9}"]);
+    let xml = write(
+        "data.xml",
+        b"<?xml version=\"1.0\"?><doc><title a=\"attr\">Keel</title><body>Test &lt;3</body></doc>",
+    );
+    let words: Vec<String> = text_of(&xml)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(words, ["Keel", "Test", "<3"]);
 
     // docx (docx-rs writes it).
     {
