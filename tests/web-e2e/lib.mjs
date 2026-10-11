@@ -82,9 +82,12 @@ export async function openPage(browser, base, token, options = {}, query = "") {
     const res = await page.goto(`${base}/?e2e=1${q}`);
     if (!res?.ok()) await t.fail(`GET / answered ${res?.status()}`);
     await page.waitForSelector("canvas#keel");
-    await page
-      .waitForFunction(() => typeof window.__keel?.state === "function", null, { timeout: 15000 })
-      .catch((e) => t.fail(`no window.__keel (${e.message}): build the bundle with scripts/build-web.sh --features e2e`));
+    // Polled with evaluate: waitForFunction's predicate can trip the page's CSP (no eval).
+    for (let i = 0; ; i++) {
+      if (await page.evaluate(() => typeof window.__keel?.state === "function")) break;
+      if (i === 150) await t.fail("no window.__keel: build the bundle with scripts/build-web.sh --features e2e");
+      await sleep(100);
+    }
   };
   // Types `value` into the real password box over the login form and presses Enter.
   t.enterToken = async (value) => {
