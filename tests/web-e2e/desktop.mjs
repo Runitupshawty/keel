@@ -143,6 +143,23 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   await t.until("tag: search", (s) => s.hits.join() === "alpha-notes.txt");
   await t.shot("13-tagged");
 
+  // Favorite from the file's preview, then the tag taken off again (each previewed and
+  // executed; the preview could add a tag but neither take one off nor favorite).
+  await t.act("favorite", "on");
+  await t.until("favorite preview", (s) => s.plan?.state === "review" && s.plan.operation === "favorites.set");
+  await t.act("execute");
+  await t.until("favorited", (s) => s.plan?.state === "done");
+  await t.act("cancel");
+  await t.until("favorite shown", (s) => s.favorite === true && s.tags.includes("qa-walk"));
+  await sleep(200);
+  await t.shot("13b-favorite-and-tag");
+  await t.act("untag", "qa-walk");
+  await t.until("untag preview", (s) => s.plan?.state === "review" && s.plan.operation === "tags.remove");
+  await t.act("execute");
+  await t.until("untagged", (s) => s.plan?.state === "done");
+  await t.act("cancel");
+  await t.until("tag gone", (s) => !s.tags.includes("qa-walk") && s.favorite === true);
+
   // A delete preview and a rename preview, both cancelled.
   await t.act("open-preview", "alpha-notes.txt");
   await t.until("alpha selected", (s) => s.selected === "alpha-notes.txt");
@@ -156,6 +173,35 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   await t.shot("15-rename-preview");
   await t.act("cancel");
   await t.until("rename preview cancelled", (s) => s.plan === null);
+
+  // Copy to the other pane: into copies/, which has an alpha-notes.txt already: the
+  // preview says so, and is cancelled.
+  await t.act("pane", "1");
+  await t.act("go", `library://${ids.Fixture}/copies`);
+  await t.until("copies in the other pane", (s) => s.active === 1 && s.entries.includes("alpha-notes.txt"));
+  await t.act("pane", "0");
+  await t.act("go", `library://${ids.Fixture}/`);
+  await t.until("fixture in the first pane", (s) => s.active === 0 && s.entries.includes("bravo-readme.txt"));
+  await t.act("open-preview", "alpha-notes.txt");
+  await t.until("alpha selected", (s) => s.selected === "alpha-notes.txt");
+  await t.act("copy-preview");
+  const conflict = await t.until("copy preview", (s) => s.plan?.state === "review");
+  console.log("  copy conflict preview:", conflict.plan.summary, JSON.stringify(conflict.plan.changes), conflict.plan.warnings);
+  await t.shot("15b-copy-conflict");
+  await t.act("cancel");
+  await t.until("copy preview cancelled", (s) => s.plan === null);
+  // A copy without a conflict, executed (the only file operation this run executes): the
+  // job shows in the jobs list, the file arrives, nothing else changes.
+  await t.act("open-preview", "bravo-readme.txt");
+  await t.until("bravo selected", (s) => s.selected === "bravo-readme.txt");
+  await t.act("copy-preview");
+  await t.until("copy preview", (s) => s.plan?.state === "review");
+  await t.act("execute");
+  await t.until("copied", (s) => s.plan?.state === "done", () => true, 20000);
+  await t.act("cancel");
+  const jobs = await t.until("copy job listed", (s) => s.jobs.some((j) => j.kind === "op" && j.status === "done"));
+  console.log("  jobs:", jobs.jobs.map((j) => `${j.kind} ${j.status}`).join(", "));
+  await t.shot("15c-jobs-after-copy");
 
   // Devices: this device (devices on, nothing paired), and the empty Spacedrop inbox.
   const dev = await t.until("devices", (s) => s.devices.id && s.inbox.entries);
@@ -171,11 +217,15 @@ export async function run({ browser, base, token, work, ids, pdfium }) {
   );
   await t.shot("16-devices-inbox");
 
-  // Nothing but the tag was executed; the fixture is as it was.
+  // Executed: the tag, the favorite, the untag and the one copy; the fixture changed only
+  // by the copied file.
   await sleep(300);
   const executed = t.sent.filter((m) => m.method === "execute").length;
-  if (executed !== 1) await t.fail(`${executed} executes, expected 1 (the tag)`);
-  if (JSON.stringify(tree(fixture)) !== JSON.stringify(before)) await t.fail("the fixture changed");
+  if (executed !== 4) await t.fail(`${executed} executes, expected 4 (tag, favorite, untag, copy)`);
+  const after = tree(fixture);
+  if (after["copies/bravo-readme.txt"] !== before["bravo-readme.txt"]) await t.fail("the copy did not arrive");
+  delete after["copies/bravo-readme.txt"];
+  if (JSON.stringify(after) !== JSON.stringify(before)) await t.fail("the fixture changed beyond the copy");
   if (existsSync(`${fixture}/renamed-notes.txt`)) await t.fail("the fixture file was renamed");
   const { error } = await t.state();
   if (error) await t.fail(`the app shows an error: ${error}`);

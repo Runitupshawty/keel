@@ -120,6 +120,19 @@ enum Act {
         path: String,
         tag: String,
     },
+    Untag {
+        path: String,
+        tag: String,
+    },
+    Favorite {
+        path: String,
+        on: bool,
+    },
+    /// Into the folder `to`.
+    Copy {
+        path: String,
+        to: String,
+    },
 }
 
 pub struct WebApp {
@@ -136,6 +149,8 @@ pub struct WebApp {
     insecure: bool,
     // layout
     screen: Screen,
+    /// The desktop layout showed both panes in the last frame.
+    two_panes: bool,
     /// Back closes the phone's preview sheet.
     history: Option<web::History>,
     base_style: Arc<egui::Style>,
@@ -189,9 +204,6 @@ pub struct WebApp {
     /// The desktop preview panel's width as last drawn.
     #[cfg(feature = "e2e")]
     e2e_preview_width: f32,
-    /// How many panes the desktop layout showed last.
-    #[cfg(feature = "e2e")]
-    e2e_columns: u8,
     /// A phone tab's label did not fit on one line in its button (last frame).
     #[cfg(feature = "e2e")]
     e2e_tabs_cut: bool,
@@ -283,6 +295,7 @@ impl WebApp {
             notice: None,
             insecure: web::insecure(),
             screen: Screen::new(width),
+            two_panes: false,
             history: web::History::install(&cc.egui_ctx),
             base_style: cc.egui_ctx.style(),
             library: String::new(),
@@ -324,8 +337,6 @@ impl WebApp {
             e2e_menu: None,
             #[cfg(feature = "e2e")]
             e2e_preview_width: 0.0,
-            #[cfg(feature = "e2e")]
-            e2e_columns: 0,
             #[cfg(feature = "e2e")]
             e2e_tabs_cut: false,
         };
@@ -1050,6 +1061,15 @@ impl WebApp {
             ),
             Act::Cancel => self.plan = None,
             Act::Tag { path, tag } => self.plan("tags.add", json!({"tag": tag, "paths": [path]})),
+            Act::Untag { path, tag } => {
+                self.plan("tags.remove", json!({"tag": tag, "paths": [path]}))
+            }
+            Act::Favorite { path, on } => {
+                self.plan("favorites.set", json!({"paths": [path], "on": on}))
+            }
+            Act::Copy { path, to } => {
+                self.plan("plan", json!({"op": "copy", "paths": [path], "to": to}))
+            }
             Act::Execute => {
                 let Some(d) = self.plan.as_mut() else { return };
                 if !matches!(d.state, PlanState::Review) {
@@ -1061,6 +1081,17 @@ impl WebApp {
                 self.call("execute", params, Want::Execute);
             }
         }
+    }
+
+    /// Where "Copy to the other pane…" copies: the other pane's folder, when the desktop
+    /// layout shows both panes and they are in different folders.
+    fn copy_target(&self) -> Option<String> {
+        let (here, there) = (&self.panes[self.active], &self.panes[1 - self.active]);
+        (self.two_panes
+            && !self.screen.phone()
+            && !there.path.is_empty()
+            && there.path != here.path)
+            .then(|| there.path.clone())
     }
 
     /// The share window's Open: the upload is claimed now, or once signed in.
@@ -1157,6 +1188,11 @@ impl WebApp {
                 ("up", _) => parent(&self.panes[self.active].path).map(|p| Act::Open(folder(p))),
                 ("execute", _) => Some(Act::Execute),
                 ("tag", Some(tag)) => selected.map(|e| Act::Tag { path: e.path, tag }),
+                ("untag", Some(tag)) => selected.map(|e| Act::Untag { path: e.path, tag }),
+                ("favorite", _) => selected.map(|e| Act::Favorite { path: e.path, on }),
+                ("copy-preview", _) => {
+                    (selected.zip(self.copy_target())).map(|(e, to)| Act::Copy { path: e.path, to })
+                }
                 ("open-preview", n) => n
                     .and_then(|n| named(self, &n))
                     .or(selected)
@@ -1232,7 +1268,7 @@ impl WebApp {
             "searched": self.searched,
             "preview_width": self.e2e_preview_width,
             "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
-            "columns": self.e2e_columns,
+            "columns": if self.two_panes { 2 } else { 1 },
             "tabs_cut": self.e2e_tabs_cut,
             "grid": self.grid,
             "active": self.active,
@@ -1638,17 +1674,53 @@ impl WebApp {
         if !e.is_dir {
             ui.label(human(e.size));
         }
+        let mut act = None;
         if let Some(info) = self.stat.as_ref().and_then(|s| s.indexed.as_ref()) {
             ui.label(format!("in {}", info.source_label));
-            if !info.tags.is_empty() {
-                ui.label(format!("tags: {}", info.tags.join(", ")));
-            }
+            // Favorite and each tag, as buttons that preview taking them off or putting on.
+            ui.horizontal_wrapped(|ui| {
+                let (star, hover) = match info.favorite {
+                    true => ("★ Favorite", "Remove from Favorites…"),
+                    false => ("☆ Favorite", "Add to Favorites…"),
+                };
+                if ui
+                    .selectable_label(info.favorite, star)
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    act = Some(Act::Favorite {
+                        path: e.path.clone(),
+                        on: !info.favorite,
+                    });
+                }
+                for t in &info.tags {
+                    let r = ui.small_button(format!("{t} ×"));
+                    if r.on_hover_text(format!("Remove the tag {t}…")).clicked() {
+                        act = Some(Act::Untag {
+                            path: e.path.clone(),
+                            tag: t.clone(),
+                        });
+                    }
+                }
+            });
         }
         ui.separator();
-        let mut act = None;
         ui.horizontal_wrapped(|ui| {
             if !e.is_dir && ui.button("Download").clicked() {
                 act = Some(Act::Download(e.path.clone()));
+            }
+            if let Some(to) = self.copy_target() {
+                let hover = self.node_title(&to).unwrap_or_else(|| to.clone());
+                if ui
+                    .button("Copy to the other pane…")
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    act = Some(Act::Copy {
+                        path: e.path.clone(),
+                        to,
+                    });
+                }
             }
             if ui.button("Send to device…").clicked() {
                 act = Some(Act::Send(e.clone()));
@@ -2017,17 +2089,11 @@ impl WebApp {
                     self.pane(&mut cols[0], 0);
                     self.pane(&mut cols[1], 1);
                 });
-                #[cfg(feature = "e2e")]
-                {
-                    self.e2e_columns = 2;
-                }
+                self.two_panes = true;
             }
             Tab::Browse => {
                 self.pane(ui, self.active);
-                #[cfg(feature = "e2e")]
-                {
-                    self.e2e_columns = 1;
-                }
+                self.two_panes = false;
             }
             Tab::Search => self.search(ui),
         });
