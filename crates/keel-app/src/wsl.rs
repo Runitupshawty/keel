@@ -152,7 +152,17 @@ pub fn hand_off(cli: &crate::cli::Cli) -> Option<i32> {
         return None;
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
-    let target = to_windows(&folder.to_string_lossy(), &cwd.to_string_lossy(), &distro);
+    // A path that is not UTF-8 has no Windows spelling: refused, never opened lossily (which
+    // could open another folder).
+    let (Some(folder_text), Some(cwd_text)) = (folder.to_str(), cwd.to_str()) else {
+        eprintln!(
+            "keel: {} is not valid UTF-8, so the Windows Keel cannot open it; keel --here opens \
+             it in the Linux window",
+            folder.display()
+        );
+        return Some(2);
+    };
+    let target = to_windows(folder_text, cwd_text, &distro);
     // No shared stdio: `keel.exe` may stay open as the window after this process exits.
     let started = std::process::Command::new(&exe)
         .args(windows_args(cli, target))

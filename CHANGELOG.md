@@ -27,6 +27,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Library backups: a backup whose final rename failed left its `.keelbackup.partial` file behind; a crash left `backup-*` and `.restore-*` scratch folders that nothing removed; and a backup or restore could take a file or library name that appeared while it ran (a restore on Linux or macOS replaced an empty folder of that name). Staging files now carry the process id and are removed on every failure, scratch folders are swept when the library opens (a restore's after a day), `library.backup` never replaces a file, also one made meanwhile, and a restore claims its name before it moves in.
 - Restoring a crafted backup could index another folder than the one its preview showed: a restore now checks each source's root, label and kind against the manifest and refuses a backup where they differ ("damaged backup").
 - Installers and profiles: `install.sh` stopped only the default profile's `keel-daemon` before replacing the files, and `install.ps1` also counted programs in a sibling folder such as `...\Keel2` as its own. Both now stop every daemon of the install and start the default profile's again, and say how to start another profile's (`keel --profile <name> daemon start`).
+- `keel` inside WSL opened another folder in the Windows Keel when the path was not valid UTF-8 (the name was read lossily); it now refuses such a path and says that `keel --here` opens it in the Linux window.
 
 ### Known limitations
 
