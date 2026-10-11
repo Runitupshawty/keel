@@ -80,13 +80,16 @@ pub(crate) fn text(path: &Path, out: &mut crate::extract::Sink) -> Result<(), cr
     let Some(pdfium) = PDFIUM.get().and_then(Option::as_ref) else {
         return Err(crate::TextError::Kind);
     };
-    let document = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|error| crate::TextError::Failed(error.to_string()))?;
+    // A fixed reason: pdfium's error code, never a message about the file.
+    let failed = |error: PdfiumError| {
+        crate::TextError::Failed(match error {
+            PdfiumError::PdfiumLibraryInternalError(code) => format!("pdfium error {code:?}"),
+            _ => "not a valid PDF".into(),
+        })
+    };
+    let document = pdfium.load_pdf_from_file(path, None).map_err(failed)?;
     for page in document.pages().iter() {
-        let text = page
-            .text()
-            .map_err(|error| crate::TextError::Failed(error.to_string()))?;
+        let text = page.text().map_err(failed)?;
         if !out.line(&text.all()) {
             break;
         }

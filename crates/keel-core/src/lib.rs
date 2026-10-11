@@ -51,8 +51,8 @@ pub use backup::{
 };
 pub use fsid::unix_ns;
 pub use hash::{
-    on_battery, DupGroup, HashJob, HashResult, RemoteHashSettings, SkipReason, SkippedSource,
-    SAMPLE, WHOLE,
+    background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,
+    RemoteHashSettings, SkipReason, SkippedSource, SAMPLE, WHOLE,
 };
 pub use index::{
     ChangeEvent, IndexProgress, Indexer, WatchConfig, WatchHandle, BATCH, POLL_INTERVAL,

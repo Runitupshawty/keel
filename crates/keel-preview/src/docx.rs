@@ -1,4 +1,4 @@
-use crate::office::{Package, MAX_BLOCKS, MAX_UNZIPPED, TRUNCATED};
+use crate::office::{Package, MAX_BLOCKS, TRUNCATED};
 use crate::{DocBlock, Preview, Request};
 use docx_rs::{
     DocumentChild, InsertChild, Paragraph, ParagraphChild, Run, RunChild, StructuredDataTag,
@@ -11,18 +11,7 @@ pub(crate) fn accepts(ext: &str) -> bool {
 }
 
 pub(crate) fn render(req: &Request) -> Preview {
-    let result = Package::open(&req.bytes_path)
-        .and_then(|mut pkg| {
-            if pkg.declared_size() > MAX_UNZIPPED {
-                return Err(format!(
-                    "document exceeds the {} MiB decompressed limit",
-                    MAX_UNZIPPED >> 20
-                ));
-            }
-            Ok(())
-        })
-        .and_then(|()| std::fs::read(&req.bytes_path).map_err(|error| error.to_string()))
-        .and_then(|bytes| read_docx(&bytes));
+    let result = open(&req.bytes_path);
     let docx = match result {
         Ok(docx) => docx,
         Err(error) => return Preview::Error(error),
@@ -33,6 +22,34 @@ pub(crate) fn render(req: &Request) -> Preview {
     });
     let blocks = rich.unwrap_or_else(|_| walk(&docx, false));
     Preview::Doc { blocks }
+}
+
+/// docx-rs reads nested parts (tables in cells, content controls) recursively, with about
+/// 60 KiB of stack per table in a debug build: it reads on its own thread, with room for
+/// the nesting `Package::repack` lets through.
+const READ_STACK: usize = 64 << 20;
+
+/// The Word document at `path`, read by docx-rs from a bounded, checked copy of the
+/// package (`Package::repack`): parts inflated past the budget or nested too deeply are an
+/// error, never a flood or a stack overflow.
+pub(crate) fn open(path: &std::path::Path) -> Result<docx_rs::Docx, String> {
+    let bytes = Package::open(path)?.repack(true)?;
+    let background = keel_core::is_background_thread();
+    std::thread::scope(|s| {
+        let reader = std::thread::Builder::new()
+            .name("keel-docx".into())
+            .stack_size(READ_STACK)
+            .spawn_scoped(s, || {
+                if background {
+                    keel_core::background_thread();
+                }
+                read_docx(&bytes)
+            })
+            .map_err(|e| e.to_string())?;
+        reader
+            .join()
+            .unwrap_or_else(|_| Err("not a valid Word document".into()))
+    })
 }
 
 /// docx-rs unwraps on some malformed packages (a corrupt deflate stream in a part): that is

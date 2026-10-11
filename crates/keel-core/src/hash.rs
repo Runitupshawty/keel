@@ -302,9 +302,21 @@ impl Drop for StoreIo {
     }
 }
 
+thread_local! {
+    /// Set by `background_thread`.
+    static LOWERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread runs at background priority (`background_thread`): a helper
+/// thread it starts (the docx reader's) lowers itself too.
+pub fn is_background_thread() -> bool {
+    LOWERED.with(std::cell::Cell::get)
+}
+
 /// Lowest scheduling priority for the calling thread (Windows and macOS also lower its IO
 /// priority, Windows only while it holds no pooled store connection). Best effort.
-pub(crate) fn background_thread() {
+pub fn background_thread() {
+    LOWERED.with(|l| l.set(true));
     #[cfg(windows)]
     {
         use windows::Win32::System::Threading::{

@@ -1,6 +1,8 @@
+use crate::office::Package;
 use crate::{Preview, Request};
-use calamine::{open_workbook_auto, Data, Reader, Sheets};
-use std::io::BufRead;
+use calamine::{open_workbook_auto, Data, Ods, Reader, Sheets, Xlsb, Xlsx};
+use std::io::{BufRead, Cursor, Read, Seek};
+use std::path::Path;
 
 const TABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "xlsx", "xls", "xlsb", "ods"];
 const MAX_ROWS: usize = 2000;
@@ -15,7 +17,7 @@ pub(crate) fn accepts(ext: &str) -> bool {
 pub(crate) fn render(req: &Request, ext: &str) -> Preview {
     let result = match ext {
         "csv" | "tsv" => csv(req),
-        _ => workbook(req),
+        _ => workbook(req, ext),
     };
     match result {
         Ok((headers, rows, truncated)) => Preview::Table {
@@ -68,17 +70,63 @@ fn csv(req: &Request) -> Result<TableData, String> {
     Ok((headers, rows, false))
 }
 
-fn workbook(req: &Request) -> Result<TableData, String> {
-    let mut workbook = open_workbook_auto(&req.bytes_path).map_err(|error| error.to_string())?;
-    if let Sheets::Xlsx(xlsx) = &mut workbook {
-        return xlsx_streamed(xlsx);
+fn workbook(req: &Request, ext: &str) -> Result<TableData, String> {
+    if ext == "xls" {
+        // ponytail: calamine reads a whole .xls into dense ranges when it opens it (no
+        // cells reader, nothing to bound first): a crafted sparse .xls can exhaust memory
+        // here. The text job never reads .xls; the preview is opened by hand.
+        let mut workbook =
+            open_workbook_auto(&req.bytes_path).map_err(|error| error.to_string())?;
+        return first_sheet(&mut workbook);
     }
-    // ponytail: xls/xlsb/ods are read as one dense Range of the first sheet (bounded by
-    // MAX_PREVIEW_BYTES on disk); calamine 0.36 also has a cells reader for xlsb, stream it
-    // like xlsx if large xlsb previews matter (xls/ods still have none).
+    first_sheet(&mut open_zip(&req.bytes_path, ext)?)
+}
+
+type Mem = Cursor<Vec<u8>>;
+
+/// A zip workbook (xlsx, xlsb, ods) read from a bounded copy of its package
+/// (`Package::repack`): calamine reads whole parts, trusting the sizes a zip declares, and
+/// would sniff a renamed .xls by its content.
+fn open_zip(path: &Path, ext: &str) -> Result<Sheets<Mem>, String> {
+    let bytes = Cursor::new(Package::open(path)?.repack(false)?);
+    Ok(match ext {
+        "xlsx" => Sheets::Xlsx(Xlsx::new(bytes).map_err(|e| e.to_string())?),
+        "xlsb" => Sheets::Xlsb(Xlsb::new(bytes).map_err(|e| e.to_string())?),
+        _ => Sheets::Ods(Ods::new(bytes).map_err(|e| e.to_string())?),
+    })
+}
+
+fn first_sheet<RS: Read + Seek>(workbook: &mut Sheets<RS>) -> Result<TableData, String> {
+    let first = || "workbook contains no sheets".to_owned();
+    // xlsx and xlsb stream their cells: a stray cell far from A1 costs nothing.
+    macro_rules! stream {
+        ($x:expr) => {{
+            let name = $x.sheet_names().first().cloned().ok_or_else(first)?;
+            let mut cells = $x
+                .worksheet_cells_reader(&name)
+                .map_err(|e| e.to_string())?;
+            let col = cells.dimensions().start.1;
+            return streamed(col, || {
+                let c = cells.next_cell().map_err(|e| e.to_string())?;
+                Ok(c.map(|c| {
+                    (
+                        c.get_position(),
+                        Data::from(c.get_value().clone()).to_string(),
+                    )
+                }))
+            });
+        }};
+    }
+    match workbook {
+        Sheets::Xlsx(x) => stream!(x),
+        Sheets::Xlsb(x) => stream!(x),
+        _ => {}
+    }
+    // ponytail: ods is read as one dense Range of the first sheet (calamine has no cells
+    // reader for it).
     let range = workbook
         .worksheet_range_at(0)
-        .ok_or_else(|| "workbook contains no sheets".to_owned())?
+        .ok_or_else(first)?
         .map_err(|error| error.to_string())?;
     let mut source = range.rows();
     let headers = source
@@ -94,23 +142,14 @@ fn workbook(req: &Request) -> Result<TableData, String> {
 }
 
 /// Reads cells in sheet order and stops after the header plus MAX_ROWS rows.
-fn xlsx_streamed<R: std::io::Read + std::io::Seek>(
-    xlsx: &mut calamine::Xlsx<R>,
+fn streamed(
+    first_col: u32,
+    mut next: impl FnMut() -> Result<Option<((u32, u32), String)>, String>,
 ) -> Result<TableData, String> {
-    let name = xlsx
-        .sheet_names()
-        .first()
-        .cloned()
-        .ok_or_else(|| "workbook contains no sheets".to_owned())?;
-    let mut cells = xlsx
-        .worksheet_cells_reader(&name)
-        .map_err(|error| error.to_string())?;
-    let first_col = cells.dimensions().start.1;
     let mut table: Vec<Vec<String>> = Vec::new();
     let mut first_row = None;
     let mut truncated = false;
-    while let Some(cell) = cells.next_cell().map_err(|error| error.to_string())? {
-        let (row, col) = cell.get_position();
+    while let Some(((row, col), value)) = next()? {
         let row = row.saturating_sub(*first_row.get_or_insert(row)) as usize;
         if row > MAX_ROWS {
             truncated = true;
@@ -127,7 +166,7 @@ fn xlsx_streamed<R: std::io::Read + std::io::Seek>(
         if line.len() <= col {
             line.resize(col + 1, String::new());
         }
-        line[col] = Data::from(cell.get_value().clone()).to_string();
+        line[col] = value;
     }
     let mut rows = table.into_iter();
     let headers = rows.next().unwrap_or_default();
@@ -135,12 +174,14 @@ fn xlsx_streamed<R: std::io::Read + std::io::Seek>(
 }
 
 /// Every sheet's cells as text (Task 62), sheet by sheet: the sheet's name, then each row's
-/// cells separated by tabs. xlsx streams its cells; xls and xlsb read a sheet's range.
+/// cells separated by tabs. xlsx and xlsb (`ext`) stream their cells from a bounded copy of
+/// the package; .xls is not read (calamine reads it whole when it opens it).
 pub(crate) fn workbook_text(
-    path: &std::path::Path,
+    path: &Path,
+    ext: &str,
     out: &mut crate::extract::Sink,
 ) -> Result<(), String> {
-    let mut workbook = open_workbook_auto(path).map_err(|error| error.to_string())?;
+    let mut workbook = open_zip(path, ext)?;
     for name in workbook.sheet_names() {
         if !out.line(&name) {
             return Ok(());
@@ -160,27 +201,23 @@ pub(crate) fn workbook_text(
             }
             true
         };
-        if let Sheets::Xlsx(xlsx) = &mut workbook {
-            let mut cells = xlsx
-                .worksheet_cells_reader(&name)
-                .map_err(|error| error.to_string())?;
-            while let Some(c) = cells.next_cell().map_err(|error| error.to_string())? {
-                let value = Data::from(c.get_value().clone()).to_string();
-                if !cell(c.get_position().0, value, out) {
-                    return Ok(());
-                }
-            }
-        } else {
-            let range = workbook
-                .worksheet_range(&name)
-                .map_err(|error| error.to_string())?;
-            for (r, line) in range.rows().enumerate() {
-                for value in line.iter().take(MAX_COLS) {
-                    if !cell(r as u32, value.to_string(), out) {
+        macro_rules! cells {
+            ($reader:expr) => {{
+                let mut cells = $reader
+                    .worksheet_cells_reader(&name)
+                    .map_err(|e| e.to_string())?;
+                while let Some(c) = cells.next_cell().map_err(|e| e.to_string())? {
+                    let value = Data::from(c.get_value().clone()).to_string();
+                    if !cell(c.get_position().0, value, out) {
                         return Ok(());
                     }
                 }
-            }
+            }};
+        }
+        match &mut workbook {
+            Sheets::Xlsx(x) => cells!(x),
+            Sheets::Xlsb(x) => cells!(x),
+            _ => return Err("not a workbook the text job reads".into()),
         }
         if !out.line(&row) {
             return Ok(());

@@ -6,7 +6,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
-- Library search finds words inside documents: plain text and code, Markdown, CSV, PDF (its text layer), Word (`.docx`), Excel (`.xlsx`, `.xls`, `.xlsb`), PowerPoint (`.pptx`) and OpenDocument (`.odt`, `.ods`, `.odp`) files. A result found by its text shows a line of it under its name with the matched words in the text colour (at most 160 characters, for the first 100 results), after the results found by name. Words match names and text alike; `content:word` (or `content:"a phrase"`) searches only the text, `-content:word` leaves out documents whose text has it, `name:word` searches only names, and `contents:off` searches names only. Every word is searched as typed, so `NEAR(`, `OR`, `*` or an unbalanced quote are plain words. See [Searching](docs/library.md#searching).
+- Library search finds words inside documents: plain text and code, Markdown, CSV, PDF (its text layer), Word (`.docx`), Excel (`.xlsx`, `.xlsb`), PowerPoint (`.pptx`) and OpenDocument (`.odt`, `.ods`, `.odp`) files. A result found by its text shows a line of it under its name with the matched words in the text colour (at most 160 characters, for the first 100 results), after the results found by name. Words match names and text alike; `content:word` (or `content:"a phrase"`) searches only the text, `-content:word` leaves out documents whose text has it, `name:word` searches only names, and `contents:off` searches names only. Every word is searched as typed, so `NEAR(`, `OR`, `*` or an unbalanced quote are plain words. See [Searching](docs/library.md#searching).
 - A **Contents** chip in the library search's chip row, in the window and the web client: lit while words also match the text inside documents; off adds `contents:off`.
 - A background **text** job reads the text of each source's documents after its walks and when the library opens, at idle priority: it pauses while you use Keel and on battery, continues where it stopped after a restart, and reads a document again when its size or modified time changes. It runs in keel-daemon when the window is attached to one; `keel sources index` starts it with the walk.
 - **Index file contents** in Settings → Library (on by default), and a **Contents** switch per source in the Overview's per-source table with its count of indexed documents. Local folders and drives are read by default; network shares, SFTP hosts, cloud accounts and paired devices only when their switch is on (each document is downloaded once). Turning a switch off deletes the text read so far.
@@ -21,9 +21,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - A NUL character typed into a library search word ended the search's query early, so that source's search failed and returned nothing; it is now read as a space.
 
+### Security
+
+- A crafted Word document (tables nested thousands deep), `.xlsb` workbook (one cell at the far corner of a sheet) or `.xlsx` workbook (a count of strings no file holds) crashed Keel or keel-daemon when it was previewed, and the text job would have read it unattended after every start. A Word document nesting tables more than 64 deep (or any markup more than 256 deep) is now refused as damaged, `.xlsb` sheets are read cell by cell like `.xlsx`, and an impossible string count is refused.
+- A Word, Excel, PowerPoint or OpenDocument file whose zip directory understates its parts' sizes could inflate far past the 64 MiB limit while previewed or read for its text (hundreds of megabytes from a file under 1 MB). Every part is now inflated through that limit before the Word and Excel readers see it.
+
 ### Known limitations
 
-- No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped.
+- No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped, and so are legacy Excel workbooks (`.xls`): their reader loads the whole workbook into memory when it opens it, with no way to bound it first. Previewing a crafted `.xls` can still exhaust memory.
 - The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
 - Each document is bounded: files over 8 MiB (PDFs over 64 MiB) are skipped unread, at most 200,000 characters of a document are kept, and a document is read for at most 10 s (the text read until then is kept). A damaged or password-protected file is counted as failed and not read again until it changes.
 - Snippets come with the first 100 results of a search; the others show their name only.
