@@ -140,6 +140,34 @@ jobs:
         with:
           command: check advisories licenses bans sources
 
+  # libFuzzer (docs/fuzzing.md): every target in fuzz/ for 60 s, on pushes to main only. Not
+  # part of `check`; the same targets run on their corpus in every `cargo test`.
+  fuzz:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          key: fuzz
+      - run: cargo install --locked cargo-fuzz
+      - run: cargo +nightly fuzz build -a
+      - name: Each target for 60 s
+        run: |
+          for t in $(cargo +nightly fuzz list); do
+            cargo +nightly fuzz run -a "$t" "fuzz/corpus/$t" --               -max_total_time=60 -max_len=65536 -timeout=10 -rss_limit_mb=2048 -malloc_limit_mb=512
+          done
+      - name: Failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
   # Pull requests only: flags newly added dependencies with known vulnerabilities or disallowed licenses.
   dependency-review:
     if: github.event_name == 'pull_request'
