@@ -161,6 +161,97 @@ fn perf_index_small_folders_generated() {
     assert!(took < Duration::from_secs(9), "{took:?}");
 }
 
+/// Task 46: what folder totals add to a first walk. The same generated tree is walked into
+/// a store without the totals triggers (no totals) and into one with them and the fill at
+/// the end, at 220,201 records in 20,201 folders and at 2,002,001 records in 2,001 folders.
+/// Budget: under 10 % more (asserted at 25 %: shared machines are noisy).
+#[test]
+#[ignore = "release measurement: 2.2 million generated records, each walked twice"]
+fn perf_folder_totals() {
+    let small = Router::new();
+    small.register(Arc::new(fake(|path: &str| {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        Ok(match segs.len() {
+            0 => (0..200)
+                .map(|a| (format!("area {a:03}"), true, 0))
+                .collect(),
+            1 => (0..100)
+                .map(|b| (format!("folder {b:03}"), true, 0))
+                .collect(),
+            _ => (0..10)
+                .map(|f| (format!("report {f}.txt"), false, 1))
+                .collect(),
+        })
+    })));
+    let (big, _big_data, _big_lib, big_without) = crate::index::tests::two_million();
+    for (label, router, without, root_bytes) in [
+        ("220k", &small, None, 200_000u64),
+        (
+            "2M",
+            &big,
+            Some(big_without),
+            (0..2_000_000u64).map(|n| n % 100_000).sum(),
+        ),
+    ] {
+        let def = SourceDef {
+            label: "perf".into(),
+            root: VPath::parse("fake://perf/").unwrap(),
+            kind: SourceKind::Share,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        };
+        let (_a, _la, without) = match without {
+            Some(src) => (None, None, src),
+            None => {
+                let (d, l, s) = library_with(def.clone());
+                (Some(d), Some(l), s)
+            }
+        };
+        without
+            .store
+            .get()
+            .unwrap()
+            .execute_batch(
+                "DROP TRIGGER record_total_ai; DROP TRIGGER record_total_ad;
+                 DROP TRIGGER record_total_au;",
+            )
+            .unwrap();
+        let start = Instant::now();
+        walk(&without, router).unwrap();
+        let plain = start.elapsed();
+        let (_d, _l, with) = library_with(def);
+        let start = Instant::now();
+        walk(&with, router).unwrap();
+        let totals = start.elapsed();
+        let c = with.store.get().unwrap();
+        let root: i64 = c
+            .query_row(
+                "SELECT bytes FROM folder_total WHERE record = (SELECT id FROM record WHERE parent IS NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(root as u64, root_bytes);
+        // The fill alone, as after the walk.
+        c.execute_batch("INSERT INTO folder_dirty SELECT id FROM record WHERE kind = 1")
+            .unwrap();
+        let start = Instant::now();
+        crate::totals::refresh(&c).unwrap();
+        let fill = start.elapsed();
+        let added = 100.0 * (totals.as_secs_f64() / plain.as_secs_f64() - 1.0);
+        eprintln!(
+            "PERF folder_totals {label}: first walk without totals {:.1} s, with {:.1} s \
+             ({added:+.1} %), the fill alone {:.2} s",
+            plain.as_secs_f64(),
+            totals.as_secs_f64(),
+            fill.as_secs_f64()
+        );
+        assert!(added < 25.0, "{label}: {added:.1} % added");
+    }
+}
+
 /// A watched source takes in a burst of 10,000 new files (10 folders of 1,000): from the
 /// first write to every file indexed.
 #[test]

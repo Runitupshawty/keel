@@ -1,9 +1,11 @@
-//! Color themes: TOML files mapped onto `egui::Visuals`.
+//! Color themes: TOML files mapped onto `egui::Visuals`. Built-ins (`assets/themes`), the
+//! user's `<config dir>/themes/*.toml` (any name; a built-in's name overrides it) and the
+//! VS Code color themes installed there (`color_theme`).
 
 use crate::settings::config_dir;
 use egui::Color32;
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
     pub dark: bool,
@@ -13,12 +15,50 @@ pub struct Theme {
     pub accent: [u8; 3],
     pub selection: [u8; 3],
     pub muted: [u8; 3],
+    /// Warning and error text (absent: Keel's defaults for a dark or light theme).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<[u8; 3]>,
+    /// Text or muted colors were moved toward legibility (a mapped VS Code theme).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adjusted: bool,
 }
 
-const BUILTIN: &[(&str, &str)] = &[
+pub(crate) const BUILTIN: &[(&str, &str)] = &[
     ("dark", include_str!("../../../assets/themes/dark.toml")),
     ("light", include_str!("../../../assets/themes/light.toml")),
+    // --- Task 47 ---
+    (
+        "midnight",
+        include_str!("../../../assets/themes/midnight.toml"),
+    ),
+    ("paper", include_str!("../../../assets/themes/paper.toml")),
+    ("dusk", include_str!("../../../assets/themes/dusk.toml")),
+    (
+        "high-contrast",
+        include_str!("../../../assets/themes/high-contrast.toml"),
+    ),
 ];
+
+/// WCAG 2.x relative luminance of an sRGB colour.
+pub(crate) fn luminance(c: Color32) -> f64 {
+    let lin = |v: u8| {
+        let s = v as f64 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast ratio of two colours (1 to 21).
+pub(crate) fn ratio(a: Color32, b: Color32) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
 
 pub fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
@@ -77,14 +117,13 @@ impl Theme {
             mix(text.g(), muted.g()),
             mix(text.b(), muted.b()),
         );
-        (v.warn_fg_color, v.error_fg_color) = if self.dark {
-            (
-                Color32::from_rgb(255, 143, 0),
-                Color32::from_rgb(255, 107, 107),
-            )
+        let (warn, error) = if self.dark {
+            ([255, 143, 0], [255, 107, 107])
         } else {
-            (Color32::from_rgb(155, 80, 0), Color32::from_rgb(190, 0, 0))
+            ([155, 80, 0], [190, 0, 0])
         };
+        v.warn_fg_color = rgb(self.warn.unwrap_or(warn));
+        v.error_fg_color = rgb(self.error.unwrap_or(error));
         ctx.set_theme(if self.dark {
             egui::ThemePreference::Dark
         } else {
@@ -101,18 +140,47 @@ impl Theme {
 pub struct Themes(Vec<(String, Theme)>);
 
 impl Themes {
-    /// The built-ins plus `current` (a user theme named in the settings).
-    pub fn load(current: &str) -> Self {
-        let mut names: Vec<&str> = BUILTIN.iter().map(|(n, _)| *n).collect();
-        if !names.contains(&current) {
-            names.push(current);
-        }
+    /// The built-ins, then every `<config dir>/themes/*.toml` by file name.
+    pub fn load() -> Self {
+        let mut names: Vec<String> = BUILTIN.iter().map(|(n, _)| (*n).to_owned()).collect();
+        let dir = config_dir().map(|d| d.join("themes"));
+        let mut user: Vec<String> = dir
+            .and_then(|d| std::fs::read_dir(d).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                name.strip_suffix(".toml").map(str::to_owned)
+            })
+            .filter(|n| !n.is_empty() && !names.contains(n))
+            .collect();
+        user.sort_by_key(|n| n.to_lowercase());
+        names.extend(user);
         Self(
             names
                 .into_iter()
-                .map(|n| (n.to_owned(), Theme::load(n)))
+                .map(|n| {
+                    let theme = Theme::load(&n);
+                    (n, theme)
+                })
                 .collect(),
         )
+    }
+
+    /// (settings name, label) of every theme, for the picker.
+    pub fn list(&self) -> Vec<(String, String)> {
+        self.0
+            .iter()
+            .map(|(n, t)| {
+                let label = if t.adjusted {
+                    format!("{} (adjusted for contrast)", t.name)
+                } else {
+                    t.name.clone()
+                };
+                (n.clone(), label)
+            })
+            .collect()
     }
 
     /// The theme loaded under `name` (the settings value), else the first (dark).
@@ -124,7 +192,7 @@ impl Themes {
 
 #[cfg(test)]
 mod tests {
-    use super::{Theme, Themes};
+    use super::{ratio, Theme, Themes};
 
     /// Every non-ASCII character in a string or char literal of the non-test code under
     /// `src` (test modules, `*_tests.rs` and the screenshot harness are skipped), with a
@@ -233,24 +301,6 @@ mod tests {
         assert!(scanned > 5, "only {scanned} crates found");
     }
 
-    /// WCAG 2.x relative luminance of an sRGB colour.
-    fn luminance(c: egui::Color32) -> f64 {
-        let lin = |v: u8| {
-            let s = v as f64 / 255.0;
-            if s <= 0.04045 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-    }
-
-    fn ratio(a: egui::Color32, b: egui::Color32) -> f64 {
-        let (a, b) = (luminance(a), luminance(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
-
     #[test]
     fn contrast_ratio_matches_the_wcag_examples() {
         use egui::Color32;
@@ -260,7 +310,7 @@ mod tests {
         assert!((ratio(Color32::from_gray(0x76), Color32::WHITE) - 4.54).abs() < 0.01);
     }
 
-    /// Both built-in themes: text, secondary (muted, weak) text, text on the selection,
+    /// Every built-in theme: text, secondary (muted, weak) text, text on the selection,
     /// links / accents, warnings and errors reach 4.5:1 on the backgrounds they are drawn
     /// on; the focus ring 3:1 (a UI component).
     #[test]
@@ -317,10 +367,44 @@ mod tests {
 
     #[test]
     fn themes_are_cached_once() {
-        let themes = Themes::load("no-such-theme");
+        let themes = Themes::load();
+
         assert!(!themes.get("light").dark);
         assert!(themes.get("dark").dark);
         assert_eq!(themes.get("unknown").name, "dark");
+    }
+
+    /// Task 47: any `<config>/themes/*.toml` is listed by its file name, with its own label;
+    /// a broken file falls back to dark.
+    #[test]
+    fn user_theme_files_are_listed_by_name() {
+        let _env = crate::settings::TEST_ENV.lock();
+        let was = std::env::var_os("KEEL_CONFIG_DIR");
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KEEL_CONFIG_DIR", dir.path());
+        let themes_dir = dir.path().join("themes");
+        std::fs::create_dir(&themes_dir).unwrap();
+        let mut ocean = Theme::load("midnight");
+        ocean.name = "Ocean".into();
+        ocean.adjusted = true;
+        ocean.bg = [1, 2, 3];
+        std::fs::write(
+            themes_dir.join("ocean.toml"),
+            toml::to_string(&ocean).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(themes_dir.join("broken.toml"), "name = [").unwrap();
+        let themes = Themes::load();
+        match was {
+            Some(v) => std::env::set_var("KEEL_CONFIG_DIR", v),
+            None => std::env::remove_var("KEEL_CONFIG_DIR"),
+        }
+        let list = themes.list();
+        assert_eq!(list.len(), super::BUILTIN.len() + 2, "{list:?}");
+        assert!(list.contains(&("ocean".into(), "Ocean (adjusted for contrast)".into())));
+        assert_eq!(themes.get("ocean"), ocean);
+        assert_eq!(themes.get("broken").name, "dark");
+        assert_eq!(themes.get("high-contrast").name, "High contrast");
     }
 
     #[test]

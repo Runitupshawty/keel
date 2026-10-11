@@ -313,3 +313,32 @@ CREATE TABLE sync_peer(
     last_sync INTEGER,
     received INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE tag_alias(uid TEXT PRIMARY KEY, tag INTEGER NOT NULL);
+
+-- @source 9
+-- Folder sizes (Task 46): every folder's apparent size and file count below it (links and
+-- what they point at not counted). Triggers mark in `folder_dirty` each folder whose total
+-- may have changed (the parent of a record inserted, removed, resized or moved, and a new
+-- folder itself); `index::refresh_totals` brings the marked folders and their parent chains
+-- up to date after each watcher batch and each full walk. Marking every folder here makes
+-- the next refresh fill the table in one pass.
+CREATE TABLE folder_total(
+    record INTEGER PRIMARY KEY,
+    bytes INTEGER NOT NULL,
+    files INTEGER NOT NULL);
+CREATE TABLE folder_dirty(record INTEGER PRIMARY KEY);
+INSERT INTO folder_dirty SELECT id FROM record WHERE kind = 1;
+CREATE TRIGGER record_total_ai AFTER INSERT ON record BEGIN
+    INSERT OR IGNORE INTO folder_dirty SELECT new.parent WHERE new.parent IS NOT NULL;
+    INSERT OR IGNORE INTO folder_dirty SELECT new.id WHERE new.kind = 1;
+END;
+CREATE TRIGGER record_total_ad AFTER DELETE ON record BEGIN
+    INSERT OR IGNORE INTO folder_dirty SELECT old.parent WHERE old.parent IS NOT NULL;
+    DELETE FROM folder_total WHERE record = old.id;
+END;
+CREATE TRIGGER record_total_au AFTER UPDATE OF parent, kind, size, flags ON record
+    WHEN old.parent IS NOT new.parent OR old.kind IS NOT new.kind OR old.size IS NOT new.size
+        OR (old.flags & 4) IS NOT (new.flags & 4) BEGIN
+    INSERT OR IGNORE INTO folder_dirty SELECT old.parent WHERE old.parent IS NOT NULL;
+    INSERT OR IGNORE INTO folder_dirty SELECT new.parent WHERE new.parent IS NOT NULL;
+    INSERT OR IGNORE INTO folder_dirty SELECT new.id WHERE new.kind = 1;
+END;

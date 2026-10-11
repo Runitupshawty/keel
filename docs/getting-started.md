@@ -173,6 +173,9 @@ On Windows, **More options** at the end of the right-click menu (or Shift+right-
 **Undo.** Ctrl+Z (Cmd+Z on macOS) in the file list undoes the last file operation: a rename or bulk rename, a move (the items go back), a copy (the copies go to the trash), a new folder or file (to the trash) and a delete (the items come back from the Recycle Bin or Trash). Press it again for the one before; the window keeps the last 20. Each operation's toast has an **Undo** button too, and the command palette lists **Undo** with what it undoes ("Undo move"). A rename goes back at once; anything that moves or deletes first shows what it will do, for example "Undo move: 3 items back to D:Photos?", and runs as a job when you press **Undo**. Keel checks first: if an item changed since (its size or modified time), is gone, or something now has its old name, nothing is touched and the toast says why. Undo never overwrites a file. Ctrl+Z in a text box (the path box, a rename) stays the text box's own undo.
 
 Some operations cannot be undone: deleting for good (SFTP, S3, WebDAV without a trash, **Delete permanently**), files replaced with **Overwrite**, changes inside archives, extracting and adding to archives, copies and moves on SSH hosts, cloud accounts and other devices, and tags and favorites (set them again). The first Ctrl+Z after one says so ("Can't undo: deleted permanently"); the next goes on to the operation before. The list is per window and is lost when Keel closes or you switch profiles.
+### Folder sizes
+
+Folders in a library source show their total size in the Size column. Elsewhere, right-click the folder's background and choose **Calculate sizes** (or turn on Settings → General → **Folder sizes: In local folders**). The **Sizes** button shows what fills a folder or a drive, biggest first; Enter goes down, Backspace up. See [Folder sizes and the Sizes view](files.md#folder-sizes-and-the-sizes-view).
 
 ### Rename and bulk rename
 
@@ -267,7 +270,7 @@ Everything the library can do is also a typed operation that `keel-daemon` serve
 
 **Profiles** are separate sets of settings and open tabs. Settings → **Profiles** creates one (a copy of the current settings), renames, deletes and switches; the command palette has **Switch profile: <name>**, and `keel --profile <name>` starts in a profile. Each profile has its own `keel-daemon`.
 
-**Themes**: Keel has a dark and a light theme; switch in Settings → **General** → **Theme** or with **Theme** in the status bar. To change colours, put a `dark.toml` or `light.toml` in the `themes` folder of the configuration folder (see below); it overrides the built-in colours.
+**Themes**: Keel has six built-in color themes (dark, light, Midnight, Paper, Dusk and High contrast); pick one in Settings → **General** → **Theme** (**Theme** in the status bar toggles dark and light). Any `.toml` file in the `themes` folder of the configuration folder (see below) is listed too, and a VS Code color theme installs from the Marketplace next to **Color themes**, after you read its license and press **I accept**. More in [Color themes](files.md#color-themes).
 
 **Icon themes**: Settings → **Icons** previews the built-in file icons and any installed theme and switches between them. To install a VS Code icon theme, type its Marketplace id (for example `PKief.material-icon-theme`), press **Install from VS Code Marketplace…**, read its license and press **I accept**. More in [Icon themes](files.md#icon-themes).
 

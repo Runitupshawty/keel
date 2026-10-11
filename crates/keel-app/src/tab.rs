@@ -23,7 +23,12 @@ impl Listing {
     }
 
     fn with_lower(entries: Vec<Entry>, lower: Vec<String>) -> Self {
-        let order = sorted(&entries, &lower, (SortKey::Name, true));
+        let order = sorted(
+            &entries,
+            &lower,
+            (SortKey::Name, true, false),
+            &Default::default(),
+        );
         Self {
             entries,
             lower,
@@ -80,7 +85,7 @@ pub struct Tab {
     /// Every entry in the current sort order, for (generation, sort); filtering is a
     /// linear pass over it, so a keystroke never sorts.
     sorted: Vec<usize>,
-    sorted_key: Option<(u64, (SortKey, bool))>,
+    sorted_key: Option<(u64, u64, Mode)>,
     /// Entry names (names survive a refresh, indices do not).
     pub selected: BTreeSet<String>,
     pub cursor: Option<String>,
@@ -118,8 +123,17 @@ pub struct Tab {
     // --- end Task 23 ---
     /// Task 29: a search tab querying the library instead of the platform backend.
     pub library_search: bool,
+    // --- Task 46 ---
+    /// Shown in the Sizes view: biggest first, folders mixed with files (set by the pane
+    /// before drawing).
+    pub sizes_view: bool,
+    /// `sizes::sync_tab`'s inputs when `totals` was last filled.
+    pub totals_key: Option<(u64, u64, u64)>,
+    /// Known folder totals by entry name (sorting by size).
+    totals: std::collections::HashMap<String, u64>,
+    totals_gen: u64,
     generation: u64,
-    cache_key: Option<(u64, String, (SortKey, bool), bool)>,
+    cache_key: Option<(u64, String, Mode, bool, u64)>,
     cache: Vec<usize>,
     /// Bumped whenever `cache` changes (Task 32: the media view's layout cache).
     cache_gen: u64,
@@ -161,6 +175,10 @@ impl Tab {
             left_search: None,
             columns: Default::default(),
             library_search: false,
+            sizes_view: false,
+            totals_key: None,
+            totals: Default::default(),
+            totals_gen: 0,
             generation: 0,
             cache_key: None,
             cache: Vec::new(),
@@ -270,15 +288,39 @@ impl Tab {
         }
     }
 
+    /// Replaces the known folder totals (a size sort follows them).
+    pub fn set_totals(&mut self, totals: std::collections::HashMap<String, u64>) {
+        if totals != self.totals {
+            self.totals = totals;
+            self.totals_gen += 1;
+        }
+    }
+
+    /// The order rows are shown in: the Sizes view's, else the chosen sort (folders first).
+    fn mode(&self) -> Mode {
+        if self.sizes_view {
+            (SortKey::Size, false, true)
+        } else {
+            (self.sort.0, self.sort.1, false)
+        }
+    }
+
     /// Indices into `entries()` after hidden/filter/sort, dirs first. Cached until the
     /// entries, filter, sort or `show_hidden` change; a filter that only grew narrows the
     /// cached rows instead of sorting again. Selection is trimmed to the visible rows.
     pub fn visible(&mut self, show_hidden: bool) -> &[usize] {
-        let key = (self.generation, self.filter.clone(), self.sort, show_hidden);
+        let mode = self.mode();
+        let key = (
+            self.generation,
+            self.filter.clone(),
+            mode,
+            show_hidden,
+            self.totals_gen,
+        );
         match &self.cache_key {
             Some(old) if *old == key => return &self.cache,
-            Some((g, f, s, h))
-                if (*g, *s, *h) == (key.0, key.2, key.3)
+            Some((g, f, s, h, t))
+                if (*g, *s, *h, *t) == (key.0, key.2, key.3, key.4)
                     && key.1.to_lowercase().starts_with(&f.to_lowercase()) =>
             {
                 let needle = key.1.to_lowercase();
@@ -286,11 +328,11 @@ impl Tab {
                 self.cache.retain(|&i| lower[i].contains(&needle));
             }
             _ => {
-                let sort_key = (self.generation, self.sort);
+                let sort_key = (self.generation, self.totals_gen, mode);
                 if self.sorted_key != Some(sort_key) {
-                    self.sorted = match self.sort {
-                        (SortKey::Name, true) => self.order.clone(),
-                        (SortKey::Name, false) => {
+                    self.sorted = match mode {
+                        (SortKey::Name, true, false) => self.order.clone(),
+                        (SortKey::Name, false, false) => {
                             // Folders stay first; each group reversed.
                             let dirs = self
                                 .order
@@ -300,7 +342,7 @@ impl Tab {
                             let (d, f) = self.order.split_at(dirs);
                             d.iter().rev().chain(f.iter().rev()).copied().collect()
                         }
-                        sort => sorted(&self.entries, &self.lower, sort),
+                        mode => sorted(&self.entries, &self.lower, mode, &self.totals),
                     };
                     self.sorted_key = Some(sort_key);
                 }
@@ -583,20 +625,39 @@ pub fn hits_listing(hits: Vec<keel_search::Hit>) -> Listing {
     Listing::with_lower(entries, lower)
 }
 
-/// Every index of `entries` in `(key, asc)` order, folders first.
-fn sorted(entries: &[Entry], lower: &[String], (key, asc): (SortKey, bool)) -> Vec<usize> {
+/// Sort key, ascending, and folders mixed with files (the Sizes view).
+type Mode = (SortKey, bool, bool);
+
+/// Every index of `entries` in `(key, asc)` order, folders first unless `mixed`. By size a
+/// folder counts its total from `totals` (by name); folders without one come last.
+fn sorted(
+    entries: &[Entry],
+    lower: &[String],
+    (key, asc, mixed): Mode,
+    totals: &std::collections::HashMap<String, u64>,
+) -> Vec<usize> {
     let mut keyed: Vec<(usize, &str)> = lower.iter().map(String::as_str).enumerate().collect();
+    let size = |e: &Entry| match e.kind {
+        Kind::Dir => totals.get(&e.name).copied(),
+        _ => Some(e.size),
+    };
     keyed.sort_by(|(ai, an), (bi, bn)| {
         let (a, b) = (&entries[*ai], &entries[*bi]);
         let by_name = || natord::compare(an, bn);
         let ord = match key {
             SortKey::Name => by_name(),
-            SortKey::Size => a.size.cmp(&b.size).then_with(by_name),
+            SortKey::Size => size(a).cmp(&size(b)).then_with(by_name),
             SortKey::Modified => a.modified.cmp(&b.modified).then_with(by_name),
             SortKey::Ext => a.ext.cmp(&b.ext).then_with(by_name),
         };
         let ord = if asc { ord } else { ord.reverse() };
-        (a.kind != Kind::Dir).cmp(&(b.kind != Kind::Dir)).then(ord)
+        let unknown = |e: &Entry| key == SortKey::Size && size(e).is_none();
+        let dirs_first = if mixed {
+            std::cmp::Ordering::Equal
+        } else {
+            (a.kind != Kind::Dir).cmp(&(b.kind != Kind::Dir))
+        };
+        dirs_first.then(unknown(a).cmp(&unknown(b))).then(ord)
     });
     keyed.into_iter().map(|(i, _)| i).collect()
 }
@@ -671,6 +732,31 @@ mod tests {
         tab.filter.clear();
         tab.sort = (SortKey::Size, true);
         assert_eq!(names(&mut tab), ["alpha", "zeta", "b10.txt", "b9.txt"]);
+    }
+
+    /// Task 46: by size a folder counts its total, unknown ones last (either direction);
+    /// the Sizes view mixes folders with files, biggest first.
+    #[test]
+    fn size_order_uses_folder_totals_and_the_sizes_view_mixes_folders() {
+        let mut tab = tab();
+        tab.set_entries(vec![
+            test_entry(&tab.dir, "small.txt", Kind::File, 10),
+            test_entry(&tab.dir, "big.bin", Kind::File, 300),
+            test_entry(&tab.dir, "data", Kind::Dir, 0),
+            test_entry(&tab.dir, "more", Kind::Dir, 0),
+        ]);
+        tab.set_totals([("data".to_string(), 100)].into());
+        tab.sort = (SortKey::Size, true);
+        assert_eq!(names(&mut tab), ["data", "more", "small.txt", "big.bin"]);
+        tab.sort = (SortKey::Size, false);
+        assert_eq!(names(&mut tab), ["data", "more", "big.bin", "small.txt"]);
+        tab.sizes_view = true;
+        assert_eq!(names(&mut tab), ["big.bin", "data", "small.txt", "more"]);
+        tab.set_totals([("data".to_string(), 1000), ("more".to_string(), 1)].into());
+        assert_eq!(names(&mut tab), ["data", "big.bin", "small.txt", "more"]);
+        tab.sizes_view = false;
+        tab.sort = (SortKey::Name, true);
+        assert_eq!(names(&mut tab), ["data", "more", "big.bin", "small.txt"]);
     }
 
     #[test]

@@ -123,6 +123,8 @@ pub enum Msg {
         id: u64,
         result: anyhow::Result<()>,
     },
+    /// Task 46: folder totals a Calculate sizes job found (path, modified time, total).
+    FolderSizes(Vec<(VPath, Option<std::time::SystemTime>, keel_core::Total)>),
     /// Sources resolved and `dst` scanned for name clashes; start or ask.
     Planned {
         op: Transfer,
@@ -297,6 +299,10 @@ pub struct AppState {
     pub media: crate::media::Media,
     /// The full-window media viewer, while open.
     pub viewer: Option<crate::media_viewer::Viewer>,
+    /// Task 46: folder totals walked this session (Calculate sizes).
+    pub sizes: crate::sizes::Sizes,
+    /// Task 47: the VS Code color theme installer (Settings → General).
+    pub color_themes: crate::color_theme::ColorThemes,
 }
 
 impl AppState {
@@ -322,7 +328,7 @@ impl AppState {
         home: VPath,
     ) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let themes = Themes::load(&settings.theme);
+        let themes = Themes::load();
         let theme = themes.get(&settings.theme);
         let thumbs = Thumbs::new(tx.clone(), ctx.clone(), router.clone());
         let mut media = crate::media::Media::new(ctx.clone(), router.clone());
@@ -397,6 +403,7 @@ impl AppState {
             themes,
             profiles: crate::profiles::Profiles::new(ctx.clone()),
             icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
+            color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -415,6 +422,7 @@ impl AppState {
             mount: Default::default(),
             media,
             viewer: None,
+            sizes: Default::default(),
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -435,6 +443,17 @@ impl AppState {
         self.mount_tick();
         self.icon_themes.tick(&mut self.settings, &mut self.toasts);
         self.icon_themes.license_modal(ctx);
+        // Task 47: a color theme installed or removed: the picker lists what is on disk,
+        // and an install switches to its first theme.
+        let before = self.settings.theme.clone();
+        if let Some(themes) = self.color_themes.tick(&mut self.settings, &mut self.toasts) {
+            self.themes = themes;
+            if before != self.settings.theme {
+                self.theme = self.themes.get(&self.settings.theme);
+                self.theme.apply(&self.ctx);
+            }
+        }
+        self.color_themes.license_modal(ctx);
         let s = &mut self.settings;
         s.show_hidden = self.show_hidden;
         s.dual = self.dual;
@@ -454,6 +473,8 @@ impl AppState {
             self.searcher.as_ref().map(|x| x.name()), // Task 24
             &mut self.library,
             &self.devices,
+            &self.themes.list(),
+            &mut self.color_themes,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -719,7 +740,9 @@ impl AppState {
                 }
             }
             Msg::JobProgress { id, p } => self.jobs.progress(id, p),
+            Msg::FolderSizes(totals) => self.sizes.got(totals),
             Msg::JobDone { id, result } => {
+                self.sizes.job_done(id);
                 if let Some((job, src)) = self.cut_job.take() {
                     if job != id {
                         self.cut_job = Some((job, src));
@@ -1082,6 +1105,28 @@ impl AppState {
         });
     }
 
+    /// Task 46: walks the subfolders of pane `p`'s folder for their totals, as a job (only
+    /// those without one unless `fresh`).
+    fn calculate_sizes(&mut self, p: usize, fresh: bool) {
+        let tab = self.panes[p].tab();
+        if tab.is_search() || tab.is_trash() || tab.kind != TabKind::Dir {
+            if fresh {
+                self.toasts.info("Calculate sizes works in a folder");
+            }
+            return;
+        }
+        let dir = tab.dir.clone();
+        let folders = self.sizes.wanted(tab.entries(), fresh);
+        if folders.is_empty() {
+            self.sizes.walking(&dir, &[], 0);
+            return;
+        }
+        let id =
+            self.jobs
+                .folder_sizes(&dir, folders.clone(), self.router.clone(), self.tx.clone());
+        self.sizes.walking(&dir, &folders, id);
+    }
+
     fn listed(&mut self, dir: VPath, req: u64, gone: bool, result: anyhow::Result<Listing>) {
         if self.inflight.get(&dir).map(|(r, _)| *r) == Some(req) {
             self.inflight.remove(&dir);
@@ -1127,6 +1172,14 @@ impl AppState {
                 }
                 // 100k entries: the last (usually only) tab takes the listing itself.
                 fill(last, listing);
+                // Task 46: a local folder outside the library gets its folder sizes on its
+                // own with the setting on.
+                self.sizes.listed(&dir);
+                if crate::sizes::auto_start(&dir, &self.library, self.settings.folder_sizes_local) {
+                    if let Some(&(p, _)) = hits.iter().find(|&&(p, t)| self.panes[p].active == t) {
+                        self.calculate_sizes(p, false);
+                    }
+                }
                 let show_hidden = self.show_hidden;
                 for &(p, t) in &hits {
                     let tab = &mut self.panes[p].tabs[t];
@@ -1699,6 +1752,8 @@ impl AppState {
                 }
             }
             Action::LeaveTerminal => self.terminal.leave(&self.ctx),
+            Action::CalculateSizes { fresh } => self.calculate_sizes(p, fresh),
+            Action::View(mode) => self.panes[p].view = mode,
             Action::ToggleTheme => {
                 let name = if self.theme.dark { "light" } else { "dark" };
                 self.settings.theme = name.to_owned();

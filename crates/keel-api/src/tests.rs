@@ -125,6 +125,7 @@ fn registry_is_preview_first() {
         "recents.note",
         "redundancy.folder",
         "library.stats",
+        "library.folder_sizes",
         "protection.summary",
         "volumes.list",
         "volumes.set",
@@ -1510,4 +1511,60 @@ fn library_stats_example_and_answer_match_the_result_schema() {
         1u64 << 30,
         "{answer}"
     );
+}
+
+/// Task 46: folder sizes from the index, by real and by library path; read-only; a path in
+/// no source is NOT_FOUND.
+#[test]
+fn library_folder_sizes_reads_the_index() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let root = call(
+        &f.ctx,
+        "library.folder_sizes",
+        json!({"path": s(f.files.path())}),
+    )
+    .unwrap();
+    // "pdf bytes" + "some notes"
+    assert_eq!(
+        (root["bytes"].as_u64(), root["files"].as_u64()),
+        (Some(19), Some(2)),
+        "{root}"
+    );
+    assert_eq!(root["children"][0]["name"], "docs", "{root}");
+    assert_eq!(root["children"][0]["is_dir"], true, "{root}");
+    assert_eq!(root["children"][0]["bytes"], 19, "{root}");
+    let docs = call(
+        &f.ctx,
+        "library.folder_sizes",
+        json!({"path": format!("library://{id}/docs")}),
+    )
+    .unwrap();
+    let names: Vec<_> = docs["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        ["notes.txt", "invoice-2026.pdf"],
+        "biggest first: {docs}"
+    );
+    assert_eq!(docs["children"][0]["files"], 1, "{docs}");
+    let op = OPS
+        .iter()
+        .find(|o| o.name == "library.folder_sizes")
+        .unwrap();
+    assert!(!op.mutating);
+    let validator = jsonschema::validator_for(&(op.result)()).unwrap();
+    assert!(validator.is_valid(&root), "{root}");
+    let outside = tempfile::tempdir().unwrap();
+    let err = call(
+        &f.ctx,
+        "library.folder_sizes",
+        json!({"path": s(outside.path())}),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiError::NOT_FOUND, "{err:?}");
 }

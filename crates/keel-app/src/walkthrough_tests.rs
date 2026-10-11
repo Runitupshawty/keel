@@ -592,6 +592,87 @@ fn grid_view() {
     shot(&mut h, "grid-view");
 }
 
+/// Task 46: the Sizes view walks a folder outside the library on its own, shows its
+/// children biggest first with share bars, Enter goes down (the walk already knows the
+/// totals below) and Backspace up; the Size column and the status bar show folder totals;
+/// Calculate sizes can be cancelled.
+#[test]
+fn sizes_view_and_calculate_sizes() {
+    let dir = std::env::temp_dir().join(format!("keel-walk-{}-sizes", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let put = |rel: &str, n: usize| {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, vec![b'x'; n]).unwrap();
+    };
+    put("big/one.bin", 2_000);
+    put("big/inner/two.bin", 1_000);
+    put("small/s.txt", 10);
+    put("mid.bin", 500);
+    let mut h = app(&dir, &demo().join("Documents"));
+    click_nth(&mut h, "Sizes", 0);
+    assert_eq!(s(&h).panes[0].view, ViewMode::Sizes);
+    assert!(
+        wait(&mut h, 20, &|s| job_done(s) && s.sizes.gen > 1),
+        "walked"
+    );
+    h.run_steps(3);
+    assert_eq!(
+        names(s(&h), 0),
+        ["big", "mid.bin", "small"],
+        "biggest first"
+    );
+    assert!(has(&h, "Share") && has(&h, "Of used"), "the Sizes columns");
+    assert!(has_contains(&h, "3 kB"), "big's total in the Size column");
+    shot(&mut h, "sizes-view");
+    sm(&mut h).tab_mut(0).click("big", false, false);
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir.join("big")) && listed(s)));
+    h.run_steps(3);
+    assert_eq!(names(s(&h), 0), ["one.bin", "inner"]);
+    let inner = s(&h)
+        .tab(0)
+        .entries()
+        .iter()
+        .find(|e| e.name == "inner")
+        .unwrap()
+        .clone();
+    assert!(
+        matches!(s(&h).sizes.get(&inner), Some(crate::sizes::Size::Known(t)) if t.bytes == 1_000),
+        "known from the walk above"
+    );
+    key(&mut h, NONE, Key::Backspace);
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir) && listed(s)));
+    // Back in Details, the status bar counts a selected folder's total.
+    click_nth(&mut h, "Details", 0);
+    sm(&mut h).tab_mut(0).click("big", false, false);
+    h.run_steps(3);
+    assert!(has_contains(&h, "3 kB"), "the selected folder's total");
+
+    // Calculate sizes over many folders, cancelled at once.
+    for i in 0..400 {
+        put(&format!("many/d{i}/f.bin"), 10);
+    }
+    sm(&mut h).run(0, Action::Navigate(VPath::local(dir.join("many"))));
+    assert!(wait(&mut h, 10, &listed));
+    sm(&mut h).run(0, Action::CalculateSizes { fresh: true });
+    let job = s(&h).jobs.list.last().unwrap();
+    assert!(job.title.starts_with("Calculating sizes"), "{}", job.title);
+    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(wait(&mut h, 20, &job_done));
+    let cancelled = s(&h).jobs.list.last().unwrap();
+    assert!(
+        matches!(&cancelled.done, Some(Err(e)) if crate::jobs::is_cancel(e)),
+        "cancelled"
+    );
+    let tab = s(&h).tab(0);
+    let pending = (tab.entries().iter())
+        .filter(|e| s(&h).sizes.get(e) == Some(crate::sizes::Size::Pending))
+        .count();
+    assert_eq!(pending, 0, "nothing left computing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The status bar counts items with the right plural.
 #[test]
 fn status_bar_counts() {
@@ -1709,6 +1790,92 @@ fn icon_theme_install_from_a_fixture_package() {
     assert!(!cfg.join("icons").join("walk.icons").exists());
     drop(h);
     std::env::remove_var("KEEL_CONFIG_DIR");
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// A color theme package: two themes, one including a base file, and a license.
+fn color_package() -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    let mut add = |name: &str, body: &str| {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    };
+    add(
+        "extension/package.json",
+        r#"{"name":"walk","displayName":"Walk Colors","license":"MIT","contributes":{"themes":[
+             {"label":"Walk Night","uiTheme":"vs-dark","path":"./themes/night.json"},
+             {"label":"Walk Day","uiTheme":"vs","path":"./themes/day.json"}]}}"#,
+    );
+    add(
+        "extension/LICENSE",
+        "MIT License
+
+A test package.",
+    );
+    add(
+        "extension/themes/base.json",
+        r##"{ "colors": { "focusBorder": "#3399ff", } }"##,
+    );
+    add(
+        "extension/themes/night.json",
+        r##"{ "include": "./base.json", // comment
+             "colors": { "editor.background": "#14181f", "foreground": "#dde3ea" } }"##,
+    );
+    add(
+        "extension/themes/day.json",
+        r##"{ "colors": { "editor.background": "#fbfbf8", "foreground": "#1d1d1d" } }"##,
+    );
+    zip.finish().unwrap().into_inner()
+}
+
+/// Task 47: a VS Code color theme package through the license dialog (I accept), the new
+/// theme applied, the picker switching to its second theme, then Remove.
+#[test]
+fn color_theme_install_switch_and_remove() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let was = std::env::var_os("KEEL_CONFIG_DIR");
+    let cfg = std::env::temp_dir().join(format!("keel-walk-{}-colors", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cfg);
+    std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD, Key::Comma);
+    let v = crate::color_theme::inspect("walk.colors", color_package()).unwrap();
+    assert_eq!(v.themes.len(), 2);
+    sm(&mut h).color_themes.offer(v);
+    h.run_steps(2);
+    assert!(has(&h, "License: Walk Colors"));
+    click(&mut h, "I accept");
+    assert!(wait(&mut h, 20, &|s| s.settings.theme == "walk.colors~0"));
+    assert_eq!(s(&h).theme.name, "Walk Night");
+    assert_eq!(s(&h).theme.bg, [0x14, 0x18, 0x1f]);
+    assert_eq!(
+        s(&h).theme.accent,
+        [0x33, 0x99, 0xff],
+        "from the included file"
+    );
+    for n in 0..2 {
+        assert!(cfg
+            .join("themes")
+            .join(format!("walk.colors~{n}.toml"))
+            .is_file());
+    }
+    shot(&mut h, "color-theme-installed");
+    click_last(&mut h, "Theme");
+    click_last(&mut h, "Walk Day");
+    assert_eq!(s(&h).settings.theme, "walk.colors~1");
+    assert!(!s(&h).theme.dark, "the light theme");
+    click(&mut h, "Remove");
+    assert!(wait(&mut h, 10, &|s| s.color_themes.installed.is_empty()));
+    assert_eq!(s(&h).settings.theme, "dark", "back to dark");
+    assert!(!cfg.join("themes").join("walk.colors~0.toml").exists());
+    drop(h);
+    match was {
+        Some(v) => std::env::set_var("KEEL_CONFIG_DIR", v),
+        None => std::env::remove_var("KEEL_CONFIG_DIR"),
+    }
     let _ = std::fs::remove_dir_all(&cfg);
 }
 

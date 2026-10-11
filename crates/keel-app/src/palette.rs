@@ -103,6 +103,10 @@ fn global_items() -> Vec<Item> {
         ("Open terminal here", "", OpenTerminal),
         ("Toggle terminal", "Ctrl+`", ToggleTerminal),
         ("Toggle dark / light theme", "", ToggleTheme),
+        // --- Task 46 ---
+        ("Calculate sizes", "", CalculateSizes { fresh: true }),
+        ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
+        ("Details view", "", View(crate::pane::ViewMode::Details)),
         ("Settings", "Ctrl+,", Settings),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),

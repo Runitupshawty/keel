@@ -58,3 +58,28 @@ fn fuzz_vsix() {
         }
     });
 }
+
+/// Task 47: VS Code color theme JSON (comments, trailing commas, `include`), its mapping
+/// onto Keel's colors, and whole packages.
+#[test]
+fn fuzz_color_theme() {
+    run("color_theme", |data| {
+        use crate::color_theme as ct;
+        let _ = ct::strip_jsonc(&String::from_utf8_lossy(data));
+        // The input as a theme file: any include it names reads the input again (a cycle
+        // or a chain), or a small sibling.
+        let colors = ct::theme_colors(
+            &mut |p| {
+                Ok(match p {
+                    "extension/sibling.json" => br##"{"colors":{"foreground":"#fff"}}"##.to_vec(),
+                    _ => data.to_vec(),
+                })
+            },
+            "extension/themes/t.json",
+        );
+        if let Ok(colors) = colors {
+            let _ = ct::map("t", &colors, data.first() == Some(&b'l'));
+        }
+        let _ = ct::inspect("pub.theme", data.to_vec());
+    });
+}

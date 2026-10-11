@@ -929,6 +929,55 @@ impl LibraryBackend {
         out
     }
 
+    /// Task 46: the indexed totals of the folders in `dirs` (real paths) and of `dirs`
+    /// themselves, by real path; folders not indexed (or not known yet) are left out.
+    pub fn folder_sizes(
+        &self,
+        sources: &[SourceSummary],
+        dirs: &[VPath],
+    ) -> HashMap<VPath, keel_core::Total> {
+        let mut out = HashMap::new();
+        for dir in dirs {
+            let mut put = |p: VPath, bytes: Option<u64>, files: Option<u64>| {
+                if let (Some(bytes), Some(files)) = (bytes, files) {
+                    out.insert(p, keel_core::Total { bytes, files });
+                }
+            };
+            match self {
+                LibraryBackend::InProcess(lib) => {
+                    let Some((source, rel)) = crate::library::locate(sources, dir) else {
+                        continue;
+                    };
+                    let Ok(sizes) = lib.folder_sizes(&source, &rel) else {
+                        continue;
+                    };
+                    let t = sizes.total;
+                    put(dir.clone(), t.map(|t| t.bytes), t.map(|t| t.files));
+                    for c in sizes.children.into_iter().filter(|c| c.is_dir) {
+                        let t = c.total;
+                        put(dir.join(&c.name), t.map(|t| t.bytes), t.map(|t| t.files));
+                    }
+                }
+                LibraryBackend::Daemon(r) => {
+                    let Some(real) = real_of(sources, dir) else {
+                        continue;
+                    };
+                    let Ok(sizes) = r.call::<api::FolderSizes>(
+                        "library.folder_sizes",
+                        json!({"path": real.display()}),
+                    ) else {
+                        continue;
+                    };
+                    put(dir.clone(), sizes.bytes, sizes.files);
+                    for c in sizes.children.into_iter().filter(|c| c.is_dir) {
+                        put(dir.join(&c.name), c.bytes, c.files);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Kinds of every job (for rows that arrived as bare events).
     pub fn job_kinds(&self) -> Result<Vec<(JobId, String)>> {
         Ok(self

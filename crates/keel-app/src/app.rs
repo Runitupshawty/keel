@@ -431,6 +431,7 @@ impl App {
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: s.settings.library.tags_column,
                         media: &mut s.media,
+                        sizes: &s.sizes,
                         keys: s.active == p,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
@@ -582,16 +583,19 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
     ui.horizontal(|ui| {
         let show_hidden = s.show_hidden;
         let p = s.active;
-        let tab = s.panes[p].tab_mut();
-        let n = tab.visible(show_hidden).len();
+        let n = s.panes[p].tab_mut().visible(show_hidden).len();
+        let tab = s.panes[p].tab();
         let selected = tab.targets();
         let picked = !tab.selected.is_empty();
+        // Task 46: a folder counts its total when known.
+        let count =
+            |e: &keel_vfs::Entry| crate::sizes::bytes_of(&s.library, &s.sizes, e).unwrap_or(0);
         let bytes: u64 = if picked {
-            selected.iter().map(|e| e.size).sum()
+            selected.iter().map(|e| count(e)).sum()
         } else {
             tab.visible_cached()
                 .iter()
-                .map(|&i| tab.entries()[i].size)
+                .map(|&i| count(&tab.entries()[i]))
                 .sum()
         };
         let mut left = vec![crate::jobs::items(n)];

@@ -8,7 +8,7 @@ use crate::cli::{Command, Conflict, DaemonCmd, PlanCmd, SourcesCmd, TagCmd};
 use keel_api::client::Client;
 use keel_api::config::HostConfig;
 use keel_api::host::{Host, NetSetup};
-use keel_api::types::{Hit, JobInfo, PlanPreview};
+use keel_api::types::{ChildSize, FolderSizes, Hit, JobInfo, PlanPreview};
 use keel_api::{ApiError, Backend};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read, Write};
@@ -258,6 +258,60 @@ fn job_done(info: &JobInfo, json: bool, out: &mut Out) -> Result<Value, Fail> {
     }
 }
 
+/// `library.folder_sizes`, or for a local folder in no library source a walk of it here.
+fn folder_sizes(b: &mut dyn Backend, path: &str) -> Result<FolderSizes, Fail> {
+    match b.call("library.folder_sizes", json!({ "path": path })) {
+        Ok(v) => parse(v),
+        Err(e) if e.code == ApiError::NOT_FOUND && !path.contains("://") => {
+            walk_sizes(path).map_err(|w| Fail::Api(ApiError::failed(format!("{w:#}"))))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Task 46: `keel du` outside the library: each child of `path` walked for its total.
+fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
+    use keel_vfs::Provider;
+    let dir = keel_vfs::VPath::local(path);
+    let router = keel_vfs::Router::new();
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let mut children = Vec::new();
+    for e in keel_vfs::LocalProvider.list(&dir)? {
+        let (bytes, files) = match e.kind {
+            _ if e.is_link => (None, None),
+            keel_vfs::Kind::Dir => {
+                let w = keel_vfs::sizes::folder_total(
+                    &router,
+                    &e.path,
+                    None,
+                    &never,
+                    &mut |_, _, _| {},
+                )?;
+                (Some(w.bytes), Some(w.files))
+            }
+            _ => (Some(e.size), Some(1)),
+        };
+        children.push(ChildSize {
+            path: e.path.display(),
+            is_dir: e.kind == keel_vfs::Kind::Dir,
+            name: e.name,
+            bytes,
+            files,
+        });
+    }
+    children.sort_by(|a, b| {
+        (b.bytes.is_some().cmp(&a.bytes.is_some()))
+            .then(b.bytes.cmp(&a.bytes))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(FolderSizes {
+        path: dir.display(),
+        bytes: Some(children.iter().filter_map(|c| c.bytes).sum()),
+        files: Some(children.iter().filter_map(|c| c.files).sum()),
+        children,
+    })
+}
+
 /// Runs `cmd`. Text goes to `out` as it comes; with `json` nothing is printed here and the
 /// one document to print is returned.
 fn command(
@@ -281,6 +335,33 @@ fn command(
                     let _ = writeln!(out, "{size:>12}  {}", h.path);
                 }
             }
+            None
+        }
+        Command::Du { path } => {
+            let sizes = folder_sizes(b, &abs(&path))?;
+            if json {
+                return Ok(Some(serde_json::to_value(&sizes).unwrap_or_default()));
+            }
+            let size = |b: Option<u64>| {
+                b.map_or("?".to_owned(), |b| {
+                    humansize::format_size(b, humansize::DECIMAL)
+                })
+            };
+            for c in &sizes.children {
+                let files = c.files.map_or(String::new(), |f| {
+                    format!("{f} file{}", if f == 1 { "" } else { "s" })
+                });
+                let _ = writeln!(out, "{:>10}  {files:>12}  {}", size(c.bytes), c.path);
+            }
+            let files = sizes.files.map_or(String::new(), |f| {
+                format!("{f} file{}", if f == 1 { "" } else { "s" })
+            });
+            let _ = writeln!(
+                out,
+                "{:>10}  {files:>12}  {}",
+                size(sizes.bytes),
+                sizes.path
+            );
             None
         }
         Command::Tag(t) => {

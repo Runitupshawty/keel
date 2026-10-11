@@ -76,13 +76,7 @@ impl Sidebar {
     /// The drive whose mount point holds `dir` (whole path components: `/media/usb` is
     /// not the drive of `/media/usb2`), the deepest one when mounts nest.
     pub fn drive_of(&self, dir: &VPath) -> Option<&Drive> {
-        let fold = |s: String| if cfg!(windows) { s.to_lowercase() } else { s };
-        let local = fold(dir.to_local_path()?.to_string_lossy().into_owned());
-        let local = std::path::Path::new(&local);
-        self.drives
-            .iter()
-            .filter(|(name, ..)| local.starts_with(fold(name.clone())))
-            .max_by_key(|(name, ..)| name.len())
+        drive_in(&self.drives, dir)
     }
 
     /// Draws the sidebar; clicks become `Navigate`, middle-clicks `NewTabAt`. `archives`:
@@ -215,6 +209,17 @@ fn clicked(r: &egui::Response, path: &VPath, out: &mut Vec<Action>) {
     } else if r.middle_clicked() {
         out.push(Action::NewTabAt(path.clone()));
     }
+}
+
+/// The drive of `drives` a local folder is on (the longest mount point holding it).
+pub fn drive_in<'a>(drives: &'a [Drive], dir: &VPath) -> Option<&'a Drive> {
+    let fold = |s: String| if cfg!(windows) { s.to_lowercase() } else { s };
+    let local = fold(dir.to_local_path()?.to_string_lossy().into_owned());
+    let local = std::path::Path::new(&local);
+    drives
+        .iter()
+        .filter(|(name, ..)| local.starts_with(fold(name.clone())))
+        .max_by_key(|(name, ..)| name.len())
 }
 
 #[cfg(test)]

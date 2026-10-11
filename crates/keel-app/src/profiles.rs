@@ -158,7 +158,7 @@ pub fn load(name: &str) -> Loaded {
     let (session, b) = session_path(name).map_or((None, None), |p| Session::load_from(&p));
     Loaded {
         name: name.to_owned(),
-        themes: Themes::load(&settings.theme),
+        themes: Themes::load(),
         settings,
         session,
         notices: a.into_iter().chain(b).collect(),

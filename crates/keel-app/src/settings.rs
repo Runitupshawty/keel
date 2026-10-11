@@ -12,9 +12,6 @@ use std::time::Duration;
 /// Writes wait this long after the last change.
 pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 
-/// Built-in themes offered in the Settings window.
-pub const THEMES: &[&str] = &["dark", "light"];
-
 const MB: u64 = 1024 * 1024;
 /// The UI scale's range (egui allows 0.2 to 5).
 pub const MIN_SCALE: f32 = 0.5;
@@ -39,6 +36,8 @@ pub struct Settings {
     pub remote_thumbnails: bool,
     /// Local copies and moves that touch the same drive run one after another.
     pub one_transfer_per_drive: bool,
+    /// Task 46: Calculate sizes starts on its own in local folders outside the library.
+    pub folder_sizes_local: bool,
     /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
@@ -193,6 +192,7 @@ impl Default for Settings {
             terminal_height: 220.0,
             remote_thumbnails: false,
             one_transfer_per_drive: false,
+            folder_sizes_local: false,
             remotes: Vec::new(),
             clouds: Vec::new(),
             hotkey: "Ctrl+Shift+Alt+K".into(),
@@ -577,6 +577,8 @@ pub fn window(
     searcher: Option<&str>, // Task 24: the active search backend's name
     library: &mut crate::library::LibraryUi, // Task 29
     devices: &crate::devices::Devices, // Task 36
+    themes: &[(String, String)], // Task 47: (name, label)
+    color_themes: &mut crate::color_theme::ColorThemes,
 ) -> bool {
     let mut theme_changed = false;
     crate::a11y::esc_closes(ctx, "Settings", open);
@@ -613,19 +615,24 @@ pub fn window(
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Theme");
+                    let shown = (themes.iter().find(|(n, _)| *n == s.theme))
+                        .map_or(s.theme.as_str(), |(_, label)| label.as_str());
                     let combo = egui::ComboBox::from_id_salt("settings-theme")
-                        .selected_text(s.theme.as_str())
+                        .selected_text(shown)
+                        .width(220.0)
                         .show_ui(ui, |ui| {
-                            for name in THEMES {
-                                if ui.selectable_label(s.theme == *name, *name).clicked()
+                            for (name, label) in themes {
+                                if ui.selectable_label(s.theme == *name, label).clicked()
                                     && s.theme != *name
                                 {
-                                    s.theme = (*name).to_owned();
+                                    s.theme = name.clone();
                                     theme_changed = true;
                                 }
                             }
                         });
                     let _ = combo.response.named("Theme");
+                    ui.end_row();
+                    color_themes.settings_rows(ui, &s.theme);
                     ui.end_row();
                     ui.label("Hidden files");
                     ui.checkbox(&mut s.show_hidden, "Show");
@@ -664,6 +671,12 @@ pub fn window(
                     ui.label("Transfers");
                     ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
                         .on_hover_text("Copies and moves on the same drive wait for each other");
+                    ui.end_row();
+                    ui.label("Folder sizes");
+                    ui.checkbox(&mut s.folder_sizes_local, "In local folders")
+                        .on_hover_text(
+                            "Walk each local folder you open for its subfolders' sizes (library folders always have them)",
+                        );
                     ui.end_row();
                     // --- Task 24 ---
                     let label = ui.label("Global hotkey");

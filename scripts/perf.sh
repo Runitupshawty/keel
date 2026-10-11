@@ -20,6 +20,7 @@ jobs="${CARGO_BUILD_JOBS:-2}"
 tests=(
   "keel-core|--lib|perf_index_200k_files|"
   "keel-core|--lib|perf_index_small_folders_generated|"
+  "keel-core|--lib|perf_folder_totals|"
   "keel-core|--lib|perf_watcher_burst_10k|"
   "keel-core|--lib|perf_hash_10k_files_of_1mib|"
   "keel-core|--lib|ten_thousand_small_files_hash_fast|"

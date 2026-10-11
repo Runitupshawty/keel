@@ -21,6 +21,9 @@ pub enum ViewMode {
     // --- Task 32 ---
     /// Square photo / video tiles from sidecars (`view_media`).
     Media,
+    // --- Task 46 ---
+    /// Folders and files by size with share bars (`view_details` with `Tab::sizes_view`).
+    Sizes,
 }
 
 pub struct Pane {
@@ -57,6 +60,8 @@ pub struct ViewCx<'a> {
     pub tags_column: bool,
     // --- Task 32 ---
     pub media: &'a mut crate::media::Media,
+    /// Task 46: folder totals walked this session.
+    pub sizes: &'a crate::sizes::Sizes,
     /// This pane has the keys: its cursor row takes the keyboard focus (`a11y::item`).
     pub keys: bool,
 }
@@ -213,6 +218,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
+    tab.sizes_view = pane.view == ViewMode::Sizes && !search;
     if let Some(banner) = &cx.banner {
         ui.horizontal(|ui| {
             if tab.loading {
@@ -236,7 +242,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     match pane.view {
         // Search rows need the Folder column.
         _ if search => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
-        ViewMode::Details => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
+        ViewMode::Details | ViewMode::Sizes => view_details::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Grid => view_grid::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Columns => crate::view_columns::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Media => crate::view_media::ui(ui, (idx, tab_idx), tab, cx, out),
@@ -349,6 +355,11 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             for (mode, text, tip) in [
+                (
+                    ViewMode::Sizes,
+                    "Sizes",
+                    "Folders and files by size: what fills this folder (Enter goes down, Backspace up)",
+                ),
                 (
                     ViewMode::Media,
                     "Media",
@@ -699,6 +710,14 @@ pub fn context_menu(
         Action::RevealInSystem,
     );
     item(ui, "Open terminal here", "", Action::OpenTerminal);
+    if !search {
+        item(
+            ui,
+            "Calculate sizes",
+            "",
+            Action::CalculateSizes { fresh: true },
+        );
+    }
     item(ui, "Properties", "", Action::Properties);
     #[cfg(windows)]
     if on_item {

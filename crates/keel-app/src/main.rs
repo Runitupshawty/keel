@@ -10,6 +10,7 @@ mod backend; // the library in-process or in keel-daemon
 mod bulk_rename;
 mod clipboard;
 mod clouds;
+mod color_theme; // Task 47: VS Code color themes
 mod crash;
 mod devices;
 mod dialogs;
@@ -41,6 +42,7 @@ mod settings;
 mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
 mod sidebar_remotes;
+mod sizes; // Task 46: folder sizes
 mod state;
 mod tab;
 mod term_pane;

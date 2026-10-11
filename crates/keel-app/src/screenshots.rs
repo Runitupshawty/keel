@@ -438,6 +438,43 @@ fn docs_screenshots() {
     }
 }
 
+/// Task 47: the main window in each built-in color theme, `docs/screenshots/theme-<name>.png`.
+#[test]
+#[ignore]
+fn docs_screenshots_themes() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let root = root();
+    write_fixture(&root);
+    let keel = root.join(".keel");
+    std::env::set_var("KEEL_CONFIG_DIR", keel.join("config"));
+    std::env::set_var("KEEL_DATA_DIR", keel.join("data"));
+    std::env::set_var("KEEL_NET_SECRET", "memory");
+    std::fs::create_dir_all(out_dir()).unwrap();
+    let (docs, pics) = (root.join("Documents"), root.join("Pictures"));
+    let mut h = harness(
+        &root,
+        VPath::local(&docs),
+        VPath::local(&pics),
+        Default::default(),
+    );
+    assert!(wait(&mut h, 30, &listed), "listed");
+    select(&mut h.state_mut().state, 0, &["budget.csv"]);
+    for (name, _) in crate::theme::BUILTIN {
+        {
+            let s = &mut h.state_mut().state;
+            s.settings.theme = (*name).to_owned();
+            s.theme = s.themes.get(name);
+            s.theme.apply(&s.ctx);
+        }
+        shot(&mut h, &root, &format!("theme-{name}"));
+    }
+    drop(h);
+    let _ = std::fs::remove_dir_all(&root);
+    for var in ["KEEL_CONFIG_DIR", "KEEL_DATA_DIR", "KEEL_NET_SECRET"] {
+        std::env::remove_var(var);
+    }
+}
+
 fn run(root: &Path) -> Vec<&'static str> {
     let mut skipped = Vec::new();
     let (docs, pics, backup) = (
