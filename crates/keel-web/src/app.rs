@@ -192,6 +192,9 @@ pub struct WebApp {
     /// How many panes the desktop layout showed last.
     #[cfg(feature = "e2e")]
     e2e_columns: u8,
+    /// A phone tab's label did not fit on one line in its button (last frame).
+    #[cfg(feature = "e2e")]
+    e2e_tabs_cut: bool,
 }
 
 fn parse<T: DeserializeOwned>(r: Result<Value, String>) -> Result<T, String> {
@@ -323,6 +326,8 @@ impl WebApp {
             e2e_preview_width: 0.0,
             #[cfg(feature = "e2e")]
             e2e_columns: 0,
+            #[cfg(feature = "e2e")]
+            e2e_tabs_cut: false,
         };
         if web::scrub_address() {
             app.notice = Some(
@@ -1228,6 +1233,7 @@ impl WebApp {
             "preview_width": self.e2e_preview_width,
             "message": match &self.shown { Shown::Message(m) => Some(m), _ => None },
             "columns": self.e2e_columns,
+            "tabs_cut": self.e2e_tabs_cut,
             "grid": self.grid,
             "active": self.active,
             "panes": self.panes.iter().map(|p| &p.path).collect::<Vec<_>>(),
@@ -2047,17 +2053,37 @@ impl WebApp {
             self.insecure_banner(ui);
         });
         self.offline_bar(ctx);
+        #[cfg(feature = "e2e")]
+        let mut cut = false;
         egui::TopBottomPanel::bottom("phone-tabs").show(ctx, |ui| {
+            // A quarter of a small phone is narrow for the finger-sized padding: the labels
+            // stay on one line (they broke mid-word at 320 points).
+            ui.spacing_mut().button_padding.x = 4.0;
             ui.columns(PhoneTab::ALL.len(), |cols| {
                 for (col, tab) in cols.iter_mut().zip(PhoneTab::ALL) {
                     let on = self.screen.tab == tab && !self.screen.sheet;
-                    let b = egui::Button::new(tab.label()).selected(on);
+                    #[cfg(feature = "e2e")]
+                    {
+                        let font = egui::TextStyle::Button.resolve(col.style());
+                        let text = tab.label().to_owned();
+                        let galley =
+                            col.fonts(|f| f.layout_no_wrap(text, font, egui::Color32::WHITE));
+                        let room = col.available_width() - 2.0 * col.spacing().button_padding.x;
+                        cut |= galley.size().x > room;
+                    }
+                    let b = egui::Button::new(tab.label())
+                        .selected(on)
+                        .wrap_mode(egui::TextWrapMode::Truncate);
                     if col.add_sized([col.available_width(), 48.0], b).clicked() {
                         self.screen.show(tab);
                     }
                 }
             });
         });
+        #[cfg(feature = "e2e")]
+        {
+            self.e2e_tabs_cut = cut;
+        }
         self.error_bar(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.screen.sheet {

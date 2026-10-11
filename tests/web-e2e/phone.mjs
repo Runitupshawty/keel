@@ -87,6 +87,16 @@ export async function run({ browser, base, token, ids, daemon }) {
   await p.noLeak();
   await p.close();
 
+  // A small phone (320 points): the bottom bar's labels fit their buttons (they broke
+  // mid-word: "Brow/se", "Devic/es").
+  const small = await openPage(browser, base, token, { ...PHONE, viewport: { width: 320, height: 568 } });
+  await small.signIn();
+  await small.until("small phone", (s) => s.layout === "phone" && s.phone_tab === "Browse");
+  await sleep(200);
+  await small.shot("27b-phone-320");
+  if ((await small.state()).tabs_cut) await small.fail("a bottom bar label does not fit its button at 320 wide");
+  await small.close();
+
   // A tablet in portrait is wide enough for the desktop layout, with one pane (two were
   // squeezed to a few letters, names under their sizes and dates).
   const tab = await openPage(browser, base, token, { viewport: { width: 820, height: 1180 }, hasTouch: true, colorScheme: "dark" });
