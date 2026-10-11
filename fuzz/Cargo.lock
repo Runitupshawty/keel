@@ -3398,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "keel-api"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "keel-core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3459,7 +3459,7 @@ dependencies = [
 
 [[package]]
 name = "keel-daemon"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3498,7 +3498,7 @@ dependencies = [
 
 [[package]]
 name = "keel-mount"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "keel-core",
@@ -3510,7 +3510,7 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "keel-preview"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ab_glyph",
  "calamine",
@@ -3566,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "keel-search"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "keel-vfs"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
