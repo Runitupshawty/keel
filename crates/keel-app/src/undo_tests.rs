@@ -259,6 +259,63 @@ fn refusals_name_what_cannot_be_undone() {
     assert!(place_refusal(&zip, true).is_some() && place_refusal(&node, true).is_some());
 }
 
+/// A library operation is recorded from its plan and the disk once its job ended: a Skip
+/// left what existed, a move counts only sources that went, remote deletes are refused.
+#[test]
+fn library_operations_record_what_their_job_did() {
+    use keel_core::{OnConflict, Op as L};
+    let planned = |op: L, existed: &[&str]| Planned {
+        op,
+        existed: existed.iter().map(|n| p(n).display()).collect(),
+        since: std::time::SystemTime::now(),
+    };
+    let copy = planned(
+        L::Copy {
+            src: vec![p("a/x"), p("a/y"), p("a/z")],
+            dst_dir: p("b"),
+            on_conflict: OnConflict::Skip,
+        },
+        &["b/y"],
+    );
+    // y existed (skipped), z never arrived (the job failed there).
+    let fs = disk(&[("a/x", 1), ("a/y", 2), ("a/z", 3), ("b/x", 1), ("b/y", 9)]);
+    assert_eq!(copy.done(&fs), Ok((Op::Copy, vec![item("b/x", None, 1)])));
+    let mv = planned(
+        L::Move {
+            src: vec![p("a/x"), p("a/y")],
+            dst_dir: p("b"),
+            on_conflict: OnConflict::Skip,
+        },
+        &[],
+    );
+    // y is still in a: not moved.
+    let fs = disk(&[("b/x", 1), ("a/y", 2), ("b/y", 2)]);
+    assert_eq!(
+        mv.done(&fs),
+        Ok((Op::Move, vec![item("b/x", Some("a/x"), 1)]))
+    );
+    let ren = planned(
+        L::Rename {
+            path: p("a/x"),
+            new_name: "w".into(),
+        },
+        &[],
+    );
+    let (op, items) = ren.done(disk(&[("a/w", 4)])).unwrap();
+    assert_eq!(op, Op::Rename(vec![(p("a/x"), p("a/w"))]));
+    assert_eq!(items, [item("a/w", Some("a/x"), 4)]);
+    let host = VPath {
+        scheme: "sftp".into(),
+        authority: "box".into(),
+        path: "/x".into(),
+    };
+    let remote = planned(L::Delete { paths: vec![host] }, &[]);
+    assert_eq!(
+        remote.done(disk(&[])),
+        Err(crate::state::PERMANENT.to_owned())
+    );
+}
+
 // ---- in a temporary folder ------------------------------------------------------------
 
 /// Every path under `root` with its bytes (folders: none), sorted.
