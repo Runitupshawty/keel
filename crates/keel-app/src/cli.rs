@@ -466,11 +466,13 @@ fn url_only(args: &[OsString]) -> Option<Result<String, clap::Error>> {
         },
         _ => return Some(refuse("other arguments were given")),
     };
-    let scheme = link
-        .get(..5)
-        .is_some_and(|s| s.eq_ignore_ascii_case("keel:"));
-    if !scheme {
-        return Some(refuse("not a keel: link"));
+    // Do not repair launcher quoting or concatenate split arguments. Literal spaces,
+    // quotes and controls must be percent-encoded; encoded values remain search data.
+    if link.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"') {
+        return Some(refuse("quotes and whitespace must be percent-encoded"));
+    }
+    if let Err(e) = keel_core::link::parse(link) {
+        return Some(refuse(&e.to_string()));
     }
     Some(Ok(link.to_owned()))
 }
@@ -653,6 +655,33 @@ mod tests {
             &["search", "--url", link],
         ] {
             assert!(full(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn handler_validates_links_before_cli_dispatch() {
+        for link in [
+            "keel:search?q=a\" es -export-txt target -n 0 x",
+            "keel:search?q=a op files.delete --execute",
+            "keel:search?q=a\t--profile=p",
+            "keel:search?q=%zz",
+            "keel:search?q=%ff",
+            "keel:search?q=a&q=b",
+            "keel:run?path=x",
+            "keel:open?path=relative",
+        ] {
+            assert!(full(&[URL_HANDLER, "--", link]).is_err(), "{link}");
+        }
+        for query in ["a\" es -export-txt target", "op files.delete --execute", "--profile=p"] {
+            let link = keel_core::link::Link::Search {
+                query: query.into(),
+                path: None,
+            }.to_url();
+            let cli = full(&[URL_HANDLER, "--", &link]).unwrap();
+            assert!(cli.command.is_none());
+            assert!(cli.profile.is_none());
+            assert!(!cli.register_url_protocol);
+            assert_eq!(crate::url_protocol::request(cli.url.as_deref().unwrap()).unwrap().search.as_deref(), Some(query));
         }
     }
 
@@ -1164,8 +1193,8 @@ mod tests {
         let cli = full(&["--url-handler", "--", "keel:search?q=a+b"]).unwrap();
         assert_eq!(cli.url.as_deref(), Some("keel:search?q=a+b"));
         assert_eq!(cli.command, None);
-        let cli = full(&["--url=KEEL:open?path=x"]).unwrap();
-        assert_eq!(cli.url.as_deref(), Some("KEEL:open?path=x"));
+        let cli = full(&["--url=KEEL:search?q=x"]).unwrap();
+        assert_eq!(cli.url.as_deref(), Some("KEEL:search?q=x"));
         let cli = parse(&["--register-url-protocol"]).unwrap();
         assert!(cli.register_url_protocol && !cli.unregister_url_protocol);
         assert!(parse(&["--register-url-protocol", "--unregister-url-protocol"]).is_err());

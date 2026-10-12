@@ -4,6 +4,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## Unreleased
 
+### Fixed
+- Validate protocol links before CLI dispatch; reject raw quotes, whitespace, malformed encoding and extra arguments. Encoded flags remain search text. 
+
 ### Added
 
 - **`keel es`**: search the whole disk from a terminal with the switches of Everything's `es.exe`, through the same backend as the window (Everything, Keel's NTFS index, Spotlight, `locate` or the folder index), or the library with `-library`. Match switches (`-case`, `-w`, `-p`, `-diacritics`, `-regex`, `-prefix`, `-suffix`), `-n`/`-o`, `-path`, `-parent-path`, `-parent`, `/ad` and `/a-d`, sorting (`-sort`, DIR-style `/o`), columns (`-name`, `-path-column`, `-full-path-and-name`, `-extension`, `-size`, `-date-modified`), `-size-format`, `-date-format`, CSV, TSV, EFU, JSON, M3U and text output to the terminal or a file (`-export-csv <file>`, …), `-no-header`, `-utf8-bom`, `-count`, `-get-result-count`, `-get-total-size`, `-get-folder-size`, `-timeout` and `-no-result-error`; `-ipc1`/`-ipc2`/`-ipc3` are accepted and ignored. `-p` needs Everything (Keel's own index matches names) and says so. See [api.md](docs/api.md#keel-es-everything-style-search).
