@@ -13,6 +13,9 @@
 //!
 //! The Classic style keeps the system title bar everywhere.
 
+// The hit testing serves the Windows subclass; elsewhere only its tests use it.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use crate::design::Style;
 use egui::{Pos2, Rect};
 

@@ -935,7 +935,21 @@ mod tests {
             let start = start.clone();
             let mut harness = Harness::builder()
                 .with_size(egui::vec2(width, 600.0))
-                .build_eframe(|cc| App::new(cc, Boot::at(start)));
+                .build_eframe(|cc| {
+                    // The panes' own view buttons: Classic (Finder-style has them in the
+                    // toolbar).
+                    let settings = Settings {
+                        style: crate::design::Style::Classic,
+                        ..Default::default()
+                    };
+                    App::new(
+                        cc,
+                        Boot {
+                            settings,
+                            ..Boot::at(start)
+                        },
+                    )
+                });
             wait_listed(&mut harness);
             let right = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x1;
             let left = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x0;

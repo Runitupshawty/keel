@@ -1308,7 +1308,7 @@ fn fingerprint(s: &AppState) -> String {
         })
         .collect();
     format!(
-        "{panes:?} {:?}",
+        "{panes:?} {:?} {:?}",
         (
             s.active,
             s.dual,
@@ -1322,7 +1322,9 @@ fn fingerprint(s: &AppState) -> String {
             s.jobs.list.len(),
             toast_texts(s),
             s.theme.dark,
-        )
+        ),
+        // Task 65.
+        (s.settings.show_sidebar, crate::toolbar::customizing(&s.ctx)),
     )
 }
 
@@ -1369,6 +1371,8 @@ fn command_palette_every_command() {
             st.active = 0;
             st.dialog = None;
             st.settings_open = false;
+            st.settings.show_sidebar = true;
+            crate::toolbar::close_customize(&st.ctx);
             st.jump.open = false;
             st.panes[0].path_edit = None;
             st.tab_mut(0).renaming = None;

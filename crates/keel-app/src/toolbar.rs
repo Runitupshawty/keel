@@ -990,6 +990,17 @@ pub fn open_customize(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(customize_id(), true));
 }
 
+/// The Customize Toolbar dialog is open.
+#[cfg(test)]
+pub fn customizing(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(customize_id()).unwrap_or(false))
+}
+
+#[cfg(test)]
+pub fn close_customize(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(customize_id(), false));
+}
+
 /// The Customize Toolbar dialog, while open: drag items to reorder them, into the toolbar
 /// list to add them and out of it to remove them (or use each row's buttons), Icon Only or
 /// Icon and Text, Restore Default. Changes show at once and are saved with the profile.
