@@ -75,9 +75,17 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
     for row in rows {
         let on_host = current.scheme == row.home.scheme && current.authority == row.id;
         let on_bookmark = row.bookmarks.iter().any(|(_, p)| p == current);
-        let glyph = Glyph::Dot(dot_color(ui, row.status));
+        let dot = dot_color(ui, row.status);
         let id = Id::new(("sidebar-remote", &row.id));
-        let r = sidebar::row(ui, id, glyph, &row.label, on_host && !on_bookmark, CLICK, |_| ());
+        let r = sidebar::row(
+            ui,
+            id,
+            Glyph::Network,
+            &row.label,
+            on_host && !on_bookmark,
+            CLICK,
+            |ui| status_dot(ui, dot),
+        );
         let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected".to_owned(),
             _ => row.detail.clone(),
@@ -173,9 +181,11 @@ pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut
     };
     for row in rows {
         let here = current.scheme == "cloud" && current.authority == row.id;
-        let glyph = Glyph::Dot(dot_color(ui, row.status));
+        let dot = dot_color(ui, row.status);
         let id = Id::new(("sidebar-cloud", &row.id));
-        let r = sidebar::row(ui, id, glyph, &row.label, here, CLICK, |_| ());
+        let r = sidebar::row(ui, id, Glyph::Cloud, &row.label, here, CLICK, |ui| {
+            status_dot(ui, dot)
+        });
         let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected yet".to_owned(),
             _ => row.detail.clone(),
@@ -207,4 +217,10 @@ pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut
             }
         });
     }
+}
+
+/// A connection's status dot at the right end of its row.
+fn status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
 }

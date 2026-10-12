@@ -5,8 +5,6 @@ use egui::{pos2, vec2, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Glyph {
-    /// Nothing (the text keeps its place).
-    None,
     Folder,
     Recents,
     Applications,
@@ -21,12 +19,10 @@ pub enum Glyph {
     Terminal,
     Archive,
     Cloud,
-    Device,
     Overview,
     Star,
     View,
     Plus,
-    Tags,
     Eject,
     /// A filled dot in this color (status dots, tag colors).
     Dot(Color32),
@@ -50,7 +46,6 @@ pub fn paint(p: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
     let ring = |x: f32, y: f32, r: f32| p.circle_stroke(at(x, y), r * s, stroke);
     let fill = |x: f32, y: f32, r: f32| p.circle_filled(at(x, y), r * s, color);
     match glyph {
-        Glyph::None => {}
         Glyph::Folder => {
             closed(&[
                 (1.5, 3.5),
@@ -140,10 +135,6 @@ pub fn paint(p: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
             fill(12.2, 10.3, 2.5);
             p.rect_filled(box_(5.0, 9.8, 12.2, 12.8), 0.0, color);
         }
-        Glyph::Device => {
-            frame(box_(3.0, 3.0, 13.0, 10.5), 1.0);
-            line(&[(1.0, 12.8), (15.0, 12.8)]);
-        }
         Glyph::Overview => {
             line(&[(3.5, 13.5), (3.5, 8.5)]);
             line(&[(8.0, 13.5), (8.0, 3.0)]);
@@ -166,10 +157,6 @@ pub fn paint(p: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::Plus => {
             line(&[(8.0, 3.0), (8.0, 13.0)]);
             line(&[(3.0, 8.0), (13.0, 8.0)]);
-        }
-        Glyph::Tags => {
-            closed(&[(2.0, 2.5), (8.0, 2.5), (14.0, 8.5), (8.5, 14.0), (2.0, 7.8)]);
-            fill(5.0, 5.5, 1.0);
         }
         Glyph::Eject => {
             let tri = [at(8.0, 3.0), at(13.0, 9.0), at(3.0, 9.0)].to_vec();

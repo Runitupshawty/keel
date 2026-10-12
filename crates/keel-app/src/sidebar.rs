@@ -42,8 +42,6 @@ pub mod metrics {
     pub const GAP: f32 = 6.0;
     /// Above each section header.
     pub const SECTION_GAP: f32 = 8.0;
-    /// Remote bookmarks under their host.
-    pub const INDENT: f32 = 14.0;
 }
 use metrics::*;
 
@@ -214,7 +212,15 @@ impl Sidebar {
             let label = fav.label();
             let selected = target.as_ref() == Some(current);
             let id = Id::new(("sidebar-favorite", i));
-            let r = row(ui, id, glyph, &label, selected, Sense::click_and_drag(), |_| ());
+            let r = row(
+                ui,
+                id,
+                glyph,
+                &label,
+                selected,
+                Sense::click_and_drag(),
+                |_| (),
+            );
             let r = match &target {
                 Some(t) => r.on_hover_text(t.display()),
                 None => r.on_hover_text("Files you opened lately (the library's Recents)"),
@@ -297,11 +303,19 @@ impl Sidebar {
             };
             let ejectable = ejectable(name, kind);
             let id = Id::new(("sidebar-drive", name));
-            let r = row(ui, id, glyph, &text, &path == current, Sense::click(), |ui| {
-                if ejectable && eject_button(ui, &text).clicked() {
-                    out.push(Action::Sidebar(SidebarCmd::Eject(name.clone())));
-                }
-            });
+            let r = row(
+                ui,
+                id,
+                glyph,
+                &text,
+                &path == current,
+                Sense::click(),
+                |ui| {
+                    if ejectable && eject_button(ui, &text).clicked() {
+                        out.push(Action::Sidebar(SidebarCmd::Eject(name.clone())));
+                    }
+                },
+            );
             let mut tip = path.display();
             if *total > 0 {
                 let used = 1.0 - *free as f32 / *total as f32;
@@ -342,8 +356,16 @@ impl Sidebar {
         }
         for (pane, tab, archive) in archives {
             let id = Id::new(("sidebar-archive", pane, tab));
-            let r = row(ui, id, Glyph::Archive, archive.name(), false, Sense::click(), |_| ())
-                .on_hover_text(archive.display());
+            let r = row(
+                ui,
+                id,
+                Glyph::Archive,
+                archive.name(),
+                false,
+                Sense::click(),
+                |_| (),
+            )
+            .on_hover_text(archive.display());
             if r.clicked() {
                 out.push(Action::FocusTab {
                     pane: *pane,
@@ -419,11 +441,13 @@ fn drop_zone(
         return;
     }
     let gap = gap_at(rows, pos.y, len);
-    let y = (rows.iter().find(|(i, ..)| *i >= gap))
-        .map_or(last.1.bottom(), |(_, rect, _)| rect.top());
+    let y =
+        (rows.iter().find(|(i, ..)| *i >= gap)).map_or(last.1.bottom(), |(_, rect, _)| rect.top());
     let line = [pos2(zone.left() + PAD_X, y), pos2(zone.right() - PAD_X, y)];
-    ui.painter().line_segment(line, Stroke::new(2.0_f32, accent));
-    ui.painter().circle_stroke(line[0], 3.0, Stroke::new(1.5_f32, accent));
+    ui.painter()
+        .line_segment(line, Stroke::new(2.0_f32, accent));
+    ui.painter()
+        .circle_stroke(line[0], 3.0, Stroke::new(1.5_f32, accent));
     if !released {
         return;
     }
@@ -773,7 +797,9 @@ impl AppState {
     /// Pins `dirs` in order before row `at` (the end when None).
     fn pin_all(&mut self, dirs: Vec<VPath>, at: Option<usize>) {
         if dirs.is_empty() {
-            return self.toasts.error("Only folders can be added to the sidebar");
+            return self
+                .toasts
+                .error("Only folders can be added to the sidebar");
         }
         let sidebar = &self.sidebar;
         let places = |p: Place| sidebar.place(p);
@@ -900,7 +926,11 @@ mod tests {
             },
         );
         assert_eq!(labels(&s).len(), 3);
-        assert!(s.toasts.list.iter().any(|t| t.text.contains("Only folders")));
+        assert!(s
+            .toasts
+            .list
+            .iter()
+            .any(|t| t.text.contains("Only folders")));
         // Home is already there (as a place): Add to Sidebar adds nothing.
         cmd(&mut s, SidebarCmd::PinSelection);
         assert_eq!(labels(&s), ["Work", "Photos", "Home"]);

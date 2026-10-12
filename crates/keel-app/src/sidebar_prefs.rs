@@ -282,9 +282,7 @@ pub enum SidebarCmd {
 pub fn folders_in(entries: &[keel_vfs::Entry], paths: &[VPath]) -> Vec<VPath> {
     paths
         .iter()
-        .filter(|p| {
-            (entries.iter()).any(|e| &e.path == *p && e.kind == keel_vfs::Kind::Dir)
-        })
+        .filter(|p| (entries.iter()).any(|e| &e.path == *p && e.kind == keel_vfs::Kind::Dir))
         .cloned()
         .collect()
 }

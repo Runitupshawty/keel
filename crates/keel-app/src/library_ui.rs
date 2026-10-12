@@ -203,7 +203,13 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
     }
     // Saved views (Phase 16 makes them Smart Folders).
     for v in &l.views {
-        entry(ui, Glyph::View, &v.name, LibCmd::Query(v.query.clone()), out);
+        entry(
+            ui,
+            Glyph::View,
+            &v.name,
+            LibCmd::Query(v.query.clone()),
+            out,
+        );
     }
     entry(ui, Glyph::Plus, "Add source…", LibCmd::AddSource, out);
 }
