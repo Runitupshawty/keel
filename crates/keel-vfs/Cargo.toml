@@ -64,6 +64,10 @@ keyring.workspace = true
 ssh-key.workspace = true
 dirs.workspace = true
 sha2.workspace = true
+# Disk usage duplicates (`du::duplicates`): BLAKE3 (the library's), xxHash3 (already in the
+# tree through ruzstd), SHA-256.
+blake3.workspace = true
+twox-hash = { version = "2", default-features = false, features = ["std", "xxhash3_128"] }
 hmac.workspace = true
 sha1.workspace = true
 opendal = { workspace = true, optional = true }

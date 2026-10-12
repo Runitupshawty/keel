@@ -17,6 +17,7 @@ mod devices;
 mod dialogs;
 mod disk_usage;
 mod dropzone;
+mod du_tabs; // Task 84: the Disk Usage window's analysis tabs
 mod folder_ops; // Task 60: folder operation dialogs
 mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)

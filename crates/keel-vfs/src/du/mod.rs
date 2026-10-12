@@ -30,6 +30,15 @@ mod sys;
 #[cfg(test)]
 mod tests;
 mod walk;
+// The Disk Usage window's analysis tabs (Task 84).
+pub mod analysis;
+#[cfg(test)]
+mod analysis_tests;
+pub mod duplicates;
+pub mod largest;
+pub mod permissions;
+pub mod search;
+pub mod storage;
 
 pub use file::{load, load_from, save, save_to, FORMAT, VERSION};
 pub use filter::Filters;
