@@ -153,7 +153,31 @@ Folders show their total size in the Details **Size** column, and sorting by siz
 
 The Size column shows `…` while a folder is being walked and stays empty while its total is unknown.
 
-**The Sizes view** (the **Sizes** button next to **Media**, or "Sizes view" in the palette) lists the folder's children biggest first, folders and files together. Each row has a bar with its share of the folder, its file count, and its share of the space used on the drive (the drive's own numbers; empty on hosts and cloud accounts). Enter goes into a folder and Backspace back up, as in Details. Outside the library, opening the Sizes view on a folder on a fixed disk walks it once; on a network share, a removable drive, an SFTP host or a cloud account it shows a **Calculate sizes** button instead, since walking those is slow or costs requests. There is no treemap.
+**The Sizes view** (the **Sizes** button next to **Media**, or "Sizes view" in the palette) lists the folder's children biggest first, folders and files together. Each row has a bar with its share of the folder, its file count, and its share of the space used on the drive (the drive's own numbers; empty on hosts and cloud accounts). Enter goes into a folder and Backspace back up, as in Details. Outside the library, opening the Sizes view on a folder on a fixed disk walks it once; on a network share, a removable drive, an SFTP host or a cloud account it shows a **Calculate sizes** button instead, since walking those is slow or costs requests.
+
+### Treemap, sunburst and flame graph
+
+Above the Sizes view, **Table**, **Treemap**, **Sunburst** and **Flame graph** switch between the list and a chart of the shown folder (remembered per pane). The chart uses the totals the view already has: the folder's files and folders, and below each folder every total known there (all of them after a **Calculate sizes** walk; in a library source a few levels are read from the index as you look). What a folder holds besides its known subfolders shows as one tile, "Files in …"; folders whose total is not known yet are left out until it arrives.
+
+- **Treemap**: each file is a rectangle sized by its bytes, inside its folder's rectangle. Files are colored by type: the biggest type (by bytes) gets the first of 13 colors, the next the second, and so on, repeating after 13 (WinDirStat's colors, editable). Folders whose contents are not known, and the "Files in" tiles, are gray.
+- **Sunburst**: the folder in the middle, its children as a ring around it, theirs as the next ring, each a slice of its parent's slice by size (10 rings at most; slivers under 0.2 % are left out).
+- **Flame graph**: the folder as the top row, its children in the row below by size, and so on down, names inside the bars wide enough for them.
+
+Hovering shows the path, the size and its share of the zoomed folder. A click selects (and selects that file or folder in the table); **double-click** or **Enter** zooms into a folder, **Ctrl+wheel** zooms in toward the pointer and out again, and **Backspace**, the mouse's back button or **⏶ Zoom out** go back up (while a chart has the keyboard, Backspace zooms out instead of leaving the folder). **Arrow keys** move the selection: in the treemap to the tile next to it on the same level, in the sunburst and flame graph to the neighbor on the ring or row (left, right), the parent (up) or the biggest child (down). The selected tile is outlined, and with **Outline every file of the selected type** on, so is every other file of its type.
+
+**Options** (next to the switch) holds the treemap's look, the same for every pane:
+
+| Option | What it does |
+|---|---|
+| Style | Presets: **WinDirStat** (the default: squarified, cushions), **KDirStat** (strips, a gray grid), **SequoiaView** (squarified, softer cushions), **Flat** (no shading, grid and folder frames). Changing any option below makes it Custom; **Reset** goes back to WinDirStat. |
+| Layout | **Squarified** (tiles as square as possible), **Strips (KDirStat)** (rows biggest first), **Hilbert** and **Moore** (files in size order follow a space-filling curve, so neighbors in size are neighbors on screen; Moore's curve closes into a loop). |
+| Cushion shading | Each tile shaded as a cushion, folders as bigger cushions they sit on (van Wijk and van de Wetering's cushion treemaps); off draws flat tiles. **Cushion height**, **Scale factor** (each level's height against its folder's), **Ambient light** and the **Light source** (drag the dot, or the x and y sliders) set how it is lit. |
+| Brightness | How light the colors are. |
+| Grid | A line between tiles, in the color chosen. |
+| Folder frames | A frame around each folder at least **Frame folders larger than** points wide and high, in the color chosen. |
+| Colors | The 13 type colors in rank order; **Default colors** restores WinDirStat's. |
+
+The treemap is laid out and shaded on a worker thread, so a big folder keeps the window responsive; while it works the previous picture stays, stretched to the new size.
 
 Sizes are apparent sizes (a file's length, not the space it takes on disk). A file with several hard links counts once for each path, a cloud placeholder by the size the service states, and links (symlinks, junctions) are neither counted nor followed. Inside a library source a total counts what the index holds: ignored files, and hidden files when the source leaves them out, are not in it. A folder that cannot be read counts as empty, and the job says how many there were; `keel du` shows a child folder it cannot read as `?` and goes on. `keel du <path>` prints the same from a terminal ([Daemon, CLI and MCP](daemon.md#daemon-cli-and-mcp), and `library.folder_sizes` in [api.md](api.md)).
 

@@ -55,6 +55,7 @@ mod term_pane;
 mod theme;
 mod toast;
 mod trash_ui;
+mod treemap; // Task 83: treemap, sunburst and flame graph
 mod undo; // Ctrl+Z for file operations
 mod update;
 mod video_player;

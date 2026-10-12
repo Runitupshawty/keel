@@ -95,6 +95,11 @@ impl Sizes {
         self.gen += 1;
     }
 
+    /// Every walked total (Task 83: the Sizes view's charts go below the shown folder).
+    pub fn walked(&self) -> impl Iterator<Item = (&VPath, Total)> {
+        self.known.iter().map(|(p, (_, t))| (p, *t))
+    }
+
     /// Job `id` ended (done, failed or cancelled): what it did not reach is unknown again.
     pub fn job_done(&mut self, id: u64) {
         let before = self.pending.len();
