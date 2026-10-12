@@ -10,6 +10,15 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Compress (NTFS)…** (Windows; context menu and command palette): compress files and folders with LZNT1 or the Windows Overlay Filter's XPRESS 4K, 8K, 16K and LZX, or uncompress them, recursively, as a job with a preview of the file count, progress and Cancel; a note says what was saved on disk, measured before and after. See [Compress (NTFS)](docs/files.md#compress-ntfs).
 - **Cleanups**: your own commands with placeholders (`%p` path, `%n` name, `%s` path without a trailing separator, `%d` folder, `%e` extension, `%%`), for files, folders or drives, optionally recursive, stored per profile and edited in Settings → Cleanups; run from the context menu (Cleanups) and the command palette ("Run cleanup: …"). Every path stays one argument whatever it holds, `cmd /c`, `sh -c` and PowerShell scripts get each value quoted for that shell, and the expanded commands are shown before the first run (and every run with "Ask before running"). See [Cleanups](docs/files.md#cleanups).
 
+### Security
+
+- Cleanups that run `cmd /c` now run as `cmd /d /v:off /s /c "<script>"`, so a script that starts with a value or a quoted program keeps its quotes: a file name holding `&`, `|`, `(` or `)` can no longer run commands. AutoRun and delayed expansion are off (with `/v:on` typed, a name with `!` is refused).
+- Cleanups find shells behind `sudo`, `doas`, `env`, `nice`, `time`, `xargs`, `wsl -e` and similar, and read `-c` in option clusters (`bash -lc`, `sh -ec`), so the script still gets quoted values. Windows PowerShell's default `-Command` (`powershell Remove-Item %p`), `/` switches and `-cwa` are read too. Values are refused where Keel cannot quote them: encoded commands, PowerShell switch values, `python -c`, `perl -e`, `node -e`, awk programs, fish and csh scripts, `ssh`, `watch`, `su`, `wsl` without `-e`, and placeholders inside a script's own quotes.
+
+### Fixed
+
+- Remove empty folders on an SFTP, FTP, S3 or WebDAV folder said "to the Recycle Bin" but deleted for good: the dialog, the preview (a Permanent warning per branch) and its headline now say so, and each folder goes on its own, deepest first, only while empty.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
