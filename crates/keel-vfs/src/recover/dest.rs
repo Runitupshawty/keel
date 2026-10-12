@@ -147,7 +147,7 @@ fn loop_backing(dev: u64) -> Option<PathBuf> {
 #[cfg(any(target_os = "linux", test))]
 fn dev_parts(dev: u64) -> (u64, u64) {
     let major = ((dev >> 8) & 0xFFF) | ((dev >> 32) & !0xFFF);
-    let minor = (dev & 0xFF) | ((dev >> 12) & !0xFF);
+    let minor = (dev & 0xFF) | ((dev >> 12) & 0xFFFF_FF00);
     (major, minor)
 }
 

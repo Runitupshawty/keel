@@ -18,30 +18,6 @@ const MAX_DIR_ENTRIES: u64 = 1 << 21;
 /// Most fragments one file's data is followed through (more: left out as damaged).
 const MAX_RUNS: usize = 1 << 16;
 
-#[cfg(test)]
-mod hostile_tests {
-    use super::*;
-
-    #[test]
-    fn a_contiguous_fat_chain_has_a_step_limit_too() {
-        let count = 100_000u32;
-        let mut fat = vec![0u8; (count as usize + 2) * 4];
-        for c in 2..count + 1 {
-            fat[c as usize * 4..c as usize * 4 + 4].copy_from_slice(&(c + 1).to_le_bytes());
-        }
-        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
-        let mut walk = Walk {
-            r: &mut reader,
-            geo: Geo { cluster: 512, fat_off: 0, fat_len: fat.len() as u64,
-                heap_off: 0, clusters: u64::from(count), root: 2, total: u64::from(count) * 512 },
-            fat, alloc: None, seen: HashSet::new(), budget: 1 << 24,
-            list: List::new(1 << 20), bad_sets: 0, no_data: 0,
-        };
-        assert!(walk.runs(2, u64::from(count) * 512, false).is_none());
-        assert_eq!(walk.runs(2, u64::from(count) * 512, true), Some(vec![(2, u64::from(count))]));
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Geo {
     pub cluster: u64,
@@ -467,4 +443,82 @@ fn ex_time(ts: u32, ms10: u8, offset: u8) -> (Option<i64>, bool) {
     // A signed 7-bit count of 15 minutes east of UTC.
     let quarters = i64::from(((offset & 0x7F) as i8) << 1 >> 1);
     (t.map(|t| t - quarters * 15 * 60), true)
+}
+
+#[cfg(test)]
+mod hostile_tests {
+    use super::*;
+
+    /// A walk over a FAT of `clusters` clusters whose entry `c` is `next(c)` (0: none).
+    fn walk_over(
+        clusters: u32,
+        budget: u64,
+        next: impl Fn(u32) -> u32,
+    ) -> Walk<'static, std::io::Cursor<Vec<u8>>> {
+        let mut fat = vec![0u8; (clusters as usize + 2) * 4];
+        for c in 2..clusters + 2 {
+            fat[c as usize * 4..c as usize * 4 + 4].copy_from_slice(&next(c).to_le_bytes());
+        }
+        // `runs` never reads the volume; a leaked empty cursor keeps the type simple.
+        let reader = Box::leak(Box::new(std::io::Cursor::new(Vec::<u8>::new())));
+        Walk {
+            r: reader,
+            geo: Geo {
+                cluster: 512,
+                fat_off: 0,
+                fat_len: fat.len() as u64,
+                heap_off: 0,
+                clusters: u64::from(clusters),
+                root: 2,
+                total: u64::from(clusters) * 512,
+            },
+            fat,
+            alloc: None,
+            seen: HashSet::new(),
+            budget,
+            list: List::new(1 << 20),
+            bad_sets: 0,
+            no_data: 0,
+        }
+    }
+
+    /// A contiguous FAT chain is followed one entry at a time and every step is paid from
+    /// the scan's budget: once it is spent the rest is taken as contiguous, not walked.
+    #[test]
+    fn a_contiguous_chain_is_walked_within_the_step_budget() {
+        let count = 100_000u32;
+        let size = u64::from(count) * 512;
+        let mut walk = walk_over(count, 1 << 24, |c| c + 1);
+        let before = walk.budget;
+        assert_eq!(walk.runs(2, size, false), Some(vec![(2, u64::from(count))]));
+        assert_eq!(before - walk.budget, u64::from(count) - 1);
+        // Out of budget: no more steps, the same contiguous answer.
+        let mut walk = walk_over(count, 10, |c| c + 1);
+        assert_eq!(walk.runs(2, size, false), Some(vec![(2, u64::from(count))]));
+        assert_eq!(walk.budget, 0);
+        // `NoFatChain` never reads the FAT.
+        let mut walk = walk_over(count, 10, |c| c + 1);
+        assert_eq!(walk.runs(2, size, true), Some(vec![(2, u64::from(count))]));
+        assert_eq!(walk.budget, 10);
+    }
+
+    /// A chain of every second cluster is as many runs as clusters: past [`MAX_RUNS`] the
+    /// file is left out instead of building a list the size of the chain.
+    #[test]
+    fn a_chain_of_endless_fragments_is_left_out() {
+        let count = (MAX_RUNS + 10) as u32;
+        let mut walk = walk_over(count * 2 + 2, 1 << 24, |c| match c % 2 {
+            0 => c + 2,
+            _ => 0,
+        });
+        assert_eq!(walk.runs(2, u64::from(count) * 512, false), None);
+    }
+
+    /// A chain that loops back ends where it repeats; the rest is contiguous.
+    #[test]
+    fn a_looping_chain_ends() {
+        let mut walk = walk_over(1000, 1 << 24, |c| if c == 50 { 2 } else { c + 1 });
+        let runs = walk.runs(2, 900 * 512, false).unwrap();
+        assert_eq!(runs.iter().map(|r| r.1).sum::<u64>(), 900);
+    }
 }

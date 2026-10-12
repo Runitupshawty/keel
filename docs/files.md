@@ -83,7 +83,7 @@ keel recover scan E:
 keel recover restore 3 12 --to D:\Recovered
 ```
 
-`keel recover restore <id>... --to <folder>` writes those files from the last scan into an existing folder on another drive, under their names (`name (2).ext` when the name is taken) and with their modified time. A scan of a folder lists the Recycle Bin items in it instead (`E:\$Recycle.Bin`, or one user's folder in it): original path, size and when it was deleted; a drive's scan lists its Recycle Bin after the deleted files. Restore Recycle Bin items from the [Recycle Bin](#recycle-bin-and-trash). `--json` prints the list as JSON.
+`keel recover restore <id>... --to <folder>` writes those files from a scan into an existing folder on another drive, under their names (`name (2).ext` when the name is taken) and with their modified time. It reads the drive again to find them: the saved list only names the files (where they were found, name and size), so a list that was edited can only pick files that are really there. The destination is refused when it is on the drive scanned, on a loop device or virtual disk (VHD, VHDX) whose file is on that drive; the folder is opened once and checked on that handle, and the file created through it, so a junction swapped in afterwards changes nothing. The scan's list is saved for restore in Keel's data folder, else in a folder of yours among the temporary ones, **never on the drive being scanned** (saving there could overwrite the very data you want back); when both are on that drive the list is not saved, and you scan again with `--save <file on another drive>` and restore with `--from <that file>`. Names read from a drive are shown with control characters escaped (`\u{1b}`), so a hostile name cannot drive the terminal. A scan of a folder lists the Recycle Bin items in it instead (`E:\$Recycle.Bin`, or one user's folder in it): original path, size and when it was deleted; a drive's scan lists its Recycle Bin after the deleted files. Restore Recycle Bin items from the [Recycle Bin](#recycle-bin-and-trash). `--json` prints the list as JSON.
 
 What each file system keeps:
 
@@ -93,7 +93,7 @@ What each file system keeps:
 
 The **confidence** column says how much of each file's space is still free: **good** (all of it: very likely intact), **partial** (some clusters were reused since), **overwritten** (all of them were; what comes back is other files' data) or **unknown** (the allocation map does not cover it). The sooner you recover after deleting, the better: everything written to the drive since may reuse the space.
 
-The drive is opened read-only and the parsers never write to it; they are fuzzed against damaged and hostile images ([Fuzzing](fuzzing.md)). The window has no recovery view yet; it comes with the Disk Usage window.
+The drive is opened read-only and the parsers never write to it; they are fuzzed against damaged and hostile images ([Fuzzing](fuzzing.md)). What a scan keeps in memory is capped (512 MiB, and a million files): each folder is named once however many files it holds, and a scan that reaches a cap stops with a note under the list. The window has no recovery view yet; it comes with the Disk Usage window.
 
 ## Terminal
 

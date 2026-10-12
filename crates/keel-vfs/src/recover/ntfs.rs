@@ -600,3 +600,69 @@ fn folder_of(
     }
     at.map(|(i, _)| i)
 }
+
+#[cfg(test)]
+mod hostile_tests {
+    use super::*;
+
+    fn dir(name: &str, parent: u64) -> Dir {
+        Dir {
+            name: name.into(),
+            parent,
+            parent_seq: 0,
+            seq: 1,
+            in_use: true,
+        }
+    }
+
+    /// 200 nested folders named with 255 three-byte characters, and 100,000 files in each
+    /// of two of them: the one within [`MAX_DEPTH`] and one too deep to name.
+    #[test]
+    fn a_deep_chain_of_long_names_is_named_once_and_stops_at_the_depth_limit() {
+        let name = "\u{20AC}".repeat(255);
+        let mut dirs = HashMap::new();
+        for i in 0..200u64 {
+            dirs.insert(100 + i, dir(&name, if i == 0 { ROOT } else { 99 + i }));
+        }
+        let mut list = List::new(64 << 20);
+        let mut placed = Placed::new();
+        let mut reached = None;
+        for _ in 0..100_000 {
+            reached = folder_of(&mut list, &dirs, &mut placed, 139, 0);
+            assert_eq!(folder_of(&mut list, &dirs, &mut placed, 289, 0), None);
+        }
+        assert!(reached.is_some());
+        assert_eq!(list.folders.len(), 41, "the root and 40 folders, each once");
+        assert!(list.held < 1 << 20, "{}", list.held);
+    }
+
+    /// Tens of thousands of long-named folders stop at the memory limit.
+    #[test]
+    fn many_long_named_folders_stop_at_the_memory_limit() {
+        let name = "\u{20AC}".repeat(255);
+        let mut dirs = HashMap::new();
+        for i in 0..50_000u64 {
+            dirs.insert(100 + i, dir(&name, ROOT));
+        }
+        let mut list = List::new(4 << 20);
+        let mut placed = Placed::new();
+        let named = (0..50_000u64)
+            .filter(|&i| folder_of(&mut list, &dirs, &mut placed, 100 + i, 0).is_some())
+            .count();
+        assert!((1000..6000).contains(&named), "{named}");
+        assert!(list.full());
+        assert!(list.held <= 4 << 20);
+    }
+
+    /// Folders whose parent references form a loop name nothing.
+    #[test]
+    fn a_loop_of_parent_references_names_nothing() {
+        let mut dirs = HashMap::new();
+        dirs.insert(100, dir("a", 101));
+        dirs.insert(101, dir("b", 100));
+        let mut list = List::new(1 << 20);
+        let mut placed = Placed::new();
+        assert_eq!(folder_of(&mut list, &dirs, &mut placed, 100, 0), None);
+        assert_eq!(list.folders.len(), 1);
+    }
+}
