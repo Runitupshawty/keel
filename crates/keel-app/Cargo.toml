@@ -52,6 +52,8 @@ regex.workspace = true
 egui_commonmark = { version = "0.20", default-features = false, features = ["pulldown_cmark"] }
 ignore.workspace = true
 serde_json = "1"
+# Hard-link dedup: the identity of open files (already in the tree through walkdir).
+same-file = "1"
 # Media view (Task 32): sidecar WebP decode, full-resolution viewer decode; the library's
 # record content ids for sidecar keys (both already built for keel-core).
 image.workspace = true

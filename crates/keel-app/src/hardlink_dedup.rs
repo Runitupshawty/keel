@@ -2,10 +2,14 @@
 //! (library BLAKE3 content ids) are planned on a worker: local, online copies only, and
 //! within a group only the copies on the same volume as the one kept (the first such
 //! copy); copies that already are that file (one hard link) are left out. The preview
-//! lists every replacement; the job compares each pair byte by byte right before linking
-//! it, makes the link under a temporary name next to the duplicate and renames it over
-//! the duplicate (the same volume, so the duplicate is never missing). Undo (Ctrl+Z, the
-//! toast) gives each path its own copy again with its old modified time.
+//! lists every replacement; the job opens both files (on Windows refusing writers until the
+//! duplicate is replaced), compares them byte by byte, makes the link under a temporary
+//! name next to the duplicate, checks that the link is the file compared and that neither
+//! changed, and renames it over the duplicate (the same volume, so the duplicate is never
+//! missing). A link takes the kept copy's permissions and attributes and drops the
+//! duplicate's alternate data streams, so pairs where those differ, and read-only copies,
+//! are left alone. Undo (Ctrl+Z, the toast) gives each path its own copy again with its old
+//! modified time.
 
 use crate::keys::Action;
 use crate::library::DupGroup;
@@ -40,6 +44,11 @@ pub enum Skip {
     AlreadyLinked,
     /// Gone, not a plain file, or its size is not the group's any more.
     Changed,
+    /// Its permissions, owner or attributes are not the copy kept's (a link would take
+    /// the kept copy's).
+    Permissions,
+    /// It has alternate data streams (a link would drop them).
+    Streams,
 }
 
 impl Skip {
@@ -50,6 +59,8 @@ impl Skip {
             Skip::OtherVolume => "on another volume",
             Skip::AlreadyLinked => "already hard links",
             Skip::Changed => "changed or gone",
+            Skip::Permissions => "other permissions or attributes",
+            Skip::Streams => "has alternate data streams",
         }
     }
 }
@@ -164,6 +175,8 @@ fn plan_by(groups: &[DupGroup], vol: impl Fn(&Path) -> Option<String>) -> DedupP
         for dup in dups {
             if same_file(keep, dup) {
                 out.skipped.push((VPath::local(dup), Skip::AlreadyLinked));
+            } else if let Err(why) = nothing_of_its_own(keep, dup) {
+                out.skipped.push((VPath::local(dup), why));
             } else {
                 out.pairs.push(Pair {
                     keep: keep.clone(),
@@ -178,7 +191,12 @@ fn plan_by(groups: &[DupGroup], vol: impl Fn(&Path) -> Option<String>) -> DedupP
 
 /// Whether the two files hold the same bytes (read side by side, 1 MiB at a time).
 pub fn same_content(a: &Path, b: &Path, cancel: &AtomicBool) -> anyhow::Result<bool> {
-    let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
+    same_bytes(&File::open(a)?, &File::open(b)?, cancel)
+}
+
+/// [`same_content`] of two open files, read from where they are.
+fn same_bytes(a: &File, b: &File, cancel: &AtomicBool) -> anyhow::Result<bool> {
+    let (mut fa, mut fb) = (a, b);
     if fa.metadata()?.len() != fb.metadata()?.len() {
         return Ok(false);
     }
@@ -198,7 +216,7 @@ pub fn same_content(a: &Path, b: &Path, cancel: &AtomicBool) -> anyhow::Result<b
 }
 
 /// Fills `buf` unless the file ends first; the bytes read.
-fn read_full(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+fn read_full(f: &mut &File, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut n = 0;
     while n < buf.len() {
         match f.read(&mut buf[n..]) {
@@ -238,10 +256,220 @@ pub struct Linked {
     pub mtime: Option<SystemTime>,
 }
 
+/// Opens `path` to read it. On Windows nobody can open it for writing while the handle is
+/// open (renaming or deleting it stays possible: the identity checks catch that); elsewhere
+/// the size and modified time are checked again instead.
+fn open_locked(path: &Path) -> std::io::Result<same_file::Handle> {
+    let mut o = File::options();
+    o.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        o.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    same_file::Handle::from_file(o.open(path)?)
+}
+
+/// The size and modified time of an open file.
+fn stamp(h: &same_file::Handle) -> std::io::Result<(u64, Option<SystemTime>)> {
+    let m = h.as_file().metadata()?;
+    Ok((m.len(), m.modified().ok()))
+}
+
+/// Whether `path` is (still) the open file `h`.
+fn is_handle(path: &Path, h: &same_file::Handle) -> bool {
+    same_file::Handle::from_path(path).is_ok_and(|p| p == *h)
+}
+
+/// Why `dup` would lose something of its own as a hard link to `keep`: the link takes the
+/// kept copy's permissions, owner and attributes, and `dup`'s alternate data streams are
+/// gone with its file record (undo cannot bring either back).
+pub fn nothing_of_its_own(keep: &Path, dup: &Path) -> Result<(), Skip> {
+    sys::nothing_of_its_own(keep, dup)
+}
+
+#[cfg(windows)]
+mod sys {
+    //! Owner, DACL, attributes and named streams through Win32 (kernel32 / advapi32).
+    use super::Skip;
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use std::path::Path;
+
+    const OWNER_SECURITY_INFORMATION: u32 = 0x1;
+    const GROUP_SECURITY_INFORMATION: u32 = 0x2;
+    const DACL_SECURITY_INFORMATION: u32 = 0x4;
+    const ERROR_HANDLE_EOF: i32 = 38;
+    /// Hidden, system and encrypted: what a link would change about the duplicate (read-only
+    /// copies are refused on their own).
+    const ATTRIBUTES: u32 = 0x2 | 0x4 | 0x4000;
+
+    #[repr(C)]
+    struct FindStreamData {
+        size: i64,
+        /// MAX_PATH + 36.
+        name: [u16; 296],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FindFirstStreamW(
+            file: *const u16,
+            level: i32,
+            data: *mut FindStreamData,
+            flags: u32,
+        ) -> *mut c_void;
+        fn FindNextStreamW(find: *mut c_void, data: *mut FindStreamData) -> i32;
+        fn FindClose(find: *mut c_void) -> i32;
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn GetFileSecurityW(
+            file: *const u16,
+            info: u32,
+            sd: *mut c_void,
+            len: u32,
+            needed: *mut u32,
+        ) -> i32;
+    }
+
+    fn wide(path: &Path) -> io::Result<Vec<u16>> {
+        let long = keel_vfs::long(path).map_err(io::Error::other)?;
+        let mut w: Vec<u16> = long.as_os_str().encode_wide().collect();
+        if w.contains(&0) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        w.push(0);
+        Ok(w)
+    }
+
+    /// Whether `path` has a stream besides its unnamed data stream.
+    pub fn named_streams(path: &Path) -> io::Result<bool> {
+        let name = wide(path)?;
+        let mut data = FindStreamData {
+            size: 0,
+            name: [0; 296],
+        };
+        // SAFETY: `name` is NUL-terminated, `data` is the FindStreamInfoStandard struct;
+        // the search handle is closed below.
+        let find = unsafe { FindFirstStreamW(name.as_ptr(), 0, &mut data, 0) };
+        if find as isize == -1 {
+            let e = io::Error::last_os_error();
+            return match e.raw_os_error() {
+                Some(ERROR_HANDLE_EOF) => Ok(false),
+                _ => Err(e),
+            };
+        }
+        let mut named = false;
+        loop {
+            let n = data.name.iter().position(|&c| c == 0).unwrap_or(296);
+            if String::from_utf16_lossy(&data.name[..n]) != "::$DATA" {
+                named = true;
+                break;
+            }
+            // SAFETY: `find` is open; `data` as above.
+            if unsafe { FindNextStreamW(find, &mut data) } == 0 {
+                break;
+            }
+        }
+        // SAFETY: opened above, closed once.
+        unsafe { FindClose(find) };
+        Ok(named)
+    }
+
+    /// The owner, group and DACL (self-relative security descriptor bytes).
+    pub fn security(path: &Path) -> io::Result<Vec<u8>> {
+        let name = wide(path)?;
+        let info =
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let mut need = 0u32;
+        // SAFETY: a size query (no buffer); `need` receives the size.
+        unsafe { GetFileSecurityW(name.as_ptr(), info, std::ptr::null_mut(), 0, &mut need) };
+        if need == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut buf = vec![0u8; need as usize];
+        // SAFETY: `buf` holds `need` bytes.
+        let ok = unsafe {
+            GetFileSecurityW(
+                name.as_ptr(),
+                info,
+                buf.as_mut_ptr().cast(),
+                need,
+                &mut need,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        buf.truncate(need as usize);
+        Ok(buf)
+    }
+
+    pub fn nothing_of_its_own(keep: &Path, dup: &Path) -> Result<(), Skip> {
+        let attrs = |p: &Path| {
+            std::fs::symlink_metadata(p)
+                .map(|m| m.file_attributes() & ATTRIBUTES)
+                .map_err(|_| Skip::Changed)
+        };
+        if attrs(keep)? != attrs(dup)? {
+            return Err(Skip::Permissions);
+        }
+        match named_streams(dup) {
+            Ok(false) => {}
+            Ok(true) => return Err(Skip::Streams),
+            Err(_) => return Err(Skip::Changed),
+        }
+        match (security(keep), security(dup)) {
+            (Ok(a), Ok(b)) if a == b => Ok(()),
+            (Ok(_), Ok(_)) => Err(Skip::Permissions),
+            _ => Err(Skip::Changed),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod sys {
+    use super::Skip;
+    use std::path::Path;
+
+    /// Mode bits, owner and group (extended attributes are not compared).
+    pub fn nothing_of_its_own(keep: &Path, dup: &Path) -> Result<(), Skip> {
+        use std::os::unix::fs::MetadataExt;
+        let of = |p: &Path| {
+            std::fs::symlink_metadata(p)
+                .map(|m| (m.mode() & 0o7777, m.uid(), m.gid()))
+                .map_err(|_| Skip::Changed)
+        };
+        if of(keep)? == of(dup)? {
+            Ok(())
+        } else {
+            Err(Skip::Permissions)
+        }
+    }
+}
+
 /// Makes `pair.dup` a hard link to `pair.keep` after checking that both are plain files
-/// of the planned size on one volume, not one file already, the duplicate is not
-/// read-only, and their bytes are equal. The duplicate is replaced in one rename.
+/// of the planned size on one volume, not one file already, neither is read-only, the link
+/// would not drop anything of the duplicate's own ([`nothing_of_its_own`]), and their
+/// bytes are equal. Both stay open from before the compare until the duplicate is replaced
+/// (on Windows no one can write either meanwhile); the new link must be the kept file that
+/// was compared, and neither file may have changed or been replaced, else nothing changes.
+/// The duplicate is replaced in one rename.
 pub fn link(pair: &Pair, cancel: &AtomicBool) -> anyhow::Result<Linked> {
+    link_with(pair, cancel, &|| {})
+}
+
+/// [`link`] with `between` run after the compare, before the link (tests change the files
+/// there).
+fn link_with(pair: &Pair, cancel: &AtomicBool, between: &dyn Fn()) -> anyhow::Result<Linked> {
     let (keep, dup) = (&pair.keep, &pair.dup);
     anyhow::ensure!(
         plain_file(keep, pair.size) && plain_file(dup, pair.size),
@@ -261,28 +489,52 @@ pub fn link(pair: &Pair, cancel: &AtomicBool) -> anyhow::Result<Linked> {
         dup.display(),
         keep.display()
     );
-    let before = fs::symlink_metadata(dup)?;
+    let opened = |p: &Path| open_locked(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()));
+    let (kh, dh) = (opened(keep)?, opened(dup)?);
+    let (kb, db) = (stamp(&kh)?, stamp(&dh)?);
     anyhow::ensure!(
-        !before.permissions().readonly(),
-        "{} is read-only",
+        is_handle(keep, &kh) && is_handle(dup, &dh) && kb.0 == pair.size && db.0 == pair.size,
+        "{} or {} changed since the preview",
+        keep.display(),
         dup.display()
     );
+    for p in [dup, keep] {
+        anyhow::ensure!(
+            !fs::symlink_metadata(p)?.permissions().readonly(),
+            "{} is read-only",
+            p.display()
+        );
+    }
+    if let Err(why) = nothing_of_its_own(keep, dup) {
+        anyhow::bail!("{} left alone: {}", dup.display(), why.text());
+    }
     anyhow::ensure!(
-        same_content(keep, dup, cancel)?,
+        same_bytes(kh.as_file(), dh.as_file(), cancel)?,
         "{} and {} are not the same bytes",
         keep.display(),
         dup.display()
     );
+    between();
     let tmp = temp_beside(dup, "link")?;
     fs::hard_link(keep, &tmp)
         .map_err(|e| anyhow::anyhow!("linking {} to {}: {e}", dup.display(), keep.display()))?;
-    // Changed while it was compared: leave it.
-    let now = fs::symlink_metadata(dup).ok();
-    let unchanged =
-        now.is_some_and(|m| m.len() == before.len() && m.modified().ok() == before.modified().ok());
-    if !unchanged {
+    // The link must be the file compared, and neither may have changed since.
+    let unchanged = || -> anyhow::Result<()> {
+        anyhow::ensure!(
+            is_handle(&tmp, &kh) && stamp(&kh)? == kb,
+            "{} changed while it was compared",
+            keep.display()
+        );
+        anyhow::ensure!(
+            is_handle(dup, &dh) && stamp(&dh)? == db,
+            "{} changed while it was compared",
+            dup.display()
+        );
+        Ok(())
+    };
+    if let Err(e) = unchanged() {
         let _ = fs::remove_file(&tmp);
-        anyhow::bail!("{} changed while it was compared", dup.display());
+        return Err(e);
     }
     if let Err(e) = fs::rename(&tmp, dup) {
         let _ = fs::remove_file(&tmp);
@@ -290,27 +542,52 @@ pub fn link(pair: &Pair, cancel: &AtomicBool) -> anyhow::Result<Linked> {
     }
     Ok(Linked {
         path: dup.clone(),
-        mtime: before.modified().ok(),
+        mtime: db.1,
     })
 }
 
 /// The undo of [`link`]: `path` gets its own copy of the bytes again (copied next to it,
-/// its old modified time set, renamed over the link).
+/// its old modified time set, renamed over the link). A read-only file stays read-only.
 pub fn unlink(path: &Path, mtime: Option<SystemTime>) -> anyhow::Result<()> {
     let tmp = temp_beside(path, "copy")?;
     let copied = (|| -> anyhow::Result<()> {
         fs::copy(path, &tmp)?;
+        let readonly = fs::metadata(&tmp)?.permissions().readonly();
         if let Some(t) = mtime {
+            if readonly {
+                set_readonly(&tmp, false)?;
+            }
             File::options().write(true).open(&tmp)?.set_modified(t)?;
+            if readonly {
+                set_readonly(&tmp, true)?;
+            }
         }
         fs::rename(&tmp, path)?;
         Ok(())
     })();
     if let Err(e) = copied {
+        if fs::metadata(&tmp).is_ok_and(|m| m.permissions().readonly()) {
+            let _ = set_readonly(&tmp, false);
+        }
         let _ = fs::remove_file(&tmp);
         anyhow::bail!("copying {} back: {e:#}", path.display());
     }
     Ok(())
+}
+
+/// Sets or clears the read-only attribute (Windows) or the write bits (elsewhere; clearing
+/// gives back the owner's only).
+#[allow(clippy::permissions_set_readonly_false)]
+fn set_readonly(path: &Path, on: bool) -> std::io::Result<()> {
+    let mut perm = fs::metadata(path)?.permissions();
+    #[cfg(unix)]
+    if !on {
+        use std::os::unix::fs::PermissionsExt;
+        perm.set_mode(perm.mode() | 0o200);
+        return fs::set_permissions(path, perm);
+    }
+    perm.set_readonly(on);
+    fs::set_permissions(path, perm)
 }
 
 /// The job: links each pair; pairs that fail a check are skipped and counted. Returns what
@@ -670,5 +947,152 @@ mod tests {
         assert!(plan.pairs.is_empty());
         assert_eq!(plan.skipped.len(), 4);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    fn pair_in(d: &Path, bytes: &[u8]) -> Pair {
+        let (keep, dup) = (d.join("keep.bin"), d.join("dup.bin"));
+        fs::write(&keep, bytes).unwrap();
+        fs::write(&dup, bytes).unwrap();
+        Pair {
+            keep,
+            dup,
+            size: bytes.len() as u64,
+        }
+    }
+
+    /// No `.keep.bin.keel-link` and the like left next to them.
+    fn no_temporaries(d: &Path) {
+        for e in fs::read_dir(d).unwrap() {
+            let name = e.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.contains(".keel-"), "{name}");
+        }
+    }
+
+    #[test]
+    fn keep_written_between_compare_and_link_is_never_linked() {
+        use std::cell::Cell;
+        let d = tmp("race-write");
+        let pair = pair_in(&d, b"version one");
+        let wrote = Cell::new(false);
+        let r = link_with(&pair, &AtomicBool::new(false), &|| {
+            // An app appending to the kept copy during a long compare.
+            let w = File::options()
+                .append(true)
+                .open(&pair.keep)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, b" and more"));
+            wrote.set(w.is_ok());
+        });
+        if wrote.get() {
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("changed while it was compared"), "{e}");
+            assert!(!same_file(&pair.keep, &pair.dup));
+        } else {
+            // Windows: the open handle refuses writers until the duplicate is replaced.
+            assert!(cfg!(windows), "only Windows refuses the writer");
+            r.unwrap();
+        }
+        assert_eq!(fs::read(&pair.dup).unwrap(), b"version one");
+        no_temporaries(&d);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn keep_or_dup_replaced_between_compare_and_link_is_never_linked() {
+        use std::cell::Cell;
+        for which in ["keep", "dup"] {
+            let d = tmp(&format!("race-swap-{which}"));
+            let pair = pair_in(&d, b"version one");
+            let target = if which == "keep" { &pair.keep } else { &pair.dup };
+            let swapped = Cell::new(false);
+            let r = link_with(&pair, &AtomicBool::new(false), &|| {
+                // An editor saving: write a new file, rename it over the old one.
+                let new = d.join("saved.tmp");
+                fs::write(&new, b"version two").unwrap();
+                swapped.set(fs::rename(&new, target).is_ok());
+                let _ = fs::remove_file(&new);
+            });
+            if swapped.get() {
+                let e = r.unwrap_err().to_string();
+                assert!(e.contains("changed while it was compared"), "{which}: {e}");
+                assert!(!same_file(&pair.keep, &pair.dup), "{which}");
+                assert_eq!(fs::read(target).unwrap(), b"version two", "{which}");
+                let other = if which == "keep" { &pair.dup } else { &pair.keep };
+                assert_eq!(fs::read(other).unwrap(), b"version one", "{which}");
+            } else {
+                r.unwrap();
+            }
+            no_temporaries(&d);
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn a_read_only_keep_is_refused() {
+        let d = tmp("ro-keep");
+        let pair = pair_in(&d, b"same");
+        set_readonly(&pair.keep, true).unwrap();
+        let e = link(&pair, &AtomicBool::new(false)).unwrap_err().to_string();
+        assert!(e.contains("read-only") && e.contains("keep.bin"), "{e}");
+        assert!(!same_file(&pair.keep, &pair.dup));
+        set_readonly(&pair.keep, false).unwrap();
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn undo_of_a_link_made_read_only_since_still_works() {
+        let d = tmp("ro-undo");
+        let pair = pair_in(&d, b"same bytes");
+        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+        File::options()
+            .write(true)
+            .open(&pair.dup)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let linked = link(&pair, &AtomicBool::new(false)).unwrap();
+        set_readonly(&pair.dup, true).unwrap(); // both names: one file
+        unlink(&pair.dup, linked.mtime).unwrap();
+        assert!(!same_file(&pair.keep, &pair.dup));
+        assert_eq!(fs::metadata(&pair.dup).unwrap().modified().unwrap(), old);
+        assert!(fs::metadata(&pair.dup).unwrap().permissions().readonly());
+        no_temporaries(&d);
+        for p in [&pair.keep, &pair.dup] {
+            set_readonly(p, false).unwrap();
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_duplicate_with_its_own_permissions_or_streams_is_left_alone() {
+        let d = tmp("own");
+        let pair = pair_in(&d, b"same bytes");
+        #[cfg(windows)]
+        fs::write(format!("{}:meta", pair.dup.display()), b"app data").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pair.dup, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(&pair.keep, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let want = if cfg!(windows) {
+            Skip::Streams
+        } else {
+            Skip::Permissions
+        };
+        assert_eq!(nothing_of_its_own(&pair.keep, &pair.dup), Err(want));
+        let plan = plan(&[group(10, &[&pair.keep, &pair.dup])]);
+        assert!(plan.pairs.is_empty());
+        assert_eq!(plan.skipped, [(VPath::local(&pair.dup), want)]);
+        let e = link(&pair, &AtomicBool::new(false)).unwrap_err().to_string();
+        assert!(e.contains(want.text()), "{e}");
+        assert!(!same_file(&pair.keep, &pair.dup));
+        // Twins with nothing of their own link.
+        let d2 = tmp("own-twins");
+        let twins = pair_in(&d2, b"same bytes");
+        assert_eq!(nothing_of_its_own(&twins.keep, &twins.dup), Ok(()));
+        link(&twins, &AtomicBool::new(false)).unwrap();
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&d2);
     }
 }
