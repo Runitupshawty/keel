@@ -419,6 +419,52 @@ mod tests {
         }
     }
 
+    /// Task 76: omitted paths never reach the tab.
+    #[test]
+    fn search_worker_applies_omissions() {
+        struct Fixed;
+        impl Searcher for Fixed {
+            fn query(&self, _: &Query) -> anyhow::Result<Vec<keel_search::Hit>> {
+                Ok(["/x/keep.txt", "/x/omit.txt", "/x/later.txt"]
+                    .into_iter()
+                    .map(|p| keel_search::Hit {
+                        path: keel_vfs::VPath::local(p),
+                        is_dir: false,
+                        size: 0,
+                        modified: None,
+                        snippet: None,
+                    })
+                    .collect())
+            }
+            fn available(&self) -> bool {
+                true
+            }
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = SearchWorker::new(tx, egui::Context::default());
+        let mut omissions = crate::omissions::Omissions::default();
+        omissions.add(vec![keel_vfs::VPath::local("/x/omit.txt")], false);
+        omissions.add(vec![keel_vfs::VPath::local("/x/later.txt")], true);
+        for (id, show) in [(1, false), (2, true)] {
+            omissions.show_omitted = show;
+            worker.search(Arc::new(Fixed), "x".into(), id, 0, omissions.filter());
+            let names = match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
+                Msg::Search { id: got, result } => {
+                    assert_eq!(got, id);
+                    let hits = result.unwrap();
+                    hits.iter().map(|h| h.path.name().to_owned()).collect::<Vec<_>>()
+                }
+                _ => panic!("unexpected message"),
+            };
+            let want: &[&str] = if show {
+                &["keep.txt", "omit.txt", "later.txt"]
+            } else {
+                &["keep.txt"]
+            };
+            assert_eq!(names, want);
+        }
+    }
+
     /// Polish backlog: one search thread; a tab's superseded query is never run.
     #[test]
     fn search_worker_skips_superseded_queries() {

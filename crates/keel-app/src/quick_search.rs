@@ -11,7 +11,23 @@ pub struct QuickSearch {
 
 impl QuickSearch {
     pub fn new(parent: &AppState) -> Self {
-        let mut state = AppState::new(parent.ctx.clone(), parent.router.clone(), parent.home.clone());
+        // Only the look and the omissions come from the main window: remotes and clouds stay
+        // empty here so this state never re-registers the shared router's providers.
+        let settings = crate::settings::Settings {
+            theme: parent.settings.theme.clone(),
+            column_widths: parent.settings.column_widths.clone(),
+            omissions: parent.settings.omissions.clone(),
+            always_on_top: parent.settings.always_on_top,
+            ..Default::default()
+        };
+        let session = crate::session::Session::single(parent.home.clone());
+        let mut state = AppState::restore(
+            parent.ctx.clone(),
+            parent.router.clone(),
+            session,
+            settings,
+            parent.home.clone(),
+        );
         state.panes[0].tabs = vec![Tab::search(parent.home.clone())];
         state.panes[0].active = 0;
         state.panes[0].focus_filter = true;

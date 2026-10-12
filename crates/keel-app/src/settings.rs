@@ -869,6 +869,31 @@ label = "nas"
     }
 
     #[test]
+    fn window_and_omission_settings_upgrade_and_round_trip() {
+        let defaults: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert_eq!(defaults.quick_hotkey, "");
+        assert!(!defaults.searches_in_windows);
+        assert!(!defaults.run_in_background);
+        assert!(!defaults.always_on_top);
+        assert_eq!(defaults.omissions, crate::omissions::Omissions::default());
+        let mut omissions = crate::omissions::Omissions {
+            show_omitted: true,
+            ..Default::default()
+        };
+        omissions.add(vec![keel_vfs::VPath::local("/x/omitted.txt")], false);
+        let custom = Settings {
+            quick_hotkey: "Ctrl+Shift+Alt+Space".into(),
+            searches_in_windows: true,
+            run_in_background: true,
+            always_on_top: true,
+            omissions,
+            ..defaults
+        };
+        let text = toml::to_string_pretty(&custom).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), custom, "{text}");
+    }
+
+    #[test]
     fn round_trip_under_keel_config_dir() {
         let _env = super::TEST_ENV.lock();
         let _restore = super::EnvRestore::save(&["KEEL_CONFIG_DIR"]);

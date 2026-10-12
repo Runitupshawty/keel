@@ -2276,7 +2276,7 @@ impl AppState {
                     self.refresh_omissions();
                 }
             }
-            Action::Search if self.settings.searches_in_windows => {
+            Action::Search if self.settings.searches_in_windows && !self.tab(p).is_search() => {
                 self.search_window = Some(self.tab(p).dir.clone());
             }
             Action::Search => {

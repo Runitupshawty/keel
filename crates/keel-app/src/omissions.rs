@@ -88,3 +88,64 @@ impl crate::state::AppState {
         self.ctx.request_repaint();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(path: &str) -> Hit {
+        Hit {
+            path: VPath::local(path),
+            is_dir: false,
+            size: 0,
+            modified: None,
+            snippet: None,
+        }
+    }
+
+    fn paths(hits: &[Hit]) -> Vec<String> {
+        hits.iter().map(|h| h.path.display()).collect()
+    }
+
+    #[test]
+    fn filter_drops_permanent_and_temporary_paths_only() {
+        let mut o = Omissions::default();
+        o.add(vec![VPath::local("/x/a.txt")], false);
+        o.add(vec![VPath::local("/x/b.txt")], true);
+        let hits = vec![hit("/x/a.txt"), hit("/x/b.txt"), hit("/x/c.txt"), hit("/x/a.txt.bak")];
+        assert_eq!(paths(&o.filter().apply(hits.clone())), paths(&[hit("/x/c.txt"), hit("/x/a.txt.bak")]));
+        // Show omitted: nothing is dropped, the lists are kept.
+        o.show_omitted = true;
+        assert_eq!(o.filter().apply(hits.clone()).len(), 4);
+        assert_eq!((o.permanent.len(), o.temporary.len()), (1, 1));
+        // An empty filter keeps everything.
+        assert_eq!(Filter::default().apply(hits).len(), 4);
+    }
+
+    #[test]
+    fn add_skips_duplicates_per_list() {
+        let mut o = Omissions::default();
+        let a = VPath::local("/x/a.txt");
+        o.add(vec![a.clone(), a.clone()], false);
+        o.add(vec![a.clone()], false);
+        o.add(vec![a.clone()], true);
+        assert_eq!(o.permanent, [a.clone()]);
+        assert_eq!(o.temporary, [a]);
+    }
+
+    #[test]
+    fn only_permanent_omissions_and_the_toggle_are_saved() {
+        let mut o = Omissions {
+            show_omitted: true,
+            mode: true,
+            manage: true,
+            ..Default::default()
+        };
+        o.add(vec![VPath::local("/x/a.txt")], false);
+        o.add(vec![VPath::local("/x/b.txt")], true);
+        let back: Omissions = toml::from_str(&toml::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back.permanent, o.permanent);
+        assert!(back.show_omitted);
+        assert!(back.temporary.is_empty() && !back.mode && !back.manage);
+    }
+}
