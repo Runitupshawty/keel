@@ -13,11 +13,13 @@ mod locate;
 mod ntfs;
 #[cfg(target_os = "macos")]
 mod spotlight;
+mod terms;
 mod walkindex;
 
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
 pub use fuzzy::Fuzzy;
+pub use terms::Highlighter;
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
@@ -36,6 +38,16 @@ pub struct Query {
     pub max: u32,
     pub regex: bool,
     pub match_case: bool,
+    /// Match Whole Words: a plain term matches only whole words of the name.
+    pub whole_word: bool,
+    /// Match Path: terms match the full path (folders and name), not only the name.
+    pub match_path: bool,
+    /// Match Diacritics: `cafe` does not find `café`. Off (the default), letters match
+    /// their accented forms both ways.
+    pub match_diacritics: bool,
+    /// Match whole filename when using wildcards (the default): `*.pdf` must match the
+    /// whole name; off, a wildcard term may match anywhere in it.
+    pub whole_filename_wildcards: bool,
     /// Fill in every hit's size and date (the default). The Keel index has to ask
     /// the file system per hit (cold disk: tens to hundreds of ms for 500 hits);
     /// with `false` it skips that and the caller fills them later with
@@ -51,6 +63,10 @@ impl Default for Query {
             max: 500,
             regex: false,
             match_case: false,
+            whole_word: false,
+            match_path: false,
+            match_diacritics: false,
+            whole_filename_wildcards: true,
             meta: true,
         }
     }
@@ -226,9 +242,10 @@ pub fn folder_index(searcher: &dyn Searcher) -> anyhow::Result<Vec<String>> {
 }
 
 /// fd-style name search under `root` with the `ignore` crate (hidden and
-/// git-ignored entries are skipped). Matches a substring of the file name, or the
-/// `regex` pattern when `query.regex` (an invalid pattern finds nothing),
-/// case-insensitive unless `match_case`, and stops after `query.max` hits.
+/// git-ignored entries are skipped). Matches a substring of the file name (of the full
+/// path with `match_path`), or the `regex` pattern when `query.regex` (an invalid pattern
+/// finds nothing), case-insensitive unless `match_case`, accents folded unless
+/// `match_diacritics`, whole words with `whole_word`; stops after `query.max` hits.
 /// Blocks on disk IO: worker threads only.
 pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
     let max = query.max as usize;
@@ -239,7 +256,11 @@ pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
     let pattern = if query.regex {
         query.text.clone()
     } else {
-        regex::escape(&query.text)
+        let src = terms::literal(&query.text, query);
+        match query.whole_word {
+            true => terms::bounded(&src, &query.text),
+            false => src,
+        }
     };
     let Ok(matcher) = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!query.match_case)
@@ -248,7 +269,14 @@ pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
         return hits;
     };
     for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if entry.depth() == 0 || !matcher.is_match(&entry.file_name().to_string_lossy()) {
+        if entry.depth() == 0 {
+            continue;
+        }
+        let found = match query.match_path {
+            true => matcher.is_match(&entry.path().to_string_lossy()),
+            false => matcher.is_match(&entry.file_name().to_string_lossy()),
+        };
+        if !found {
             continue;
         }
         match hit_for_path(entry.path()) {
@@ -415,6 +443,31 @@ mod tests {
         assert!(walk(&root, &regex("(unclosed")).is_empty(), "bad pattern");
         // Without `regex`, pattern characters are literal.
         assert!(walk(&root, &query(r"needle\.txt")).is_empty());
+
+        // Match Path, Match Whole Words, diacritics.
+        assert_eq!(walk(&root, &query("sub")).len(), 1, "the folder only");
+        let path = Query {
+            match_path: true,
+            ..query("sub")
+        };
+        assert_eq!(walk(&root, &path).len(), 3, "the folder and all below it");
+        let whole = Query {
+            whole_word: true,
+            ..query("needle")
+        };
+        assert!(walk(&root, &whole).is_empty());
+        std::fs::write(root.join("café menu.txt"), b"x").unwrap();
+        assert_eq!(names(walk(&root, &query("cafe"))), ["café menu.txt"]);
+        let exact = Query {
+            match_diacritics: true,
+            ..query("cafe")
+        };
+        assert!(walk(&root, &exact).is_empty());
+        let whole = Query {
+            whole_word: true,
+            ..query("menu")
+        };
+        assert_eq!(names(walk(&root, &whole)), ["café menu.txt"]);
 
         std::fs::remove_dir_all(&root).unwrap();
     }

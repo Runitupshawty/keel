@@ -38,6 +38,8 @@ struct Functions {
     set_request_flags: SetU32,
     set_max: SetU32,
     set_match_case: SetBool,
+    set_match_path: SetBool,
+    set_match_whole_word: SetBool,
     set_regex: SetBool,
     query: QueryW,
     get_num_results: GetU32,
@@ -120,6 +122,8 @@ impl EverythingSearcher {
             set_request_flags: symbol!("Everything_SetRequestFlags", SetU32),
             set_max: symbol!("Everything_SetMax", SetU32),
             set_match_case: symbol!("Everything_SetMatchCase", SetBool),
+            set_match_path: symbol!("Everything_SetMatchPath", SetBool),
+            set_match_whole_word: symbol!("Everything_SetMatchWholeWord", SetBool),
             set_regex: symbol!("Everything_SetRegex", SetBool),
             query: symbol!("Everything_QueryW", QueryW),
             get_num_results: symbol!("Everything_GetNumResults", GetU32),
@@ -150,12 +154,21 @@ impl EverythingSearcher {
 }
 
 /// Everything search string and whether whole-string regex mode is on.
-/// `regex:` scopes the regex to the text so a `folder:` prefix stays a filter.
+/// `regex:` scopes the regex to the text so a `folder:` prefix stays a filter. Match
+/// Case, Match Path, Match Whole Words and Regex are Everything's own search flags (set
+/// with the SDK, the same switches as its Search menu); Match Diacritics has no SDK
+/// flag, so it is Everything's `diacritics:` modifier over the whole search as a group.
+/// Keel's "Match whole filename when using wildcards" is Everything's own setting there.
 fn search_text(query: &Query) -> (String, bool) {
+    let text = if query.match_diacritics && !query.regex && !query.text.trim().is_empty() {
+        format!("diacritics:<{}>", query.text)
+    } else {
+        query.text.clone()
+    };
     match (query.folders_only, query.regex) {
-        (true, true) => (format!("folder: regex:{}", query.text), false),
-        (true, false) => (format!("folder: {}", query.text), false),
-        (false, regex) => (query.text.clone(), regex),
+        (true, true) => (format!("folder: regex:{text}"), false),
+        (true, false) => (format!("folder: {text}"), false),
+        (false, regex) => (text, regex),
     }
 }
 
@@ -181,6 +194,8 @@ impl Searcher for EverythingSearcher {
             );
             (functions.set_max)(query.max);
             (functions.set_match_case)(i32::from(query.match_case));
+            (functions.set_match_path)(i32::from(query.match_path));
+            (functions.set_match_whole_word)(i32::from(query.whole_word));
             (functions.set_regex)(i32::from(regex));
 
             if (functions.query)(1) == 0 {
@@ -287,5 +302,29 @@ mod tests {
         assert_eq!(text(true, false), ("folder: ^ab+c$".into(), false));
         assert_eq!(text(false, true), ("^ab+c$".into(), true));
         assert_eq!(text(false, false), ("^ab+c$".into(), false));
+    }
+
+    #[test]
+    fn match_diacritics_is_a_modifier_over_the_whole_search() {
+        let q = |text: &str, folders_only, regex| {
+            search_text(&Query {
+                text: text.into(),
+                folders_only,
+                regex,
+                match_diacritics: true,
+                ..Query::default()
+            })
+        };
+        assert_eq!(
+            q("café ext:pdf", false, false),
+            ("diacritics:<café ext:pdf>".into(), false)
+        );
+        assert_eq!(
+            q("café", true, false),
+            ("folder: diacritics:<café>".into(), false)
+        );
+        // A regex has no accents to fold; an empty search stays empty.
+        assert_eq!(q("^caf", false, true), ("^caf".into(), true));
+        assert_eq!(q("", false, false), ("".into(), false));
     }
 }

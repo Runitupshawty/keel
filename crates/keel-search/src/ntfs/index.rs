@@ -100,6 +100,8 @@ pub(crate) struct Matcher {
     pub folders_only: bool,
     /// `in:` path prefix.
     pub within: Option<String>,
+    /// Match Path: every term, matched against the full path instead of the name.
+    pub path: Vec<Regex>,
 }
 
 impl Index {
@@ -381,6 +383,7 @@ impl Index {
             if keep(quality)
                 && m.rest.iter().all(|re| re.is_match(name))
                 && !within.as_mut().is_some_and(|w| !w.contains(self, slot))
+                && (m.path.is_empty() || self.path_matches(slot.frn, &m.path))
             {
                 hits.push((quality, i));
             }
@@ -445,6 +448,12 @@ impl Index {
 
     /// `in:` target: the folder holding the prefix's last component, and that
     /// partial component (entries under the folder whose top name starts with it).
+    /// Match Path: the full path of `frn` matches every one of `res`.
+    fn path_matches(&self, frn: u64, res: &[Regex]) -> bool {
+        self.path(frn)
+            .is_some_and(|p| res.iter().all(|re| re.is_match(&p)))
+    }
+
     fn within(&self, prefix: &str) -> Option<Within> {
         let prefix = prefix.replace('/', "\\");
         let (folder, partial) = prefix.rsplit_once('\\').unwrap_or(("", &prefix));

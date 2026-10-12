@@ -2,12 +2,13 @@
 //! match the name; `"quoted text"` is one term; a term with `*` or `?` is a glob over
 //! the whole name; `regex:` makes the rest of a term a regular expression (or the
 //! whole text when `Query::regex` is set); `folder:` keeps folders only; `in:<path>`
-//! keeps entries under a path prefix. Anything else is a substring.
+//! keeps entries under a path prefix. Anything else is a substring. The search toggles
+//! (whole words, path, diacritics, whole-filename wildcards) come from `crate::terms`.
 
 use regex::{Regex, RegexBuilder};
 
 use super::index::Matcher;
-use crate::Query;
+use crate::{terms, Query};
 
 enum Term {
     Literal(String),
@@ -35,26 +36,6 @@ fn split_terms(text: &str) -> Vec<String> {
     terms
 }
 
-/// Whole-name glob as a regex. A leading or trailing `*` drops that anchor instead
-/// (same matches, and the regex engine can then skip ahead on the literal).
-fn glob(term: &str) -> String {
-    let mut re = String::new();
-    if !term.starts_with('*') {
-        re.push('^');
-    }
-    for c in term.trim_matches('*').chars() {
-        match c {
-            '*' => re.push_str(".*"),
-            '?' => re.push('.'),
-            c => re.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
-        }
-    }
-    if !term.ends_with('*') {
-        re.push('$');
-    }
-    re
-}
-
 fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
     term.get(..prefix.len())
         .filter(|head| head.eq_ignore_ascii_case(prefix))
@@ -76,13 +57,13 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
                 if rest.is_empty() {
                     continue;
                 }
-                terms.push(term_of(rest));
+                terms.push(term_of(rest, query));
             } else if let Some(rest) = strip_ci(&term, "in:") {
                 within = Some(rest.to_owned());
             } else if let Some(rest) = strip_ci(&term, "regex:") {
                 terms.push(Term::Pattern(rest.to_owned()));
             } else {
-                terms.push(term_of(&term));
+                terms.push(term_of(&term, query));
             }
         }
     }
@@ -104,9 +85,25 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
             .build()?)
     };
     let build = |t: &Term| match t {
-        Term::Literal(s) => regex(&regex::escape(s)),
+        Term::Literal(s) => regex(&terms::literal(s, query)),
         Term::Pattern(p) => regex(p),
     };
+    // Match Whole Words and Match Path (shared with the walk index, `terms.rs`).
+    let words = terms::word_terms(&literals(&terms), query, &regex)?;
+    if query.match_path {
+        let mut path = terms.iter().map(build).collect::<anyhow::Result<Vec<_>>>()?;
+        path.extend(words);
+        return Ok(Matcher {
+            scan: None,
+            rest: Vec::new(),
+            literal: None,
+            prefix: None,
+            match_case: query.match_case,
+            folders_only,
+            within,
+            path,
+        });
+    }
     let mut scan = None;
     let mut literal = None;
     let mut prefix = None;
@@ -116,12 +113,13 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
             scan = Some(build(t)?);
             if let Term::Literal(s) = t {
                 literal = Some(s.clone());
-                prefix = Some(regex(&format!("^{}", regex::escape(s)))?);
+                prefix = Some(regex(&format!("^{}", terms::literal(s, query)))?);
             }
         } else {
             rest.push(build(t)?);
         }
     }
+    rest.extend(words);
     Ok(Matcher {
         scan,
         rest,
@@ -130,12 +128,22 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
         match_case: query.match_case,
         folders_only,
         within,
+        path: Vec::new(),
     })
 }
 
-fn term_of(text: &str) -> Term {
+fn literals(terms: &[Term]) -> Vec<&str> {
+    (terms.iter())
+        .filter_map(|t| match t {
+            Term::Literal(s) => Some(s.as_str()),
+            Term::Pattern(_) => None,
+        })
+        .collect()
+}
+
+fn term_of(text: &str, query: &Query) -> Term {
     if text.contains(['*', '?']) {
-        Term::Pattern(glob(text))
+        Term::Pattern(terms::glob(text, query))
     } else {
         Term::Literal(text.to_owned())
     }
@@ -278,6 +286,38 @@ mod tests {
         assert!(find(r"report in:D:\").is_empty());
         assert!(find(r"report in:C:\Nope\x").is_empty());
         assert_eq!(find(r#"in:"C:\Users\ann\my report.docx""#).len(), 1);
+    }
+
+    /// Match Whole Words, Match Path, Match Diacritics and whole-filename wildcards.
+    #[test]
+    fn search_toggles() {
+        let with = |text: &str, set: fn(&mut Query)| {
+            let mut q = Query {
+                text: text.into(),
+                ..Query::default()
+            };
+            set(&mut q);
+            find_q(q)
+        };
+        let words = with("report", |q| q.whole_word = true);
+        assert_eq!(words.len(), 5);
+        assert!(!words.iter().any(|p| p.ends_with("reportage")));
+        assert_eq!(with("port", |q| q.whole_word = true).len(), 0);
+        assert_eq!(find("ann"), [r"C:\Users\ann"]);
+        assert_eq!(with("ann", |q| q.match_path = true).len(), 7);
+        assert_eq!(
+            with("windows pdf", |q| q.match_path = true),
+            [r"C:\Windows\report.pdf"]
+        );
+        assert_eq!(
+            with(r"*\ann\rep* folder:", |q| q.match_path = true),
+            [r"C:\Users\ann\report"],
+            "a wildcard over the whole path"
+        );
+        assert_eq!(find("nOtés"), [r"C:\Users\ann\notes.txt"]);
+        assert!(with("notés", |q| q.match_diacritics = true).is_empty());
+        assert!(find("*.pd").is_empty());
+        assert_eq!(with("*.pd", |q| q.whole_filename_wildcards = false).len(), 3);
     }
 
     #[test]
