@@ -1350,6 +1350,8 @@ fn fingerprint(s: &AppState) -> String {
             s.jobs.list.len(),
             toast_texts(s),
             s.theme.dark,
+            // Task 67: Get Info windows.
+            s.info.windows.len(),
         )
     )
 }
@@ -1398,6 +1400,7 @@ fn command_palette_every_command() {
             st.dialog = None;
             st.settings_open = false;
             st.jump.open = false;
+            st.info.windows.clear();
             st.panes[0].path_edit = None;
             st.tab_mut(0).renaming = None;
         }
