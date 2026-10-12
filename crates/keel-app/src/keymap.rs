@@ -671,6 +671,21 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .global(),
+        // --- Task 77 ---
+        cmd(
+            "filelist.open",
+            "Open file list…",
+            FileList(crate::filelist_ui::FileListCmd::Open(None)),
+            &[],
+        )
+        .global(),
+        cmd(
+            "filelist.export",
+            "Export results…",
+            FileList(crate::filelist_ui::FileListCmd::Export),
+            &[],
+        )
+        .global(),
         // --- keys the palette does not list ---
         cmd(PALETTE_ID, "Command palette", Palette, &["Ctrl+Shift+P"])
             .typing()

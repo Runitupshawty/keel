@@ -24,3 +24,11 @@ rusqlite.workspace = true
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
 windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
+
+[features]
+# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/` (docs/fuzzing.md).
+fuzzing = []
+
+[dev-dependencies]
+# The in-tree fuzz runs' harness (`keel_vfs::fuzz_harness`).
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }

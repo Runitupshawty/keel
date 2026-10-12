@@ -493,6 +493,8 @@ keel unmount <K:|folder>
 keel mounts
 keel daemon start|stop|status|rotate-token
 keel mcp [--allow-execute]
+keel filelist create <folder> -o <file> [filters] [--format F] [--no-header] [--bom]
+keel filelist export <list> -o <file> [--query Q] [--format F] [--no-header] [--bom]
 keel op [list]
 keel op <name> [--params <json> | --params-file <file>] [--execute]
 ```

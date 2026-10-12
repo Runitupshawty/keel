@@ -135,6 +135,8 @@ pub struct Tab {
     /// A search tab's matched parts of names (and of folders with Match Path), from its
     /// last query.
     pub highlight: Option<keel_search::Highlighter>,
+    /// Task 77: a file list tab: its queries search this list (`filelist_ui`).
+    pub filelist: Option<std::sync::Arc<keel_search::FileListSearcher>>,
     // --- Task 46 ---
     /// Shown in the Sizes view: biggest first, folders mixed with files (set by the pane
     /// before drawing).
@@ -189,6 +191,7 @@ impl Tab {
             library_search: false,
             snippets: Default::default(),
             highlight: None,
+            filelist: None,
             sizes_view: false,
             totals_key: None,
             totals: Default::default(),
@@ -244,6 +247,13 @@ impl Tab {
                 "" => "Library search".into(),
                 q => format!("Library: {q}"),
             },
+            TabKind::Search { query, .. } if self.filelist.is_some() => {
+                let list = self.filelist.as_ref().map_or("", |s| s.label());
+                match query.trim() {
+                    "" => list.to_owned(),
+                    q => format!("{list}: {q}"),
+                }
+            }
             TabKind::Search { query, .. } if query.is_empty() => "Search".into(),
             TabKind::Search { query, .. } => format!("Search: {query}"),
             TabKind::Overview => "Overview".into(),

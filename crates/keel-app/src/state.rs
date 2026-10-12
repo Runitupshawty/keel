@@ -232,6 +232,8 @@ pub enum Msg {
     // --- Task 36 ---
     Devices(crate::devices::DevMsg),
     Mount(crate::mount_ui::MountMsg),
+    /// Task 77: a file list read, an export written.
+    FileList(crate::filelist_ui::FileListMsg),
     /// An account's storage quota (None: unknown).
     CloudQuota {
         id: String,
@@ -999,6 +1001,7 @@ impl AppState {
             Msg::Library(msg) => self.library_msg(msg),
             Msg::Devices(msg) => self.devices_msg(msg),
             Msg::Mount(msg) => self.mount_msg(msg),
+            Msg::FileList(msg) => self.filelist_msg(msg),
             Msg::CloudQuota { id, quota } => self.cloud_quota(id, quota),
             Msg::CloudLink { path, result } => self.cloud_link(path, result),
         }
@@ -1014,7 +1017,8 @@ impl AppState {
             return;
         };
         tab.loading = false;
-        let remote = crate::remotes::is_network(&tab.dir);
+        // A remote or file list tab says nothing about the platform search backend.
+        let remote = crate::remotes::is_network(&tab.dir) || tab.filelist.is_some();
         match result {
             Ok(hits) => {
                 tab.snippets = (hits.iter())
@@ -1071,7 +1075,10 @@ impl AppState {
             .then(|| self.library.backend.clone())
             .flatten()
             .map(|b| Arc::new(crate::library::LibSearch(b)) as Arc<dyn Searcher>);
+        // Task 77: a file list tab searches the list's entries (an empty query lists them all).
+        let filelist = (tab.filelist.clone()).map(|s| s as Arc<dyn Searcher>);
         let searcher = match self.searcher.clone() {
+            _ if filelist.is_some() => filelist,
             _ if tab.library_search && library.is_none() => {
                 tab.loading = false;
                 tab.error = Some("The library is not open".into());
@@ -1092,7 +1099,7 @@ impl AppState {
         self.next_req += 1;
         let replaces = std::mem::replace(req, self.next_req);
         let text = query.trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && tab.filelist.is_none() {
             tab.set_listing(Listing::new(Vec::new()));
             tab.loading = false;
             tab.highlight = None;
@@ -2478,6 +2485,7 @@ impl AppState {
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::Mount(cmd) => self.mount_cmd(cmd),
+            Action::FileList(cmd) => self.filelist_cmd(p, cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;
@@ -2702,6 +2710,9 @@ impl AppState {
             self.run(p, Action::Navigate(e.path));
         } else if jobs::is_archive_file(&e) {
             self.run(p, Action::Navigate(VPath::join_archive(&e.path, "")));
+        } else if let Some(list) = (e.ext == "efu").then(|| e.path.to_local_path()).flatten() {
+            // Task 77: an EFU file list opens as a file list tab.
+            self.filelist_cmd(p, crate::filelist_ui::FileListCmd::Open(Some(list)));
         } else {
             self.launch(e.path, platform::open);
         }

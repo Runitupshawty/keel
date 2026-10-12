@@ -21,6 +21,7 @@ keel-daemon = { path = "../crates/keel-daemon", features = ["fuzzing"] }
 keel-preview = { path = "../crates/keel-preview", features = ["fuzzing"] }
 keel-query = { path = "../crates/keel-query", features = ["fuzzing"] }
 keel-props = { path = "../crates/keel-props", features = ["fuzzing"] }
+keel-search = { path = "../crates/keel-search", features = ["fuzzing"] }
 
 # Not a member of the Keel workspace: it needs nightly and libFuzzer.
 [workspace]
@@ -214,6 +215,13 @@ bench = false
 [[bin]]
 name = "trash_info"
 path = "fuzz_targets/trash_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "efu"
+path = "fuzz_targets/efu.rs"
 test = false
 doc = false
 bench = false

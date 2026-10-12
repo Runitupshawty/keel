@@ -248,6 +248,8 @@ pub enum Action {
     Devices(crate::devices::DevCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
+    /// Task 77: open a file list as a tab, export results (`filelist_ui.rs`).
+    FileList(crate::filelist_ui::FileListCmd),
 }
 
 /// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.

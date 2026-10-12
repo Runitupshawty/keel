@@ -15,3 +15,4 @@
 *.dng binary
 # Fuzz seeds are byte-exact inputs.
 fuzz/corpus/** -text
+fuzz/corpus/efu/* -text
