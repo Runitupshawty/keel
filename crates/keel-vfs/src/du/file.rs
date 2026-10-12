@@ -97,6 +97,9 @@ struct Header {
     version: u32,
 }
 
+/// `[name, parent, kind, flags, attributes, ext, link, size, allocated, modified]`.
+type DocNode = (String, u32, u8, u16, u32, u32, u32, u64, u64, i64);
+
 #[derive(Deserialize)]
 struct DocIn {
     format: String,
@@ -117,7 +120,7 @@ struct DocIn {
     exts: Vec<String>,
     #[serde(default)]
     links: Vec<String>,
-    nodes: Vec<(String, u32, u8, u16, u32, u32, u32, u64, u64, i64)>,
+    nodes: Vec<DocNode>,
 }
 
 /// Writes `tree` to `w` (gzip when `compress`). Dead items are left out.

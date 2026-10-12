@@ -26,12 +26,14 @@ pub(super) fn now_ns() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
+/// Hard-link candidates: (identity, node).
+type Candidates = Vec<(u128, NodeId)>;
+
 /// The tree being built, shared by the walker threads.
 struct Arena {
     nodes: Mutex<Vec<Node>>,
     exts: Mutex<Exts>,
-    /// Hard-link candidates: (identity, node).
-    ids: Mutex<Vec<(u128, NodeId)>>,
+    ids: Mutex<Candidates>,
 }
 
 struct Exts {
@@ -70,7 +72,7 @@ impl Arena {
         }
     }
 
-    fn into_parts(self) -> (Vec<Node>, Vec<Box<str>>, Vec<(u128, NodeId)>) {
+    fn into_parts(self) -> (Vec<Node>, Vec<Box<str>>, Candidates) {
         (
             self.nodes.into_inner(),
             self.exts.into_inner().list,
@@ -527,7 +529,7 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
 /// Groups files by identity: a group of two or more gets an entry in `tree.links`, and
 /// every name but the first in tree order is a duplicate. `cands` are the new candidates;
 /// files already known to be linked are added here.
-pub(super) fn link_up(tree: &mut Tree, mut cands: Vec<(u128, NodeId)>) {
+pub(super) fn link_up(tree: &mut Tree, mut cands: Candidates) {
     for (i, n) in tree.nodes.iter().enumerate() {
         if n.link != 0 && n.kind != NodeKind::Dead {
             if let Some(&id) = tree.links.get(n.link as usize - 1) {
