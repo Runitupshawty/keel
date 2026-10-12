@@ -97,11 +97,16 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
             text += " · cancelled: incomplete";
         }
         ui.label(text);
-        if ui.add_enabled(!state.export.busy(), egui::Button::new("Save CSV…")).clicked() {
+        if ui
+            .add_enabled(!state.export.busy(), egui::Button::new("Save CSV…"))
+            .clicked()
+        {
             let r = report.clone();
-            state.export.start(ui.ctx(), "permissions.csv".into(), "CSV", "csv", move |w| {
-                Ok(permissions::write_csv(&r, w)?)
-            });
+            state
+                .export
+                .start(ui.ctx(), "permissions.csv".into(), "CSV", "csv", move |w| {
+                    Ok(permissions::write_csv(&r, w)?)
+                });
         }
     });
     state.export.ui(ui);
@@ -229,7 +234,8 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
                                 ui.label(e.kind.as_str());
                             });
                             row.col(|ui| {
-                                ui.label(e.access.as_str()).on_hover_text(format!("{:#x}", e.mask));
+                                ui.label(e.access.as_str())
+                                    .on_hover_text(format!("{:#x}", e.mask));
                             });
                             row.col(|ui| {
                                 ui.label(if e.inherited { "Inherited" } else { "Explicit" });

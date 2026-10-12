@@ -64,7 +64,8 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) {
                 match &mut tier.younger_than_days {
                     Some(days) => {
                         ui.label("changed in the last");
-                        let r = ui.add(egui::DragValue::new(days).range(1..=36_500).suffix(" days"));
+                        let r =
+                            ui.add(egui::DragValue::new(days).range(1..=36_500).suffix(" days"));
                         apply |= r.named("Days").changed();
                     }
                     None => {
@@ -72,7 +73,12 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) {
                     }
                 }
                 ui.label("price");
-                let r = ui.add(egui::DragValue::new(&mut tier.cost_per_gb).speed(0.001).range(0.0..=1e6).max_decimals(4));
+                let r = ui.add(
+                    egui::DragValue::new(&mut tier.cost_per_gb)
+                        .speed(0.001)
+                        .range(0.0..=1e6)
+                        .max_decimals(4),
+                );
                 apply |= r.named("Price per GB per month").changed();
                 if i < last && ui.small_button("Remove").named("Remove tier").clicked() {
                     remove = Some(i);
@@ -134,16 +140,31 @@ fn results(ui: &mut egui::Ui, tiers: &[Tier], a: &Analytics) {
     }
     rows.push(("Total".into(), &a.total));
     table(ui, "du-storage-tiers", "Tier", &rows, all);
-    egui::CollapsingHeader::new("By extension").default_open(true).show(ui, |ui| {
-        let rows: Vec<(String, &Total)> = (a.extensions.iter().take(ROWS))
-            .map(|(e, t)| (if e.is_empty() { "(none)".into() } else { format!(".{e}") }, t))
-            .collect();
-        table(ui, "du-storage-ext", "Extension", &rows, all);
-    });
-    egui::CollapsingHeader::new("By top folder").default_open(true).show(ui, |ui| {
-        let rows: Vec<(String, &Total)> = (a.folders.iter().take(ROWS)).map(|(f, t)| (f.clone(), t)).collect();
-        table(ui, "du-storage-folders", "Folder", &rows, all);
-    });
+    egui::CollapsingHeader::new("By extension")
+        .default_open(true)
+        .show(ui, |ui| {
+            let rows: Vec<(String, &Total)> = (a.extensions.iter().take(ROWS))
+                .map(|(e, t)| {
+                    (
+                        if e.is_empty() {
+                            "(none)".into()
+                        } else {
+                            format!(".{e}")
+                        },
+                        t,
+                    )
+                })
+                .collect();
+            table(ui, "du-storage-ext", "Extension", &rows, all);
+        });
+    egui::CollapsingHeader::new("By top folder")
+        .default_open(true)
+        .show(ui, |ui| {
+            let rows: Vec<(String, &Total)> = (a.folders.iter().take(ROWS))
+                .map(|(f, t)| (f.clone(), t))
+                .collect();
+            table(ui, "du-storage-folders", "Folder", &rows, all);
+        });
 }
 
 /// Name, files, size, share of all bytes, monthly cost.

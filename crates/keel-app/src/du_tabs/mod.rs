@@ -100,7 +100,10 @@ impl<T: Send + 'static> Worker<T> {
             }
         });
         if !p.current.as_os_str().is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(p.current.display().to_string()).weak()).truncate());
+            ui.add(
+                egui::Label::new(egui::RichText::new(p.current.display().to_string()).weak())
+                    .truncate(),
+            );
         }
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
@@ -133,12 +136,21 @@ pub struct SizeFields {
 impl SizeFields {
     /// The two fields: (one changed, Enter pressed in one).
     pub fn ui(&mut self, ui: &mut egui::Ui) -> (bool, bool) {
-        let enter = |r: &egui::Response| r.lost_focus() && r.ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let enter =
+            |r: &egui::Response| r.lost_focus() && r.ctx.input(|i| i.key_pressed(egui::Key::Enter));
         ui.label("Size from");
-        let a = ui.add(egui::TextEdit::singleline(&mut self.min).desired_width(70.0).hint_text("0"));
+        let a = ui.add(
+            egui::TextEdit::singleline(&mut self.min)
+                .desired_width(70.0)
+                .hint_text("0"),
+        );
         let a = a.named("Minimum size");
         ui.label("to");
-        let b = ui.add(egui::TextEdit::singleline(&mut self.max).desired_width(70.0).hint_text("any"));
+        let b = ui.add(
+            egui::TextEdit::singleline(&mut self.max)
+                .desired_width(70.0)
+                .hint_text("any"),
+        );
         let b = b.named("Maximum size");
         (a.changed() || b.changed(), enter(&a) || enter(&b))
     }
@@ -155,8 +167,15 @@ pub fn size_text(bytes: u64) -> String {
 /// Unix nanoseconds as local time.
 pub fn time_text(ns: Option<i64>) -> String {
     ns.and_then(|n| {
-        let t = chrono::DateTime::from_timestamp(n.div_euclid(1_000_000_000), n.rem_euclid(1_000_000_000) as u32)?;
-        Some(t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        let t = chrono::DateTime::from_timestamp(
+            n.div_euclid(1_000_000_000),
+            n.rem_euclid(1_000_000_000) as u32,
+        )?;
+        Some(
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+        )
     })
     .unwrap_or_default()
 }
@@ -167,13 +186,16 @@ pub fn error_line(ui: &mut egui::Ui, text: &str) {
     }
 }
 
+/// A last column of [`file_table`]: its title and what to draw in it for row `i`.
+pub type ExtraColumn<'a> = (&'a str, &'a mut dyn FnMut(&mut egui::Ui, usize));
+
 /// A table of files: Name, Size, Size on disk, Modified, Folder. A click on a row returns
 /// it (to select it in the tree); `extra` draws a last column (a row's buttons).
 pub fn file_table(
     ui: &mut egui::Ui,
     salt: &str,
     rows: &[FileRow],
-    mut extra: Option<(&str, &mut dyn FnMut(&mut egui::Ui, usize))>,
+    mut extra: Option<ExtraColumn<'_>>,
 ) -> Option<NodeId> {
     let mut picked = None;
     let mut table = TableBuilder::new(ui)
@@ -206,10 +228,16 @@ pub fn file_table(
             body.rows(22.0, rows.len(), |mut row| {
                 let i = row.index();
                 let f = &rows[i];
-                let name = f.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                let name = f
+                    .path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                 row.col(|ui| {
                     let r = ui.selectable_label(false, &name);
-                    let r = r.named(&format!("{name}, {}: select in the tree", size_text(f.bytes)));
+                    let r = r.named(&format!(
+                        "{name}, {}: select in the tree",
+                        size_text(f.bytes)
+                    ));
                     if r.on_hover_text(f.path.display().to_string()).clicked() {
                         picked = Some(f.node);
                     }
@@ -224,7 +252,11 @@ pub fn file_table(
                     ui.label(time_text(f.modified_ns));
                 });
                 row.col(|ui| {
-                    let dir = f.path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+                    let dir = f
+                        .path
+                        .parent()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
                     ui.add(egui::Label::new(egui::RichText::new(dir).weak()).truncate());
                 });
                 if let Some((_, draw)) = &mut extra {
@@ -310,7 +342,9 @@ pub fn save(
     write: impl FnOnce(&mut dyn std::io::Write) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
-    let name = path.file_name().ok_or_else(|| anyhow::anyhow!("no file name"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("no file name"))?;
     let mut temp_name = std::ffi::OsString::from(".");
     temp_name.push(name);
     temp_name.push(".keel-part");

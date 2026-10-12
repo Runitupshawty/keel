@@ -4,7 +4,6 @@ use super::*;
 use keel_core::Op;
 use keel_vfs::du::{scan, Root, ScanOptions};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
@@ -20,7 +19,12 @@ fn fixture() -> (tempfile::TempDir, Arc<Tree>) {
     put(&r.join("b/two.bin"), &[7; 5000]);
     put(&r.join("b/notes.txt"), b"hello");
     put(&r.join("photo.jpg"), &[1; 3000]);
-    let t = scan(&[Root::Path(r.to_owned())], &ScanOptions::default(), &ScanHandle::new()).unwrap();
+    let t = scan(
+        &[Root::Path(r.to_owned())],
+        &ScanOptions::default(),
+        &ScanHandle::new(),
+    )
+    .unwrap();
     (tmp, Arc::new(t))
 }
 
@@ -125,10 +129,8 @@ fn storage_tab_computes_on_a_worker() {
 #[test]
 fn duplicates_tab_finds_and_plans_keep_one_and_hard_links() {
     let (tmp, t) = fixture();
-    let mut st = duplicates::State {
-        min_size: String::new(),
-        ..duplicates::State::default()
-    };
+    let mut st = duplicates::State::default();
+    st.min_size = String::new();
     let ctx = egui::Context::default();
     st.start(&ctx, &t);
     draw_until(|ui| {
@@ -141,14 +143,22 @@ fn duplicates_tab_finds_and_plans_keep_one_and_hard_links() {
 
     let r = tmp.path();
     let (keep, other) = (r.join("a/one.bin"), r.join("b/two.bin"));
-    let ops = duplicates::ops(duplicates::Action::Keep, &keep, std::slice::from_ref(&other));
+    let ops = duplicates::ops(
+        duplicates::Action::Keep,
+        &keep,
+        std::slice::from_ref(&other),
+    );
     assert_eq!(
         ops,
         [Op::Delete {
             paths: vec![keel_vfs::VPath::local(&other)]
         }]
     );
-    let ops = duplicates::ops(duplicates::Action::HardLink, &keep, std::slice::from_ref(&other));
+    let ops = duplicates::ops(
+        duplicates::Action::HardLink,
+        &keep,
+        std::slice::from_ref(&other),
+    );
     assert_eq!(ops.len(), 2);
     assert_eq!(
         ops[1],
@@ -161,7 +171,9 @@ fn duplicates_tab_finds_and_plans_keep_one_and_hard_links() {
     let first = Outcome::Plans(ops).first_action();
     assert!(matches!(
         first,
-        Some(crate::keys::Action::Library(crate::library::LibCmd::Plan(Op::Delete { .. })))
+        Some(crate::keys::Action::Library(crate::library::LibCmd::Plan(
+            Op::Delete { .. }
+        )))
     ));
     // Nothing on disk changed.
     assert!(keep.exists() && other.exists());
@@ -173,7 +185,9 @@ fn permissions_tab_reads_folders() {
     let mut st = permissions::State::default();
     let ctx = egui::Context::default();
     let tree = t.clone();
-    let job = Worker::spawn(&ctx, "test", move |h| Ok(keel_vfs::du::permissions::scan(&tree, false, &h)));
+    let job = Worker::spawn(&ctx, "test", move |h| {
+        Ok(keel_vfs::du::permissions::scan(&tree, false, &h))
+    });
     let start = Instant::now();
     let report = loop {
         if let Some(r) = job.poll() {

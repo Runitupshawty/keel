@@ -85,14 +85,27 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
         state.owner_job = None;
         apply = true;
     }
-    let enter = |r: &egui::Response| r.lost_focus() && r.ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    let enter =
+        |r: &egui::Response| r.lost_focus() && r.ctx.input(|i| i.key_pressed(egui::Key::Enter));
     ui.horizontal_wrapped(|ui| {
         ui.label("Name");
-        let hint = if state.regex { "regular expression" } else { "part of the name" };
-        let r = ui.add(egui::TextEdit::singleline(&mut state.name).desired_width(200.0).hint_text(hint));
+        let hint = if state.regex {
+            "regular expression"
+        } else {
+            "part of the name"
+        };
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut state.name)
+                .desired_width(200.0)
+                .hint_text(hint),
+        );
         apply |= enter(&r.named("Name"));
-        apply |= ui.checkbox(&mut state.regex, "Regular expression").changed();
-        apply |= ui.checkbox(&mut state.case_sensitive, "Match case").changed();
+        apply |= ui
+            .checkbox(&mut state.regex, "Regular expression")
+            .changed();
+        apply |= ui
+            .checkbox(&mut state.case_sensitive, "Match case")
+            .changed();
     });
     ui.horizontal_wrapped(|ui| {
         for (kind, label) in [
@@ -105,7 +118,11 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
         }
         ui.separator();
         ui.label("Extensions");
-        let r = ui.add(egui::TextEdit::singleline(&mut state.extensions).desired_width(90.0).hint_text("jpg, png"));
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut state.extensions)
+                .desired_width(90.0)
+                .hint_text("jpg, png"),
+        );
         apply |= enter(&r.named("Extensions"));
     });
     ui.horizontal_wrapped(|ui| {
@@ -113,12 +130,21 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
         apply |= submitted;
         ui.separator();
         ui.label("Owner");
-        let r = ui.add(egui::TextEdit::singleline(&mut state.owner).desired_width(120.0).hint_text("name or SID"));
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut state.owner)
+                .desired_width(120.0)
+                .hint_text("name or SID"),
+        );
         apply |= enter(&r.named("Owner"));
         let loading = state.owner_job.is_some();
-        let label = if state.owners.is_empty() { "Read owners" } else { "Read owners again" };
+        let label = if state.owners.is_empty() {
+            "Read owners"
+        } else {
+            "Read owners again"
+        };
         let b = ui.add_enabled(!loading, egui::Button::new(label));
-        let b = b.on_hover_text("Reads the owner of every item of the scan (needed to search by owner)");
+        let b = b
+            .on_hover_text("Reads the owner of every item of the scan (needed to search by owner)");
         if b.clicked() {
             let tree = tree.clone();
             state.owner_job = Some(Worker::spawn(ui.ctx(), "keel-du-owners", move |h| {
@@ -158,11 +184,17 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
         size_text(r.allocated),
     );
     if r.owners_unknown > 0 {
-        summary += &format!(" · {} without a known owner", crate::library::count(r.owners_unknown));
+        summary += &format!(
+            " · {} without a known owner",
+            crate::library::count(r.owners_unknown)
+        );
     }
     ui.label(summary);
     if r.nodes.len() > SHOWN {
-        ui.weak(format!("Showing the first {}", crate::library::count(SHOWN as u64)));
+        ui.weak(format!(
+            "Showing the first {}",
+            crate::library::count(SHOWN as u64)
+        ));
     }
     file_table(ui, "du-search", &state.rows, None).map(Outcome::Select)
 }

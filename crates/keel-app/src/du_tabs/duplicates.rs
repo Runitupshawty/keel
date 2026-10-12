@@ -140,7 +140,9 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
             .response
             .named("Hash algorithm");
         ui.checkbox(&mut state.sparse, "Sample files over 64 MiB")
-            .on_hover_text("Faster; such files are listed as probable duplicates and read whole before any action");
+            .on_hover_text(
+            "Faster; such files are listed as probable duplicates and read whole before any action",
+        );
         ui.label("Smallest file");
         let r = ui.add(egui::TextEdit::singleline(&mut state.min_size).desired_width(60.0));
         r.named("Smallest file");
@@ -188,21 +190,36 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
         }
         ui.strong(text);
         if !report.skipped.is_empty() {
-            ui.label(format!("· {} not read", crate::library::count(report.skipped.len() as u64)))
-                .on_hover_text(skipped_text(report));
+            ui.label(format!(
+                "· {} not read",
+                crate::library::count(report.skipped.len() as u64)
+            ))
+            .on_hover_text(skipped_text(report));
         }
         let idle = !state.export.busy();
-        if ui.add_enabled(idle, egui::Button::new("Save CSV…")).clicked() {
+        if ui
+            .add_enabled(idle, egui::Button::new("Save CSV…"))
+            .clicked()
+        {
             let r = report.clone();
-            state.export.start(ui.ctx(), "duplicates.csv".into(), "CSV", "csv", move |w| {
-                Ok(duplicates::write_csv(&r, w)?)
-            });
+            state
+                .export
+                .start(ui.ctx(), "duplicates.csv".into(), "CSV", "csv", move |w| {
+                    Ok(duplicates::write_csv(&r, w)?)
+                });
         }
-        if ui.add_enabled(idle, egui::Button::new("Save JSON…")).clicked() {
+        if ui
+            .add_enabled(idle, egui::Button::new("Save JSON…"))
+            .clicked()
+        {
             let r = report.clone();
-            state.export.start(ui.ctx(), "duplicates.json".into(), "JSON", "json", move |w| {
-                Ok(duplicates::write_json(&r, w)?)
-            });
+            state.export.start(
+                ui.ctx(),
+                "duplicates.json".into(),
+                "JSON",
+                "json",
+                move |w| Ok(duplicates::write_json(&r, w)?),
+            );
         }
     });
     state.export.ui(ui);
@@ -257,7 +274,11 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
                         }
                     });
                     row.col(|ui| {
-                        let name = g.files[0].path.file_name().unwrap_or_default().to_string_lossy();
+                        let name = g.files[0]
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
                         ui.add(egui::Label::new(name).truncate());
                     });
                     if row.response().named(&format!("Group {}", i + 1)).clicked() {
@@ -272,7 +293,10 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
     let mut act = None;
     let mut buttons = |ui: &mut egui::Ui, i: usize| {
         let keep = ui.add_enabled(!busy, egui::Button::new("Keep this one").small());
-        if keep.on_hover_text("Delete the others (to the trash), after a preview").clicked() {
+        if keep
+            .on_hover_text("Delete the others (to the trash), after a preview")
+            .clicked()
+        {
             act = Some((i, Action::Keep));
         }
         let link = ui.add_enabled(!busy, egui::Button::new("Hard-link others here").small());
@@ -281,7 +305,12 @@ pub fn ui(ui: &mut egui::Ui, tree: &Arc<Tree>, state: &mut State) -> Option<Outc
             act = Some((i, Action::HardLink));
         }
     };
-    let picked = file_table(ui, "du-dup-files", &group.files, Some(("Action", &mut buttons)));
+    let picked = file_table(
+        ui,
+        "du-dup-files",
+        &group.files,
+        Some(("Action", &mut buttons)),
+    );
     if let Some((keep, action)) = act {
         let g = group.clone();
         state.error.clear();
