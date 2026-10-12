@@ -36,6 +36,7 @@ crate's `fuzzing` feature.
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |
 | `probe` | `keel_core::fuzz::probe` | ffprobe JSON as the video metadata reader takes it |
 | `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters, `content:` terms) and the SQL it becomes; every FTS5 MATCH string it builds (names and the text inside documents) must run without an error |
+| `efu` | `keel_search::fuzz::efu` | file lists: the first byte picks EFU, CSV, TSV, TXT or M3U, the rest is the file, read under small bounds (10,000 rows, 4 KiB lines); what is read is written in every export format, the EFU written back must read back with as many entries and the same columns, and the list is searched |
 | `backup` | `keel_core::fuzz::backup` | a library backup (`.keelbackup`): the zip, the manifest and its bounds (`inspect`), then a restore into a scratch data folder (hashes, database checks) |
 | `rpc` | `keel_api::fuzz::rpc` | JSON-RPC lines from the daemon socket, each request's params decoded by its operation |
 | `mcp` | `keel_api::fuzz::mcp` | an MCP stdio session, with and without `--allow-execute` |

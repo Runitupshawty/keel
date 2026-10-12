@@ -93,6 +93,50 @@ Reading the whole file table needs administrator rights. Until you grant them Ke
 
 On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files…" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
 
+## File lists
+
+A file list is a file that names other files: Everything's **EFU** (`.efu`), or a plain list. Keel opens one as a tab, searches it, writes search results as one, and makes one from a folder.
+
+**Formats Keel reads**, by extension (any other file is read as EFU when its first line names a `Filename` column, else as one path per line):
+
+| Extension | What it holds |
+| --- | --- |
+| `.efu` | UTF-8 CSV with a header. `Filename` (the full path) is required; `Size` (bytes), `Date Modified`, `Date Created` and `Attributes` (Windows attribute bits, decimal or `0x` hex; 16 marks a folder) are read when present, in any order and letter case; any other column is kept as a property. Dates are FILETIME numbers (100 ns ticks since 1601, what Everything writes) or ISO 8601 (`2024-03-05`, `2024-03-05T14:07:09`, with a fraction, `Z` or `+01:00`; a date without a zone is UTC) |
+| `.csv`, `.tsv` | The same columns, comma- or tab-separated. Instead of `Filename` a `Full Path` or `Path` column works, or `Name` with `Path` (the folder: Everything's own CSV export); a file whose first line names none of these has no header, and the first column of each row is the path |
+| `.txt` | One path per line; blank lines are skipped, surrounding quotes and spaces dropped |
+| `.m3u`, `.m3u8` | One path per line; lines starting with `#` are comments |
+
+Fields follow CSV quoting: a field in double quotes may hold commas and line breaks, and `""` inside it is one quote (Everything quotes every `Filename`). A path ending in `\` or `/` is a folder. A UTF-8 byte order mark is skipped. Reading is bounded: at most 5,000,000 entries and 256 KiB per line (a quoted field's line breaks count towards its line), and a longer file is refused with the line it stopped at. Opening a list never touches the paths it names: sizes and dates come from the list.
+
+**Opening a list as a tab.** "Open file list…" in the command palette (Ctrl+Shift+P), `keel --filelist <file>`, or opening an `.efu` file in a pane (Enter or a double-click) reads the list on a worker and opens a search tab over it, titled with the list's name. It shows every entry at first (up to 100,000 rows); the query box then searches the list's names with the same syntax as Keel's own index: words (every word must be in the name), `*` and `?` wildcards, `regex:`, `folder:` (folders only) and `in:<path>` (under that folder). Exact names come first, then names starting with the text, then the rest. The bar shows how many of the list's entries are shown. Opening, copying or previewing a row works on the file at that path, if it exists on this computer. The tab is not saved with the session: like any search tab it comes back as the folder it started from (the list's folder).
+
+**Exporting.** Right-click in any tab (a search, a file list, or a folder) and choose **Export results…** (**Export list…** in a folder), or "Export results…" in the palette. The dialog picks the format, whether the first line carries the column names (CSV, TSV) or `#EXTM3U` (M3U), whether the file starts with a UTF-8 byte order mark (some Windows programs need one to read UTF-8), and, when rows are selected, whether to write only those. The rows are written in the order shown, through a temporary `.part` file that is renamed when complete.
+
+| Format | What is written |
+| --- | --- |
+| EFU | `Filename,Size,Date Modified,Date Created,Attributes` and any property columns, `Filename` always quoted, dates as FILETIME numbers, CRLF line ends: Everything opens it |
+| CSV | The same columns with dates as ISO 8601 UTC (`2024-03-05T14:07:09Z`) |
+| TSV | As CSV, tab-separated; a field holding a tab, a quote or a line break is quoted |
+| TXT | One full path per line |
+| M3U, M3U8 | One full path per line, `#EXTM3U` first with the header on; both are written as UTF-8 |
+| JSON | An array of objects: `filename`, `size`, `date_modified`, `date_created` (ISO 8601), `attributes` and the property columns; missing values are left out |
+
+A folder's or a search's rows carry the size and modified date Keel shows, and attributes for folders and hidden files; created dates are not known there. A path holding a line break is left out of TXT and M3U.
+
+**From the command line** (no window, no library):
+
+```
+keel filelist create <folder> -o <file> [--include-files W] [--exclude-files W]
+                     [--include-folders W] [--exclude-folders W]
+                     [--no-subfolders] [--no-folders] [--no-files]
+                     [--format F] [--no-header] [--bom] [--json]
+keel filelist export <list> -o <file> [--query Q] [--format F] [--no-header] [--bom] [--json]
+```
+
+`create` walks the folder in name order (a folder's entries right after it) with each entry's size, modified and created dates and attributes. Links are listed (as what they point at) but never walked into; folders it cannot read are skipped. Wildcards are separated by `;` or `,` (`*.mp3;*.flac`) and match names without regard to case; one holding `/` or `\` matches the path below the folder instead (`music/live`). `--exclude-folders` leaves out a folder with everything in it; `--include-folders` lists only what is in (or is) a matching folder, still walking the others to find them. `export` writes a file list (any format above) in another format, with `--query` keeping only the entries a search finds (the tab's syntax), in list order. The format comes from `--format` (`efu`, `csv`, `tsv`, `txt`, `m3u`, `m3u8`, `json`), else the output's extension, else EFU; `-o -` writes to standard output. Both print the number of entries written (`--json`: `{"file", "format", "entries"}`); exit codes are 0, 1 (failed) and 2 (usage).
+
+Not yet: a File List Editor (adding files by dragging, merging lists, removing duplicates, rescanning), file lists in the index, the `filelist:` search functions, `.metadata.efu` sidecars and the EFU file association.
+
 ## Finding folders and files (Ctrl+P)
 
 Ctrl+P opens the finder. Type a few letters of a folder's or a file's name (in order, not necessarily next to each other; the whole path counts) and press Enter: a folder opens, and a file opens its folder with the file selected and the preview shown. Ctrl+Enter opens the result in a new tab, Shift+Enter in the other pane (in a new tab when there is one pane). Each result shows its icon, its name and, dimmed, the folder it is in. Tab switches between **Folders**, **Files** and **Both** (the default); the choice is kept per profile.
@@ -139,7 +183,7 @@ Symbolic links on Windows need Developer Mode (Settings → System → For devel
 ## Command line
 
 ```
-keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] [--here]
+keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE] [--check-update] [--here]
 ```
 
 | Flag | Meaning |
@@ -148,6 +192,7 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] 
 | `--new-window` | Start a separate window even if Keel is already running |
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
+| `--filelist FILE` | Open this file list (EFU, TXT, CSV, TSV, M3U) as a tab ([File lists](#file-lists)) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |

@@ -2,6 +2,15 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **File lists.** Keel reads Everything's EFU file lists (`Filename` plus `Size`, `Date Modified`, `Date Created`, `Attributes` and any property column; dates as FILETIME numbers or ISO 8601), CSV and TSV tables (also Everything's `Name` + `Path` CSV export), and plain `.txt` / `.m3u` lists, bounded to 5,000,000 entries and 256 KiB per line. "Open file list…" in the command palette, `keel --filelist <file>`, or opening an `.efu` file opens a list as a tab that searches its entries (words, `*` wildcards, `regex:`, `folder:`, `in:`) with the list's own sizes and dates, without touching the paths it names. See [File lists](docs/files.md#file-lists).
+- **Export results…** in the right-click menu of any tab and in the palette: the shown (or only the selected) rows as EFU, CSV, TSV, TXT, M3U, M3U8 or JSON, with options for a header line and a UTF-8 byte order mark.
+- `keel filelist create <folder> -o <file>` makes a file list from a folder walk (include and exclude wildcards for files and folders, `--no-subfolders`, `--no-folders`, `--no-files`); `keel filelist export <list> -o <file>` writes a list in another format, optionally only the entries a `--query` finds.
+- Fuzz target `efu` for the file list readers and writers ([docs/fuzzing.md](docs/fuzzing.md)).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
