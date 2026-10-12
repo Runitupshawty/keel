@@ -189,6 +189,7 @@ fn main() -> eframe::Result<()> {
     }
     let opts = eframe::NativeOptions {
         viewport,
+        persistence_path: settings::window_state(),
         ..Default::default()
     };
     let boot = app::Boot {

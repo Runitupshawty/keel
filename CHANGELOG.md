@@ -8,6 +8,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Updating Keel restarted only the default profile's keel-daemon, without the arguments it ran with (`--web`, `--web-host`, a profile): a daemon serving the phone web client came back without it, and other profiles' daemons did not come back. `install.ps1` and `install.sh` now start every daemon they stopped again with its own arguments.
 - On Windows, a script that piped `install.ps1`'s output (`| Out-String`, `| tail`) waited until the keel-daemon the installer restarted exited, because the daemon inherited the pipe. The daemon now starts detached, holding none of the installer's output.
+- With `KEEL_CONFIG_DIR` set (tests, harnesses, portable runs), Keel still saved the window's size and position in the user's own `app.ron` (`%APPDATA%\Keel\data`, `~/Library/Application Support/Keel`, `~/.local/share/keel`). It is now saved as `app.ron` in `KEEL_CONFIG_DIR`.
 
 ## [0.22.0] - 2026-10-11
 
