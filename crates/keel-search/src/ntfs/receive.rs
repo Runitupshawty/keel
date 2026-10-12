@@ -418,7 +418,8 @@ mod tests {
         ];
         for (stream, says) in cases {
             let err = receive(vec![start('C', 1)], &stream)
-                .unwrap_err()
+                .err()
+                .unwrap_or_else(|| panic!("{says}: accepted"))
                 .to_string();
             assert!(err.contains(says), "{says}: {err}");
         }

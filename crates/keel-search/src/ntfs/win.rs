@@ -356,6 +356,9 @@ impl Volume {
     }
 
     /// Streams every MFT entry with a name (`FSCTL_ENUM_USN_DATA`; administrator).
+    /// The live tests compare the raw MFT read with it; the helper itself forwards the
+    /// raw buffers ([`RawVolume::enumerate_raw`]).
+    #[cfg(test)]
     pub fn enumerate(&self, mut each: impl FnMut(Vec<Record>)) -> io::Result<()> {
         self.enumerate_raw(&mut |buf| {
             if let Some((_, records)) = parse_buffer(buf) {
