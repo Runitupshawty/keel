@@ -128,10 +128,31 @@ Sizes are apparent sizes (a file's length, not the space it takes on disk). A fi
 - **Links are not followed**: symlinks, junctions and mount points are listed (as `link`, with a note saying which) and add nothing. `--follow-links` follows them; a link leading back to a folder it is in is listed as a link loop and not entered, so a scan always ends.
 - **Cloud placeholders are never downloaded**: an online-only file counts by its stated size with nothing on disk, and an online-only folder is not listed (note "cloud placeholder").
 - **Free space and unknown space** for each drive scanned from its root: unknown is the drive's used space minus what the scan found on disk (system files Keel cannot read, other users' folders, files changed since).
-- `--exclude GLOB` leaves out files and folders by name (`*` and `?`; repeat it for several; without case on Windows). The scanner also filters by path, by a regular expression on the path, by minimum size, by age (older or newer than), and leaves out hidden or system items; the Disk Usage window will offer those.
+- **Filters** leave items out of the scan: `--exclude GLOB` by name (`*` and `?`; repeat it for several; without case on Windows), `--exclude-path PATH` a folder or file and what is below it, `--exclude-regex REGEX` by a regular expression on the full path (Windows paths have backslashes), `--min-size SIZE` files smaller than SIZE (`500`, `10k`, `1.5MB`; `KiB`, `MiB`, `GiB` for powers of 1024), `--older-than AGE` and `--newer-than AGE` files by their last write (`90s`, `30m`, `12h`, `30d`, `2w`, `1y`; a bare number is days), `--no-hidden` and `--no-system` hidden and system items. The last line says how many items were left out.
+- **Links and hard links**: `--follow-symlinks`, `--follow-junctions` and `--follow-mount-points` follow one kind of link (`--follow-links` all three); `--count-hardlinks-each` counts every name of a hard-linked file.
 - `--top N` lists the N biggest items of each root (20 by default), then its free and unknown space and its total, and at the end the file and folder counts and the time taken; while it runs a terminal shows the files and bytes found, files per second and the folder being read.
-- `--save FILE` writes the whole scan to a file (gzip-compressed JSON, versioned), and `keel du --load FILE` shows it again later without walking. A scan file written by a newer Keel is refused with a message saying so.
+- `--save FILE` writes the whole scan to a file (gzip-compressed JSON, versioned), and `keel du --load FILE` (or `--load-from FILE`) shows it again later without walking. A scan file written by a newer Keel is refused with a message saying so.
 - `--json` prints the same as one JSON document ([api.md](api.md#cli)).
+- `--size-on-disk` ranks by size on disk instead of size (the listing, the exports and the report).
+
+#### Exports and reports
+
+One scan can write several files, for a spreadsheet, a script or a person:
+
+- `--save-to FILE.csv` or `FILE.json`: every item of the scan. CSV has one row per item with its id and its parent's id, full path, name, kind, extension, size, size on disk, files, folders and items below, last write and newest write below (UTC, ISO 8601), attributes and notes. JSON is a scan file, so `keel du --load-from FILE.json` reads it back.
+- `--save-types-to FILE.csv|.json`: the file types, one row per extension with its files, size, size on disk and share.
+- `--save-largest-to FILE.csv|.json`: the largest files (`--top N`, 100 by default; `--top 0` all).
+- `--report FILE.html`: a report to read in any browser: the totals, each scanned folder or drive, the top folders with a bar chart, the file types and the largest files (`--top N`, 20 by default). It is one file with no scripts and nothing loaded from elsewhere, and it follows the system's light or dark mode. `--mail` then opens a new mail in the default mail client with a short summary and where the report was saved; nothing is attached or sent, so attach the report before sending it.
+
+CSV files are UTF-8 with every field quoted and Windows line ends; `--bom` starts them with a byte order mark, which Excel needs to read non-English names correctly. A name starting with `=`, `+`, `-` or `@` gets a leading `'` in CSV so a spreadsheet shows it rather than running it as a formula. Hard-link names counted elsewhere are left out of the file types and largest files. Every file is written in one step (a temporary file renamed), so an existing file is replaced only by a complete one.
+
+For scheduled runs: the output paths and filters are checked before the scan starts (a wrong extension or regular expression exits 2 without scanning), every output is attempted even when one fails, `--quiet` prints nothing but errors, and the exit code says what happened: 0 everything was written, 1 something failed, 2 usage, and with `--strict` 3 when everything was written but some folders could not be read or the scan was cut short. For example, a weekly report of a data drive:
+
+```
+keel du --scan D:\ --exclude-path D:\Backups --report D:\Reports\disk.html --save-types-to D:\Reports\types.csv --bom --quiet --strict
+```
+
+Scripts and agents can also run scans through the API: `du.scan`, `du.result` and `du.export` ([api.md](api.md#operations)).
 
 A folder that cannot be read counts as empty and the last line says how many there were; folders deeper than 512 levels are not entered.
 

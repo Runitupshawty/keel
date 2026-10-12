@@ -112,6 +112,9 @@ user is working) also act directly: they change no file.
 | `redundancy` | read | How many copies of a file's content exist, and in which sources; each location has its volume's `state`, `backup` mark and whether it is only a device's `claimed` copy (never counted) |
 | `redundancy.folder` | read | `redundancy` for every indexed file in a folder (the first 5000): `[{path, copies}]` |
 | `library.folder_sizes` | read | A folder's indexed total and each child's size, biggest first: `{path, bytes, files, children: [{name, path, is_dir, bytes, files}], truncated}`. At most `max` children (default 1000; `truncated` says there were more); `dirs_only: true` lists only the child folders. `bytes` / `files` are absent for a folder whose total is not known yet (its source's first walk has not finished) and for a link. Apparent sizes; links are not counted. A path in no source, or not indexed, is NOT_FOUND |
+| `du.scan` | read | Start a disk usage scan on the host in the background: `paths` (absolute folders or drives) and/or `all_drives`, with the filters `exclude_names` (globs), `exclude_paths`, `exclude_regex`, `min_size`, `older_than_secs`, `newer_than_secs`, `exclude_hidden`, `exclude_system`, and `follow_symlinks`, `follow_junctions`, `follow_mount_points`, `count_hard_links_each`. Answers `{id}` at once. The read rules apply to the roots (no UNC or device paths outside sources on Windows) and Keel's configuration folder is always left out. The host keeps the last 4 scans; a fifth drops the oldest finished one (FAILED while 4 are running) |
+| `du.result` | read | A scan's `state` (`running`, `done`, `failed`), `progress` (`files`, `folders`, `bytes`, `elapsed_ms`, `current`), and when done its `summary` as `keel du --scan --json` prints it (`top` items of each root, default 20; `size_on_disk` ranks by bytes on disk), or its `error`. `wait_ms` (at most 10000) waits for a running scan. An unknown or dropped `id` is NOT_FOUND |
+| `du.export` | read | A finished scan as text, `{format, content}`: `list` `tree` (every item; JSON is a scan file `keel du --load-from` reads), `types` (one row per extension), `largest` (`top` files, default 100) as `format` `csv` or `json` (default; `bom` for CSV), or `report` (the HTML report; `top` folders and types, default 20). At most 64 MB; FAILED while the scan runs |
 | `library.inspect` | read | Everything the library knows about one `path` (a real or a `library://` path), for an inspector: `{entry, library?}`. `entry` is the file or folder as `stat` shows it, from the file system (from the index when the source is offline). `library` is absent when the path is in no source or not indexed yet; else `source`, `source_label`, `record`, `volume` (as `volumes.list` shows it), `content_id` (64 hex digits; absent before hashing, for a folder, after drift), `first_seen` and `last_hashed` (unix seconds; absent when not recorded), `copies` (a file's protection count as `redundancy` answers it, with `locations` the OTHER files holding its content, device claims last) and `more_copies`, `tags` (Favorites as `favorite`), `history` (the operation log entries that touched it, newest first, followed back through moves and renames: `{id, ts, kind, ok?, from?, to?, tag?}` with `kind` `copy`, `move`, `rename`, `delete`, `tag`, `untag`, or `merge`, `flatten` or `organize` for a folder operation that moved it; `from`: it came from there, `to`: a copy of it was made there; a file that left one of its paths before it came there is another file and is not listed) and `more_history`, and for a folder `folder` (`bytes`, `files`, `folders`, `biggest` child). Copies and history at most `max` each (default 50, at most 1000). A path that cannot be reached and is not indexed is NOT_FOUND |
 | `library.folder_style` | read | A folder's color and icon, `[{path, color?, icon?}]`: with `path`, that folder (one entry, without `color` and `icon` when it has none); without, every folder in the library that has a style. A path in no library source is NOT_FOUND ("add the folder's drive to the library to style it") |
 | `library.set_folder_style` | preview | Set an indexed folder's `color` (`#rrggbb`) and `icon` (one emoji, or `theme:<name>`: the icon theme's folder icon for folders of that name, shown by the desktop app when its theme has one); an omitted field stays as it is and `""` clears it. Answers `{path, color?, icon?}`. A file, a malformed color, more than one emoji, or a folder in no library source is refused at the preview. Changes only the library (never the folder); syncs to other devices with library sync |
@@ -426,7 +429,11 @@ claimed before a restart; unclaimed uploads left by an earlier run are deleted a
 ```
 keel search <query> [--max N] [--json]
 keel du <path> [--top N] [--json]
-keel du --scan <paths…> | --all-drives | --load <file> [--top N] [--save <file>] [--exclude GLOB…] [--follow-links] [--json]
+keel du --scan <paths…> | --all-drives | --load-from <file> [--top N] [--save <file>] [--save-to <file.csv|.json>]
+        [--save-types-to <file>] [--save-largest-to <file>] [--report <file.html> [--mail]] [--bom] [--size-on-disk]
+        [--exclude GLOB…] [--exclude-path PATH…] [--exclude-regex RE] [--min-size SIZE] [--older-than AGE] [--newer-than AGE]
+        [--no-hidden] [--no-system] [--follow-links | --follow-symlinks --follow-junctions --follow-mount-points]
+        [--count-hardlinks-each] [--strict] [--quiet] [--json]
 keel tag add|remove <tag> <paths…>
 keel plan copy|move <src…> --to <dir> [--on-conflict skip|overwrite|rename] [--json]
 keel plan delete <paths…> [--json]
@@ -468,8 +475,10 @@ bytes, allocated, files, folders, items, unreadable, excluded, roots}`, each roo
 children, truncated}` and each child `{name, path?, kind ("dir", "file", "link"), bytes,
 allocated, files, folders, items, newest?, notes?}` (`allocated`: bytes on disk;
 `newest`: the newest change below, unix seconds; `free` and `unknown` only for drive
-roots). Exit codes: 0 ok, 1 the operation failed,
-2 usage. Typed at a terminal, a lone argument that names an existing folder opens that
+roots), with `written: [{what, path}]` (the files it wrote) and `errors` when one could
+not be written ([Exports and reports](files.md#exports-and-reports)). Exit codes: 0 ok,
+1 the operation failed, 2 usage, and for `keel du --strict` 3: written, but the scan is
+partial. Typed at a terminal, a lone argument that names an existing folder opens that
 folder in the window even when it is a subcommand name (`keel devices` where `devices` is
 a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
 subcommand; without a terminal (an agent starting `keel mcp`, a script) a name is never
