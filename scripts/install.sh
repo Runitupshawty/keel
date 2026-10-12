@@ -95,9 +95,16 @@ mac_signed() {
 }
 
 # An update replaces running daemons (the phone web client, mounts, attached windows).
-# stop_daemons SHARE: stops every keel-daemon of the install in SHARE, the default profile's
-# with `keel daemon stop` and any other profile's by signal; prints 1 when one ran, else 0.
+# stop_daemons SHARE: stops every keel-daemon of the install in SHARE, the default
+# profile's with `keel daemon stop` and any other by signal, and prints one line per
+# daemon that ran: `keel-daemon` and the arguments it ran with (a profile, --web...), for
+# restart_daemons.
 stop_daemons() {
+  local pid line
+  for pid in $(pgrep -f "$1/keel-daemon" 2>/dev/null || true); do
+    line="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    case "$line" in "$1/keel-daemon" | "$1/keel-daemon "*) echo "keel-daemon${line#"$1/keel-daemon"}" ;; esac
+  done
   if pgrep -f "$1/keel-daemon" >/dev/null 2>&1; then
     "$1/keel" daemon stop >/dev/null 2>&1 || true
     pkill -f "$1/keel-daemon" >/dev/null 2>&1 || true
@@ -108,19 +115,37 @@ stop_daemons() {
       pkill -KILL -f "$1/keel-daemon" >/dev/null 2>&1 || true
       sleep 0.5
     fi
-    echo 1
-  else
-    echo 0
   fi
 }
-# restart_daemon SHARE: starts the default profile's daemon again; other profiles' are
-# left to `keel --profile <name> daemon start`.
-restart_daemon() {
-  if "$1/keel" daemon start >/dev/null 2>&1; then
-    echo "keel-daemon restarted (the default profile's; for another profile run: keel --profile <name> daemon start)."
-  else
-    echo "keel-daemon was running and could not be restarted; run: keel daemon start" >&2
-  fi
+# restart_daemons SHARE LINES: starts each daemon stop_daemons listed again, with the
+# arguments it ran with. One without arguments (the default profile's) through `keel daemon
+# start`; the others detached, their output discarded, so nothing holds the installer's
+# terminal or pipes.
+restart_daemons() {
+  local line args
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    args="${line#keel-daemon}"
+    args="${args# }"
+    if [ -z "$args" ]; then
+      if "$1/keel" daemon start >/dev/null 2>&1; then
+        echo "keel-daemon restarted."
+      else
+        echo "keel-daemon was running and could not be restarted; run: keel daemon start" >&2
+      fi
+      continue
+    fi
+    # The arguments as ps printed them, split at spaces.
+    # shellcheck disable=SC2086
+    if command -v setsid >/dev/null 2>&1; then
+      setsid nohup "$1/keel-daemon" $args </dev/null >/dev/null 2>&1 &
+    else
+      nohup "$1/keel-daemon" $args </dev/null >/dev/null 2>&1 &
+    fi
+    echo "keel-daemon $args restarted."
+  done <<EOF
+$2
+EOF
 }
 
 # scripts/test-install.sh sources this file for the functions above, with this set.
@@ -213,15 +238,15 @@ case "$plat" in
     ;;
 esac
 
-# Stop the old daemons before the files go and start the new default one after.
-daemon_was_running=0
-if [ -x "$share/keel" ]; then daemon_was_running="$(stop_daemons "$share")"; fi
+# Stop the old daemons before the files go and start each again after, as it ran.
+daemons=""
+if [ -x "$share/keel" ]; then daemons="$(stop_daemons "$share")"; fi
 rm -rf "$share"; mkdir -p "$share" "$(dirname "$bin")"
 cp -R "$src/." "$share/"
 chmod +x "$share/keel" "$share/keel-daemon"
 ln -sf "$share/keel" "$bin"
 ln -sf "$share/keel-daemon" "$dbin"
-if [ "$daemon_was_running" = 1 ]; then restart_daemon "$share"; fi
+if [ -n "$daemons" ]; then restart_daemons "$share" "$daemons"; fi
 
 case "$plat" in
   linux-*)

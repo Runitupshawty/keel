@@ -1,9 +1,9 @@
 use super::*;
-use crate::index::tests::{eventually, walk};
+use crate::index::tests::{eventually, eventually_reaches, walk};
 use crate::library::tests::folder;
 use crate::media::tests::{exif_jpeg, png};
 use crate::JobStatus;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn library(data: &Path, root: &Path) -> (Library, SourceId) {
     let lib = Library::open(data, "m").unwrap();
@@ -141,8 +141,8 @@ fn a_stopped_job_resumes_from_its_checkpoint() {
     }
     let (lib, id) = library(data.path(), files.path());
     let job = lib.media_job(&id).unwrap();
-    eventually("first checkpoint", || {
-        media_rows(&lib, &id) >= CHECKPOINT_EVERY as i64
+    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
+        media_rows(&lib, &id)
     });
     // Pause (user activity), then close: the job stops at its pause.
     lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
@@ -192,18 +192,39 @@ fn the_media_job_pauses_one_second_after_input() {
     for i in 0..5 {
         png(&files.path().join(format!("{i}.png")), 8, 8);
     }
+    // What the same five sidecars cost on this machine now, with no input to wait for.
+    let base = {
+        let data = tempfile::tempdir().unwrap();
+        let (lib, id) = library(data.path(), files.path());
+        let start = Instant::now();
+        run(&lib, &id);
+        start.elapsed()
+    };
     let (lib, id) = library(data.path(), files.path());
     lib.note_activity();
+    let noted = Instant::now();
     assert!(lib.shared.busy_within(Duration::from_secs(1)));
     let job = lib.media_job(&id).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(media_rows(&lib, &id), 0, "paused right after the input");
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
-    // Absolute timing: five sidecars take well under 5 s here, but not on a loaded CI machine.
-    if std::env::var_os("CI").is_none() {
-        assert!(lib.user_active(), "done within the 5 s other jobs wait");
-    }
+    let took = noted.elapsed();
     assert_eq!(media_rows(&lib, &id), 5);
+    // The 1 s pause, then the work, with room for a busier moment: well under the 5 s other
+    // jobs wait on an idle machine. A machine so loaded that this budget reaches 5 s cannot
+    // tell the two apart, and says so instead (CI runners are not timed at all).
+    if std::env::var_os("CI").is_some() {
+        return;
+    }
+    let budget = crate::library::SIDECAR_PAUSE + base * 2 + Duration::from_millis(500);
+    if budget >= crate::library::ACTIVITY_PAUSE {
+        eprintln!("skipped the timing: five sidecars took {base:?} alone, too loaded to tell");
+        return;
+    }
+    assert!(
+        took < budget,
+        "done {took:?} after the input, over {budget:?} (five sidecars alone: {base:?})"
+    );
 }
 
 /// `cargo test -p keel-core --release -- --ignored sidecar_perf --nocapture`

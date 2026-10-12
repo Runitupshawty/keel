@@ -264,8 +264,7 @@ fn main() -> eframe::Result<()> {
     }
     let opts = eframe::NativeOptions {
         viewport,
-        // With KEEL_CONFIG_DIR (portable mode, tests) the window state lives there too.
-        persistence_path: settings::config_dir_override().map(|d| d.join("window")),
+        persistence_path: settings::window_state(),
         ..Default::default()
     };
     let boot = app::Boot {

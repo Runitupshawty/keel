@@ -1,6 +1,6 @@
 use crate::office::Package;
 use crate::{Preview, Request};
-use calamine::{open_workbook_auto, Data, Ods, Reader, Sheets, Xlsb, Xlsx};
+use calamine::{Data, Ods, Reader, Sheets, Xls, Xlsb, Xlsx};
 use std::io::{BufRead, Cursor, Read, Seek};
 use std::path::Path;
 
@@ -70,16 +70,28 @@ fn csv(req: &Request) -> Result<TableData, String> {
     Ok((headers, rows, false))
 }
 
+/// The largest .xls previewed: calamine reads all of it, into memory, when it opens it.
+const MAX_XLS_BYTES: u64 = 32 << 20;
+
 fn workbook(req: &Request, ext: &str) -> Result<TableData, String> {
     if ext == "xls" {
-        // ponytail: calamine reads a whole .xls into dense ranges when it opens it (no
-        // cells reader, nothing to bound first): a crafted sparse .xls can exhaust memory
-        // here. The text job never reads .xls; the preview is opened by hand.
-        let mut workbook =
-            open_workbook_auto(&req.bytes_path).map_err(|error| error.to_string())?;
-        return first_sheet(&mut workbook);
+        return first_sheet(&mut Sheets::Xls(open_xls(&req.bytes_path)?));
     }
     first_sheet(&mut open_zip(&req.bytes_path, ext)?)
+}
+
+/// An .xls opened by calamine once its size and what it claims are bounded (`xls::check`):
+/// calamine reads the whole workbook into dense sheets, sized by what the file says.
+fn open_xls(path: &Path) -> Result<Xls<Mem>, String> {
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size > MAX_XLS_BYTES {
+        return Err("too big to preview (an .xls over 32 MiB)".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if !crate::xls::check(&bytes) {
+        return Err("damaged or too large to preview".into());
+    }
+    Xls::new(Cursor::new(bytes)).map_err(|e| e.to_string())
 }
 
 type Mem = Cursor<Vec<u8>>;

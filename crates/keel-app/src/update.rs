@@ -115,17 +115,20 @@ fn now() -> i64 {
 
 /// `keel --check-update`: prints the result; exit 0 when it worked, 1 when not.
 pub fn cli() -> i32 {
+    use std::io::Write;
+    let mut out = crate::commands::stdout();
     match check(LATEST_URL, VERSION, "") {
         Ok(Some(r)) => {
-            println!(
+            let _ = writeln!(
+                out,
                 "Keel {} is available (this is {VERSION}): {}",
                 r.version, r.page
             );
-            println!("Install: {ONE_LINER}");
+            let _ = writeln!(out, "Install: {ONE_LINER}");
             0
         }
         Ok(None) => {
-            println!("Keel {VERSION} is up to date");
+            let _ = writeln!(out, "Keel {VERSION} is up to date");
             0
         }
         Err(e) => {

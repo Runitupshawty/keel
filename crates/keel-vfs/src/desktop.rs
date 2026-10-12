@@ -62,6 +62,23 @@ pub fn attach_parent_console() {
     let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
 }
 
+/// Keeps this process's standard input, output and error out of the processes it starts
+/// from now on: Windows hands every inheritable handle to a child, so a detached
+/// keel-daemon held the pipe of `keel daemon start | …` and the reader waited until the
+/// daemon exited. A child still gets the standard handles its `Command` gives it (std
+/// duplicates those for it).
+pub fn keep_std_handles_private() {
+    use windows::Win32::Foundation::{SetHandleInformation, HANDLE_FLAGS, HANDLE_FLAG_INHERIT};
+    use windows::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if let Ok(handle) = unsafe { GetStdHandle(which) } {
+            let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+        }
+    }
+}
+
 /// The volume `path` (which must exist) is on, as `\?\Volume{GUID}\`, lowercase: the same
 /// for every way to reach it (drive letters, `subst` drives, junctions, folder mount
 /// points). For a network share, its root (`\server\share\`). None when Windows can't

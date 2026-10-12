@@ -127,6 +127,47 @@ impl From<Usage> for Fail {
 
 type Out = Box<dyn Write>;
 
+/// Standard output for what a command prints. A reader that closed the pipe early (`keel
+/// --version | head -1`) stops the printing: the rest is dropped and the command ends as it
+/// would have (exit 0), never with "failed printing to stdout".
+pub struct Stdout {
+    closed: bool,
+}
+
+pub fn stdout() -> Stdout {
+    Stdout { closed: false }
+}
+
+impl Stdout {
+    fn quiet(&mut self, result: std::io::Result<()>) -> std::io::Result<()> {
+        match result {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.closed = true;
+                Ok(())
+            }
+            r => r,
+        }
+    }
+}
+
+impl Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.closed {
+            let r = std::io::stdout().write_all(buf);
+            self.quiet(r)?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let r = std::io::stdout().flush();
+        self.quiet(r)
+    }
+}
+
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     // Task 77: file lists need no library and no settings.
     if let Command::Filelist(cmd) = cmd {
@@ -175,7 +216,7 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
             return FAILED;
         }
     };
-    let mut out: Out = Box::new(std::io::stdout());
+    let mut out: Out = Box::new(stdout());
     match cmd {
         Command::Search {
             query,
@@ -1695,6 +1736,9 @@ pub fn spawn_daemon(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        // Else it inherits this process's output too: `keel daemon start | …` would not
+        // end until the daemon does.
+        keel_vfs::desktop::keep_std_handles_private();
     }
     #[cfg(unix)]
     {
@@ -1796,6 +1840,12 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
                 );
                 return OK;
             };
+            // The library it serves: it lets go of the socket first and closes the library
+            // after, so "stopped" waits for that too (else a `daemon start` right after
+            // meets the old daemon still running, and `ps` shows two).
+            let library = (c.call("version", Value::Null).ok())
+                .and_then(|v| v["library"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| cfg.library.clone());
             if let Err(e) = c.call("daemon.shutdown", Value::Null) {
                 eprintln!("keel: {}", e.message);
                 return FAILED;
@@ -1804,6 +1854,12 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
             let deadline = Instant::now() + Duration::from_secs(20);
             while Instant::now() < deadline {
                 if running(cfg).is_none() {
+                    let dir = cfg.data_dir.join("library").join(&library);
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if let Err(e) = crate::library::released(&dir, left) {
+                        eprintln!("keel: {e}");
+                        return FAILED;
+                    }
                     say(
                         out,
                         json!({"running": false}),

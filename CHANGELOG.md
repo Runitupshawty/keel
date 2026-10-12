@@ -138,7 +138,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The `keel:` handler now runs `keel.exe --url-handler -- "<link>"` and Keel refuses the command line unless the link is the only argument: a link with an unencoded `"` (a `.url` file, an Office hyperlink, `start`) could add options or run a subcommand such as `keel es -export-txt` or `keel op --execute`. Links are validated before any command is read: raw quotes, whitespace, controls, malformed encoding and unknown actions are refused, and encoded text stays search text. Run `keel --register-url-protocol` again to update an existing registration (an old `--url "%1"` one is safe too).
 - A `keel.portable` saved as UTF-16 (Notepad "Unicode", PowerShell 5.1 `>`) made Keel panic at startup; it is now read, and an unreadable folder name falls back to `keel-data` with a notice.
 - `keel FOLDER --search QUERY` searched the whole disk; it now searches only in FOLDER (the query starts with `in:"FOLDER"`, which shows in the search box).
-- With `KEEL_CONFIG_DIR` set, the window's size and position (eframe's `app.ron`) were still saved in eframe's own folder; they now go to `<KEEL_CONFIG_DIR>/window`.
 - A volume whose file table (`$MFT`) is so fragmented that its list of extents continues in other records was indexed only up to its first extent, and the index was still marked complete. Keel now follows every extent, and reads the volume by enumeration instead when the extents do not cover the whole table.
 - A late preview of a system cleanup no longer replaces the task of a dialog opened since.
 - Undo of hard links works when the linked file became read-only.
@@ -151,6 +150,18 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Delete permanently refuses OneDrive and other cloud placeholders (folders that are reparse points but no links, offline and on-access files) instead of counting them as one empty file and then deleting their contents, walks without recursion, and deletes exactly the items it counted, one at a time.
 - Cleanups that run `cmd /c` now run as `cmd /d /v:off /s /c "<script>"`, so a script that starts with a value or a quoted program keeps its quotes: a file name holding `&`, `|`, `(` or `)` can no longer run commands. AutoRun and delayed expansion are off (with `/v:on` typed, a name with `!` is refused).
 - Cleanups find shells behind `sudo`, `doas`, `env`, `nice`, `time`, `xargs`, `wsl -e` and similar, and read `-c` in option clusters (`bash -lc`, `sh -ec`), so the script still gets quoted values. Windows PowerShell's default `-Command` (`powershell Remove-Item %p`), `/` switches and `-cwa` are read too. Values are refused where Keel cannot quote them: encoded commands, PowerShell switch values, `python -c`, `perl -e`, `node -e`, awk programs, fish and csh scripts, `ssh`, `watch`, `su`, `wsl` without `-e`, and placeholders inside a script's own quotes.
+
+## [0.22.1] - 2026-10-12
+
+### Fixed
+
+- Updating Keel restarted only the default profile's keel-daemon, without the arguments it ran with (`--web`, `--web-host`, a profile): a daemon serving the phone web client came back without it, and other profiles' daemons did not come back. `install.ps1` and `install.sh` now start every daemon they stopped again with its own arguments.
+- On Windows, a script that piped `install.ps1`'s output (`| Out-String`, `| tail`) waited until the keel-daemon the installer restarted exited, because the daemon inherited the pipe. The daemon now starts detached, holding none of the installer's output.
+- With `KEEL_CONFIG_DIR` set (tests, harnesses, portable runs), Keel still saved the window's size and position in the user's own `app.ron` (`%APPDATA%\Keel\data`, `~/Library/Application Support/Keel`, `~/.local/share/keel`). It is now saved as `app.ron` in `KEEL_CONFIG_DIR`.
+- `keel --version | head -1` (and `keel --check-update` into a reader that stops early) ended with "failed printing to stdout: The pipe is being closed"; output into a closed pipe now stops quietly and the command exits 0, like every other `keel` command's.
+- A crafted legacy Excel workbook (`.xls`) of a few kilobytes could crash Keel or keel-daemon when it was previewed: its reader reserves room for the cells the file claims (a 32-bit row count) and lays out every cell between the first and the last. The preview now checks those claims before the reader opens the file, refusing a workbook that claims more than a full sheet (65,536 rows by 256 columns) as "damaged or too large to preview", and an `.xls` over 32 MiB as too big.
+- `keel daemon stop` said "stopped" as soon as keel-daemon let go of its socket, while it was still closing the library: a `keel daemon start` right after could find the library still open (its new daemon exited at once), and `ps` showed two keel-daemon processes for a moment. `daemon stop` now returns once the library is closed.
+- On Windows, `keel daemon start` with its output piped (`| tee`, a script reading it) did not end until the keel-daemon it started stopped: the daemon inherited the pipe. A daemon started by `keel` (or the window) now inherits none of its standard handles.
 
 ## [0.22.0] - 2026-10-11
 
@@ -185,9 +196,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Known limitations
 
-- On Windows, a script that pipes `install.ps1`'s output (`| tail`, `| Out-String`) can wait until the daemon the installer restarted exits, because the restarted daemon inherits the pipe: redirect the installer's output to a file instead. The installer restarts the default profile's daemon without the arguments it ran with (for example `--web`): a daemon started by a scheduled task or a service should be restarted by that task.
-- `keel --version | head -1` and other commands whose reader closes the pipe early end with "failed printing to stdout" instead of exiting quietly.
-- No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped, and so are legacy Excel workbooks (`.xls`): their reader loads the whole workbook into memory when it opens it, with no way to bound it first. Previewing a crafted `.xls` can still exhaust memory.
+- No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped, and so are legacy Excel workbooks (`.xls`): their reader loads the whole workbook into memory when it opens it.
 - The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
 - Each document is bounded: files over 8 MiB (PDFs over 64 MiB) are skipped unread, at most 200,000 characters of a document are kept, and a document is read for at most 10 s (the text read until then is kept). A damaged or password-protected file is counted as failed and not read again until it changes.
 - Snippets come with the first 100 results of a search; the others show their name only.

@@ -143,31 +143,57 @@ FAKE_CS_VERIFY=0
 rm "$t/mac/keel-daemon.team"
 check "codesign: partly signed is refused" 2 mac_signed "$t/mac/keel" "$t/mac/keel-daemon"
 
-# --- daemons on update: fake keel, pgrep and pkill record what they were asked ---
+# --- daemons on update: fake keel, keel-daemon, pgrep, pkill and ps record what they were asked ---
 mkdir "$t/share"
 CALLS="$t/calls"; export CALLS
 printf '#!/usr/bin/env bash\necho "keel $*" >> "$CALLS"\n' > "$t/share/keel"
-# The fake daemon is gone once pkill ran, as a real one is.
-printf '#!/usr/bin/env bash\necho "pgrep $*" >> "$CALLS"\nif grep -q "^pkill" "$CALLS"; then exit 1; fi\nexit "${FAKE_PGREP:-0}"\n' > "$t/fake/pgrep"
+printf '#!/usr/bin/env bash\necho "keel-daemon $*" >> "$CALLS"\n' > "$t/share/keel-daemon"
+# FAKE_PIDS run until pkill ran, as real daemons do; ps names each by $t/ps.<pid>.
+cat > "$t/fake/pgrep" <<'PGREP'
+#!/usr/bin/env bash
+echo "pgrep $*" >> "$CALLS"
+if grep -q "^pkill" "$CALLS" || [ -z "$FAKE_PIDS" ]; then exit 1; fi
+printf '%s\n' $FAKE_PIDS
+PGREP
 printf '#!/usr/bin/env bash\necho "pkill $*" >> "$CALLS"\n' > "$t/fake/pkill"
-chmod +x "$t/share/keel" "$t/fake/pgrep" "$t/fake/pkill"
+printf '#!/usr/bin/env bash\nfor a; do :; done\ncat "%s/ps.$a"\n' "$t" > "$t/fake/ps"
+chmod +x "$t/share/keel" "$t/share/keel-daemon" "$t/fake/pgrep" "$t/fake/pkill" "$t/fake/ps"
+echo "$t/share/keel-daemon --profile=work --web 0.0.0.0:7421" > "$t/ps.101"
+echo "$t/share/keel-daemon" > "$t/ps.102"
+# Another program whose arguments name the daemon is not one.
+echo "vi $t/share/keel-daemon" > "$t/ps.103"
+PATH="$t/fake:$real_path"
+FAKE_PIDS="101 102 103"; export FAKE_PIDS
 : > "$CALLS"
-ran="$(stop_daemons "$t/share")"
-if [ "$ran" = 1 ] && grep -qx "keel daemon stop" "$CALLS" && grep -qx "pkill -f $t/share/keel-daemon" "$CALLS"; then
+daemons="$(stop_daemons "$t/share")"
+want="keel-daemon --profile=work --web 0.0.0.0:7421
+keel-daemon"
+if [ "$daemons" = "$want" ]; then ok "update: each daemon is read with its arguments"
+else fail "update: read '$daemons'"; fi
+if grep -qx "keel daemon stop" "$CALLS" && grep -qx "pkill -f $t/share/keel-daemon" "$CALLS"; then
   ok "update: every daemon of the install stops (other profiles' too)"
-else fail "update: stop said $ran: $(cat "$CALLS")"; fi
+else fail "update: stop ran: $(cat "$CALLS")"; fi
 if ! grep -q "pkill -KILL" "$CALLS"; then ok "update: a daemon that stops in time is not killed"
 else fail "update: killed one that stopped: $(cat "$CALLS")"; fi
 : > "$CALLS"
-check "update: the default profile's daemon starts again" 0 restart_daemon "$t/share"
-said "keel --profile <name> daemon start"
-if [ "$(cat "$CALLS")" = "keel daemon start" ]; then ok "update: one start, default profile"
+check "update: each daemon starts again" 0 restart_daemons "$t/share" "$daemons"
+said "keel-daemon --profile=work --web 0.0.0.0:7421 restarted."
+said "keel-daemon restarted."
+# The one with arguments starts detached: wait for it.
+for _ in $(seq 1 50); do grep -q "^keel-daemon" "$CALLS" && break; sleep 0.1; done
+if [ "$(sort "$CALLS")" = "keel daemon start
+keel-daemon --profile=work --web 0.0.0.0:7421" ]; then
+  ok "update: with its own arguments, and the one without through keel daemon start"
 else fail "update: start ran: $(cat "$CALLS")"; fi
 : > "$CALLS"
-FAKE_PGREP=1; export FAKE_PGREP
-ran="$(stop_daemons "$t/share")"
-if [ "$ran" = 0 ] && ! grep -q "^keel\|^pkill" "$CALLS"; then ok "update: no daemon, nothing stopped"
-else fail "update: idle stop said $ran: $(cat "$CALLS")"; fi
+FAKE_PIDS=""
+daemons="$(stop_daemons "$t/share")"
+if [ -z "$daemons" ] && ! grep -q "^keel\|^pkill" "$CALLS"; then ok "update: no daemon, nothing stopped"
+else fail "update: idle stop read '$daemons': $(cat "$CALLS")"; fi
+: > "$CALLS"
+check "update: no daemon, nothing starts" 0 restart_daemons "$t/share" "$daemons"
+if [ ! -s "$t/out" ] && [ ! -s "$CALLS" ]; then ok "update: nothing started or said"
+else fail "update: idle start ran: $(cat "$CALLS"), said $(cat "$t/out")"; fi
 PATH="$real_path"
 
 [ "$failed" = 0 ] || { echo "$failed check(s) failed"; exit 1; }

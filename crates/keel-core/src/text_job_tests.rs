@@ -1,11 +1,11 @@
 use super::*;
-use crate::index::tests::{eventually, walk, write};
+use crate::index::tests::{eventually, eventually_reaches, walk, write};
 use crate::library::tests::{folder, remote};
 use crate::{JobStatus, LibraryQuery};
 use std::time::Duration;
 
 /// A text reader for tests: `.txt` and `.md` are their text (cut at the caps), `.doc` is
-/// damaged, `.slow` sleeps past its time, `.lag` is text read in 5 ms, `.bin` is no text.
+/// damaged, `.slow` hangs until its file is deleted, `.lag` is text read in 5 ms, `.bin` is no text.
 pub(crate) fn extractor() -> TextExtractor {
     TextExtractor {
         extensions: &["txt", "md", "doc", "slow", "lag", "bin"],
@@ -18,7 +18,13 @@ pub(crate) fn extractor() -> TextExtractor {
                 "doc" => TextOutcome::Failed("not a valid Word document".into()),
                 "bin" => TextOutcome::SkippedKind,
                 "slow" => {
-                    std::thread::sleep(caps.time + ABANDON_AFTER + Duration::from_millis(300));
+                    // Stuck for as long as the test lets it, however slow the machine is
+                    // (a fixed sleep past the abandon time can end before a starved job
+                    // stops waiting). The cap only keeps a failed test from leaking it.
+                    let start = Instant::now();
+                    while path.exists() && start.elapsed() < Duration::from_secs(300) {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     TextOutcome::Done {
                         text: "late".into(),
                         truncated: false,
@@ -193,7 +199,9 @@ fn caps_skip_big_files_cut_long_ones_and_abandon_stuck_readers() {
     assert_eq!(status("big.txt"), (SKIPPED_SIZE, 0, false));
     assert_eq!(status("long.md"), (DONE, 50, true));
     assert_eq!(status("stuck.slow"), (FAILED, 0, false));
-    // The abandoned reader ends on its own and is no longer counted.
+    assert_eq!(lib.shared.text_abandoned.load(Ordering::SeqCst), 1);
+    // The abandoned reader ends once released and is no longer counted.
+    std::fs::remove_file(f.join("stuck.slow")).unwrap();
     eventually("the stuck reader ends", || {
         lib.shared.text_abandoned.load(Ordering::SeqCst) == 0
     });
@@ -210,8 +218,8 @@ fn a_stopped_job_resumes_from_its_checkpoint() {
     }
     let (lib, id) = library(data.path(), files.path());
     let job = lib.index_text(&id).unwrap().unwrap();
-    eventually("first checkpoint", || {
-        rows(&lib, &id) >= CHECKPOINT_EVERY as i64
+    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
+        rows(&lib, &id)
     });
     // Pause (user activity), then close: the job stops at its pause.
     lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);

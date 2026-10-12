@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// A hand-written package: `themes/base.json` <- `themes/mid.json` <- `themes/night.json`
 /// (comments, trailing commas, an alpha color, a missing key), and a light theme.
@@ -159,60 +160,80 @@ fn low_contrast_text_is_adjusted_to_four_and_a_half() {
     }
 }
 
+/// Runs `body` on a thread and fails when it has not ended after `limit`, instead of hanging
+/// the run (the thread is left behind). The install test once ran for 15 hours on a loaded
+/// machine: everything it waits on is the file system (`sync_all`, `rename`, a directory
+/// listing that keeps failing, which `.flatten()` would retry for ever).
+fn within(limit: Duration, body: impl FnOnce() + Send + 'static) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        body();
+        let _ = tx.send(());
+    });
+    if rx.recv_timeout(limit) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+        panic!("did not end within {limit:?}");
+    }
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 #[test]
 fn install_writes_one_file_per_theme_and_remove_takes_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let night = map(
-        "Night",
-        &colors("extension/themes/night.json").unwrap(),
-        false,
-    );
-    let day = map("Day", &colors("extension/themes/day.json").unwrap(), true);
-    let v = ColorVsix {
-        id: "pub.themes".into(),
-        label: "Themes".into(),
-        license: String::new(),
-        themes: vec![night.clone(), day],
-    };
-    let names = install(&v, dir.path()).unwrap();
-    assert_eq!(names, ["pub.themes~0", "pub.themes~1"]);
-    std::fs::write(dir.path().join("mine.toml"), "x").unwrap();
-    assert_eq!(
-        installed(dir.path()),
-        [("pub.themes".into(), "Night".into())]
-    );
-    let back: Theme =
-        toml::from_str(&std::fs::read_to_string(dir.path().join("pub.themes~0.toml")).unwrap())
-            .unwrap();
-    assert_eq!(
-        (back.name.as_str(), back.bg, back.dark),
-        ("Night", night.bg, true)
-    );
-    // Reinstalling a package with fewer themes leaves no stale file.
-    let one = ColorVsix {
-        themes: vec![night],
-        ..v
-    };
-    install(&one, dir.path()).unwrap();
-    assert!(!dir.path().join("pub.themes~1.toml").exists());
-    remove(dir.path(), "pub.themes").unwrap();
-    assert!(installed(dir.path()).is_empty());
-    assert!(
-        dir.path().join("mine.toml").exists(),
-        "the user's own file stays"
-    );
-    assert!(remove(dir.path(), "../x").is_err());
-    // A user's own file named like an installed theme is neither listed, replaced nor
-    // removed.
-    std::fs::write(dir.path().join("pub.themes~0.toml"), "name = \"Mine\"").unwrap();
-    std::fs::write(dir.path().join("pub.themes~x.toml"), "name = \"Mine too\"").unwrap();
-    assert!(installed(dir.path()).is_empty());
-    assert!(remove(dir.path(), "pub.themes").is_err());
-    let e = format!("{:#}", install(&one, dir.path()).unwrap_err());
-    assert!(e.contains("not installed by Keel"), "{e}");
-    for own in ["pub.themes~0.toml", "pub.themes~x.toml"] {
-        assert!(dir.path().join(own).exists(), "{own}");
-    }
+    within(Duration::from_secs(120), || {
+        let dir = tempfile::tempdir().unwrap();
+        let night = map(
+            "Night",
+            &colors("extension/themes/night.json").unwrap(),
+            false,
+        );
+        let day = map("Day", &colors("extension/themes/day.json").unwrap(), true);
+        let v = ColorVsix {
+            id: "pub.themes".into(),
+            label: "Themes".into(),
+            license: String::new(),
+            themes: vec![night.clone(), day],
+        };
+        let names = install(&v, dir.path()).unwrap();
+        assert_eq!(names, ["pub.themes~0", "pub.themes~1"]);
+        std::fs::write(dir.path().join("mine.toml"), "x").unwrap();
+        assert_eq!(
+            installed(dir.path()),
+            [("pub.themes".into(), "Night".into())]
+        );
+        let back: Theme =
+            toml::from_str(&std::fs::read_to_string(dir.path().join("pub.themes~0.toml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            (back.name.as_str(), back.bg, back.dark),
+            ("Night", night.bg, true)
+        );
+        // Reinstalling a package with fewer themes leaves no stale file.
+        let one = ColorVsix {
+            themes: vec![night],
+            ..v
+        };
+        install(&one, dir.path()).unwrap();
+        assert!(!dir.path().join("pub.themes~1.toml").exists());
+        remove(dir.path(), "pub.themes").unwrap();
+        assert!(installed(dir.path()).is_empty());
+        assert!(
+            dir.path().join("mine.toml").exists(),
+            "the user's own file stays"
+        );
+        assert!(remove(dir.path(), "../x").is_err());
+        // A user's own file named like an installed theme is neither listed, replaced nor
+        // removed.
+        std::fs::write(dir.path().join("pub.themes~0.toml"), "name = \"Mine\"").unwrap();
+        std::fs::write(dir.path().join("pub.themes~x.toml"), "name = \"Mine too\"").unwrap();
+        assert!(installed(dir.path()).is_empty());
+        assert!(remove(dir.path(), "pub.themes").is_err());
+        let e = format!("{:#}", install(&one, dir.path()).unwrap_err());
+        assert!(e.contains("not installed by Keel"), "{e}");
+        for own in ["pub.themes~0.toml", "pub.themes~x.toml"] {
+            assert!(dir.path().join(own).exists(), "{own}");
+        }
+    });
 }
 
 /// A light theme whose selection the text is unreadable on (#616161 on #0060C0, 1.01:1)

@@ -98,13 +98,69 @@ try {
     if (Test-Inside 'C:\Apps\Keel2\keel-daemon.exe' 'C:\Apps\Keel') { throw 'a sibling folder matched' }
     if (Test-Inside '' 'C:\Apps\Keel') { throw 'no path matched' }
   }
-  Check "update: the default profile's daemon starts again" {
-    $log = Join-Path $dir 'calls.txt'
-    $fake = Join-Path $dir 'keel.cmd'
-    Set-Content $fake "@echo %*>> `"$log`""
-    $said = Restart-KeelDaemon $fake 6>&1 | Out-String
-    if ((Get-Content $log) -ne 'daemon start') { throw "ran '$(Get-Content $log)'" }
-    if ($said -notlike '*keel --profile <name> daemon start*') { throw "said '$said'" }
+  Check "update: a daemon's arguments are read from its command line" {
+    $cases = @{
+      '"C:\Apps\Keel\keel-daemon.exe" --profile=work --web 0.0.0.0:7421' = '--profile=work --web 0.0.0.0:7421'
+      'C:\Apps\Keel\keel-daemon.exe --profile=work' = '--profile=work'
+      '"C:\Program Files\Keel\keel-daemon.exe"' = ''
+      'C:\Apps\Keel\keel-daemon.exe' = ''
+    }
+    foreach ($c in $cases.Keys) {
+      $got = Get-CommandArgs $c
+      if ($got -ne $cases[$c]) { throw "'$c' gave '$got'" }
+    }
+  }
+  # A stand-in daemon (a .cmd) that writes the arguments it got.
+  # One file per start: two stand-ins appending to one file at once lose a line (seen on CI).
+  $logDir = Join-Path $dir 'started'
+  $fake = Join-Path $dir 'keel-daemon.cmd'
+  # Each case writes its own file (two starts in one second share cmd's %RANDOM% seed).
+  Set-Content $fake "@if `"%~1`"==`"`" (echo []> `"$logDir\none.txt`") else (echo [%*]> `"$logDir\args.txt`")"
+  function Wait-Log([int]$Lines) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (@(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue).Count -lt $Lines -and [DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds 100
+    }
+    @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() })
+  }
+  Check 'update: a daemon with arguments starts again with them, one without with none' {
+    Remove-Item $logDir -Recurse -ErrorAction SilentlyContinue; New-Item -ItemType Directory $logDir | Out-Null
+    # The stand-in ends at once, so the installer says it exited: that names it too.
+    $said = Restart-KeelDaemons $fake @('--profile=work --web 127.0.0.1:7421', '') *>&1 | Out-String
+    $got = @(Wait-Log 2)
+    if (($got -join '|') -ne '[--profile=work --web 127.0.0.1:7421]|[]') { throw "started '$($got -join '|')'" }
+    if ($said -notlike '*keel-daemon --profile=work --web 127.0.0.1:7421*') { throw "said '$said'" }
+  }
+  Check 'update: no daemon ran, none starts' {
+    Remove-Item $logDir -Recurse -ErrorAction SilentlyContinue; New-Item -ItemType Directory $logDir | Out-Null
+    $said = Restart-KeelDaemons $fake @() *>&1 | Out-String
+    Start-Sleep -Milliseconds 500
+    $any = @(Get-ChildItem $logDir -File); if ($any.Count) { throw "started '$(Get-Content $any[0].FullName)'" }
+    if ($said.Trim()) { throw "said '$said'" }
+  }
+  Check "update: the install's running daemon is found with its arguments and restarted with them" {
+    # A stand-in keel-daemon.exe (ping, kept busy) in the install.
+    $inst = Join-Path $dir 'daemon-inst'
+    New-Item -ItemType Directory $inst | Out-Null
+    $exe = Join-Path $inst 'keel-daemon.exe'
+    Copy-Item (Join-Path $env:SystemRoot 'System32\PING.EXE') $exe
+    $first = Start-Process $exe '-n 120 127.0.0.1' -PassThru -WindowStyle Hidden
+    $saved = $script:InstallDir
+    try {
+      $script:InstallDir = Split-Path (Get-Process -Id $first.Id).Path
+      $daemons = Get-KeelDaemonArgs
+      if (($daemons -join '|') -ne '-n 120 127.0.0.1') { throw "read '$($daemons -join '|')'" }
+      Stop-Keel
+      if (-not $first.HasExited) { throw 'still runs' }
+      $null = Restart-KeelDaemons $exe $daemons *>&1
+      $again = Get-KeelDaemonArgs
+      if (($again -join '|') -ne '-n 120 127.0.0.1') { throw "restarted with '$($again -join '|')'" }
+    } finally {
+      $script:InstallDir = $saved
+      Get-Process keel-daemon -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$inst*" } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+      $first | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
   }
   Check 'update: Stop-Keel stops the programs of the install, and only those' {
     # Two stand-ins named keel.exe (ping, kept busy): one in the install, one elsewhere.

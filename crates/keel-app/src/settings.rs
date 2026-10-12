@@ -335,18 +335,9 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(base.config_dir().join(app_dir()))
 }
 
-/// `KEEL_CONFIG_DIR` when it is set (portable mode, tests): eframe's window state
-/// (`app.ron`) then goes to its `window` folder instead of eframe's own storage folder.
-pub fn config_dir_override() -> Option<PathBuf> {
-    std::env::var_os("KEEL_CONFIG_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-}
-
 /// Where session.json lives: `KEEL_CONFIG_DIR` too when set (one folder for a
 /// portable or test setup), else `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel`,
-/// `~/.cache/keel` (spec 2.9). eframe keeps its own window state (`app.ron`) in its
-/// storage folder, or in `<KEEL_CONFIG_DIR>/window` when that is set.
+/// `~/.cache/keel` (spec 2.9). eframe keeps its own window state: see [`window_state`].
 pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());
@@ -372,6 +363,14 @@ pub fn data_dir() -> Option<PathBuf> {
         return Some(test_dir().join("data"));
     }
     keel_core::data_dir()
+}
+
+/// Where eframe keeps the window state (`app.ron`): `<KEEL_CONFIG_DIR>/app.ron` when that
+/// is set (tests, harnesses, portable runs never touch the user's), else None: eframe's
+/// own storage folder.
+pub fn window_state() -> Option<PathBuf> {
+    let dir = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty())?;
+    Some(PathBuf::from(dir).join("app.ron"))
 }
 
 fn app_dir() -> &'static str {
@@ -1014,6 +1013,19 @@ pub fn window(
 #[cfg(test)]
 mod tests {
     use super::{ArchiveFormat, ArchiveSettings, OpenWith, Settings};
+
+    #[test]
+    fn window_state_follows_keel_config_dir() {
+        let _env = super::TEST_ENV.lock();
+        let _restore = super::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KEEL_CONFIG_DIR", dir.path());
+        assert_eq!(super::window_state(), Some(dir.path().join("app.ron")));
+        std::env::set_var("KEEL_CONFIG_DIR", "");
+        assert_eq!(super::window_state(), None);
+        std::env::remove_var("KEEL_CONFIG_DIR");
+        assert_eq!(super::window_state(), None, "eframe's own folder");
+    }
 
     /// The scale slider says "1.0×", not the escape's text.
     #[test]

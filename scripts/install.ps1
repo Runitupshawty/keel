@@ -82,14 +82,47 @@ function Stop-Keel {
   Start-Sleep -Milliseconds 300
 }
 
-# The update stopped every running daemon (the phone web client, mounts, attached windows):
-# the default profile's starts again; other profiles' are left to
-# `keel --profile <name> daemon start`.
-function Restart-KeelDaemon([string]$Exe) {
-  & $Exe daemon start
-  if ($LASTEXITCODE -eq 0) {
-    Write-Host "keel-daemon restarted (the default profile's; for another profile run: keel --profile <name> daemon start)."
-  } else { Write-Warning 'keel-daemon was running and could not be restarted; run: keel daemon start' }
+# The arguments in a process's command line: what follows the program, quoted or not.
+function Get-CommandArgs([string]$CommandLine) {
+  $c = $CommandLine.TrimStart()
+  $rest = if ($c.StartsWith('"')) {
+    $end = $c.IndexOf('"', 1)
+    if ($end -lt 0) { '' } else { $c.Substring($end + 1) }
+  } else {
+    $sp = $c.IndexOf(' ')
+    if ($sp -lt 0) { '' } else { $c.Substring($sp) }
+  }
+  $rest.Trim()
+}
+
+# The arguments of each keel-daemon of the install that runs now (a profile, --web,
+# --web-host...), read before the update stops them so each starts again as it ran.
+function Get-KeelDaemonArgs {
+  @(Get-CimInstance Win32_Process -Filter "Name = 'keel-daemon.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { Test-Inside $_.ExecutablePath $InstallDir } |
+    ForEach-Object { Get-CommandArgs $_.CommandLine })
+}
+
+# Starts each daemon the update stopped again with its own arguments ($Daemons: what
+# Get-KeelDaemonArgs read). Started detached and hidden, with no redirection: the daemon
+# inherits none of the installer's handles, so a script piping this installer's output
+# does not wait for it.
+function Restart-KeelDaemons([string]$Exe, [string[]]$Daemons) {
+  $started = foreach ($a in $Daemons) {
+    try {
+      $p = if ($a) { Start-Process -FilePath $Exe -ArgumentList $a -WindowStyle Hidden -PassThru }
+           else { Start-Process -FilePath $Exe -WindowStyle Hidden -PassThru }
+      [pscustomobject]@{ Args = $a; Process = $p }
+    } catch { Write-Warning "keel-daemon $a could not be restarted: $($_.Exception.Message)" }
+  }
+  if (-not $started) { return }
+  # One that ends at once (a port taken, a bad argument) is reported.
+  Start-Sleep -Seconds 1
+  foreach ($s in $started) {
+    $what = ('keel-daemon ' + $s.Args).Trim()
+    if ($s.Process.HasExited) { Write-Warning "$what was running and exited when restarted; start it again by hand." }
+    else { Write-Host "$what restarted." }
+  }
 }
 
 function Set-UserPath([string]$Dir, [bool]$Add) {
@@ -221,8 +254,7 @@ try {
     throw "Release $tag is not signed, but this installer expects Keel's signature. Nothing was installed. Pass -SkipVerify to install it anyway."
   } else { Write-Warning "Release $tag is not signed; the checksum is all that was verified." }
 
-  $daemonWasRunning = [bool](Get-Process keel-daemon -ErrorAction SilentlyContinue |
-    Where-Object { Test-Inside $_.Path $InstallDir })
+  $daemons = Get-KeelDaemonArgs
   Stop-Keel
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
   Copy-Item (Join-Path $src.FullName '*') $InstallDir -Recurse -Force
@@ -231,7 +263,7 @@ try {
   $self = Join-Path $InstallDir 'install.ps1'
   $null = Save-Installer $src.FullName $self $PSCommandPath
 
-  if ($daemonWasRunning) { Restart-KeelDaemon $exe }
+  if ($daemons) { Restart-KeelDaemons (Join-Path $InstallDir 'keel-daemon.exe') $daemons }
 
   New-Shortcut $Lnk $exe
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }
