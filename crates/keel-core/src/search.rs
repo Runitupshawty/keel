@@ -99,6 +99,11 @@ pub struct Span {
 }
 
 impl Span {
+    fn intersect(&mut self, other: Span) {
+        self.min = self.min.into_iter().chain(other.min).max();
+        self.max = self.max.into_iter().chain(other.max).min();
+    }
+
     fn is_open(&self) -> bool {
         self.min.is_none() && self.max.is_none()
     }
@@ -408,40 +413,43 @@ impl LibraryQuery {
                         Some((b, b.checked_add(1)?))
                     })
                     .with_context(|| format!("bad size: {value}"))?;
-                    q.min_size = from.map(|b| b as u64);
-                    q.max_size = before.map(|b| (b - 1).max(0) as u64);
+                    let mut min = from.map(|b| b as u64);
+                    let max = before.map(|b| (b - 1).max(0) as u64);
                     if before.is_some_and(|b| b <= 0) {
                         // `size:<0`: nothing (an empty range, not every size).
-                        q.min_size = Some(1);
+                        min = Some(1);
                     }
+                    q.min_size = q.min_size.into_iter().chain(min).max();
+                    q.max_size = q.max_size.into_iter().chain(max).min();
                 }
                 "dm" | "datemodified" | "modified" => {
                     let (from, before) = range_filter(&value, |x| date_range(x, now, utc_offset))
                         .with_context(|| format!("bad date: {value}"))?;
-                    q.modified_from = from;
-                    q.modified_before = before;
+                    q.modified_from = q.modified_from.into_iter().chain(from).max();
+                    q.modified_before = q.modified_before.into_iter().chain(before).min();
                 }
                 "camera" if !value.is_empty() => q.camera = Some(value),
                 "taken" => {
                     let (from, before) = range_filter(&value, |x| date_range(x, now, utc_offset))
                         .with_context(|| format!("bad date: {value}"))?;
-                    q.taken = Span {
+                    q.taken.intersect(Span {
                         min: from,
                         max: before.map(|b| b - 1),
-                    };
+                    });
                 }
                 "w" | "width" | "h" | "height" => {
                     let sp = span(&value, |x| x.trim().parse().ok())
                         .with_context(|| format!("bad pixel count: {value}"))?;
                     if key.starts_with('w') {
-                        q.width = sp;
+                        q.width.intersect(sp);
                     } else {
-                        q.height = sp;
+                        q.height.intersect(sp);
                     }
                 }
                 "duration" | "length" => {
-                    q.duration_ms =
-                        span(&value, millis).with_context(|| format!("bad duration: {value}"))?;
+                    q.duration_ms.intersect(
+                        span(&value, millis).with_context(|| format!("bad duration: {value}"))?,
+                    );
                 }
                 "has" if value.eq_ignore_ascii_case("gps") => q.has_gps = true,
                 "kind" | "type"
