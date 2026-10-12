@@ -372,6 +372,7 @@ pub enum LibMsg {
         name: String,
     },
     /// Task 67: native Finder tags read or written (macOS), by local path.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Native(Vec<(VPath, Vec<keel_core::FinderTag>)>),
 }
 

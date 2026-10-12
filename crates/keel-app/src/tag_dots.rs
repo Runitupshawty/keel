@@ -51,7 +51,7 @@ pub fn color32(hex: &str) -> Option<Color32> {
 pub fn dots(tags: &[Tag], on: &[TagId], native: &[FinderTag]) -> Vec<Dot> {
     let mut out: Vec<Dot> = Vec::new();
     let mut names: Vec<&str> = Vec::new();
-    let mut push = |out: &mut Vec<Dot>, color: Option<Color32>, name: &str| {
+    let push = |out: &mut Vec<Dot>, color: Option<Color32>, name: &str| {
         if let Some(color) = color.filter(|c| !out.iter().any(|d| d.color == *c)) {
             out.push(Dot {
                 color,
