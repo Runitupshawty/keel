@@ -138,6 +138,9 @@ fn registry_is_preview_first() {
         "media.index",
         "contents.set",
         "activity.note",
+        "du.scan",
+        "du.result",
+        "du.export",
         "devices.settings",
         "devices.settings_set",
         "library.sync",
@@ -2208,4 +2211,87 @@ fn crafted_documents_fail_and_leave_no_trace() {
     let data = f.ctx.data_dir.clone().unwrap();
     assert!(files_holding(&data, MARKER.as_bytes()).is_empty());
     assert!(files_holding(f.cfg.path(), MARKER.as_bytes()).is_empty());
+}
+
+/// Task 86: `du.scan` runs in the background and answers with an id; `du.result` waits for
+/// it and sums it up; `du.export` returns every list and the report; the configuration
+/// folder is never scanned; only the last `du::KEEP` scans are kept.
+#[test]
+fn disk_usage_scan_result_and_export() {
+    let mut f = fixture(None);
+    let root = f.files.path().to_owned();
+    // A configuration folder inside the scanned folder is left out.
+    let cfg = root.join("keel-config");
+    std::fs::create_dir(&cfg).unwrap();
+    std::fs::write(cfg.join("token"), b"secret").unwrap();
+    f.ctx.config_dir = Some(cfg.clone());
+    let ctx = &f.ctx;
+    let done = |id: &Value| -> Value {
+        for _ in 0..30 {
+            let r = call(ctx, "du.result", json!({"id": id, "wait_ms": 10_000})).unwrap();
+            if r["state"] != "running" {
+                return r;
+            }
+        }
+        panic!("the scan did not finish");
+    };
+    let started = call(ctx, "du.scan", json!({"paths": [s(&root)]})).unwrap();
+    let id = started["id"].clone();
+    assert_eq!(id.as_str().unwrap().len(), 16, "{started}");
+    let r = done(&id);
+    assert_eq!(r["state"], "done", "{r}");
+    let sum = &r["summary"];
+    assert_eq!((sum["bytes"].as_u64(), sum["files"].as_u64()), (Some(19), Some(2)), "{r}");
+    assert_eq!(sum["roots"][0]["children"][0]["name"], "docs", "{r}");
+    assert!(r["progress"]["files"].as_u64().unwrap() >= 2, "{r}");
+    // Every list and the report.
+    let export = |params: Value| call(ctx, "du.export", params).unwrap();
+    let types = export(json!({"id": id, "list": "types", "format": "csv", "bom": true}));
+    assert_eq!(types["format"], "csv");
+    let text = types["content"].as_str().unwrap();
+    assert!(text.starts_with("\u{feff}\"extension\""), "{text}");
+    assert!(text.contains("\"pdf\",\"1\",\"9\""), "{text}");
+    let tree = export(json!({"id": id, "list": "tree"}));
+    assert_eq!(tree["format"], "json");
+    let loaded = keel_vfs::du::load_from(tree["content"].as_str().unwrap().as_bytes()).unwrap();
+    assert_eq!(loaded.node(keel_vfs::du::TOP).size, 19);
+    assert!(loaded.nodes().all(|(_, n)| &*n.name != "token"));
+    let largest = export(json!({"id": id, "list": "largest", "top": 1}));
+    let largest: Value = serde_json::from_str(largest["content"].as_str().unwrap()).unwrap();
+    assert_eq!(largest.as_array().unwrap().len(), 1);
+    assert_eq!(largest[0]["name"], "notes.txt");
+    let report = export(json!({"id": id, "list": "report", "format": "csv"}));
+    assert_eq!(report["format"], "html");
+    assert!(report["content"].as_str().unwrap().contains("<svg"));
+
+    // Refusals.
+    let err = |method: &str, params: Value| call(ctx, method, params).unwrap_err();
+    assert_eq!(
+        err("du.result", json!({"id": "ffffffffffffffff"})).code,
+        ApiError::NOT_FOUND
+    );
+    assert_eq!(
+        err("du.scan", json!({"paths": ["relative/folder"]})).code,
+        ApiError::INVALID_PARAMS
+    );
+    assert_eq!(err("du.scan", json!({})).code, ApiError::INVALID_PARAMS);
+    let bad_regex = json!({"paths": [s(&root)], "exclude_regex": "("});
+    assert_eq!(err("du.scan", bad_regex).code, ApiError::INVALID_PARAMS);
+    let e = err("du.scan", json!({"paths": [s(&cfg)]}));
+    assert!(e.message.contains("configuration"), "{}", e.message);
+
+    // The oldest finished scan makes room for a new one.
+    let mut ids = vec![id];
+    for _ in 0..crate::du::KEEP {
+        let started = call(ctx, "du.scan", json!({"paths": [s(&root)], "min_size": 10})).unwrap();
+        let r = done(&started["id"]);
+        assert_eq!(r["summary"]["files"], 1, "min_size: {r}");
+        assert!(r["summary"]["excluded"].as_u64().unwrap() >= 1, "{r}");
+        ids.push(started["id"].clone());
+    }
+    assert_eq!(
+        err("du.export", json!({"id": ids[0], "list": "types"})).code,
+        ApiError::NOT_FOUND
+    );
+    assert_eq!(done(&ids[crate::du::KEEP])["state"], "done");
 }

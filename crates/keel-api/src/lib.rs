@@ -15,6 +15,7 @@ pub mod client;
 pub mod config;
 pub mod crash;
 pub mod daemon_provider;
+pub mod du;
 pub mod error;
 pub mod files;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
@@ -67,6 +68,8 @@ pub struct Ctx {
     /// Keel's data folder (the library database, device keys, share uploads, the mount
     /// spool): never sent with `spacedrop.send`, except the inbox and opened shares.
     pub data_dir: Option<std::path::PathBuf>,
+    /// Disk usage scans started with `du.scan`.
+    pub du: Arc<du::Scans>,
 }
 
 /// `<data dir>/shares/<id>/` holds a Web Share Target upload; this file in it marks one the
@@ -90,6 +93,7 @@ impl Ctx {
             config_dir: config::config_dir(),
             drops: None,
             data_dir: None,
+            du: Default::default(),
         }
     }
 

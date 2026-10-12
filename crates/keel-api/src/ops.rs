@@ -188,6 +188,12 @@ pub static OPS: &[Operation] = &[
         NoParams => Inbox, drop_inbox, json!({})),
     previewed!("spacedrop.answer", "Accepts or declines a Spacedrop offer waiting in the inbox.",
         SpacedropAnswerParams => Done, drop_answer_preview, drop_answer, json!({"peer": "a".repeat(52), "id": "0123456789abcdef0123456789abcdef", "accept": true})),
+    now!("du.scan", "Starts a disk usage scan of folders or drives on the host (or all_drives: every local fixed drive) in the background and returns its id at once; size on disk, hard links counted once (count_hard_links_each: every name), links followed only on request, filters by name glob, path, path regex, minimum size, age, hidden and system. Keel's configuration folder is left out. Read-only.",
+        DuScanParams => DuScanStarted, crate::du::scan, json!({"paths": [example_dir()], "exclude_names": ["*.tmp"], "min_size": 4096})),
+    now!("du.result", "A disk usage scan's state (running, done, failed) and progress, and when done its totals and each root's biggest items (`top`, default 20; size_on_disk ranks by bytes on disk); wait_ms waits up to 10 s for it to finish. Read-only.",
+        DuResultParams => DuResult, crate::du::result, json!({"id": "0123456789abcdef", "top": 10, "wait_ms": 1000})),
+    now!("du.export", "A finished disk usage scan as text: every item (`tree`; JSON is a scan file `keel du --load-from` reads), the file types (`types`), the largest files (`largest`, `top` default 100) as CSV or JSON, or the HTML report (`report`). At most 64 MB. Read-only.",
+        DuExportParams => DuExport, crate::du::export, json!({"id": "0123456789abcdef", "list": "types", "format": "csv"})),
 ];
 
 fn example_dir() -> &'static str {
