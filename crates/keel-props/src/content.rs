@@ -435,7 +435,13 @@ impl Matcher {
         budget: &Budget,
     ) -> Result<Outcome, Error> {
         let meta = fs::metadata(path)?;
-        self.match_file_as(path, meta.is_file(), is_placeholder(&meta), extracted, budget)
+        self.match_file_as(
+            path,
+            meta.is_file(),
+            is_placeholder(&meta),
+            extracted,
+            budget,
+        )
     }
 
     fn match_file_as(
@@ -588,7 +594,11 @@ fn probe_eof<R: Read>(r: &mut R) -> io::Result<bool> {
 enum Decoder {
     Raw,
     Text(encoding_rs::Decoder),
-    Utf32 { le: bool, carry: Vec<u8>, first: bool },
+    Utf32 {
+        le: bool,
+        carry: Vec<u8>,
+        first: bool,
+    },
 }
 
 impl Decoder {
@@ -602,21 +612,23 @@ impl Decoder {
             Encoding::Utf16Le => UTF_16LE,
             Encoding::Utf16Be => UTF_16BE,
             Encoding::Ansi => WINDOWS_1252,
-            Encoding::Auto => match crate::text::sniff(&head[..head.len().min(crate::text::SNIFF_LEN)]) {
-                T::Utf16Le => UTF_16LE,
-                T::Utf16Be => UTF_16BE,
-                T::Utf32Le | T::Utf32Be => {
-                    return Decoder::Utf32 {
-                        le: head.starts_with(b"\xff\xfe"),
-                        carry: Vec::new(),
-                        first: true,
+            Encoding::Auto => {
+                match crate::text::sniff(&head[..head.len().min(crate::text::SNIFF_LEN)]) {
+                    T::Utf16Le => UTF_16LE,
+                    T::Utf16Be => UTF_16BE,
+                    T::Utf32Le | T::Utf32Be => {
+                        return Decoder::Utf32 {
+                            le: head.starts_with(b"\xff\xfe"),
+                            carry: Vec::new(),
+                            first: true,
+                        }
                     }
+                    T::Ansi => WINDOWS_1252,
+                    // ASCII, UTF-8 and binary files: binary content is searched as UTF-8 so the
+                    // text inside programs and documents is found.
+                    _ => UTF_8,
                 }
-                T::Ansi => WINDOWS_1252,
-                // ASCII, UTF-8 and binary files: binary content is searched as UTF-8 so the
-                // text inside programs and documents is found.
-                _ => UTF_8,
-            },
+            }
         };
         Decoder::Text(e.new_decoder_with_bom_removal())
     }
@@ -861,12 +873,18 @@ mod tests {
         // Hex ignores case options: 0x5a is `Z`, not `z`.
         assert!(!hit(spec("7a6970", Encoding::Hex), data));
         // Non-ASCII pattern characters are their UTF-8 bytes.
-        assert!(hit(spec("\u{e9}", Encoding::Binary), "caf\u{e9}".as_bytes()));
+        assert!(hit(
+            spec("\u{e9}", Encoding::Binary),
+            "caf\u{e9}".as_bytes()
+        ));
         assert!(!hit(spec("\u{e9}", Encoding::Binary), b"caf\xe9"));
         assert_eq!(parse_hex("abc"), Err(PatternError::BadHex("abc".into())));
         assert_eq!(parse_hex("zz"), Err(PatternError::BadHex("zz".into())));
         assert_eq!(parse_hex("  "), Err(PatternError::Empty));
-        assert_eq!(parse_hex("0xA0 b1-C2:d3").unwrap(), vec![0xa0, 0xb1, 0xc2, 0xd3]);
+        assert_eq!(
+            parse_hex("0xA0 b1-C2:d3").unwrap(),
+            vec![0xa0, 0xb1, 0xc2, 0xd3]
+        );
         // Binary regular expressions match any byte with `.`.
         let mut re = spec(r"PK..\xff", Encoding::Binary);
         re.regex = true;
@@ -882,7 +900,13 @@ mod tests {
         assert!(!hit(s, data));
         let mut ww = spec("fox", Encoding::Auto);
         ww.whole_words = true;
-        assert_eq!(run(ww.clone(), data), Outcome::Match(Found { offset: 16, line: 1 }));
+        assert_eq!(
+            run(ww.clone(), data),
+            Outcome::Match(Found {
+                offset: 16,
+                line: 1
+            })
+        );
         ww.pattern = "foxe".into();
         assert!(!hit(ww.clone(), data));
         ww.pattern = "-hole;".into();
@@ -938,7 +962,10 @@ mod tests {
         // each-line: every line alone, without its \r.
         assert_eq!(
             run(re("^delta$", Lines::EachLine), data),
-            Outcome::Match(Found { offset: 18, line: 3 })
+            Outcome::Match(Found {
+                offset: 18,
+                line: 3
+            })
         );
         assert!(hit(re("^alpha$", Lines::EachLine), data));
         assert!(!hit(re("alpha.*beta", Lines::EachLine), data));
@@ -968,7 +995,10 @@ mod tests {
         let data = across(CHUNK - 3, b" needle ", b'x');
         assert_eq!(
             run(spec("needle", Encoding::Auto), &data),
-            Outcome::Match(Found { offset: (CHUNK - 2) as u64, line: 1 })
+            Outcome::Match(Found {
+                offset: (CHUNK - 2) as u64,
+                line: 1
+            })
         );
         let mut ww = spec("needle", Encoding::Auto);
         ww.whole_words = true;
@@ -997,7 +1027,10 @@ mod tests {
         // A multi-byte character across the edge, in UTF-8 and UTF-16.
         let data = across(CHUNK - 1, "\u{e9}t\u{e9}".as_bytes(), b'x');
         assert!(hit(spec("x\u{c9}T\u{c9}x", Encoding::Auto), &data));
-        let utf16 = encode(&format!("{}\u{e9}t\u{e9}{}", "y".repeat(CHUNK / 2 - 1), "y"), FxEncoding::Utf16LeBom);
+        let utf16 = encode(
+            &format!("{}\u{e9}t\u{e9}{}", "y".repeat(CHUNK / 2 - 1), "y"),
+            FxEncoding::Utf16LeBom,
+        );
         assert!(hit(spec("y\u{e9}t\u{e9}y", Encoding::Utf16Le), &utf16));
         assert!(hit(spec("y\u{e9}t\u{e9}y", Encoding::Auto), &utf16));
         // Line numbers count lines in earlier chunks.
@@ -1005,14 +1038,20 @@ mod tests {
         v.extend_from_slice(b"target\n");
         assert_eq!(
             run(spec("target", Encoding::Auto), &v),
-            Outcome::Match(Found { offset: 2 * CHUNK as u64, line: CHUNK as u64 + 1 })
+            Outcome::Match(Found {
+                offset: 2 * CHUNK as u64,
+                line: CHUNK as u64 + 1
+            })
         );
         let mut each = spec("^target$", Encoding::Auto);
         each.regex = true;
         each.lines = Lines::EachLine;
         assert_eq!(
             run(each, &v),
-            Outcome::Match(Found { offset: 2 * CHUNK as u64, line: CHUNK as u64 + 1 })
+            Outcome::Match(Found {
+                offset: 2 * CHUNK as u64,
+                line: CHUNK as u64 + 1
+            })
         );
         // A long regular expression match across the edge (within the 64 KiB window).
         let mut re = spec("begin x+ end", Encoding::Auto);
@@ -1175,7 +1214,10 @@ mod tests {
             .unwrap()
             .is_match());
         let recall = Budget::new(Limits::default(), Cancel::default(), true);
-        assert!(m.match_file_as(&p, true, true, None, &recall).unwrap().is_match());
+        assert!(m
+            .match_file_as(&p, true, true, None, &recall)
+            .unwrap()
+            .is_match());
     }
 
     /// A real offline file (the attribute cloud providers set on placeholders) is skipped.
@@ -1215,10 +1257,16 @@ mod tests {
         let s = Spec::parse("utf16becontent:hex:00 41", Encoding::Auto);
         assert_eq!((s.encoding, s.pattern.as_str()), (Encoding::Hex, "00 41"));
         let s = Spec::parse("\"case:x\"", Encoding::Utf8);
-        assert_eq!((s.encoding, s.case, s.pattern.as_str()), (Encoding::Utf8, false, "case:x"));
+        assert_eq!(
+            (s.encoding, s.case, s.pattern.as_str()),
+            (Encoding::Utf8, false, "case:x")
+        );
         let s = Spec::parse("http://x", Encoding::Auto);
         assert_eq!(s.pattern, "http://x");
-        assert_eq!(Encoding::from_function("UTF16Content:"), Some(Encoding::Utf16Le));
+        assert_eq!(
+            Encoding::from_function("UTF16Content:"),
+            Some(Encoding::Utf16Le)
+        );
         for e in [
             Encoding::Auto,
             Encoding::Utf8,

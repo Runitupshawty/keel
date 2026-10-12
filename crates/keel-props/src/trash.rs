@@ -156,7 +156,10 @@ fn parse_local_date(s: &str) -> Option<SystemTime> {
         let (c, z) = time.split_at(at);
         let sign = if z.starts_with('-') { -1 } else { 1 };
         let (zh, zm) = z[1..].split_once(':').unwrap_or((&z[1..], "0"));
-        (c, Some(sign * (num(zh)? as i32 * 3600 + num(zm)? as i32 * 60)))
+        (
+            c,
+            Some(sign * (num(zh)? as i32 * 3600 + num(zm)? as i32 * 60)),
+        )
     } else {
         (time, None)
     };
@@ -307,7 +310,10 @@ mod tests {
         let mut v1_short = v1[..30].to_vec();
         v1_short.push(0x42);
         assert_eq!(
-            parse_recycle_info(&v1_short).unwrap().original_path.as_deref(),
+            parse_recycle_info(&v1_short)
+                .unwrap()
+                .original_path
+                .as_deref(),
             Some(r"D:\")
         );
         let zero = fx::recycle_info(2, "x", 1, 0);
@@ -316,11 +322,18 @@ mod tests {
 
     #[test]
     fn trash_info_files() {
-        let d = parse_trash_info(&fx::trash_info("/home/u/My%20File%C3%A9.txt", "2021-06-15T10:20:30Z"))
-            .unwrap();
-        assert_eq!(d.original_path.as_deref(), Some("/home/u/My File\u{e9}.txt"));
+        let d = parse_trash_info(&fx::trash_info(
+            "/home/u/My%20File%C3%A9.txt",
+            "2021-06-15T10:20:30Z",
+        ))
+        .unwrap();
+        assert_eq!(
+            d.original_path.as_deref(),
+            Some("/home/u/My File\u{e9}.txt")
+        );
         assert_eq!(date(d.deleted), "2021-06-15T10:20:30Z");
-        let d = parse_trash_info(b"[Trash Info]\nDeletionDate=2021-06-15T12:20:30.123+02:00\n").unwrap();
+        let d = parse_trash_info(b"[Trash Info]\nDeletionDate=2021-06-15T12:20:30.123+02:00\n")
+            .unwrap();
         assert_eq!(date(d.deleted), "2021-06-15T10:20:30Z");
         assert_eq!(d.original_path, None);
         // Local time, as the specification writes it.
@@ -377,7 +390,10 @@ mod tests {
         let file = sid.join("$RXY34ZQ.txt");
         let d = deleted(&file).unwrap().unwrap();
         assert_eq!(d.original_path.as_deref(), Some(r"C:\data\file.txt"));
-        assert_eq!(crate::get(&file, "date-deleted:").unwrap().to_string(), "2021-06-15T10:20:30Z");
+        assert_eq!(
+            crate::get(&file, "date-deleted:").unwrap().to_string(),
+            "2021-06-15T10:20:30Z"
+        );
         let record = deleted(&sid.join("$IXY34ZQ.txt")).unwrap().unwrap();
         assert_eq!(record, d);
         // Inside a deleted folder: the folder's record.
@@ -423,7 +439,11 @@ mod tests {
                 "2021-06-15T10:20:30Z"
             );
             assert_eq!(
-                deleted(&trash.join("files").join("dir")).unwrap().unwrap().original_path.as_deref(),
+                deleted(&trash.join("files").join("dir"))
+                    .unwrap()
+                    .unwrap()
+                    .original_path
+                    .as_deref(),
                 Some("/home/u/dir")
             );
         }

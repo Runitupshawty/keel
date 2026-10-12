@@ -52,7 +52,15 @@ pub fn content_match(data: &[u8]) {
         None => (rest, &[][..]),
     };
     let pattern = String::from_utf8_lossy(&pattern[..pattern.len().min(64)]);
-    let encodings = [E::Auto, E::Utf8, E::Utf16Le, E::Utf16Be, E::Ansi, E::Binary, E::Hex];
+    let encodings = [
+        E::Auto,
+        E::Utf8,
+        E::Utf16Le,
+        E::Utf16Be,
+        E::Ansi,
+        E::Binary,
+        E::Hex,
+    ];
     let mut spec = Spec::new(pattern.as_ref(), encodings[usize::from(flags & 7) % 7]);
     spec.case = flags & 8 != 0;
     spec.whole_words = flags & 16 != 0;

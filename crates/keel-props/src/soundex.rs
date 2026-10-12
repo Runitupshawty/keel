@@ -53,7 +53,8 @@ pub fn matches(text: &str, pattern: &str) -> bool {
 
 /// Runs of letters (digits and punctuation separate words).
 fn words(s: &str) -> impl Iterator<Item = &str> {
-    s.split(|c: char| fold(c).is_none()).filter(|w| !w.is_empty())
+    s.split(|c: char| fold(c).is_none())
+        .filter(|w| !w.is_empty())
 }
 
 fn digit(c: char) -> u8 {
@@ -90,7 +91,13 @@ fn fold(c: char) -> Option<char> {
         '\u{155}' | '\u{157}' | '\u{159}' => 'r',
         '\u{df}' | '\u{15b}' | '\u{15d}' | '\u{15f}' | '\u{161}' => 's',
         '\u{163}' | '\u{165}' | '\u{167}' => 't',
-        '\u{f9}'..='\u{fc}' | '\u{169}' | '\u{16b}' | '\u{16d}' | '\u{16f}' | '\u{171}' | '\u{173}' => 'u',
+        '\u{f9}'..='\u{fc}'
+        | '\u{169}'
+        | '\u{16b}'
+        | '\u{16d}'
+        | '\u{16f}'
+        | '\u{171}'
+        | '\u{173}' => 'u',
         '\u{175}' => 'w',
         '\u{fd}' | '\u{ff}' | '\u{177}' => 'y',
         '\u{17a}' | '\u{17c}' | '\u{17e}' => 'z',
