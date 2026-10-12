@@ -100,8 +100,14 @@ fn build(boot: Boot, size: egui::Vec2, wgpu: bool) -> H {
     h
 }
 
+/// The window in the Classic style: the position checks here (tab strip, path bar, rows)
+/// are measured in it. `appearance_style_finder_and_classic` boots the Finder default.
 fn app(left: &Path, right: &Path) -> H {
-    app_with(boot(left, right, Default::default()), SIZE)
+    let classic = crate::settings::Settings {
+        style: crate::design::Style::Classic,
+        ..Default::default()
+    };
+    app_with(boot(left, right, classic), SIZE)
 }
 
 /// Renders the window to `target/walkthrough/<name>.png` (with `KEEL_WALKTHROUGH_SHOTS`).
@@ -3351,7 +3357,12 @@ fn organize_by_type_then_undo() {
 fn appearance_style_finder_and_classic() {
     use crate::design::{Style, CLASSIC, FINDER};
     let root = demo();
-    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    let new_profile = boot(
+        &root.join("Documents"),
+        &root.join("Pictures"),
+        Default::default(),
+    );
+    let mut h = app_with(new_profile, SIZE);
     h.run_steps(2);
     let ctx = s(&h).ctx.clone();
     assert_eq!(s(&h).settings.style, Style::Finder, "the default");

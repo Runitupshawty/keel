@@ -107,6 +107,8 @@ impl Accent {
 pub struct Radii {
     /// Buttons, text fields, combo boxes.
     pub control: u8,
+    /// A control under the pointer.
+    pub control_hovered: u8,
     /// Windows and dialogs.
     pub window: u8,
     /// Menus and popups.
@@ -163,6 +165,7 @@ pub const CLASSIC: Tokens = Tokens {
     menu_margin: 6,
     radius: Radii {
         control: 2,
+        control_hovered: 3,
         window: 6,
         menu: 6,
         selection: 4.0,
@@ -192,6 +195,7 @@ pub const FINDER: Tokens = Tokens {
     menu_margin: 6,
     radius: Radii {
         control: 6,
+        control_hovered: 6,
         window: 10,
         menu: 8,
         selection: 5.0,
@@ -241,12 +245,12 @@ impl Tokens {
         for w in [
             &mut v.widgets.noninteractive,
             &mut v.widgets.inactive,
-            &mut v.widgets.hovered,
             &mut v.widgets.active,
             &mut v.widgets.open,
         ] {
             w.corner_radius = control;
         }
+        v.widgets.hovered.corner_radius = CornerRadius::same(self.radius.control_hovered);
         v.window_corner_radius = CornerRadius::same(self.radius.window);
         v.menu_corner_radius = CornerRadius::same(self.radius.menu);
     }
