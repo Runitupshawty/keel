@@ -10,6 +10,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - A multi-stage Docker build for keel-daemon with the embedded web client, a non-root runtime and persistent data/config storage ([Docker](docs/daemon.md#docker)).
 
+- A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
+
 ## [0.23.0] - 2026-10-12
 
 ### Added

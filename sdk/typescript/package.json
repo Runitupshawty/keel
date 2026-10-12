@@ -1,0 +1,10 @@
+{
+  "name": "@keel/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsc --strict --target ES2022 --module NodeNext --outDir dist keel.ts typecheck.ts && node --test client.test.mjs"
+  },
+  "devDependencies": { "typescript": "^5.9.3" }
+}
