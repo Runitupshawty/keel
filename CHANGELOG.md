@@ -13,7 +13,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Changed
 
-- The sidebar's Quick access, Drives, WSL, Open archives, Remotes, Cloud and Devices sections are now one **Locations** section; Quick access became Favorites (Pictures is no longer there by default: drag it in to keep it). The library's Recents moved from the Library section to Favorites, and its tags to their own Tags section. While no host or cloud account is set up, Locations shows **Add server or cloud…** instead of two "None configured" lines; paired devices show while devices are on.
+- The sidebar's Quick access, Drives, WSL, Open archives, Remotes, Cloud and Devices sections are now one **Locations** section; Quick access became Favorites (the Recycle Bin or Trash is now in Locations, and Pictures is no longer there by default: drag it in to keep it). The library's Recents moved from the Library section to Favorites, and its tags to their own Tags section. While no host or cloud account is set up, Locations shows **Add server or cloud…** instead of two "None configured" lines; paired devices show while devices are on.
 
 ## [0.22.0] - 2026-10-11
 
