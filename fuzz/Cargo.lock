@@ -3584,7 +3584,7 @@ dependencies = [
 
 [[package]]
 name = "keel-props"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "chrono",
  "crc",
@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "keel-query"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "chrono",
  "regex",
