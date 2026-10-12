@@ -4,16 +4,18 @@
 //! `no-reorder:` (or a `$0:`..`$9:` capture, which depends on order) says otherwise.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{Datelike, Timelike};
 
 use crate::date::{local_fields, month_name, time_of_day, weekday_name, DateCtx, DateVal};
-use crate::functions::{self, DatePart, FnKind, NumProp, TextProp, FILTER_MACROS};
+use crate::functions::{self, DatePart, FnKind, NumProp, Rel, TextProp, FILTER_MACROS};
 use crate::modifiers::Modifier;
 use crate::parse::{Ast, Expr, Item, Term};
-use crate::props::{attr, name_of, normalize, parent_of, DateProp, Props};
+use crate::props::{attr, name_of, normalize, parent_of, ChildCounts, DateProp, Props};
 use crate::text::{self, decode_hex, soundex, Anchors, Fold, RegexFlags, TextMatch, Wild};
+use crate::tree::{NodeId, Tree};
 use crate::values::{
     number_from_text, parse_number, parse_size, split_range, CmpOp, NumParse, NumTest, NumVal,
     Parsed,
@@ -27,10 +29,37 @@ pub(crate) struct Env {
     pub captures: bool,
 }
 
-/// Evaluation state of one item.
-#[derive(Default)]
-pub(crate) struct Ctx {
+/// Evaluation state of one item: regex captures, the tree the item belongs to, and what is
+/// left of its scan budget (children and descendants visited by tree functions).
+pub(crate) struct Ctx<'t> {
     captures: Vec<Option<String>>,
+    tree: Option<&'t dyn Tree>,
+    scan_left: u64,
+}
+
+impl<'t> Ctx<'t> {
+    pub fn new(tree: Option<&'t dyn Tree>, scan_limit: u64) -> Self {
+        Self {
+            captures: Vec::new(),
+            tree,
+            scan_left: scan_limit,
+        }
+    }
+
+    /// Takes one visit from the budget; `false` when it is spent.
+    fn spend(&mut self) -> bool {
+        if self.scan_left == 0 {
+            return false;
+        }
+        self.scan_left -= 1;
+        true
+    }
+
+    /// The tree and the item's node in it.
+    fn node(&self, p: &dyn Props) -> Option<(&'t dyn Tree, NodeId)> {
+        let tree = self.tree?;
+        Some((tree, tree.node_of(p)?))
+    }
 }
 
 pub(crate) enum Node {
@@ -62,6 +91,21 @@ enum Test {
     Kind(Vec<Kind>),
     In(String, Fold),
     Dynamic(Box<Term>),
+    /// A related item (child, descendant, sibling...) of this kind matches the inner node.
+    Rel(Rel, Option<bool>, Box<Node>),
+    Exists(Box<ExistsPath>),
+    /// The inner node, evaluated on the parent folder.
+    OfParent(Box<Node>),
+    /// Folded full paths without trailing separators.
+    PathList(HashSet<String>, Fold),
+}
+
+/// An `exists:` value: a full path, or names from the item's folder.
+struct ExistsPath {
+    absolute: Option<String>,
+    parts: Vec<String>,
+    only: Option<bool>,
+    fold: Fold,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +153,8 @@ enum DateTest {
 
 /// Per-term settings: the options, then the term's modifiers in order.
 #[derive(Clone, Copy, Debug)]
-struct Settings {
-    fold: Fold,
+pub(crate) struct Settings {
+    pub fold: Fold,
     anchors: Anchors,
     regex: bool,
     wildcards: bool,
@@ -129,7 +173,7 @@ struct Settings {
     no_substitute: bool,
 }
 
-fn settings(mods: &[Modifier], o: &Options) -> Settings {
+pub(crate) fn settings(mods: &[Modifier], o: &Options) -> Settings {
     let mut s = Settings {
         fold: Fold {
             case: o.match_case,
@@ -215,7 +259,7 @@ fn leaf(test: Test, cost: u32) -> Node {
     Node::Leaf(Box::new(Leaf { test, cost }))
 }
 
-fn value_err(item: &Item, message: String) -> Error {
+pub(crate) fn value_err(item: &Item, message: String) -> Error {
     Error {
         span: item.span.clone(),
         kind: ErrorKind::Value,
@@ -352,7 +396,7 @@ impl Compiler<'_> {
         };
         let text = match prop {
             TextProp::Ext => item.text.trim_start_matches('.').to_string(),
-            TextProp::Parent => trim_sep(&item.text).to_string(),
+            TextProp::Parent | TextProp::Ancestor => trim_sep(&item.text).to_string(),
             _ => item.text.clone(),
         };
         if s.len || s.to_num.is_some() {
@@ -370,7 +414,7 @@ impl Compiler<'_> {
             };
             return Ok(t);
         }
-        let whole_default = matches!(prop, TextProp::Ext | TextProp::Parent);
+        let whole_default = matches!(prop, TextProp::Ext | TextProp::Parent | TextProp::Ancestor);
         let mut anchors = s.anchors;
         anchors.whole |= whole_default;
         let build = |anchors: Anchors| -> Result<TextMatch, Error> {
@@ -426,6 +470,69 @@ impl Compiler<'_> {
             FnKind::Ui | FnKind::Macro(_) | FnKind::Unsupported(_) => {
                 // Handled by the parser.
                 return Ok(Node::And(Vec::new()));
+            }
+            FnKind::Related(rel, only) => {
+                let mut names = Vec::new();
+                for item in &t.items {
+                    let test = self.text_test(TextProp::Name, item, s)?;
+                    names.push(leaf(Test::Text(TextProp::Name, test), 2));
+                }
+                let inner = match names.len() {
+                    0 => Node::And(Vec::new()),
+                    1 => names.pop().unwrap_or(Node::And(Vec::new())),
+                    _ => Node::Or(names),
+                };
+                let cost = match rel {
+                    Rel::Child | Rel::Sibling => 50,
+                    Rel::ParentSibling => 55,
+                    Rel::AncestorSibling => 70,
+                    Rel::Descendant => 80,
+                };
+                return Ok(leaf(Test::Rel(rel, only, Box::new(inner)), cost));
+            }
+            FnKind::Exists(only) => {
+                if t.items.is_empty() {
+                    return Err(Error {
+                        span: t.span.clone(),
+                        kind: ErrorKind::Value,
+                        message: "exists: needs a name or a path".into(),
+                    });
+                }
+                let mut alts = Vec::new();
+                for item in &t.items {
+                    let e = exists_path(item, only, s.fold)?;
+                    alts.push(leaf(Test::Exists(Box::new(e)), 30));
+                }
+                return Ok(if alts.len() == 1 {
+                    alts.pop().unwrap_or(Node::And(Vec::new()))
+                } else {
+                    Node::Or(alts)
+                });
+            }
+            FnKind::OfParent(inner) => {
+                let node = self.function(*inner, t, s)?;
+                return Ok(leaf(Test::OfParent(Box::new(node)), 20));
+            }
+            FnKind::PathList => {
+                let fold = Fold {
+                    diacritics: true,
+                    ..s.fold
+                };
+                let mut set = HashSet::new();
+                for item in &t.items {
+                    if !matches!(item.op, None | Some(CmpOp::Eq)) {
+                        return Err(value_err(item, "pathlist: takes full paths".into()));
+                    }
+                    set.insert(fold.apply(trim_sep(&normalize(&item.text))).into_owned());
+                }
+                return Ok(leaf(Test::PathList(set, fold), 3));
+            }
+            FnKind::Set(_) => {
+                return Err(Error {
+                    span: t.span.clone(),
+                    kind: ErrorKind::Syntax,
+                    message: "this function works on the whole result; it cannot be inside `|`, `!` or `$property:` terms".into(),
+                });
             }
             _ => {}
         }
@@ -541,7 +648,12 @@ impl Compiler<'_> {
             | FnKind::Empty
             | FnKind::Ui
             | FnKind::Macro(_)
-            | FnKind::Unsupported(_) => Node::And(Vec::new()),
+            | FnKind::Unsupported(_)
+            | FnKind::Related(..)
+            | FnKind::Exists(_)
+            | FnKind::OfParent(_)
+            | FnKind::PathList
+            | FnKind::Set(_) => Node::And(Vec::new()),
         })
     }
 
@@ -610,6 +722,48 @@ fn path_term(text: &str, regex: bool) -> bool {
     }
 }
 
+/// An `exists:` value: `C:\x`, `\x` or `\\server\share\x` is a full path; anything else is
+/// names from the item's folder (`a.txt`, `..\b`, `sub\c.txt`).
+fn exists_path(item: &Item, only: Option<bool>, fold: Fold) -> Result<ExistsPath, Error> {
+    if !matches!(item.op, None | Some(CmpOp::Eq)) {
+        return Err(value_err(item, "exists: takes a name or a path".into()));
+    }
+    let text = normalize(item.text.trim()).into_owned();
+    let drive = text.as_bytes().get(1) == Some(&b':') && text.as_bytes()[0].is_ascii_alphabetic();
+    let fold = Fold {
+        diacritics: true,
+        ..fold
+    };
+    if drive || text.starts_with('\\') {
+        let trimmed = trim_sep(&text);
+        let absolute = if trimmed.is_empty() || (drive && trimmed.len() == 2) {
+            format!("{trimmed}\\")
+        } else {
+            trimmed.to_string()
+        };
+        return Ok(ExistsPath {
+            absolute: Some(absolute),
+            parts: Vec::new(),
+            only,
+            fold,
+        });
+    }
+    let parts: Vec<String> = text
+        .split('\\')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .map(|p| fold.apply(p).into_owned())
+        .collect();
+    if parts.is_empty() {
+        return Err(value_err(item, "exists: needs a name or a path".into()));
+    }
+    Ok(ExistsPath {
+        absolute: None,
+        parts,
+        only,
+        fold,
+    })
+}
+
 fn unknown_test(item: &Item) -> NumTest {
     if item.op == Some(CmpOp::Ne) {
         NumTest::Known
@@ -618,7 +772,10 @@ fn unknown_test(item: &Item) -> NumTest {
     }
 }
 
-fn num_test(item: &Item, parse: &dyn Fn(&str) -> Result<NumVal, String>) -> Result<NumTest, Error> {
+pub(crate) fn num_test(
+    item: &Item,
+    parse: &dyn Fn(&str) -> Result<NumVal, String>,
+) -> Result<NumTest, Error> {
     match split_range(item.text.trim(), parse).map_err(|m| value_err(item, m))? {
         Parsed::One(v) => Ok(NumTest::single(item.op, v)),
         Parsed::Range(lo, hi) => NumTest::range(item.op, lo, hi).map_err(|m| value_err(item, m)),
@@ -721,7 +878,7 @@ fn kinds(s: &str) -> Result<Vec<Kind>, String> {
 }
 
 /// The path without trailing separators (`C:\` → `C:`, `\` → ``).
-fn trim_sep(s: &str) -> &str {
+pub(crate) fn trim_sep(s: &str) -> &str {
     s.trim_end_matches(['\\', '/'])
 }
 
@@ -729,7 +886,10 @@ fn text_cost(p: TextProp, s: &Settings) -> u32 {
     let base = match p {
         TextProp::Name | TextProp::Stem | TextProp::Ext | TextProp::Extension => 2,
         TextProp::FullPath | TextProp::Parent | TextProp::ParentName => 4,
+        TextProp::Ancestor | TextProp::AncestorName => 5,
         TextProp::Type => 10,
+        TextProp::HardLinkNames | TextProp::StreamNames => 30,
+        TextProp::ContainerNames => 40,
     };
     base + if s.regex || s.soundex { 3 } else { 0 }
 }
@@ -746,6 +906,11 @@ fn num_cost(p: NumProp) -> u32 {
         | NumProp::ChildFileCount
         | NumProp::ChildFolderCount
         | NumProp::RunCount => 3,
+        NumProp::HardLinkCount | NumProp::StreamCount => 20,
+        NumProp::DescendantCount
+        | NumProp::DescendantFileCount
+        | NumProp::DescendantFolderCount => 30,
+        NumProp::ContainerFileCount => 40,
     }
 }
 
@@ -824,26 +989,224 @@ fn text_value<'a>(prop: TextProp, p: &'a dyn Props) -> Option<Cow<'a, str>> {
         TextProp::Parent => Cow::Owned(trim_sep(&parent_of(&normalize(p.path()))?).to_string()),
         TextProp::ParentName => Cow::Owned(name_of(&parent_of(&normalize(p.path()))?).to_string()),
         TextProp::Type => p.type_name().unwrap_or_else(|| Cow::Owned(builtin_type(p))),
+        list => Cow::Owned(text_list(list, p)?.join(";")),
     })
+}
+
+/// The values of a list property ([`TextProp::is_list`]).
+fn text_list(prop: TextProp, p: &dyn Props) -> Option<Vec<String>> {
+    match prop {
+        TextProp::Ancestor | TextProp::AncestorName => {
+            let mut out = Vec::new();
+            let mut cur = parent_of(&normalize(p.path()));
+            while let Some(dir) = cur {
+                out.push(if prop == TextProp::Ancestor {
+                    trim_sep(&dir).to_string()
+                } else {
+                    name_of(&dir).to_string()
+                });
+                cur = parent_of(&dir);
+            }
+            Some(out)
+        }
+        TextProp::HardLinkNames => p.hard_link_names(),
+        TextProp::StreamNames => p.stream_names(),
+        TextProp::ContainerNames => p.container_file_names(),
+        _ => text_value(prop, p).map(|v| vec![v.into_owned()]),
+    }
 }
 
 fn utf16_len(s: &str) -> f64 {
     s.encode_utf16().count() as f64
 }
 
-fn num_value(prop: NumProp, p: &dyn Props) -> Option<f64> {
+fn num_value(prop: NumProp, p: &dyn Props, ctx: &mut Ctx) -> Option<f64> {
+    let count = |n: Option<u64>, names: &dyn Fn() -> Option<Vec<String>>| {
+        n.or_else(|| names().map(|v| v.len() as u64))
+            .map(|v| v as f64)
+    };
     match prop {
         NumProp::Size => p.size().map(|v| v as f64),
         NumProp::SizeOnDisk => p.allocated().map(|v| v as f64),
         NumProp::NameLength => Some(utf16_len(p.name())),
         NumProp::FullPathLength => Some(utf16_len(p.path())),
         NumProp::ParentCount => Some(f64::from(p.depth())),
-        NumProp::ChildCount => p.child_counts().map(|c| (c.files + c.folders) as f64),
-        NumProp::ChildFileCount => p.child_counts().map(|c| c.files as f64),
-        NumProp::ChildFolderCount => p.child_counts().map(|c| c.folders as f64),
+        NumProp::ChildCount => child_counts(p, ctx).map(|c| (c.files + c.folders) as f64),
+        NumProp::ChildFileCount => child_counts(p, ctx).map(|c| c.files as f64),
+        NumProp::ChildFolderCount => child_counts(p, ctx).map(|c| c.folders as f64),
         NumProp::RunCount => p.run_count().map(|v| v as f64),
         NumProp::FileId => p.file_id().map(|v| v as f64),
         NumProp::ParentFileId => p.parent_file_id().map(|v| v as f64),
+        NumProp::DescendantCount => descendant_counts(p, ctx).map(|c| (c.files + c.folders) as f64),
+        NumProp::DescendantFileCount => descendant_counts(p, ctx).map(|c| c.files as f64),
+        NumProp::DescendantFolderCount => descendant_counts(p, ctx).map(|c| c.folders as f64),
+        NumProp::HardLinkCount => count(p.hard_link_count(), &|| p.hard_link_names()),
+        NumProp::StreamCount => count(p.stream_count(), &|| p.stream_names()),
+        NumProp::ContainerFileCount => {
+            count(p.container_file_count(), &|| p.container_file_names())
+        }
+    }
+}
+
+/// Direct children of a folder: the source's count, else counted through the tree.
+fn child_counts(p: &dyn Props, ctx: &mut Ctx) -> Option<ChildCounts> {
+    if let Some(c) = p.child_counts() {
+        return Some(c);
+    }
+    if !p.is_dir() {
+        return None;
+    }
+    let (tree, me) = ctx.node(p)?;
+    count_below(tree, me, false, ctx)
+}
+
+/// Everything below a folder: the tree's aggregates, else a bounded scan.
+fn descendant_counts(p: &dyn Props, ctx: &mut Ctx) -> Option<ChildCounts> {
+    if !p.is_dir() {
+        return None;
+    }
+    let (tree, me) = ctx.node(p)?;
+    if let Some(c) = tree.descendant_counts(me) {
+        return Some(c);
+    }
+    count_below(tree, me, true, ctx)
+}
+
+/// Counts children (or, `deep`, descendants); `None` when the scan budget runs out.
+fn count_below(tree: &dyn Tree, root: NodeId, deep: bool, ctx: &mut Ctx) -> Option<ChildCounts> {
+    let mut counts = ChildCounts::default();
+    let mut stack = vec![root];
+    let mut spent = false;
+    while let Some(dir) = stack.pop() {
+        tree.children(dir, &mut |n| {
+            if !ctx.spend() {
+                spent = true;
+                return false;
+            }
+            tree.with_props(n, &mut |cp| {
+                if cp.is_dir() {
+                    counts.folders += 1;
+                    if deep {
+                        stack.push(n);
+                    }
+                } else {
+                    counts.files += 1;
+                }
+            });
+            true
+        });
+        if spent {
+            return None;
+        }
+    }
+    Some(counts)
+}
+
+type ItemTest<'a, 't> = dyn FnMut(&dyn Props, &mut Ctx<'t>) -> bool + 'a;
+
+/// Whether a child of `dir` other than `skip` passes `test`.
+fn any_child<'t>(
+    tree: &'t dyn Tree,
+    dir: NodeId,
+    skip: Option<NodeId>,
+    ctx: &mut Ctx<'t>,
+    test: &mut ItemTest<'_, 't>,
+) -> bool {
+    let mut hit = false;
+    tree.children(dir, &mut |c| {
+        if Some(c) == skip {
+            return true;
+        }
+        if !ctx.spend() {
+            return false;
+        }
+        tree.with_props(c, &mut |cp| hit = test(cp, ctx));
+        !hit
+    });
+    hit
+}
+
+/// Whether anything below `dir` passes `test` (depth first, bounded by the scan budget).
+fn any_descendant<'t>(
+    tree: &'t dyn Tree,
+    dir: NodeId,
+    ctx: &mut Ctx<'t>,
+    test: &mut ItemTest<'_, 't>,
+) -> bool {
+    let mut stack = vec![dir];
+    let mut hit = false;
+    let mut spent = false;
+    while let Some(d) = stack.pop() {
+        tree.children(d, &mut |c| {
+            if !ctx.spend() {
+                spent = true;
+                return false;
+            }
+            tree.with_props(c, &mut |cp| {
+                hit = test(cp, ctx);
+                if cp.is_dir() {
+                    stack.push(c);
+                }
+            });
+            !hit
+        });
+        if hit || spent {
+            break;
+        }
+    }
+    hit
+}
+
+/// The child of `dir` called `name` (folded).
+fn child_named<'t>(
+    tree: &'t dyn Tree,
+    dir: NodeId,
+    name: &str,
+    fold: Fold,
+    ctx: &mut Ctx<'t>,
+) -> Option<NodeId> {
+    let mut found = None;
+    tree.children(dir, &mut |c| {
+        if !ctx.spend() {
+            return false;
+        }
+        tree.with_props(c, &mut |cp| {
+            if fold.apply(cp.name()) == name {
+                found = Some(c);
+            }
+        });
+        found.is_none()
+    });
+    found
+}
+
+fn is_dir_node(tree: &dyn Tree, n: NodeId) -> bool {
+    let mut dir = false;
+    tree.with_props(n, &mut |p| dir = p.is_dir());
+    dir
+}
+
+impl ExistsPath {
+    fn eval(&self, p: &dyn Props, ctx: &mut Ctx) -> bool {
+        let Some(tree) = ctx.tree else {
+            return false;
+        };
+        let target = match &self.absolute {
+            Some(path) => tree.find(path),
+            None => (|| {
+                let me = tree.node_of(p)?;
+                let mut cur = tree.parent(me)?;
+                for part in &self.parts {
+                    cur = if part == ".." {
+                        tree.parent(cur)?
+                    } else {
+                        child_named(tree, cur, part, self.fold, ctx)?
+                    };
+                }
+                Some(cur)
+            })(),
+        };
+        target.is_some_and(|n| self.only.is_none_or(|d| is_dir_node(tree, n) == d))
     }
 }
 
@@ -868,6 +1231,18 @@ impl TextTest {
         let Some(v) = value else {
             return matches!(self.kind, TextKind::Unknown);
         };
+        self.hit(v, ctx, env) != self.negate
+    }
+
+    /// A list property: any value matches (`!=`: none does).
+    fn eval_list(&self, values: Option<Vec<String>>, ctx: &mut Ctx, env: &Env) -> bool {
+        let Some(values) = values else {
+            return matches!(self.kind, TextKind::Unknown);
+        };
+        values.iter().any(|v| self.hit(v, ctx, env)) != self.negate
+    }
+
+    fn hit(&self, v: &str, ctx: &mut Ctx, env: &Env) -> bool {
         let one = |s: &str, ctx: &mut Ctx| -> bool {
             if self.each_line {
                 s.lines().any(|l| self.one(l, ctx, env))
@@ -875,12 +1250,11 @@ impl TextTest {
                 self.one(s, ctx, env)
             }
         };
-        let hit = match self.multi {
+        match self.multi {
             Multi::One => one(v, ctx),
             Multi::Any => v.split(';').any(|s| one(s.trim(), ctx)),
             Multi::All => v.split(';').all(|s| one(s.trim(), ctx)),
-        };
-        hit != self.negate
+        }
     }
 
     fn one(&self, s: &str, ctx: &mut Ctx, env: &Env) -> bool {
@@ -928,10 +1302,11 @@ impl Test {
     fn eval(&self, p: &dyn Props, env: &Env, ctx: &mut Ctx) -> bool {
         match self {
             Test::Only(only) => only.is_none_or(|dir| p.is_dir() == dir),
+            Test::Text(prop, t) if prop.is_list() => t.eval_list(text_list(*prop, p), ctx, env),
             Test::Text(prop, t) => t.eval(text_value(*prop, p).as_deref(), ctx, env),
-            Test::Num(prop, t) => t.eval(num_value(*prop, p)),
+            Test::Num(prop, t) => t.eval(num_value(*prop, p, ctx)),
             Test::NumAsText(prop, t) => {
-                let v = num_value(*prop, p).map(fmt_num);
+                let v = num_value(*prop, p, ctx).map(fmt_num);
                 t.eval(v.as_deref(), ctx, env)
             }
             Test::Date(prop, t) => {
@@ -967,9 +1342,7 @@ impl Test {
             Test::AttrUnknown(want) => p.attributes().is_none() == *want,
             Test::Root => parent_of(&normalize(p.path())).is_none(),
             Test::Empty => {
-                p.is_dir()
-                    && p.child_counts()
-                        .is_some_and(|c| c.files == 0 && c.folders == 0)
+                p.is_dir() && child_counts(p, ctx).is_some_and(|c| c.files == 0 && c.folders == 0)
             }
             Test::Kind(kinds) => kinds.iter().any(|k| match k {
                 Kind::Folder => p.is_dir(),
@@ -994,6 +1367,59 @@ impl Test {
                 };
                 c.term(&t).is_ok_and(|n| n.eval(p, env, ctx))
             }
+            Test::Rel(rel, only, inner) => {
+                let Some((tree, me)) = ctx.node(p) else {
+                    return false;
+                };
+                let mut test = |cp: &dyn Props, ctx: &mut Ctx<'_>| {
+                    only.is_none_or(|d| cp.is_dir() == d) && inner.eval(cp, env, ctx)
+                };
+                match rel {
+                    Rel::Child => p.is_dir() && any_child(tree, me, None, ctx, &mut test),
+                    Rel::Descendant => p.is_dir() && any_descendant(tree, me, ctx, &mut test),
+                    Rel::Sibling => tree
+                        .parent(me)
+                        .is_some_and(|dir| any_child(tree, dir, Some(me), ctx, &mut test)),
+                    Rel::ParentSibling => {
+                        let Some(parent) = tree.parent(me) else {
+                            return false;
+                        };
+                        tree.parent(parent)
+                            .is_some_and(|g| any_child(tree, g, Some(parent), ctx, &mut test))
+                    }
+                    Rel::AncestorSibling => {
+                        let mut cur = tree.parent(me);
+                        while let Some(a) = cur {
+                            let up = tree.parent(a);
+                            if let Some(g) = up {
+                                if any_child(tree, g, Some(a), ctx, &mut test) {
+                                    return true;
+                                }
+                            }
+                            if !ctx.spend() {
+                                return false;
+                            }
+                            cur = up;
+                        }
+                        false
+                    }
+                }
+            }
+            Test::Exists(e) => e.eval(p, ctx),
+            Test::OfParent(inner) => {
+                let Some((tree, me)) = ctx.node(p) else {
+                    return false;
+                };
+                let Some(parent) = tree.parent(me) else {
+                    return false;
+                };
+                let mut hit = false;
+                tree.with_props(parent, &mut |pp| hit = inner.eval(pp, env, ctx));
+                hit
+            }
+            Test::PathList(set, fold) => {
+                set.contains(fold.apply(trim_sep(&normalize(p.path()))).as_ref())
+            }
         }
     }
 }
@@ -1007,7 +1433,7 @@ fn fmt_num(v: f64) -> String {
 }
 
 /// `$name:` and `$0:` replaced by the item's values.
-fn substitute(text: &str, p: &dyn Props, env: &Env, ctx: &Ctx) -> String {
+fn substitute(text: &str, p: &dyn Props, env: &Env, ctx: &mut Ctx) -> String {
     let mut out = String::new();
     let mut last = 0;
     for (range, r) in subst_refs(text) {
@@ -1017,7 +1443,7 @@ fn substitute(text: &str, p: &dyn Props, env: &Env, ctx: &Ctx) -> String {
             SubRef::Text(prop) => text_value(prop, p)
                 .map(|v| v.into_owned())
                 .unwrap_or_default(),
-            SubRef::Num(prop) => num_value(prop, p).map(fmt_num).unwrap_or_default(),
+            SubRef::Num(prop) => num_value(prop, p, ctx).map(fmt_num).unwrap_or_default(),
             SubRef::Date(prop) => p
                 .date(prop)
                 .and_then(|ts| env.date.local(ts))
@@ -1042,6 +1468,92 @@ pub(crate) fn uses_captures(e: &Expr) -> bool {
                 .any(|(_, r)| matches!(r, SubRef::Capture(_)))
         }),
     }
+}
+
+/// One property of a `dupe:`/`distinct:`/`unique:` list.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Key {
+    Text(TextProp, Fold),
+    Num(NumProp),
+    Date(DateProp, Option<DatePart>),
+    Attr,
+}
+
+impl Key {
+    /// The key for a property name (`size`, `name`, `dmyear`), or why it cannot be one.
+    pub fn of(name: &str, fold: Fold) -> Result<Key, String> {
+        match functions::lookup(&name.trim().to_ascii_lowercase()) {
+            Some(FnKind::Text(p)) => Ok(Key::Text(p, fold)),
+            Some(FnKind::Number(p)) => Ok(Key::Num(p)),
+            Some(FnKind::Date(p, part)) => Ok(Key::Date(p, part)),
+            Some(FnKind::Attributes) => Ok(Key::Attr),
+            Some(FnKind::Unsupported(why)) => Err(format!("`{name}` is not yet supported: {why}")),
+            _ => Err(format!(
+                "`{name}` is not a property to compare (name, size, ext, dm, attributes, ...)"
+            )),
+        }
+    }
+}
+
+/// Appends the item's values for `keys` to `out`, encoded so byte order is value order;
+/// `false` (and `out` unchanged) when a value is unknown.
+pub(crate) fn push_key(
+    keys: &[Key],
+    p: &dyn Props,
+    env: &Env,
+    ctx: &mut Ctx,
+    out: &mut Vec<u8>,
+) -> bool {
+    let start = out.len();
+    for k in keys {
+        let ok = match *k {
+            Key::Text(prop, fold) => {
+                let v = if prop.is_list() {
+                    text_list(prop, p).map(|v| Cow::Owned(v.join(";")))
+                } else {
+                    text_value(prop, p)
+                };
+                v.map(|v| {
+                    out.extend_from_slice(fold.apply(&v).as_bytes());
+                    out.push(0);
+                })
+                .is_some()
+            }
+            Key::Num(prop) => num_value(prop, p, ctx)
+                .map(|v| out.extend_from_slice(&f64_key(v)))
+                .is_some(),
+            Key::Date(prop, None) => p
+                .date(prop)
+                .map(|v| out.extend_from_slice(&((v as u64) ^ (1 << 63)).to_be_bytes()))
+                .is_some(),
+            Key::Date(prop, Some(part)) => p
+                .date(prop)
+                .and_then(|ts| part_of(part, ts, &env.date))
+                .map(|v| out.extend_from_slice(&f64_key(v)))
+                .is_some(),
+            Key::Attr => p
+                .attributes()
+                .map(|a| out.extend_from_slice(&a.to_be_bytes()))
+                .is_some(),
+        };
+        if !ok {
+            out.truncate(start);
+            return false;
+        }
+    }
+    true
+}
+
+/// A float as bytes that sort like the numbers.
+fn f64_key(v: f64) -> [u8; 8] {
+    let v = if v == 0.0 { 0.0 } else { v };
+    let bits = v.to_bits();
+    let ordered = if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits ^ (1 << 63)
+    };
+    ordered.to_be_bytes()
 }
 
 /// Shared environment for a compiled query.

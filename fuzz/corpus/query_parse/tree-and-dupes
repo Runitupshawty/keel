@@ -1,0 +1,1 @@
+child:*.mp3 descendant-folder:docs sibling:a;b exists:..\README parentdm:today dupe:size;ext dupe-min:3 count:10

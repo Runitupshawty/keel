@@ -591,7 +591,11 @@ impl Parser<'_> {
             && !regex.unwrap_or(self.opts.regex)
             && matches!(
                 kind,
-                FnKind::Text(TextProp::FullPath | TextProp::Parent) | FnKind::In
+                FnKind::Text(TextProp::FullPath | TextProp::Parent | TextProp::Ancestor)
+                    | FnKind::In
+                    | FnKind::PathList
+                    | FnKind::Exists(_)
+                    | FnKind::Set(functions::SetFn::DupeFrom)
             );
         let parts: Vec<&[Ch]> = chars.split(|c| c.c == ';' && !c.quoted).collect();
         let mut items = Vec::new();
@@ -773,7 +777,7 @@ mod tests {
         assert_eq!((e.span, e.kind), (2..3, ErrorKind::Syntax));
         let e = parse("x extt:jpg", &Options::default()).unwrap_err();
         assert_eq!((e.span, e.kind), (2..7, ErrorKind::Unknown));
-        let e = parse("dupe:size", &Options::default()).unwrap_err();
+        let e = parse("md5:abc", &Options::default()).unwrap_err();
         assert_eq!(e.kind, ErrorKind::Unsupported);
         assert!(e.message.contains("not yet supported"));
         let deep = "<".repeat(40) + "a" + &">".repeat(40);

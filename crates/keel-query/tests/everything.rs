@@ -1,14 +1,15 @@
 //! Conformance: one case per operator, modifier, constant and implemented function of
-//! Everything's search language (docs/search.md), over an in-memory fixture tree. "Now" is
-//! Monday 2026-10-12 12:00 UTC and local time is UTC.
+//! Everything's search language (docs/search.md), over an in-memory fixture tree (with its
+//! parent links, for the tree functions, and the set functions applied). "Now" is Monday
+//! 2026-10-12 12:00 UTC and local time is UTC.
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use keel_query::{
-    attr, functions, modifiers, parse, ChildCounts, DateOrder, DateProp, ErrorKind, Options,
-    Precedence, Props,
+    attr, functions, modifiers, normalize, parent_of, parse, ChildCounts, DateOrder, DateProp,
+    ErrorKind, NodeId, Options, Precedence, Props, Tree,
 };
 
 const NOW: i64 = 1_791_806_400_000;
@@ -44,6 +45,10 @@ struct E {
     children: Option<(u64, u64)>,
     id: Option<(u64, u64)>,
     type_name: Option<&'static str>,
+    link_count: Option<u64>,
+    links: Option<&'static [&'static str]>,
+    streams: Option<&'static [&'static str]>,
+    contents: Option<&'static [&'static str]>,
 }
 
 thread_local! {
@@ -97,6 +102,92 @@ impl Props for E {
         TYPE_CALLS.with(|c| c.set(c.get() + 1));
         self.type_name.map(Cow::Borrowed)
     }
+    fn hard_link_count(&self) -> Option<u64> {
+        self.link_count
+    }
+    fn hard_link_names(&self) -> Option<Vec<String>> {
+        self.links
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+    }
+    fn stream_names(&self) -> Option<Vec<String>> {
+        self.streams
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+    }
+    fn container_file_names(&self) -> Option<Vec<String>> {
+        self.contents
+            .map(|v| v.iter().map(|s| s.to_string()).collect())
+    }
+}
+
+/// The fixture's parent links: an arena over the items, found by path.
+struct Fixture {
+    items: Vec<E>,
+    parent: Vec<Option<usize>>,
+    children: Vec<Vec<usize>>,
+    by_path: HashMap<String, usize>,
+}
+
+fn path_key(path: &str) -> String {
+    normalize(path).trim_end_matches('\\').to_lowercase()
+}
+
+impl Fixture {
+    fn new(items: Vec<E>) -> Self {
+        let by_path: HashMap<String, usize> = items
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (path_key(e.path), i))
+            .collect();
+        let parent: Vec<Option<usize>> = items
+            .iter()
+            .map(|e| {
+                parent_of(&normalize(e.path)).and_then(|p| by_path.get(&path_key(&p)).copied())
+            })
+            .collect();
+        let mut children = vec![Vec::new(); items.len()];
+        for (i, p) in parent.iter().enumerate() {
+            if let Some(p) = p {
+                children[*p].push(i);
+            }
+        }
+        Self {
+            items,
+            parent,
+            children,
+            by_path,
+        }
+    }
+
+    fn select(&self, o: &Options, query: &str) -> Vec<&'static str> {
+        let q = parse(query, o).unwrap_or_else(|e| panic!("{query}: {e}"));
+        q.select(&self.items, Some(self))
+            .unwrap_or_else(|e| panic!("{query}: {e}"))
+            .into_iter()
+            .map(|i| self.items[i].name)
+            .collect()
+    }
+}
+
+impl Tree for Fixture {
+    fn node_of(&self, item: &dyn Props) -> Option<NodeId> {
+        self.find(item.path())
+    }
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        self.parent[node as usize].map(|p| p as NodeId)
+    }
+    fn children(&self, node: NodeId, f: &mut dyn FnMut(NodeId) -> bool) {
+        for &c in &self.children[node as usize] {
+            if !f(c as NodeId) {
+                break;
+            }
+        }
+    }
+    fn with_props(&self, node: NodeId, f: &mut dyn FnMut(&dyn Props)) {
+        f(&self.items[node as usize]);
+    }
+    fn find(&self, path: &str) -> Option<NodeId> {
+        self.by_path.get(&path_key(path)).map(|&i| i as NodeId)
+    }
 }
 
 const A: u32 = attr::ARCHIVE;
@@ -138,6 +229,10 @@ fn tree() -> Vec<E> {
             run: Some(ts(2026, 10, 11, 20, 0)),
             runs: Some(5),
             id: Some((1001, 1000)),
+            links: Some(&[
+                "C:\\fixture\\docs\\report.pdf",
+                "C:\\fixture\\bin\\report-link.pdf",
+            ]),
             ..file(
                 "report.pdf",
                 "C:\\fixture\\docs\\report.pdf",
@@ -150,6 +245,7 @@ fn tree() -> Vec<E> {
             rc: Some(ts(2026, 10, 11, 18, 0)),
             attrs: Some(A | attr::READONLY),
             runs: Some(0),
+            streams: Some(&[]),
             ..file(
                 "Notes.TXT",
                 "C:\\fixture\\docs\\Notes.TXT",
@@ -191,6 +287,7 @@ fn tree() -> Vec<E> {
         E {
             da: Some(ts(2026, 10, 10, 9, 15)),
             taken: Some(ts(2026, 7, 4, 16, 20)),
+            streams: Some(&["Zone.Identifier"]),
             ..file(
                 "photo.jpg",
                 "C:\\fixture\\pics\\photo.jpg",
@@ -212,6 +309,7 @@ fn tree() -> Vec<E> {
         E {
             run: Some(ts(2026, 10, 1, 8, 0)),
             runs: Some(12),
+            link_count: Some(1),
             ..file(
                 "tool.exe",
                 "C:\\fixture\\bin\\tool.exe",
@@ -228,12 +326,15 @@ fn tree() -> Vec<E> {
                 Some(ts(2026, 10, 13, 9, 0)),
             )
         },
-        file(
-            "archive.zip",
-            "C:\\fixture\\archive.zip",
-            0,
-            Some(ts(2026, 9, 30, 23, 59)),
-        ),
+        E {
+            contents: Some(&["docs\\a.txt", "b.md"]),
+            ..file(
+                "archive.zip",
+                "C:\\fixture\\archive.zip",
+                0,
+                Some(ts(2026, 9, 30, 23, 59)),
+            )
+        },
         file(
             "README",
             "C:\\fixture\\README",
@@ -281,13 +382,17 @@ fn opts() -> Options {
     }
 }
 
+/// The result names in result order (set functions order them).
+fn ordered_o(o: &Options, query: &str) -> Vec<&'static str> {
+    Fixture::new(tree()).select(o, query)
+}
+
+fn ordered(query: &str) -> Vec<&'static str> {
+    ordered_o(&opts(), query)
+}
+
 fn qo(o: &Options, query: &str) -> Vec<&'static str> {
-    let q = parse(query, o).unwrap_or_else(|e| panic!("{query}: {e}"));
-    let mut names: Vec<&'static str> = tree()
-        .iter()
-        .filter(|e| q.matches(*e))
-        .map(|e| e.name)
-        .collect();
+    let mut names = ordered_o(o, query);
     names.sort_unstable();
     names
 }
@@ -1526,6 +1631,546 @@ fn fn_date_date() {
     check!("dmdate:today", [".hidden", "report.pdf"]);
 }
 
+// ---- functions: tree -------------------------------------------------------------------
+
+const BELOW_FIXTURE_FOLDERS: [&str; 11] = [
+    "123.txt",
+    "IMG_0001.PNG",
+    "Notes.TXT",
+    "Résumé.docx",
+    "Song-Two.flac",
+    "empty",
+    "photo.jpg",
+    "report.pdf",
+    "setup.msi",
+    "song one.mp3",
+    "tool.exe",
+];
+
+const IN_DOCS: [&str; 4] = ["Notes.TXT", "Résumé.docx", "empty", "report.pdf"];
+
+/// A second tree: folders with sizes and no child counts of their own.
+fn sized() -> Fixture {
+    let dir = |name, path, size| E {
+        name,
+        path,
+        dir: true,
+        size: Some(size),
+        ..E::default()
+    };
+    let file = |name, path| E {
+        name,
+        path,
+        size: Some(10),
+        ..E::default()
+    };
+    Fixture::new(vec![
+        dir("C:", "C:\\", 5_050),
+        dir("big", "C:\\big", 5_000),
+        file("a", "C:\\big\\a"),
+        dir("small", "C:\\small", 50),
+        file("b", "C:\\small\\b"),
+        file("c", "C:\\small\\c"),
+        dir("none", "C:\\none", 0),
+    ])
+}
+
+fn sorted(mut v: Vec<&'static str>) -> Vec<&'static str> {
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn tree_functions_need_a_tree() {
+    for s in [
+        "child:docs",
+        "sibling:readme",
+        "exists:readme",
+        "parentdm:2026",
+    ] {
+        let q = parse(s, &opts()).unwrap();
+        assert!(!tree().iter().any(|e| q.matches(e)), "{s}");
+    }
+}
+
+#[test]
+fn fn_child() {
+    check!("child:report.pdf", ["docs"]);
+    check!("child:*.mp3", ["music"]);
+    check!("child:docs", ["fixture"]);
+    check!("child:fixture", ["C:"]);
+    check!("child:report.pdf;photo.jpg", ["docs", "pics"]);
+    check!(
+        "child:",
+        ["2024", "C:", "bin", "docs", "fixture", "music", "pics"]
+    );
+}
+
+#[test]
+fn fn_child_file() {
+    check!("child-file:readme", ["fixture"]);
+    check!("child-file:docs", []);
+}
+
+#[test]
+fn fn_child_folder() {
+    check!("child-folder:docs", ["fixture"]);
+    check!("child-folder:empty", ["docs"]);
+    check!("child-folder:readme", []);
+}
+
+#[test]
+fn fn_child_counts_from_the_tree() {
+    let t = sized();
+    let q = |s: &str| sorted(t.select(&opts(), s));
+    assert_eq!(q("child-count:2"), ["small"]);
+    assert_eq!(q("child-count:3"), ["C:"]);
+    assert_eq!(q("child-file-count:1"), ["big"]);
+    assert_eq!(q("child-folder-count:3"), ["C:"]);
+    assert_eq!(q("empty:"), ["none"]);
+}
+
+#[test]
+fn fn_descendant() {
+    check!("descendant:*.jpg", ["C:", "fixture", "pics"]);
+    check!("descendant:empty", ["C:", "docs", "fixture"]);
+}
+
+#[test]
+fn fn_descendant_file() {
+    check!("descendant-file:123.txt", ["2024", "C:", "fixture"]);
+    check!("descendant-file:empty", []);
+}
+
+#[test]
+fn fn_descendant_folder() {
+    check!("descendant-folder:empty", ["C:", "docs", "fixture"]);
+    check!("descendant-folder:*.txt", []);
+}
+
+#[test]
+fn fn_descendant_count() {
+    check!("descendant-count:>10", ["C:", "fixture"]);
+    check!("descendant-count:2", ["bin", "music", "pics"]);
+    check!("descendant-count:0", ["empty"]);
+    // Files have no descendants to count.
+    assert_eq!(count("descendant-count:unknown"), 15);
+}
+
+#[test]
+fn fn_descendant_file_count() {
+    check!("descendant-file-count:3", ["docs"]);
+    check!("descendant-file-count:15", ["C:", "fixture"]);
+}
+
+#[test]
+fn fn_descendant_folder_count() {
+    check!("descendant-folder-count:>=6", ["C:", "fixture"]);
+    check!("descendant-folder-count:1", ["docs"]);
+}
+
+#[test]
+fn tree_scans_are_bounded() {
+    let o = Options {
+        tree_scan_limit: 5,
+        ..opts()
+    };
+    // C: and fixture have more than five items below: unknown, not a wrong count.
+    assert_eq!(qo(&o, "descendant-count:>10"), Vec::<&str>::new());
+    assert_eq!(qo(&o, "descendant-count:2"), ["bin", "music", "pics"]);
+    assert_eq!(qo(&o, "descendant:*.jpg"), ["pics"]);
+}
+
+#[test]
+fn fn_sibling() {
+    check!(
+        "sibling:README",
+        [
+            ".hidden",
+            "2024",
+            "archive.zip",
+            "bin",
+            "docs",
+            "music",
+            "offline.dat",
+            "pics",
+            "red;blue.txt"
+        ]
+    );
+    check!("sibling:*.flac", ["song one.mp3"]);
+    // An item is not its own sibling.
+    check!("sibling:\"song one.mp3\"", ["Song-Two.flac"]);
+}
+
+#[test]
+fn fn_sibling_file() {
+    check!("sibling-file:*.mp3", ["Song-Two.flac"]);
+    check!("sibling-file:empty", []);
+}
+
+#[test]
+fn fn_sibling_folder() {
+    check!(
+        "sibling-folder:empty",
+        ["Notes.TXT", "Résumé.docx", "report.pdf"]
+    );
+}
+
+#[test]
+fn fn_parent_sibling() {
+    check!(
+        "parent-sibling:pics",
+        [
+            "123.txt",
+            "Notes.TXT",
+            "Résumé.docx",
+            "Song-Two.flac",
+            "empty",
+            "report.pdf",
+            "setup.msi",
+            "song one.mp3",
+            "tool.exe"
+        ]
+    );
+}
+
+#[test]
+fn fn_ancestor_sibling() {
+    assert_eq!(q("ancestor-sibling:archive.zip"), BELOW_FIXTURE_FOLDERS);
+    check!("ancestor-sibling:fixture", []);
+}
+
+#[test]
+fn fn_ancestor() {
+    assert_eq!(q("ancestor:C:\\fixture\\docs"), IN_DOCS);
+    assert_eq!(q("ancestor:C:\\fixture\\docs\\"), IN_DOCS);
+    assert_eq!(count("ancestor:C:\\fixture"), 21);
+    assert_eq!(count("ancestor:C:\\"), 22);
+    // `*` stays inside one folder name; `**` crosses folders.
+    check!("ancestor:**\\music", ["Song-Two.flac", "song one.mp3"]);
+    check!("ancestor:C:\\*\\music", ["Song-Two.flac", "song one.mp3"]);
+    check!("ancestor:*\\music", []);
+    check!("ancestor:C:\\fix", []);
+}
+
+#[test]
+fn fn_ancestor_name() {
+    assert_eq!(q("ancestor-name:docs"), IN_DOCS);
+    check!("ancestor-name:pic", ["IMG_0001.PNG", "photo.jpg"]);
+    assert_eq!(count("ancestor-name:fixture"), 21);
+}
+
+#[test]
+fn fn_exists() {
+    assert_eq!(q("exists:empty"), IN_DOCS);
+    assert_eq!(q("exists:NOTES.txt"), IN_DOCS);
+    assert_eq!(q("exists:..\\README"), BELOW_FIXTURE_FOLDERS);
+    assert_eq!(count("exists:docs\\report.pdf"), 10);
+    assert_eq!(count("exists:C:\\fixture\\bin\\tool.exe"), tree().len());
+    check!("exists:C:\\nope", []);
+    // With substitution: files that have a sibling of the same stem with another extension.
+    check!("exists:$stem:.mp3", ["song one.mp3"]);
+    assert_eq!(err("exists:").kind, ErrorKind::Value);
+}
+
+#[test]
+fn fn_file_exists() {
+    assert_eq!(q("file-exists:report.pdf"), IN_DOCS);
+    check!("file-exists:empty", []);
+}
+
+#[test]
+fn fn_folder_exists() {
+    assert_eq!(q("folder-exists:empty"), IN_DOCS);
+    check!("folder-exists:report.pdf", []);
+}
+
+#[test]
+fn fn_parentsize() {
+    let t = sized();
+    assert_eq!(t.select(&opts(), "parentsize:5000"), ["a"]);
+    assert_eq!(
+        sorted(t.select(&opts(), "parentsize:>1kb")),
+        ["a", "big", "none", "small"]
+    );
+    assert_eq!(sorted(t.select(&opts(), "parentsize:50")), ["b", "c"]);
+    assert_eq!(
+        sorted(t.select(&opts(), "parentsize:5050")),
+        ["big", "none", "small"]
+    );
+}
+
+#[test]
+fn fn_parentdm() {
+    assert_eq!(q("parentdm:2026-10-01"), IN_DOCS);
+    assert_eq!(q("parentdm:thismonth"), IN_DOCS);
+}
+
+#[test]
+fn fn_pathlist() {
+    check!(
+        "pathlist:C:\\fixture\\README;c:\\FIXTURE\\bin\\tool.exe",
+        ["README", "tool.exe"]
+    );
+    check!("pathlist:C:\\", ["C:"]);
+    check!("pathlist:\"C:\\fixture\\red;blue.txt\"", ["red;blue.txt"]);
+}
+
+// ---- functions: duplicates and sets ----------------------------------------------------
+
+const DM_2026_FILES: [&str; 8] = [
+    "report.pdf",
+    "Notes.TXT",
+    "Résumé.docx",
+    "photo.jpg",
+    "IMG_0001.PNG",
+    "setup.msi",
+    "archive.zip",
+    ".hidden",
+];
+
+const TXT: [&str; 3] = ["Notes.TXT", "123.txt", "red;blue.txt"];
+
+fn both(a: &[&'static str], b: &[&'static str]) -> Vec<&'static str> {
+    a.iter().chain(b).copied().collect()
+}
+
+#[test]
+fn fn_dupe() {
+    // Groups in value order, items of a group in result order.
+    assert_eq!(ordered("dupe:size"), ["empty", "archive.zip"]);
+    assert_eq!(ordered("file: dupe:ext"), TXT);
+    assert_eq!(ordered("file:dupe:ext"), TXT);
+    assert_eq!(ordered("file: dupe:type"), TXT);
+    assert_eq!(
+        ordered("file: dupe:dmyear"),
+        both(&["tool.exe", "123.txt"], &DM_2026_FILES)
+    );
+    assert_eq!(ordered("dupe:size;ext"), Vec::<&str>::new());
+    assert_eq!(ordered("dupe:size ext:zip"), Vec::<&str>::new());
+    // Without a property, names compare (case-insensitively).
+    assert_eq!(ordered("dupe:"), Vec::<&str>::new());
+    assert_eq!(ordered("dupe:name"), Vec::<&str>::new());
+    // Unknown values are never duplicates: offline.dat has no size.
+    assert!(!ordered("dupe:size").contains(&"offline.dat"));
+    let p = parse("dupe:size", &opts()).unwrap();
+    assert!(p.has_set_functions());
+    assert!(!parse("size:1", &opts()).unwrap().has_set_functions());
+}
+
+#[test]
+fn fn_dupe_count() {
+    assert_eq!(
+        ordered("file: dupe:dmyear dupe-count:2"),
+        ["tool.exe", "123.txt"]
+    );
+    assert_eq!(ordered("file: dupe:dmyear dupe-count:>=3"), DM_2026_FILES);
+}
+
+#[test]
+fn fn_dupe_min() {
+    assert_eq!(ordered("file: dupe:dmyear dupe-min:3"), DM_2026_FILES);
+    assert_eq!(ordered("file: dupe:ext dupe-min:4"), Vec::<&str>::new());
+    // Alone, `dupe-min:` means `dupe:name`; a later `dupe:` replaces that.
+    assert_eq!(ordered("dupe-min:2"), Vec::<&str>::new());
+    assert_eq!(ordered("file: dupe-min:2 dupe:ext"), TXT);
+}
+
+#[test]
+fn fn_dupe_max() {
+    assert_eq!(
+        ordered("file: dupe:dmyear dupe-max:2"),
+        ["tool.exe", "123.txt"]
+    );
+}
+
+#[test]
+fn fn_dupe_from() {
+    assert_eq!(
+        ordered("file: dupe:dmyear dupe-from:C:\\fixture\\2024"),
+        ["tool.exe", "123.txt"]
+    );
+    assert_eq!(
+        ordered("file: dupe:dmyear dupe-from:C:\\fixture\\bin"),
+        both(&["tool.exe", "123.txt"], &DM_2026_FILES)
+    );
+    assert_eq!(
+        ordered("file: dupe:dmyear dupe-from:C:\\fixture\\music"),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn fn_legacy_dupes() {
+    assert_eq!(ordered("sizedupe:"), ["empty", "archive.zip"]);
+    assert_eq!(ordered("namepartdupe:"), Vec::<&str>::new());
+    assert_eq!(ordered("dmdupe:"), Vec::<&str>::new());
+    assert_eq!(ordered("dcdupe:"), Vec::<&str>::new());
+    assert_eq!(ordered("dadupe:"), Vec::<&str>::new());
+    assert_eq!(ordered("folder: attribdupe:"), plain_dirs());
+    assert_eq!(err("sizedupe:x").kind, ErrorKind::Value);
+}
+
+/// Folders with only the directory attribute, in fixture order.
+fn plain_dirs() -> Vec<&'static str> {
+    vec!["fixture", "docs", "empty", "music", "pics", "bin", "2024"]
+}
+
+#[test]
+fn fn_unique() {
+    assert_eq!(
+        ordered("file: unique:ext"),
+        [
+            "report.pdf",
+            "Résumé.docx",
+            "song one.mp3",
+            "Song-Two.flac",
+            "photo.jpg",
+            "IMG_0001.PNG",
+            "tool.exe",
+            "setup.msi",
+            "archive.zip",
+            "README",
+            ".hidden",
+            "offline.dat"
+        ]
+    );
+}
+
+#[test]
+fn fn_distinct() {
+    assert_eq!(
+        ordered("file: distinct:ext"),
+        [
+            "report.pdf",
+            "Notes.TXT",
+            "Résumé.docx",
+            "song one.mp3",
+            "Song-Two.flac",
+            "photo.jpg",
+            "IMG_0001.PNG",
+            "tool.exe",
+            "setup.msi",
+            "archive.zip",
+            "README",
+            ".hidden",
+            "offline.dat"
+        ]
+    );
+}
+
+#[test]
+fn fn_distinct_sort() {
+    assert_eq!(
+        ordered("file: distinct-sort:ext"),
+        [
+            "README",
+            "offline.dat",
+            "Résumé.docx",
+            "tool.exe",
+            "Song-Two.flac",
+            ".hidden",
+            "photo.jpg",
+            "song one.mp3",
+            "setup.msi",
+            "report.pdf",
+            "IMG_0001.PNG",
+            "Notes.TXT",
+            "archive.zip"
+        ]
+    );
+}
+
+#[test]
+fn fn_count() {
+    assert_eq!(ordered("count:3"), ["C:", "fixture", "docs"]);
+    assert_eq!(ordered("ext:txt count:2"), ["Notes.TXT", "123.txt"]);
+    assert_eq!(
+        ordered("file: dupe:dmyear count:3"),
+        ["tool.exe", "123.txt", "report.pdf"]
+    );
+    assert_eq!(ordered("count:0"), Vec::<&str>::new());
+}
+
+#[test]
+fn set_functions_errors() {
+    for (s, kind) in [
+        ("a | dupe:size", ErrorKind::Syntax),
+        ("!dupe:size", ErrorKind::Syntax),
+        ("<a | count:2>", ErrorKind::Syntax),
+        ("dupe:bogus", ErrorKind::Value),
+        ("dupe:md5", ErrorKind::Value),
+        ("count:x", ErrorKind::Value),
+        ("count:1 count:2", ErrorKind::Value),
+        ("dupe:size unique:ext", ErrorKind::Value),
+        ("unique:ext dupe-min:3", ErrorKind::Value),
+        ("dupe:size dupe-min:x", ErrorKind::Value),
+    ] {
+        assert_eq!(err(s).kind, kind, "{s}");
+    }
+    // Inside a group that is ANDed it is fine.
+    assert_eq!(ordered("<file: dupe:ext>"), TXT);
+}
+
+#[test]
+fn set_functions_are_bounded_in_memory() {
+    let o = Options {
+        set_memory_limit: 64,
+        ..opts()
+    };
+    let t = Fixture::new(tree());
+    let q = parse("dupe:size", &o).unwrap();
+    let e = q.select(&t.items, Some(&t)).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Limit);
+    assert_eq!(e.span, 0..9);
+    // `count:` alone keeps no values and stops early.
+    let q = parse("count:2", &o).unwrap();
+    assert_eq!(q.select(&t.items, Some(&t)).unwrap(), [0, 1]);
+}
+
+// ---- functions: hard links, streams, containers ----------------------------------------
+
+#[test]
+fn fn_hard_link_count() {
+    check!("hard-link-count:2", ["report.pdf"]);
+    check!("hard-link-count:1", ["tool.exe"]);
+    check!("hard-link-count:>=1", ["report.pdf", "tool.exe"]);
+    assert_eq!(count("hard-link-count:unknown"), tree().len() - 2);
+}
+
+#[test]
+fn fn_hard_link_filenames() {
+    check!("hard-link-filenames:report-link", ["report.pdf"]);
+    check!("hard-link-filenames:**\\bin\\*", ["report.pdf"]);
+    check!("hard-link-filenames:nothing", []);
+}
+
+#[test]
+fn fn_alternate_data_stream_count() {
+    check!("alternate-data-stream-count:1", ["photo.jpg"]);
+    check!("adscount:0", ["Notes.TXT"]);
+    assert_eq!(count("adscount:unknown"), tree().len() - 2);
+}
+
+#[test]
+fn fn_alternate_data_stream_names() {
+    check!("alternate-data-stream-names:*.identifier", ["photo.jpg"]);
+    check!("adsnames:zone", ["photo.jpg"]);
+}
+
+#[test]
+fn fn_container_file_count() {
+    check!("container-file-count:2", ["archive.zip"]);
+    assert_eq!(count("container-file-count:unknown"), tree().len() - 1);
+}
+
+#[test]
+fn fn_container_filenames() {
+    check!("container-filenames:*.md", ["archive.zip"]);
+    check!("container-filenames:a.txt", ["archive.zip"]);
+    check!("container-filenames:docs\\a.txt", ["archive.zip"]);
+}
+
 // ---- macros, aliases, unsupported, UI --------------------------------------------------
 
 #[test]
@@ -1583,18 +2228,12 @@ fn macro_user() {
 #[test]
 fn unsupported_functions_are_refused_with_the_reason() {
     for s in [
-        "sizedupe:",
-        "namepartdupe:",
-        "dmdupe:",
-        "dupe:size",
         "utf8content:x",
         "ansicontent:x",
         "utf16content:x",
         "content:x",
         "width:>100",
         "artist:x",
-        "child:x",
-        "sibling:x",
         "md5:x",
         "tag:x",
         "filelist:x",

@@ -1,4 +1,5 @@
-//! Search functions (`size:`, `dm:`, `ext:`, ...): the ones this crate evaluates, the
+//! Search functions (`size:`, `dm:`, `ext:`, ...): the ones this crate evaluates (item
+//! properties, tree functions over parent links, set functions over the whole result), the
 //! date functions and their component forms, the built-in filter macros, the UI-state
 //! functions (recorded for the search UI) and every other Everything function, which is
 //! refused with "not yet supported" and the task that adds it.
@@ -24,6 +25,30 @@ pub enum TextProp {
     ParentName,
     /// The file type description.
     Type,
+    /// Any folder above the item: its full path (`ancestor:`).
+    Ancestor,
+    /// Any folder above the item: its name (`ancestor-name:`).
+    AncestorName,
+    /// Any of the file's names (hard links), full paths.
+    HardLinkNames,
+    /// Any of the file's alternate data stream names.
+    StreamNames,
+    /// Any path inside an archive.
+    ContainerNames,
+}
+
+impl TextProp {
+    /// Properties with several values; a term matches when any value does.
+    pub fn is_list(self) -> bool {
+        matches!(
+            self,
+            TextProp::Ancestor
+                | TextProp::AncestorName
+                | TextProp::HardLinkNames
+                | TextProp::StreamNames
+                | TextProp::ContainerNames
+        )
+    }
 }
 
 /// A number property.
@@ -40,6 +65,12 @@ pub enum NumProp {
     RunCount,
     FileId,
     ParentFileId,
+    DescendantCount,
+    DescendantFileCount,
+    DescendantFolderCount,
+    HardLinkCount,
+    StreamCount,
+    ContainerFileCount,
 }
 
 /// A component of a date (`dmyear:`, `dcdow:`, `date-accessed-time:`).
@@ -78,10 +109,62 @@ pub enum FnKind {
     In,
     /// A filter macro: files with these extensions (`audio:`, `zip:`, ...).
     Macro(&'static str),
+    /// An item related through the tree has a matching name (`child:`, `sibling:`);
+    /// `Some(true)`: folders only, `Some(false)`: files only.
+    Related(Rel, Option<bool>),
+    /// A name relative to the item's folder, or a full path, is in the index (`exists:`);
+    /// `Some(true)`: a folder, `Some(false)`: a file.
+    Exists(Option<bool>),
+    /// A function evaluated on the parent folder (`parentsize:`, `parentdm:`).
+    OfParent(&'static FnKind),
+    /// The full path is one of these (`pathlist:`).
+    PathList,
+    /// A function over the whole result set (`dupe:`, `unique:`, `count:`).
+    Set(SetFn),
     /// A UI-state function (`sort:`, `columns:`, ...): recorded, never filters.
     Ui,
     /// Known, not evaluated yet: the reason (which task adds it).
     Unsupported(&'static str),
+}
+
+/// How a related item is found from the item, for [`FnKind::Related`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rel {
+    /// A direct child of a folder.
+    Child,
+    /// Anything below a folder.
+    Descendant,
+    /// Another item in the same folder.
+    Sibling,
+    /// Another item in the parent folder's folder.
+    ParentSibling,
+    /// Another item next to any folder above the item.
+    AncestorSibling,
+}
+
+/// Functions over the whole result set, applied after every item was matched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetFn {
+    /// Items that share these property values with another result (`dupe:size;name`).
+    Dupe,
+    /// How many items a duplicate group has.
+    DupeCount,
+    /// Duplicate groups with an item inside these folders.
+    DupeFrom,
+    /// Duplicate groups of at least this many items.
+    DupeMin,
+    /// Duplicate groups of at most this many items.
+    DupeMax,
+    /// The first result for each distinct value.
+    Distinct,
+    /// The first result for each distinct value, sorted by the value.
+    DistinctSort,
+    /// Results whose value no other result has.
+    Unique,
+    /// At most this many results.
+    Count,
+    /// Everything 1.4's `sizedupe:` and friends: `dupe:` on this property.
+    Legacy(&'static str),
 }
 
 /// One row of the function table.
@@ -228,6 +311,224 @@ pub static FUNCTIONS: &[FunctionInfo] = &[
         K::Number(N::RunCount),
         "how many times Keel opened the item"
     ),
+    // Tree functions.
+    f!(
+        &["ancestor"],
+        K::Text(T::Ancestor),
+        "a folder above the item has this full path (wildcards allowed)"
+    ),
+    f!(
+        &["ancestor-name"],
+        K::Text(T::AncestorName),
+        "a folder above the item has this name"
+    ),
+    f!(
+        &["child"],
+        K::Related(Rel::Child, None),
+        "folders with a file or folder directly inside whose name matches"
+    ),
+    f!(
+        &["child-file"],
+        K::Related(Rel::Child, Some(false)),
+        "folders with a file directly inside whose name matches"
+    ),
+    f!(
+        &["child-folder"],
+        K::Related(Rel::Child, Some(true)),
+        "folders with a folder directly inside whose name matches"
+    ),
+    f!(
+        &["descendant"],
+        K::Related(Rel::Descendant, None),
+        "folders with a file or folder anywhere below whose name matches"
+    ),
+    f!(
+        &["descendant-file"],
+        K::Related(Rel::Descendant, Some(false)),
+        "folders with a file anywhere below whose name matches"
+    ),
+    f!(
+        &["descendant-folder"],
+        K::Related(Rel::Descendant, Some(true)),
+        "folders with a folder anywhere below whose name matches"
+    ),
+    f!(
+        &["descendant-count"],
+        K::Number(N::DescendantCount),
+        "files and folders anywhere below a folder"
+    ),
+    f!(
+        &["descendant-file-count"],
+        K::Number(N::DescendantFileCount),
+        "files anywhere below a folder"
+    ),
+    f!(
+        &["descendant-folder-count"],
+        K::Number(N::DescendantFolderCount),
+        "folders anywhere below a folder"
+    ),
+    f!(
+        &["sibling"],
+        K::Related(Rel::Sibling, None),
+        "another file or folder in the same folder has a matching name"
+    ),
+    f!(
+        &["sibling-file"],
+        K::Related(Rel::Sibling, Some(false)),
+        "another file in the same folder has a matching name"
+    ),
+    f!(
+        &["sibling-folder"],
+        K::Related(Rel::Sibling, Some(true)),
+        "another folder in the same folder has a matching name"
+    ),
+    f!(
+        &["parent-sibling"],
+        K::Related(Rel::ParentSibling, None),
+        "the parent folder has a sibling with a matching name"
+    ),
+    f!(
+        &["ancestor-sibling"],
+        K::Related(Rel::AncestorSibling, None),
+        "a folder above the item has a sibling with a matching name"
+    ),
+    f!(
+        &["exists"],
+        K::Exists(None),
+        "this name (next to the item; `..` and subfolders allowed) or full path is indexed"
+    ),
+    f!(
+        &["file-exists"],
+        K::Exists(Some(false)),
+        "like `exists:`, and it is a file"
+    ),
+    f!(
+        &["folder-exists"],
+        K::Exists(Some(true)),
+        "like `exists:`, and it is a folder"
+    ),
+    f!(
+        &["parentsize"],
+        K::OfParent(&K::Number(N::Size)),
+        "the parent folder's size"
+    ),
+    f!(
+        &["parentdm"],
+        K::OfParent(&K::Date(DateProp::Modified, None)),
+        "the parent folder's date modified"
+    ),
+    f!(
+        &["pathlist"],
+        K::PathList,
+        "the full path is one of these (`;` list)"
+    ),
+    // Set functions.
+    f!(
+        &["dupe"],
+        K::Set(SetFn::Dupe),
+        "results that share these properties with another result (`dupe:size;name`; default `name`)"
+    ),
+    f!(
+        &["dupe-count"],
+        K::Set(SetFn::DupeCount),
+        "duplicate groups of this many results (`dupe-count:>=3`)"
+    ),
+    f!(
+        &["dupe-from"],
+        K::Set(SetFn::DupeFrom),
+        "duplicate groups with a result inside one of these folders"
+    ),
+    f!(
+        &["dupe-min"],
+        K::Set(SetFn::DupeMin),
+        "duplicate groups of at least this many results (default 2)"
+    ),
+    f!(
+        &["dupe-max"],
+        K::Set(SetFn::DupeMax),
+        "duplicate groups of at most this many results"
+    ),
+    f!(
+        &["distinct"],
+        K::Set(SetFn::Distinct),
+        "the first result for each distinct value of these properties"
+    ),
+    f!(
+        &["distinct-sort"],
+        K::Set(SetFn::DistinctSort),
+        "like `distinct:`, sorted by the value"
+    ),
+    f!(
+        &["unique"],
+        K::Set(SetFn::Unique),
+        "results whose value of these properties no other result has"
+    ),
+    f!(
+        &["count"],
+        K::Set(SetFn::Count),
+        "at most this many results"
+    ),
+    f!(
+        &["sizedupe"],
+        K::Set(SetFn::Legacy("size")),
+        "Everything 1.4: `dupe:size`"
+    ),
+    f!(
+        &["namepartdupe"],
+        K::Set(SetFn::Legacy("stem")),
+        "Everything 1.4: `dupe:stem`"
+    ),
+    f!(
+        &["dmdupe"],
+        K::Set(SetFn::Legacy("dm")),
+        "Everything 1.4: `dupe:dm`"
+    ),
+    f!(
+        &["dcdupe"],
+        K::Set(SetFn::Legacy("dc")),
+        "Everything 1.4: `dupe:dc`"
+    ),
+    f!(
+        &["dadupe"],
+        K::Set(SetFn::Legacy("da")),
+        "Everything 1.4: `dupe:da`"
+    ),
+    f!(
+        &["attribdupe"],
+        K::Set(SetFn::Legacy("attributes")),
+        "Everything 1.4: `dupe:attributes`"
+    ),
+    // Hard links, streams and containers: read lazily, unknown when the source has none.
+    f!(
+        &["hard-link-count"],
+        K::Number(N::HardLinkCount),
+        "how many names (hard links) the file has"
+    ),
+    f!(
+        &["hard-link-filenames"],
+        K::Text(T::HardLinkNames),
+        "any of the file's names (full paths) matches"
+    ),
+    f!(
+        &["alternate-data-stream-count", "adscount"],
+        K::Number(N::StreamCount),
+        "how many alternate data streams the file has"
+    ),
+    f!(
+        &["alternate-data-stream-names", "adsnames"],
+        K::Text(T::StreamNames),
+        "any alternate data stream name matches"
+    ),
+    f!(
+        &["container-file-count"],
+        K::Number(N::ContainerFileCount),
+        "how many files an archive holds"
+    ),
+    f!(
+        &["container-filenames"],
+        K::Text(T::ContainerNames),
+        "any path inside an archive matches"
+    ),
 ];
 
 /// Date functions: names (canonical first), the property, and the short form that takes
@@ -316,30 +617,6 @@ pub static FILTER_MACROS: &[(&[&str], &str)] = &[
 /// Everything functions recognised but not evaluated by this crate yet: names and the
 /// reason shown in the error.
 pub static UNSUPPORTED: &[(&[&str], &str)] = &[
-    (
-        &[
-            "child", "child-file", "child-folder", "descendant", "descendant-file", "descendant-folder",
-            "descendant-count", "descendant-file-count", "descendant-folder-count", "sibling",
-            "sibling-file", "sibling-folder", "parent-sibling", "ancestor-sibling", "ancestor",
-            "ancestor-name", "exists", "file-exists", "folder-exists", "count", "parentsize",
-            "parentdm", "pathlist",
-        ],
-        "a tree function (Phase 15, Task 72)",
-    ),
-    (
-        &[
-            "dupe", "dupe-count", "dupe-from", "dupe-max", "dupe-min", "distinct", "distinct-sort",
-            "unique", "sizedupe", "namepartdupe", "dmdupe", "dcdupe", "dadupe", "attribdupe",
-        ],
-        "a duplicate function (Phase 15, Task 72; `sizedupe:` will be `dupe:size`)",
-    ),
-    (
-        &[
-            "hard-link-count", "hard-link-filenames", "alternate-data-stream-count", "adscount",
-            "alternate-data-stream-names", "adsnames", "container-file-count", "container-filenames",
-        ],
-        "a hard link, stream or container function (Phase 15, Task 72)",
-    ),
     (
         &[
             "content", "utf8content", "ansicontent", "utf16content", "utf16becontent", "textplain",
@@ -534,7 +811,8 @@ mod tests {
         );
         assert_eq!(lookup("date-takenmonth"), None);
         assert_eq!(lookup("regmatch3"), Some(K::Ui));
-        assert!(matches!(lookup("sizedupe"), Some(K::Unsupported(_))));
+        assert_eq!(lookup("sizedupe"), Some(K::Set(SetFn::Legacy("size"))));
+        assert!(matches!(lookup("md5"), Some(K::Unsupported(_))));
     }
 
     #[test]

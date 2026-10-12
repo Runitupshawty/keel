@@ -1,10 +1,13 @@
 //! Fuzz entry point (docs/fuzzing.md): `query_parse` parses any text with several option
-//! sets and evaluates what compiles against a few items. It must never panic, and a typed
-//! query is bounded (group and macro depth, regex size).
+//! sets and evaluates what compiles against a few items, alone and as a tree with the set
+//! functions applied. It must never panic, and a typed query is bounded (group and macro
+//! depth, regex size, tree scans, set memory).
 
 use std::collections::BTreeMap;
 
-use crate::{parse, ChildCounts, DateOrder, DateProp, Options, Precedence, Props};
+use crate::{
+    normalize, parse, ChildCounts, DateOrder, DateProp, NodeId, Options, Precedence, Props, Tree,
+};
 
 struct Item {
     name: &'static str,
@@ -117,7 +120,44 @@ pub fn query_parse(data: &[u8]) {
             for item in ITEMS {
                 let _ = q.matches(item);
             }
+            let _ = q.select(ITEMS, Some(&Links));
         }
+    }
+}
+
+/// Parent links over [`ITEMS`]: the file in `Docs`, `Docs` under the drive, a cycle-free
+/// forest with a lone Unix item.
+struct Links;
+
+const PARENTS: [Option<NodeId>; 4] = [Some(1), Some(2), None, None];
+
+impl Tree for Links {
+    fn node_of(&self, item: &dyn Props) -> Option<NodeId> {
+        ITEMS
+            .iter()
+            .position(|i| i.path == item.path())
+            .map(|i| i as NodeId)
+    }
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        PARENTS.get(node as usize).copied().flatten()
+    }
+    fn children(&self, node: NodeId, f: &mut dyn FnMut(NodeId) -> bool) {
+        for (i, p) in PARENTS.iter().enumerate() {
+            if *p == Some(node) && !f(i as NodeId) {
+                return;
+            }
+        }
+    }
+    fn with_props(&self, node: NodeId, f: &mut dyn FnMut(&dyn Props)) {
+        if let Some(item) = ITEMS.get(node as usize) {
+            f(item);
+        }
+    }
+    fn find(&self, path: &str) -> Option<NodeId> {
+        ITEMS
+            .iter()
+            .position(|i| normalize(i.path).eq_ignore_ascii_case(path))
+            .map(|i| i as NodeId)
     }
 }
 
@@ -198,6 +238,16 @@ mod tests {
         "$name:",
         "$1:",
         "pair:",
+        "child:",
+        "descendant:",
+        "sibling:",
+        "exists:..\\",
+        "parentsize:",
+        "dupe:size;name",
+        "dupe-min:",
+        "distinct-sort:",
+        "unique:",
+        "count:",
         "AND",
         "OR",
         "NOT",
