@@ -686,12 +686,18 @@ mod tests {
         let confirmed = measure(&paths, &cancel).unwrap();
         let wide: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
         // SAFETY: a NUL-terminated path in this test's temporary directory.
-        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_OFFLINE) }, 0);
+        assert_ne!(
+            unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_OFFLINE) },
+            0
+        );
         let measured = measure(&paths, &cancel);
         let deleted = run(&confirmed, &|_| {}, &cancel);
         // Restore the ordinary attribute before asserting or cleaning up the fixture.
         assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), 0x80) }, 0);
-        assert!(measured.unwrap_err().to_string().contains("placeholder or reparse point"));
+        assert!(measured
+            .unwrap_err()
+            .to_string()
+            .contains("placeholder or reparse point"));
         assert!(deleted.is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"leave me");
         std::fs::remove_dir_all(d).unwrap();
