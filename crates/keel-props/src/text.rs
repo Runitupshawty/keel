@@ -231,11 +231,11 @@ impl Counter {
             Encoding::Utf16Le | Encoding::Utf16Be => {
                 let le = self.enc == Encoding::Utf16Le;
                 let whole = rest.len() / 2 * 2;
-                let units = rest[..whole].chunks_exact(2).map(|c| {
+                let units = rest[..whole].as_chunks::<2>().0.iter().map(|c| {
                     if le {
-                        u16::from_le_bytes([c[0], c[1]])
+                        u16::from_le_bytes(*c)
                     } else {
-                        u16::from_be_bytes([c[0], c[1]])
+                        u16::from_be_bytes(*c)
                     }
                 });
                 // A surrogate pair split by a chunk boundary decodes as two replacement
@@ -248,11 +248,11 @@ impl Counter {
             Encoding::Utf32Le | Encoding::Utf32Be => {
                 let le = self.enc == Encoding::Utf32Le;
                 let whole = rest.len() / 4 * 4;
-                for c in rest[..whole].chunks_exact(4) {
+                for c in rest[..whole].as_chunks::<4>().0 {
                     let v = if le {
-                        u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                        u32::from_le_bytes(*c)
                     } else {
-                        u32::from_be_bytes([c[0], c[1], c[2], c[3]])
+                        u32::from_be_bytes(*c)
                     };
                     self.char(char::from_u32(v).unwrap_or('\u{fffd}'));
                 }

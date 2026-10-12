@@ -121,8 +121,10 @@ fn ansi_z(b: &[u8], off: usize) -> Option<String> {
 fn utf16_z(b: &[u8], off: usize) -> Option<String> {
     let rest = b.get(off..)?;
     let units: Vec<u16> = rest
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|&u| u != 0)
         .collect();
     if units.len() * 2 + 2 > rest.len() {
@@ -195,9 +197,11 @@ pub fn parse(b: &[u8]) -> Result<Shortcut, LnkError> {
         pos += len;
         let s = if unicode {
             let units: Vec<u16> = raw
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .take(MAX_STRING_CHARS)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             String::from_utf16_lossy(&units)
         } else {

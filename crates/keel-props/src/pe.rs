@@ -162,7 +162,9 @@ pub fn version_info<R: Read + Seek>(r: &mut R, len: u64) -> Result<VersionInfo, 
     }
     let table = read_at(r, len, pe_off + 24 + opt_size as u64, nsections * 40)?;
     let sections: Vec<Section> = table
-        .chunks_exact(40)
+        .as_chunks::<40>()
+        .0
+        .iter()
         .map(|s| Section {
             vsize: u32_at(s, 8).unwrap_or(0),
             va: u32_at(s, 12).unwrap_or(0),
@@ -218,7 +220,9 @@ fn dir_entries<R: Read + Seek>(
     }
     let raw = read_at(r, len, at + 16, n * 8)?;
     Ok(raw
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|e| (u32_at(e, 0).unwrap_or(0), u32_at(e, 4).unwrap_or(0)))
         .collect())
 }
@@ -289,8 +293,10 @@ fn children(b: &[u8]) -> impl Iterator<Item = Block<'_>> {
 
 fn utf16_value(b: &[u8]) -> String {
     let units: Vec<u16> = b
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|&u| u != 0)
         .collect();
     String::from_utf16_lossy(&units).trim().to_owned()

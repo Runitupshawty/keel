@@ -248,9 +248,11 @@ fn decode_text(enc: u8, b: &[u8]) -> String {
             let mut le = enc == 1;
             let mut out = String::new();
             let units = b
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .take(MAX_VALUE_CHARS * 4)
-                .map(|c| [c[0], c[1]]);
+                .copied();
             let mut buf: Vec<u16> = Vec::new();
             for pair in units {
                 // Each value of a UTF-16 frame may start with its own byte order mark.
@@ -378,7 +380,7 @@ pub fn parse_id3v2(tag: &[u8], info: &mut AudioInfo) {
             2 => be_u24(&h[3..6]),
             3 => be_u32(&h[4..8]).unwrap_or(0) as usize,
             // ID3v2.4 sizes are synchsafe; some writers store plain integers.
-            _ => synchsafe(&h[4..8]).map_or_else(|| be_u32(&h[4..8]).unwrap_or(0), |n| n) as usize,
+            _ => synchsafe(&h[4..8]).unwrap_or_else(|| be_u32(&h[4..8]).unwrap_or(0)) as usize,
         };
         let start = pos + header;
         let Some(end) = start.checked_add(size).filter(|&e| e <= body.len()) else {
