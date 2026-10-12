@@ -1420,6 +1420,51 @@ fn command_palette_every_command() {
     assert!(ran > 45, "{ran} commands run");
 }
 
+/// Settings → Keyboard (Phase 16 Task 76): Record a key for a command and use it; a key
+/// another command has asks before moving; the palette shows the new key; Reset all.
+#[test]
+fn keyboard_page_rebinds_a_command() {
+    let _clip = crate::clipboard::SYSTEM_CLIPBOARD.lock();
+    let dir = scratch("keymap");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    let mut h = app(&a, &b);
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Keyboard");
+    let at = field(&h, "Search commands");
+    fill(&mut h, at, "toggle dark");
+    click(&mut h, "Record");
+    assert_eq!(s(&h).keyboard.recording, Some("view.theme"));
+    // While recording, the key only records: Ctrl+K reaches nothing else.
+    key(&mut h, CMD, Key::K);
+    assert_eq!(s(&h).keyboard.recording, None);
+    assert_eq!(s(&h).settings.keymap.0["view.theme"], ["Ctrl+K"]);
+    assert!(s(&h).settings_open);
+    sm(&mut h).settings_open = false;
+    h.run_steps(2);
+    let theme = s(&h).settings.theme.clone();
+    key(&mut h, CMD, Key::K);
+    assert_ne!(s(&h).settings.theme, theme, "Ctrl+K toggles the theme now");
+    // The palette shows it.
+    key(&mut h, CMD_SHIFT, Key::P);
+    let item = (s(&h).palette.items.iter())
+        .find(|i| i.action == Action::ToggleTheme)
+        .unwrap();
+    assert_eq!(item.shortcut, crate::keys::shortcut_label("Ctrl+K"));
+    key(&mut h, NONE, Key::Escape);
+    // Ctrl+E is Filter this folder: asked first, then moved.
+    key(&mut h, CMD, Key::Comma);
+    click(&mut h, "Record");
+    key(&mut h, CMD, Key::E);
+    assert!(s(&h).settings.keymap.is_default("filter"), "nothing moved yet");
+    click(&mut h, "Use it for \"Toggle dark / light theme\"");
+    assert_eq!(s(&h).settings.keymap.0["view.theme"], ["Ctrl+K", "Ctrl+E"]);
+    assert!(s(&h).settings.keymap.0["filter"].is_empty());
+    shot(&mut h, "settings-keyboard");
+    click(&mut h, "Reset all");
+    assert_eq!(s(&h).settings.keymap, crate::keymap::Keymap::default());
+}
+
 /// The keys of the guide's "most useful keys" table, each doing what the guide says.
 /// Ctrl+` (a real shell) and the global hotkey (a system-wide grab) are not pressed.
 #[test]
