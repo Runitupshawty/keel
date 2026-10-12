@@ -251,10 +251,13 @@ impl App {
             && !s.palette.open
             && !self.crashed
             && s.viewer.is_none() // Task 32: the viewer reads its own keys
+            && s.keyboard.recording.is_none() // Settings → Keyboard is recording a key
             && !ctx.is_context_menu_open();
         let terminal = s.terminal.focused(ctx);
         s.assign_keys(ctx, keys_on && !terminal); // Task 58
-        for action in keys::actions_with_terminal(ctx, keys_on, terminal) {
+        s.sync_keys(ctx);
+        let bindings = s.keys.clone();
+        for action in keys::actions_with_terminal(ctx, keys_on, terminal, &bindings) {
             s.run(s.active, action);
         }
         s.terminal.input(ctx, keys_on, &s.settings, &s.tx);
@@ -491,8 +494,18 @@ impl App {
             });
         // --- Task 24 ---
         self.drag_out.check(ctx, s);
-        if let Some(e) = (self.hotkey.as_mut()).and_then(|h| h.sync(&s.settings.hotkey)) {
-            s.toasts.error(e);
+        if let Some(hotkey) = self.hotkey.as_mut() {
+            use crate::hotkey::Kind;
+            let set = &s.settings;
+            for (kind, text) in [
+                (Kind::Show, &set.hotkey),
+                (Kind::NewWindow, &set.hotkey_new_window),
+                (Kind::Toggle, &set.hotkey_toggle_window),
+            ] {
+                if let Some(e) = hotkey.sync(kind, text) {
+                    s.toasts.error(e);
+                }
+            }
         }
         // --- end Task 24 ---
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {

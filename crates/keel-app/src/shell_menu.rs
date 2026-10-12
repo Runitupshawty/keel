@@ -66,7 +66,7 @@ pub(crate) mod win {
             .filter(|i| seen.insert(i.label.clone()))
             .map(|i| Item {
                 label: format!("Shell: {}", i.label),
-                shortcut: "",
+                shortcut: String::new(),
                 action: Action::ShellCommand(i.id),
             })
             .collect()

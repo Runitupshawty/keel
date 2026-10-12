@@ -1,14 +1,15 @@
 //! Ctrl+Shift+P: every action by name, plus the context actions for the selection,
 //! fuzzy filtered. A few dozen labels match instantly, so this runs on the UI thread.
 
+use crate::keymap::{Bindings, Pal};
 use crate::keys::Action;
-use crate::library::LibCmd;
 use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
 pub struct Item {
     pub label: String,
-    pub shortcut: &'static str,
+    /// Its keys as bound now ("" = none).
+    pub shortcut: String,
     pub action: Action,
 }
 
@@ -45,148 +46,38 @@ fn wants_shell(text: &str) -> bool {
     t.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("shell"))
 }
 
-/// Actions on the selection (shown first when something is selected).
-fn context_items() -> Vec<Item> {
-    use crate::folder_ops::Kind;
-    use Action::*;
-    [
-        ("Open", "Enter", Enter),
-        ("Open with…", "Ctrl+Shift+O", OpenWith),
-        ("Open location", "Ctrl+Enter", OpenLocation),
-        ("Copy", "Ctrl+C", Copy),
-        ("Cut", "Ctrl+X", Cut),
-        ("Rename", "F2", Rename),
-        ("Bulk rename…", "Ctrl+F2", BulkRename),
-        ("Move to trash", "Del", Delete),
-        ("Properties", "", Properties),
-        ("Extract here", "", ExtractHere),
-        ("Extract to folder", "", ExtractToFolder),
-        ("Extract to…", "", ExtractTo),
-        ("Extract to the other pane", "", ExtractToOther),
-        ("Add to zip", "", AddToZip),
-        ("Compress to zip…", "", CompressToZip),
-        ("Tag…", "Ctrl+Shift+T", Library(LibCmd::TagPicker)),
-        ("Toggle favorite", "Ctrl+D", Library(LibCmd::ToggleFavorite)),
-        // --- Task 60 ---
-        ("Merge into…", "", Library(LibCmd::FolderOp(Kind::Merge))),
-        ("Flatten…", "", Library(LibCmd::FolderOp(Kind::Flatten))),
-        (
-            "Organize by…",
-            "",
-            Library(LibCmd::FolderOp(Kind::Organize)),
-        ),
-        (
-            "Attributes…",
-            "",
-            Library(LibCmd::FolderOp(Kind::Attributes)),
-        ),
-        ("Create link…", "", Library(LibCmd::FolderOp(Kind::Link))),
-    ]
-    .map(|(label, shortcut, action)| Item {
-        label: label.to_owned(),
-        shortcut,
-        action,
-    })
-    .into()
-}
-
-fn global_items() -> Vec<Item> {
-    use Action::*;
-    [
-        ("Go to parent folder", "Alt+Up", Up),
-        ("Back", "Alt+Left", Back),
-        ("Forward", "Alt+Right", Forward),
-        ("Refresh", "F5", Refresh),
-        ("New tab", "Ctrl+T", NewTab),
-        ("Close tab", "Ctrl+W", CloseTab),
-        ("Toggle dual pane", "Ctrl+Shift+D", ToggleDual),
-        ("Switch pane", "F6", SwitchPane),
-        ("Toggle preview panel", "F3", TogglePreview),
-        ("Show inspector", "Ctrl+I", ToggleInspector),
-        ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
-        (
-            "Stash selection in the drop zone",
-            "Ctrl+Shift+S",
-            StashSelection,
-        ),
-        ("Paste the drop zone here", "", StashPaste { mv: false }),
-        ("Move the drop zone here", "", StashPaste { mv: true }),
-        ("Clear the drop zone", "", ClearStash),
-        (
-            "Toggle hidden files",
-            crate::keys::HIDDEN_LABEL,
-            ToggleHidden,
-        ),
-        ("Filter this folder", "Ctrl+E", FocusFilter),
-        ("Edit path", "Ctrl+L", FocusPath),
-        // Not "with Everything": Windows uses Keel's own index when Everything is not running.
-        ("Search files", "Ctrl+F", Search),
-        ("Jump to folder or file", "Ctrl+P", JumpFolder),
-        ("Rebuild folder and file lists", "", ReindexFolders),
-        ("Select all", "Ctrl+A", SelectAll),
-        ("Invert selection", "", InvertSelection),
-        ("Paste", "Ctrl+V", Paste),
-        ("Copy path", "", CopyPath),
-        ("New folder", "Ctrl+Shift+N", NewFolder),
-        ("New file", "", NewFile),
-        ("Show in system file manager", "", RevealInSystem),
-        ("Open terminal here", "", OpenTerminal),
-        ("Toggle terminal", "Ctrl+`", ToggleTerminal),
-        ("Toggle dark / light theme", "", ToggleTheme),
-        // --- Task 46 ---
-        ("Calculate sizes", "", CalculateSizes { fresh: true }),
-        ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
-        ("Details view", "", View(crate::pane::ViewMode::Details)),
-        ("Settings", "Ctrl+,", Settings),
-        // --- Task 29 ---
-        ("Library overview", "", Library(LibCmd::Overview)),
-        ("Add library source…", "", Library(LibCmd::AddSource)),
-        ("Find duplicates", "", Library(LibCmd::Duplicates)),
-        // --- Task 58 ---
-        (
-            "Assign tags with number keys",
-            "Ctrl+Shift+A",
-            Library(LibCmd::AssignMode),
-        ),
-        // --- Task 53 ---
-        ("Back up library…", "", Library(LibCmd::Backup)),
-        ("Restore library…", "", Library(LibCmd::Restore)),
-        (
-            "Favorites",
-            "",
-            Library(LibCmd::Query(crate::library::FAVORITES_QUERY.into())),
-        ),
-        (
-            "Recents",
-            "",
-            Library(LibCmd::Query(crate::library::RECENTS_QUERY.into())),
-        ),
-    ]
-    .map(|(label, shortcut, action)| Item {
-        label: label.to_owned(),
-        shortcut,
-        action,
-    })
-    .into()
+/// The palette's entries from the command table (`keymap::commands`): the selection's
+/// first when there is one, then the global ones, each with its keys as bound now.
+fn entries(selection: bool, keys: &Bindings) -> (Vec<Item>, Vec<Item>) {
+    let (mut context, mut global) = (Vec::new(), Vec::new());
+    for c in crate::keymap::commands() {
+        let list = match c.palette {
+            Pal::Context if selection => &mut context,
+            Pal::Global => &mut global,
+            _ => continue,
+        };
+        list.push(Item {
+            label: c.label.to_owned(),
+            shortcut: keys.label(&c.action),
+            action: c.action,
+        });
+    }
+    (context, global)
 }
 
 impl Palette {
     /// Opens with the global actions, plus the context ones when something is selected.
-    pub fn show(&mut self, selection: bool) {
-        let mut items = if selection {
-            context_items()
-        } else {
-            Vec::new()
-        };
+    pub fn show(&mut self, selection: bool, keys: &Bindings) {
+        let (mut items, global) = entries(selection, keys);
         items.extend(self.undo.clone().map(|label| Item {
             label,
-            shortcut: "Ctrl+Z",
+            shortcut: keys.label(&Action::Undo),
             action: Action::Undo,
         }));
-        items.extend(global_items());
+        items.extend(global);
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
-            shortcut: "",
+            shortcut: String::new(),
             action: Action::SwitchProfile(name.clone()),
         }));
         self.items = items;
@@ -275,7 +166,7 @@ impl Palette {
                     for (row, &i) in self.shown.iter().enumerate() {
                         let item = &self.items[i];
                         let button = egui::Button::new(item.label.as_str())
-                            .shortcut_text(crate::keys::shortcut_label(item.shortcut))
+                            .shortcut_text(item.shortcut.as_str())
                             .selected(row == self.cursor)
                             .frame(row == self.cursor)
                             .min_size(egui::vec2(ui.available_width(), 0.0));
@@ -312,25 +203,25 @@ mod tests {
         assert!(wants_shell("Shell: Open") && wants_shell("  shell"));
         assert!(!wants_shell("she") && !wants_shell("copy") && !wants_shell(""));
         let mut p = Palette::default();
-        p.show(false);
+        p.show(false, &Bindings::default());
         let n = p.items.len();
         p.add(vec![Item {
             label: "Shell: Open with Notepad".into(),
-            shortcut: "",
+            shortcut: String::new(),
             action: Action::Undo,
         }]);
         assert_eq!(p.items.len(), n + 1);
         p.text = "shell: notepad".into();
         p.filter();
         assert_eq!(p.items[p.shown[0]].label, "Shell: Open with Notepad");
-        p.show(false);
+        p.show(false, &Bindings::default());
         assert_eq!(p.items.len(), n, "a new opening starts without them");
     }
 
     #[test]
     fn filter_dual_finds_toggle_dual() {
         let mut p = Palette::default();
-        p.show(false);
+        p.show(false, &Bindings::default());
         assert!(p.shown.len() > 20, "every action listed");
         p.text = "dual".into();
         p.filter();
@@ -343,9 +234,28 @@ mod tests {
     #[test]
     fn search_is_named_for_every_backend() {
         let mut p = Palette::default();
-        p.show(false);
+        p.show(false, &Bindings::default());
         let search = p.items.iter().find(|i| i.action == Action::Search).unwrap();
         assert_eq!(search.label, "Search files");
+    }
+
+    /// The palette shows the keys as bound now, not the defaults.
+    #[test]
+    fn shortcuts_follow_the_keymap() {
+        let mut p = Palette::default();
+        p.show(false, &Bindings::default());
+        let refresh = |p: &Palette| {
+            let i = p.items.iter().find(|i| i.action == Action::Refresh).unwrap();
+            i.shortcut.clone()
+        };
+        assert_eq!(refresh(&p), "F5");
+        let mut map = crate::keymap::Keymap::default();
+        let f9 = crate::keymap::Chord::parse("F9").unwrap();
+        map.bind("view.refresh", f9, false).unwrap();
+        p.show(false, &map.bindings());
+        assert_eq!(refresh(&p), "F5, F9");
+        let paste = p.items.iter().find(|i| i.action == Action::Paste).unwrap();
+        assert_eq!(paste.shortcut, crate::keys::shortcut_label("Ctrl+V"));
     }
 
     #[test]
@@ -354,7 +264,7 @@ mod tests {
             profiles: vec!["work".into()],
             ..Palette::default()
         };
-        p.show(false);
+        p.show(false, &Bindings::default());
         p.text = "switch profile".into();
         p.filter();
         assert_eq!(
@@ -367,7 +277,7 @@ mod tests {
     #[test]
     fn selection_adds_context_actions() {
         let mut p = Palette::default();
-        p.show(true);
+        p.show(true, &Bindings::default());
         p.text = "open location".into();
         p.filter();
         assert_eq!(p.items[p.shown[0]].action, Action::OpenLocation);

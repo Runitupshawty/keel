@@ -1,8 +1,9 @@
 //! Keyboard map: one pass over the frame's input producing `Action`s.
 
 use crate::jobs::{ArchiveSrc, Transfer};
+use crate::keymap::Bindings;
 use crate::tab::Nav;
-use egui::{Event, Key, Modifiers};
+use egui::{Event, Key};
 use keel_vfs::{Conflict, VPath};
 use std::path::PathBuf;
 
@@ -168,6 +169,8 @@ pub enum Action {
     ToggleInspector,
     /// Settings window (Ctrl+,).
     Settings,
+    /// Start another Keel window (`keel --new-window`, same profile).
+    NewWindow,
     /// Palette "Switch profile: <name>".
     SwitchProfile(String),
     /// Archive targets: extract next to the archive.
@@ -240,23 +243,6 @@ pub enum Action {
     Mount(crate::mount_ui::MountCmd),
 }
 
-const CMD: Modifiers = Modifiers::COMMAND;
-const CMD_SHIFT: Modifiers = Modifiers {
-    shift: true,
-    ..Modifiers::COMMAND
-};
-
-/// Show / hide hidden files: Finder's Cmd+Shift+. on macOS (Cmd+H hides the app there).
-#[cfg(target_os = "macos")]
-const HIDDEN: (Modifiers, Key) = (CMD_SHIFT, Key::Period);
-#[cfg(not(target_os = "macos"))]
-const HIDDEN: (Modifiers, Key) = (CMD, Key::H);
-pub const HIDDEN_LABEL: &str = if cfg!(target_os = "macos") {
-    "Ctrl+Shift+."
-} else {
-    "Ctrl+H"
-};
-
 /// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.
 pub fn shortcut_label(text: &str) -> String {
     label_for(text, cfg!(target_os = "macos"))
@@ -270,99 +256,14 @@ fn label_for(text: &str, mac: bool) -> String {
     }
 }
 
-/// Shortcut table; more specific modifier sets come first because egui ignores
-/// unrequested Shift/Alt when matching.
-const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
-    (CMD, Key::Backtick, Action::ToggleTerminal),
-    (CMD_SHIFT, Key::P, Action::Palette),
-    (CMD_SHIFT, Key::D, Action::ToggleDual),
-    (CMD_SHIFT, Key::N, Action::NewFolder),
-    (CMD_SHIFT, Key::O, Action::OpenWith),
-    (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
-    // After Ctrl+Shift+Z: egui ignores an unrequested Shift. In a text field Ctrl+Z stays
-    // the field's own undo (not in WHILE_TYPING).
-    (CMD, Key::Z, Action::Undo),
-    (CMD_SHIFT, Key::S, Action::StashSelection),
-    // Task 29: Ctrl+T stays New tab; the tag picker is Ctrl+Shift+T.
-    (
-        CMD_SHIFT,
-        Key::T,
-        Action::Library(crate::library::LibCmd::TagPicker),
-    ),
-    // Task 58: tag assign mode (number keys toggle tags); before Ctrl+A (Select all).
-    (
-        CMD_SHIFT,
-        Key::A,
-        Action::Library(crate::library::LibCmd::AssignMode),
-    ),
-    (HIDDEN.0, HIDDEN.1, Action::ToggleHidden),
-    (CMD, Key::P, Action::JumpFolder),
-    (CMD, Key::Enter, Action::OpenLocation),
-    (CMD, Key::F, Action::Search),
-    (CMD, Key::E, Action::FocusFilter),
-    (CMD, Key::I, Action::ToggleInspector),
-    (CMD, Key::L, Action::FocusPath),
-    (CMD, Key::T, Action::NewTab),
-    (CMD, Key::W, Action::CloseTab),
-    (CMD, Key::A, Action::SelectAll),
-    (
-        CMD,
-        Key::D,
-        Action::Library(crate::library::LibCmd::ToggleFavorite),
-    ),
-    (CMD, Key::Comma, Action::Settings),
-    (Modifiers::ALT, Key::ArrowUp, Action::Up),
-    (Modifiers::ALT, Key::ArrowLeft, Action::Back),
-    (Modifiers::ALT, Key::ArrowRight, Action::Forward),
-    (Modifiers::NONE, Key::Backspace, Action::Backspace),
-    (CMD, Key::F2, Action::BulkRename),
-    (Modifiers::NONE, Key::F2, Action::Rename),
-    (Modifiers::NONE, Key::F3, Action::TogglePreview),
-    (Modifiers::NONE, Key::F5, Action::Refresh),
-    (Modifiers::NONE, Key::F6, Action::SwitchPane),
-    #[cfg(windows)]
-    (
-        Modifiers::SHIFT,
-        Key::F10,
-        Action::ShellMenu {
-            extended: true,
-            keyboard: true,
-        },
-    ),
-    (Modifiers::NONE, Key::Delete, Action::Delete),
-    (Modifiers::NONE, Key::Enter, Action::Enter),
-    (Modifiers::NONE, Key::Space, Action::ToggleSelect),
-    (Modifiers::NONE, Key::Escape, Action::ClearFilter),
-];
-
-/// Shortcuts that never mean anything to a focused text box.
-const WHILE_TYPING: &[Action] = &[
-    Action::ToggleTerminal,
-    Action::Palette,
-    Action::JumpFolder,
-    Action::Search,
-    Action::ToggleDual,
-    Action::TogglePreview,
-    Action::ToggleInspector,
-    Action::NewTab,
-    Action::CloseTab,
-    Action::Settings,
-];
-
-const MOVES: &[(Key, Nav)] = &[
-    (Key::ArrowUp, Nav::Prev),
-    (Key::ArrowDown, Nav::Next),
-    (Key::ArrowLeft, Nav::Left),
-    (Key::ArrowRight, Nav::Right),
-    (Key::PageUp, Nav::PageUp),
-    (Key::PageDown, Nav::PageDown),
-    (Key::Home, Nav::Home),
-    (Key::End, Nav::End),
-];
-
-pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool) -> Vec<Action> {
+pub fn actions_with_terminal(
+    ctx: &egui::Context,
+    enabled: bool,
+    terminal: bool,
+    keys: &Bindings,
+) -> Vec<Action> {
     if !terminal {
-        return actions(ctx, enabled);
+        return actions(ctx, enabled, keys);
     }
     // Track swallowed clipboard presses even while the terminal owns the events.
     // Their later releases must never become a file paste after focus leaves.
@@ -371,14 +272,16 @@ pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool)
         return Vec::new();
     }
     ctx.input_mut(|i| {
-        if i.consume_key(CMD, Key::Backtick) {
-            return vec![Action::ToggleTerminal];
-        }
-        // Plain Esc belongs to the shell's programs (vim, less, fzf, PSReadLine).
-        if i.consume_key(Modifiers::NONE, Key::F6) || i.consume_key(Modifiers::SHIFT, Key::Escape) {
-            // Discard this frame's text/key events on focus transfer.
-            i.events.retain(|e| !crate::term_pane::keyboard_event(e));
-            return vec![Action::LeaveTerminal];
+        // Plain Esc belongs to the shell's programs (vim, less, fzf, PSReadLine): the
+        // keymap never gives it to Leave the terminal.
+        for b in keys.terminal() {
+            if i.consume_key(b.mods(), b.chord.key) {
+                if b.action == Action::LeaveTerminal {
+                    // Discard this frame's text/key events on focus transfer.
+                    i.events.retain(|e| !crate::term_pane::keyboard_event(e));
+                }
+                return vec![b.action.clone()];
+            }
         }
         Vec::new()
     })
@@ -389,7 +292,7 @@ pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool)
 /// arrow keys for itself (`a11y::list_has_keys`), every other shortcut still works. Call every frame: with
 /// `enabled` false (a modal is open) nothing is returned, but V presses are still tracked
 /// so a V held while the modal closes cannot turn into a paste.
-pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
+pub fn actions(ctx: &egui::Context, enabled: bool, keys: &Bindings) -> Vec<Action> {
     // Tracked even while typing, so a key released inside a text box cannot confuse it.
     let paste = paste_pressed(ctx);
     if !enabled {
@@ -398,30 +301,28 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
     if typing(ctx) {
         // Window-level shortcuts still work from a text box (e.g. Ctrl+P from the search box).
         return ctx.input_mut(|i| {
-            SHORTCUTS
-                .iter()
-                .filter(|(_, _, a)| WHILE_TYPING.contains(a))
-                .filter(|(mods, key, _)| i.consume_key(*mods, *key))
-                .map(|(_, _, a)| a.clone())
+            keys.main()
+                .filter(|b| b.typing)
+                .filter(|b| i.consume_key(b.mods(), b.chord.key))
+                .map(|b| b.action.clone())
                 .collect()
         });
     }
     let list = crate::a11y::list_has_keys(ctx);
     let mut out = ctx.input_mut(|i| {
         let mut out = Vec::new();
-        for (mods, key, action) in SHORTCUTS {
-            if !list && *mods == Modifiers::NONE && matches!(key, Key::Enter | Key::Space) {
+        for b in keys.main() {
+            if !list && b.needs_list() {
                 continue;
             }
-            if i.consume_key(*mods, *key) {
-                out.push(action.clone());
-            }
-        }
-        for (key, nav) in MOVES.iter().filter(|_| list) {
-            let extend = i.modifiers.shift;
-            // Counted: a slow frame can carry several key repeats.
-            for _ in 0..i.count_and_consume_key(Modifiers::NONE, *key) {
-                out.push(Action::Move(*nav, extend));
+            if let Action::Move(nav, _) = b.action {
+                let extend = i.modifiers.shift;
+                // Counted: a slow frame can carry several key repeats.
+                for _ in 0..i.count_and_consume_key(b.mods(), b.chord.key) {
+                    out.push(Action::Move(nav, extend));
+                }
+            } else if i.consume_key(b.mods(), b.chord.key) {
+                out.push(b.action.clone());
             }
         }
         // AltGr arrives as Ctrl+Alt (Windows): its characters (@, €, \ on many layouts)
@@ -512,6 +413,9 @@ fn paste_pressed(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Modifiers;
+
+    const CMD: Modifiers = Modifiers::COMMAND;
 
     #[test]
     fn terminal_focus_suppresses_file_shortcuts_and_clipboard_release() {
@@ -526,7 +430,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    assert!(actions_with_terminal(ctx, true, true).is_empty());
+                    assert!(actions_with_terminal(ctx, true, true, &Bindings::default()).is_empty());
                 },
             );
         }
@@ -551,7 +455,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    actions = actions_with_terminal(ctx, true, true);
+                    actions = actions_with_terminal(ctx, true, true, &Bindings::default());
                     left = ctx.input(|i| i.events.len());
                 },
             );
@@ -639,7 +543,7 @@ mod tests {
                 modifiers,
                 ..Default::default()
             },
-            |ctx| out = actions(ctx, true),
+            |ctx| out = actions(ctx, true, &Bindings::default()),
         );
         out
     }
@@ -659,13 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_files_shortcut_and_labels_follow_the_os() {
-        let (mods, key) = HIDDEN;
-        if cfg!(target_os = "macos") {
-            assert_eq!((mods, key), (CMD_SHIFT, Key::Period));
-        } else {
-            assert_eq!((mods, key), (CMD, Key::H));
-        }
+    fn labels_follow_the_os() {
         assert_eq!(label_for("Ctrl+Shift+P", true), "Cmd+Shift+P");
         assert_eq!(label_for("Ctrl+Shift+P", false), "Ctrl+Shift+P");
         assert_eq!(label_for("F5", true), "F5");
@@ -681,7 +579,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ctx| out = actions(ctx, enabled),
+                |ctx| out = actions(ctx, enabled, &Bindings::default()),
             );
             out
         };
