@@ -259,11 +259,12 @@ mod tests {
             let _ = tx.send(e);
         })
         .unwrap();
-        std::fs::write(root.join("sub").join("new.txt"), b"x").unwrap();
         let mut seen = Vec::new();
         let end = Instant::now() + Duration::from_secs(10);
         while !seen.contains(&root.join("sub").join("new.txt")) {
             assert!(Instant::now() < end, "no event, got {seen:?}");
+            // Changes before the thread's first read are not reported: write until seen.
+            std::fs::write(root.join("sub").join("new.txt"), b"x").unwrap();
             if let Ok(Event::Paths(p)) = rx.recv_timeout(Duration::from_millis(100)) {
                 seen.extend(p);
             }

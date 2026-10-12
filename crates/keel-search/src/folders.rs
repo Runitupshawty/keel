@@ -615,14 +615,15 @@ mod tests {
         });
         let f = FolderIndexes::with(b.join("idx"), s.clone(), Arc::new(Fake::default()), clock());
         settle(&f, "a.log", &["a.log"]);
-        let first = Arc::as_ptr(&f.inner.indexes()[0]);
+        let first = f.inner.indexes()[0].clone();
         // The same settings keep the index.
         f.set_index_settings(&s);
-        assert_eq!(Arc::as_ptr(&f.inner.indexes()[0]), first);
+        assert!(Arc::ptr_eq(&f.inner.indexes()[0], &first));
         s.exclude.files = vec!["*.log".into()];
         s.folders[0].scan.schedule = Schedule::EveryHours(2);
         f.set_index_settings(&s);
-        assert_ne!(Arc::as_ptr(&f.inner.indexes()[0]), first);
+        assert!(!Arc::ptr_eq(&f.inner.indexes()[0], &first));
+        drop(first);
         // The new index serves the saved rows, then walks again by the new rules.
         settle(&f, "b.txt", &["b.txt"]);
         settle(&f, "a.log", &[]);
