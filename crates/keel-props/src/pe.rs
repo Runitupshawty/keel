@@ -64,17 +64,17 @@ impl VersionInfo {
     /// A StringFileInfo value by key (`CompanyName`), from the US English table when there is
     /// one, else the first table that has it.
     pub fn string(&self, key: &str) -> Option<&str> {
-        let pick = |t: &(String, Vec<(String, String)>)| {
+        fn pick<'a>(t: &'a (String, Vec<(String, String)>), key: &str) -> Option<&'a str> {
             t.1.iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(key))
                 .map(|(_, v)| v.as_str())
                 .filter(|v| !v.trim().is_empty())
-        };
+        }
         self.tables
             .iter()
             .filter(|t| t.0.to_ascii_lowercase().starts_with("0409"))
-            .find_map(pick)
-            .or_else(|| self.tables.iter().find_map(pick))
+            .find_map(|t| pick(t, key))
+            .or_else(|| self.tables.iter().find_map(|t| pick(t, key)))
     }
 
     /// The file version: the fixed one, else the `FileVersion` string.
