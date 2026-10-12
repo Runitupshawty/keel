@@ -28,19 +28,19 @@ const fn sig(id: &'static str, content_type: &'static str, perceived: &'static s
 }
 
 fn at(head: &[u8], off: usize, magic: &[u8]) -> bool {
-    head.get(off..off + magic.len()) == Some(magic)
+    off.checked_add(magic.len()).and_then(|end| head.get(off..end)) == Some(magic)
 }
 
 fn u32be(head: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(head.get(off..off + 4)?.try_into().ok()?))
+    Some(u32::from_be_bytes(head.get(off..off.checked_add(4)?)?.try_into().ok()?))
 }
 
 fn u32le(head: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(head.get(off..off + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(head.get(off..off.checked_add(4)?)?.try_into().ok()?))
 }
 
 fn u16le(head: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(head.get(off..off + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(head.get(off..off.checked_add(2)?)?.try_into().ok()?))
 }
 
 fn contains(head: &[u8], needle: &[u8]) -> bool {
@@ -407,7 +407,7 @@ fn zip_kind(h: &[u8]) -> Signature {
 fn pe_kind(h: &[u8]) -> Signature {
     if let Some(off) = u32le(h, 0x3c).map(|o| o as usize) {
         if at(h, off, b"PE\0\0") {
-            let chars = u16le(h, off + 22).unwrap_or(0);
+            let chars = off.checked_add(22).and_then(|o| u16le(h, o)).unwrap_or(0);
             if chars & 0x2000 != 0 {
                 return sig(
                     "dll",
