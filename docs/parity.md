@@ -205,7 +205,7 @@ Added 2026-10-12 at the owner's request: every feature of voidtools Everything (
 | Everything: file lists | **Lacks** | Phase 16 Task 77 |
 | Everything: HTTP and ETP servers, network indexes | **Part**: `keel-daemon --web` searches the library only | Phase 16 Task 78 |
 | Everything: `es.exe`, command line, SDK, URL protocol | **Part**: `keel search` (library only), `--search` | Phase 16 Task 79 |
-| WinDirStat: scanning | **Part**: the scan engine (`keel du --scan`): several roots and all local drives in parallel, size on disk, hard links once, links followed only on request, filters, free and unknown space, scan files; no Disk Usage window yet, no MFT path, no file watcher or MTP | [Phase 17](superpowers/plans/2026-10-12-keel-phase17.md) Tasks 81 and 82 |
+| WinDirStat: scanning | **Part**: the scan engine (`keel du --scan`): several roots and all local drives in parallel, size on disk, hard links once, links followed only on request, filters, free and unknown space, scan files; phones and cameras on Windows (WPD, read-only); no Disk Usage window yet, no MFT path, no file watcher, no MTP elsewhere than Windows | [Phase 17](superpowers/plans/2026-10-12-keel-phase17.md) Tasks 81 and 82 |
 | WinDirStat: tree, file types, treemap, sunburst, flame graph | **Part**: one-level Sizes view with share bars; no tree, file types list or treemap | Phase 17 Tasks 82 and 83 |
 | WinDirStat: largest files, duplicates, search, storage analytics, permissions | **Part**: library duplicate finder, search tabs | Phase 17 Task 84 |
 | WinDirStat: cleanups, compression, recovery | **Part**: open, delete to Recycle Bin, terminal, properties | Phase 17 Task 85 |

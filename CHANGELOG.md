@@ -8,6 +8,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - `keel du --scan <folders or drives…>` and `keel du --all-drives`: Keel's disk usage scanner, without the library. Several roots are walked in parallel into one result; each item has its size on disk next to its size (compressed and sparse files by what they really take); a file with several hard links counts once; symlinks, junctions and mount points are listed but not followed unless `--follow-links` is given (a link leading back into a folder it is in is not entered); cloud placeholders are never downloaded; drives scanned from their root show their free space and the used space the scan did not find. `--top N` lists the biggest items of each root, `--exclude GLOB` leaves names out, a terminal shows progress (files, bytes, files per second, the folder being read), and `--save FILE` / `keel du --load FILE` keep a scan to show again without walking. See [Disk usage scans](docs/files.md#disk-usage-scans).
 - `keel du <path> --top N` keeps the N biggest children.
+- The disk usage scanner reads phones and cameras on Windows: each storage of a connected portable device (MTP or PTP, through Windows Portable Devices) can be scanned next to drives and folders, read-only (a device is opened with read access and only listed, never written), with pause, cancel and a 30-minute limit; the list of scannable roots for the coming drive picker has the local drives and every device storage. See [Phones and cameras](docs/files.md#phones-and-cameras).
 
 ## [0.22.0] - 2026-10-11
 
