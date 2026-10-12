@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- The Sizes view has a **Table / Treemap / Sunburst / Flame graph** switch: a chart of the shown folder from the folder totals Keel has (everything below it after Calculate sizes; in a library source, a few levels read from the index). The treemap has squarified (default), strip (KDirStat), Hilbert and Moore layouts, cushion shading drawn off the UI thread or flat tiles, and options for brightness, cushion height, scale factor, light source, ambient light, grid, folder frames (color and size threshold) and the 13 type colors by size rank, with WinDirStat, KDirStat, SequoiaView and Flat presets. Hover for the path and size; click selects (in the table too), double-click, Enter or Ctrl+wheel zoom in, Backspace, Ctrl+wheel or the mouse's back button zoom out, and the arrow keys move between neighboring tiles. See [Treemap, sunburst and flame graph](docs/files.md#treemap-sunburst-and-flame-graph).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
