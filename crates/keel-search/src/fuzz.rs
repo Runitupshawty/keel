@@ -11,7 +11,7 @@ use crate::{mft, wire};
 pub fn mft_record(data: &[u8]) {
     let _ = wire::Frame::decode(data);
     let mut batch = wire::Batch::new(1024);
-    for (number, chunk) in data.chunks_exact(1024).enumerate() {
+    for (number, chunk) in data.as_chunks::<1024>().0.iter().enumerate() {
         let mut fixed = chunk.to_vec();
         if mft::fixup(&mut fixed).is_ok() {
             let before = mft::parse_fixed(&fixed);
