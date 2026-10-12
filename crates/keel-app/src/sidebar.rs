@@ -148,6 +148,10 @@ impl Sidebar {
                 });
                 let r = item(ui, &path, &text);
                 clicked(&r, &path, out);
+                // Task 85: Clean up (system cleanups and launchers; none on Linux).
+                if crate::system_cleanup::DRIVE_MENU {
+                    r.context_menu(|ui| crate::system_cleanup::drive_menu(ui, name, out));
+                }
                 if *total > 0 {
                     let used = 1.0 - *free as f32 / *total as f32;
                     ui.add(

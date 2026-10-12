@@ -21,6 +21,7 @@ mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)
 #[cfg(test)]
 mod fuzz_tests;
+mod hardlink_dedup; // Task 85: replace duplicates with hard links
 mod icon_theme;
 mod icons;
 mod inspector;
@@ -34,6 +35,7 @@ mod media_viewer;
 mod mount_ui;
 mod palette;
 mod pane;
+mod permanent_delete; // Task 85: Delete permanently
 mod platform;
 mod preview_panel;
 mod profiles;
@@ -48,6 +50,7 @@ mod sidebar;
 mod sidebar_remotes;
 mod sizes; // Task 46: folder sizes
 mod state;
+mod system_cleanup; // Task 85: system cleanups and launchers
 mod tab;
 mod term_pane;
 mod theme;
@@ -145,6 +148,12 @@ fn main() -> eframe::Result<()> {
                 1
             }
         });
+    }
+    // Task 85: `keel --system-cleanup <task> --cleanup-report <file>`: the one-shot
+    // elevated helper of the system cleanups, no window.
+    if let Some(task) = &cli.system_cleanup {
+        let report = cli.cleanup_report.as_deref();
+        std::process::exit(system_cleanup::helper_main(task, report));
     }
     let home = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_owned())

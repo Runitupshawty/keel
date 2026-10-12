@@ -23,6 +23,9 @@ pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
 };
+// Task 85: the system cleanups' one-shot elevated helper.
+#[cfg(windows)]
+pub use ntfs::run_elevated;
 pub use walkindex::{home_root, index_dir as walk_index_dir, WalkIndexSearcher};
 
 use std::path::Path;

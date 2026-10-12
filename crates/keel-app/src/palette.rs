@@ -184,6 +184,8 @@ impl Palette {
             action: Action::Undo,
         }));
         items.extend(global_items());
+        // Task 85: Delete permanently (with a selection), system cleanups, launchers.
+        items.extend(crate::system_cleanup::palette_items(selection));
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
             shortcut: "",

@@ -1023,6 +1023,14 @@ fn dup_finder(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     crate::library::counted(groups.len() as u64, "group"),
                     format_size(reclaimable(groups), DECIMAL)
                 ));
+                // Task 85: local copies on one volume share their bytes (preview first).
+                let dedup = ui.button("Replace with hard links…").on_hover_text(
+                    "Copies on the same volume become hard links to one of them, after a \
+                     preview and a byte-by-byte check; Undo copies them back",
+                );
+                if dedup.clicked() {
+                    out.push(Action::System(crate::system_cleanup::SysCmd::DedupPreview));
+                }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (g, group) in groups.iter().enumerate() {
                         let title = format!(

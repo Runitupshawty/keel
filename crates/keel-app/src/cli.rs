@@ -33,6 +33,12 @@ pub struct Cli {
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
+    /// Internal (Task 85): run one system cleanup elevated (`system_cleanup::helper_main`).
+    #[arg(long, value_name = "TASK", hide = true)]
+    pub system_cleanup: Option<String>,
+    /// Internal (Task 85): where `--system-cleanup` writes its report.
+    #[arg(long, value_name = "FILE", hide = true)]
+    pub cleanup_report: Option<PathBuf>,
     /// Check once whether a newer Keel release is out (one request to GitHub) and exit.
     #[arg(long)]
     pub check_update: bool,
@@ -390,7 +396,13 @@ const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
 /// The index of the only positional argument in `args` when it is the last argument and a
 /// subcommand's name.
 fn lone_subcommand(args: &[OsString]) -> Option<usize> {
-    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service"];
+    const TAKE_VALUE: &[&str] = &[
+        "--profile",
+        "--search",
+        "--index-service",
+        "--system-cleanup",
+        "--cleanup-report",
+    ];
     let mut positional = None;
     let mut i = 1;
     while i < args.len() {
@@ -471,6 +483,8 @@ mod tests {
                 profile: None,
                 search: None,
                 index_service: None,
+                system_cleanup: None,
+                cleanup_report: None,
                 check_update: false,
                 here: false,
                 json: false,
@@ -508,6 +522,24 @@ mod tests {
             .render_help()
             .to_string();
         assert!(!help.contains("index-service"), "hidden from --help");
+        assert!(!help.contains("system-cleanup"), "hidden from --help");
+    }
+
+    #[test]
+    fn parses_the_system_cleanup_helper() {
+        // As `system_cleanup::helper_args` writes it (the shell splits the quotes).
+        let report = std::env::temp_dir().join("keel-syscleanup-1-2.json");
+        let cli = parse(&[
+            "--system-cleanup",
+            r"vhd-ps:D:\VMs\a b.vhdx",
+            "--cleanup-report",
+            report.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(cli.system_cleanup.as_deref(), Some(r"vhd-ps:D:\VMs\a b.vhdx"));
+        assert_eq!(cli.cleanup_report, Some(report));
+        assert_eq!(cli.folder, None);
+        assert_eq!(cli.command, None);
     }
 
     #[test]

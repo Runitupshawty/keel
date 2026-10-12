@@ -43,6 +43,9 @@ pub enum Op {
     Attributes(Vec<(VPath, keel_vfs::Attributes)>),
     /// A link made (`now`): removed again (a hard link goes to the trash).
     Link,
+    /// Task 85: duplicates replaced with hard links: each path gets its own copy of the
+    /// bytes again, with its modified time from before.
+    Hardlink(Vec<(VPath, Option<std::time::SystemTime>)>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +203,7 @@ impl Entry {
             },
             Op::Attributes(_) => "attributes",
             Op::Link => "link",
+            Op::Hardlink(_) => "hard links",
         }
     }
 
@@ -251,6 +255,7 @@ impl Entry {
             }
             Op::Attributes(_) => format!("Changed the attributes of {n}"),
             Op::Link => format!("Made the link {}", self.items[0].now.name()),
+            Op::Hardlink(_) => format!("Replaced {n} with hard links"),
         }
         .trim_end()
         .to_owned()
@@ -306,6 +311,7 @@ impl Entry {
             }
             Op::Attributes(_) => format!("Undo attributes: set {n} back as they were?"),
             Op::Link => format!("Undo link: remove {}?", self.items[0].now.name()),
+            Op::Hardlink(_) => format!("Undo hard links: give {n} their own copy again?"),
         }
     }
 
@@ -813,6 +819,14 @@ pub fn run(
                 } else {
                     keel_vfs::local::trash(&it.now)?;
                 }
+                p.done_items += 1;
+            }
+        }
+        Op::Hardlink(before) => {
+            for (path, mtime) in before {
+                step(&mut p, path)?;
+                let local = path.to_local_path().context("hard links are local")?;
+                crate::hardlink_dedup::unlink(&local, *mtime)?;
                 p.done_items += 1;
             }
         }

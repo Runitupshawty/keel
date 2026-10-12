@@ -431,7 +431,7 @@ impl Jobs {
         id
     }
 
-    fn spawn(
+    pub(crate) fn spawn(
         &mut self,
         title: String,
         tx: Sender<Msg>,

@@ -31,6 +31,7 @@ use win::{Journal, Volume, VolumeId};
 
 pub(crate) use win::file_meta;
 pub use win::is_elevated;
+pub use win::run_elevated;
 
 /// Shown while only the user folders are indexed.
 pub const FALLBACK_STATUS: &str = "Indexing user folders only; run 'Index all drives' as \
