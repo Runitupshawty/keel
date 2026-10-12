@@ -1,9 +1,9 @@
 //! The path bar (Phase 14 Task 67): a strip above the status bar with the active folder's
 //! crumbs, icon and name each, from the root down, and the selected item after them.
-//! Double-click opens a crumb; files dragged onto a folder crumb move there (Alt / Option
-//! copies) through the usual transfer jobs; a drag resting on a crumb opens it
-//! (`spring`). Right-click: Copy as Pathname, Open in New Tab. Shown with View → Show
-//! Path Bar (palette) or Settings → General.
+//! Double-click (or Enter on a focused crumb) opens one; files dragged onto a folder
+//! crumb move there (Alt / Option copies) through the usual transfer jobs; a drag resting
+//! on a crumb opens it (`spring`). Right-click: Copy as Pathname, Open, Open in New Tab.
+//! Shown or hidden from the palette or Settings → General.
 
 use crate::finder::FinderCmd;
 use crate::keys::Action;
@@ -138,7 +138,13 @@ fn crumb(ui: &mut egui::Ui, p: usize, c: &Crumb, out: &mut Vec<(usize, Action)>)
     );
     ui.painter().galley(text_at, galley, color);
     let r = r.on_hover_text(c.path.display());
-    if r.double_clicked() {
+    // Enter or Space on a focused crumb (a click without the pointer) opens it too.
+    let keyboard = r.clicked() && !ctx.input(|i| i.pointer.any_released());
+    if r.clicked() && !keyboard {
+        // A pointer click leaves the keys with the file list.
+        r.surrender_focus();
+    }
+    if r.double_clicked() || keyboard {
         out.push((
             p,
             if c.dir {

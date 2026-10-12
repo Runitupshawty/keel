@@ -673,12 +673,10 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .map(|&i| count(&tab.entries()[i]))
                 .sum()
         };
-        // Phase 14 Task 67: "12 items, 431.2 GB available".
-        let mut count_line = crate::jobs::items(n);
-        if let Some((_, _, free, _)) = s.sidebar.drive_of(&tab.dir) {
-            count_line = format!("{count_line}, {} available", format_size(*free, DECIMAL));
-        }
-        let mut left = vec![count_line];
+        // Phase 14 Task 67: "12 items, 431.2 GB available" (the count stays its own label).
+        let available = (s.sidebar.drive_of(&tab.dir))
+            .map(|(_, _, free, _)| format!(", {} available", format_size(*free, DECIMAL)));
+        let mut left = vec![crate::jobs::items(n)];
         if picked {
             left.push(format!("{} selected", tab.selected.len()));
         }
@@ -687,6 +685,9 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
             left.push(format!("filter: {}", tab.filter));
         }
         if narrow {
+            if let Some(a) = &available {
+                left[0].push_str(a);
+            }
             let text = left.join("  ·  ");
             ui.allocate_ui_with_layout(
                 egui::vec2(left_max, ui.spacing().interact_size.y),
@@ -699,6 +700,10 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                     ui.separator();
                 }
                 ui.label(part);
+                if let Some(a) = available.as_ref().filter(|_| i == 0) {
+                    ui.add_space(-ui.spacing().item_spacing.x);
+                    ui.label(a);
+                }
             }
         }
         // Announced after navigation: the folder and its item count (a live region).
@@ -896,13 +901,7 @@ mod tests {
             .with_size(egui::vec2(1280.0, 800.0))
             .build_eframe(|cc| App::new(cc, Boot::at(start)));
         wait_listed(&mut harness);
-        // "1 item", or "1 item, 12.3 GB available" once the drives are read.
-        let node = egui_kittest::kittest::Queryable::get_by_label_contains(&harness, "1 item");
-        let label = node.label().unwrap_or_default();
-        assert!(
-            label == "1 item" || label.starts_with("1 item, "),
-            "{label}"
-        );
+        egui_kittest::kittest::Queryable::get_by_label(&harness, "1 item");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
