@@ -546,7 +546,7 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!((m.files, m.folders, m.bytes), (1, 1501, 3));
+        assert_eq!((m.files, m.folders, m.bytes), (1, depth as u64 + 1, 3));
         assert!(!d.join("t").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
