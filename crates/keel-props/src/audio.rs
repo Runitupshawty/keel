@@ -177,7 +177,11 @@ pub fn read<R: Read + Seek>(r: &mut R, len: u64) -> io::Result<AudioInfo> {
     let mut audio_start = 0u64;
     if head.starts_with(b"ID3") && head.len() >= 10 {
         let size = synchsafe(&head[6..10]).unwrap_or(0);
-        let footer = if head[3] == 4 && head[5] & 0x10 != 0 { 10 } else { 0 };
+        let footer = if head[3] == 4 && head[5] & 0x10 != 0 {
+            10
+        } else {
+            0
+        };
         audio_start = 10 + u64::from(size) + footer;
         let tag = read_at(r, len, 0, (audio_start as usize).min(MAX_TAG_BYTES))?;
         parse_id3v2(&tag, &mut info);
@@ -1180,7 +1184,9 @@ mod tests {
             fmt.extend_from_slice(&v.to_le_bytes());
         }
         fmt.extend_from_slice(&3u32.to_le_bytes());
-        fmt.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+        fmt.extend_from_slice(&[
+            1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+        ]);
         let mut b = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
         b.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
         b.extend_from_slice(&fmt);

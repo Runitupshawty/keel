@@ -28,19 +28,27 @@ const fn sig(id: &'static str, content_type: &'static str, perceived: &'static s
 }
 
 fn at(head: &[u8], off: usize, magic: &[u8]) -> bool {
-    off.checked_add(magic.len()).and_then(|end| head.get(off..end)) == Some(magic)
+    off.checked_add(magic.len())
+        .and_then(|end| head.get(off..end))
+        == Some(magic)
 }
 
 fn u32be(head: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(head.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        head.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32le(head: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(head.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        head.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn u16le(head: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(head.get(off..off.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        head.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn contains(head: &[u8], needle: &[u8]) -> bool {
