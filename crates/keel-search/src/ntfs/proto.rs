@@ -30,10 +30,13 @@ pub(crate) const MAX_MESSAGE: usize = 512;
 const MAX_VERSION: usize = 64;
 
 /// Error codes of [`Response::Error`] that are not Windows error codes.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const E_BAD_REQUEST: u32 = 0xE000_0001;
 /// The drive letter is not a fixed local NTFS volume.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const E_BAD_VOLUME: u32 = 0xE000_0002;
 /// Anything else that failed in the service (the message says what).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const E_FAILED: u32 = 0xE000_0003;
 
 /// What the unelevated Keel asks for. Every request names at most one volume.
@@ -292,6 +295,7 @@ impl Request {
     }
 
     /// The volume a request names.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn letter(&self) -> Option<char> {
         match self {
             Request::Hello | Request::Volumes => None,

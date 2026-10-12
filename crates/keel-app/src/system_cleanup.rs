@@ -63,6 +63,7 @@ pub enum SysMsg {
     Info(u64, Result<TaskInfo, String>),
     VhdPicked(PathBuf),
     /// A system cleanup finished: what to tell (and for an analysis, its report).
+    #[cfg_attr(not(windows), allow(dead_code))]
     Done {
         task: Task,
         result: Result<String, String>,
@@ -133,6 +134,7 @@ impl Task {
     }
 
     /// The helper's `--system-cleanup` argument.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn to_arg(&self) -> String {
         match self {
             Task::Hibernation => "hibernate-off".into(),
@@ -327,6 +329,7 @@ pub fn hyperv_manifest(system32: &Path) -> Option<String> {
 
 /// .NET and PowerShell settings a child must not take from the user's environment: a
 /// profiler DLL would be loaded into the elevated process.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn unsafe_env(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
     n.starts_with("COR_")
@@ -395,6 +398,7 @@ pub fn steps_in(task: &Task, dirs: &SysDirs) -> Result<Vec<Step>, String> {
 }
 
 /// The elevated helper's arguments (`keel_search::run_elevated` passes them verbatim).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn helper_args(task: &Task, report: &Path) -> String {
     format!(
         "--system-cleanup \"{}\" --cleanup-report \"{}\"",

@@ -48,7 +48,8 @@ pub enum Skip {
     /// the kept copy's).
     Permissions,
     /// It has alternate data streams (a link would drop them).
-    Streams,
+    #[cfg_attr(not(windows), allow(dead_code))]
+Streams,
 }
 
 impl Skip {
