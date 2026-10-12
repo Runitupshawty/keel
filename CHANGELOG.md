@@ -2,6 +2,17 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Settings → **Search**: Keel's own index now also covers FAT, FAT32, exFAT and ReFS volumes, removable and network drives and any folder you add, by walking them, searched together with the NTFS index. **Folders** and **Volumes** tabs (per volume: **Include in database**, **Include only**; **Automatically include new fixed volumes**, **Automatically include new removable volumes**, **Automatically remove offline volumes**) and an **Exclude** tab (exclude hidden, exclude system, exclude folders, include only folders, include only files, exclude files), applied while indexing. Each folder and volume has **Monitor changes** with a **Change buffer** size (Windows), **Rescan when the change buffer overflows**, a **Rescan** schedule (every N hours, or daily at a time) and **Fast rescan** (only the folders whose modified time changed). An offline volume stays searchable from its last scan and is marked offline, unless it is removed automatically. Saved under `[search_index]`. See [Folders and volumes](docs/files.md#folders-and-volumes-settings--search).
+- The walked index stores each entry's created time and attributes besides its size and modified time.
+
+### Changed
+
+- The home-folder name index (macOS and Linux, and Windows without an NTFS index) has a new layout with created times and attributes: it is walked once again after the update.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
