@@ -114,20 +114,21 @@ try {
   # One file per start: two stand-ins appending to one file at once lose a line (seen on CI).
   $logDir = Join-Path $dir 'started'
   $fake = Join-Path $dir 'keel-daemon.cmd'
-  Set-Content $fake "@echo [%*]>> `"$logDir\%RANDOM%%RANDOM%.txt`""
+  # Each case writes its own file (two starts in one second share cmd's %RANDOM% seed).
+  Set-Content $fake "@if `"%~1`"==`"`" (echo []> `"$logDir\none.txt`") else (echo [%*]> `"$logDir\args.txt`")"
   function Wait-Log([int]$Lines) {
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while (@(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue).Count -lt $Lines -and [DateTime]::UtcNow -lt $deadline) {
       Start-Sleep -Milliseconds 100
     }
-    @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() })
+    @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() })
   }
   Check 'update: a daemon with arguments starts again with them, one without with none' {
     Remove-Item $logDir -Recurse -ErrorAction SilentlyContinue; New-Item -ItemType Directory $logDir | Out-Null
     # The stand-in ends at once, so the installer says it exited: that names it too.
     $said = Restart-KeelDaemons $fake @('--profile=work --web 127.0.0.1:7421', '') *>&1 | Out-String
-    $got = Wait-Log 2 | Sort-Object
-    if (($got -join '|') -ne '[]|[--profile=work --web 127.0.0.1:7421]') { throw "started '$($got -join '|')'" }
+    $got = @(Wait-Log 2)
+    if (($got -join '|') -ne '[--profile=work --web 127.0.0.1:7421]|[]') { throw "started '$($got -join '|')'" }
     if ($said -notlike '*keel-daemon --profile=work --web 127.0.0.1:7421*') { throw "said '$said'" }
   }
   Check 'update: no daemon ran, none starts' {
