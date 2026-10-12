@@ -50,6 +50,11 @@ pub struct Settings {
     /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Shift+Alt+K" (not
     /// Ctrl+Alt alone: AltGr on many layouts; see `hotkey`).
     pub hotkey: String,
+    pub quick_hotkey: String,
+    pub searches_in_windows: bool,
+    pub run_in_background: bool,
+    pub always_on_top: bool,
+    pub omissions: crate::omissions::Omissions,
     /// A second `keel` hands its folder / search to the running one and exits.
     pub single_instance: bool,
     // --- Task 23 ---
@@ -202,6 +207,11 @@ impl Default for Settings {
             clouds: Vec::new(),
             hotkey: "Ctrl+Shift+Alt+K".into(),
             single_instance: true,
+            quick_hotkey: String::new(),
+            searches_in_windows: false,
+            run_in_background: false,
+            always_on_top: false,
+            omissions: Default::default(),
             column_widths: Vec::new(),
             reduce_motion: false,
             ui_scale: 1.0,
@@ -711,6 +721,23 @@ pub fn window(
                     // --- Task 24 ---
                     let label = ui.label("Global hotkey");
                     let _ = crate::hotkey::field(ui, &mut s.hotkey).labelled_by(label.id);
+                    ui.end_row();
+                    ui.label("Quick Search hotkey");
+                    ui.push_id("quick-hotkey", |ui| { crate::hotkey::field(ui, &mut s.quick_hotkey); });
+                    ui.end_row();
+                    ui.label("Search windows");
+                    ui.checkbox(&mut s.searches_in_windows, "Open searches in new windows");
+                    ui.end_row();
+                    ui.label("Window level");
+                    ui.checkbox(&mut s.always_on_top, "Always on top");
+                    ui.end_row();
+                    if cfg!(windows) {
+                        ui.label("Tray");
+                        ui.checkbox(&mut s.run_in_background, "Run in background when closed");
+                        ui.end_row();
+                    }
+                    ui.label("Result omissions");
+                    if ui.button("Manage omissions").clicked() { s.omissions.manage = true; }
                     ui.end_row();
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")

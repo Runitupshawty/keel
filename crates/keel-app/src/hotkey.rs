@@ -13,9 +13,11 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 pub struct Hotkey {
     manager: GlobalHotKeyManager,
     /// What is registered now.
-    current: Option<HotKey>,
+    current: [Option<HotKey>; 2],
     /// The setting text last applied (changes are applied once).
-    applied: Option<String>,
+    applied: [Option<String>; 2],
+    quick_id: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    pub events: crossbeam_channel::Receiver<()>,
     /// Another Keel is the single instance and holds the hotkey: failing to register it here
     /// is expected, not worth a toast.
     quiet: bool,
@@ -46,40 +48,59 @@ impl Hotkey {
             .map_err(|e| tracing::warn!("global hotkey: {e}"))
             .ok()?;
         let ctx = ctx.clone();
+        let (tx, events) = crossbeam_channel::unbounded();
+        let quick_id = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let quick = quick_id.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             if e.state == HotKeyState::Pressed {
-                crate::single_instance::bring_to_front(&ctx);
+                if e.id == quick.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = tx.send(());
+                    ctx.request_repaint();
+                } else {
+                    crate::single_instance::bring_to_front(&ctx);
+                }
             }
         }));
         Some(Self {
             manager,
-            current: None,
-            applied: None,
+            current: [None, None],
+            applied: [None, None],
+            quick_id,
+            events,
             quiet,
         })
     }
 
     /// Registers the hotkey in `text` ("" = none) when it changed since the last call.
     /// Returns a message for a toast when it is not valid or another app holds it.
-    pub fn sync(&mut self, text: &str) -> Option<String> {
-        if self.applied.as_deref() == Some(text) {
+    pub fn sync(&mut self, text: &str, quick: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (slot, text) in [text, quick].into_iter().enumerate() {
+            if let Some(e) = self.sync_slot(text, slot) { errors.push(e); }
+        }
+        self.quick_id.store(self.current[1].map_or(0, |key| key.id()), std::sync::atomic::Ordering::Relaxed);
+        errors
+    }
+
+    fn sync_slot(&mut self, text: &str, slot: usize) -> Option<String> {
+        if self.applied[slot].as_deref() == Some(text) {
             return None;
         }
-        self.applied = Some(text.to_owned());
+        self.applied[slot] = Some(text.to_owned());
         let wanted = match parse(text) {
             Ok(key) => key,
             Err(e) => return Some(e),
         };
-        if wanted == self.current {
+        if wanted == self.current[slot] {
             return None;
         }
-        if let Some(old) = self.current.take() {
+        if let Some(old) = self.current[slot].take() {
             let _ = self.manager.unregister(old);
         }
         let key = wanted?;
         match self.manager.register(key) {
             Ok(()) => {
-                self.current = Some(key);
+                self.current[slot] = Some(key);
                 None
             }
             Err(e) if self.quiet => {

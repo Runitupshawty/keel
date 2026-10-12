@@ -71,6 +71,9 @@ mod cli;
 mod commands; // Task 37
 mod dragout;
 mod hotkey;
+mod omissions;
+mod quick_search;
+mod tray;
 mod index_ui;
 mod single_instance;
 // --- end Task 24 ---

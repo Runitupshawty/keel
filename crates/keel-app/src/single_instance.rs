@@ -238,6 +238,7 @@ pub fn bring_to_front(ctx: &egui::Context) {
     // Windows: at once (a minimized window may not run frames for the commands below).
     #[cfg(windows)]
     keel_vfs::desktop::focus_own_window();
+    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     ctx.request_repaint();

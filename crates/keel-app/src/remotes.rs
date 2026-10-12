@@ -1069,12 +1069,13 @@ pub fn search_names(
 pub fn spawn_search(
     router: Arc<Router>,
     root: VPath,
-    text: String,
+    request: (String, crate::omissions::Filter),
     id: u64,
     newest: Arc<AtomicU64>,
     tx: Sender<Msg>,
     ctx: egui::Context,
 ) {
+    let (text, omissions) = request;
     newest.store(id, Ordering::Relaxed);
     spawn("keel-remote-search", move || {
         let result = router
@@ -1090,6 +1091,7 @@ pub fn spawn_search(
                     &|| newest.load(Ordering::Relaxed) != id,
                 )
             });
+        let result = result.map(|hits| omissions.apply(hits));
         send(&tx, &ctx, Msg::Search { id, result });
     });
 }

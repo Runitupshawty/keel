@@ -257,7 +257,7 @@ pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Cont
     });
 }
 
-type SearchJob = (Arc<dyn Searcher>, String, u64);
+type SearchJob = (Arc<dyn Searcher>, String, u64, crate::omissions::Filter);
 
 /// One search thread for the whole app. Queries wait their turn (Everything serves one
 /// at a time); a query whose tab has moved on to a newer one is dropped unrun, so typing
@@ -274,7 +274,7 @@ impl SearchWorker {
         let live: Arc<Mutex<HashSet<u64>>> = Arc::default();
         let wanted = live.clone();
         spawn("keel-search", move || {
-            while let Ok((searcher, text, id)) = rx.recv() {
+            while let Ok((searcher, text, id, omissions)) = rx.recv() {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
@@ -283,6 +283,7 @@ impl SearchWorker {
                     max: crate::search_tab::MAX_HITS,
                     ..Query::default()
                 });
+                let result = result.map(|hits| omissions.apply(hits));
                 wanted.lock().remove(&id);
                 send(&tx, &ctx, Msg::Search { id, result });
             }
@@ -291,13 +292,13 @@ impl SearchWorker {
     }
 
     /// Queues query `id`, superseding `replaces` (the tab's previous request).
-    pub fn search(&self, searcher: Arc<dyn Searcher>, text: String, id: u64, replaces: u64) {
+    pub fn search(&self, searcher: Arc<dyn Searcher>, text: String, id: u64, replaces: u64, omissions: crate::omissions::Filter) {
         {
             let mut live = self.live.lock();
             live.remove(&replaces);
             live.insert(id);
         }
-        let _ = self.jobs.send((searcher, text, id));
+        let _ = self.jobs.send((searcher, text, id, omissions));
     }
 }
 
@@ -435,7 +436,7 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
-        worker.search(slow.clone(), "a".into(), 1, 0);
+        worker.search(slow.clone(), "a".into(), 1, 0, Default::default());
         // Wait until "a" is really running (a slow machine may not have scheduled the
         // worker yet; a later query for the same tab would then supersede it).
         let until = std::time::Instant::now() + Duration::from_secs(5);
@@ -447,9 +448,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
-        worker.search(slow.clone(), "ab".into(), 2, 1);
-        worker.search(slow.clone(), "x".into(), 3, 0);
-        worker.search(slow.clone(), "abc".into(), 4, 2);
+        worker.search(slow.clone(), "ab".into(), 2, 1, Default::default());
+        worker.search(slow.clone(), "x".into(), 3, 0, Default::default());
+        worker.search(slow.clone(), "abc".into(), 4, 2, Default::default());
         let mut answered = Vec::new();
         while answered.len() < 3 {
             match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {

@@ -102,3 +102,6 @@ resvg.workspace = true
 # Icon + manifest resource, linked only when the target is Windows (checked in build.rs).
 [build-dependencies]
 embed-resource = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Gdi"] }
