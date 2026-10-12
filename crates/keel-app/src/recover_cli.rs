@@ -606,7 +606,7 @@ mod tests {
     fn image_scan_does_not_save_on_its_source_volume() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("volume.img");
-        let mut nt = NtfsImg::new();
+        let nt = NtfsImg::new();
         std::fs::write(&image, nt.image()).unwrap();
         let save = dir.path().join("scan.json");
         assert!(matches!(
