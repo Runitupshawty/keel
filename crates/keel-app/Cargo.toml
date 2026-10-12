@@ -74,9 +74,10 @@ semver = "1"
 interprocess = "2.4.4"
 global-hotkey = "0.8.0"
 
-# The system accent color (`design`): a registry read (features already in the workspace).
+# The system accent color (`design`): a registry read (features already in the workspace);
+# the tray icon and the window level (`tray`).
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
 
 # Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
 [target.'cfg(not(windows))'.dependencies]
@@ -106,6 +107,3 @@ resvg.workspace = true
 # Icon + manifest resource, linked only when the target is Windows (checked in build.rs).
 [build-dependencies]
 embed-resource = "3"
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
