@@ -42,7 +42,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has** (unreleased): drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (unreleased): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
 | 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
-| Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Part**: fixed Quick access, library Favorites and saved views; no user-arranged sidebar |
+| Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (unreleased): a user-arranged Favorites section (drag folders in, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
 | Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Part**: tags and saved views; no hand-ordered collection |
 | Mobile explorer | alpha (alpha.2); v1 mobile alpha | [SD-REL] | **Part**: the installable web app (PWA) with a phone layout ([devices.md](devices.md#phones)); no native app |
 

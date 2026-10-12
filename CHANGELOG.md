@@ -38,12 +38,17 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - `keel filelist create <folder> -o <file>` makes a file list from a folder walk (include and exclude wildcards for files and folders, `--no-subfolders`, `--no-folders`, `--no-files`); `keel filelist export <list> -o <file>` writes a list in another format, optionally only the entries a `--query` finds.
 - Fuzz target `efu` for the file list readers and writers ([docs/fuzzing.md](docs/fuzzing.md)).
 - A second built-in icon theme, **Keel Finder** (Settings → Icons): rounded blue folders with a darker tab; Desktop, Documents, Downloads, Pictures, Music, Videos, Home and Program Files / Applications folders with an embossed glyph; drives, network shares, cloud accounts and an empty or full Recycle Bin / Trash in the sidebar and in listings; documents with a folded corner and a band naming the extension, colored by kind. Icons are drawn for the size they are shown at, from 16 to 512 pixels, in light and dark variants, and a folder color draws the folder in that color. Original artwork, MIT OR Apache-2.0 like the rest of Keel. See [Icon themes](docs/files.md#icon-themes).
+- A Finder-style sidebar with four sections: **Favorites**, **Locations**, **Library** and **Tags**. Each section's header shows **Hide** or **Show** when you point at it; hidden sections are kept per profile. Rows have a rounded highlight and icons in the accent colour. See [Sidebar](docs/files.md#sidebar).
+- **Favorites** you arrange yourself, kept per profile (`[sidebar]` in `config.toml`): a new profile starts with Recents, Applications (macOS) or Programs (Windows), Desktop, Documents, Downloads and Home. Drag folders from a pane into the list to add them (a drop on the middle of a folder row copies or moves into it instead), drag rows to reorder them, and right-click for **Remove from Sidebar**, **Move up**, **Move down** and **Open in new tab**. **Add to Sidebar** in the command palette adds the selected folders, or the current folder; the Favorites header's context menu has **Add current folder** and **Restore default favorites**.
+- An **eject** button on removable drives and optical discs in Locations (Windows: the shell's Eject; macOS: `diskutil eject`; Linux: `gio mount --eject` or `umount`). Mapped network drives show a network icon.
+- **Tags** in the sidebar show their color dots, with **All Tags…** for the full list.
 
 ### Changed
 
 - A search is no longer capped at 500 results (see Load more). Remote host and cloud name searches still stop at 500.
 - In a search tab Ctrl+I is Match case (Everything's key); the Inspector stays on Ctrl+I elsewhere and in the command palette. The toggles' keys and Load more are listed in Settings → Keyboard like every other command and work in search tabs only.
 - Keel's own index matches letters with their accented forms by default (Match diacritics off, like Everything).
+- The sidebar's Quick access, Drives, WSL, Open archives, Remotes, Cloud and Devices sections are now one **Locations** section; Quick access became Favorites (the Recycle Bin or Trash is now in Locations, and Pictures is no longer there by default: drag it in to keep it). The library's Recents moved from the Library section to Favorites, and its tags to their own Tags section. While no host or cloud account is set up, Locations shows **Add server or cloud…** instead of two "None configured" lines; paired devices show while devices are on.
 
 ### Fixed
 

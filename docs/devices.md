@@ -8,7 +8,7 @@ Keel can talk directly to your other computers. There is no account and no serve
 
 **Pair two devices.**
 
-1. On one device open the sidebar's **Devices** section and choose **Pair a device… → Show code**. Keel shows a short code and a QR code (the QR carries the full ticket).
+1. On one device find your devices in the sidebar's **Locations** section, click **Pair…** and choose **Show code**. Keel shows a short code and a QR code (the QR carries the full ticket).
 2. On the other device choose **Pair a device… → Enter code** and type the short code, or paste the ticket.
 3. Both sides now list each other under Devices with a status dot (direct, relay or offline), the device's name and a storage bar.
 

@@ -310,15 +310,24 @@ pub(crate) fn write_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("Inbox")).unwrap();
 }
 
-/// The fixture's sidebar: these quick-access folders and one drive, never the real ones.
+/// The fixture's sidebar: these favorites and one drive, never the real ones.
 pub(crate) fn neutral_sidebar(s: &mut AppState, root: &Path) {
+    use crate::sidebar_prefs::{Favorite, Place};
     let p = |name: &str| VPath::local(root.join(name));
-    s.sidebar.quick = vec![
-        ("Home".into(), VPath::local(root)),
-        ("Documents".into(), p("Documents")),
-        ("Pictures".into(), p("Pictures")),
-        ("Backup".into(), p("Backup")),
+    let place = |place| Favorite::Place { place };
+    s.sidebar.places = [
+        (Place::Home, VPath::local(root)),
+        (Place::Documents, p("Documents")),
+    ]
+    .into();
+    s.settings.sidebar.favorites = vec![
+        place(Place::Recents),
+        place(Place::Home),
+        place(Place::Documents),
+        Favorite::folder(p("Pictures")),
+        Favorite::folder(p("Backup")),
     ];
+    s.sidebar.kinds.clear();
     let drive = if cfg!(windows) { "C:" } else { "/" };
     s.sidebar.drives = vec![(
         drive.into(),

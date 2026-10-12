@@ -671,6 +671,14 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .global(),
+        // Phase 14: the selected folders, or the current one.
+        cmd(
+            "sidebar.pin",
+            "Add to Sidebar",
+            Sidebar(crate::sidebar_prefs::SidebarCmd::PinSelection),
+            &[],
+        )
+        .global(),
         // --- Task 77 ---
         cmd(
             "filelist.open",

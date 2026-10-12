@@ -66,7 +66,10 @@ pub fn spawn_drives(tx: Sender<Msg>, ctx: egui::Context) -> bool {
         // Task 51: the WSL list is a registry read; it follows drives being added.
         send(&tx, &ctx, Msg::WslDistros(keel_term::wsl_distros()));
         let drives = keel_vfs::drives();
+        let names: Vec<String> = drives.iter().map(|d| d.0.clone()).collect();
         send(&tx, &ctx, Msg::Drives(drives));
+        // Phase 14: after the list, as a dead mapped drive can block here.
+        send(&tx, &ctx, Msg::DriveKinds(crate::sidebar::kinds_of(&names)));
     })
 }
 

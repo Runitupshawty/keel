@@ -52,7 +52,10 @@ pub use cloud::{
 };
 pub use entry::{Entry, Kind};
 pub use ftp::FtpProvider;
-pub use local::{drives, is_fixed_disk, long, user_mount, watch, LocalProvider};
+pub use local::{
+    drive_kind, drives, is_fixed_disk, long, mount_kind, user_mount, watch, DriveKind,
+    LocalProvider,
+};
 pub use provider::{
     Caps, ChangeCursor, ChangeFeed, ChangeKind, ChangedPath, FeedError, Provider, Quota,
     RemoveKind, ShareLink, Space,

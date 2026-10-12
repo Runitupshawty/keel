@@ -305,8 +305,15 @@ impl App {
                 let mut acts = Vec::new();
                 let current = s.panes[s.active].tab().dir.clone();
                 let archives = s.open_archives();
-                s.sidebar
-                    .ui(ui, &shown, &current, &archives, &s.library, &mut acts);
+                s.sidebar.ui(
+                    ui,
+                    &shown,
+                    &s.settings.sidebar,
+                    &current,
+                    &archives,
+                    &s.library,
+                    &mut acts,
+                );
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
         crate::a11y::group_end(ctx, "sidebar");

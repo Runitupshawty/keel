@@ -92,6 +92,8 @@ pub enum Msg {
         watcher: Box<dyn Any + Send>,
     },
     Drives(Vec<Drive>),
+    /// Phase 14: each drive's kind (removable ones get an eject button).
+    DriveKinds(Vec<(String, keel_vfs::DriveKind)>),
     /// Task 51: the installed WSL distributions, the default first.
     WslDistros(Vec<String>),
     /// Task 51: distribution `name` opened (its root) or could not be.
@@ -732,6 +734,7 @@ impl AppState {
                 self.sidebar.drives_pending = None;
                 self.sidebar.drives_stuck = false;
             }
+            Msg::DriveKinds(kinds) => self.sidebar.set_kinds(kinds),
             Msg::WslDistros(names) => {
                 if !self.sidebar.wsl_frozen {
                     self.sidebar.wsl = names;
@@ -2484,6 +2487,7 @@ impl AppState {
             // Handled by `library_intercept`.
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
+            Action::Sidebar(cmd) => self.sidebar_cmd(p, cmd),
             Action::Mount(cmd) => self.mount_cmd(cmd),
             Action::FileList(cmd) => self.filelist_cmd(p, cmd),
             Action::FocusTab { pane, tab } => {

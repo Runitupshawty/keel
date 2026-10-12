@@ -97,6 +97,8 @@ pub struct Settings {
     pub search: crate::search_tab::SearchSettings,
     /// Copy path puts each path in double quotes.
     pub quote_copied_paths: bool,
+    /// `[sidebar]`: Favorites in their order and hidden sections (Phase 14).
+    pub sidebar: crate::sidebar_prefs::SidebarSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -238,6 +240,7 @@ impl Default for Settings {
             hotkey_toggle_window: String::new(),
             search: Default::default(),
             quote_copied_paths: false,
+            sidebar: Default::default(),
         }
     }
 }
