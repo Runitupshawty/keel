@@ -199,6 +199,7 @@ impl FatImg {
     }
 
     fn short_entry(&mut self, off: usize, short: &[u8; 11], attr: u8, first: u32, size: u32) {
+        put(&mut self.img, off, &[0; 32]);
         put(&mut self.img, off, short);
         self.img[off + 11] = attr;
         put16(&mut self.img, off + 14, FAT_TIME);
