@@ -1081,9 +1081,14 @@ mod tests {
     fn serves_this_user_over_a_real_pipe() {
         let name = format!("keel-index-test-{}", std::process::id());
         let me = keel_vfs::pipe::user_sid().unwrap();
-        let server = PipeServer::bind(&name, &pipe_sddl(&me)).unwrap();
+        // The service makes more instances as SYSTEM, which has full control. This
+        // test runs as the user, so it also gets the right to create instances (the
+        // user's real rights are tested separately).
+        let sddl = pipe_sddl(&me).replace("0x12019b", "0x12019f");
+        assert!(sddl.contains("0x12019f"));
+        let server = PipeServer::bind(&name, &sddl).unwrap();
         // The name is taken now: a second server (a squatter) cannot share it.
-        assert!(PipeServer::bind(&name, &pipe_sddl(&me)).is_err());
+        assert!(PipeServer::bind(&name, &sddl).is_err());
         let backend: Arc<dyn Elevated> = Arc::new(Mock {
             image: Some(sample_image()),
             ..Mock::default()
@@ -1113,6 +1118,19 @@ mod tests {
         drop((client, second));
         control.stop();
         thread.join().unwrap().unwrap();
+    }
+
+    /// The user the service serves may read and write the pipe but not create another
+    /// instance of it, so cannot stand up a second server under the service's name.
+    #[test]
+    fn the_user_cannot_make_a_second_instance() {
+        let name = format!("keel-index-test-instances-{}", std::process::id());
+        let me = keel_vfs::pipe::user_sid().unwrap();
+        let server = PipeServer::bind(&name, &pipe_sddl(&me)).unwrap();
+        let err = server.instance(false).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        // Reading and writing is allowed.
+        assert!(connect_pipe(&name, Duration::from_secs(2), |_| true).is_ok());
     }
 
     #[test]
