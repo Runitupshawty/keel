@@ -478,12 +478,12 @@ pub fn legible(fg: Color32, backs: &[Color32], min: f64) -> Color32 {
     if worst(fg) >= min {
         return fg;
     }
-    let dark_backs = backs
+    let mean = backs
         .iter()
         .map(|b| crate::theme::luminance(*b))
         .sum::<f64>()
-        / backs.len().max(1) as f64
-        < 0.18;
+        / (backs.len().max(1) as f64);
+    let dark_backs = mean < 0.18;
     let toward = if dark_backs {
         Color32::WHITE
     } else {
