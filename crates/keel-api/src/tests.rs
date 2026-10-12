@@ -145,6 +145,7 @@ fn registry_is_preview_first() {
         "library.restore",
         "library.folder_style",
         "library.set_folder_style",
+        "system.search",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -2208,4 +2209,56 @@ fn crafted_documents_fail_and_leave_no_trace() {
     let data = f.ctx.data_dir.clone().unwrap();
     assert!(files_holding(&data, MARKER.as_bytes()).is_empty());
     assert!(files_holding(f.cfg.path(), MARKER.as_bytes()).is_empty());
+}
+
+/// Task 78: `system.search` runs the platform search (here a walk of the test folder) with
+/// Everything's options, sorted and paged, and refuses a bad pattern as invalid params.
+#[test]
+fn system_search_runs_the_platform_search() {
+    struct Walk(std::path::PathBuf);
+    impl keel_search::Searcher for Walk {
+        fn query(&self, q: &keel_search::Query) -> anyhow::Result<Vec<keel_search::Hit>> {
+            Ok(keel_search::walk(&self.0, q))
+        }
+        fn available(&self) -> bool {
+            true
+        }
+        fn name(&self) -> &'static str {
+            "Walk"
+        }
+    }
+    let f = fixture(None);
+    f.ctx.system.set(Arc::new(Walk(f.files.path().to_owned())));
+    let r: SystemSearchResult =
+        serde_json::from_value(call(&f.ctx, "system.search", json!({"query": "INVOICE"})).unwrap())
+            .unwrap();
+    assert_eq!((r.backend.as_str(), r.total, r.capped), ("Walk", 1, false));
+    let hit = &r.hits[0];
+    assert_eq!((hit.name.as_str(), hit.size, hit.is_dir), ("invoice-2026.pdf", 9, false));
+    assert!(hit.modified.is_some(), "size and date filled in");
+    assert_eq!(hit.parent, s(&f.files.path().join("docs")));
+    assert_eq!(hit.path, s(&f.files.path().join("docs/invoice-2026.pdf")));
+    // Everything: the folder, both files; biggest first, one per page.
+    let r: SystemSearchResult = serde_json::from_value(
+        call(
+            &f.ctx,
+            "system.search",
+            json!({"query": "", "count": 1, "offset": 0, "sort": "size", "ascending": false}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!((r.total, r.hits.len()), (3, 1));
+    assert_eq!(r.hits[0].name, "notes.txt");
+    let none = call(
+        &f.ctx,
+        "system.search",
+        json!({"query": "INVOICE", "match_case": true}),
+    )
+    .unwrap();
+    assert_eq!(none["total"], 0);
+    let e = call(&f.ctx, "system.search", json!({"query": "(x", "regex": true})).unwrap_err();
+    assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e:?}");
+    let e = call(&f.ctx, "system.search", json!({"query": "x", "count": -1})).unwrap_err();
+    assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e:?}");
 }

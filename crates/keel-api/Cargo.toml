@@ -24,6 +24,8 @@ crossbeam-channel.workspace = true
 toml.workspace = true
 directories.workspace = true
 keel-core = { path = "../keel-core" }
+# system.search: the platform's file search (the window's search pane backend).
+keel-search = { path = "../keel-search" }
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["cloud"] }
 keel-net = { path = "../keel-net" }
 # preview.render: the desktop app's previewers; PNG out.
