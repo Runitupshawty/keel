@@ -259,6 +259,7 @@ fn roots_text(roots: &[Root]) -> String {
         .map(|r| match r {
             Root::AllLocalDrives => "all local drives".to_owned(),
             Root::Path(p) => p.display().to_string(),
+            Root::Mtp { .. } => "a portable device".to_owned(),
         })
         .collect();
     names.join(", ")
