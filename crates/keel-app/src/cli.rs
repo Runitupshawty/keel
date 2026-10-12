@@ -834,8 +834,19 @@ mod tests {
         assert_eq!(cmd(&["mounts"]), Command::Mounts);
         assert_eq!(
             cmd(&[
-                "journal", "--watch", "--action", "create,rename", "--action", "delete",
-                "--since", "2h", "--path", r"\.pdf$", "--max", "0", "--csv"
+                "journal",
+                "--watch",
+                "--action",
+                "create,rename",
+                "--action",
+                "delete",
+                "--since",
+                "2h",
+                "--path",
+                r"\.pdf$",
+                "--max",
+                "0",
+                "--csv"
             ]),
             Command::Journal {
                 watch: true,

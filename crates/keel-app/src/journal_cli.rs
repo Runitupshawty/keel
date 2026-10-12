@@ -236,7 +236,10 @@ mod tests {
         let text = buf.text();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].contains("create") && lines[0].ends_with("a.txt"), "oldest first");
+        assert!(
+            lines[0].contains("create") && lines[0].ends_with("a.txt"),
+            "oldest first"
+        );
         assert!(lines[2].contains("rename") && lines[2].ends_with("a.txt)"));
         buf.0.lock().clear();
         let renames = Args {

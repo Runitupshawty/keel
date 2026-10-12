@@ -71,10 +71,10 @@ mod x11_clipboard;
 // --- Task 24 ---
 mod cli;
 mod commands; // Task 37
-mod journal_cli; // Phase 15: `keel journal`
 mod dragout;
 mod hotkey;
 mod index_ui;
+mod journal_cli; // Phase 15: `keel journal`
 mod single_instance;
 // --- end Task 24 ---
 

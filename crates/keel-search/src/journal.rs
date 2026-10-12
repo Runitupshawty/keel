@@ -471,9 +471,18 @@ impl Journal {
     pub fn clear(&self) -> anyhow::Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM events", [])?;
-        conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        vacuum(&conn)?;
         Ok(())
     }
+}
+
+/// Gives free pages back to the file system. The pragma frees one page per step, so it
+/// is stepped to the end (a batch would step it once).
+fn vacuum(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("PRAGMA incremental_vacuum")?;
+    let mut rows = stmt.query([])?;
+    while rows.next()?.is_some() {}
+    Ok(())
 }
 
 /// Bytes in use: pages minus free pages.
@@ -504,7 +513,7 @@ fn trim(conn: &Connection, max: u64) -> anyhow::Result<()> {
             "DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?1)",
             [drop],
         )?;
-        conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        vacuum(&conn)?;
     }
     Ok(())
 }

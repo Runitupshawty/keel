@@ -304,7 +304,11 @@ pub fn ui(ui: &mut egui::Ui, v: &mut JournalView, out: &mut Vec<Action>) {
                 ui.colored_label(ui.visuals().warn_fg_color, e);
             }
             None => {
-                let more = if v.rows.len() >= LIMIT { " (newest)" } else { "" };
+                let more = if v.rows.len() >= LIMIT {
+                    " (newest)"
+                } else {
+                    ""
+                };
                 ui.weak(format!("{} entries{more}", v.rows.len()));
             }
         }
@@ -325,9 +329,8 @@ pub fn ui(ui: &mut egui::Ui, v: &mut JournalView, out: &mut Vec<Action>) {
 
 fn table(ui: &mut egui::Ui, v: &mut JournalView, out: &mut Vec<Action>) {
     use egui_extras::{Column, TableBuilder};
-    let cell = |ui: &mut egui::Ui, text: &str| {
-        ui.add(egui::Label::new(text).truncate().selectable(false))
-    };
+    let cell =
+        |ui: &mut egui::Ui, text: &str| ui.add(egui::Label::new(text).truncate().selectable(false));
     TableBuilder::new(ui)
         .id_salt("journal-table")
         .striped(true)
@@ -401,10 +404,12 @@ mod tests {
         assert_eq!(f.text, "Report");
         // A later From than today wins.
         v.since = "1m".into();
-        assert!(v.filter().unwrap().since.unwrap() > journal::start_of_today() || {
-            // Just after midnight "1m ago" may be yesterday.
-            journal::now_ms() - journal::start_of_today() < 60_000
-        });
+        assert!(
+            v.filter().unwrap().since.unwrap() > journal::start_of_today() || {
+                // Just after midnight "1m ago" may be yesterday.
+                journal::now_ms() - journal::start_of_today() < 60_000
+            }
+        );
         v.since = "soon".into();
         assert!(v.filter().unwrap_err().starts_with("From"));
         v.since.clear();
@@ -417,10 +422,7 @@ mod tests {
         let at = journal::local_text(0);
         let text = |e: Event| entry_text(&e.at(0)).strip_prefix(&at).unwrap().to_owned();
         let p = std::path::Path::new;
-        assert_eq!(
-            text(Event::new(Change::Create, p("/a/x.txt"))),
-            "  Created"
-        );
+        assert_eq!(text(Event::new(Change::Create, p("/a/x.txt"))), "  Created");
         assert_eq!(
             text(Event::renamed(p("/a/old.txt"), p("/a/new.txt"))),
             "  Renamed from old.txt"

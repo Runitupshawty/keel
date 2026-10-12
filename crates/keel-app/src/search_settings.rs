@@ -382,7 +382,9 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
 fn journal(ui: &mut egui::Ui, d: &mut IndexSettings) {
     let j = &mut d.journal;
     ui.checkbox(&mut j.enabled, "Keep an index journal")
-        .on_hover_text("Every create, delete, rename, modify and attribute change the index applies");
+        .on_hover_text(
+            "Every create, delete, rename, modify and attribute change the index applies",
+        );
     ui.add_enabled_ui(j.enabled, |ui| {
         ui.horizontal(|ui| {
             ui.label("Size");
