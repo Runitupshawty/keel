@@ -20,6 +20,9 @@ impl Dirs {
         let _ = std::fs::remove_dir_all(&base);
         let (root, idx) = (base.join("root"), base.join("idx"));
         std::fs::create_dir_all(&root).unwrap();
+        // macOS temp folders are behind a symlink (/var -> /private/var) the index resolves.
+        #[cfg(target_os = "macos")]
+        let root = root.canonicalize().unwrap();
         Self { root, idx }
     }
 
@@ -46,7 +49,7 @@ impl Dirs {
         let d = Self::new();
         d.file("docs/Report.PDF", b"12345");
         d.file("docs/report notes.txt", b"x");
-        d.file("docs/old/report.pdf", b"x");
+        d.file("docs/oldies/report.pdf", b"x");
         d.file("src/main.rs", b"fn main(){}");
         d.file(".hidden/report.secret", b"x");
         d
@@ -150,10 +153,10 @@ fn substring_glob_regex_and_filters() {
     };
     assert_eq!(names(&s, &case), ["Report.PDF"]);
     assert_eq!(names(&s, &q(r"regex:main\.rs$")), ["main.rs"]);
-    assert_eq!(names(&s, &q("folder:o")), ["old", "docs"]);
+    assert_eq!(names(&s, &q("folder:o")), ["oldies", "docs"]);
     let within = format!(
         "report in:\"{}\"",
-        d.root.join("docs").join("old").display()
+        d.root.join("docs").join("oldies").display()
     );
     assert_eq!(names(&s, &q(&within)), ["report.pdf"]);
     let capped = Query {
@@ -182,10 +185,10 @@ fn search_toggles() {
     assert_eq!(names(&s, &q("note")), ["report notes.txt"]);
     assert!(with("note", |q| q.whole_word = true).is_empty());
     assert_eq!(with("notes", |q| q.whole_word = true), ["report notes.txt"]);
-    assert_eq!(names(&s, &q("old")), ["old"]);
-    assert_eq!(with("old", |q| q.match_path = true), ["old", "report.pdf"]);
+    assert_eq!(names(&s, &q("oldies")), ["oldies"]);
+    assert_eq!(with("oldies", |q| q.match_path = true), ["oldies", "report.pdf"]);
     assert_eq!(
-        with("old pdf", |q| q.match_path = true),
+        with("oldies pdf", |q| q.match_path = true),
         ["report.pdf"],
         "every term, anywhere in the path"
     );
@@ -239,7 +242,7 @@ fn rename_delete_and_create_show_up_after_the_watcher_batch() {
     assert!(!s.shared.unwatched.load(Relaxed), "watcher failed to start");
     let docs = d.root.join("docs");
     std::fs::rename(docs.join("report notes.txt"), docs.join("minutes.txt")).unwrap();
-    std::fs::remove_file(docs.join("old/report.pdf")).unwrap();
+    std::fs::remove_file(docs.join("oldies/report.pdf")).unwrap();
     d.file("fresh/deep/report-new.md", b"x");
     settle(&s, &q("report"), &["Report.PDF", "report-new.md"]);
     settle(&s, &q("minutes"), &["minutes.txt"]);
@@ -329,7 +332,7 @@ fn folder_index_lists_folders_only() {
         .collect();
     rel.sort();
     // No files, no hidden folder, not the root itself.
-    assert_eq!(rel, ["docs", "docs/old", "src"]);
+    assert_eq!(rel, ["docs", "docs/oldies", "src"]);
 }
 
 #[test]
@@ -451,7 +454,7 @@ fn fast_rescan_lists_only_folders_whose_time_moved() {
     };
     let s = d.open_with(opts());
     scans(&s, 1);
-    let old = d.root.join("docs").join("old").join("report.pdf");
+    let old = d.root.join("docs").join("oldies").join("report.pdf");
     assert_eq!(s.info(&old).unwrap().size, 1);
     // Folder times have millisecond precision in the index.
     std::thread::sleep(Duration::from_millis(50));
@@ -627,8 +630,8 @@ fn journal_follows_the_watcher(opts: WalkOptions) {
         "docs/minutes.txt",
         Some("docs/report notes.txt"),
     );
-    std::fs::remove_file(d.root.join("docs/old/report.pdf")).unwrap();
-    journaled(&j, &d, Delete, "docs/old/report.pdf", None);
+    std::fs::remove_file(d.root.join("docs/oldies/report.pdf")).unwrap();
+    journaled(&j, &d, Delete, "docs/oldies/report.pdf", None);
     let before = entries(&j, &d).len();
     rename(&d.root.join("src"), &d.root.join("source"));
     journaled(&j, &d, Rename, "source", Some("src"));
@@ -643,7 +646,7 @@ fn journal_follows_the_watcher(opts: WalkOptions) {
     assert!(s.info(&d.root.join("source").join("main.rs")).is_some());
     let rc = |rel: &str| j.recently_changed(&s.roots()[0].join(rel)).unwrap();
     assert!(rc("new.txt").is_some());
-    assert!(rc("docs/old").is_none());
+    assert!(rc("docs/oldies").is_none());
     drop(s);
     drop(j);
     // A restart keeps the journal.

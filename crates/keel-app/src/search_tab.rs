@@ -796,7 +796,7 @@ mod tests {
     const FILES: &[&str] = &[
         "docs/Report.pdf",
         "docs/report notes.txt",
-        "docs/old/report.pdf",
+        "docs/oldies/report.pdf",
         "café menu.txt",
         "reportage.md",
     ];
@@ -834,12 +834,12 @@ mod tests {
             ["Report.pdf", "report notes.txt", "report.pdf"]
         );
         // Match Path.
-        assert_eq!(f.search("old", off), ["old"]);
+        assert_eq!(f.search("oldies", off), ["oldies"]);
         let path = Toggles {
             match_path: true,
             ..off
         };
-        assert_eq!(f.search("old", path), ["old", "report.pdf"]);
+        assert_eq!(f.search("oldies", path), ["oldies", "report.pdf"]);
         // Match Diacritics.
         assert_eq!(f.search("cafe", off), ["café menu.txt"]);
         let marks = Toggles {
@@ -878,10 +878,10 @@ mod tests {
             match_path: true,
             ..Toggles::default()
         };
-        f.search("old", path);
+        f.search("oldies", path);
         let h = f.state.tab(0).highlight.clone().expect("highlighter");
         assert!(h.path);
-        let folder = f.root.join("docs").join("old").display().to_string();
+        let folder = f.root.join("docs").join("oldies").display().to_string();
         assert!(!h.marks(&folder).is_empty());
         // An empty query clears the results and the highlight (no query runs).
         if let TabKind::Search { query, due, .. } = &mut f.state.tab_mut(0).kind {

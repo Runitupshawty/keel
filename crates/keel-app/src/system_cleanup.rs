@@ -1404,6 +1404,8 @@ mod tests {
         }
     }
 
+    // The helper and its System32 programs are Windows'.
+    #[cfg(windows)]
     #[test]
     fn commands_for_each_cleanup() {
         let d = dirs(false);
@@ -1566,6 +1568,8 @@ mod tests {
         }
     }
 
+    // The helper and its System32 programs are Windows'.
+    #[cfg(windows)]
     #[test]
     fn the_report_goes_only_directly_into_the_temporary_folder() {
         let temp = std::env::temp_dir();
@@ -1675,6 +1679,8 @@ mod tests {
         assert!(check_vhd(&upper).is_ok());
     }
 
+    // The helper and its System32 programs are Windows'.
+    #[cfg(windows)]
     #[test]
     fn helper_arguments_round_trip() {
         let report = std::env::temp_dir().join("keel-syscleanup-1-2.json");

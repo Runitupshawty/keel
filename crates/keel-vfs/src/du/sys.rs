@@ -72,7 +72,9 @@ pub(super) fn allocated(
     #[cfg(not(windows))]
     let _ = path;
     match alloc {
-        Some(a) if a > 0 || size == 0 => a,
+        // Unix counts blocks, so no block at all is a (sparse) file with nothing on disk;
+        // a Windows listing reporting 0 for a file with data did not say.
+        Some(a) if a > 0 || size == 0 || cfg!(unix) => a,
         _ => round_up(size, cluster),
     }
 }

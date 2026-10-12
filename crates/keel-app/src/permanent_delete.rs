@@ -526,7 +526,9 @@ mod tests {
     fn a_deep_tree_is_measured_and_deleted_without_recursion() {
         let d = tmp("deep");
         let mut deepest = d.join("t");
-        for _ in 0..1500 {
+        // macOS paths are at most 1024 bytes long.
+        let depth = if cfg!(target_os = "macos") { 400 } else { 1500 };
+        for _ in 0..depth {
             deepest.push("a");
         }
         std::fs::create_dir_all(&deepest).unwrap();

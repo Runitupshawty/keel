@@ -307,8 +307,12 @@ impl<'a> Walker<'a> {
         if let Some(e) = ext_of(&n.name) {
             b.exts.push((b.nodes.len(), e));
         }
-        // Unix tells which files have other names; a Windows listing does not.
-        if self.opts.count_hard_links_once && raw.nlink != 1 {
+        // Unix tells which files have other names; a Windows listing does not. When links
+        // are followed, a file can also be reached by a path through a link (one name, but
+        // seen twice), so every file is a candidate then.
+        let follows =
+            self.opts.follow_symlinks || self.opts.follow_junctions || self.opts.follow_mount_points;
+        if self.opts.count_hard_links_once && (raw.nlink != 1 || follows) {
             if let Some(id) = raw.id {
                 b.ids.push((id, b.nodes.len()));
             }
