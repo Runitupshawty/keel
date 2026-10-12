@@ -1,7 +1,7 @@
 //! A bounded CSV record reader (RFC 4180 quoting, lenient about stray quotes) and the
 //! field writer, for EFU, CSV and TSV file lists.
 
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 
 use anyhow::bail;
 
@@ -38,7 +38,7 @@ pub fn read_line(
     line: &mut usize,
 ) -> anyhow::Result<Option<usize>> {
     buf.clear();
-    let n = r.by_ref().take(max as u64 + 2).read_until(b'\n', buf)?;
+    let n = Read::take(&mut *r, max as u64 + 2).read_until(b'\n', buf)?;
     if n == 0 {
         return Ok(None);
     }
