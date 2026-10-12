@@ -408,9 +408,11 @@ impl EsArgs {
         let mut text = self.text();
         if self.match_path {
             if !everything {
-                return Err("-p (match path) needs Everything running: Keel's own index \
+                return Err(
+                    "-p (match path) needs Everything running: Keel's own index \
                             matches names only (-path <folder> searches under a folder)"
-                    .into());
+                        .into(),
+                );
             }
             if self.regex {
                 return Err("-p cannot be combined with -regex".into());
@@ -473,10 +475,8 @@ impl EsArgs {
 
     /// Size and date are needed for every result (not just the page shown).
     fn meta_for_all(&self) -> bool {
-        matches!(
-            self.sort_order().0,
-            SortKey::Size | SortKey::DateModified
-        ) || self.report == Some(Report::TotalSize)
+        matches!(self.sort_order().0, SortKey::Size | SortKey::DateModified)
+            || self.report == Some(Report::TotalSize)
     }
 
     fn columns(&self) -> Vec<Column> {
@@ -649,7 +649,10 @@ pub fn filter(rows: &mut Vec<Row>, a: &EsArgs) -> Result<(), String> {
     let path = a.path.as_deref().map(|p| absolute(p).display().to_string());
     let parent_path = (a.parent_path.as_deref())
         .and_then(|p| absolute(p).parent().map(|p| p.display().to_string()));
-    let parent = a.parent.as_deref().map(|p| absolute(p).display().to_string());
+    let parent = a
+        .parent
+        .as_deref()
+        .map(|p| absolute(p).display().to_string());
     rows.retain(|r| {
         let target = if a.match_path { &r.path } else { &r.name };
         match a.only {
@@ -1018,7 +1021,8 @@ pub fn run(args: &[String], profile: &str, json: bool) -> i32 {
         _ if a.library => library_rows(&a, profile).and_then(|rows| output(rows, &a, &mut out)),
         _ => {
             let searcher = keel_search::default_searcher();
-            search(&a, Source::System(searcher.as_ref())).and_then(|rows| output(rows, &a, &mut out))
+            search(&a, Source::System(searcher.as_ref()))
+                .and_then(|rows| output(rows, &a, &mut out))
         }
     };
     match result {
@@ -1036,8 +1040,8 @@ pub fn run(args: &[String], profile: &str, json: bool) -> i32 {
 }
 
 fn library_rows(a: &EsArgs, profile: &str) -> Result<Vec<Row>, Fail> {
-    let cfg = keel_api::config::HostConfig::load(profile)
-        .map_err(|e| Fail::Failed(format!("{e:#}")))?;
+    let cfg =
+        keel_api::config::HostConfig::load(profile).map_err(|e| Fail::Failed(format!("{e:#}")))?;
     let mut backend = crate::commands::connect(&cfg, keel_api::client::REQUEST_WAIT)
         .map_err(|e| Fail::Failed(format!("{e:#}")))?;
     search(a, Source::Library(&mut *backend))

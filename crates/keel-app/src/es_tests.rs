@@ -70,7 +70,14 @@ fn parses_match_switches_in_any_spelling() {
     assert!(a.case && a.whole_word && a.match_path && a.diacritics);
     assert_eq!(a.terms, ["two words", "x"]);
     assert_eq!(a.text(), "\"two words\" x");
-    let a = p(&["-case", "-no-case", "-ww", "-no-whole-word", "-p", "-no-match-path"]);
+    let a = p(&[
+        "-case",
+        "-no-case",
+        "-ww",
+        "-no-whole-word",
+        "-p",
+        "-no-match-path",
+    ]);
     assert!(!a.case && !a.whole_word && !a.match_path);
     let a = p(&["-r", "^ab+c$", "-regex", "d e"]);
     assert!(a.regex);
@@ -86,7 +93,18 @@ fn parses_match_switches_in_any_spelling() {
 
 #[test]
 fn parses_paging_scope_and_sort() {
-    let a = p(&["-n", "5", "-o", "10", "-path", "a b", "-parent", "c", "-parent-path", "d"]);
+    let a = p(&[
+        "-n",
+        "5",
+        "-o",
+        "10",
+        "-path",
+        "a b",
+        "-parent",
+        "c",
+        "-parent-path",
+        "d",
+    ]);
     assert_eq!((a.max, a.offset), (Some(5), 10));
     assert_eq!(a.path.as_deref(), Some(Path::new("a b")));
     assert_eq!(a.parent.as_deref(), Some(Path::new("c")));
@@ -95,10 +113,22 @@ fn parses_paging_scope_and_sort() {
     assert_eq!((a.max, a.offset), (Some(3), 1));
     for (list, key, asc) in [
         (&["-sort", "size"][..], SortKey::Size, None),
-        (&["-sort", "Date-Modified-Descending"], SortKey::DateModified, Some(false)),
+        (
+            &["-sort", "Date-Modified-Descending"],
+            SortKey::DateModified,
+            Some(false),
+        ),
         (&["-sort", "date_modified"], SortKey::DateModified, None),
-        (&["-sort", "ext", "-sort-descending"], SortKey::Extension, Some(false)),
-        (&["-sort-descending", "-sort", "path-ascending"], SortKey::Path, Some(true)),
+        (
+            &["-sort", "ext", "-sort-descending"],
+            SortKey::Extension,
+            Some(false),
+        ),
+        (
+            &["-sort-descending", "-sort", "path-ascending"],
+            SortKey::Path,
+            Some(true),
+        ),
         (&["/on"], SortKey::Name, Some(true)),
         (&["/O-S"], SortKey::Size, Some(false)),
         (&["/oe"], SortKey::Extension, Some(true)),
@@ -114,7 +144,15 @@ fn parses_paging_scope_and_sort() {
 
 #[test]
 fn parses_columns_formats_and_reports() {
-    let a = p(&["-size", "-name", "-dm", "-size", "-path-column", "-ext", "-full-path-and-name"]);
+    let a = p(&[
+        "-size",
+        "-name",
+        "-dm",
+        "-size",
+        "-path-column",
+        "-ext",
+        "-full-path-and-name",
+    ]);
     assert_eq!(
         a.columns,
         [
@@ -139,9 +177,19 @@ fn parses_columns_formats_and_reports() {
     ] {
         assert_eq!(p(&[sw]).format, f);
         let a = p(&[&format!("-export{sw}"), "out.file"]);
-        assert_eq!((a.format, a.export.as_deref()), (f, Some(Path::new("out.file"))));
+        assert_eq!(
+            (a.format, a.export.as_deref()),
+            (f, Some(Path::new("out.file")))
+        );
     }
-    let a = p(&["-no-header", "-utf8-bom", "-no-result-error", "-timeout", "250", "-library"]);
+    let a = p(&[
+        "-no-header",
+        "-utf8-bom",
+        "-no-result-error",
+        "-timeout",
+        "250",
+        "-library",
+    ]);
     assert!(a.no_header && a.utf8_bom && a.no_result_error && a.library);
     assert_eq!(a.timeout, Some(Duration::from_millis(250)));
     assert_eq!(p(&["-count"]).report, Some(Report::Count));
@@ -191,7 +239,10 @@ fn backend_text_scopes_and_matches_paths() {
     );
     // -p needs Everything, where each term gets path:.
     let a = p(&["-p", "docs", "!old", "\"a b\""]);
-    assert!(a.backend_text(false).unwrap_err().contains("needs Everything"));
+    assert!(a
+        .backend_text(false)
+        .unwrap_err()
+        .contains("needs Everything"));
     assert_eq!(
         a.backend_text(true).unwrap(),
         "path:docs !path:old path:\"a b\""
@@ -296,11 +347,21 @@ fn prints_paths_and_columns() {
     assert_eq!(printed(r.clone(), &["-o", "99"]), "");
     let text = printed(r.clone(), &["-o", "3", "-n", "1", "-name", "-size", "-ext"]);
     assert_eq!(text, "reporting.txt  2048  txt\n");
-    let text = printed(r.clone(), &["-o", "3", "-n", "1", "-size", "-size-format", "2"]);
+    let text = printed(
+        r.clone(),
+        &["-o", "3", "-n", "1", "-size", "-size-format", "2"],
+    );
     assert_eq!(text, "2 KB\n");
     let text = printed(r.clone(), &["-n", "1", "-size", "-name", "-path-column"]);
-    assert_eq!(text, format!("  a  {}\n", root().display()), "folders have no size");
-    let text = printed(r.clone(), &["-o", "3", "-n", "1", "-dm", "-date-format", "3"]);
+    assert_eq!(
+        text,
+        format!("  a  {}\n", root().display()),
+        "folders have no size"
+    );
+    let text = printed(
+        r.clone(),
+        &["-o", "3", "-n", "1", "-dm", "-date-format", "3"],
+    );
     assert_eq!(text, "2023-11-14T22:13:40Z\n");
     let text = printed(r, &["-o", "3", "-n", "1", "-dm", "-date-format", "2"]);
     assert_eq!(text, "133444736200000000\n");
@@ -321,7 +382,10 @@ fn exports_csv_tsv_efu_json_and_m3u() {
          \"a\",,133444736000000000\n"
     );
     let csv = printed(two.clone(), &["-csv", "-no-header"]);
-    assert_eq!(csv, format!("\"{}\"\n\"{}\"\n", full(0).replace('"', "\"\""), full(1)));
+    assert_eq!(
+        csv,
+        format!("\"{}\"\n\"{}\"\n", full(0).replace('"', "\"\""), full(1))
+    );
     let tsv = printed(two.clone(), &["-tsv", "-name", "-ext"]);
     assert_eq!(tsv, "Name\tExtension\nReport \"Q1\".pdf\tpdf\na\t\n");
     let efu = printed(two.clone(), &["-efu"]);
@@ -346,7 +410,11 @@ fn exports_csv_tsv_efu_json_and_m3u() {
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v[1]["filename"], serde_json::json!(full(1)));
     let m3u = printed(two.clone(), &["-m3u8"]);
-    assert_eq!(m3u, format!("#EXTM3U\n{}\n", full(0)), "folders are left out");
+    assert_eq!(
+        m3u,
+        format!("#EXTM3U\n{}\n", full(0)),
+        "folders are left out"
+    );
     let bom = printed(two, &["-txt", "-utf8-bom", "-n", "0"]);
     assert_eq!(bom, "\u{feff}");
 }
@@ -372,7 +440,10 @@ fn exports_to_a_file() {
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.starts_with("\"Name\"\n\"Report.pdf\"\n"), "{text}");
     // A folder that does not exist fails.
-    let a = p(&["-export-csv", &dir.path().join("no/such.csv").display().to_string()]);
+    let a = p(&[
+        "-export-csv",
+        &dir.path().join("no/such.csv").display().to_string(),
+    ]);
     assert!(matches!(output(rows(), &a, &mut out), Err(Fail::Failed(_))));
 }
 

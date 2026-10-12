@@ -259,7 +259,8 @@ mod tests {
 
     #[test]
     fn a_portable_keel_is_its_own_instance() {
-        let dirs = keel_core::portable::Dirs::under(std::path::PathBuf::from("/media/stick/keel-data"));
+        let dirs =
+            keel_core::portable::Dirs::under(std::path::PathBuf::from("/media/stick/keel-data"));
         assert_eq!(key("work", None), "work");
         let portable = key("work", Some(&dirs));
         assert_ne!(portable, "work");

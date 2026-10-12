@@ -54,7 +54,14 @@ pub fn register() -> anyhow::Result<()> {
     let icon = format!(r"{KEY}\DefaultIcon");
     reg(&["add", KEY, "/ve", "/d", "URL:Keel link", "/f"])?;
     reg(&["add", KEY, "/v", "URL Protocol", "/d", "", "/f"])?;
-    reg(&["add", &icon, "/ve", "/d", &format!("{},0", exe.display()), "/f"])?;
+    reg(&[
+        "add",
+        &icon,
+        "/ve",
+        "/d",
+        &format!("{},0", exe.display()),
+        "/f",
+    ])?;
     reg(&["add", &command, "/ve", "/d", &command_line(&exe), "/f"])?;
     Ok(())
 }
