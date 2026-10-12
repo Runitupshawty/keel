@@ -168,6 +168,9 @@ compare as typed (case still folds).
 | `type:` | the file type description (`Text Document`, `File folder`); Keel's table by extension, or the platform's when the source provides it |
 | `kind:` | Keel: `folder`, `file`, `audio`, `video`, `image`, `document`, `executable`, `archive` |
 | `in:` | Keel: the item is inside this folder, at any depth |
+| `ancestor:` | a folder above the item has this full path (`ancestor:C:\work` is anything inside it; wildcards: `ancestor:**\photos`, where `**` crosses folders) |
+| `ancestor-name:` | a folder above the item has a name containing the text |
+| `pathlist:` | the full path is one of a `;` list (`pathlist:C:\a.txt;C:\b.txt`); any case |
 
 Paths are compared with `/` read as `\`, so the same terms work on Windows, macOS and Linux
 (`\home\me` matches `/home/me`).
@@ -184,10 +187,55 @@ Paths are compared with `/` read as `\`, so the same terms work on Windows, macO
 | `empty:` | folders with no files and no subfolders |
 | `attributes:`, `attr:`, `attrib:`, `attribute:` | has all these attributes: letters (`attrib:RHS`) or a hex mask (`attrib:0x20`) |
 | `run-count:`, `runcount:` | how many times Keel opened the item |
+| `descendant-count:` | files and folders anywhere below a folder |
+| `descendant-file-count:` | files anywhere below a folder |
+| `descendant-folder-count:` | folders anywhere below a folder |
+| `hard-link-count:` | how many names (hard links) a file has; `unknown` when the source does not read them |
+| `hard-link-filenames:` | any of the file's names (full paths) matches: `hard-link-filenames:**\backup\*` |
+| `alternate-data-stream-count:`, `adscount:` | how many alternate data streams (NTFS named streams) a file has |
+| `alternate-data-stream-names:`, `adsnames:` | any stream name matches: `adsnames:Zone.Identifier` |
+| `container-file-count:` | how many files an archive holds |
+| `container-filenames:` | any path inside an archive matches: `container-filenames:*.pdf` |
+
+Child and descendant counts come from the index's folder totals when it keeps them; otherwise
+they are counted through the index's parent links, visiting at most 100,000 items per folder
+(past that the count is `unknown`). Hard links, streams and archive contents are read only for
+items that passed the cheaper terms, and are `unknown` where the source cannot read them.
 
 Attribute letters: `A` archive, `C` compressed, `D` directory, `E` encrypted, `H` hidden, `I` not
 content indexed, `L` reparse point, `M` recall on data access, `N` normal, `O` offline, `P` sparse,
 `R` read-only, `S` system, `T` temporary, `U` recall on open, `V` integrity stream, `X` no scrub data.
+
+### Tree functions
+
+These look at other items of the index through its parent links. The value is a name, matched
+like a plain term (contains the text; with wildcards, the whole name); `;` lists any of
+several names.
+
+| Function | Matches |
+|---|---|
+| `child:` | folders with a file or folder directly inside whose name matches (`child:desktop.ini`); `child:` alone: folders that are not empty |
+| `child-file:` | folders with a matching file directly inside |
+| `child-folder:` | folders with a matching folder directly inside |
+| `descendant:` | folders with a matching file or folder anywhere below (`descendant:*.psd`) |
+| `descendant-file:` | folders with a matching file anywhere below |
+| `descendant-folder:` | folders with a matching folder anywhere below |
+| `sibling:` | items with another item of a matching name in the same folder (`*.jpg sibling:*.xmp`) |
+| `sibling-file:` | ... another file |
+| `sibling-folder:` | ... another folder |
+| `parent-sibling:` | items whose parent folder has a sibling of a matching name |
+| `ancestor-sibling:` | items with a folder above them that has a sibling of a matching name |
+| `exists:` | a name next to the item exists in the index; `..` goes up and `\` into subfolders (`exists:..\README`), a full path is looked up as is; with substitution: `*.raw !exists:$stem:.jpg` is every raw file without a JPEG of the same name |
+| `file-exists:` | like `exists:`, and it is a file |
+| `folder-exists:` | like `exists:`, and it is a folder |
+| `parentsize:` | the parent folder's size, with the size values below (`parentsize:>1gb`) |
+| `parentdm:` | the parent folder's date modified, with the date values below (`parentdm:today`) |
+
+`root:`, `empty:`, `parent:`, `parent-name:`, `parent-count:` and the `child-count:` family are
+in the tables above; they need no other items. Every tree function is bounded: each item visits
+at most 100,000 other items (children, descendants, siblings); a search that runs past that
+treats the item as `unknown` for that term, never as a wrong answer. Without an index (a folder
+listing searched as it is), tree functions are `unknown`.
 
 ### Dates
 
@@ -259,6 +307,40 @@ Constants, with Everything's bounds:
 | `gigantic` | over 128 MB |
 | `unknown` | not known |
 
+## Duplicates and set functions
+
+These work on the whole result, after every other term: `dupe:size ext:jpg` is the JPEG files
+that have the same size as another JPEG file. They go anywhere in the query that is ANDed
+(also inside a `< >` group), not inside `|` or after `!`. The value of `dupe:`, `distinct:`
+and `unique:` is a `;` list of properties, named like their functions: `name`, `stem`, `ext`,
+`path` (`full-path`), `parent`, `type`, `size`, `size-on-disk`, `dm`, `dc`, `da`, date
+components (`dmyear`, `dcdate`), `attributes`, `child-count`, `run-count` and the other number
+and text functions. Text compares by the search's case and accent settings (`case:dupe:name`).
+Items whose value is `unknown` are left out.
+
+| Function | Result |
+|---|---|
+| `dupe:` | items that share the values with another result (`dupe:size;name`); `dupe:` alone compares names |
+| `dupe-count:` | only duplicate groups of this many items (`dupe-count:3`, `dupe-count:>=3`) |
+| `dupe-min:` | only duplicate groups of at least this many items (2 by default) |
+| `dupe-max:` | only duplicate groups of at most this many items |
+| `dupe-from:` | only duplicate groups with an item inside one of these folders (`dupe:size dupe-from:D:\incoming`) |
+| `distinct:` | the first result for each distinct value (`distinct:ext`) |
+| `distinct-sort:` | like `distinct:`, sorted by the value |
+| `unique:` | results whose value no other result has |
+| `count:` | at most this many results (`count:100`) |
+| `sizedupe:` | Everything 1.4: `dupe:size` |
+| `namepartdupe:` | Everything 1.4: `dupe:stem` |
+| `dmdupe:`, `dcdupe:`, `dadupe:` | Everything 1.4: `dupe:dm`, `dupe:dc`, `dupe:da` |
+| `attribdupe:` | Everything 1.4: `dupe:attributes` |
+
+`dupe-count:`, `dupe-min:`, `dupe-max:` and `dupe-from:` without `dupe:` mean `dupe:name`. Only
+one of `dupe:`, `distinct:` and `unique:` can be used in a search. Duplicates come grouped and
+the groups in order of their value (smallest size first); within a group, and for `unique:` and
+`distinct:`, items keep the search's order. Memory is bounded: a duplicate search keeps a small
+row and the compared values of each candidate, and stops with "too many results for this
+function" past 512 MB instead of growing; narrow it with other terms (`dupe:size size:>1mb`).
+
 ## Macros
 
 Filter macros keep files by extension, Everything's default lists; a value after the colon is
@@ -295,9 +377,6 @@ so a query never silently matches the wrong thing:
 
 | Functions | Why |
 |---|---|
-| `child:`, `child-file:`, `child-folder:`, `descendant:`, `descendant-file:`, `descendant-folder:`, `descendant-count:`, `descendant-file-count:`, `descendant-folder-count:`, `sibling:`, `sibling-file:`, `sibling-folder:`, `parent-sibling:`, `ancestor-sibling:`, `ancestor:`, `ancestor-name:`, `exists:`, `file-exists:`, `folder-exists:`, `count:`, `parentsize:`, `parentdm:`, `pathlist:` | tree functions (Phase 15, Task 72) |
-| `dupe:`, `dupe-count:`, `dupe-from:`, `dupe-max:`, `dupe-min:`, `distinct:`, `distinct-sort:`, `unique:`, `sizedupe:`, `namepartdupe:`, `dmdupe:`, `dcdupe:`, `dadupe:`, `attribdupe:` | duplicate functions (Task 72; `sizedupe:` will be `dupe:size`) |
-| `hard-link-count:`, `hard-link-filenames:`, `alternate-data-stream-count:`, `adscount:`, `alternate-data-stream-names:`, `adsnames:`, `container-file-count:`, `container-filenames:` | hard link, stream and container functions (Task 72) |
 | `content:`, `utf8content:`, `ansicontent:`, `utf16content:`, `utf16becontent:`, `textplain:` | content functions (Task 73) |
 | `perceived-type:`, `content-type:`, `document-content-type:`, `file-signature:`, `shortcut-target:`, `volume-label:`, `location:`, `loc:`, `computer:`, `url:`, `owner:`, `protected:`, `offline:`, `online:`, `offline-availability:`, `offline-status:`, `is-running:`, `shared-with:`, `status:`, `content-status:`, `character-encoding:`, `line-count:`, `word-count:`, `page-count:`, `slide-count:`, `total-editing-time:`, `md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`, `crc:`, `digital-signature-name:`, `digital-signature-timestamp:`, `version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`, `details:`, `system-index:`, `si:` | file properties read from disk (Task 73) |
 | `width:`, `wide:`, `height:`, `high:`, `dimensions:`, `orientation:`, `bit-depth:`, `bpp:`, `horizontal-resolution:`, `vertical-resolution:`, `aspect-ratio:`, `camera-maker:`, `camera-model:`, `lens-model:`, `aperture:`, `f-stop:`, `max-aperture:`, `exposure-time:`, `exposure-bias:`, `exposure-program:`, `exif-version:`, `flash-mode:`, `focal-length:`, `35mm-focal-length:`, `iso-speed:`, `light-source:`, `metering-mode:`, `brightness:`, `contrast:`, `saturation:`, `white-balance:`, `subject-distance:`, `latitude:`, `longitude:`, `altitude:` | image properties (Task 73) |
@@ -310,6 +389,11 @@ so a query never silently matches the wrong thing:
 ## Where Keel differs from Everything
 
 - `in:` (a folder, at any depth) and `kind:` are Keel's own.
+- `exists:` looks in Keel's index, not on disk; `dupe-from:` keeps whole duplicate groups that
+  have an item in the folder; set functions skip items whose compared value is `unknown`; tree
+  functions and duplicate searches are bounded (above) where Everything is not.
+- Duplicates by content hash (`dupe:sha256`) wait for the hash functions (Phase 15, Task 73);
+  the library's duplicate finder compares content today.
 - Size comparisons use the value itself (`size:>1mb` is more than 1,048,576 bytes); equality uses
   the unit's granularity like Everything (`size:1mb` is 1 MB up to 2 MB minus one byte).
 - `pastweek` is the last seven days up to now; `lastweek` is the previous calendar week.
