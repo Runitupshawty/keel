@@ -23,9 +23,6 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
-#[cfg(windows)]
-mod rdcw;
-mod schedule;
 /// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/proto.rs"]
@@ -34,6 +31,9 @@ mod proto;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/raw.rs"]
 mod raw;
+#[cfg(windows)]
+mod rdcw;
+mod schedule;
 #[cfg(target_os = "macos")]
 mod spotlight;
 mod terms;

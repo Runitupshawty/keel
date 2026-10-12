@@ -21,10 +21,10 @@ mod devices;
 mod dialogs;
 mod dropzone;
 mod du_tabs; // Task 84: the Disk Usage window's analysis tabs
+mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu
 mod filelist_ui; // Task 77: file list tabs, Export, `keel filelist`
 mod finder; // Phase 14 Task 67: Quick Look, path bar, spring-loading, Go to Folder
 mod finder_icons; // Task 68: the built-in Keel Finder icon theme
-mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu
 mod folder_ops; // Task 60: folder operation dialogs
 mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)
