@@ -202,16 +202,7 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
             crate::mount_ui::source_menu(ui, &s.id.0, out);
         });
     }
-    // Saved views (Phase 16 makes them Smart Folders).
-    for v in &l.views {
-        entry(
-            ui,
-            Glyph::View,
-            &v.name,
-            LibCmd::Query(v.query.clone()),
-            out,
-        );
-    }
+    // Saved views are listed with the bookmarks (`bookmarks::sidebar`).
     entry(ui, Glyph::Plus, "Add source…", LibCmd::AddSource, out);
 }
 
