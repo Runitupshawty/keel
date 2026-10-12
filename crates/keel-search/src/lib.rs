@@ -6,9 +6,17 @@
 mod composite;
 #[cfg(windows)]
 mod everything;
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 mod fuzzy;
 #[cfg(target_os = "linux")]
 mod locate;
+/// The raw MFT record parser: used by the Windows index, built everywhere for fuzzing.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/mft.rs"]
+mod mft;
 #[cfg(windows)]
 mod ntfs;
 #[cfg(target_os = "macos")]

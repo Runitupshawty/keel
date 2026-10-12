@@ -9,6 +9,10 @@ repository.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`.
+fuzzing = []
+
 [dependencies]
 anyhow.workspace = true
 directories.workspace = true
@@ -24,3 +28,7 @@ rusqlite.workspace = true
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
 windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
+
+[dev-dependencies]
+# The in-tree fuzz runs (`keel_vfs::fuzz_harness`).
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }
