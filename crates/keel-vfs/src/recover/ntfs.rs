@@ -6,6 +6,7 @@
 //! runs continue in other records (`$ATTRIBUTE_LIST`), are counted but not listed.
 
 use super::alloc::Alloc;
+use super::utf16_units;
 use super::{
     filetime, read_at, read_up_to, u16_at, u32_at, u64_at, Candidate, Confidence, Data, Extent,
     FsKind, RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
@@ -183,10 +184,7 @@ fn parse_record(rec: &[u8]) -> Option<Record> {
 fn file_name(v: &[u8]) -> Option<FileName> {
     let n = usize::from(*v.get(64)?);
     let raw = v.get(66..66 + 2 * n)?;
-    let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    let units: Vec<u16> = utf16_units(raw).collect();
     let name = String::from_utf16_lossy(&units);
     if name.is_empty() {
         return None;
@@ -477,13 +475,16 @@ fn deleted_file(geo: &Geo, no: u64, record: Record, counts: &mut Counts) -> Opti
     })
 }
 
+/// `(first cluster, count)` runs.
+type ClusterRuns = Vec<(u64, u64)>;
+
 /// The byte extents covering `size` and the allocated cluster runs among them; None when
 /// a run leaves the volume or the runs are shorter than the size.
 fn extents(
     geo: &Geo,
     runs: &[(Option<u64>, u64)],
     size: u64,
-) -> Option<(Vec<Extent>, Vec<(u64, u64)>)> {
+) -> Option<(Vec<Extent>, ClusterRuns)> {
     let mut need = size.div_ceil(geo.cluster);
     let mut extents = Vec::new();
     let mut clusters = Vec::new();

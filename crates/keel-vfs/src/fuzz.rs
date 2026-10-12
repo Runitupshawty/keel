@@ -137,17 +137,17 @@ pub fn ftp_mlsd(data: &[u8]) {
 /// Deleted-file recovery over an NTFS volume image: the boot sector, the `$MFT` walk
 /// (fixups, attributes, data runs), `$Bitmap`, folder paths, then each candidate's data.
 pub fn recover_ntfs(data: &[u8]) {
-    recover(data, |r| crate::recover::scan_ntfs(r));
+    recover(data, crate::recover::scan_ntfs);
 }
 
 /// Deleted-file recovery over an exFAT volume image: entry sets, chains, the bitmap.
 pub fn recover_exfat(data: &[u8]) {
-    recover(data, |r| crate::recover::scan_exfat(r));
+    recover(data, crate::recover::scan_exfat);
 }
 
 /// Deleted-file recovery over a FAT12/16/32 volume image: folders, long names, the FAT.
 pub fn recover_fat(data: &[u8]) {
-    recover(data, |r| crate::recover::scan_fat(r));
+    recover(data, crate::recover::scan_fat);
 }
 
 /// A Recycle Bin `$I` file.

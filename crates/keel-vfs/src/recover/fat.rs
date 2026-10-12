@@ -8,6 +8,7 @@
 //! files past cluster 65,535 there point at the wrong place (rated by the clusters found).
 
 use super::alloc::Alloc;
+use super::utf16_units;
 use super::{
     civil, read_up_to, u16_at, u32_at, Candidate, Confidence, Data, Extent, FsKind, RecoverError,
     Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
@@ -274,13 +275,11 @@ impl<R: Read + Seek> Walk<'_, R> {
             let Ok(bytes) = read_up_to(self.r, off, len) else {
                 break;
             };
-            for (i, e) in bytes.chunks_exact(32).enumerate() {
+            for (i, e) in bytes.as_chunks::<32>().0.iter().enumerate() {
                 if out.len() as u64 >= MAX_DIR_ENTRIES {
                     return out;
                 }
-                let mut entry = [0u8; 32];
-                entry.copy_from_slice(e);
-                out.push((off + i as u64 * 32, entry));
+                out.push((off + i as u64 * 32, *e));
             }
             if (bytes.len() as u64) < len {
                 break;
@@ -434,11 +433,7 @@ fn long_name(e: &[u8; 32], lfns: &[[u8; 32]], erased: bool) -> Option<String> {
     let mut units = Vec::with_capacity(lfns.len() * 13);
     for l in lfns.iter().rev() {
         for range in [1..11, 14..26, 28..32] {
-            units.extend(
-                l[range]
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]])),
-            );
+            units.extend(utf16_units(&l[range]));
         }
     }
     let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());

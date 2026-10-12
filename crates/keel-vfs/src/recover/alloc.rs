@@ -27,7 +27,7 @@ impl Alloc {
             })
             .collect();
         words.truncate(bits.div_ceil(64) as usize);
-        if bits % 64 != 0 {
+        if !bits.is_multiple_of(64) {
             if let Some(last) = words.last_mut() {
                 *last &= (1u64 << (bits % 64)) - 1;
             }
@@ -84,11 +84,6 @@ impl Alloc {
         (self.used_before(hi) - self.used_before(lo), hi - lo)
     }
 
-    pub fn is_used(&self, cluster: u64) -> Option<bool> {
-        let (used, covered) = self.count(cluster, 1);
-        (covered == 1).then_some(used == 1)
-    }
-
     /// The confidence for data in these cluster runs `(first cluster, count)`.
     pub fn confidence(&self, runs: &[(u64, u64)]) -> Confidence {
         let (mut used, mut covered, mut total) = (0u64, 0u64, 0u64);
@@ -122,9 +117,9 @@ mod tests {
         assert_eq!(a.count(0, 100), (5, 12));
         assert_eq!(a.count(18, 10), (1, 4));
         assert_eq!(a.count(30, 4), (0, 0));
-        assert_eq!(a.is_used(11), Some(true));
-        assert_eq!(a.is_used(13), Some(false));
-        assert_eq!(a.is_used(99), None);
+        assert_eq!(a.count(11, 1), (1, 1));
+        assert_eq!(a.count(13, 1), (0, 1));
+        assert_eq!(a.count(99, 1), (0, 0));
         assert_eq!(a.confidence(&[(13, 2)]), Confidence::Good);
         assert_eq!(a.confidence(&[(11, 2)]), Confidence::Overwritten);
         assert_eq!(a.confidence(&[(12, 2)]), Confidence::Partial);

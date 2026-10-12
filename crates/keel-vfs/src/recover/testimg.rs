@@ -224,7 +224,7 @@ impl FatImg {
     ) -> Vec<usize> {
         let mut units = long.map(utf16).unwrap_or_default();
         let parts = units.len().div_ceil(13);
-        if units.len() % 13 != 0 {
+        if !units.len().is_multiple_of(13) {
             units.push(0);
         }
         units.resize(parts * 13, 0xFFFF);

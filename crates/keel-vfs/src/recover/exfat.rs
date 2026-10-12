@@ -7,7 +7,7 @@
 
 use super::alloc::Alloc;
 use super::{
-    civil, read_up_to, u16_at, u32_at, u64_at, Candidate, Confidence, Data, Extent, FsKind,
+    civil, read_up_to, u16_at, u32_at, u64_at, utf16_units, Candidate, Confidence, Data, Extent, FsKind,
     RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
 };
 use std::collections::HashSet;
@@ -240,10 +240,8 @@ impl<R: Read + Seek> Walk<'_, R> {
             let Ok(bytes) = read_up_to(self.r, off, self.geo.cluster) else {
                 break;
             };
-            for (i, e) in bytes.chunks_exact(32).enumerate() {
-                let mut entry = [0u8; 32];
-                entry.copy_from_slice(e);
-                out.push((off + i as u64 * 32, entry));
+            for (i, e) in bytes.as_chunks::<32>().0.iter().enumerate() {
+                out.push((off + i as u64 * 32, *e));
             }
             if (bytes.len() as u64) < self.geo.cluster {
                 break;
@@ -404,11 +402,7 @@ fn file_set(set: &[(u64, [u8; 32])]) -> Option<FileSet> {
         if n[0] & 0x7F != 0x41 {
             return None;
         }
-        units.extend(
-            n[2..32]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]])),
-        );
+        units.extend(utf16_units(&n[2..32]));
     }
     units.truncate(name_len);
     if set_checksum(set) != u16_at(p, 2) {
