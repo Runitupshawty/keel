@@ -370,10 +370,15 @@ fn breadcrumb_click() {
     let root = demo();
     let shed = root.join("Documents").join("Projects").join("shed");
     let mut h = app(&shed, &root.join("Pictures"));
-    // The left pane's crumbs come first.
-    let at = crumb(&h, "Documents");
+    // The left pane's crumbs come first. The parent of the current folder: the nearest parts
+    // always fit left of the view buttons, farther ones fold behind "..." in a long temp path.
+    let at = crumb(&h, "Projects");
     click_at(&mut h, at, NONE, PointerButton::Primary);
-    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &root.join("Documents"))));
+    assert!(wait(&mut h, 10, &|s| dir_is(
+        s,
+        0,
+        &root.join("Documents").join("Projects")
+    )));
     shot(&mut h, "breadcrumb-click");
 }
 
