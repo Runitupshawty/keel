@@ -485,7 +485,10 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                 }
                 let exts = t.extensions.clone();
                 let label = t.label.clone();
-                r.on_hover_text(type_hover(t)).context_menu(|ui| {
+                r.on_hover_ui(|ui| {
+                    ui.label(type_hover(t));
+                })
+                .context_menu(|ui| {
                     if ui.button("Show only these files in the tree").clicked() {
                         event = Some(TypeEvent::Filter(exts.clone()));
                         ui.close_menu();
@@ -577,14 +580,12 @@ fn tree_area(
     let columns = settings.shown_columns();
     if let Some(m) = &du.model {
         if columns.iter().any(|c| c.metadata()) {
-            let visible: Vec<NodeId> = m.rows.iter().map(|r| r.0).collect();
             let start = ui.data(|d| d.get_temp::<usize>(egui::Id::new("keel-du-first-row")));
-            let from = start.unwrap_or(0).min(visible.len());
-            let ids = visible[from..]
-                .iter()
+            let from = start.unwrap_or(0).min(m.rows.len());
+            let ids: Vec<NodeId> = (m.rows[from..].iter())
                 .take(page as usize + 8)
-                .copied()
-                .collect::<Vec<_>>();
+                .map(|r| r.0)
+                .collect();
             du.want_metadata(ids.into_iter());
         }
     }
@@ -837,7 +838,9 @@ fn tree_area(
                         range: false,
                     });
                 }
-                let r = r.on_hover_text(row_hover(model, id));
+                let r = r.on_hover_ui(|ui| {
+                    ui.label(row_hover(model, id));
+                });
                 row_menu(&r, model, id, ext, out, &mut events);
             });
         });
