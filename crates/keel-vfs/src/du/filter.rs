@@ -192,11 +192,12 @@ mod tests {
 
     #[test]
     fn keys_drop_trailing_separators_but_not_roots() {
-        assert_eq!(key(Path::new("/")), "/");
         if cfg!(windows) {
             assert_eq!(key(Path::new("C:\\")), "c:\\");
             assert_eq!(key(Path::new("C:/Data/")), "c:\\data");
+            assert_eq!(key(Path::new("\\\\server\\share\\")), "\\\\server\\share");
         } else {
+            assert_eq!(key(Path::new("/")), "/");
             assert_eq!(key(Path::new("/data/")), "/data");
         }
     }
