@@ -1,6 +1,7 @@
 //! The folder operation dialogs (Merge into…, Flatten, Organize by…, Attributes…, Create
 //! link…): each picks what the operation needs and asks for its library plan, whose preview
-//! dialog lists every change before anything runs (`LibCmd::Plan`).
+//! dialog lists every change before anything runs (`LibCmd::Plan`). Set folder dates has
+//! nothing to pick and goes straight to its preview.
 
 use crate::a11y::Named as _;
 use crate::keys::Action;
@@ -18,6 +19,8 @@ pub enum Kind {
     Link,
     /// Remove empty folders (Task 85).
     RemoveEmpty,
+    /// Set folder dates to the newest change below.
+    FolderDates,
 }
 
 impl Kind {
@@ -29,9 +32,18 @@ impl Kind {
             Kind::Attributes => "Attributes…",
             Kind::Link => "Create link…",
             Kind::RemoveEmpty => "Remove empty folders…",
+            Kind::FolderDates => FOLDER_DATES,
         }
     }
+
+    /// Whether it opens a dialog first (else its preview opens at once).
+    pub fn asks(self) -> bool {
+        self != Kind::FolderDates
+    }
 }
+
+/// The menu and palette entry of Set folder dates.
+pub const FOLDER_DATES: &str = "Set folder dates to the newest change below…";
 
 pub struct FolderDialog {
     pub kind: Kind,
@@ -67,10 +79,16 @@ impl FolderDialog {
             Kind::Merge if targets.len() < 2 || !folders => {
                 return Err("Select two or more folders to merge".into())
             }
-            Kind::Flatten | Kind::Organize | Kind::RemoveEmpty
+            Kind::Flatten | Kind::Organize | Kind::RemoveEmpty | Kind::FolderDates
                 if targets.len() != 1 || !folders =>
             {
-                return Err(format!("{} works on one folder", kind.title()))
+                return Err(format!(
+                    "{} works on one folder",
+                    kind.title().trim_end_matches('…')
+                ))
+            }
+            Kind::FolderDates if !locals => {
+                return Err("Folder dates are set on this computer's folders only".into())
             }
             Kind::Link if targets.len() != 1 => {
                 return Err("Select one file or folder to link to".into())
@@ -150,6 +168,7 @@ impl FolderDialog {
                     kind: self.link_kind,
                 }
             }
+            Kind::FolderDates => Op::folder_dates(one()),
         })
     }
 
@@ -332,6 +351,12 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
                 r.named("Link name");
             });
         }
+        // Not shown: it previews at once (`Kind::asks`).
+        Kind::FolderDates => {
+            ui.label(format!(
+                "Set each folder in {one} to the date of the newest file below it"
+            ));
+        }
     }
     if let Some(e) = &d.error {
         ui.colored_label(ui.visuals().error_fg_color, e);
@@ -413,6 +438,17 @@ mod tests {
             &[false]
         )
         .is_err());
+        let d = FolderDialog::new(Kind::FolderDates, vec![v("/d/a")], &[true]).unwrap();
+        assert!(!d.kind.asks());
+        assert_eq!(d.op(), Ok(Op::folder_dates(v("/d/a"))));
+        let two = FolderDialog::new(Kind::FolderDates, vec![v("/d/a"), v("/d/b")], &[true, true]);
+        assert_eq!(
+            two.err().as_deref(),
+            Some("Set folder dates to the newest change below works on one folder")
+        );
+        assert!(FolderDialog::new(Kind::FolderDates, vec![v("/d/f.txt")], &[false]).is_err());
+        let remote = VPath::parse("sftp://h/x").unwrap();
+        assert!(FolderDialog::new(Kind::FolderDates, vec![remote], &[true]).is_err());
     }
 
     #[test]

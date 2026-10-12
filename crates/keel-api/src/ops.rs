@@ -168,6 +168,8 @@ pub static OPS: &[Operation] = &[
         AttributesParams => PlanPreview, plan_set_attributes, json!({"paths": [example_file()], "readonly": true})),
     now!("plan.link", "Previews making a link on the host: a symbolic link (on Windows only with Developer Mode or elevation), a junction to a folder (Windows) or a hard link to a file. Call execute to apply.",
         LinkParams => PlanPreview, plan_link, json!({"target": example_dir(), "link": format!("{}-link", example_dir()), "kind": if cfg!(windows) { "junction" } else { "symlink" }})),
+    now!("plan.folder_dates", "Previews setting the modified time of each folder at and under `path` on the host to that of the newest file below it, at any depth (links are not followed; a folder with no file below keeps its time). Each change's detail is the new time and the old one. Call execute to apply.",
+        FolderDatesParams => PlanPreview, plan_folder_dates, json!({"path": example_dir()})),
     now!("execute", "Applies a previewed plan: pass the plan_id and input_hash of the preview being confirmed. Refuses expired, tampered or changed plans.",
         true, ExecuteParams => Executed, execute, json!({"plan_id": "0123456789abcdef0123456789abcdef", "input_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"})),
     now!("library.sync", "Pulls tag, favorite, folder style and content-id changes now from one paired device, or every device library sync is on with (both sides must turn it on); applies them to the library at once.",
@@ -2178,9 +2180,32 @@ fn plan_link(ctx: &Ctx, p: LinkParams) -> Result<PlanPreview> {
     file_plan(ctx, op)
 }
 
+fn plan_folder_dates(ctx: &Ctx, p: FolderDatesParams) -> Result<PlanPreview> {
+    file_plan(ctx, keel_core::Op::folder_dates(real_path(ctx, &p.path)?))
+}
+
+/// `2014-05-13T16:53:20Z` (UTC) for a time in nanoseconds since the Unix epoch.
+fn utc(ns: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(
+        ns.div_euclid(1_000_000_000),
+        ns.rem_euclid(1_000_000_000) as u32,
+    )
+    .map_or_else(
+        || ns.to_string(),
+        |t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
 fn store_file_plan(ctx: &Ctx, plan: keel_core::Plan) -> Result<PlanPreview> {
     let summary = file_summary(&plan);
-    let changes = plan.changes.iter().map(file_change).collect();
+    let mut changes: Vec<Change> = plan.changes.iter().map(file_change).collect();
+    if let keel_core::Op::FolderDates { dates, .. } = &plan.op {
+        // The new time and the old one, for each folder.
+        for (c, d) in changes.iter_mut().zip(dates) {
+            c.detail = Some(format!("{}, was {}", utc(d.to), utc(d.was)));
+            (c.files, c.bytes) = (None, None);
+        }
+    }
     let warnings = plan.warnings.iter().map(file_warning).collect();
     let (plan_id, input_hash, expires_at) = ctx.plans.insert(Input::Files(plan), false)?;
     Ok(PlanPreview {
@@ -2238,6 +2263,7 @@ fn file_change(c: &keel_core::Change) -> Change {
         A::RemoveFolder => "remove_folder",
         A::SetAttributes => "set_attributes",
         A::Link => "link",
+        A::SetFolderDate => "set_folder_date",
     };
     Change {
         action: action.into(),

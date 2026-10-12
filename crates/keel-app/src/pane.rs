@@ -721,6 +721,8 @@ pub fn context_menu(
                     item(ui, "Flatten…", "", op(Kind::Flatten));
                     item(ui, "Organize by…", "", op(Kind::Organize));
                     item(ui, "Remove empty folders…", "", op(Kind::RemoveEmpty));
+                    let dates = crate::folder_ops::FOLDER_DATES;
+                    item(ui, dates, "", op(Kind::FolderDates));
                 }
                 item(ui, "Attributes…", "", op(Kind::Attributes));
                 item(ui, "Create link…", "", op(Kind::Link));

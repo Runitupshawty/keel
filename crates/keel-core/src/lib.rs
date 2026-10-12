@@ -23,6 +23,8 @@ mod comments;
 mod db;
 /// Finder tag colors and macOS native tags (`com.apple.metadata:_kMDItemUserTags`).
 pub mod finder_tags;
+/// Set folder dates to the newest change below (a plan like the folder operations).
+mod folder_dates;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -59,6 +61,7 @@ pub use backup::{
 };
 pub use comments::MAX_COMMENT;
 pub use finder_tags::{FinderColor, FinderTag};
+pub use folder_dates::{ns_time, FolderDate};
 pub use fsid::unix_ns;
 pub use hash::{
     background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,

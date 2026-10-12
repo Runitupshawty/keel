@@ -446,6 +446,14 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .ctx(),
+        // --- Task 85 ---
+        cmd(
+            "folder.dates",
+            crate::folder_ops::FOLDER_DATES,
+            Library(LibCmd::FolderOp(Kind::FolderDates)),
+            &[],
+        )
+        .ctx(),
         // --- the palette, in a search tab (Everything's Search menu and its keys) ---
         cmd(
             "search.match_case",

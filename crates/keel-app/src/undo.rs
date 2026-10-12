@@ -46,6 +46,8 @@ pub enum Op {
     /// Task 85: duplicates replaced with hard links: each path gets its own copy of the
     /// bytes again, with its modified time from before.
     Hardlink(Vec<(VPath, Option<std::time::SystemTime>)>),
+    /// Folder dates set: each folder gets its modified time back.
+    FolderDates(Vec<(VPath, std::time::SystemTime)>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +206,7 @@ impl Entry {
             Op::Attributes(_) => "attributes",
             Op::Link => "link",
             Op::Hardlink(_) => "hard links",
+            Op::FolderDates(_) => "folder dates",
         }
     }
 
@@ -256,6 +259,7 @@ impl Entry {
             Op::Attributes(_) => format!("Changed the attributes of {n}"),
             Op::Link => format!("Made the link {}", self.items[0].now.name()),
             Op::Hardlink(_) => format!("Replaced {n} with hard links"),
+            Op::FolderDates(_) => format!("Set the dates of {}", folders(self.items.len())),
         }
         .trim_end()
         .to_owned()
@@ -312,6 +316,10 @@ impl Entry {
             Op::Attributes(_) => format!("Undo attributes: set {n} back as they were?"),
             Op::Link => format!("Undo link: remove {}?", self.items[0].now.name()),
             Op::Hardlink(_) => format!("Undo hard links: give {n} their own copy again?"),
+            Op::FolderDates(_) => format!(
+                "Undo folder dates: set {} back as they were?",
+                folders(self.items.len())
+            ),
         }
     }
 
@@ -516,6 +524,14 @@ pub fn trashed(
     Ok(items)
 }
 
+/// "1 folder", "3 folders".
+fn folders(n: usize) -> String {
+    match n {
+        1 => "1 folder".to_owned(),
+        n => format!("{n} folders"),
+    }
+}
+
 /// "2 of the 5 items".
 fn items_of(missing: usize, all: usize) -> String {
     format!("{missing} of the {}", items(all))
@@ -539,12 +555,16 @@ pub struct Planned {
     /// into one stays), and the attributes an attribute plan changes.
     pub taken: Vec<VPath>,
     pub before: Vec<(VPath, keel_vfs::Attributes)>,
+    /// A folder dates plan: the folders its preview changes, and their times read just
+    /// before it ran.
+    pub dated: Vec<VPath>,
+    pub dates: Vec<(VPath, std::time::SystemTime)>,
 }
 
 impl Planned {
     /// Reads, on a worker just before the plan runs, what undo needs to know about the disk
     /// as it was: the targets of a folder operation's moves that exist, an attribute
-    /// plan's attributes.
+    /// plan's attributes, a folder dates plan's times.
     pub fn read_before(&mut self, stat: impl Fn(&VPath) -> Option<Stamp>) {
         self.taken = (self.moves.iter())
             .map(|(_, to)| to)
@@ -559,6 +579,13 @@ impl Planned {
                 })
                 .collect();
         }
+        self.dates = (self.dated.iter())
+            .filter_map(|p| {
+                let local = p.to_local_path()?;
+                let t = std::fs::symlink_metadata(local).ok()?.modified().ok()?;
+                Some((p.clone(), t))
+            })
+            .collect();
     }
 
     /// What the operation did, as the disk shows it now that its job ended (the part that
@@ -707,6 +734,22 @@ impl Planned {
                 };
                 Ok((Op::Link, items))
             }
+            L::FolderDates { .. } => {
+                if self.dates.len() < self.dated.len() {
+                    return Err("the folder dates before could not be read".into());
+                }
+                // Each folder as the plan left it: one changed since is refused.
+                let items = (self.dates.iter())
+                    .filter_map(|(p, _)| {
+                        Some(Item {
+                            now: p.clone(),
+                            was: None,
+                            stamp: Some(stat(p)?),
+                        })
+                    })
+                    .collect();
+                Ok((Op::FolderDates(self.dates.clone()), items))
+            }
             L::Delete { paths } => {
                 if paths.iter().any(|p| p.to_local_path().is_none()) {
                     return Err(crate::state::PERMANENT.into());
@@ -823,6 +866,14 @@ pub fn run(
                 step(&mut p, path)?;
                 let local = path.to_local_path().context("attributes are local")?;
                 keel_vfs::fsattr::set_attributes(&local, attrs)?;
+                p.done_items += 1;
+            }
+        }
+        Op::FolderDates(before) => {
+            for (path, t) in before {
+                step(&mut p, path)?;
+                let local = path.to_local_path().context("folder dates are local")?;
+                keel_vfs::fsattr::set_folder_modified(&local, *t)?;
                 p.done_items += 1;
             }
         }

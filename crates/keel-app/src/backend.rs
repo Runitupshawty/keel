@@ -341,7 +341,8 @@ impl Planned {
             Planned::Local(plan) => plan
                 .changes
                 .iter()
-                .map(|c| {
+                .enumerate()
+                .map(|(i, c)| {
                     use keel_core::Action as A;
                     let empty = matches!(
                         &plan.op,
@@ -350,6 +351,14 @@ impl Planned {
                             ..
                         }
                     );
+                    if let (A::SetFolderDate, Op::FolderDates { dates, .. }) = (c.action, &plan.op)
+                    {
+                        let when = |ns: i64| local_time(keel_core::ns_time(ns));
+                        let (to, was) = dates.get(i).map_or((String::new(), String::new()), |d| {
+                            (when(d.to), when(d.was))
+                        });
+                        return format!("Set date of {} → {to} (was {was})", c.from.display());
+                    }
                     let verb = match c.action {
                         A::RemoveFolder if empty => "Remove empty folder",
                         A::Copy => "Copy",
@@ -360,6 +369,7 @@ impl Planned {
                         A::RemoveFolder => "Remove when empty",
                         A::SetAttributes => "Set attributes of",
                         A::Link => "Link to",
+                        A::SetFolderDate => "Set date of",
                     };
                     let to = c.to.as_ref().map(|t| format!(" → {}", t.display()));
                     if matches!(
@@ -400,6 +410,13 @@ impl Planned {
                         "remove_folder" => "Remove when empty".to_owned(),
                         "set_attributes" => "Set attributes of".to_owned(),
                         "link" => "Link to".to_owned(),
+                        "set_folder_date" => {
+                            let when = c.detail.as_deref().unwrap_or_default();
+                            return format!(
+                                "Set date of {} → {when}",
+                                c.path.as_deref().unwrap_or_default()
+                            );
+                        }
                         _ => verb,
                     };
                     format!("{verb} {path}{}{size}", to.unwrap_or_default())
@@ -440,6 +457,20 @@ impl Planned {
             }
         }
         (moves, made, prune)
+    }
+
+    /// For undo of a folder dates plan: the folders whose time it sets.
+    pub fn dated(&self) -> Vec<VPath> {
+        match self {
+            Planned::Local(p) => (p.changes.iter())
+                .filter(|c| c.action == keel_core::Action::SetFolderDate)
+                .map(|c| c.from.clone())
+                .collect(),
+            Planned::Daemon(p) => (p.changes.iter())
+                .filter(|c| c.action == "set_folder_date")
+                .filter_map(|c| c.path.as_deref().map(vpath_of))
+                .collect(),
+        }
     }
 
     /// For undo: the targets that existed before (shown paths: a Skip leaves or merges
@@ -1367,6 +1398,13 @@ fn real_paths(sources: &[SourceSummary], targets: &[VPath]) -> Result<Vec<String
         .collect()
 }
 
+/// `2024-03-01 14:22:05`, local time.
+fn local_time(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
 /// An API path: a URI, else a local path.
 pub fn vpath_of(s: &str) -> VPath {
     match s.contains("://") {
@@ -1518,6 +1556,9 @@ fn plan_params(op: &Op) -> (&'static str, Value) {
                 "plan.link",
                 json!({"target": target.display(), "link": link.display(), "kind": kind}),
             )
+        }
+        Op::FolderDates { root, .. } => {
+            return ("plan.folder_dates", json!({"path": root.display()}))
         }
     };
     ("plan", params)

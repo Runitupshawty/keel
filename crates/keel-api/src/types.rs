@@ -578,11 +578,19 @@ pub struct LinkParams {
     pub kind: LinkKind,
 }
 
+/// `plan.folder_dates`: each folder at and under `path` gets the modified time of the newest
+/// file below it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FolderDatesParams {
+    pub path: String,
+}
+
 /// One projected change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Change {
     /// `copy`, `move`, `delete`, `rename`, `make_folder`, `remove_folder`, `set_attributes`,
-    /// `link`, or the operation's own (`tag.add`, `source.add`…).
+    /// `link`, `set_folder_date`, or the operation's own (`tag.add`, `source.add`…).
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,

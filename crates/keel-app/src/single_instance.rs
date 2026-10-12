@@ -316,6 +316,7 @@ mod tests {
             folder: Some(std::env::temp_dir()),
             search: Some("needle".into()),
             filelist: None,
+            disk_usage: true,
             select: None,
         };
         let (_server, rx) = served(&name);
@@ -341,6 +342,7 @@ mod tests {
             folder: Some(folder.clone()),
             search: None,
             filelist: None,
+            disk_usage: false,
             select: None,
         };
         let (_server, rx) = served(&name);

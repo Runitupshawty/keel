@@ -407,6 +407,11 @@ impl crate::Plan {
                 link.display(),
                 target.display()
             ),
+            Op::FolderDates { root, dates } => format!(
+                "Set the dates of {} in {} to the newest file below each",
+                counted(dates.len(), "folder"),
+                root.display()
+            ),
             _ => return None,
         })
     }

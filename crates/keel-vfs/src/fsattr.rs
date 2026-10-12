@@ -207,6 +207,33 @@ pub fn symlinks_allowed() -> bool {
     true
 }
 
+/// Sets the modified time of the folder `dir` itself: a link there is never followed (on
+/// Windows its own time is set; on Unix it is refused).
+pub fn set_folder_modified(dir: &Path, time: std::time::SystemTime) -> Result<()> {
+    let mut open = fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES; FILE_FLAG_BACKUP_SEMANTICS (a folder) and
+        // FILE_FLAG_OPEN_REPARSE_POINT (never what a junction points to).
+        open.access_mode(0x0100)
+            .custom_flags(0x0200_0000 | 0x0020_0000);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY);
+    }
+    #[cfg(not(any(windows, unix)))]
+    open.read(true);
+    let f = open
+        .open(dir)
+        .with_context(|| format!("open {}", dir.display()))?;
+    f.set_modified(time)
+        .with_context(|| format!("set the date of {}", dir.display()))
+}
+
 /// Makes `link` (which must not exist) pointing at `target` (absolute).
 pub fn make_link(target: &Path, link: &Path, kind: LinkKind) -> Result<()> {
     anyhow::ensure!(
@@ -363,6 +390,18 @@ mod tests {
         assert_eq!(String::from_utf16(&units[..8]).unwrap(), r"\??\C:\a");
         assert_eq!(String::from_utf16(&units[9..13]).unwrap(), r"C:\a");
         assert!(mount_point_data(&"x".repeat(40_000)).is_err());
+    }
+
+    #[test]
+    fn a_folders_own_date_is_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("f.txt"), "f").unwrap();
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        set_folder_modified(&sub, t).unwrap();
+        assert_eq!(fs::metadata(&sub).unwrap().modified().unwrap(), t);
+        assert!(set_folder_modified(&dir.path().join("missing"), t).is_err());
     }
 
     fn u16_at_slice(c: &[u8]) -> u16 {

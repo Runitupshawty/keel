@@ -83,6 +83,14 @@ pub enum Op {
         link: VPath,
         kind: keel_vfs::LinkKind,
     },
+    /// Each folder at and under the local folder `root` gets the modified time of the newest
+    /// file below it ([`Op::folder_dates`]): the preview fills `dates` from the disk (sorted
+    /// by path), so a preview made again after a file changed has another op and is refused.
+    FolderDates {
+        root: VPath,
+        #[serde(default)]
+        dates: Vec<crate::FolderDate>,
+    },
 }
 
 impl Op {
@@ -97,6 +105,14 @@ impl Op {
         }
     }
 
+    /// Set folder dates under `root` to the newest change below (the preview fills them in).
+    pub fn folder_dates(root: VPath) -> Op {
+        Op::FolderDates {
+            root,
+            dates: Vec::new(),
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Op::Copy { .. } => "copy",
@@ -106,6 +122,7 @@ impl Op {
             Op::Arrange { what, .. } => what.verb(),
             Op::SetAttributes { .. } => "attributes",
             Op::Link { .. } => "link",
+            Op::FolderDates { .. } => "folder dates",
         }
     }
 
@@ -117,6 +134,7 @@ impl Op {
             Op::Rename { path, .. } => vec![path.clone()],
             Op::Arrange { moves, .. } => moves.iter().map(|(item, _)| item.clone()).collect(),
             Op::Link { target, .. } => vec![target.clone()],
+            Op::FolderDates { dates, .. } => dates.iter().map(|d| d.path.clone()).collect(),
         }
     }
 
@@ -166,6 +184,10 @@ impl Op {
                 "link": link.display(),
                 "kind": kind,
             }),
+            Op::FolderDates { root, dates } => serde_json::json!({
+                "folder": root.display(),
+                "folders": dates.len(),
+            }),
         }
     }
 }
@@ -183,6 +205,8 @@ pub enum Action {
     SetAttributes,
     /// `from` is the target, `to` the new link.
     Link,
+    /// A folder whose modified time a folder dates plan sets (the op has the times).
+    SetFolderDate,
 }
 
 /// One projected change per top-level path.
@@ -354,6 +378,16 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                 renamed,
                 prune,
             }
+        }
+        Op::FolderDates { root, .. } => {
+            let local = local_only(&root, "folder dates")?;
+            let dates = crate::folder_dates::generate(&root, &local)?;
+            anyhow::ensure!(
+                !dates.is_empty(),
+                "nothing to change: every folder under {} already has the date of the newest file below it",
+                root.display()
+            );
+            Op::FolderDates { root, dates }
         }
         op => op,
     };
@@ -544,6 +578,11 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             }
             changes.push(change(Action::Link, target, Some(link.clone())));
         }
+        Op::FolderDates { dates, .. } => {
+            for d in dates {
+                changes.push(change(Action::SetFolderDate, &d.path, None));
+            }
+        }
     }
     let mut seen = Vec::new();
     warnings.retain(|w| {
@@ -567,6 +606,7 @@ fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<
         Op::Arrange { what, .. } => what.roots(),
         Op::SetAttributes { paths, .. } => paths.iter().collect(),
         Op::Link { target, link, .. } => vec![target, link],
+        Op::FolderDates { root, .. } => vec![root],
         _ => Vec::new(),
     };
     if let Some(p) = elsewhere.iter().find(|p| outer(p).is_some()) {
@@ -590,7 +630,10 @@ fn archive_writes(lib: &Shared, op: &Op, warnings: &mut Vec<Warning>) -> Result<
         }
         Op::Delete { paths } => paths.iter().collect(),
         Op::Rename { path, .. } => vec![path],
-        Op::Arrange { .. } | Op::SetAttributes { .. } | Op::Link { .. } => Vec::new(),
+        Op::Arrange { .. }
+        | Op::SetAttributes { .. }
+        | Op::Link { .. }
+        | Op::FolderDates { .. } => Vec::new(),
     };
     for p in written {
         let Some(archive) = outer(p) else { continue };
@@ -982,7 +1025,7 @@ fn target(op: &Op, item: &VPath) -> Option<VPath> {
         Op::Arrange { moves, renamed, .. } => crate::arrange::into_of(moves, item)
             .map(|d| d.join(crate::arrange::renamed_to(renamed, item).unwrap_or(item.name()))),
         Op::Link { link, .. } => Some(link.clone()),
-        Op::Delete { .. } | Op::SetAttributes { .. } => None,
+        Op::Delete { .. } | Op::SetAttributes { .. } | Op::FolderDates { .. } => None,
     }
 }
 
@@ -1041,8 +1084,8 @@ fn ran(ctx: &JobCtx, op: &Op, item: &VPath, s: Started) -> bool {
     match op {
         Op::Copy { .. } => appeared && !is_dir(ctx, item),
         Op::Link { link, .. } => live(ctx, link),
-        // Setting attributes again changes nothing.
-        Op::SetAttributes { .. } => false,
+        // Setting attributes or dates again changes nothing.
+        Op::SetAttributes { .. } | Op::FolderDates { .. } => false,
         _ => !live(ctx, item),
     }
 }
@@ -1563,6 +1606,11 @@ fn step(ctx: &JobCtx, op: &Op, item: &VPath) -> Result<bool> {
         Op::SetAttributes { attrs, .. } => keel_vfs::fsattr::set_attributes(&local(item)?, attrs)?,
         Op::Link { link, kind, .. } => {
             keel_vfs::fsattr::make_link(&local(item)?, &local(link)?, *kind)?
+        }
+        Op::FolderDates { dates, .. } => {
+            let to = crate::folder_dates::date_of(dates, item)
+                .with_context(|| format!("no date planned for {}", item.display()))?;
+            keel_vfs::fsattr::set_folder_modified(&local(item)?, crate::ns_time(to))?
         }
         Op::Delete { .. } => router
             .provider_for(item)

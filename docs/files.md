@@ -452,7 +452,7 @@ The Disk Usage window shows these tabs for the scan it holds; clicking a file or
 
 ## Folder operations
 
-Right-click a folder (or a file, for the last two) and open **Folder operations**, or type the name in the command palette (Ctrl+Shift+P):
+Right-click a folder (or a file, for Attributes and Create link) and open **Folder operations**, or type the name in the command palette (Ctrl+Shift+P):
 
 | Operation | What it does |
 | --- | --- |
@@ -462,12 +462,13 @@ Right-click a folder (or a file, for the last two) and open **Folder operations*
 | **Attributes…** | Hidden and read-only (Windows; hidden also on macOS), and on Linux and macOS the mode bits in octal (`755`). The checkboxes start at the items' current values (filled in grey when the selected items differ); only what you change is set. Not recursive |
 | **Create link…** | A link to the selected file or folder, next to it: a **Junction** (Windows, folders) or a **Hard link** (files, on the same drive), or a **Symbolic link** |
 | **Remove empty folders…** | Every empty folder below the folder goes to the Recycle Bin (Trash): a folder holding no files and no links at any depth, so a branch of empty folders goes whole, as one item. Where there is no trash (SFTP, FTP, S3, WebDAV) they are deleted for good: the dialog, the preview's warnings and its headline say so, and each folder of a branch is removed on its own, deepest first, only while it is empty. A folder with a hidden file in it (`desktop.ini`, `.DS_Store`) is not empty. Each folder is checked again just before it goes; one that got a file since stays |
+| **Set folder dates to the newest change below…** | The folder and every folder in it, at any depth, get the modified date of the newest file below them (WinDirStat's cleanup of that name), so a folder's date says when something in it last changed. A folder with no file below it keeps its date; links are not followed and do not count. Folders on this computer only. The preview opens at once and lists each folder with its new and old date |
 
-With nothing selected, Flatten, Organize and Attributes work on the folder shown. Merge, Flatten and Organize ask what happens when a name is taken: **Skip** (the item stays where it was, and so does its folder), **Keep both** (the new one gets a free name such as `a (2).txt`) or **Overwrite**. Two items of one operation never land on one name (letter case aside, on every system): with Skip or Keep both the later ones get the next free name (`same (2).txt`), and with Overwrite, which would replace the operation's own files, the operation is refused, naming each item that would. Each operation then opens the library's preview, which lists every move with its target, every folder it makes or removes, and every name that is taken; Enter or **Confirm** runs it as a job in the jobs panel, with progress and cancel. A cancelled operation leaves every file in one place, moved or not. If the folder changed after the preview (a file added, removed or renamed), the operation does not run: the fresh preview is shown to confirm instead. Links (symbolic links, junctions) inside the folders are never moved and never followed; a folder that still holds one stays.
+With nothing selected, Flatten, Organize, Attributes and Set folder dates work on the folder shown. Merge, Flatten and Organize ask what happens when a name is taken: **Skip** (the item stays where it was, and so does its folder), **Keep both** (the new one gets a free name such as `a (2).txt`) or **Overwrite**. Two items of one operation never land on one name (letter case aside, on every system): with Skip or Keep both the later ones get the next free name (`same (2).txt`), and with Overwrite, which would replace the operation's own files, the operation is refused, naming each item that would. Each operation then opens the library's preview, which lists every move with its target, every folder it makes or removes, and every name that is taken; Enter or **Confirm** runs it as a job in the jobs panel, with progress and cancel. A cancelled operation leaves every file in one place, moved or not. If the folder changed after the preview (a file added, removed or renamed), the operation does not run: the fresh preview is shown to confirm instead. Links (symbolic links, junctions) inside the folders are never moved and never followed; a folder that still holds one stays.
 
 Symbolic links on Windows need Developer Mode (Settings → System → For developers) or an elevated program, and Keel never elevates: the dialog says so and offers a junction (folders) or a hard link (files) instead, which need neither.
 
-**Ctrl+Z** undoes the last of these like any file operation: merge, flatten and organize move every item back (refusing, without moving anything, when its old place is taken) and make again the folders they removed, then remove the folders they made if they are empty. A folder that merged into one of the same name already there (Skip) stays where it went, since what is in that folder now is both, and the toast says so; attributes get their old values back; a symbolic link or junction is removed (never what it points to) and a hard link goes to the trash. They are library plans, so the library must be on (Settings → Library); the folders need not be in a library source. From a terminal: `keel plan merge|flatten|organize|attrs|link` ([api.md](api.md#cli)).
+**Ctrl+Z** undoes the last of these like any file operation: merge, flatten and organize move every item back (refusing, without moving anything, when its old place is taken) and make again the folders they removed, then remove the folders they made if they are empty. A folder that merged into one of the same name already there (Skip) stays where it went, since what is in that folder now is both, and the toast says so; attributes get their old values back; folder dates get their old dates back (refused when a folder changed since, a file added to it for example); a symbolic link or junction is removed (never what it points to) and a hard link goes to the trash. They are library plans, so the library must be on (Settings → Library); the folders need not be in a library source. From a terminal: `keel plan merge|flatten|organize|attrs|link|folder-dates` ([api.md](api.md#cli)).
 
 ## Compress (NTFS)
 
@@ -508,7 +509,7 @@ The editor shows the command line expanded for an example file as you type, or w
 ## Command line
 
 ```
-keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE] [--check-update] [--here]
+keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE] [--disk-usage FOLDER] [--check-update] [--here]
 keel --url LINK
 keel --register-url-protocol | --unregister-url-protocol
 keel --install-service | --uninstall-service
@@ -527,6 +528,7 @@ keel es [switches] [search]
 | `--register-url-protocol`, `--unregister-url-protocol` | Windows: make this Keel open `keel:` links for your user, or stop (removes the handler only when it is this Keel's) |
 | `es …` | Search the whole disk from the terminal with Everything's `es.exe` switches ([`keel es`](api.md#keel-es-everything-style-search)) |
 | `--install-service`, `--uninstall-service` | Windows: install or remove the [Keel index service](index-service.md) for your account (asks for administrator rights) and exit |
+| `--disk-usage FOLDER` | Open FOLDER in the Sizes view, its children by size (instead of FOLDER, not with it) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |
@@ -556,6 +558,10 @@ Put an empty file named `keel.portable` beside `keel.exe` (and `keel-daemon.exe`
 The portable folder must be yours alone to change. Keel makes it (and its `config`, `data` and `index` folders) for your user only when it is missing. When one of them already exists and other users of the computer can write to it (a folder made by hand under `C:\` or `D:\`, `C:\Users\Public`, `/tmp`), portable mode stays off and Keel says so, because another user could otherwise plant settings that run as you; delete the folder and let Keel make it, or pick another. On Linux and macOS the folders must be owned by you and not writable by group or others. FAT and exFAT drives (most USB sticks) have no permissions and are accepted: anyone holding the stick can read and change what is on it.
 
 A portable Keel is its own instance: it never hands a folder or search to an installed Keel (or another portable copy) that is already running. `KEEL_CONFIG_DIR`, `KEEL_DATA_DIR` and `KEEL_INDEX_DIR` still win when they are set. Passwords, key passphrases, cloud tokens and the device identity stay in the system keychain, which is not a folder; on another computer you sign in to remotes and clouds again.
+
+## Explorer menu
+
+On Windows, Settings → General → **Explorer menu** adds two commands to Explorer's right-click menu for folders, the empty area of an open folder, and drives: **Search in Keel** opens a search tab in that folder, and **Analyze disk usage with Keel** opens it in the Sizes view (`keel --disk-usage`). On Windows 11 they are under **Show more options**. Untick the switch to remove them. They are registered for your user only (under `HKEY_CURRENT_USER\Software\Classes`), so no administrator prompt; Keel never writes to the machine-wide part of the registry and removes only its own two commands. They point to the `keel.exe` that added them: after moving Keel, the switch says they belong to another copy, and unticking and ticking it again points them to this one.
 
 ## Profiles
 
