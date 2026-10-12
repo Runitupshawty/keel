@@ -4818,6 +4818,7 @@ dependencies = [
  "opendal",
  "parking_lot",
  "qrcode",
+ "raw-window-handle",
  "regex",
  "resvg 0.44.0",
  "rfd",

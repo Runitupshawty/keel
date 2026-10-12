@@ -80,7 +80,10 @@ global-hotkey = "0.8.0"
 # the tray icon and the window level (`tray`); Explorer's folder menu (Task 85): per-user
 # registry keys (already built for keel-vfs).
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_System_LibraryLoader"] }
+# Task 65: the Finder style's title bar (DWM frame and backdrop, hit testing, hover).
+windows = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_LibraryLoader", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse"] }
+# The window handle the title bar subclass hooks (already in the tree through winit).
+raw-window-handle = "0.6"
 
 # Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
 [target.'cfg(not(windows))'.dependencies]

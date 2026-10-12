@@ -289,6 +289,13 @@ pub enum Action {
     // --- Task 76 ---
     /// Bookmarks, filters and search history (`bookmarks.rs`).
     Find(crate::bookmarks::FindCmd),
+    // --- Task 65 ---
+    /// Show / hide the sidebar (Ctrl+Alt+S, the toolbar's sidebar button).
+    ToggleSidebar,
+    /// The Customize Toolbar dialog (`toolbar.rs`).
+    CustomizeToolbar,
+    /// The toolbar's search field: a search tab for this query, run now.
+    ToolbarSearch(String),
 }
 
 /// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.

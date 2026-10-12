@@ -24,6 +24,8 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+S | Stash the selection in the drop zone |
 | Ctrl+Shift+U | The [Disk Usage window](#the-disk-usage-window) |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
+| Ctrl+Alt+S | Show or hide the sidebar |
+| Ctrl+[ / Ctrl+] | Back / forward (also Alt+Left / Alt+Right) |
 
 These are the defaults. The full list, with your bindings, is in the command palette (Ctrl+Shift+P) and in Settings → Keyboard. Cmd replaces Ctrl on macOS.
 
@@ -602,6 +604,32 @@ Settings → **Appearance** sets how the window is drawn; the color theme (below
 - **Accent color**: **Automatic** (the system accent in Finder-style on the built-in dark and light themes, the theme's accent otherwise), **System**, **Theme** or **Custom** (a color picker; `accent = { custom = [r, g, b] }` in `config.toml`). The system accent is read once at start: on Windows the accent of Settings → Personalization → Colors, on macOS the one of System Settings → Appearance, on Linux GNOME's accent color (GNOME 47 and later); blue where there is none. An accent that would be hard to read is moved darker or lighter until links reach 4.5:1 on every background and the focus ring 3:1 (a test checks every macOS and GNOME accent, black, white and pale yellow).
 
 The design tokens (spacing, radii, row heights, type scale, the eight Finder tag colors red, orange, yellow, green, blue, purple, gray and none, and the semantic colors for light and dark) are in [design.rs](../crates/keel-app/src/design.rs). Tests hold Classic to egui's defaults and check the contrast of all four token sets (Finder and Classic, light and dark): text 4.5:1, secondary text 4.5:1, tertiary text and the focus ring 3:1, text on the selection 4.5:1.
+
+## Window and toolbar
+
+In **Finder-style** the window has one toolbar, and it is the title bar. Its items, left to right as in Finder:
+
+- **Sidebar**: shows or hides the sidebar (also Ctrl+Alt+S, in either style).
+- **Back / Forward** (also Alt+Left / Alt+Right and Ctrl+[ / Ctrl+]).
+- **The folder's name**: click it for the folders it is in (nearest first) and **Go to Folder…** (Ctrl+L).
+- A flexible space, then **View**: Icons, List and Columns as one segmented control; the chevron next to it has Media and Sizes too. Gallery joins them with the Finder views.
+- **Group and Sort**: sort by Name, Kind, Date Modified or Size, ascending or descending; in the Media view also group by the date taken.
+- **Share**: Send with Spacedrop, Copy Link (cloud items that have share links), Copy Path.
+- **Tags**: the library's tags with their colors; the tags every selected item has are highlighted, and a click adds or removes the tag on all of them. **Tags…** opens the tag picker.
+- **Action**: the folder's context menu and **Customize Toolbar…**.
+- **Search**: the magnifier opens a search field; Enter opens a search tab for what you typed, Esc closes the field.
+
+In Finder-style the panes leave out their own back and forward arrows and view buttons while the toolbar has them; the up and refresh arrows and the path bar stay. The toolbar works on the active pane. When the window is too narrow for every item, the ones at the right fold into the **»** menu (the sidebar button, the arrows and the folder name stay longest).
+
+**Customize Toolbar** (the Action menu, right-click on an empty part of the toolbar on macOS and Linux, Settings → Appearance, or the command palette): drag items up and down the list to reorder them, from **Available** into the list to add them and back to remove them; each row also has buttons for this. **Icon Only** or **Icon and Text** (the item's name under its icon), and **Restore Default**. The toolbar is saved with the profile (`[toolbar]` in `config.toml`: `items` left to right, and `labels`).
+
+**The title bar** follows each system's conventions:
+
+- **Windows**: Keel draws minimize, maximize and close at the right in the Windows style. Drag the window by any empty part of the toolbar, double-click it to maximize or restore, right-click it (or Alt+Space) for the window menu; resize from every edge and corner. On Windows 11, hovering over maximize offers the snap layouts. The window has rounded corners and a shadow, and the Mica backdrop is set on Windows 11 (it shows only while the window is redrawn, because Keel draws an opaque window).
+- **macOS**: the window's own close, minimize and zoom buttons stay at the top left, with the toolbar beside them. Drag the window by the toolbar; a double-click zooms it. Switching the style changes the title bar the next time Keel starts (until then a Classic window keeps a strip to drag it by).
+- **Linux and the BSDs**: the window manager's title bar stays (tiling window managers keep working), with the toolbar under it.
+
+**Classic** keeps the system title bar and the panes' own arrows and view buttons, as before.
 
 ## Color themes
 

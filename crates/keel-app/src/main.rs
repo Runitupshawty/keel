@@ -11,6 +11,7 @@ mod bookmarks; // Task 76: bookmarks, filters and search history in the window
 mod bulk_rename;
 mod chip_row; // Task 57: library search filter chips (keel-web includes it by path)
 mod cleanups; // Task 85: user-defined cleanups
+mod chrome; // Task 65: the Finder style's title bar
 mod clipboard;
 mod clouds;
 mod color_theme; // Task 47: VS Code color themes
@@ -79,6 +80,7 @@ mod tag_dots;
 mod term_pane;
 mod theme;
 mod toast;
+mod toolbar; // Task 65: the Finder style's unified toolbar
 mod trash_ui;
 mod treemap; // Task 83: treemap, sunburst and flame graph
 mod undo; // Ctrl+Z for file operations
@@ -248,10 +250,11 @@ fn main() -> eframe::Result<()> {
     session.repair(&home);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
-        .with_min_inner_size([640.0, 400.0])
         .with_title("Keel")
         // Wayland: matches assets/keel.desktop (StartupWMClass=keel) for the icon.
         .with_app_id("keel");
+    // Task 65: the Finder style's toolbar is the title bar (macOS, Windows).
+    viewport = chrome::viewport(viewport, settings.style);
     match eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/keel.png")) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => tracing::warn!("window icon: {e}"),
@@ -275,6 +278,7 @@ fn main() -> eframe::Result<()> {
         request,
         server,
         searcher: None,
+        native_chrome: true,
     };
     eframe::run_native(
         "Keel",

@@ -108,7 +108,8 @@ Keel opens on your home folder in both panes.
 - **Two panes**: click a pane, or press F6, to make it the active one. Ctrl+Shift+D switches between one and two panes.
 - **Tabs**: Ctrl+T opens a tab, Ctrl+W closes it, drag tabs to reorder them. Your tabs are restored the next time Keel starts.
 - **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start, nearest parent first), or press Ctrl+L to type a path. Backspace goes to the parent folder.
-- **Views**: the buttons at the right of each pane's header switch between **Details**, **Grid** (thumbnails), **Columns** and **Media** (photo and video tiles).
+- **Toolbar** (Finder-style, at the top of the window, in the title bar on Windows and macOS): show or hide the sidebar, back and forward, the folder's name (click it for its parent folders), the views, sorting, sharing, tags, the folder's actions and search. Its Action menu (or a right-click on it, on macOS and Linux) has **Customize Toolbar…**. See [Window and toolbar](files.md#window-and-toolbar).
+- **Views**: **Details** (List), **Grid** (Icons), **Columns** and **Media** (photo and video tiles), from the toolbar's view buttons in Finder-style or the buttons at the right of each pane's header in Classic.
 - **Filter**: start typing in a list to show only the names that match; Esc clears the filter.
 - **Preview panel**: F3 shows or hides it. It previews code with syntax highlighting, text, Markdown, images, PDF pages, CSV and spreadsheets, Word, PowerPoint and OpenDocument files, video frames, and anything else as hex.
 - **Status bar** (bottom): how many items the folder has, how many are selected and their size, the active filter, on Windows the search backend and its state, the free space of the drive, and **Theme**, which switches between dark and light.
@@ -129,7 +130,8 @@ Keel opens on your home folder in both panes.
 | --- | --- |
 | Enter | Open the file or folder |
 | Alt+Up, Backspace | Parent folder |
-| Alt+Left / Alt+Right | Back / forward |
+| Alt+Left / Alt+Right, Ctrl+[ / Ctrl+] | Back / forward |
+| Ctrl+Alt+S | Show or hide the sidebar |
 | F6 | Switch pane |
 | Ctrl+T / Ctrl+W | New tab / close tab |
 | Ctrl+L | Type a path |

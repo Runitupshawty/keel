@@ -493,8 +493,9 @@ pub fn commands() -> Vec<Command> {
         cmd("search.more", "Search: Load more results", SearchMore, &[]).search(),
         // --- the palette, always ---
         cmd("go.up", "Go to parent folder", Up, &["Alt+Up"]).global(),
-        cmd("go.back", "Back", Back, &["Alt+Left"]).global(),
-        cmd("go.forward", "Forward", Forward, &["Alt+Right"]).global(),
+        // Task 65: Finder's Cmd+[ and Cmd+] too.
+        cmd("go.back", "Back", Back, &["Alt+Left", "Ctrl+["]).global(),
+        cmd("go.forward", "Forward", Forward, &["Alt+Right", "Ctrl+]"]).global(),
         cmd("view.refresh", "Refresh", Refresh, &["F5"]).global(),
         cmd("tab.new", "New tab", NewTab, &["Ctrl+T"])
             .global()
@@ -681,6 +682,42 @@ pub fn commands() -> Vec<Command> {
             .global()
             .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
+        // --- Task 65 ---
+        cmd(
+            "view.grid",
+            "Grid view",
+            View(crate::pane::ViewMode::Grid),
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.columns",
+            "Columns view",
+            View(crate::pane::ViewMode::Columns),
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.media",
+            "Media view",
+            View(crate::pane::ViewMode::Media),
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.sidebar",
+            "Show / hide sidebar",
+            ToggleSidebar,
+            &["Ctrl+Alt+S"],
+        )
+        .global(),
+        cmd(
+            "view.customize_toolbar",
+            "Customize toolbar…",
+            CustomizeToolbar,
+            &[],
+        )
+        .global(),
         // --- Phase 17 Task 82 ---
         cmd(
             "du.open",

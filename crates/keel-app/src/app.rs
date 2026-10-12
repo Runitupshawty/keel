@@ -35,6 +35,8 @@ pub struct Boot {
     /// The search backend; None picks the OS default (`keel_search::default_searcher`),
     /// which may walk the home folder. Tests pass their own.
     pub searcher: Option<Arc<dyn keel_search::Searcher>>,
+    /// Task 65: the window was opened with `chrome::viewport` (false in tests).
+    pub native_chrome: bool,
 }
 
 impl Boot {
@@ -52,6 +54,7 @@ impl Boot {
             searcher: Some(Arc::new(keel_search::Unavailable::new(
                 "no search in tests",
             ))),
+            native_chrome: false,
         }
     }
 }
@@ -89,6 +92,8 @@ pub struct App {
     on_top_applied: Option<bool>,
     /// The opt-in update check and its banner (off in tests: no persist).
     updates: Option<crate::update::Updates>,
+    /// Task 65: the title bar (Finder style).
+    chrome: crate::chrome::Chrome,
     #[cfg(test)]
     pub panic_next_frame: bool,
 }
@@ -100,6 +105,7 @@ impl App {
         // `a11y` finds the pointer-only Tab stops to skip (cheap at this widget count).
         cc.egui_ctx.enable_accesskit();
         cc.egui_ctx.set_fonts(crate::fonts::fonts());
+        let chrome = crate::chrome::Chrome::new(cc, boot.settings.style, boot.native_chrome);
         // Another Keel is the single instance (and holds the global hotkey).
         let not_server = boot.settings.single_instance && boot.server.is_none();
         let persist = boot
@@ -185,6 +191,7 @@ impl App {
             exiting: false,
             on_top_applied: None,
             updates,
+            chrome,
             #[cfg(test)]
             panic_next_frame: false,
         }
@@ -343,6 +350,10 @@ impl App {
 
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
+        // Task 65: first, so the toolbar spans the window above the sidebar.
+        self.chrome.sync(ctx, s.settings.style);
+        crate::toolbar::panel(ctx, s, &mut self.chrome, &mut out);
+        crate::toolbar::customize(ctx, &mut s.settings.toolbar);
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
         // Phase 14 Task 67: the path bar, above the status bar.
         if s.settings.finder.path_bar {
@@ -370,32 +381,37 @@ impl App {
         );
         out.extend(job_acts.into_iter().map(|a| (s.active, a)));
         s.terminal.panel(ctx, &mut s.settings, &s.tx);
-        crate::a11y::group_start(ctx, "sidebar");
-        let sidebar = egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(s.settings.sidebar_width)
-            .width_range(140.0..=420.0)
-            .show(ctx, |ui| {
-                let mut acts = Vec::new();
-                let current = s.panes[s.active].tab().dir.clone();
-                let archives = s.open_archives();
-                s.sidebar.ui(
-                    ui,
-                    &shown,
-                    &s.settings.sidebar,
-                    &current,
-                    &archives,
-                    &s.library,
-                    &mut acts,
-                );
-                out.extend(acts.into_iter().map(|a| (s.active, a)));
-            });
-        crate::a11y::group_end(ctx, "sidebar");
-        let w = sidebar.response.rect.width().round();
-        if self.seen_widths.0.is_some_and(|seen| seen != w) {
-            s.settings.sidebar_width = w;
+        // Task 65: Ctrl+Alt+S and the toolbar's sidebar button hide it.
+        if s.settings.show_sidebar {
+            crate::a11y::group_start(ctx, "sidebar");
+            let sidebar = egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(s.settings.sidebar_width)
+                .width_range(140.0..=420.0)
+                .show(ctx, |ui| {
+                    let mut acts = Vec::new();
+                    let current = s.panes[s.active].tab().dir.clone();
+                    let archives = s.open_archives();
+                    s.sidebar.ui(
+                        ui,
+                        &shown,
+                        &s.settings.sidebar,
+                        &current,
+                        &archives,
+                        &s.library,
+                        &mut acts,
+                    );
+                    out.extend(acts.into_iter().map(|a| (s.active, a)));
+                });
+            crate::a11y::group_end(ctx, "sidebar");
+            let w = sidebar.response.rect.width().round();
+            if self.seen_widths.0.is_some_and(|seen| seen != w) {
+                s.settings.sidebar_width = w;
+            }
+            self.seen_widths.0 = Some(w);
+        } else {
+            self.seen_widths.0 = None;
         }
-        self.seen_widths.0 = Some(w);
         // --- Task 23 ---: the columns view previews inline while the panel is closed.
         let inline = !s.preview.open && crate::view_columns::wants_preview(&s.panes[s.active]);
         let inspecting = s.preview.open && s.preview.tab == crate::inspector::PanelTab::Inspector;
@@ -1113,7 +1129,21 @@ mod tests {
             let start = start.clone();
             let mut harness = Harness::builder()
                 .with_size(egui::vec2(width, 600.0))
-                .build_eframe(|cc| App::new(cc, Boot::at(start)));
+                .build_eframe(|cc| {
+                    // The panes' own view buttons: Classic (Finder-style has them in the
+                    // toolbar).
+                    let settings = Settings {
+                        style: crate::design::Style::Classic,
+                        ..Default::default()
+                    };
+                    App::new(
+                        cc,
+                        Boot {
+                            settings,
+                            ..Boot::at(start)
+                        },
+                    )
+                });
             wait_listed(&mut harness);
             let right = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x1;
             let left = |n: &egui_kittest::kittest::Node<'_>| n.raw_bounds().unwrap().x0;

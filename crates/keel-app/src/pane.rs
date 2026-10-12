@@ -346,11 +346,17 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 .tip(tip)
                 .clicked()
         };
+        // Task 65: what the Finder style's toolbar shows is not repeated here.
+        let toolbar = |item| crate::toolbar::shows(ui.ctx(), item);
+        let (arrows, views) = (
+            !toolbar(crate::toolbar::Item::Navigation),
+            !toolbar(crate::toolbar::Item::Views),
+        );
         let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
-        if nav(ui, back, "⏴", "Back (Alt+Left)") {
+        if arrows && nav(ui, back, "⏴", "Back (Alt+Left)") {
             out.push(Action::Back);
         }
-        if nav(ui, !tab.future.is_empty(), "⏵", "Forward (Alt+Right)") {
+        if arrows && nav(ui, !tab.future.is_empty(), "⏵", "Forward (Alt+Right)") {
             out.push(Action::Forward);
         }
         if nav(ui, tab.dir.parent().is_some(), "⏶", "Up (Alt+Up)") {
@@ -374,7 +380,10 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 (ViewMode::Columns, "Columns", "Columns view"),
                 (ViewMode::Grid, "Grid", "Grid view with thumbnails"),
                 (ViewMode::Details, "Details", "Details view"),
-            ] {
+            ]
+            .into_iter()
+            .filter(|_| views)
+            {
                 if ui
                     .selectable_label(pane.view == mode, text)
                     .on_hover_text(tip)
