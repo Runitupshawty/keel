@@ -124,7 +124,9 @@ impl RawObject {
     /// replaced so the item has a path of its own; the last write time, else the creation
     /// time; hidden and system attributes.
     pub(crate) fn entry(&self) -> Entry {
-        let pick = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        fn pick(s: &Option<String>) -> Option<&str> {
+            s.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        }
         let raw = pick(&self.original_name)
             .or_else(|| pick(&self.name))
             .unwrap_or(&self.id);
