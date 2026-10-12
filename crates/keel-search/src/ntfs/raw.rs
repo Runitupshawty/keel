@@ -82,11 +82,17 @@ pub(crate) fn layout(volume: &dyn RawVolume) -> anyhow::Result<Layout> {
     let mut zero = buf[..record as usize].to_vec();
     mft::fixup(&mut zero).context("the MFT's first record")?;
     let base = mft::parse_fixed(&zero).context("the MFT's first record")?;
+    ensure!(base.in_use && base.base == 0, "invalid MFT base record");
     if base.list_outside {
         bail!("the MFT's attribute list is not inside its first record");
     }
     let (size, mut extents) = mft::data_extents(&zero).context("the MFT's first record")?;
     let size = size.ok_or_else(|| anyhow!("the MFT's first record has no data size"))?;
+    let valid = size.min(data.mft_valid_length);
+    ensure!(
+        valid >= record && valid.is_multiple_of(record),
+        "the MFT's valid length is not a whole number of records"
+    );
     // The later extents of a fragmented MFT: in extension records named by the list,
     // each in an extent known by then (NTFS keeps them in the first one).
     let mut named: Vec<&mft::ListEntry> = base
@@ -119,16 +125,20 @@ pub(crate) fn layout(volume: &dyn RawVolume) -> anyhow::Result<Layout> {
             mft::parse_fixed(&ext).with_context(|| format!("MFT extension record {number}"))?;
         ensure!(
             rec.in_use
-                && rec.base & mft::RECORD_MASK == 0
+                && rec.base == u64::from(base.sequence) << 48
                 && rec.sequence == (entry.record >> 48) as u16,
             "MFT extension record {number} does not belong to the MFT"
         );
         let (_, more) =
             mft::data_extents(&ext).with_context(|| format!("MFT extension record {number}"))?;
+        ensure!(
+            more.iter().any(|(vcn, _)| *vcn == entry.start_vcn),
+            "MFT extension record {number} lacks the listed data extent"
+        );
         extents.extend(more);
     }
     extents.sort_by_key(|(vcn, _)| *vcn);
-    let count = size.min(data.mft_valid_length) / record;
+    let count = valid / record;
     let mut vcn = 0u64;
     let mut covered = 0u64;
     let mut out = Vec::new();
@@ -489,6 +499,15 @@ pub(crate) mod tests {
                 build(vec![entry(8, 20 | 2 << 48)], 1 << 48, 8),
                 "does not belong",
             ),
+            // A stale base reference must not borrow runs from a reused record.
+            (
+                build(vec![entry(8, 20 | 1 << 48)], 2 << 48, 8),
+                "does not belong",
+            ),
+            (
+                build(vec![entry(9, 20 | 1 << 48)], 1 << 48, 8),
+                "lacks the listed data extent",
+            ),
             // Record 40 is in the second extent, unknown until it is read.
             (
                 build(vec![entry(8, 40 | 1 << 48)], 1 << 48, 8),
@@ -586,5 +605,59 @@ pub(crate) mod tests {
         zero[510] ^= 1;
         image.put(&[(MFT_LCN, 8)], 0, &zero);
         check(&image, "first record");
+    }
+
+    #[test]
+    fn invalid_lengths_and_base_records_are_refused() {
+        let size = 32 * RECORD;
+        for valid in [0, RECORD - 1, size - 1] {
+            let mut image = Image::new(48, valid);
+            image.put(&[(MFT_LCN, 8)], 0, &mft_zero(size, runs(&[(Some(MFT_LCN), 8)]), None));
+            assert!(layout(&image).unwrap_err().to_string().contains("valid length"));
+        }
+        for (offset, value) in [(0x16, 0u64), (0x20, 1u64)] {
+            let mut image = Image::new(48, size);
+            let mut zero = mft_zero(size, runs(&[(Some(MFT_LCN), 8)]), None);
+            if offset == 0x16 {
+                zero[offset..offset + 2].copy_from_slice(&(value as u16).to_le_bytes());
+            } else {
+                zero[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            image.put(&[(MFT_LCN, 8)], 0, &zero);
+            assert!(layout(&image).unwrap_err().to_string().contains("base record"));
+        }
+    }
+
+    #[test]
+    fn reads_are_chunked_and_the_last_record_is_delivered() {
+        use std::cell::Cell;
+        struct Measured {
+            image: Image,
+            largest: Cell<usize>,
+        }
+        impl RawVolume for Measured {
+            fn ntfs_data(&self) -> io::Result<NtfsData> {
+                self.image.ntfs_data()
+            }
+            fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+                self.largest.set(self.largest.get().max(buf.len()));
+                self.image.read_at(offset, buf)
+            }
+        }
+        let size = MFT_CHUNK + CLUSTER;
+        let clusters = size / CLUSTER;
+        let mut image = Image::new(MFT_LCN + clusters, size);
+        image.put(&[(MFT_LCN, clusters)], 0, &mft_zero(size, runs(&[(Some(MFT_LCN), clusters)]), None));
+        let measured = Measured { image, largest: Cell::new(0) };
+        let layout = layout(&measured).unwrap();
+        let mut next = 0;
+        read_records(&measured, &layout, |number, record| {
+            assert_eq!(number, next);
+            assert_eq!(record.len(), RECORD as usize);
+            next += 1;
+            Ok(())
+        }).unwrap();
+        assert_eq!(next, size / RECORD);
+        assert_eq!(measured.largest.get(), MFT_CHUNK as usize);
     }
 }
