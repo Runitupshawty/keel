@@ -152,6 +152,17 @@ pub struct Applied {
     pub keep: Option<Vec<String>>,
 }
 
+/// Tests: a plain search with no filter.
+#[cfg(test)]
+impl From<&str> for Applied {
+    fn from(text: &str) -> Self {
+        Applied {
+            text: text.to_owned(),
+            ..Applied::default()
+        }
+    }
+}
+
 impl Applied {
     /// Whether the hit `name` (a folder when `dir`) passes the filter.
     pub fn keeps(&self, name: &str, dir: bool) -> bool {
@@ -161,7 +172,7 @@ impl Applied {
             Some(exts) => {
                 !dir && name.rsplit_once('.').is_some_and(|(_, ext)| {
                     let ext = ext.to_ascii_lowercase();
-                    exts.iter().any(|e| *e == ext)
+                    exts.contains(&ext)
                 })
             }
         }
