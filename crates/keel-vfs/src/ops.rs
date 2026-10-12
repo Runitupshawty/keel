@@ -471,6 +471,7 @@ fn transfer_local(
             cancel,
             moving,
             swept: Default::default(),
+            placed: Default::default(),
             journal,
             top: None,
             pool: (threads > 1)
@@ -652,6 +653,9 @@ struct Job<'a, 'j> {
     moving: bool,
     /// Folders already swept for stale staging files.
     swept: std::collections::HashSet<PathBuf>,
+    /// The files a move placed (`folded`): Overwrite never replaces one (its source is
+    /// gone). A copy's later source of one name replaces an earlier one.
+    placed: std::collections::HashSet<PathBuf>,
     journal: Option<&'a mut Journal<'j>>,
     /// The target picked for the top-level source being transferred, and whether it was
     /// free (set by the first `node` of each source: the top level picks before it recurses).
@@ -701,6 +705,15 @@ impl Job<'_, '_> {
                         picked => break picked,
                     }
                 };
+                // Another source of this move landed there (two picked files of one name,
+                // or `A.txt` and `a.txt` into a folder that ignores case): it is skipped,
+                // never written over.
+                let picked = picked.filter(|t| {
+                    metadata.is_dir()
+                        || !self.moving
+                        || self.conflict != Conflict::Overwrite
+                        || !self.placed.contains(&folded(t))
+                });
                 match picked {
                     Some(target) => target,
                     None => {
@@ -731,6 +744,7 @@ impl Job<'_, '_> {
             // Same volume: one rename. Another volume: fall through to copy + delete.
             match sys::rename_noreplace(source, &target) {
                 Ok(()) => {
+                    self.placed.insert(folded(&target));
                     let (bytes, items) = plan_size(std::slice::from_ref(&target))?;
                     self.state.done_bytes += bytes;
                     self.state.done_items += items;
@@ -889,6 +903,7 @@ impl Job<'_, '_> {
         stamp: Option<Stamp>,
     ) -> Result<()> {
         if self.moving {
+            self.placed.insert(folded(target));
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
@@ -925,6 +940,7 @@ impl Job<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
+            self.placed.insert(folded(&local_target(&target)?));
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
         }
@@ -1367,6 +1383,7 @@ fn transfer_with(
         cancel,
         moving: mv,
         swept: Default::default(),
+        placed: Default::default(),
         journal,
     };
     let mut result = Ok(());
@@ -1522,6 +1539,8 @@ struct ProviderJob<'a, 'j> {
     root: crate::VPath,
     /// Destination folders already swept for stale staging files.
     swept: std::collections::HashSet<String>,
+    /// The files a move placed (`folded_target`): Overwrite never replaces one.
+    placed: std::collections::HashSet<String>,
     journal: Option<&'a mut Journal<'j>>,
 }
 fn provider_stat(
@@ -1586,8 +1605,16 @@ impl ProviderJob<'_, '_> {
                         "cannot copy onto itself: {}",
                         source.display()
                     );
-                    if self.conflict == Conflict::Skip
-                        && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
+                    // Another source of this move landed there (two picked files of one name,
+                    // or `A.txt` and `a.txt` into a folder that ignores case): skipped, never
+                    // written over.
+                    let ours = self.moving
+                        && self.conflict == Conflict::Overwrite
+                        && before.kind != Kind::Dir
+                        && self.placed.contains(&folded_target(&target));
+                    if ours
+                        || self.conflict == Conflict::Skip
+                            && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
                     {
                         self.state.skipped += 1;
                         (self.progress)(self.state.clone());
@@ -1633,6 +1660,7 @@ impl ProviderJob<'_, '_> {
             // is one rename on the server.
             let merge = before.kind == Kind::Dir && occupied.is_some();
             if !merge && self.rename_on_server(src, &dst, source, &target, occupied.is_some())? {
+                self.placed.insert(folded_target(&target));
                 return Ok(true);
             }
         }
@@ -1669,6 +1697,7 @@ impl ProviderJob<'_, '_> {
         let picked = target != *proposed;
         let placed = self.copy(src, source, &before, &target, picked)?;
         if self.moving {
+            self.placed.insert(folded_target(&target));
             check_cancel(self.cancel)?;
             // The copy is verified: delete the source permanently, like `move_local` (the
             // local provider's `remove` would only send it to the Recycle Bin).
@@ -1706,6 +1735,7 @@ impl ProviderJob<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
+            self.placed.insert(folded_target(&target));
             match source.to_local_path() {
                 Some(local) => fs::remove_file(&local)
                     .with_context(|| format!("remove moved file {}", local.display()))?,
@@ -3123,6 +3153,67 @@ mod case_twin_tests {
             (1, 1),
             "one copied, its twin skipped and kept"
         );
+    }
+
+    /// Overwrite replaces what was there before, never a file this same move just placed:
+    /// moved over it, the first twin would be gone from both sides.
+    #[test]
+    fn overwrite_never_replaces_what_the_transfer_placed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
+        if !tmp.path().join("probe").exists() {
+            return;
+        }
+        for journaled in [false, true] {
+            let dst = tmp.path().join(format!("dst{journaled}"));
+            std::fs::create_dir(&dst).unwrap();
+            let router = Router::new();
+            let mem = Arc::new(MemoryProvider::new());
+            router.register(mem.clone());
+            mem.put("/src/A.txt", "one");
+            mem.put("/src/a.txt", "two!");
+            let src = [VPath::parse("memory://box/src").unwrap()];
+            let (to, cancel) = (VPath::local(&dst), AtomicBool::new(false));
+            let mut journal = Journal::new(Default::default(), None, |_, _| Ok(()));
+            match journaled {
+                true => transfer_resumable(
+                    &src,
+                    &to,
+                    true,
+                    Conflict::Overwrite,
+                    &|_| {},
+                    &cancel,
+                    &router,
+                    &mut journal,
+                ),
+                false => super::transfer(
+                    &src,
+                    &to,
+                    true,
+                    Conflict::Overwrite,
+                    &|_| {},
+                    &cancel,
+                    &router,
+                ),
+            }
+            .unwrap();
+            drop(journal);
+            let mut kept: Vec<Vec<u8>> = std::fs::read_dir(dst.join("src"))
+                .unwrap()
+                .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+                .collect();
+            for e in mem.list(&src[0]).unwrap_or_default() {
+                let mut body = Vec::new();
+                std::io::Read::read_to_end(&mut mem.read(&e.path).unwrap(), &mut body).unwrap();
+                kept.push(body);
+            }
+            kept.sort();
+            assert_eq!(
+                kept,
+                [b"one".to_vec(), b"two!".to_vec()],
+                "journaled: {journaled}"
+            );
+        }
     }
 }
 

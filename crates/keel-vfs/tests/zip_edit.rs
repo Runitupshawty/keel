@@ -581,3 +581,33 @@ fn perf_zip_delete_one_entry_of_1gib() {
     assert!(leftovers(tmp.path()).is_empty());
     assert!(took < std::time::Duration::from_secs(20), "{took:?}");
 }
+
+/// Two sources of one name moved into a zip together with Overwrite: the second never
+/// replaces the first (already gone from its folder); it is skipped and stays.
+#[test]
+fn overwrite_never_replaces_a_file_the_same_move_adds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = tmp.path().join("a.zip");
+    zip_file(&zip, &[("keep.txt", b"keep")]);
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    for d in [&a, &b] {
+        fs::create_dir(d).unwrap();
+    }
+    fs::write(a.join("notes.txt"), b"from a").unwrap();
+    fs::write(b.join("notes.txt"), b"from b").unwrap();
+    transfer(
+        &[
+            VPath::local(a.join("notes.txt")),
+            VPath::local(b.join("notes.txt")),
+        ],
+        &at(&zip, ""),
+        true,
+        Conflict::Overwrite,
+        &|_| {},
+        &no_cancel(),
+        &router(tmp.path()),
+    )
+    .unwrap();
+    assert_eq!(tree(&zip)["notes.txt"], b"from a");
+    assert_eq!(fs::read(b.join("notes.txt")).unwrap(), b"from b");
+}

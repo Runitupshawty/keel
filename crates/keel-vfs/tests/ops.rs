@@ -487,3 +487,31 @@ fn transfer_landed_reports_each_top_level_source() {
     assert_eq!(landed, [at("new.txt", "new.txt", true, true)]);
     assert!(!src.join("new.txt").exists() && dst.join("new.txt").exists());
 }
+
+/// Two sources of one name (picked from search results in two folders) moved together
+/// with Overwrite: the second never replaces the first, which is already gone from its
+/// folder. It is skipped and stays where it was.
+#[test]
+fn overwrite_never_replaces_a_file_the_same_move_placed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b, dst) = (
+        tmp.path().join("a"),
+        tmp.path().join("b"),
+        tmp.path().join("dst"),
+    );
+    for d in [&a, &b, &dst] {
+        fs::create_dir(d).unwrap();
+    }
+    fs::write(a.join("notes.txt"), b"from a").unwrap();
+    fs::write(b.join("notes.txt"), b"from b").unwrap();
+    move_local(
+        &[a.join("notes.txt"), b.join("notes.txt")],
+        &dst,
+        Conflict::Overwrite,
+        &|_| {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("notes.txt")).unwrap(), b"from a");
+    assert_eq!(fs::read(b.join("notes.txt")).unwrap(), b"from b");
+}
