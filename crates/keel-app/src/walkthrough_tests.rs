@@ -393,9 +393,22 @@ fn breadcrumb_click() {
     let mut h = app(&shed, &root.join("Pictures"));
     // The left pane's crumbs come first.
     let (at, double) = crumb(&h, "Documents");
-    click_at(&mut h, at, NONE, PointerButton::Primary);
-    if double {
+    if !double {
         click_at(&mut h, at, NONE, PointerButton::Primary);
+    }
+    if double {
+        // Both clicks in one frame: egui counts them as a double-click.
+        h.input_mut().events.push(Event::PointerMoved(at));
+        h.step();
+        for pressed in [true, false, true, false] {
+            h.input_mut().events.push(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: NONE,
+            });
+        }
+        h.run_steps(3);
     }
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &root.join("Documents"))));
     shot(&mut h, "breadcrumb-click");
@@ -1678,8 +1691,8 @@ fn settings_search_applies_folders_and_excludes() {
     let root = demo();
     let mut h = app(&root.join("Documents"), &root.join("Pictures"));
     key(&mut h, CMD, Key::Comma);
-    h.run_steps(3); // the window sizes itself over its first frames
-    click_last(&mut h, "Search index");
+    // The first one: the General page has a label of that name too.
+    click_nth(&mut h, "Search index", 0);
     click_last(&mut h, "New folder");
     type_text(&mut h, "/data/share");
     click_last(&mut h, "Add folder");
