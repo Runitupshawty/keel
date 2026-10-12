@@ -289,7 +289,8 @@ impl Jobs {
             );
             let refresh = |paths: &[PathBuf]| {
                 for p in paths {
-                    for dir in [Some(p.as_path()), p.parent()].into_iter().flatten() {
+                    let own = p.is_dir().then_some(p.as_path());
+                    for dir in [own, p.parent()].into_iter().flatten() {
                         let dir = VPath::local(dir);
                         send(&ntx, &ctx, Msg::Changed { dir });
                     }

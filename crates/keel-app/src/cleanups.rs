@@ -714,7 +714,11 @@ pub fn command(e: &Expanded, console: bool) -> std::process::Command {
     if !e.dir.is_empty() {
         c.current_dir(&e.dir);
     }
-    c.stdin(std::process::Stdio::null());
+    // With a console of its own the standard handles are left alone: a windowed Keel has
+    // none, and when none is set Windows gives the program its new console's.
+    if !console {
+        c.stdin(std::process::Stdio::null());
+    }
     c
 }
 
@@ -1175,6 +1179,32 @@ mod tests {
         assert!(targets(&drives_only, &picked)
             .unwrap_err()
             .contains("drives"));
+    }
+
+    #[test]
+    fn cleanups_are_kept_in_the_profile_and_a_bad_one_drops_alone() {
+        let c = UserCleanup {
+            title: "Delete .bak".into(),
+            command: r#"cmd /c del /q "%d\*.bak""#.into(),
+            recurse: true,
+            confirmed: true,
+            ..UserCleanup::default()
+        };
+        let s = crate::settings::Settings {
+            cleanups: vec![c.clone()],
+            ..Default::default()
+        };
+        let text = toml::to_string(&s).unwrap();
+        assert!(text.contains("[[cleanups]]"), "{text}");
+        let (back, dropped) = crate::settings::parse_lenient(&text).unwrap();
+        assert_eq!(back.cleanups, [c]);
+        assert!(dropped.is_empty());
+        let text = "[[cleanups]]\ntitle = 'ok'\n[[cleanups]]\ntitle = 5\n";
+        let (back, dropped) = crate::settings::parse_lenient(text).unwrap();
+        assert_eq!(back.cleanups.len(), 1);
+        assert_eq!(back.cleanups[0].title, "ok");
+        assert!(back.cleanups[0].ask, "missing keys take defaults");
+        assert_eq!(dropped, ["[[cleanups]] #2"]);
     }
 
     #[test]

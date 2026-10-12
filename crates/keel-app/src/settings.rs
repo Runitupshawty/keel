@@ -368,18 +368,20 @@ fn library_name(text: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Parses config.toml with each `[[clouds]]` / `[[remotes]]` entry on its own: an invalid
+/// Parses config.toml with each `[[clouds]]` / `[[remotes]]` / `[[cleanups]]` entry on its own: an invalid
 /// one is left out and named in the returned list instead of failing the whole file.
 pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     let mut table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut dropped = Vec::new();
     let clouds = entries(&mut table, "clouds", &mut dropped);
     let remotes = entries(&mut table, "remotes", &mut dropped);
+    let cleanups = entries(&mut table, "cleanups", &mut dropped);
     let mut s: Settings = toml::Value::Table(table)
         .try_into()
         .map_err(|e: toml::de::Error| e.to_string())?;
     s.clouds = clouds;
     s.remotes = remotes;
+    s.cleanups = cleanups;
     s.devices.migrate();
     Ok((s, dropped))
 }
