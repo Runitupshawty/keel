@@ -1349,9 +1349,8 @@ fn fingerprint(s: &AppState) -> String {
             s.dropzone.items().len(),
             s.jobs.list.len(),
             toast_texts(s),
-            s.theme.dark,
             // Task 67: Get Info windows.
-            s.info.windows.len(),
+            (s.theme.dark, s.info.windows.len()),
         )
     )
 }
