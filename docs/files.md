@@ -6,6 +6,9 @@ Reference for the file panes and everything around them. The [getting-started gu
 
 | Key | Action |
 | --- | --- |
+| Space | [Quick Look](#quick-look): a floating preview of the selection (Space or Esc closes it) |
+| Ctrl+Space | Select or deselect the cursor row (Space too, with Quick Look on Space turned off) |
+| Ctrl+Shift+G | [Go to Folder](#go-to-folder): type a path, with completion |
 | Ctrl+Z | Undo the last file operation (rename, move, copy, new item, delete to the trash, a [folder operation](#folder-operations)); see [Undo](getting-started.md#copy-move-and-delete) |
 | Ctrl+F2 | Bulk rename the selection (pattern, find/replace, case; Ctrl+Z undoes it) |
 | Ctrl+, | Settings |
@@ -34,6 +37,28 @@ Drag rows out of Keel's window onto another app (a file manager, a mail draft, a
 - **Windows**: a native file drag, as from Explorer.
 - **macOS**: a native file drag with each file's icon under the pointer; Finder, Mail, TextEdit and other apps receive the files' URLs.
 - **Linux**: works on X11. Keel offers the files as `text/uri-list` over XDND, which GNOME Files, Dolphin, Thunar, browsers, mail apps and most editors take. There is no drag image: the pointer keeps its usual shape while you drag. In a Wayland session dragging out needs Keel to run through XWayland: start it with `WAYLAND_DISPLAY` unset (`env -u WAYLAND_DISPLAY keel`). From a native Wayland window a row drag stays inside Keel (it still drops onto the other pane or a folder), since Wayland only lets the toolkit start a drag. A desktop that takes drops through a proxy window (icons on the desktop) is not a target.
+
+## Quick Look
+
+Space opens Quick Look: a floating window over the file list showing the item under the cursor with the same previews as the preview panel (code and text, Markdown, images, PDF pages, Word, PowerPoint, OpenDocument and spreadsheets, fonts, archives, audio with Play), photos decoded sharp at the window's size, and videos that play with sound after **▶ Play** or a click on the picture (needs `ffmpeg` on `PATH`). The arrow keys move the cursor in the list and Quick Look follows; Space or Esc closes it. Drag its edges to resize it, or use the full-screen button (⛶) to fill the screen; the button again, or closing Quick Look, puts the window back. **Open With…** opens the app picker for the selection.
+
+With several items selected, Quick Look opens on an **index sheet**: a grid of the selected items with their thumbnails. Click one to show it alone; then Left/Right (or Up/Down, Home, End) step through the selected items, wrapping around, without changing the selection, and **⊞ Index Sheet** goes back to the grid.
+
+The docked preview panel (F3) stays as it was and can be open at the same time. In the Media view Space still opens the media viewer on photos and videos. To give Space back its old job (select the cursor row), turn off **Space: Opens Quick Look** in Settings → General; Ctrl+Space selects in either case, and **Quick Look** in the command palette always opens it.
+
+## Path bar and status bar
+
+The path bar at the bottom of the window (above the status bar) shows where the active pane is: one crumb per folder from the drive or root down, each with its icon, and the selected item at the end. Double-click a crumb to open it (a file crumb opens the file). Drag files onto a folder crumb to move them there; hold Alt (Option on macOS) while dropping to copy instead. Entries dragged out of an archive are extracted. Right-click a crumb for **Copy as Pathname**, **Open** and **Open in New Tab**. Show or hide it with **Show / hide path bar** in the command palette or **Path bar** in Settings → General.
+
+The status bar's first part reads like Finder's: "12 items, 431.2 GB available" (the free space of the folder's drive, once Keel has read the drives), then the selection and the total size.
+
+## Spring-loaded folders
+
+While you drag files, rest the pointer on a folder (a row, a tile, a column entry or a path bar crumb) for 0.6 seconds and it opens in that pane, so you can drag into a folder a few levels down without letting go; press Space while hovering to open it at once. Moving to another folder starts the wait again. Turn it off with **Dragging: Spring-loaded folders** in Settings → General.
+
+## Go to Folder
+
+Ctrl+Shift+G (or **Go to folder…** in the command palette) asks for a path and opens it in the active pane. Paths are read like the pane's path box: absolute (`C:\Users`, `/usr/local`), `~` for your home folder, relative to the active folder (`..\other`, `sub/dir`), or a location such as `sftp://host/srv`. While you type, the names in the folder you are typing in are listed (folders first; names starting with a dot once you type the dot). Tab completes the only match, or as much as the matches share; Up and Down pick a suggestion and Enter goes there; a file opens its folder with the file selected. Esc closes. The last path typed is kept until Keel closes.
 
 ## Inspector
 
