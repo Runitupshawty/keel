@@ -124,11 +124,8 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
         });
         ui.indent(("remote-bookmarks", &row.id), |ui| {
             for (label, path) in &row.bookmarks {
-                let icon = if path == current {
-                    crate::icons::folder_open()
-                } else {
-                    crate::icons::folder()
-                };
+                let px = 16.0 * ui.ctx().pixels_per_point();
+                let icon = crate::icons::place(path, path == current, px);
                 let r = ui
                     .add(
                         egui::Button::image_and_text(

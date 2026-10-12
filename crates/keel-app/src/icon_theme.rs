@@ -852,12 +852,12 @@ impl IconThemes {
                         continue; // superseded
                     }
                     match result {
-                        Ok(theme) => self.activate(Some(theme)),
+                        Ok(theme) => self.activate(Some(theme), false),
                         // For this run only: the setting stays, so a theme that failed for
                         // a passing reason (a locked file) is back next time.
                         Err(e) => {
                             toasts.error(format!("Icon theme {id}: {e}; using the built-in icons"));
-                            self.activate(None);
+                            self.activate(None, false);
                         }
                     }
                 }
@@ -879,8 +879,8 @@ impl IconThemes {
         if self.applied.as_deref() != Some(settings.icon_theme.as_str()) {
             let id = settings.icon_theme.clone();
             self.applied = Some(id.clone());
-            if id == BUILTIN {
-                self.activate(None);
+            if id == BUILTIN || id == crate::finder_icons::ID {
+                self.activate(None, id == crate::finder_icons::ID);
             } else {
                 self.generation += 1;
                 let generation = self.generation;
@@ -895,8 +895,10 @@ impl IconThemes {
         }
     }
 
-    fn activate(&self, theme: Option<Arc<Loaded>>) {
+    /// `theme` (an installed theme), else the built-in icons: Keel Finder when `finder`.
+    fn activate(&self, theme: Option<Arc<Loaded>>, finder: bool) {
         crate::icons::set_theme(theme);
+        crate::icons::set_finder(finder);
         // Drop the decoded textures of the previous theme.
         self.ctx.forget_all_images();
         self.ctx.request_repaint();
@@ -919,16 +921,22 @@ impl IconThemes {
 
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings) {
         ui.label("Icon theme");
-        let builtin = (
-            BUILTIN.to_owned(),
-            "Built-in (Material Icon Theme subset)".to_owned(),
-        );
+        let builtin = [
+            (
+                BUILTIN.to_owned(),
+                "Built-in (Material Icon Theme subset)".to_owned(),
+            ),
+            (
+                crate::finder_icons::ID.to_owned(),
+                crate::finder_icons::LABEL.to_owned(),
+            ),
+        ];
         let mut remove_id = None;
-        for (id, label) in std::iter::once(&builtin).chain(&self.installed) {
+        for (id, label) in builtin.iter().chain(&self.installed) {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut s.icon_theme, id.clone(), label)
                     .on_hover_text(id);
-                if id != BUILTIN
+                if split_id(id).is_some()
                     && ui
                         .add_enabled(!self.busy, egui::Button::new("Remove").small())
                         .clicked()
@@ -967,7 +975,10 @@ impl IconThemes {
                 "notes.txt",
             ]
             .map(|n| (n, crate::icons::file_icon(n)));
-            for (name, src) in folders.into_iter().chain(files) {
+            let px = size.x * ui.ctx().pixels_per_point();
+            let extras = crate::icons::finder_preview();
+            for (name, src) in folders.into_iter().chain(files).chain(extras) {
+                let src = crate::icons::at(src, px);
                 ui.add(egui::Image::new(src).fit_to_exact_size(size))
                     .on_hover_text(name);
             }

@@ -206,9 +206,17 @@ pub fn paint(
     let src = (style.and_then(FolderStyle::theme_icon))
         .and_then(crate::icons::named_folder)
         .unwrap_or(base);
-    let src = if large { crate::icons::large(src) } else { src };
+    // Keel Finder icons are drawn for the slot's size and in the folder's color; other
+    // themes' icons are tinted.
+    let px = rect.size().max_elem() * ui.ctx().pixels_per_point();
+    let rgb = color.map(|c| [c.r(), c.g(), c.b()]);
+    let (src, tint) = match crate::icons::sized(&src, px, rgb) {
+        Some(sized) => (sized, None),
+        None if large => (crate::icons::large(src), color),
+        None => (src, color),
+    };
     let mut img = egui::Image::new(src).fit_to_exact_size(rect.size());
-    if let Some(c) = color {
+    if let Some(c) = tint {
         // Multiplied onto the icon's own (mid-grey) colour: lightened first, so the folder
         // shows the color rather than a dark shade of it.
         let up = |v: u8| (v as f32 * 1.6).min(255.0) as u8;

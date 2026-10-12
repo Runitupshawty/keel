@@ -109,11 +109,8 @@ impl Sidebar {
             // --- Task 29 ---
             crate::library_ui::sidebar(ui, library, theme, current, out);
             let item = |ui: &mut egui::Ui, path: &VPath, text: &str| {
-                let icon = if path == current {
-                    crate::icons::folder_open()
-                } else {
-                    crate::icons::folder()
-                };
+                let px = 16.0 * ui.ctx().pixels_per_point();
+                let icon = crate::icons::place(path, path == current, px);
                 ui.add(
                     egui::Button::image_and_text(
                         egui::Image::new(icon).fit_to_exact_size([16.0, 16.0].into()),

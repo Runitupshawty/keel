@@ -286,6 +286,7 @@ impl Tab {
     /// Replaces the listing; selection names that no longer exist are dropped.
     pub fn set_listing(&mut self, listing: Listing) {
         crate::devices::note_listing(&self.dir, &listing.entries);
+        crate::finder_icons::note_listing(&self.dir, &listing.entries);
         let old = std::mem::replace(&mut self.entries, listing.entries);
         let old_lower = std::mem::replace(&mut self.lower, listing.lower);
         self.order = listing.order;
