@@ -327,19 +327,38 @@ mod tests {
             regex: true,
             ..none()
         };
-        let a = apply("logo", "Designs", std::slice::from_ref(&mine), Target::Everything, tab);
+        let a = apply(
+            "logo",
+            "Designs",
+            std::slice::from_ref(&mine),
+            Target::Everything,
+            tab,
+        );
         assert_eq!(a.text, "ext:psd;ai logo");
         assert!(a.matching.case && a.matching.regex);
         assert_eq!(a.keep, None);
         assert_eq!(
-            apply("", "Designs", std::slice::from_ref(&mine), Target::Library, none()).text,
+            apply(
+                "",
+                "Designs",
+                std::slice::from_ref(&mine),
+                Target::Library,
+                none()
+            )
+            .text,
             "ext:psd;ai"
         );
-        assert_eq!(names(std::slice::from_ref(&mine)).last().unwrap(), "Designs");
+        assert_eq!(
+            names(std::slice::from_ref(&mine)).last().unwrap(),
+            "Designs"
+        );
 
         // The editor's checks.
         assert!(check(&mine, &[]).is_ok());
-        assert!(check(&mine, std::slice::from_ref(&mine)).is_err(), "duplicate name");
+        assert!(
+            check(&mine, std::slice::from_ref(&mine)).is_err(),
+            "duplicate name"
+        );
         for bad in [" Designs", "", "audio"] {
             let f = CustomFilter {
                 name: bad.into(),
