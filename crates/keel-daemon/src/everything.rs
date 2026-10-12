@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(filetime(UNIX_EPOCH), 116_444_736_000_000_000);
         assert_eq!(
             filetime(UNIX_EPOCH - Duration::from_secs(1)),
-            116_444_726_000_000_000
+            116_444_735_990_000_000
         );
     }
 
