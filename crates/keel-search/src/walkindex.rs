@@ -764,10 +764,20 @@ fn meta_of(md: &std::fs::Metadata, path: &Path) -> Meta {
     } else {
         md
     };
+    // A folder's time as listed in its parent (Windows: the parent's copy, updated
+    // lazily) can lag its own; a fast rescan compares the folder's own, so store that.
+    #[cfg(windows)]
+    let own = (md.is_dir() && !link)
+        .then(|| std::fs::metadata(path).ok())
+        .flatten();
+    #[cfg(windows)]
+    let mtime = millis(own.as_ref().unwrap_or(md).modified());
+    #[cfg(not(windows))]
+    let mtime = millis(md.modified());
     Meta {
         is_dir: md.is_dir(),
         size: if md.is_dir() { 0 } else { md.len() },
-        mtime: millis(md.modified()),
+        mtime,
         created: millis(md.created()),
         attrs: attrs_of(md, path) | if link { attr::REPARSE_POINT } else { 0 },
     }

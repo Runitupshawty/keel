@@ -623,8 +623,9 @@ mod tests {
         s.folders[0].scan.schedule = Schedule::EveryHours(2);
         f.set_index_settings(&s);
         assert_ne!(Arc::as_ptr(&f.inner.indexes()[0]), first);
+        // The new index serves the saved rows, then walks again by the new rules.
+        settle(&f, "b.txt", &["b.txt"]);
         settle(&f, "a.log", &[]);
-        assert_eq!(names(&f, "b.txt"), ["b.txt"]);
         drop(f);
         let _ = std::fs::remove_dir_all(&b);
     }
