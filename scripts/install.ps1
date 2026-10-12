@@ -60,7 +60,7 @@ function Set-UrlProtocol([string]$Exe, [bool]$On) {
     Set-Item $UrlKey -Value 'URL:Keel link'
     New-ItemProperty $UrlKey -Name 'URL Protocol' -Value '' -Force | Out-Null
     Set-Item "$UrlKey\DefaultIcon" -Value "$Exe,0"
-    Set-Item "$UrlKey\shell\open\command" -Value "`"$Exe`" --url `"%1`""
+    Set-Item "$UrlKey\shell\open\command" -Value "`"$Exe`" --url-handler -- `"%1`""
   } else {
     $cmd = (Get-Item "$UrlKey\shell\open\command" -ErrorAction SilentlyContinue).GetValue('')
     if ($cmd -and $cmd.ToLowerInvariant().Contains($Exe.ToLowerInvariant())) {

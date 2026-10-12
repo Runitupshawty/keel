@@ -39,8 +39,9 @@ pub struct Cli {
     /// Linux inside WSL: open FOLDER in this Linux window, not in the Windows Keel.
     #[arg(long)]
     pub here: bool,
-    /// Open a keel: link (keel:search?q=QUERY[&path=FOLDER], keel:open?path=FOLDER).
-    #[arg(long, value_name = "LINK", conflicts_with_all = ["folder", "search"])]
+    /// Open a keel: link (keel:search?q=QUERY[&path=FOLDER], keel:open?path=FOLDER); takes
+    /// no other argument.
+    #[arg(long, value_name = "LINK", exclusive = true)]
     pub url: Option<String>,
     /// Windows: open keel: links with this Keel (per user).
     #[arg(long, conflicts_with = "unregister_url_protocol")]
@@ -376,6 +377,12 @@ impl Cli {
         is_dir: impl Fn(&Path) -> bool,
     ) -> Result<Self, clap::Error> {
         let mut args: Vec<OsString> = args.into_iter().collect();
+        // A link is one argument and nothing else, checked before anything else reads `args`.
+        if let Some(link) = url_only(&args) {
+            let mut cli = Self::try_parse_from(&args[..1])?;
+            cli.url = Some(link?);
+            return Ok(cli);
+        }
         // `keel es …`: es.exe's switches go to `es` as typed (clap would take `--` and
         // `-h` itself).
         if let Some(i) = es_index(&args) {
@@ -415,6 +422,57 @@ impl Cli {
             select: None,
         }
     }
+}
+
+/// What the registered `keel:` handler runs: `"keel.exe" --url-handler -- "%1"`
+/// (`url_protocol::command_line`).
+pub const URL_HANDLER: &str = "--url-handler";
+
+/// Whether `arg` asks to open a link: `--url`, `--url=…`, `--url-handler`, `--url-handler=…`.
+fn is_url_arg(arg: &OsString) -> bool {
+    let a = arg.to_string_lossy();
+    a == "--url"
+        || a == URL_HANDLER
+        || a.starts_with("--url=")
+        || a.starts_with(&format!("{URL_HANDLER}="))
+}
+
+/// The link when `args` open one, refused unless it is the only thing on the command line:
+/// `keel --url-handler -- LINK`, `keel --url LINK` or `keel --url=LINK`, LINK starting with
+/// `keel:`. Windows splits the handler's `"%1"` at any `"` a launcher left in the link
+/// (`.url` files, Office, `start` do not encode it), so `keel:x" es -export-txt F` arrives as
+/// several arguments; none of them may ever reach another option or a subcommand.
+fn url_only(args: &[OsString]) -> Option<Result<String, clap::Error>> {
+    let rest = args.get(1..)?;
+    if !rest.iter().any(is_url_arg) {
+        return None;
+    }
+    let refuse = |why: &str| -> Result<String, clap::Error> {
+        Err(Cli::command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!("--url takes one keel: link and nothing else ({why})"),
+        ))
+    };
+    let strs: Option<Vec<&str>> = rest.iter().map(|a| a.to_str()).collect();
+    let Some(strs) = strs else {
+        return Some(refuse("not valid text"));
+    };
+    let link = match strs.as_slice() {
+        [h, "--", link] if *h == URL_HANDLER => *link,
+        ["--url", link] => *link,
+        [one] => match one.strip_prefix("--url=") {
+            Some(link) => link,
+            None => return Some(refuse("no link")),
+        },
+        _ => return Some(refuse("other arguments were given")),
+    };
+    let scheme = link
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("keel:"));
+    if !scheme {
+        return Some(refuse("not a keel: link"));
+    }
+    Some(Ok(link.to_owned()))
 }
 
 /// Subcommands a lone name always means (never a folder of that name): what agents and
@@ -527,6 +585,75 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("keel").chain(args.iter().copied()))
+    }
+
+    /// `Cli::parse_args`, as `main` calls it.
+    fn full(args: &[&str]) -> Result<Cli, clap::Error> {
+        let args = std::iter::once("keel").chain(args.iter().copied());
+        Cli::parse_args(args.map(OsString::from), true, |_| true)
+    }
+
+    /// Review 1 blocker: Windows splits the handler's `"%1"` at a `"` left in the link, so a
+    /// link such as `keel:search?q=a" es -export-txt F -n 0 x` arrives as several arguments.
+    /// Whatever follows (or precedes) the link, nothing but the link is ever read.
+    #[test]
+    fn a_link_never_reaches_other_options_or_subcommands() {
+        let link = "keel:search?q=a";
+        let tails: &[&[&str]] = &[
+            &["es", "-export-txt", "thesis.docx", "-n", "0", "x\""],
+            &["op", "files.delete", "--params", "{}", "--execute"],
+            &["execute", "p1", "--hash", "h"],
+            &["mcp"],
+            &["--register-url-protocol"],
+            &["--unregister-url-protocol"],
+            &["--index-service", "x"],
+            &["--check-update"],
+            &["--profile", "p"],
+            &["--new-window"],
+            &["--json"],
+            &["--here"],
+            &["--search", "y"],
+            &["--url", "keel:open?path=x"],
+            &["--", "es"],
+            &["D:\\"],
+            &["x"],
+        ];
+        let heads: &[&[&str]] = &[&["--url-handler", "--", link], &["--url", link]];
+        for tail in tails {
+            for head in heads {
+                let after: Vec<&str> = head.iter().chain(tail.iter()).copied().collect();
+                let before: Vec<&str> = tail.iter().chain(head.iter()).copied().collect();
+                for args in [after, before] {
+                    for interactive in [true, false] {
+                        let got = Cli::parse_args(
+                            std::iter::once("keel")
+                                .chain(args.iter().copied())
+                                .map(OsString::from),
+                            interactive,
+                            |_| true,
+                        );
+                        assert!(got.is_err(), "{args:?} parsed: {got:?}");
+                    }
+                }
+            }
+        }
+        // The handler's form only: no link, no `--`, a flag or a non-keel: value as the link.
+        for args in [
+            &["--url-handler"][..],
+            &["--url-handler", "--"],
+            &["--url-handler", link],
+            &["--url-handler", "--", "--register-url-protocol"],
+            &["--url-handler", "--", "es"],
+            &["--url-handler", "--", "https://example.com"],
+            &["--url-handler=keel:search?q=a"],
+            &["--url"],
+            &["--url", "--check-update"],
+            &["--url=-x"],
+            &["es", "--url-handler", "--", link],
+            &["search", "--url", link],
+        ] {
+            assert!(full(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]
@@ -1033,6 +1160,12 @@ mod tests {
         // Not with a folder or a search of its own.
         assert!(parse(&["--url", "keel:search?q=x", "D:\\"]).is_err());
         assert!(parse(&["--url", "keel:search?q=x", "--search", "y"]).is_err());
+        // What the registered handler runs.
+        let cli = full(&["--url-handler", "--", "keel:search?q=a+b"]).unwrap();
+        assert_eq!(cli.url.as_deref(), Some("keel:search?q=a+b"));
+        assert_eq!(cli.command, None);
+        let cli = full(&["--url=KEEL:open?path=x"]).unwrap();
+        assert_eq!(cli.url.as_deref(), Some("KEEL:open?path=x"));
         let cli = parse(&["--register-url-protocol"]).unwrap();
         assert!(cli.register_url_protocol && !cli.unregister_url_protocol);
         assert!(parse(&["--register-url-protocol", "--unregister-url-protocol"]).is_err());

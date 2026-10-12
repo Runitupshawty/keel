@@ -28,10 +28,16 @@ pub fn request(url: &str) -> Result<Request, String> {
 #[cfg(windows)]
 const KEY: &str = r"HKCU\Software\Classes\keel";
 
-/// The handler's command line: this executable with `--url` and the link.
+/// The handler's command line: this executable, `--url-handler --` and the link. Windows
+/// splits `"%1"` at any `"` left in the link, so `Cli::parse_args` takes the handler only as
+/// exactly these three arguments and refuses anything more.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn command_line(exe: &std::path::Path) -> String {
-    format!("\"{}\" --url \"%1\"", exe.display())
+    format!(
+        "\"{}\" {} -- \"%1\"",
+        exe.display(),
+        crate::cli::URL_HANDLER
+    )
 }
 
 #[cfg(windows)]
@@ -163,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn handler_command_passes_the_link_quoted() {
+    fn handler_command_passes_the_link_after_the_handler_switch() {
         let exe = PathBuf::from(if cfg!(windows) {
             r"C:\Program Files\Keel\keel.exe"
         } else {
@@ -171,7 +177,7 @@ mod tests {
         });
         assert_eq!(
             command_line(&exe),
-            format!("\"{}\" --url \"%1\"", exe.display())
+            format!("\"{}\" --url-handler -- \"%1\"", exe.display())
         );
     }
 }

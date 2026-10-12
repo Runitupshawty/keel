@@ -151,7 +151,7 @@ keel es [switches] [search]
 | `--new-window` | Start a separate window even if Keel is already running |
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query. With FOLDER it searches only in FOLDER and its subfolders: the query starts with `in:"FOLDER"`, which you can see and edit (every search backend reads `in:`; with Everything it becomes a path term) |
-| `--url LINK` | Open a `keel:` link ([Links](#keel-links)) |
+| `--url LINK` | Open a `keel:` link ([Links](#keel-links)); nothing else may be on the command line |
 | `--register-url-protocol`, `--unregister-url-protocol` | Windows: make this Keel open `keel:` links for your user, or stop (removes the handler only when it is this Keel's) |
 | `es …` | Search the whole disk from the terminal with Everything's `es.exe` switches ([`keel es`](api.md#keel-es-everything-style-search)) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
@@ -174,7 +174,7 @@ A `keel:` link opens a search or a folder in Keel, from a web page, a note, a ch
 
 Values are percent-encoded (`+` is a space); `keel://search/?q=…` works too. A link can only search or show a folder: there is nothing that runs, changes or deletes anything. A file's path opens its folder with the file selected, never the file itself. Only full local paths are taken (`C:\…` on Windows, `/…` elsewhere): network paths (`\\server\share`, `//server/share`, which would make Windows contact that server and offer it your sign-in), device paths, relative paths and `..` are refused, as are unknown actions and a parameter given twice; a refused link opens Keel without doing anything (the log says why). Links are at most 4096 characters.
 
-Nothing handles `keel:` links until you ask: on Windows run `keel --register-url-protocol` (or install with `-UrlProtocol`, see [Install](../README.md)); it writes `HKCU\Software\Classes\keel` for your user only, no administrator rights needed. `keel --unregister-url-protocol` (or uninstalling) removes it when it points at this Keel. On Linux and macOS the handler is not registered yet; `keel --url LINK` works on every system.
+Nothing handles `keel:` links until you ask: on Windows run `keel --register-url-protocol` (or install with `-UrlProtocol`, see [Install](../README.md)); it writes `HKCU\Software\Classes\keel` for your user only, no administrator rights needed. The handler runs `keel.exe --url-handler -- "<link>"`, and Keel refuses that command line unless the link is the only thing after `--`, so a link with a `"` in it (which some launchers pass on unencoded) cannot add options or a subcommand. `keel --unregister-url-protocol` (or uninstalling) removes it when it points at this Keel. On Linux and macOS the handler is not registered yet; `keel --url LINK` works on every system.
 
 ## Portable mode
 
