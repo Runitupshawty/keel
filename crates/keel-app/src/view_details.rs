@@ -298,7 +298,8 @@ pub fn ui(
                 header.col(|ui| {
                     let Some(key) = key.filter(|_| !sizes) else {
                         let r = ui.add(
-                            egui::Label::new(egui::RichText::new(label).strong()).sense(Sense::CLICK),
+                            egui::Label::new(egui::RichText::new(label).strong())
+                                .sense(Sense::CLICK),
                         );
                         let r = match c {
                             Col::OfUsed => r.on_hover_text(

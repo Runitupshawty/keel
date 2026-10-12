@@ -3365,7 +3365,11 @@ fn header_right_click_chooses_columns() {
     assert!(has(&h, "Date Created"));
     click_last(&mut h, "Date Created");
     h.run_steps(3);
-    assert!(has(&h, "Created"), "the column shows: {}", dump(&h, "Created"));
+    assert!(
+        has(&h, "Created"),
+        "the column shows: {}",
+        dump(&h, "Created")
+    );
     assert!(has(&h, "Modified"), "the others stay");
     let _ = std::fs::remove_dir_all(&cfg);
 }
