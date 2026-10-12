@@ -1558,6 +1558,16 @@ mod tests {
             (CMD_SHIFT, Key::T, Action::Library(LibCmd::TagPicker)),
             (CMD_SHIFT, Key::A, Action::Library(LibCmd::AssignMode)),
             (HIDDEN_OLD.0, HIDDEN_OLD.1, Action::ToggleHidden),
+            // Added with the Finder-style toolbar, View Options and the Disk Usage window.
+            (CMD_ALT, Key::S, Action::ToggleSidebar),
+            (CMD, Key::OpenBracket, Action::Back),
+            (CMD, Key::CloseBracket, Action::Forward),
+            (CMD, Key::J, Action::ViewOptions),
+            (
+                CMD_SHIFT,
+                Key::U,
+                Action::DiskUsage(crate::disk_usage::DuCmd::Open),
+            ),
             (CMD, Key::P, Action::JumpFolder),
             (CMD, Key::Enter, Action::OpenLocation),
             (CMD, Key::F, Action::Search),
@@ -1628,6 +1638,7 @@ mod tests {
         Action::NewTab,
         Action::CloseTab,
         Action::Settings,
+        Action::DiskUsage(crate::disk_usage::DuCmd::Open),
     ];
 
     #[test]
@@ -1926,7 +1937,7 @@ mod tests {
         let mut left = usize::MAX;
         let _ = ctx.run(
             egui::RawInput {
-                events: vec![press(Key::J, CMD), Event::Text("j".into())],
+                events: vec![press(Key::K, CMD), Event::Text("k".into())],
                 ..Default::default()
             },
             |ctx| {
@@ -1936,7 +1947,7 @@ mod tests {
         );
         assert_eq!(left, 0);
         assert_eq!(ui.recording, None);
-        assert_eq!(map.0["view.theme"], ["Ctrl+J"]);
+        assert_eq!(map.0["view.theme"], ["Ctrl+K"]);
         // A conflicting key waits for the answer.
         ui.recording = Some("view.theme");
         let _ = ctx.run(
@@ -1950,7 +1961,7 @@ mod tests {
             ui.conflict.as_ref().map(|c| c.2.clone()),
             Some(vec!["filter"])
         );
-        assert_eq!(map.0["view.theme"], ["Ctrl+J"]);
+        assert_eq!(map.0["view.theme"], ["Ctrl+K"]);
         // Esc cancels.
         ui.recording = Some("view.theme");
         let _ = ctx.run(
@@ -1961,6 +1972,6 @@ mod tests {
             |ctx| ui.capture(ctx, &mut map),
         );
         assert_eq!(ui.recording, None);
-        assert_eq!(map.0["view.theme"], ["Ctrl+J"]);
+        assert_eq!(map.0["view.theme"], ["Ctrl+K"]);
     }
 }
