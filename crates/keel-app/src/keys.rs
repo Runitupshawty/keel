@@ -151,6 +151,9 @@ pub enum Action {
     /// when single-pane).
     OpenLocation,
     Search,
+    /// A new search tab in the pane running this query (the Disk Usage window's
+    /// "Search for .ext").
+    SearchFor(String),
     JumpFolder,
     /// A Ctrl+P result: a folder opens; a file opens its folder with it selected and the
     /// preview shown. In a new tab, or in the other pane (a new tab when single-pane).
@@ -225,6 +228,8 @@ pub enum Action {
     // --- Task 29 ---
     /// Library sidebar, overview, dialogs, tags (`library.rs`).
     Library(crate::library::LibCmd),
+    /// Phase 17 Task 82: the Disk Usage window (Ctrl+Shift+U, a drive's context menu).
+    DiskUsage(crate::disk_usage::DuCmd),
     /// Recycle Bin / Trash tab: put the targets back where they were deleted from.
     RestoreTrash,
     /// Confirmed: delete these trash items for good.
@@ -279,6 +284,11 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::N, Action::NewFolder),
     (CMD_SHIFT, Key::O, Action::OpenWith),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
+    (
+        CMD_SHIFT,
+        Key::U,
+        Action::DiskUsage(crate::disk_usage::DuCmd::Open),
+    ),
     // After Ctrl+Shift+Z: egui ignores an unrequested Shift. In a text field Ctrl+Z stays
     // the field's own undo (not in WHILE_TYPING).
     (CMD, Key::Z, Action::Undo),
@@ -347,6 +357,7 @@ const WHILE_TYPING: &[Action] = &[
     Action::NewTab,
     Action::CloseTab,
     Action::Settings,
+    Action::DiskUsage(crate::disk_usage::DuCmd::Open),
 ];
 
 const MOVES: &[(Key, Nav)] = &[
@@ -389,6 +400,20 @@ pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool)
 /// arrow keys for itself (`a11y::list_has_keys`), every other shortcut still works. Call every frame: with
 /// `enabled` false (a modal is open) nothing is returned, but V presses are still tracked
 /// so a V held while the modal closes cannot turn into a paste.
+/// Actions while another window has the keys (the Disk Usage window): only the
+/// window-level shortcuts that also work from a text box (palette, Settings, Ctrl+P…).
+pub fn window_actions(ctx: &egui::Context) -> Vec<Action> {
+    let _ = paste_pressed(ctx);
+    ctx.input_mut(|i| {
+        SHORTCUTS
+            .iter()
+            .filter(|(_, _, a)| WHILE_TYPING.contains(a))
+            .filter(|(mods, key, _)| i.consume_key(*mods, *key))
+            .map(|(_, _, a)| a.clone())
+            .collect()
+    })
+}
+
 pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
     // Tracked even while typing, so a key released inside a text box cannot confuse it.
     let paste = paste_pressed(ctx);

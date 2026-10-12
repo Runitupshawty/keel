@@ -138,6 +138,17 @@ fn global_items() -> Vec<Item> {
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
         ("Settings", "Ctrl+,", Settings),
+        // --- Phase 17 Task 82 ---
+        (
+            "Disk usage",
+            "Ctrl+Shift+U",
+            DiskUsage(crate::disk_usage::DuCmd::Open),
+        ),
+        (
+            "Analyze this folder's disk usage",
+            "",
+            DiskUsage(crate::disk_usage::DuCmd::ScanCurrent),
+        ),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),
         ("Add library source…", "", Library(LibCmd::AddSource)),

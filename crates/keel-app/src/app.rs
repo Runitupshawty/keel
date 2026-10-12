@@ -253,8 +253,16 @@ impl App {
             && s.viewer.is_none() // Task 32: the viewer reads its own keys
             && !ctx.is_context_menu_open();
         let terminal = s.terminal.focused(ctx);
-        s.assign_keys(ctx, keys_on && !terminal); // Task 58
-        for action in keys::actions_with_terminal(ctx, keys_on, terminal) {
+        // Phase 17 Task 82: the Disk Usage window has the keys after a click in it; only
+        // window-level shortcuts reach the panes then.
+        let du_keys = s.disk_usage.open && s.disk_usage.keys && !terminal;
+        s.assign_keys(ctx, keys_on && !terminal && !du_keys); // Task 58
+        let actions = if keys_on && du_keys {
+            keys::window_actions(ctx)
+        } else {
+            keys::actions_with_terminal(ctx, keys_on, terminal)
+        };
+        for action in actions {
             s.run(s.active, action);
         }
         s.terminal.input(ctx, keys_on, &s.settings, &s.tx);
@@ -519,6 +527,14 @@ impl App {
         let mut acts = Vec::new();
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
+        crate::disk_usage::ui::window(
+            ctx,
+            &mut s.disk_usage,
+            &mut s.settings.disk_usage,
+            &s.sidebar.drives,
+            &s.theme,
+            &mut acts,
+        );
         out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {

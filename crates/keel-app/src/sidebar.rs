@@ -148,6 +148,21 @@ impl Sidebar {
                 });
                 let r = item(ui, &path, &text);
                 clicked(&r, &path, out);
+                // Phase 17 Task 82.
+                r.context_menu(|ui| {
+                    if ui.button("Analyze disk usage").clicked() {
+                        let root =
+                            keel_vfs::du::Root::Path(path.to_local_path().unwrap_or_default());
+                        out.push(Action::DiskUsage(crate::disk_usage::DuCmd::Scan(vec![
+                            root,
+                        ])));
+                        ui.close_menu();
+                    }
+                    if ui.button("Open in a new tab").clicked() {
+                        out.push(Action::NewTabAt(path.clone()));
+                        ui.close_menu();
+                    }
+                });
                 if *total > 0 {
                     let used = 1.0 - *free as f32 / *total as f32;
                     ui.add(

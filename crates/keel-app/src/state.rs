@@ -282,6 +282,8 @@ pub struct AppState {
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
+    /// Phase 17 Task 82: the Disk Usage window.
+    pub disk_usage: crate::disk_usage::DiskUsage,
     /// SFTP hosts: providers, status, host-key prompts, host editor (`remotes.rs`).
     pub remotes: crate::remotes::Remotes,
     /// Cloud accounts: providers, status, the account wizard (`clouds.rs`).
@@ -424,6 +426,7 @@ impl AppState {
             undo: Default::default(),
             settings,
             settings_open: false,
+            disk_usage: Default::default(),
             remotes,
             clouds,
             toasts: Toasts::default(),
@@ -1865,6 +1868,18 @@ impl AppState {
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
+            Action::DiskUsage(crate::disk_usage::DuCmd::ScanCurrent) => {
+                match self.tab(p).dir.to_local_path() {
+                    Some(dir) if !self.tab(p).is_search() => {
+                        let root = keel_vfs::du::Root::Path(dir);
+                        self.disk_usage.start(vec![root]);
+                    }
+                    _ => self
+                        .toasts
+                        .error("Disk usage scans local folders and drives only"),
+                }
+            }
+            Action::DiskUsage(cmd) => self.disk_usage.command(cmd, &self.sidebar.drives),
             Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
@@ -2266,6 +2281,20 @@ impl AppState {
                     pane.active = pane.tabs.len() - 1;
                 }
                 self.panes[p].focus_filter = true;
+            }
+            Action::SearchFor(text) => {
+                let mut tab = Tab::search(self.tab(p).dir.clone());
+                if !crate::remotes::is_network(&tab.dir) {
+                    tab.error = self.search_reason.clone();
+                }
+                if let TabKind::Search { query, due, .. } = &mut tab.kind {
+                    *query = text;
+                    *due = Some(Instant::now());
+                }
+                let pane = &mut self.panes[p];
+                pane.tabs.push(tab);
+                pane.active = pane.tabs.len() - 1;
+                self.ctx.request_repaint();
             }
             Action::OpenLocation => self.open_location(p),
             Action::JumpFolder => {

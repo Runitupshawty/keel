@@ -80,6 +80,8 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[disk_usage]`: the Disk Usage window's layout, columns and options.
+    pub disk_usage: crate::disk_usage::DuSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +216,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            disk_usage: Default::default(),
         }
     }
 }
