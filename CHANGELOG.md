@@ -2,6 +2,16 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Keel's own Windows index reads each volume's file table (MFT) directly when it runs as administrator (**Index all drives**), and keeps every file's size, size on disk, dates created, modified and accessed, attributes, hard link and alternate stream counts and reparse tag, plus per-folder totals (size, size on disk, files, folders, newest change) kept current from the USN journal. Each journal record also dates the file (recently changed) and the folders it changed. See [Search without Everything](docs/files.md#search-without-everything).
+
+### Changed
+
+- The index file in the cache folder is now at version 1 (the metadata columns): an index from an older Keel is upgraded when opened, with its new columns empty until the next full index; one from a newer Keel is rebuilt.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

@@ -39,6 +39,8 @@ One desktop PC, release build, 2026-10-10 (0.15.0 plus the changes listed under 
 | Extract a zip (`perf_zip_extract_3k_under_2s`, `perf_zip_extract_10k`) | 3,000 / 10,000 entries | 1.1 s / 4.7 s (2,150 entries/s) | 2 s / 20 s |
 | Delete one entry of a zip (`perf_zip_delete_one_entry_of_1gib`) | 1 GiB, 1,024 entries | 1.4 s (one rewrite, 774 MB/s) | 20 s |
 | Search an NTFS index (`perf_two_million_entries`, keel-search) | 2,000,000 generated entries | built in 0.49 s; queries 0.9-31 ms | |
+| Read an NTFS volume's file table (`live_raw_mft_matches_enumeration`, keel-search, 2026-10-12, elevated, the machine busy with other builds) | 1,534,000 / 1,735,000 / 169,000 files on three NTFS volumes | raw MFT read with every metadata column 4.6 s / 14.6 s / 2.8 s; `FSCTL_ENUM_USN_DATA` (names and attributes only) 5.4 s / 41.8 s / 2.0 s; sizes equal to the file system's for all 15,000 files sampled | |
+| Folder totals and fast sort (`perf_two_million_entries`, keel-search, 2026-10-12) | 2,000,000 generated entries with sizes and dates | totals recounted in 0.16 s; fast-sort orders by name, size and modified built in 1.4 s; 1,000 changes applied in 2 ms and settled (totals and the three orders) in 0.34 s; sorting 200,000 results by size 7.8 ms through the order, 27 ms without | |
 | Search a walk index (`bench_synthetic_tree`, keel-search) | 100,000 files on disk | indexed in 0.49 s; queries 0.3-5.6 ms | |
 
 ### Devices, daemon, web client, startup
