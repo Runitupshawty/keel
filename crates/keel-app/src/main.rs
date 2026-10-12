@@ -70,12 +70,14 @@ mod x11_clipboard;
 mod cli;
 mod commands; // Task 37
 mod dragout;
-mod es; // Task 79: `keel es`
 mod hotkey;
 mod index_ui;
 mod single_instance;
-mod url_protocol; // Task 79: keel: links
 // --- end Task 24 ---
+// --- Task 79 ---
+mod es;
+mod url_protocol;
+// --- end Task 79 ---
 
 // `crate::chips` for `chip_row` (keel-web has its own copy of the module at that path).
 use keel_core::chips;
