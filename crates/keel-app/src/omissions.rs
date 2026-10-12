@@ -182,7 +182,10 @@ mod tests {
             ..Default::default()
         };
         let mut quick = Omissions::default();
-        assert!(quick.same_lists(&main), "the open dialog is not a difference");
+        assert!(
+            quick.same_lists(&main),
+            "the open dialog is not a difference"
+        );
         main.add(vec![VPath::local("/x/a.txt")], true);
         assert!(!quick.same_lists(&main));
         quick.copy_lists(&main);
