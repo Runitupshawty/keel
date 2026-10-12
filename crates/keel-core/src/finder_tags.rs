@@ -103,13 +103,13 @@ impl FinderColor {
     /// The Finder color closest to a library color (`#rrggbb`; anything else, or none, is
     /// no color): a tag colored before Finder colors existed still gets a dot in Finder.
     pub fn nearest(color: Option<&str>) -> FinderColor {
-        let Some(rgb) = color.and_then(rgb) else {
+        let Some(have) = color.and_then(rgb) else {
             return FinderColor::None;
         };
         if let Some(c) = color.and_then(Self::of_hex) {
             return c;
         }
-        let [r, g, b] = rgb.map(i32::from);
+        let [r, g, b] = have.map(i32::from);
         // Grays (little saturation) are gray, whatever their brightness.
         if r.max(g).max(b) - r.min(g).min(b) < 24 {
             return FinderColor::Gray;
@@ -279,7 +279,10 @@ mod xattr {
         }
         let len = len as usize;
         if len > super::MAX_XATTR {
-            return Err(Error::new(ErrorKind::InvalidData, "tag attribute too large"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "tag attribute too large",
+            ));
         }
         let mut buf = vec![0u8; len];
         let got = read(&mut buf);
@@ -425,7 +428,10 @@ pub mod bplist {
                 return Ok((usize::from(low), at + 1));
             }
             let int = *self.data.get(at + 1).context("truncated count")?;
-            ensure!(int >> 4 == 0x1 && int & 0xF <= 3, "bad count marker {int:#x}");
+            ensure!(
+                int >> 4 == 0x1 && int & 0xF <= 3,
+                "bad count marker {int:#x}"
+            );
             let size = 1usize << (int & 0xF);
             let n = uint(self.data, at + 2, size)?;
             let n = usize::try_from(n).context("count overflow")?;
@@ -495,7 +501,7 @@ pub mod bplist {
         let at = doc.offset(top)?;
         ensure!(data[at] >> 4 == 0xA, "the tags are not an array");
         let (n, refs) = doc.count(at)?;
-        ensure!(n <= MAX_TAGS, "too many tags ({n})");
+        ensure!(n <= super::MAX_TAGS, "too many tags ({n})");
         let refs_len = n.checked_mul(ref_size).context("array overflow")?;
         doc.body(refs, refs_len)?;
         (0..n)
@@ -645,7 +651,10 @@ mod tests {
         let off = toggled(&native, "Work", FinderColor::Red, false);
         assert_eq!(off, [FinderTag::new("Finder only", FinderColor::Green)]);
         let added = toggled(&native, "New", FinderColor::None, true);
-        assert_eq!(added.last(), Some(&FinderTag::new("New", FinderColor::None)));
+        assert_eq!(
+            added.last(),
+            Some(&FinderTag::new("New", FinderColor::None))
+        );
     }
 
     /// The xattr round trip on a real file (macOS CI): written, read back, replaced, removed.

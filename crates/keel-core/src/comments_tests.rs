@@ -52,7 +52,9 @@ fn set_read_clear_and_follow_a_rename() {
     // Blank clears; too long and unknown records are refused.
     lib.set_comment(&plan, "  \n").unwrap();
     assert_eq!(lib.comment(&plan).unwrap(), None);
-    assert!(lib.set_comment(&work, &"x".repeat(MAX_COMMENT + 1)).is_err());
+    assert!(lib
+        .set_comment(&work, &"x".repeat(MAX_COMMENT + 1))
+        .is_err());
     let gone = RecordRef {
         source: src.id.clone(),
         id: 999_999,
@@ -67,8 +69,11 @@ fn set_read_clear_and_follow_a_rename() {
     let top = rec(&src, "top.txt");
     lib.set_comment(&top, "bye").unwrap();
     std::fs::remove_file(root.join("top.txt")).unwrap();
-    Indexer::apply_change(&src, ChangeEvent::Changed(VPath::local(root.join("top.txt"))))
-        .unwrap();
+    Indexer::apply_change(
+        &src,
+        ChangeEvent::Changed(VPath::local(root.join("top.txt"))),
+    )
+    .unwrap();
     let c = src.store.get().unwrap();
     let left: i64 = c
         .query_row(
