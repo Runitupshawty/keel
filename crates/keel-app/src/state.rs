@@ -1017,10 +1017,32 @@ impl AppState {
         }
     }
 
+    /// The query of pane `p`'s search tab was edited (typing with the list focused): run
+    /// it after the search delay (when searching as you type), from the first page.
+    fn search_edited(&mut self, p: usize) {
+        let delay = self.settings.search.delay();
+        if let TabKind::Search { due, limit, .. } = &mut self.tab_mut(p).kind {
+            *limit = 0;
+            if let Some(delay) = delay {
+                *due = Some(Instant::now() + delay);
+                self.ctx.request_repaint_after(delay);
+            }
+        }
+    }
+
     /// Runs the due query of search tab `t` in pane `p`.
     fn start_search(&mut self, p: usize, t: usize) {
+        let settings = &self.settings.search;
         let tab = &mut self.panes[p].tabs[t];
-        let TabKind::Search { query, due, req } = &mut tab.kind else {
+        let TabKind::Search {
+            query,
+            due,
+            req,
+            toggles,
+            limit,
+            more,
+        } = &mut tab.kind
+        else {
             return;
         };
         // A remote or cloud tab searches names there (remotes.rs); Everything stays local.
@@ -1053,12 +1075,18 @@ impl AppState {
         if text.is_empty() {
             tab.set_listing(Listing::new(Vec::new()));
             tab.loading = false;
+            tab.highlight = None;
             return;
         }
         tab.loading = true;
+        // Task 76: the toggles, and the first page or what Load more asked for.
+        *limit = settings.limit(*limit);
+        *more = *limit < settings.max();
+        let q = settings.query(text.clone(), *toggles, *limit);
+        tab.highlight = keel_search::Highlighter::new(&q);
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => self.search.search(searcher, text, self.next_req, replaces),
+            Some(searcher) => self.search.search(searcher, q, self.next_req, replaces),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
@@ -1614,12 +1642,11 @@ impl AppState {
         };
         match action {
             Action::Backspace if self.tab(p).is_search() => {
-                if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
+                if let TabKind::Search { query, .. } = &mut self.tab_mut(p).kind {
                     // Backspace in a search tab edits the query (Alt+Up does not).
                     query.pop();
-                    *due = Some(Instant::now() + DEBOUNCE);
-                    self.ctx.request_repaint_after(DEBOUNCE);
                 }
+                self.search_edited(p);
             }
             Action::Up | Action::Backspace => {
                 if !self.tab(p).is_search() && self.tab_mut(p).up() {
@@ -1694,11 +1721,10 @@ impl AppState {
             }
             Action::Type(text) => {
                 let tab = self.tab_mut(p);
-                if let TabKind::Search { query, due, .. } = &mut tab.kind {
+                if let TabKind::Search { query, .. } = &mut tab.kind {
                     // Typing in a search tab edits the query.
                     query.push_str(&text);
-                    *due = Some(Instant::now() + DEBOUNCE);
-                    self.ctx.request_repaint_after(DEBOUNCE);
+                    self.search_edited(p);
                 } else {
                     tab.filter.push_str(&text);
                     tab.filter_open = true;
@@ -1757,11 +1783,51 @@ impl AppState {
                     t if t.is_empty() => vec![self.tab(p).dir.display()],
                     t => t.iter().map(|e| e.path.display()).collect(),
                 };
+                let paths: Vec<String> = match self.settings.quote_copied_paths {
+                    true => paths.into_iter().map(|p| format!("\"{p}\"")).collect(),
+                    false => paths,
+                };
                 self.ctx.copy_text(paths.join("\n"));
                 self.toasts.info(match paths.len() {
                     1 => "Copied path".to_owned(),
                     n => format!("Copied {n} paths"),
                 });
+            }
+            Action::CopyName => {
+                let tab = self.tab(p);
+                let names: Vec<String> = match tab.targets() {
+                    t if t.is_empty() => vec![tab.dir.name().to_owned()],
+                    t => t.iter().map(|e| tab.shown_name(e).to_owned()).collect(),
+                };
+                self.ctx.copy_text(names.join("\n"));
+                self.toasts.info(match names.len() {
+                    1 => "Copied name".to_owned(),
+                    n => format!("Copied {n} names"),
+                });
+            }
+            // --- Task 76 ---
+            Action::SearchToggle(t) => {
+                if let TabKind::Search {
+                    toggles,
+                    limit,
+                    due,
+                    ..
+                } = &mut self.tab_mut(p).kind
+                {
+                    let on = t.of(toggles);
+                    *on = !*on;
+                    *limit = 0;
+                    *due = Some(Instant::now());
+                    self.ctx.request_repaint();
+                }
+            }
+            Action::SearchMore => {
+                let settings = self.settings.search.clone();
+                if let TabKind::Search { limit, due, .. } = &mut self.tab_mut(p).kind {
+                    *limit = settings.more(*limit);
+                    *due = Some(Instant::now());
+                    self.ctx.request_repaint();
+                }
             }
             Action::CopyLink(path) => self.copy_link(p, &path),
             Action::OpenWith => {
@@ -2258,6 +2324,9 @@ impl AppState {
             Action::Search => {
                 if !self.tab(p).is_search() {
                     let mut tab = Tab::search(self.tab(p).dir.clone());
+                    if let TabKind::Search { toggles, .. } = &mut tab.kind {
+                        *toggles = self.settings.search.toggles;
+                    }
                     if !crate::remotes::is_network(&tab.dir) {
                         tab.error = self.search_reason.clone();
                     }
@@ -2289,6 +2358,7 @@ impl AppState {
             Action::Palette => {
                 let selection = !self.tab(p).targets().is_empty();
                 self.palette.undo = self.undo.label();
+                self.palette.search = self.tab(p).is_search();
                 // The "Shell: …" entries follow on the first "shell" typed (palette_shell).
                 self.palette.show(selection);
             }

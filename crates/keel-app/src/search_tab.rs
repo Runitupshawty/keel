@@ -1,5 +1,9 @@
-//! Search tab: a query box over the active pane's results table. Typing is debounced
-//! (`DEBOUNCE`); `AppState::tick` sends due queries to `worker::spawn_search`.
+//! Search tab: a query box over the active pane's results table, with Everything's search
+//! toggles (Match Case Ctrl+I, Match Whole Words Ctrl+B, Match Path Ctrl+U, Match
+//! Diacritics Ctrl+M, Regex Ctrl+R) beside it and a Search menu. Typing is debounced
+//! (Settings: search as you type and its delay); `AppState::tick` sends due queries to
+//! `worker::SearchWorker`. The first query asks for `PAGE` results; Load more asks for
+//! more, up to the Most results setting.
 
 use crate::keys::Action;
 use crate::pane::Pane;
@@ -8,16 +12,190 @@ use egui::{Key, Modifiers};
 use keel_search::{Query, Searcher};
 use std::time::{Duration, Instant};
 
+/// The default delay of search as you type.
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
+/// A remote (SFTP, cloud) name search walks the host: it stops after this many.
 pub const MAX_HITS: u32 = 500;
+/// The first query of a search asks for this many results.
+pub const PAGE: u32 = 1_000;
+/// The Most results setting's range.
+pub const MAX_RESULTS: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
 pub const NOT_RUNNING: &str =
     "Everything is not running. Start Everything.exe (voidtools) to search.";
 
-#[cfg(windows)]
-const HINT: &str = "Everything syntax: ext:pdf dm:today \"exact phrase\" folder: regex:";
-#[cfg(not(windows))]
-const HINT: &str = "Search file names";
+/// The query box's hint for the backend that answers it (the System backend's `name`):
+/// Everything takes its own syntax; Keel's index takes names, wildcards, quotes,
+/// `folder:`, `in:` and `regex:` (not `ext:` or `dm:`); the library its own terms.
+pub fn hint(backend: Option<&str>, library: bool) -> &'static str {
+    match backend {
+        _ if library => "Names and text: ext:pdf kind:image tag:x size:>1mb dm:2026 content:",
+        Some("Everything") => "Everything syntax: ext:pdf dm:today \"exact phrase\" folder: regex:",
+        Some("Keel index") => "Names: report *.pdf \"exact phrase\" folder: in:<folder> regex:",
+        _ => "Search file names",
+    }
+}
+
+/// Everything's search toggles (its Search menu), per search tab.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct Toggles {
+    pub match_case: bool,
+    pub whole_word: bool,
+    pub match_path: bool,
+    pub match_diacritics: bool,
+    pub regex: bool,
+}
+
+/// One of the [`Toggles`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toggle {
+    Case,
+    WholeWord,
+    Path,
+    Diacritics,
+    Regex,
+}
+
+impl Toggle {
+    pub const ALL: [Toggle; 5] = [
+        Toggle::Case,
+        Toggle::WholeWord,
+        Toggle::Path,
+        Toggle::Diacritics,
+        Toggle::Regex,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Toggle::Case => "Match case",
+            Toggle::WholeWord => "Match whole words",
+            Toggle::Path => "Match path",
+            Toggle::Diacritics => "Match diacritics",
+            Toggle::Regex => "Regular expression",
+        }
+    }
+
+    /// The button's text in the search bar.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Toggle::Case => "Aa",
+            Toggle::WholeWord => "ab",
+            Toggle::Path => "\\",
+            Toggle::Diacritics => "\u{e9}",
+            Toggle::Regex => ".*",
+        }
+    }
+
+    /// Everything's shortcuts (in a search tab; Ctrl+I is the Inspector elsewhere).
+    pub fn shortcut(self) -> &'static str {
+        match self {
+            Toggle::Case => "Ctrl+I",
+            Toggle::WholeWord => "Ctrl+B",
+            Toggle::Path => "Ctrl+U",
+            Toggle::Diacritics => "Ctrl+M",
+            Toggle::Regex => "Ctrl+R",
+        }
+    }
+
+    pub fn key(self) -> Key {
+        match self {
+            Toggle::Case => Key::I,
+            Toggle::WholeWord => Key::B,
+            Toggle::Path => Key::U,
+            Toggle::Diacritics => Key::M,
+            Toggle::Regex => Key::R,
+        }
+    }
+
+    pub fn of(self, t: &mut Toggles) -> &mut bool {
+        match self {
+            Toggle::Case => &mut t.match_case,
+            Toggle::WholeWord => &mut t.whole_word,
+            Toggle::Path => &mut t.match_path,
+            Toggle::Diacritics => &mut t.match_diacritics,
+            Toggle::Regex => &mut t.regex,
+        }
+    }
+
+    pub fn get(self, mut t: Toggles) -> bool {
+        *self.of(&mut t)
+    }
+}
+
+/// `[search]` in the profile's settings (Everything's Home and Search options).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct SearchSettings {
+    /// The toggles a new search tab starts with.
+    pub toggles: Toggles,
+    /// Run the query while typing; off, Enter runs it.
+    pub as_you_type: bool,
+    /// How long typing has to pause before the query runs.
+    pub delay_ms: u64,
+    /// A `*` or `?` term matches the whole name (`*.pdf`); off, anywhere in it.
+    pub whole_filename_wildcards: bool,
+    /// Load more stops at this many results.
+    pub max_results: u32,
+}
+
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self {
+            toggles: Toggles::default(),
+            as_you_type: true,
+            delay_ms: DEBOUNCE.as_millis() as u64,
+            whole_filename_wildcards: true,
+            max_results: 10_000,
+        }
+    }
+}
+
+impl SearchSettings {
+    /// The wait after an edit before the query runs; None when only Enter runs it.
+    pub fn delay(&self) -> Option<Duration> {
+        self.as_you_type
+            .then(|| Duration::from_millis(self.delay_ms.min(2_000)))
+    }
+
+    pub fn max(&self) -> u32 {
+        self.max_results
+            .clamp(*MAX_RESULTS.start(), *MAX_RESULTS.end())
+    }
+
+    /// The limit of a query: the first page for a new one (`limit` 0), else `limit`.
+    pub fn limit(&self, limit: u32) -> u32 {
+        match limit {
+            0 => PAGE.min(self.max()),
+            n => n.min(self.max()),
+        }
+    }
+
+    /// What Load more asks for after `limit`.
+    pub fn more(&self, limit: u32) -> u32 {
+        self.limit(limit).saturating_mul(4).min(self.max())
+    }
+
+    /// The backend query for `text` with these toggles, asking for `max` results.
+    pub fn query(&self, text: String, t: Toggles, max: u32) -> Query {
+        Query {
+            text,
+            max,
+            regex: t.regex,
+            match_case: t.match_case,
+            whole_word: t.whole_word,
+            match_path: t.match_path,
+            match_diacritics: t.match_diacritics,
+            whole_filename_wildcards: self.whole_filename_wildcards,
+            ..Query::default()
+        }
+    }
+}
+
+/// Where the app leaves the search settings for the search bar each frame.
+pub fn settings_id() -> egui::Id {
+    egui::Id::new("keel-search-settings")
+}
 
 /// What the user is told when a query fails.
 pub fn banner(err: &str) -> String {
@@ -45,9 +223,71 @@ pub fn probe(searcher: &dyn Searcher) -> Option<String> {
         .map(|e| banner(&format!("{e:#}")))
 }
 
-/// The query box. Editing schedules the query `DEBOUNCE` later; Enter runs it now;
-/// Up/Down move the result cursor while typing. With the Library backend the filter chips
-/// (`chip_row`) follow; a chip runs the query now.
+/// `text` with the `marks` byte ranges (from [`keel_search::Highlighter`]) drawn in the
+/// strong text colour on a light selection tint.
+pub fn highlighted(
+    ui: &egui::Ui,
+    text: &str,
+    marks: &[(usize, usize)],
+    color: Option<egui::Color32>,
+) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let plain = TextFormat::simple(font.clone(), color.unwrap_or(ui.visuals().text_color()));
+    let mark = TextFormat {
+        background: ui.visuals().selection.bg_fill.gamma_multiply(0.5),
+        ..TextFormat::simple(font, ui.visuals().strong_text_color())
+    };
+    let mut job = LayoutJob::default();
+    let mut at = 0;
+    for &(a, b) in marks {
+        let fits = at <= a && a < b && b <= text.len();
+        if !fits || !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+            continue;
+        }
+        job.append(&text[at..a], 0.0, plain.clone());
+        job.append(&text[a..b], 0.0, mark.clone());
+        at = b;
+    }
+    job.append(&text[at..], 0.0, plain);
+    job
+}
+
+/// The Search menu: the toggles, Load more, Open path and the copy commands.
+fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Action>) {
+    let mut item = |ui: &mut egui::Ui, button: egui::Button<'_>, action: Action| {
+        if ui.add(button).clicked() {
+            out.push(action);
+            ui.close_menu();
+        }
+    };
+    for t in Toggle::ALL {
+        let button = egui::Button::new(t.label())
+            .selected(t.get(toggles))
+            .shortcut_text(crate::keys::shortcut_label(t.shortcut()));
+        item(ui, button, Action::SearchToggle(t));
+    }
+    ui.separator();
+    if more {
+        item(ui, egui::Button::new("Load more results"), Action::SearchMore);
+    }
+    let open =
+        egui::Button::new("Open path").shortcut_text(crate::keys::shortcut_label("Ctrl+Enter"));
+    item(ui, open, Action::OpenLocation);
+    item(ui, egui::Button::new("Copy name"), Action::CopyName);
+    item(ui, egui::Button::new("Copy full path"), Action::CopyPath);
+    ui.separator();
+    item(
+        ui,
+        egui::Button::new("Search settings\u{2026}"),
+        Action::Settings,
+    );
+}
+
+/// The query box. Editing schedules the query after the search delay (when searching as
+/// you type); Enter runs it now; Up/Down move the result cursor while typing. The toggles
+/// and the Search menu follow; with the Library backend the filter chips (`chip_row`)
+/// follow too; a chip runs the query now.
 pub fn bar(
     ui: &mut egui::Ui,
     pane: &mut Pane,
@@ -56,14 +296,27 @@ pub fn bar(
     out: &mut Vec<Action>,
 ) {
     let library = lib.is_open();
+    let settings: SearchSettings = ui
+        .ctx()
+        .data(|d| d.get_temp(settings_id()))
+        .unwrap_or_default();
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     let (count, busy) = (tab.entries().len(), tab.loading);
-    let TabKind::Search { query, due, .. } = &mut tab.kind else {
+    let TabKind::Search {
+        query,
+        due,
+        toggles,
+        limit,
+        more,
+        ..
+    } = &mut tab.kind
+    else {
         return;
     };
     ui.horizontal(|ui| {
         // Task 29: the backend (the platform's, or the library index).
+        let name = platform;
         let platform = platform.unwrap_or("System");
         let before = tab.library_search;
         let combo = egui::ComboBox::from_id_salt("search-backend")
@@ -83,6 +336,7 @@ pub fn bar(
         let _ = crate::a11y::Named::named(combo.response, "Search with");
         if tab.library_search != before {
             // Run the query again on the other backend now.
+            *limit = 0;
             *due = Some(Instant::now());
             ui.ctx().request_repaint();
         }
@@ -102,8 +356,8 @@ pub fn bar(
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 110.0).max(120.0))
-                .hint_text(HINT),
+                .desired_width((ui.available_width() - 300.0).max(120.0))
+                .hint_text(hint(name, tab.library_search)),
         );
         if focus {
             r.request_focus();
@@ -116,22 +370,58 @@ pub fn bar(
             }
         }
         if r.changed() {
-            *due = Some(Instant::now() + DEBOUNCE);
-            ui.ctx().request_repaint_after(DEBOUNCE);
+            *limit = 0;
+            if let Some(delay) = settings.delay() {
+                *due = Some(Instant::now() + delay);
+                ui.ctx().request_repaint_after(delay);
+            }
         }
         if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            *limit = 0;
             *due = Some(Instant::now());
             ui.ctx().request_repaint();
         }
+        // The toggles (Everything's Search menu); the library has its own terms.
+        ui.add_enabled_ui(!tab.library_search, |ui| {
+            for t in Toggle::ALL {
+                let text = egui::RichText::new(t.icon()).monospace();
+                let tip = format!(
+                    "{} ({})",
+                    t.label(),
+                    crate::keys::shortcut_label(t.shortcut())
+                );
+                let r = ui
+                    .selectable_label(t.get(*toggles), text)
+                    .on_hover_text(&tip)
+                    .on_disabled_hover_text("The library search has its own terms");
+                if crate::a11y::Named::named(r, t.label()).clicked() {
+                    out.push(Action::SearchToggle(t));
+                }
+            }
+        });
+        let capped = *limit > 0 && count as u32 >= *limit;
+        let can_more = capped && *more && !tab.library_search;
+        ui.menu_button("Search", |ui| search_menu(ui, *toggles, can_more, out));
         if busy {
             crate::anim::spinner(ui);
         }
-        let n = count;
-        ui.weak(match n {
+        ui.weak(match count {
             1 => "1 result".to_owned(),
-            n if n as u32 >= MAX_HITS => format!("first {n} results"),
+            n if capped => format!("first {n} results"),
             n => format!("{n} results"),
         });
+        if can_more
+            && ui
+                .small_button("Load more")
+                .on_hover_text(format!(
+                    "Up to {} results (the Most results setting is {})",
+                    settings.more(*limit),
+                    settings.max()
+                ))
+                .clicked()
+        {
+            out.push(Action::SearchMore);
+        }
     });
     if tab.library_search && library {
         let tags: Vec<String> = lib.tags.iter().map(|t| t.name.clone()).collect();
@@ -142,10 +432,57 @@ pub fn bar(
             types: &lib.top_ext,
         };
         if crate::chip_row::chip_row(ui, query, &offer) {
+            *limit = 0;
             *due = Some(Instant::now());
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// Settings rows (the General page's grid): search as you type and its delay, whole
+/// filename wildcards, Most results, the toggles new searches start with, and quoted
+/// copied paths.
+pub fn settings_rows(ui: &mut egui::Ui, s: &mut SearchSettings, quote_paths: &mut bool) {
+    ui.label("Search");
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut s.as_you_type, "Search as you type");
+        ui.add_enabled(
+            s.as_you_type,
+            egui::DragValue::new(&mut s.delay_ms)
+                .range(0..=2_000)
+                .suffix(" ms"),
+        )
+        .on_hover_text("How long typing pauses before the search runs");
+    });
+    ui.end_row();
+    ui.label("");
+    ui.checkbox(
+        &mut s.whole_filename_wildcards,
+        "Match whole filename when using wildcards",
+    )
+    .on_hover_text("*.pdf matches the whole name; off, a wildcard term matches anywhere in it");
+    ui.end_row();
+    let label = ui.label("Most results");
+    let r = ui
+        .add(
+            egui::DragValue::new(&mut s.max_results)
+                .range(MAX_RESULTS)
+                .speed(100.0),
+        )
+        .on_hover_text("Load more stops here (a search shows the first 1,000 at once)");
+    let _ = r.labelled_by(label.id);
+    ui.end_row();
+    ui.label("New searches");
+    ui.horizontal_wrapped(|ui| {
+        for t in Toggle::ALL {
+            ui.checkbox(t.of(&mut s.toggles), t.label());
+        }
+    });
+    ui.end_row();
+    ui.label("Copy path");
+    ui.checkbox(quote_paths, "In double quotes")
+        .on_hover_text("Copy path puts each path in \"double quotes\"");
+    ui.end_row();
 }
 
 #[cfg(test)]
@@ -186,6 +523,320 @@ mod tests {
         state.apply(msg);
         assert_eq!(state.tab(0).error.as_deref(), Some(NOT_RUNNING));
         assert!(!state.tab(0).loading);
+    }
+
+    /// A temp folder, Keel's walk index over it as the System backend, and a search tab.
+    struct Fixture {
+        base: std::path::PathBuf,
+        root: std::path::PathBuf,
+        state: AppState,
+    }
+
+    impl Fixture {
+        fn new(tag: &str, files: &[&str]) -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "keel-search-tab-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+            let root = base.join("tree");
+            for f in files {
+                let path = root.join(f);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, b"12345").unwrap();
+            }
+            let index = keel_search::WalkIndexSearcher::open(base.join("index"), vec![root.clone()])
+                .unwrap();
+            assert!(index.wait_ready(Duration::from_secs(60)));
+            let mut state = AppState::new(
+                egui::Context::default(),
+                Arc::new(Router::new()),
+                VPath::local(&root),
+            );
+            let searcher: Arc<dyn Searcher> = Arc::new(index);
+            state.apply(Msg::Searcher {
+                searcher,
+                reason: None,
+            });
+            state.run(0, Action::Search);
+            assert!(state.tab(0).is_search());
+            Self { base, root, state }
+        }
+
+        /// Runs `text` with `toggles` through the search worker; the result names, sorted.
+        fn search(&mut self, text: &str, toggles: Toggles) -> Vec<String> {
+            if let TabKind::Search {
+                query,
+                due,
+                toggles: t,
+                limit,
+                ..
+            } = &mut self.state.tab_mut(0).kind
+            {
+                *query = text.into();
+                *t = toggles;
+                *limit = 0;
+                *due = Some(Instant::now());
+            }
+            self.finish()
+        }
+
+        /// Runs the due query and applies its answer.
+        fn finish(&mut self) -> Vec<String> {
+            self.state.tick();
+            let msg = loop {
+                match self.state.rx.recv_timeout(Duration::from_secs(30)).unwrap() {
+                    m @ Msg::Search { .. } => break m,
+                    other => self.state.apply(other),
+                }
+            };
+            self.state.apply(msg);
+            let tab = self.state.tab(0);
+            assert_eq!(tab.error, None);
+            let mut names: Vec<String> = (tab.entries().iter())
+                .map(|e| tab.shown_name(e).to_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn toggles(&self) -> Toggles {
+            match &self.state.tab(0).kind {
+                TabKind::Search { toggles, .. } => *toggles,
+                _ => panic!("not a search tab"),
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    const FILES: &[&str] = &[
+        "docs/Report.pdf",
+        "docs/report notes.txt",
+        "docs/old/report.pdf",
+        "café menu.txt",
+        "reportage.md",
+    ];
+
+    /// Task 76: each toggle changes what the worker finds (Keel's walk index on a temp
+    /// folder), and the toggle actions flip the tab's toggles and search again.
+    #[test]
+    fn each_toggle_through_the_worker() {
+        let mut f = Fixture::new("toggles", FILES);
+        let off = Toggles::default();
+        assert_eq!(
+            f.search("report", off),
+            ["Report.pdf", "report notes.txt", "report.pdf", "reportage.md"]
+        );
+        // Match Case, from its action (Ctrl+I).
+        f.search("Report", off);
+        f.state.run(0, Action::SearchToggle(Toggle::Case));
+        assert!(f.toggles().match_case);
+        assert_eq!(f.finish(), ["Report.pdf"]);
+        f.state.run(0, Action::SearchToggle(Toggle::Case));
+        assert!(!f.toggles().match_case);
+        assert_eq!(f.finish().len(), 4);
+        // Match Whole Words.
+        let words = Toggles {
+            whole_word: true,
+            ..off
+        };
+        assert_eq!(
+            f.search("report", words),
+            ["Report.pdf", "report notes.txt", "report.pdf"]
+        );
+        // Match Path.
+        assert_eq!(f.search("old", off), ["old"]);
+        let path = Toggles {
+            match_path: true,
+            ..off
+        };
+        assert_eq!(f.search("old", path), ["old", "report.pdf"]);
+        // Match Diacritics.
+        assert_eq!(f.search("cafe", off), ["café menu.txt"]);
+        let marks = Toggles {
+            match_diacritics: true,
+            ..off
+        };
+        assert!(f.search("cafe", marks).is_empty());
+        assert_eq!(f.search("café", marks), ["café menu.txt"]);
+        // Regex.
+        assert!(f.search(r"^report\.pdf$", off).is_empty(), "literal");
+        let regex = Toggles { regex: true, ..off };
+        assert_eq!(
+            f.search(r"^report\.pdf$", regex),
+            ["Report.pdf", "report.pdf"]
+        );
+        // Match whole filename when using wildcards (a setting).
+        assert!(f.search("*.pd", off).is_empty());
+        f.state.settings.search.whole_filename_wildcards = false;
+        assert_eq!(f.search("*.pd", off), ["Report.pdf", "report.pdf"]);
+        // New search tabs start with the profile's toggles.
+        f.state.settings.search.toggles.whole_word = true;
+        f.state.run(0, Action::NewTab);
+        f.state.run(0, Action::Search);
+        assert!(f.toggles().whole_word);
+    }
+
+    /// Task 76: the matched parts of names are highlighted; with Match Path, of folders.
+    #[test]
+    fn matched_parts_are_highlighted() {
+        let mut f = Fixture::new("marks", FILES);
+        f.search("rep", Toggles::default());
+        let h = f.state.tab(0).highlight.clone().expect("highlighter");
+        assert_eq!(h.marks("My Report.pdf"), [(3, 6)]);
+        assert!(!h.path);
+        let path = Toggles {
+            match_path: true,
+            ..Toggles::default()
+        };
+        f.search("old", path);
+        let h = f.state.tab(0).highlight.clone().expect("highlighter");
+        assert!(h.path);
+        let folder = f.root.join("docs").join("old").display().to_string();
+        assert!(!h.marks(&folder).is_empty());
+        // An empty query clears the results and the highlight (no query runs).
+        if let TabKind::Search { query, due, .. } = &mut f.state.tab_mut(0).kind {
+            query.clear();
+            *due = Some(Instant::now());
+        }
+        f.state.tick();
+        assert!(f.state.tab(0).highlight.is_none());
+        assert!(f.state.tab(0).entries().is_empty());
+    }
+
+    /// Task 76: no 500 cap. The first query shows the first page; Load more asks for more,
+    /// up to the Most results setting; the status bar's numbers follow.
+    #[test]
+    fn load_more_goes_past_the_first_page() {
+        let names: Vec<String> = (0..PAGE + 50).map(|i| format!("item{i:05}.txt")).collect();
+        let files: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut f = Fixture::new("more", &files);
+        assert_eq!(f.search("item", Toggles::default()).len(), PAGE as usize);
+        let TabKind::Search { limit, more, .. } = f.state.tab(0).kind.clone() else {
+            unreachable!()
+        };
+        assert_eq!((limit, more), (PAGE, true));
+        f.state.run(0, Action::SearchMore);
+        assert_eq!(f.finish().len(), PAGE as usize + 50);
+        let TabKind::Search { limit, .. } = f.state.tab(0).kind.clone() else {
+            unreachable!()
+        };
+        assert_eq!(limit, 4 * PAGE);
+        // Sizes and dates came along (the walk index has them).
+        let tab = f.state.tab(0);
+        assert!(tab.entries().iter().all(|e| e.size == 5 && e.modified.is_some()));
+        // Editing the query starts from the first page again.
+        f.state.run(0, Action::Type("0".into()));
+        assert!(matches!(
+            f.state.tab(0).kind,
+            TabKind::Search { limit: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn limits_and_settings() {
+        let s = SearchSettings::default();
+        assert_eq!(s.limit(0), PAGE);
+        assert_eq!(s.more(PAGE), 4 * PAGE);
+        assert_eq!(s.more(4 * PAGE), 10_000);
+        assert_eq!(s.more(10_000), 10_000);
+        let few = SearchSettings {
+            max_results: 5,
+            ..s.clone()
+        };
+        assert_eq!(few.max(), *MAX_RESULTS.start(), "clamped");
+        assert_eq!(s.delay(), Some(DEBOUNCE));
+        let enter = SearchSettings {
+            as_you_type: false,
+            ..s.clone()
+        };
+        assert_eq!(enter.delay(), None);
+        let q = s.query(
+            "x".into(),
+            Toggles {
+                match_case: true,
+                whole_word: true,
+                match_path: true,
+                match_diacritics: true,
+                regex: true,
+            },
+            7,
+        );
+        assert!(q.match_case && q.whole_word && q.match_path && q.match_diacritics && q.regex);
+        assert!(q.whole_filename_wildcards);
+        assert_eq!(q.max, 7);
+        // Old settings files without [search] load with the defaults.
+        let old: crate::settings::Settings = toml::from_str("theme = 'light'").unwrap();
+        assert_eq!(old.search, SearchSettings::default());
+        assert!(!old.quote_copied_paths);
+    }
+
+    /// The hint names only what the backend understands (Keel's index has no `ext:`).
+    #[test]
+    fn hint_matches_the_backend() {
+        assert!(hint(Some("Everything"), false).contains("ext:"));
+        let native = hint(Some("Keel index"), false);
+        assert!(!native.contains("ext:") && !native.contains("dm:"));
+        assert!(native.contains("in:") && native.contains("regex:"));
+        assert!(hint(Some("Library"), true).contains("tag:"));
+        assert_eq!(hint(None, false), "Search file names");
+    }
+
+    /// Everything's toggle shortcuts reach a search tab, also from its query box.
+    #[test]
+    fn toggle_shortcuts() {
+        let ctx = egui::Context::default();
+        for t in Toggle::ALL {
+            let mut out = Vec::new();
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key: t.key(),
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers::COMMAND,
+                    }],
+                    modifiers: Modifiers::COMMAND,
+                    ..Default::default()
+                },
+                |ctx| out = crate::keys::search_toggles(ctx),
+            );
+            assert_eq!(out, [Action::SearchToggle(t)]);
+        }
+    }
+
+    /// Copy name copies file names; Copy path can quote each path.
+    #[test]
+    fn copy_name_and_quoted_paths() {
+        let mut f = Fixture::new("copy", FILES);
+        f.search("report.pdf", Toggles::default());
+        let first = f.state.tab(0).entries()[0].clone();
+        f.state.tab_mut(0).click(&first.name, false, false);
+        let copied = |state: &AppState| -> Vec<String> {
+            state
+                .ctx
+                .output(|o| o.commands.clone())
+                .into_iter()
+                .filter_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t),
+                    _ => None,
+                })
+                .collect()
+        };
+        f.state.run(0, Action::CopyName);
+        assert_eq!(copied(&f.state).last().unwrap(), first.path.name());
+        f.state.settings.quote_copied_paths = true;
+        f.state.run(0, Action::CopyPath);
+        assert_eq!(
+            copied(&f.state).last().unwrap(),
+            &format!("\"{}\"", first.path.display())
+        );
     }
 
     /// Hits with the same file name stay distinct rows; Open location selects the file in

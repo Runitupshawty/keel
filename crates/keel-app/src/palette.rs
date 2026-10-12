@@ -24,6 +24,9 @@ pub struct Palette {
     pub profiles: Vec<String>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
+    /// The active tab is a search tab: its toggles and Load more are offered (set before
+    /// `show`).
+    pub search: bool,
     focus: bool,
     fuzzy: Option<Fuzzy>,
     /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`); dropped when
@@ -90,6 +93,25 @@ fn context_items() -> Vec<Item> {
     .into()
 }
 
+/// A search tab's toggles (Everything's Search menu) and Load more.
+fn search_items() -> Vec<Item> {
+    use crate::search_tab::Toggle;
+    let mut items: Vec<Item> = Toggle::ALL
+        .into_iter()
+        .map(|t| Item {
+            label: format!("Search: {}", t.label()),
+            shortcut: t.shortcut(),
+            action: Action::SearchToggle(t),
+        })
+        .collect();
+    items.push(Item {
+        label: "Search: Load more results".into(),
+        shortcut: "",
+        action: Action::SearchMore,
+    });
+    items
+}
+
 fn global_items() -> Vec<Item> {
     use Action::*;
     [
@@ -127,6 +149,7 @@ fn global_items() -> Vec<Item> {
         ("Invert selection", "", InvertSelection),
         ("Paste", "Ctrl+V", Paste),
         ("Copy path", "", CopyPath),
+        ("Copy name", "", CopyName),
         ("New folder", "Ctrl+Shift+N", NewFolder),
         ("New file", "", NewFile),
         ("Show in system file manager", "", RevealInSystem),
@@ -183,6 +206,9 @@ impl Palette {
             shortcut: "Ctrl+Z",
             action: Action::Undo,
         }));
+        if self.search {
+            items.extend(search_items());
+        }
         items.extend(global_items());
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),

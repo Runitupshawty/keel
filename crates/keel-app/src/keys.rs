@@ -97,6 +97,13 @@ pub enum Action {
     NewFolder,
     NewFile,
     CopyPath,
+    /// Copy the targets' names (a search tab: the file names, not the full paths).
+    CopyName,
+    /// A search toggle (Match Case, Whole Words, Path, Diacritics, Regex) in a search tab:
+    /// flip it and search again.
+    SearchToggle(crate::search_tab::Toggle),
+    /// A search tab: ask for more results (up to the Most results setting).
+    SearchMore,
     /// A share link for this cloud item (the one right-clicked), on the clipboard
     /// (`clouds::can_link`).
     CopyLink(VPath),
@@ -359,6 +366,19 @@ const MOVES: &[(Key, Nav)] = &[
     (Key::Home, Nav::Home),
     (Key::End, Nav::End),
 ];
+
+/// A search tab's toggle shortcuts (Everything's: Ctrl+I, Ctrl+B, Ctrl+U, Ctrl+M,
+/// Ctrl+R), also while typing in its query box. Call before [`actions`] so Ctrl+I is
+/// Match Case there, not the Inspector.
+pub fn search_toggles(ctx: &egui::Context) -> Vec<Action> {
+    ctx.input_mut(|i| {
+        crate::search_tab::Toggle::ALL
+            .into_iter()
+            .filter(|t| i.consume_key(CMD, t.key()))
+            .map(Action::SearchToggle)
+            .collect()
+    })
+}
 
 pub fn actions_with_terminal(ctx: &egui::Context, enabled: bool, terminal: bool) -> Vec<Action> {
     if !terminal {

@@ -80,6 +80,10 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[search]`: search tab toggles' defaults and search options (Task 76).
+    pub search: crate::search_tab::SearchSettings,
+    /// Copy path puts each path in double quotes.
+    pub quote_copied_paths: bool,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +218,8 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            search: Default::default(),
+            quote_copied_paths: false,
         }
     }
 }
@@ -728,6 +734,12 @@ pub fn window(
                             "After a crash, show the saved report the next time Keel starts",
                         );
                     ui.end_row();
+                    // --- Task 76 ---
+                    crate::search_tab::settings_rows(
+                        ui,
+                        &mut s.search,
+                        &mut s.quote_copied_paths,
+                    );
                     if cfg!(windows) {
                         ui.label("Search index");
                         crate::index_ui::full_index_button(ui, searcher, tx);

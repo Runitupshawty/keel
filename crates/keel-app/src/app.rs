@@ -254,6 +254,17 @@ impl App {
             && !ctx.is_context_menu_open();
         let terminal = s.terminal.focused(ctx);
         s.assign_keys(ctx, keys_on && !terminal); // Task 58
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                crate::search_tab::settings_id(),
+                s.settings.search.clone(),
+            )
+        });
+        if keys_on && !terminal && s.panes[s.active].tab().is_search() {
+            for action in keys::search_toggles(ctx) {
+                s.run(s.active, action);
+            }
+        }
         for action in keys::actions_with_terminal(ctx, keys_on, terminal) {
             s.run(s.active, action);
         }
@@ -648,10 +659,25 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .sum()
         };
         let mut left = vec![crate::jobs::items(n)];
-        if picked {
-            left.push(format!("{} selected", tab.selected.len()));
+        if tab.is_search() {
+            // Task 76: the results' total size, and the selection's beside it.
+            let total: u64 = (tab.visible_cached().iter())
+                .map(|&i| count(&tab.entries()[i]))
+                .sum();
+            left.push(format_size(total, DECIMAL));
+            if picked {
+                left.push(format!(
+                    "{} selected ({})",
+                    tab.selected.len(),
+                    format_size(bytes, DECIMAL)
+                ));
+            }
+        } else {
+            if picked {
+                left.push(format!("{} selected", tab.selected.len()));
+            }
+            left.push(format_size(bytes, DECIMAL));
         }
-        left.push(format_size(bytes, DECIMAL));
         if !tab.filter.is_empty() {
             left.push(format!("filter: {}", tab.filter));
         }
