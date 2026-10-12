@@ -231,7 +231,10 @@ fn names_and_dates_are_mapped() {
     assert_eq!(WpdTime::FileTime(0).unix_ns(), UNKNOWN_TIME);
     assert_eq!(WpdTime::FileTime(116_444_736_000_000_000).unix_ns(), 0);
     // Before 1970.
-    assert_eq!(WpdTime::FileTime(116_444_735_000_000_000).unix_ns(), -100_000_000_000);
+    assert_eq!(
+        WpdTime::FileTime(116_444_735_000_000_000).unix_ns(),
+        -100_000_000_000
+    );
 
     // No usable name: the object id; the creation date when there is no change date.
     let mut o = obj("o9", "  ", ContentKind::File, Some(5));
@@ -241,7 +244,10 @@ fn names_and_dates_are_mapped() {
     assert!(!e.folder);
     assert_eq!((e.size, e.modified), (5, 86_400_000_000_000));
     // A folder's stated size is not its size; an unknown type with a size is a file.
-    assert_eq!(obj("f", "F", ContentKind::Folder, Some(4096)).entry().size, 0);
+    assert_eq!(
+        obj("f", "F", ContentKind::Folder, Some(4096)).entry().size,
+        0
+    );
     assert!(!obj("x", "X", ContentKind::Unknown, Some(1)).entry().folder);
     assert!(obj("y", "Y", ContentKind::Functional, None).entry().folder);
 }
@@ -365,8 +371,14 @@ fn device_errors() {
 
     // A device that lists a folder inside itself does not loop.
     let mut dev = phone();
-    dev.objects.get_mut("f1").unwrap().push(folder("f1", "DCIM"));
-    dev.objects.get_mut("f1").unwrap().push(folder("s1", "Loop"));
+    dev.objects
+        .get_mut("f1")
+        .unwrap()
+        .push(folder("f1", "DCIM"));
+    dev.objects
+        .get_mut("f1")
+        .unwrap()
+        .push(folder("s1", "Loop"));
     let t = scan_mock(&mock(vec![dev]), &ScanOptions::default()).unwrap();
     assert!(t.info.complete);
     let dcim = child(&t, t.roots()[0].node, "DCIM");
@@ -534,13 +546,7 @@ fn live_device_scan() {
     let s = t.summary(10);
     eprintln!(
         "{}: {} bytes, {} files, {} folders in {} ms (complete: {}, timed out: {})",
-        s.roots[0].path,
-        s.bytes,
-        s.files,
-        s.folders,
-        s.elapsed_ms,
-        s.complete,
-        t.info.timed_out
+        s.roots[0].path, s.bytes, s.files, s.folders, s.elapsed_ms, s.complete, t.info.timed_out
     );
     for c in &s.roots[0].children {
         eprintln!("  {:>14}  {}", c.bytes, c.name);

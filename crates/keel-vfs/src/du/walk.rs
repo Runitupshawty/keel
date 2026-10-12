@@ -7,8 +7,8 @@ use super::filter::Compiled;
 use super::mtp::{self, Backend, Session};
 use super::sys::{self, Raw};
 use super::{
-    attr, flag, DeviceRoot, LinkKind, Node, NodeId, NodeKind, Root, RootInfo, ScanHandle,
-    ScanInfo, ScanOptions, Space, Tree, NONE, TOP,
+    attr, flag, DeviceRoot, LinkKind, Node, NodeId, NodeKind, Root, RootInfo, ScanHandle, ScanInfo,
+    ScanOptions, Space, Tree, NONE, TOP,
 };
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -949,7 +949,8 @@ fn refresh_device(
     handle.start();
     // The folder's object id, by name from the storage down (and the storage's space).
     let found = mtp::on_device_thread(|| -> Result<(Option<String>, Option<Space>)> {
-        let mut s = (devices.open(&dev.device_id)).context("the portable device is not connected")?;
+        let mut s =
+            (devices.open(&dev.device_id)).context("the portable device is not connected")?;
         let space = match is_root {
             true => s.storage(&dev.storage_id)?.space,
             false => None,

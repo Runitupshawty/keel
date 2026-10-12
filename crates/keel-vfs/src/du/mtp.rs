@@ -266,10 +266,9 @@ pub(crate) mod wpd {
         PortableDeviceValues, WPD_CLIENT_DESIRED_ACCESS, WPD_CLIENT_MAJOR_VERSION,
         WPD_CLIENT_MINOR_VERSION, WPD_CLIENT_NAME, WPD_CLIENT_REVISION,
         WPD_CLIENT_SECURITY_QUALITY_OF_SERVICE, WPD_CONTENT_TYPE_FOLDER,
-        WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_DEVICE_OBJECT_ID,
-        WPD_FUNCTIONAL_CATEGORY_STORAGE, WPD_FUNCTIONAL_OBJECT_CATEGORY,
-        WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_DATE_CREATED, WPD_OBJECT_DATE_MODIFIED,
-        WPD_OBJECT_ISHIDDEN, WPD_OBJECT_ISSYSTEM, WPD_OBJECT_NAME,
+        WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_DEVICE_OBJECT_ID, WPD_FUNCTIONAL_CATEGORY_STORAGE,
+        WPD_FUNCTIONAL_OBJECT_CATEGORY, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_DATE_CREATED,
+        WPD_OBJECT_DATE_MODIFIED, WPD_OBJECT_ISHIDDEN, WPD_OBJECT_ISSYSTEM, WPD_OBJECT_NAME,
         WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_OBJECT_SIZE, WPD_STORAGE_CAPACITY,
         WPD_STORAGE_DESCRIPTION, WPD_STORAGE_FREE_SPACE_IN_BYTES,
     };
@@ -603,7 +602,9 @@ pub(crate) mod wpd {
 
     impl Session for WpdSession {
         fn name(&mut self) -> String {
-            self.name.clone().unwrap_or_else(|| "Portable device".into())
+            self.name
+                .clone()
+                .unwrap_or_else(|| "Portable device".into())
         }
 
         fn storage(&mut self, storage_id: &str) -> Result<Storage> {
@@ -630,9 +631,7 @@ pub(crate) mod wpd {
                 };
                 let kind = match guid(&v, &WPD_OBJECT_CONTENT_TYPE) {
                     Some(g) if g == WPD_CONTENT_TYPE_FOLDER => ContentKind::Folder,
-                    Some(g) if g == WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT => {
-                        ContentKind::Functional
-                    }
+                    Some(g) if g == WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT => ContentKind::Functional,
                     Some(_) => ContentKind::File,
                     None => ContentKind::Unknown,
                 };
