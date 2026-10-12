@@ -237,8 +237,9 @@ pub struct Journal<'j> {
     record: Record<'j>,
     fresh: Vec<(crate::VPath, Placed)>,
     bytes: u64,
-    /// The files placed, by this run or recorded by an earlier one (case-folded targets).
-    landed: std::collections::HashSet<String>,
+    /// What was placed, by this run or recorded by an earlier one: case-folded target ->
+    /// the targets as placed, and whether each is a folder (made, or moved whole).
+    landed: HashMap<String, Vec<(crate::VPath, bool)>>,
 }
 
 impl<'j> Journal<'j> {
@@ -250,10 +251,13 @@ impl<'j> Journal<'j> {
         record: impl FnMut(Vec<(crate::VPath, Placed)>, Option<&Unfinished>) -> Result<()> + 'j,
     ) -> Journal<'j> {
         let files = placed.values().filter(|p| p.file.is_some()).count() as u64;
-        let landed = (placed.values())
-            .filter(|p| p.file.is_some())
-            .map(|p| folded_target(&p.target))
-            .collect();
+        let mut landed: HashMap<String, Vec<(crate::VPath, bool)>> = HashMap::new();
+        for p in placed.values() {
+            landed
+                .entry(folded_target(&p.target))
+                .or_default()
+                .push((p.target.clone(), p.file.is_none()));
+        }
         Journal {
             landed,
             placed,
@@ -278,8 +282,12 @@ impl<'j> Journal<'j> {
         if let Some(stamp) = placed.file {
             self.files += 1;
             self.bytes += stamp.size;
-            self.landed.insert(folded_target(&placed.target));
         }
+        (self
+            .landed
+            .entry(folded_target(&placed.target))
+            .or_default())
+        .push((placed.target.clone(), placed.file.is_none()));
         self.fresh.push((source, placed));
         if now || self.fresh.len() >= RECORD_FILES || self.bytes >= RECORD_BYTES {
             self.flush()?;
@@ -287,10 +295,28 @@ impl<'j> Journal<'j> {
         Ok(())
     }
 
-    /// Another source's file was placed at `target` (or at a name a case-insensitive disk
-    /// takes for it).
+    /// A file (`dir` false) or a folder was placed at `target`, or at another spelling of
+    /// it that is the same file (`A.txt` for `a.txt` on a disk that ignores case).
+    fn landed_at(&self, target: &crate::VPath, dir: bool) -> bool {
+        let same = |p: &crate::VPath| match (p.to_local_path(), target.to_local_path()) {
+            (Some(a), Some(b)) => same_file::is_same_file(a, b).unwrap_or(false),
+            _ => false,
+        };
+        (self.landed.get(&folded_target(target))).is_some_and(|placed| {
+            (placed.iter()).any(|(p, d)| *d == dir && (p == target || same(p)))
+        })
+    }
+
+    /// A file was placed at `target`.
     fn landed(&self, target: &crate::VPath) -> bool {
-        self.landed.contains(&folded_target(target))
+        self.landed_at(target, false)
+    }
+
+    /// `target` was placed, or is inside a folder that was (made, or moved whole).
+    fn holds(&self, target: &crate::VPath) -> bool {
+        self.landed(target)
+            || std::iter::successors(target.parent(), crate::VPath::parent)
+                .any(|dir| self.landed_at(&dir, true))
     }
 
     /// The unfinished record of `source`, taken out.
@@ -301,6 +327,52 @@ impl<'j> Journal<'j> {
 
 fn folded_target(p: &crate::VPath) -> String {
     format!("{}://{}{}", p.scheme, p.authority, p.path.to_lowercase())
+}
+
+/// What a move placed (files, and folders moved whole by one rename): Overwrite never
+/// replaces one of them, or a file inside one, since its source is gone. Local targets
+/// are known by file identity (so `a.txt` is `A.txt` exactly where the disk ignores case),
+/// others by path.
+#[derive(Default)]
+struct Moved {
+    ids: std::collections::HashSet<(u64, u64)>,
+    paths: std::collections::HashSet<crate::VPath>,
+}
+impl Moved {
+    fn add(&mut self, p: &crate::VPath) {
+        match p.to_local_path() {
+            Some(local) => {
+                if let Some(id) = long(&local).ok().and_then(|l| sys::file_id(&l)) {
+                    self.ids.insert(id);
+                }
+            }
+            None => {
+                self.paths.insert(p.clone());
+            }
+        }
+    }
+    /// `p` exists and is (or is inside) something this move placed.
+    fn holds(&self, p: &crate::VPath) -> bool {
+        match p.to_local_path() {
+            Some(local) => {
+                let Ok(local) = long(&local) else {
+                    return false;
+                };
+                !self.ids.is_empty()
+                    && sys::file_id(&local).is_some()
+                    && (local.ancestors())
+                        .any(|a| sys::file_id(a).is_some_and(|id| self.ids.contains(&id)))
+            }
+            None => std::iter::successors(Some(p.clone()), crate::VPath::parent)
+                .any(|a| self.paths.contains(&a)),
+        }
+    }
+}
+
+/// `target` exists and this move placed it (or a folder holding it), in this run or, from
+/// its journal, an earlier one.
+fn moved_here(moved: &Moved, journal: Option<&Journal>, target: &crate::VPath) -> bool {
+    moved.holds(target) || journal.is_some_and(|j| j.holds(target))
 }
 
 /// How a journaled transfer takes one source before its conflict policy.
@@ -471,7 +543,7 @@ fn transfer_local(
             cancel,
             moving,
             swept: Default::default(),
-            placed: Default::default(),
+            moved: Moved::default(),
             journal,
             top: None,
             pool: (threads > 1)
@@ -653,9 +725,8 @@ struct Job<'a, 'j> {
     moving: bool,
     /// Folders already swept for stale staging files.
     swept: std::collections::HashSet<PathBuf>,
-    /// The files a move placed (`folded`): Overwrite never replaces one (its source is
-    /// gone). A copy's later source of one name replaces an earlier one.
-    placed: std::collections::HashSet<PathBuf>,
+    /// What a move placed. A copy's later source of one name replaces an earlier one.
+    moved: Moved,
     journal: Option<&'a mut Journal<'j>>,
     /// The target picked for the top-level source being transferred, and whether it was
     /// free (set by the first `node` of each source: the top level picks before it recurses).
@@ -712,7 +783,11 @@ impl Job<'_, '_> {
                     metadata.is_dir()
                         || !self.moving
                         || self.conflict != Conflict::Overwrite
-                        || !self.placed.contains(&folded(t))
+                        || !moved_here(
+                            &self.moved,
+                            self.journal.as_deref(),
+                            &crate::VPath::local(t),
+                        )
                 });
                 match picked {
                     Some(target) => target,
@@ -744,7 +819,22 @@ impl Job<'_, '_> {
             // Same volume: one rename. Another volume: fall through to copy + delete.
             match sys::rename_noreplace(source, &target) {
                 Ok(()) => {
-                    self.placed.insert(folded(&target));
+                    self.moved.add(&crate::VPath::local(&target));
+                    if let Some(j) = self.journal.as_deref_mut() {
+                        // Recorded like any placed file; a folder moved whole holds only
+                        // the move's own files.
+                        let file = (!metadata.is_dir()).then(|| Stamp::of(&metadata));
+                        let target = crate::VPath::local(&target);
+                        j.placed(
+                            key.clone(),
+                            Placed {
+                                target,
+                                file,
+                                archive: None,
+                            },
+                            false,
+                        )?;
+                    }
                     let (bytes, items) = plan_size(std::slice::from_ref(&target))?;
                     self.state.done_bytes += bytes;
                     self.state.done_items += items;
@@ -903,7 +993,7 @@ impl Job<'_, '_> {
         stamp: Option<Stamp>,
     ) -> Result<()> {
         if self.moving {
-            self.placed.insert(folded(target));
+            self.moved.add(&crate::VPath::local(target));
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
@@ -940,7 +1030,7 @@ impl Job<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
-            self.placed.insert(folded(&local_target(&target)?));
+            self.moved.add(&target);
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
         }
@@ -1383,7 +1473,7 @@ fn transfer_with(
         cancel,
         moving: mv,
         swept: Default::default(),
-        placed: Default::default(),
+        moved: Moved::default(),
         journal,
     };
     let mut result = Ok(());
@@ -1539,8 +1629,8 @@ struct ProviderJob<'a, 'j> {
     root: crate::VPath,
     /// Destination folders already swept for stale staging files.
     swept: std::collections::HashSet<String>,
-    /// The files a move placed (`folded_target`): Overwrite never replaces one.
-    placed: std::collections::HashSet<String>,
+    /// What a move placed.
+    moved: Moved,
     journal: Option<&'a mut Journal<'j>>,
 }
 fn provider_stat(
@@ -1611,7 +1701,7 @@ impl ProviderJob<'_, '_> {
                     let ours = self.moving
                         && self.conflict == Conflict::Overwrite
                         && before.kind != Kind::Dir
-                        && self.placed.contains(&folded_target(&target));
+                        && moved_here(&self.moved, self.journal.as_deref(), &target);
                     if ours
                         || self.conflict == Conflict::Skip
                             && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
@@ -1660,7 +1750,7 @@ impl ProviderJob<'_, '_> {
             // is one rename on the server.
             let merge = before.kind == Kind::Dir && occupied.is_some();
             if !merge && self.rename_on_server(src, &dst, source, &target, occupied.is_some())? {
-                self.placed.insert(folded_target(&target));
+                self.moved.add(&target);
                 return Ok(true);
             }
         }
@@ -1697,7 +1787,7 @@ impl ProviderJob<'_, '_> {
         let picked = target != *proposed;
         let placed = self.copy(src, source, &before, &target, picked)?;
         if self.moving {
-            self.placed.insert(folded_target(&target));
+            self.moved.add(&target);
             check_cancel(self.cancel)?;
             // The copy is verified: delete the source permanently, like `move_local` (the
             // local provider's `remove` would only send it to the Recycle Bin).
@@ -1735,7 +1825,7 @@ impl ProviderJob<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
-            self.placed.insert(folded_target(&target));
+            self.moved.add(&target);
             match source.to_local_path() {
                 Some(local) => fs::remove_file(&local)
                     .with_context(|| format!("remove moved file {}", local.display()))?,
@@ -3123,7 +3213,9 @@ mod case_twin_tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
         if !tmp.path().join("probe").exists() {
-            return; // this temp folder tells case apart: no twins land on one name
+            // This temp folder tells case apart: no twins land on one name.
+            eprintln!("skipped: the temp folder is case-sensitive");
+            return;
         }
         let router = Router::new();
         let mem = Arc::new(MemoryProvider::new());
@@ -3155,6 +3247,39 @@ mod case_twin_tests {
         );
     }
 
+    /// On a destination that tells case apart, `A.txt` and `a.txt` are two files: moving
+    /// both with Overwrite replaces an `a.txt` that was there, not skips it.
+    #[test]
+    fn overwrite_replaces_a_case_twin_on_a_case_sensitive_destination() {
+        let router = Router::new();
+        let mem = Arc::new(MemoryProvider::new());
+        router.register(mem.clone());
+        mem.put("/src/A.txt", "big");
+        mem.put("/src/a.txt", "new");
+        mem.put("/dst/src/a.txt", "old");
+        super::transfer(
+            &[VPath::parse("memory://box/src").unwrap()],
+            &VPath::parse("memory://box/dst").unwrap(),
+            true,
+            Conflict::Overwrite,
+            &|_| {},
+            &AtomicBool::new(false),
+            &router,
+        )
+        .unwrap();
+        let read = |p: &str| {
+            let mut body = String::new();
+            std::io::Read::read_to_string(
+                &mut mem.read(&VPath::parse(p).unwrap()).unwrap(),
+                &mut body,
+            )
+            .unwrap();
+            body
+        };
+        assert_eq!(read("memory://box/dst/src/A.txt"), "big");
+        assert_eq!(read("memory://box/dst/src/a.txt"), "new");
+    }
+
     /// Overwrite replaces what was there before, never a file this same move just placed:
     /// moved over it, the first twin would be gone from both sides.
     #[test]
@@ -3162,6 +3287,7 @@ mod case_twin_tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
         if !tmp.path().join("probe").exists() {
+            eprintln!("skipped: the temp folder is case-sensitive");
             return;
         }
         for journaled in [false, true] {

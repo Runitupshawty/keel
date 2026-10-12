@@ -515,3 +515,77 @@ fn overwrite_never_replaces_a_file_the_same_move_placed() {
     assert_eq!(fs::read(dst.join("notes.txt")).unwrap(), b"from a");
     assert_eq!(fs::read(b.join("notes.txt")).unwrap(), b"from b");
 }
+
+/// A folder moved whole by one rename, then a second folder of its name merged into it:
+/// the files the first one brought are the move's own and are never written over.
+#[test]
+fn overwrite_never_replaces_a_file_inside_a_folder_the_same_move_placed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b, dst) = (
+        tmp.path().join("a"),
+        tmp.path().join("b"),
+        tmp.path().join("dst"),
+    );
+    for d in [a.join("docs"), b.join("docs"), dst.clone()] {
+        fs::create_dir_all(d).unwrap();
+    }
+    fs::write(a.join("docs/notes.txt"), b"from a").unwrap();
+    fs::write(b.join("docs/notes.txt"), b"from b").unwrap();
+    move_local(
+        &[a.join("docs"), b.join("docs")],
+        &dst,
+        Conflict::Overwrite,
+        &|_| {},
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(fs::read(dst.join("docs/notes.txt")).unwrap(), b"from a");
+    assert_eq!(fs::read(b.join("docs/notes.txt")).unwrap(), b"from b");
+}
+
+/// Resumed after a stop, a move remembers what its earlier run recorded it moved:
+/// a later source of the same name does not write over it.
+#[test]
+fn a_resumed_move_never_replaces_a_file_its_earlier_run_moved() {
+    use keel_vfs::{
+        ops::{transfer_resumable, Journal},
+        Router, VPath,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b, dst) = (
+        tmp.path().join("a"),
+        tmp.path().join("b"),
+        tmp.path().join("dst"),
+    );
+    for d in [&a, &b, &dst] {
+        fs::create_dir(d).unwrap();
+    }
+    fs::write(a.join("notes.txt"), b"from a").unwrap();
+    fs::write(b.join("notes.txt"), b"from b").unwrap();
+    let (router, cancel) = (Router::new(), AtomicBool::new(false));
+    let recorded = RefCell::new(std::collections::HashMap::new());
+    let run = |src: &std::path::Path, placed| {
+        let mut journal = Journal::new(placed, None, |fresh, _| {
+            recorded.borrow_mut().extend(fresh);
+            Ok(())
+        });
+        transfer_resumable(
+            &[VPath::local(src)],
+            &VPath::local(&dst),
+            true,
+            Conflict::Overwrite,
+            &|_| {},
+            &cancel,
+            &router,
+            &mut journal,
+        )
+        .unwrap();
+        // As recorded every few files, and when a run stops.
+        journal.flush().unwrap();
+    };
+    run(&a.join("notes.txt"), Default::default());
+    let earlier = recorded.borrow().clone();
+    run(&b.join("notes.txt"), earlier);
+    assert_eq!(fs::read(dst.join("notes.txt")).unwrap(), b"from a");
+    assert_eq!(fs::read(b.join("notes.txt")).unwrap(), b"from b");
+}
