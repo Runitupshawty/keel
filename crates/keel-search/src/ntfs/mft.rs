@@ -25,7 +25,7 @@ pub(crate) const MAX_RECORD: usize = 64 * 1024;
 const ATTR_STANDARD_INFORMATION: u32 = 0x10;
 const ATTR_ATTRIBUTE_LIST: u32 = 0x20;
 const ATTR_FILE_NAME: u32 = 0x30;
-const ATTR_DATA: u32 = 0x80;
+pub(crate) const ATTR_DATA: u32 = 0x80;
 const ATTR_REPARSE_POINT: u32 = 0xC0;
 const ATTR_END: u32 = 0xFFFF_FFFF;
 
@@ -518,11 +518,23 @@ pub(crate) fn decode_runs(bytes: &[u8]) -> Result<Vec<Run>, MftError> {
 }
 
 /// The unnamed `$DATA` stream's size and data runs in a fixed-up record, all its
-/// extents in this record in order. Record 0 (the `$MFT` itself) says where the MFT
-/// lies on the volume.
+/// extents in this record in order.
 pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
+    let (size, extents) = data_extents(r)?;
+    let runs = extents.into_iter().flat_map(|(_, runs)| runs).collect();
+    Ok((size.ok_or(MftError::Runs)?, runs))
+}
+
+/// Extents of a non-resident attribute: (start VCN, runs).
+pub(crate) type Extents = Vec<(u64, Vec<Run>)>;
+
+/// The extents of the unnamed `$DATA` stream that are in this fixed-up record, in
+/// record order, and the stream's size when its first extent (VCN 0) is here. Record
+/// 0 (the `$MFT` itself) and the extension records its `$ATTRIBUTE_LIST` names say
+/// where the MFT lies on the volume.
+pub(crate) fn data_extents(r: &[u8]) -> Result<(Option<u64>, Extents), MftError> {
     let mut size = None;
-    let mut runs = Vec::new();
+    let mut extents = Vec::new();
     let mut failed = None;
     each_attribute(r, |a| {
         if a.kind != ATTR_DATA || a.named || failed.is_some() {
@@ -539,7 +551,7 @@ pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
                 size = Some(s);
             }
             match decode_runs(bytes) {
-                Ok(more) => runs.extend(more),
+                Ok(runs) => extents.push((start_vcn, runs)),
                 Err(e) => failed = Some(e),
             }
         }
@@ -547,7 +559,7 @@ pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
     if let Some(e) = failed {
         return Err(e);
     }
-    Ok((size.ok_or(MftError::Runs)?, runs))
+    Ok((size, extents))
 }
 
 /// One file, merged from its base record and any extension records: what the index

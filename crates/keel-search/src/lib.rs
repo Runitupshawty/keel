@@ -19,6 +19,10 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
+/// Where the MFT lies on a volume and the raw read of its records.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/raw.rs"]
+mod raw;
 #[cfg(target_os = "macos")]
 mod spotlight;
 mod walkindex;

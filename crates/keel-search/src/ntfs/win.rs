@@ -31,6 +31,7 @@ use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLE
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::usn::{parse_buffer, Record, Stat};
+use crate::raw::{NtfsData, RawVolume};
 
 const DRIVE_FIXED: u32 = 3;
 const GENERIC_READ: u32 = 0x8000_0000;
@@ -128,16 +129,6 @@ pub(crate) struct Journal {
     pub id: u64,
     pub next_usn: i64,
     pub lowest_valid_usn: i64,
-}
-
-/// `NTFS_VOLUME_DATA_BUFFER`, the fields the raw MFT read needs.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct NtfsData {
-    pub bytes_per_cluster: u64,
-    pub bytes_per_record: u64,
-    pub mft_start_lcn: u64,
-    /// Bytes of the MFT in use; records past it were never written.
-    pub mft_valid_length: u64,
 }
 
 /// A handle to `\\.\X:`. Reading the MFT needs an administrator; the journal read
@@ -340,38 +331,6 @@ impl Volume {
             .map(str::to_owned)
     }
 
-    /// Cluster and record sizes and where the MFT starts (`FSCTL_GET_NTFS_VOLUME_DATA`;
-    /// administrator).
-    pub fn ntfs_data(&self) -> io::Result<NtfsData> {
-        let mut out = [0u8; 96];
-        ioctl(&self.file, FSCTL_GET_NTFS_VOLUME_DATA, &(), &mut out)?;
-        let u32_at = |i: usize| u64::from(u32::from_le_bytes(out[i..i + 4].try_into().unwrap()));
-        let u64_at = |i: usize| u64::from_le_bytes(out[i..i + 8].try_into().unwrap());
-        Ok(NtfsData {
-            bytes_per_cluster: u32_at(44),
-            bytes_per_record: u32_at(48),
-            mft_valid_length: u64_at(56),
-            mft_start_lcn: u64_at(64),
-        })
-    }
-
-    /// Fills `buf` from byte `offset` of the volume (administrator). Offset and length
-    /// must be whole sectors.
-    pub fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        use std::os::windows::fs::FileExt;
-        let mut done = 0;
-        while done < buf.len() {
-            let n = self
-                .file
-                .seek_read(&mut buf[done..], offset + done as u64)?;
-            if n == 0 {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-            done += n;
-        }
-        Ok(())
-    }
-
     pub fn query_journal(&self) -> io::Result<Journal> {
         let mut out = [0u8; 64];
         ioctl(&self.file, FSCTL_QUERY_USN_JOURNAL, &(), &mut out)?;
@@ -440,6 +399,40 @@ impl Volume {
                 return Ok((all, input.start_usn));
             }
         }
+    }
+}
+
+impl RawVolume for Volume {
+    /// Cluster and record sizes and where the MFT starts (`FSCTL_GET_NTFS_VOLUME_DATA`;
+    /// administrator).
+    fn ntfs_data(&self) -> io::Result<NtfsData> {
+        let mut out = [0u8; 96];
+        ioctl(&self.file, FSCTL_GET_NTFS_VOLUME_DATA, &(), &mut out)?;
+        let u32_at = |i: usize| u64::from(u32::from_le_bytes(out[i..i + 4].try_into().unwrap()));
+        let u64_at = |i: usize| u64::from_le_bytes(out[i..i + 8].try_into().unwrap());
+        Ok(NtfsData {
+            bytes_per_cluster: u32_at(44),
+            bytes_per_record: u32_at(48),
+            mft_valid_length: u64_at(56),
+            mft_start_lcn: u64_at(64),
+        })
+    }
+
+    /// Fills `buf` from byte `offset` of the volume (administrator). Offset and length
+    /// must be whole sectors.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = self
+                .file
+                .seek_read(&mut buf[done..], offset + done as u64)?;
+            if n == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            done += n;
+        }
+        Ok(())
     }
 }
 

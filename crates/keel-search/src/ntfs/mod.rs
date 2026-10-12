@@ -27,6 +27,7 @@ use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
 use crate::mft;
+use crate::raw::read_mft;
 use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index, Info};
@@ -175,76 +176,10 @@ fn adopt(dir: &Path) -> Vec<PathBuf> {
     adopted
 }
 
-/// Bytes of the MFT read per volume read call.
-const MFT_CHUNK: u64 = 4 << 20;
 /// System files in records 0 to 15 (`$MFT` to `$Extend`; 5 is the root folder) are
 /// not indexed; what lives under `$Extend` is then unreachable and never listed.
 const FIRST_USER_RECORD: u64 = 16;
 const ROOT_RECORD: u64 = 5;
-
-/// Reads every `FILE` record of the volume's MFT straight from disk (administrator)
-/// and hands each file over as an [`mft::Entry`]. Records torn by a write during the
-/// read are skipped (the journal replay after the build brings them back). Errors on
-/// a layout this reader does not take (records split across MFT extents, a sparse
-/// MFT), so the caller can enumerate instead.
-fn read_mft(volume: &Volume, mut each: impl FnMut(mft::Entry)) -> anyhow::Result<()> {
-    let data = volume.ntfs_data()?;
-    let (cluster, record) = (data.bytes_per_cluster, data.bytes_per_record);
-    if cluster == 0
-        || !cluster.is_power_of_two()
-        || cluster > MFT_CHUNK
-        || record < 512
-        || record > mft::MAX_RECORD as u64
-        || !record.is_power_of_two()
-    {
-        bail!("unexpected NTFS geometry: {cluster} B clusters, {record} B records");
-    }
-    let start = data
-        .mft_start_lcn
-        .checked_mul(cluster)
-        .ok_or_else(|| anyhow!("MFT start out of range"))?;
-    let mut buf = vec![0u8; cluster.max(record) as usize];
-    volume.read_at(start, &mut buf)?;
-    let mut zero = buf[..record as usize].to_vec();
-    mft::fixup(&mut zero)?;
-    let (size, runs) = mft::data_runs(&zero)?;
-    let count = size.min(data.mft_valid_length) / record;
-    let mut scan = mft::Scan::default();
-    let mut number = 0u64;
-    for run in runs {
-        let lcn = run.lcn.ok_or_else(|| anyhow!("sparse MFT run"))?;
-        let mut offset = lcn
-            .checked_mul(cluster)
-            .ok_or_else(|| anyhow!("MFT run out of range"))?;
-        let mut left = run
-            .clusters
-            .checked_mul(cluster)
-            .ok_or_else(|| anyhow!("MFT run out of range"))?;
-        if left % record != 0 {
-            bail!("an MFT record spans two extents");
-        }
-        while left > 0 && number < count {
-            let len = left.min(MFT_CHUNK);
-            buf.resize(len as usize, 0);
-            volume.read_at(offset, &mut buf)?;
-            for chunk in buf.chunks_exact_mut(record as usize) {
-                if number >= count {
-                    break;
-                }
-                if let Ok(Some(entry)) = scan.add(number, chunk) {
-                    each(entry);
-                }
-                number += 1;
-            }
-            offset += len;
-            left -= len;
-        }
-    }
-    for entry in scan.finish() {
-        each(entry);
-    }
-    Ok(())
-}
 
 /// Puts one file read from the MFT in the index (its first name; the others are
 /// counted as hard links).
