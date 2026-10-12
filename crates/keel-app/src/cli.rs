@@ -1769,7 +1769,8 @@ mod tests {
             Request {
                 folder: Some(dir.clone()),
                 search: Some("a b".into()),
-                select: None
+                select: None,
+                filelist: None,
             }
         );
         let cli = parse(&["--url", &format!("keel:open?path={enc}")]).unwrap();

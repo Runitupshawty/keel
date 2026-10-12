@@ -914,6 +914,7 @@ pub fn search(a: &EsArgs, source: Source) -> Result<Vec<Row>, Fail> {
                     regex: a.regex,
                     match_case: a.case,
                     meta: false,
+                    ..keel_search::Query::default()
                 })
                 .map_err(|e| Fail::Failed(format!("{e:#}")))?;
             if hits.len() >= FETCH_CAP as usize {
