@@ -143,6 +143,7 @@ impl QuickSearch {
                         searcher: s.searcher.as_ref().map(|x| x.name()),
                         tags_column: &mut no_tags,
                         list: &mut s.settings.list,
+                        views: &mut s.settings.views,
                         media: &mut s.media,
                         sizes: &s.sizes,
                         keys: true,
