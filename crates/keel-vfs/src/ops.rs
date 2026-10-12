@@ -237,6 +237,8 @@ pub struct Journal<'j> {
     record: Record<'j>,
     fresh: Vec<(crate::VPath, Placed)>,
     bytes: u64,
+    /// The files placed, by this run or recorded by an earlier one (case-folded targets).
+    landed: std::collections::HashSet<String>,
 }
 
 impl<'j> Journal<'j> {
@@ -248,7 +250,12 @@ impl<'j> Journal<'j> {
         record: impl FnMut(Vec<(crate::VPath, Placed)>, Option<&Unfinished>) -> Result<()> + 'j,
     ) -> Journal<'j> {
         let files = placed.values().filter(|p| p.file.is_some()).count() as u64;
+        let landed = (placed.values())
+            .filter(|p| p.file.is_some())
+            .map(|p| folded_target(&p.target))
+            .collect();
         Journal {
+            landed,
             placed,
             unfinished,
             files,
@@ -271,6 +278,7 @@ impl<'j> Journal<'j> {
         if let Some(stamp) = placed.file {
             self.files += 1;
             self.bytes += stamp.size;
+            self.landed.insert(folded_target(&placed.target));
         }
         self.fresh.push((source, placed));
         if now || self.fresh.len() >= RECORD_FILES || self.bytes >= RECORD_BYTES {
@@ -279,10 +287,20 @@ impl<'j> Journal<'j> {
         Ok(())
     }
 
+    /// Another source's file was placed at `target` (or at a name a case-insensitive disk
+    /// takes for it).
+    fn landed(&self, target: &crate::VPath) -> bool {
+        self.landed.contains(&folded_target(target))
+    }
+
     /// The unfinished record of `source`, taken out.
     fn take_unfinished(&mut self, source: &crate::VPath) -> Option<Unfinished> {
         self.unfinished.take_if(|u| u.source == *source)
     }
+}
+
+fn folded_target(p: &crate::VPath) -> String {
+    format!("{}://{}{}", p.scheme, p.authority, p.path.to_lowercase())
 }
 
 /// How a journaled transfer takes one source before its conflict policy.
@@ -345,6 +363,9 @@ fn settle(
         None if unfinished.is_some() => Settle::Into(target),
         None => Settle::Normal,
         Some((true, _)) if source_dir && ours => Settle::Into(target),
+        // Another source of this transfer landed there (`A.txt` and `a.txt` from a disk
+        // that tells case apart): a clash, never a file of this one.
+        Some((false, _)) if unfinished.is_none() && j.landed(&target) => Settle::Normal,
         Some((false, now)) if !source_dir && ours => {
             anyhow::ensure!(same(now), TargetChanged(target.display()));
             Settle::Done(target)
@@ -3054,6 +3075,54 @@ mod tests {
         assert!(stays_under(&remote, &remote.join("a")).is_ok());
         assert!(stays_under(&remote, &remote.join("..")).is_err());
         assert!(stays_under(&remote, &VPath::parse("sftp://box/destx").unwrap()).is_err());
+    }
+}
+
+/// A journaled move from a source that tells case apart (an SFTP host, a Linux disk) into
+/// a folder that does not (macOS, Windows, a FAT stick): `A.txt` and `a.txt` land on one
+/// name. The second is not taken for a file an earlier run placed in the folder this run
+/// made: it gets the conflict policy, and its source is never deleted uncopied.
+#[cfg(test)]
+mod case_twin_tests {
+    use super::{transfer_resumable, Conflict, Journal};
+    use crate::{memory::MemoryProvider, Provider, Router, VPath};
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    #[test]
+    fn a_case_twin_is_not_taken_for_a_placed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
+        if !tmp.path().join("probe").exists() {
+            return; // this temp folder tells case apart: no twins land on one name
+        }
+        let router = Router::new();
+        let mem = Arc::new(MemoryProvider::new());
+        router.register(mem.clone());
+        mem.put("/src/A.txt", "one");
+        mem.put("/src/a.txt", "two");
+        let src = VPath::parse("memory://box/src").unwrap();
+        let mut journal = Journal::new(Default::default(), None, |_, _| Ok(()));
+        transfer_resumable(
+            &[src],
+            &VPath::local(tmp.path()),
+            true,
+            Conflict::Skip,
+            &|_| {},
+            &AtomicBool::new(false),
+            &router,
+            &mut journal,
+        )
+        .unwrap();
+        drop(journal);
+        let landed = std::fs::read_dir(tmp.path().join("src")).unwrap().count();
+        let left = mem
+            .list(&VPath::parse("memory://box/src").unwrap())
+            .map_or(0, |l| l.len());
+        assert_eq!(
+            (landed, left),
+            (1, 1),
+            "one copied, its twin skipped and kept"
+        );
     }
 }
 
