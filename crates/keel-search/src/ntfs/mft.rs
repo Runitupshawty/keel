@@ -41,6 +41,12 @@ pub(crate) const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 /// In a `$FILE_NAME`'s flags: the file has a reparse point, whose tag the name keeps.
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
+/// The reparse tag of a file compressed by the Windows Overlay Filter (`compact
+/// /exe`, CompactOS): its unnamed stream is an empty sparse placeholder and the
+/// compressed contents are in the named stream [`WOF_STREAM`].
+pub(crate) const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
+const WOF_STREAM: &str = "WofCompressedData";
+
 /// `$FILE_NAME` namespaces: 0 POSIX, 1 Win32, 2 DOS (an 8.3 alias), 3 Win32 and DOS.
 pub(crate) const NAMESPACE_DOS: u8 = 2;
 
@@ -84,15 +90,21 @@ impl fmt::Display for MftError {
 impl std::error::Error for MftError {}
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(at..at.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        b.get(at..at.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(b: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        b.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn u64_at(b: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(b.get(at..at.checked_add(8)?)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        b.get(at..at.checked_add(8)?)?.try_into().ok()?,
+    ))
 }
 
 /// `$STANDARD_INFORMATION`: the dates Explorer shows (FILETIME: 100 ns since 1601) and
@@ -127,6 +139,8 @@ pub(crate) struct Sizes {
     /// The attribute header flags ([`ATTR_COMPRESSED`], encrypted 0x4000,
     /// [`ATTR_SPARSE`]).
     pub flags: u16,
+    /// The data sits in the record itself.
+    pub resident: bool,
 }
 
 /// One `$ATTRIBUTE_LIST` entry: which record holds (part of) an attribute.
@@ -161,6 +175,8 @@ pub(crate) struct FileRecord {
     pub list: Vec<ListEntry>,
     /// The `$ATTRIBUTE_LIST` is non-resident: its entries are on disk, not here.
     pub list_outside: bool,
+    /// Bytes on disk of the `WofCompressedData` stream (not counted in `streams`).
+    pub wof: Option<u64>,
 }
 
 /// Checks and removes the update sequence in place: the last two bytes of every
@@ -219,6 +235,8 @@ enum Body<'a> {
 struct Attr<'a> {
     kind: u32,
     named: bool,
+    /// The name, UTF-16LE.
+    name: &'a [u8],
     flags: u16,
     body: Body<'a>,
 }
@@ -270,6 +288,9 @@ fn attr(kind: u32, raw: &[u8]) -> Result<Attr<'_>, MftError> {
     Ok(Attr {
         kind,
         named: name_chars > 0,
+        name: raw
+            .get(name_at..name_at + 2 * name_chars)
+            .unwrap_or_default(),
         flags,
         body,
     })
@@ -391,17 +412,31 @@ pub(crate) fn parse_fixed(r: &[u8]) -> Result<FileRecord, MftError> {
             }
         }
         (ATTR_DATA, body) if a.first() => {
-            if a.named {
+            let wof = a.named
+                && a.name.as_chunks::<2>().0.len() == WOF_STREAM.len()
+                && a.name
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
+                    .eq(WOF_STREAM.encode_utf16());
+            if wof {
+                rec.wof = Some(match body {
+                    Body::Resident(v) => (v.len() as u64).next_multiple_of(8),
+                    Body::NonResident { on_disk, .. } => *on_disk,
+                });
+            } else if a.named {
                 rec.streams = rec.streams.saturating_add(1);
             } else if rec.data.is_none() {
-                let (size, allocated) = match body {
-                    Body::Resident(v) => (v.len() as u64, 0),
-                    Body::NonResident { size, on_disk, .. } => (*size, *on_disk),
+                let (size, allocated, resident) = match body {
+                    Body::Resident(v) => (v.len() as u64, 0, true),
+                    Body::NonResident { size, on_disk, .. } => (*size, *on_disk, false),
                 };
                 rec.data = Some(Sizes {
                     size,
                     allocated,
                     flags: a.flags,
+                    resident,
                 });
             }
         }
@@ -531,6 +566,8 @@ pub(crate) struct Entry {
     /// Alternate data streams.
     pub streams: u16,
     pub reparse: u32,
+    /// Bytes on disk of a WOF-compressed file's compressed contents, 0 when none.
+    pub wof: u64,
 }
 
 impl Entry {
@@ -566,6 +603,12 @@ impl Scan {
     /// record is a complete file; `Ok(None)` for a free record, an extension record or
     /// a base that waits for its extensions.
     pub fn add(&mut self, number: u64, record: &mut [u8]) -> Result<Option<Entry>, MftError> {
+        // Most of a big MFT can be free records: skip them before the fixups.
+        if record.get(..4) == Some(&b"FILE"[..])
+            && u16_at(record, 0x16).is_some_and(|flags| flags & RECORD_IN_USE == 0)
+        {
+            return Ok(None);
+        }
         let rec = parse(record)?;
         Ok(self.add_parsed(number, rec))
     }
@@ -616,6 +659,7 @@ fn entry(number: u64, base: FileRecord, extensions: Vec<FileRecord>) -> Option<E
     let mut data = base.data;
     let mut streams = base.streams;
     let mut reparse = base.reparse;
+    let mut wof = base.wof;
     for ext in extensions {
         // Left by an earlier file that used the same base record.
         if ext.base != frn {
@@ -624,6 +668,7 @@ fn entry(number: u64, base: FileRecord, extensions: Vec<FileRecord>) -> Option<E
         names.extend(ext.names);
         data = data.or(ext.data);
         streams = streams.saturating_add(ext.streams);
+        wof = wof.or(ext.wof);
         if reparse == 0 {
             reparse = ext.reparse;
         }
@@ -642,6 +687,7 @@ fn entry(number: u64, base: FileRecord, extensions: Vec<FileRecord>) -> Option<E
         data: data.unwrap_or_default(),
         streams,
         reparse,
+        wof: wof.unwrap_or(0),
     })
 }
 
@@ -852,7 +898,8 @@ pub(crate) mod tests {
             Some(Sizes {
                 size: 10_000,
                 allocated: 12_288,
-                flags: 0
+                flags: 0,
+                resident: false,
             })
         );
         let e = entry(40, rec, Vec::new()).unwrap();
@@ -862,7 +909,10 @@ pub(crate) mod tests {
         assert_eq!(e.names[0].parent, ROOT);
         assert_eq!(e.links(), 1);
         assert_eq!(e.attributes(), 0x20);
-        assert_eq!((e.data.size, e.data.allocated, e.streams), (10_000, 12_288, 0));
+        assert_eq!(
+            (e.data.size, e.data.allocated, e.streams),
+            (10_000, 12_288, 0)
+        );
     }
 
     #[test]
@@ -878,9 +928,19 @@ pub(crate) mod tests {
             ],
         );
         let e = entry(41, parse(&mut r).unwrap(), Vec::new()).unwrap();
-        assert_eq!((e.data.size, e.data.allocated), (42, 0), "resident: 0 on disk");
+        assert_eq!(
+            (e.data.size, e.data.allocated),
+            (42, 0),
+            "resident: 0 on disk"
+        );
+        assert!(e.data.resident);
 
-        let mut r = record(2, 0, DIR, &[A::Standard(times(9)), A::Name(ROOT, "Folder", 1)]);
+        let mut r = record(
+            2,
+            0,
+            DIR,
+            &[A::Standard(times(9)), A::Name(ROOT, "Folder", 1)],
+        );
         let e = entry(42, parse(&mut r).unwrap(), Vec::new()).unwrap();
         assert!(e.is_dir);
         assert_eq!(e.attributes(), 0x20 | FILE_ATTRIBUTE_DIRECTORY);
@@ -902,7 +962,11 @@ pub(crate) mod tests {
             ],
         );
         let e = entry(50, parse(&mut r).unwrap(), Vec::new()).unwrap();
-        let names: Vec<(&str, u64)> = e.names.iter().map(|n| (n.name.as_str(), n.parent)).collect();
+        let names: Vec<(&str, u64)> = e
+            .names
+            .iter()
+            .map(|n| (n.name.as_str(), n.parent))
+            .collect();
         assert_eq!(
             names,
             [
@@ -925,14 +989,66 @@ pub(crate) mod tests {
                 A::Name(ROOT, "download.zip", 1),
                 A::NonResident("", 0, 5_000, 8_192, None, 0, vec![0x11, 2, 0x20, 0]),
                 A::Stream("Zone.Identifier", 26),
-                A::NonResident("big", 0, 1 << 20, 1 << 20, None, 0, vec![0x21, 0x10, 0, 0x30, 0]),
+                A::NonResident(
+                    "big",
+                    0,
+                    1 << 20,
+                    1 << 20,
+                    None,
+                    0,
+                    vec![0x21, 0x10, 0, 0x30, 0],
+                ),
                 // A later extent of the same named stream is not another stream.
                 A::NonResident("big", 256, 0, 0, None, 0, vec![0x11, 1, 0x50, 0]),
             ],
         );
         let e = entry(60, parse(&mut r).unwrap(), Vec::new()).unwrap();
         assert_eq!(e.streams, 2);
-        assert_eq!(e.data.size, 5_000, "named streams leave the file size alone");
+        assert_eq!(e.wof, 0);
+        assert_eq!(
+            e.data.size, 5_000,
+            "named streams leave the file size alone"
+        );
+    }
+
+    /// CompactOS / `compact /exe`: an empty sparse unnamed stream, the contents in
+    /// `WofCompressedData`, which is no alternate stream of the user's.
+    #[test]
+    fn wof_compressed_files_keep_their_compressed_size() {
+        let mut r = record(
+            1,
+            0,
+            IN_USE,
+            &[
+                A::Standard(times(1)),
+                A::Name(ROOT, "app.exe", 1),
+                A::NonResident(
+                    "",
+                    0,
+                    1 << 20,
+                    1 << 20,
+                    Some(0),
+                    ATTR_SPARSE,
+                    vec![0x01, 0x10, 0],
+                ),
+                A::NonResident(
+                    "WofCompressedData",
+                    0,
+                    300_000,
+                    303_104,
+                    None,
+                    0,
+                    vec![0x21, 0x4A, 0x00, 0x10, 0],
+                ),
+                A::Reparse(IO_REPARSE_TAG_WOF),
+            ],
+        );
+        let e = entry(61, parse(&mut r).unwrap(), Vec::new()).unwrap();
+        assert_eq!((e.data.size, e.data.allocated), (1 << 20, 0));
+        assert_eq!(
+            (e.wof, e.streams, e.reparse),
+            (303_104, 0, IO_REPARSE_TAG_WOF)
+        );
     }
 
     #[test]
@@ -1005,7 +1121,12 @@ pub(crate) mod tests {
         assert_eq!(parse(&mut r).unwrap().reparse, 0xA000_000C);
 
         // A $FILE_NAME with the reparse flag carries the tag too.
-        let mut r = record(1, 0, IN_USE, &[A::Standard(times(1)), A::Name(ROOT, "x", 1)]);
+        let mut r = record(
+            1,
+            0,
+            IN_USE,
+            &[A::Standard(times(1)), A::Name(ROOT, "x", 1)],
+        );
         let at = 0x38 + encode(&A::Standard(times(1))).len() + 0x18;
         r[at + 0x38..at + 0x3C].copy_from_slice(&0x400u32.to_le_bytes());
         r[at + 0x3C..at + 0x40].copy_from_slice(&0x8000_0017u32.to_le_bytes());
@@ -1039,13 +1160,26 @@ pub(crate) mod tests {
                 A::Name(ROOT, "fragmented.db", 1),
             ],
         );
-        let mut names = record(1, base_ref, IN_USE, &[A::Name(0x99 | 1 << 48, "link.db", 1)]);
+        let mut names = record(
+            1,
+            base_ref,
+            IN_USE,
+            &[A::Name(0x99 | 1 << 48, "link.db", 1)],
+        );
         let mut data = record(
             1,
             base_ref,
             IN_USE,
             &[
-                A::NonResident("", 0, 9_000_000, 9_003_008, None, 0, vec![0x21, 0xFF, 0x10, 0x00, 0]),
+                A::NonResident(
+                    "",
+                    0,
+                    9_000_000,
+                    9_003_008,
+                    None,
+                    0,
+                    vec![0x21, 0xFF, 0x10, 0x00, 0],
+                ),
                 A::Stream("meta", 4),
             ],
         );
@@ -1073,7 +1207,11 @@ pub(crate) mod tests {
             1,
             0,
             IN_USE,
-            &[A::Standard(times(1)), A::ListOutside, A::Name(ROOT, "huge", 1)],
+            &[
+                A::Standard(times(1)),
+                A::ListOutside,
+                A::Name(ROOT, "huge", 1),
+            ],
         );
         let mut scan = Scan::default();
         assert_eq!(scan.add(90, &mut base).unwrap(), None);
@@ -1093,7 +1231,12 @@ pub(crate) mod tests {
 
     #[test]
     fn corrupt_fixups_are_rejected() {
-        let good = record(1, 0, IN_USE, &[A::Standard(times(1)), A::Name(ROOT, "a", 1)]);
+        let good = record(
+            1,
+            0,
+            IN_USE,
+            &[A::Standard(times(1)), A::Name(ROOT, "a", 1)],
+        );
         // A torn write: the second block's check bytes differ.
         let mut torn = good.clone();
         torn[1022] = 0x2B;
@@ -1116,7 +1259,12 @@ pub(crate) mod tests {
 
     #[test]
     fn truncated_records_and_attributes_are_rejected() {
-        let good = record(1, 0, IN_USE, &[A::Standard(times(1)), A::Name(ROOT, "a", 1)]);
+        let good = record(
+            1,
+            0,
+            IN_USE,
+            &[A::Standard(times(1)), A::Name(ROOT, "a", 1)],
+        );
         assert_eq!(parse(&mut good[..1000].to_vec()), Err(MftError::Size));
         assert_eq!(parse(&mut good[..512].to_vec()), Err(MftError::Header));
         assert_eq!(parse(&mut Vec::new()), Err(MftError::Size));
@@ -1152,7 +1300,9 @@ pub(crate) mod tests {
     #[test]
     fn data_runs_decode_and_reject_garbage() {
         // 0x31: 1 length byte, 3 delta bytes. Then a backwards jump, then a hole.
-        let runs = [0x31, 0x10, 0x00, 0x10, 0x00, 0x21, 0x08, 0x00, 0xF0, 0x01, 0x05, 0x00];
+        let runs = [
+            0x31, 0x10, 0x00, 0x10, 0x00, 0x21, 0x08, 0x00, 0xF0, 0x01, 0x05, 0x00,
+        ];
         assert_eq!(
             decode_runs(&runs).unwrap(),
             [
@@ -1191,7 +1341,15 @@ pub(crate) mod tests {
             &[
                 A::Standard(times(1)),
                 A::Name(ROOT, "$MFT", 3),
-                A::NonResident("", 0, 1 << 20, 1 << 20, None, 0, vec![0x21, 0x40, 0x00, 0x0C, 0]),
+                A::NonResident(
+                    "",
+                    0,
+                    1 << 20,
+                    1 << 20,
+                    None,
+                    0,
+                    vec![0x21, 0x40, 0x00, 0x0C, 0],
+                ),
                 A::NonResident("", 0x40, 0, 0, None, 0, vec![0x21, 0x40, 0x00, 0x20, 0]),
             ],
         );

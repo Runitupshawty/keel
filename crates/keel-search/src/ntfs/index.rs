@@ -346,7 +346,14 @@ impl Index {
     /// unknown), keeping folder totals current; true when anything changed. The
     /// recently-changed dates of the entry and of the folders it left and entered move
     /// up to `when`.
-    pub fn upsert_at(&mut self, frn: u64, parent: u64, name: &str, is_dir: bool, when: i64) -> bool {
+    pub fn upsert_at(
+        &mut self,
+        frn: u64,
+        parent: u64,
+        name: &str,
+        is_dir: bool,
+        when: i64,
+    ) -> bool {
         let Some(&i) = self.by_frn.get(&frn) else {
             self.insert(frn, parent, name, is_dir, when);
             return true;
@@ -949,7 +956,15 @@ impl Index {
             .iter()
             .enumerate()
             .filter(|(_, s)| s.frn != DEAD)
-            .map(|(i, s)| (s.frn, s.parent, self.name_of(s), s.is_dir, self.columns.get(i)))
+            .map(|(i, s)| {
+                (
+                    s.frn,
+                    s.parent,
+                    self.name_of(s),
+                    s.is_dir,
+                    self.columns.get(i),
+                )
+            })
     }
 
     /// Every live entry as (frn, parent, name, is_dir).
@@ -1466,7 +1481,11 @@ mod tests {
         assert_eq!(root.size, 201_005);
         assert_eq!(root.allocated, 4096 + 200_704 + 4096);
         assert_eq!(ix.folder(11).unwrap().size, 1005);
-        assert_eq!(ix.folder(13).unwrap().newest, 80, "docs changed when a.bin came");
+        assert_eq!(
+            ix.folder(13).unwrap().newest,
+            80,
+            "docs changed when a.bin came"
+        );
         assert_eq!(ix.info(13).unwrap().changed, 80);
         assert!(ix.folder(12).is_none(), "a file has no totals");
 
@@ -1475,7 +1494,11 @@ mod tests {
         assert_eq!(ix.folder(11).unwrap().size, 1000);
         assert_eq!(ix.folder(20).unwrap().size, 200_005);
         assert_eq!(ix.folder(20).unwrap().folders, 1);
-        assert_eq!(ix.folder(10).unwrap().newest, 90, "ann changed when docs left");
+        assert_eq!(
+            ix.folder(10).unwrap().newest,
+            90,
+            "ann changed when docs left"
+        );
         // A size change reaches every folder above.
         ix.set_info(14, file_info(1_000_005, 95));
         assert_eq!(ix.folder(5).unwrap().size, 1_201_005);
@@ -1518,7 +1541,11 @@ mod tests {
         ix.settle();
         check(&ix);
         assert_eq!(ix.folder(10).unwrap().size, 0, "Users lost ann's subtree");
-        assert_eq!(ix.folder(5).unwrap().files, 1, "only notepad.exe is reachable");
+        assert_eq!(
+            ix.folder(5).unwrap().files,
+            1,
+            "only notepad.exe is reachable"
+        );
         // Changes inside the cycle stay bounded.
         ix.set_info(12, file_info(20, 2));
         ix.remove(12);
@@ -1767,6 +1794,8 @@ mod tests {
             "{} entries, {batches} batches, ops by kind {stats:?}",
             ix.len()
         );
-        assert!(stats[0] + stats[1] > 1_000 && stats[2] + stats[3] > 200 && stats[4] + stats[5] > 1_000);
+        assert!(
+            stats[0] + stats[1] > 1_000 && stats[2] + stats[3] > 200 && stats[4] + stats[5] > 1_000
+        );
     }
 }

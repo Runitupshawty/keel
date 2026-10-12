@@ -12,15 +12,16 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::{
-    FileBasicInfo, FileIdType, FileNameInfo, FileStandardInfo, GetDriveTypeW, GetFileAttributesExW, GetFileExInfoStandard,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives,
-    GetVolumeInformationW, OpenFileById, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, WIN32_FILE_ATTRIBUTE_DATA,
+    FileBasicInfo, FileCompressionInfo, FileIdType, FileNameInfo, FileStandardInfo, GetDriveTypeW,
+    GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW, OpenFileById,
+    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    WIN32_FILE_ATTRIBUTE_DATA,
 };
 use windows::Win32::System::Ioctl::{
-    FSCTL_ENUM_USN_DATA, FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_UNPRIVILEGED_USN_JOURNAL,
-    FSCTL_READ_USN_JOURNAL,
+    FSCTL_ENUM_USN_DATA, FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_QUERY_USN_JOURNAL,
+    FSCTL_READ_UNPRIVILEGED_USN_JOURNAL, FSCTL_READ_USN_JOURNAL,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
@@ -34,6 +35,8 @@ use super::usn::{parse_buffer, Record, Stat};
 const DRIVE_FIXED: u32 = 3;
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+const FILE_ATTRIBUTE_SPARSE: u32 = 0x0200;
+const FILE_ATTRIBUTE_COMPRESSED: u32 = 0x0800;
 const BUFFER: usize = 1 << 20;
 
 /// A fixed NTFS volume by drive letter and serial number.
@@ -125,6 +128,16 @@ pub(crate) struct Journal {
     pub id: u64,
     pub next_usn: i64,
     pub lowest_valid_usn: i64,
+}
+
+/// `NTFS_VOLUME_DATA_BUFFER`, the fields the raw MFT read needs.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NtfsData {
+    pub bytes_per_cluster: u64,
+    pub bytes_per_record: u64,
+    pub mft_start_lcn: u64,
+    /// Bytes of the MFT in use; records past it were never written.
+    pub mft_valid_length: u64,
 }
 
 /// A handle to `\\.\X:`. Reading the MFT needs an administrator; the journal read
@@ -255,12 +268,27 @@ impl Volume {
                 )
                 .is_ok()
         };
-        // SAFETY: opened above.
-        let _ = unsafe { CloseHandle(file) };
         if !ok {
+            // SAFETY: opened above.
+            let _ = unsafe { CloseHandle(file) };
             return None;
         }
         let attributes = basic[4] as u32;
+        // Compressed and sparse files: the bytes really on disk, as the MFT read counts.
+        let mut compression = [0u64; 2];
+        let packed = attributes & (FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_SPARSE) != 0 && {
+            // SAFETY: a live, 8-aligned buffer the size of FILE_COMPRESSION_INFO.
+            unsafe {
+                GetFileInformationByHandleEx(
+                    file,
+                    FileCompressionInfo,
+                    compression.as_mut_ptr() as *mut c_void,
+                    size_of_val(&compression) as u32,
+                )
+            }
+            .is_ok()
+        };
+        let on_disk = if packed { compression[0] } else { standard[0] };
         let file_bytes = |n: u64| {
             if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
                 0
@@ -268,9 +296,11 @@ impl Volume {
                 n
             }
         };
+        // SAFETY: opened above.
+        let _ = unsafe { CloseHandle(file) };
         Some(Stat {
             size: file_bytes(standard[1]),
-            allocated: file_bytes(standard[0]),
+            allocated: file_bytes(on_disk),
             created: basic[0] as i64,
             accessed: basic[1] as i64,
             modified: basic[2] as i64,
@@ -308,6 +338,38 @@ impl Volume {
             .next()
             .filter(|n| !n.is_empty())
             .map(str::to_owned)
+    }
+
+    /// Cluster and record sizes and where the MFT starts (`FSCTL_GET_NTFS_VOLUME_DATA`;
+    /// administrator).
+    pub fn ntfs_data(&self) -> io::Result<NtfsData> {
+        let mut out = [0u8; 96];
+        ioctl(&self.file, FSCTL_GET_NTFS_VOLUME_DATA, &(), &mut out)?;
+        let u32_at = |i: usize| u64::from(u32::from_le_bytes(out[i..i + 4].try_into().unwrap()));
+        let u64_at = |i: usize| u64::from_le_bytes(out[i..i + 8].try_into().unwrap());
+        Ok(NtfsData {
+            bytes_per_cluster: u32_at(44),
+            bytes_per_record: u32_at(48),
+            mft_valid_length: u64_at(56),
+            mft_start_lcn: u64_at(64),
+        })
+    }
+
+    /// Fills `buf` from byte `offset` of the volume (administrator). Offset and length
+    /// must be whole sectors.
+    pub fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = self
+                .file
+                .seek_read(&mut buf[done..], offset + done as u64)?;
+            if n == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            done += n;
+        }
+        Ok(())
     }
 
     pub fn query_journal(&self) -> io::Result<Journal> {

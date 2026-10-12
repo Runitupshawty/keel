@@ -1,6 +1,8 @@
 //! Keel's own Windows file index. Every fixed NTFS volume is read straight from the
-//! MFT (`FSCTL_ENUM_USN_DATA`, administrator only) and persisted to
-//! `<cache>/index/<serial>.db`. Any later start loads that db and catches up from
+//! MFT (administrator only): the raw `FILE` records through the volume handle
+//! ([`crate::mft`]: names, hard links, sizes, dates, attributes, streams), or, when
+//! that read is refused or fails, `FSCTL_ENUM_USN_DATA` (names and attributes only).
+//! The index is persisted to `<cache>/index/<serial>.db`. Any later start loads that db and catches up from
 //! the USN journal, then polls it every 2 s; this works without elevation too
 //! (`FSCTL_READ_UNPRIVILEGED_USN_JOURNAL` on a root-folder handle, names restored by
 //! opening each new file by id). A changed journal id or a truncated journal means
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
+use crate::mft;
 use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index, Info};
@@ -172,8 +175,119 @@ fn adopt(dir: &Path) -> Vec<PathBuf> {
     adopted
 }
 
-/// Reads one volume's MFT into a fresh index (administrator). The journal position
-/// is taken first, so changes made during the read are replayed afterwards.
+/// Bytes of the MFT read per volume read call.
+const MFT_CHUNK: u64 = 4 << 20;
+/// System files in records 0 to 15 (`$MFT` to `$Extend`; 5 is the root folder) are
+/// not indexed; what lives under `$Extend` is then unreachable and never listed.
+const FIRST_USER_RECORD: u64 = 16;
+const ROOT_RECORD: u64 = 5;
+
+/// Reads every `FILE` record of the volume's MFT straight from disk (administrator)
+/// and hands each file over as an [`mft::Entry`]. Records torn by a write during the
+/// read are skipped (the journal replay after the build brings them back). Errors on
+/// a layout this reader does not take (records split across MFT extents, a sparse
+/// MFT), so the caller can enumerate instead.
+fn read_mft(volume: &Volume, mut each: impl FnMut(mft::Entry)) -> anyhow::Result<()> {
+    let data = volume.ntfs_data()?;
+    let (cluster, record) = (data.bytes_per_cluster, data.bytes_per_record);
+    if cluster == 0
+        || !cluster.is_power_of_two()
+        || cluster > MFT_CHUNK
+        || record < 512
+        || record > mft::MAX_RECORD as u64
+        || !record.is_power_of_two()
+    {
+        bail!("unexpected NTFS geometry: {cluster} B clusters, {record} B records");
+    }
+    let start = data
+        .mft_start_lcn
+        .checked_mul(cluster)
+        .ok_or_else(|| anyhow!("MFT start out of range"))?;
+    let mut buf = vec![0u8; cluster.max(record) as usize];
+    volume.read_at(start, &mut buf)?;
+    let mut zero = buf[..record as usize].to_vec();
+    mft::fixup(&mut zero)?;
+    let (size, runs) = mft::data_runs(&zero)?;
+    let count = size.min(data.mft_valid_length) / record;
+    let mut scan = mft::Scan::default();
+    let mut number = 0u64;
+    for run in runs {
+        let lcn = run.lcn.ok_or_else(|| anyhow!("sparse MFT run"))?;
+        let mut offset = lcn
+            .checked_mul(cluster)
+            .ok_or_else(|| anyhow!("MFT run out of range"))?;
+        let mut left = run
+            .clusters
+            .checked_mul(cluster)
+            .ok_or_else(|| anyhow!("MFT run out of range"))?;
+        if left % record != 0 {
+            bail!("an MFT record spans two extents");
+        }
+        while left > 0 && number < count {
+            let len = left.min(MFT_CHUNK);
+            buf.resize(len as usize, 0);
+            volume.read_at(offset, &mut buf)?;
+            for chunk in buf.chunks_exact_mut(record as usize) {
+                if number >= count {
+                    break;
+                }
+                if let Ok(Some(entry)) = scan.add(number, chunk) {
+                    each(entry);
+                }
+                number += 1;
+            }
+            offset += len;
+            left -= len;
+        }
+    }
+    for entry in scan.finish() {
+        each(entry);
+    }
+    Ok(())
+}
+
+/// Puts one file read from the MFT in the index (its first name; the others are
+/// counted as hard links).
+fn add_entry(index: &mut Index, entry: &mft::Entry) {
+    let number = entry.frn & mft::RECORD_MASK;
+    if number < FIRST_USER_RECORD && number != ROOT_RECORD {
+        return;
+    }
+    let Some(name) = entry.names.first() else {
+        return;
+    };
+    index.upsert(entry.frn, name.parent, &name.name, entry.is_dir);
+    let times = &entry.standard;
+    // Data kept inside the record takes no clusters; Windows reports its size rounded
+    // up to 8 bytes, and so does the index, matching the journal's lookups by id.
+    // A WOF-compressed file takes the clusters of its compressed stream.
+    let allocated = if entry.data.resident {
+        entry.data.size.next_multiple_of(8)
+    } else if entry.reparse == mft::IO_REPARSE_TAG_WOF && entry.wof > 0 {
+        entry.wof
+    } else {
+        entry.data.allocated
+    };
+    index.set_info(
+        entry.frn,
+        Info {
+            size: entry.data.size,
+            allocated,
+            created: times.created as i64,
+            modified: times.modified as i64,
+            accessed: times.accessed as i64,
+            changed: 0,
+            attributes: entry.attributes(),
+            links: entry.links(),
+            streams: entry.streams,
+            reparse: entry.reparse,
+        },
+    );
+}
+
+/// Reads one volume's MFT into a fresh index (administrator): the raw records when
+/// they can be read, else `FSCTL_ENUM_USN_DATA`. The journal position is taken
+/// first, so changes made during the read are replayed afterwards.
 fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
     let volume = Volume::open(id.letter)?;
     if !volume.privileged() {
@@ -195,23 +309,35 @@ fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
     let root = win::root_frn(id.letter)?;
     let mut index = Index::new(id.drive(), root);
     index.begin_bulk();
-    volume.enumerate(|records| {
-        for r in records {
-            index.upsert(r.frn, r.parent, &r.name, r.is_dir);
-            let info = Info {
-                attributes: r.attributes,
-                ..Info::default()
-            };
-            index.set_info(r.frn, info);
+    let full = match read_mft(&volume, |entry| add_entry(&mut index, &entry)) {
+        Ok(()) => true,
+        Err(e) => {
+            warn(&format!(
+                "reading the MFT of {} directly: {e:#}; enumerating instead",
+                id.drive()
+            ));
+            index = Index::new(id.drive(), root);
+            index.begin_bulk();
+            volume.enumerate(|records| {
+                for r in records {
+                    index.upsert(r.frn, r.parent, &r.name, r.is_dir);
+                    let info = Info {
+                        attributes: r.attributes,
+                        ..Info::default()
+                    };
+                    index.set_info(r.frn, info);
+                }
+            })?;
+            false
         }
-    })?;
+    };
     index.settle();
     let meta = Meta {
         journal_id: journal.id,
         next_usn: journal.next_usn,
         root,
         volume: id.drive(),
-        full: false,
+        full,
     };
     Ok((index, meta))
 }
@@ -733,6 +859,7 @@ fn warn(message: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::index::Column;
     use super::usn::tests::record_bytes;
     use super::usn::{parse_buffer, REASON_FILE_DELETE, REASON_RENAME_OLD_NAME};
     use super::*;
@@ -897,6 +1024,227 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Size, dates and links of a file by its reference number, as a journal poll
+    /// looks them up.
+    #[test]
+    fn stat_by_file_id_reads_size_dates_and_links() {
+        let dir = std::env::temp_dir().join(format!("keel-stat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.bin");
+        std::fs::write(&file, vec![7u8; 10_000]).unwrap();
+        std::fs::hard_link(&file, dir.join("b.bin")).unwrap();
+        let letter = std::fs::canonicalize(&dir)
+            .unwrap()
+            .display()
+            .to_string()
+            .trim_start_matches(r"\\?\")
+            .chars()
+            .next()
+            .unwrap();
+        let volume = Volume::open(letter).unwrap();
+        let frn = win::frn_of(&file).unwrap();
+        let stat = volume.stat(frn).unwrap();
+        assert_eq!(stat.size, 10_000);
+        assert!(stat.allocated >= 10_000, "{stat:?}");
+        assert_eq!(stat.links, 2);
+        assert!(
+            stat.created > 0 && stat.modified >= stat.created,
+            "{stat:?}"
+        );
+        assert_eq!(stat.attributes & 0x10, 0);
+        let folder = volume.stat(win::frn_of(&dir).unwrap()).unwrap();
+        assert_ne!(folder.attributes & 0x10, 0);
+        assert_eq!((folder.size, folder.allocated), (0, 0));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            volume.stat(0x0000_FFFF_FFFF_FFF0).is_none(),
+            "no such record"
+        );
+    }
+
+    /// A journal batch with sizes looked up: the file's size reaches every folder
+    /// above, a delete takes it away again, and folder dates follow.
+    #[test]
+    fn journal_batches_keep_folder_totals() {
+        let mut index = Index::new("C:", 5);
+        index.upsert(5, 5, ".", true);
+        index.upsert(10, 5, "Users", true);
+        let rec = |frn, parent, reason, attrs, name: &str, time| usn::Record {
+            frn,
+            parent,
+            usn: 0,
+            reason,
+            is_dir: attrs & DIR != 0,
+            name: name.into(),
+            time,
+            attributes: attrs,
+        };
+        let records = vec![
+            rec(20, 10, CREATE, DIR, "Projects", 1_000),
+            rec(21, 20, CREATE, 0x20, "plan.md", 1_001),
+            rec(21, 20, 0x2 | CLOSE, 0x20, "plan.md", 1_002),
+        ];
+        let stats: HashMap<u64, usn::Stat> = usn::to_stat(&records, 10)
+            .into_iter()
+            .map(|frn| {
+                let size = if frn == 21 { 5_000 } else { 0 };
+                let stat = usn::Stat {
+                    size,
+                    allocated: size.div_ceil(4096) * 4096,
+                    modified: 1_002,
+                    created: 1_001,
+                    attributes: if frn == 20 { DIR } else { 0x20 },
+                    links: 1,
+                    ..usn::Stat::default()
+                };
+                (frn, stat)
+            })
+            .collect();
+        let mut changes = Changes::default();
+        usn::apply_with(&mut index, &records, &stats, &mut changes);
+        let info = index.info(21).unwrap();
+        assert_eq!(
+            (info.size, info.changed, info.attributes),
+            (5_000, 1_002, 0x20)
+        );
+        let users = index.folder(10).unwrap();
+        assert_eq!((users.size, users.files, users.folders), (5_000, 1, 1));
+        assert_eq!(users.allocated, 8_192);
+        assert_eq!(users.newest, 1_002);
+        assert_eq!(
+            index.info(20).unwrap().changed,
+            1_001,
+            "dated when plan.md came"
+        );
+
+        let gone = [rec(
+            21,
+            20,
+            REASON_FILE_DELETE | CLOSE,
+            0x20,
+            "plan.md",
+            2_000,
+        )];
+        usn::apply_with(&mut index, &gone, &HashMap::new(), &mut changes);
+        let users = index.folder(10).unwrap();
+        assert_eq!((users.size, users.files), (0, 0));
+        assert_eq!(users.newest, 2_000);
+        assert!(changes.removes.contains(&21));
+    }
+
+    /// Elevated only: the raw MFT read finds the files `FSCTL_ENUM_USN_DATA` lists on
+    /// every fixed NTFS volume, with the sizes the file system reports. Prints counts
+    /// and system file names only.
+    #[test]
+    #[ignore = "reads every fixed volume's MFT; needs administrator"]
+    fn live_raw_mft_matches_enumeration() {
+        if !is_elevated() {
+            println!("skipped: not elevated");
+            return;
+        }
+        for id in win::fixed_ntfs_volumes() {
+            let volume = Volume::open(id.letter).unwrap();
+            // FILETIME now: files created after this were not there for the raw read.
+            let unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            let read_start = (unix.as_nanos() / 100) as i64 + 116_444_736_000_000_000;
+            let started = Instant::now();
+            let mut raw: HashMap<u64, (u64, String, bool, u64, u64)> = HashMap::new();
+            read_mft(&volume, |e| {
+                let mut index = Index::new("", 0);
+                add_entry(&mut index, &e);
+                let allocated = index.info(e.frn).map_or(0, |i| i.allocated);
+                let name = &e.names[0];
+                let row = (
+                    name.parent,
+                    name.name.clone(),
+                    e.is_dir,
+                    e.data.size,
+                    allocated,
+                );
+                raw.insert(e.frn, row);
+            })
+            .unwrap();
+            let raw_time = started.elapsed();
+            let started = Instant::now();
+            let mut listed: HashMap<u64, (u64, String)> = HashMap::new();
+            volume
+                .enumerate(|records| {
+                    for r in records {
+                        listed.insert(r.frn, (r.parent, r.name));
+                    }
+                })
+                .unwrap();
+            println!(
+                "{}: raw read {} files in {raw_time:.2?}; enumeration {} in {:.2?}",
+                id.drive(),
+                raw.len(),
+                listed.len(),
+                started.elapsed()
+            );
+            let only_raw: Vec<u64> = raw
+                .keys()
+                .filter(|f| !listed.contains_key(f))
+                .copied()
+                .collect();
+            let only_listed: Vec<u64> = listed
+                .keys()
+                .filter(|f| !raw.contains_key(f))
+                .copied()
+                .collect();
+            let system = |names: Vec<&String>| -> Vec<String> {
+                names
+                    .into_iter()
+                    .filter(|n| n.starts_with('$'))
+                    .take(20)
+                    .cloned()
+                    .collect()
+            };
+            println!(
+                "only in the raw read: {} (system: {:?}); only enumerated: {} (system: {:?})",
+                only_raw.len(),
+                system(only_raw.iter().map(|f| &raw[f].1).collect()),
+                only_listed.len(),
+                system(only_listed.iter().map(|f| &listed[f].1).collect()),
+            );
+            let same_parent = listed
+                .iter()
+                .filter(|(f, (p, _))| raw.get(f).is_some_and(|r| r.0 == *p))
+                .count();
+            println!("same parent: {same_parent} of {}", listed.len());
+            // Enumerated but not read: only a miss when the file is older than the read.
+            let missed = only_listed
+                .iter()
+                .filter(|f| volume.stat(**f).is_some_and(|s| s.created < read_start))
+                .count();
+            println!("enumerated, not read, and older than the read: {missed}");
+            let (mut checked, mut sizes, mut allocated) = (0, 0, 0);
+            let mut samples = Vec::new();
+            for (frn, (_, _, _, size, alloc)) in raw.iter().filter(|(_, row)| !row.2).take(5_000) {
+                let Some(stat) = volume.stat(*frn) else {
+                    continue;
+                };
+                checked += 1;
+                sizes += usize::from(stat.size != *size);
+                if stat.allocated != *alloc {
+                    allocated += 1;
+                    if samples.len() < 12 {
+                        samples.push((*size, *alloc, stat.allocated, stat.attributes));
+                    }
+                }
+            }
+            println!(
+                "{checked} files checked by id: {sizes} sizes and {allocated} sizes on disk differ"
+            );
+            println!("size on disk (size, read, by id, attributes): {samples:x?}");
+            assert!(missed <= listed.len() / 10_000 + 16);
+            assert!(sizes <= checked / 100 + 5);
+            assert!(allocated <= checked / 100 + 5);
+        }
+    }
+
     #[test]
     fn one_failing_volume_does_not_stop_the_others() {
         let ids = [
@@ -1039,11 +1387,81 @@ mod tests {
                 )
             };
             index.upsert(frn, parent, &name, is_dir);
+            if !is_dir {
+                let size = r >> 44;
+                index.set_info(
+                    frn,
+                    Info {
+                        size,
+                        allocated: size.next_multiple_of(4096),
+                        modified: (r >> 20 & 0xFFFF_FFFF) as i64,
+                        ..Info::default()
+                    },
+                );
+            }
             if is_dir {
                 dirs.push(frn);
             }
         }
-        println!("built 2M entries in {:?}", built.elapsed());
+        println!(
+            "built 2M entries with sizes and dates (folder totals kept as they came) in {:?}",
+            built.elapsed()
+        );
+        let started = Instant::now();
+        index.begin_bulk();
+        index.settle();
+        println!("folder totals recounted in {:?}", started.elapsed());
+        let started = Instant::now();
+        index.set_fast_sort(&[Column::Name, Column::Size, Column::Modified]);
+        index.settle();
+        println!(
+            "fast-sort orders (name, size, modified) built in {:?}",
+            started.elapsed()
+        );
+        let started = Instant::now();
+        for n in 0..1_000u64 {
+            let frn = 6 + rand() % 2_000_000;
+            match n % 10 {
+                0 => {
+                    index.remove_at(frn, 1 << 40);
+                }
+                1 => {
+                    if let Some((parent, _, is_dir)) = index.get(frn) {
+                        index.upsert_at(frn, parent, &format!("renamed-{n}.txt"), is_dir, 1 << 40);
+                    }
+                }
+                _ => {
+                    index.set_info(
+                        frn,
+                        Info {
+                            size: n,
+                            modified: 1 << 40,
+                            ..Info::default()
+                        },
+                    );
+                }
+            }
+        }
+        let changed = started.elapsed();
+        let started = Instant::now();
+        index.settle();
+        println!(
+            "1,000 changes: applied in {changed:?}, orders and totals settled in {:?}",
+            started.elapsed()
+        );
+        let mut some: Vec<u64> = (0..200_000).map(|_| 6 + rand() % 2_000_000).collect();
+        let mut again = some.clone();
+        let started = Instant::now();
+        index.sort_frns(Column::Size, true, &mut some);
+        println!(
+            "sort 200,000 results by size: {:?} through the order",
+            started.elapsed()
+        );
+        index.set_fast_sort(&[]);
+        let started = Instant::now();
+        index.sort_frns(Column::Size, true, &mut again);
+        println!("the same without fast sort: {:?}", started.elapsed());
+        assert_eq!(some, again);
         for text in [
             "keel",
             "invoice-report-12",
