@@ -78,7 +78,8 @@ impl Staged {
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
                 let path =
                     local.with_file_name(keel_vfs::ops::partial_name(&name.to_string_lossy()));
-                let exists = keep && fs::metadata(&local).is_ok_and(|m| m.is_file());
+                let old = fs::metadata(&local).ok().filter(|m| m.is_file());
+                let exists = keep && old.is_some();
                 if exists {
                     fs::copy(&local, &path)?;
                 }
@@ -87,6 +88,22 @@ impl Staged {
                     .write(true)
                     .create_new(!exists)
                     .open(&path);
+                // A file written over from empty keeps its mode (`fs::copy` keeps it
+                // otherwise): a private file stays private, a script executable.
+                #[cfg(unix)]
+                let file = match (file, &old) {
+                    (Ok(file), Some(old)) if !exists => {
+                        match file.set_permissions(old.permissions()) {
+                            Ok(()) => Ok(file),
+                            Err(e) => {
+                                drop(file);
+                                let _ = fs::remove_file(&path);
+                                Err(e)
+                            }
+                        }
+                    }
+                    (file, _) => file,
+                };
                 match file {
                     Ok(file) => Spool::Beside { file, path },
                     Err(e) => {
