@@ -193,6 +193,28 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 - A fuzz target for every parser of outside bytes.
 - Shipped today on three platforms. Atlas has no release, and Spacedrive's current line has alphas, plus nightlies of the CLI and daemon only.
 
+## voidtools Everything and WinDirStat
+
+Added 2026-10-12 at the owner's request: every feature of voidtools Everything (1.4.1 and the 1.5 alpha) and WinDirStat (up to 2.9.3) is planned. The full checklist, verified against each project's own pages, and Keel's state for every item with file and line, are in [the audit](superpowers/plans/2026-10-12-everything-windirstat-audit.md). In short, at 0.22.0:
+
+| Area | Keel today | Plan |
+| --- | --- | --- |
+| Everything: index | **Part**: NTFS file table and USN journal, names only (no size, dates or attributes in the index), library sources for other volumes | [Phase 15](superpowers/plans/2026-10-12-keel-phase15.md) Task 70: full-metadata index, folder sizes, fast sort, ReFS/FAT/exFAT/network/folder indexes, an index service |
+| Everything: search language | **Part**: AND, quotes, globs, `regex:`, `folder:`, `in:` in the pane; `ext:`, `size:`, `dm:`, `kind:`, `content:`, `tag:` and media terms in the library; no OR, NOT, grouping, modifiers or most functions | Phase 15 Tasks 71 to 74: one parser with every operator, all 49 modifiers and every search function, constants, macros, the journal |
+| Everything: search window | **Part**: search tabs, 500-result cap, fixed columns, library chips and saved views (no UI to create them) | [Phase 16](superpowers/plans/2026-10-12-keel-phase16.md) Task 76: toggles, no cap, column chooser, filters, bookmarks, history, omissions, configurable keys, Quick Search window, tray, localization |
+| Everything: file lists | **Lacks** | Phase 16 Task 77 |
+| Everything: HTTP and ETP servers, network indexes | **Part**: `keel-daemon --web` searches the library only | Phase 16 Task 78 |
+| Everything: `es.exe`, command line, SDK, URL protocol | **Part**: `keel search` (library only), `--search` | Phase 16 Task 79 |
+| WinDirStat: scanning | **Part**: Calculate sizes and library totals, apparent size only, serial walk, hard links counted per path | [Phase 17](superpowers/plans/2026-10-12-keel-phase17.md) Task 81 |
+| WinDirStat: tree, file types, treemap, sunburst, flame graph | **Part**: one-level Sizes view with share bars; no tree, file types list or treemap | Phase 17 Tasks 82 and 83 |
+| WinDirStat: largest files, duplicates, search, storage analytics, permissions | **Part**: library duplicate finder, search tabs | Phase 17 Task 84 |
+| WinDirStat: cleanups, compression, recovery | **Part**: open, delete to Recycle Bin, terminal, properties | Phase 17 Task 85 |
+| WinDirStat: export and command line | **Part**: `keel du --json` | Phase 17 Task 86 |
+
+The owner also asked for a macOS Finder-style interface: [Phase 14](superpowers/plans/2026-10-12-keel-phase14.md), planned first so the surfaces of Phases 15 to 17 are built in it.
+
+Two rows above were found out of date by the audit and are corrected in Phase 16: the Windows shell menu exists (Atlas table, "Searchable context menus"), and keyboard shortcuts are not configurable beyond the global hotkey (Spacedrive table, "Keybinds").
+
 ## Ranked gaps
 
 The ranking weighs three things: the requirements in spec section 1 (**R**), daily-driver value, the spec's measure of success being a week without Explorer (**D**), and friends installing and using Keel (**F**). Effort is S, M or L.
@@ -227,6 +249,10 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** (unreleased, [files.md](files.md#folder-operations)) | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |
+| 29 | Finder-style interface (unified toolbar, sidebar sections, list with disclosure triangles, Gallery, Quick Look, Get Info, tag colors) | owner request | D, F | L (Phase 14) |
+| 30 | Everything parity: full-metadata index and the whole search language | voidtools Everything | D: the owner's daily search tool | L (Phase 15) |
+| 31 | Everything parity: search window, file lists, servers, `es`, SDK | voidtools Everything | D | L (Phase 16) |
+| 32 | WinDirStat parity: scans, treemap, analysis tabs, cleanups, recovery | WinDirStat | D: "what fills this disk" | L (Phase 17) |
 
 Ruled out by the spec: OneDrive, hosted accounts and any cloud service of Keel's own.
 
