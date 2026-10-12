@@ -1510,9 +1510,8 @@ impl Worker {
     fn periodic(&mut self) {
         let sh = self.shared.clone();
         if !self.online() {
-            if !sh.offline.swap(true, Relaxed) {
-                self.watch = None;
-            }
+            sh.offline.store(true, Relaxed);
+            self.watch = None;
             return;
         }
         if sh.offline.swap(false, Relaxed) {
@@ -1744,8 +1743,13 @@ impl Worker {
     /// Reconciles the table with the file system for each path an event named:
     /// present and admitted by the walk rules -> insert or refresh (a new folder
     /// with its whole subtree), else drop. File system reads happen without the
-    /// lock; the table is then updated under one short write lock.
+    /// lock; the table is then updated under one short write lock. While a root is
+    /// missing nothing is dropped: an unplugged volume is offline, not emptied.
     fn apply(&self, paths: HashSet<PathBuf>) {
+        if !self.online() {
+            self.shared.offline.store(true, Relaxed);
+            return;
+        }
         enum Seen {
             Gone(PathBuf),
             Here(PathBuf, Meta, Vec<(PathBuf, Meta)>),
