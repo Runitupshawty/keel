@@ -66,9 +66,11 @@ pub fn parse_recycle_info(b: &[u8]) -> Option<Deleted> {
     Some(Deleted {
         original_path: (!path.is_empty()).then_some(path),
         size: Some(size),
-        deleted: (filetime != 0)
-            .then(|| filetime_to_system_time(filetime))
-            .flatten(),
+        deleted: if filetime == 0 {
+            None
+        } else {
+            filetime_to_system_time(filetime)
+        },
     })
 }
 
@@ -259,17 +261,17 @@ pub fn deleted(path: &Path) -> io::Result<Option<Deleted>> {
     let Some(record) = record_path(path) else {
         return Ok(None);
     };
-    let (file, parse): (&Path, fn(&[u8]) -> Option<Deleted>) = match &record {
-        Record::RecycleBin(p) => (p, parse_recycle_info),
-        Record::Trash(p) => (p, parse_trash_info),
-    };
+    let (Record::RecycleBin(file) | Record::Trash(file)) = &record;
     let mut buf = Vec::new();
     match File::open(file) {
         Ok(f) => f.take(MAX_INFO_BYTES).read_to_end(&mut buf)?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    Ok(parse(&buf))
+    Ok(match record {
+        Record::RecycleBin(_) => parse_recycle_info(&buf),
+        Record::Trash(_) => parse_trash_info(&buf),
+    })
 }
 
 #[cfg(test)]
