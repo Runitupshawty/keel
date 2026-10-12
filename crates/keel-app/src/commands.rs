@@ -163,6 +163,11 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     if let Command::Es { args } = &cmd {
         return crate::es::run(args, profile, json);
     }
+    // Recovery reads volumes, not the library.
+    let cmd = match cmd {
+        Command::Recover(r) => return crate::recover_cli::run(r, json),
+        cmd => cmd,
+    };
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -1065,7 +1070,8 @@ fn command(
         | Command::Op { .. }
         | Command::Filelist(_)
         | Command::Journal { .. }
-        | Command::Es { .. } => {
+        | Command::Es { .. }
+        | Command::Recover(_) => {
             unreachable!("handled by run")
         }
     };

@@ -253,3 +253,31 @@ path = "fuzz_targets/index_proto.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "recover_ntfs"
+path = "fuzz_targets/recover_ntfs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recover_exfat"
+path = "fuzz_targets/recover_exfat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recover_fat"
+path = "fuzz_targets/recover_fat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recycle_bin"
+path = "fuzz_targets/recycle_bin.rs"
+test = false
+doc = false
+bench = false

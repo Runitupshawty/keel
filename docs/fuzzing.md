@@ -34,6 +34,10 @@ crate's `fuzzing` feature.
 | `du_scan_file` | `keel_vfs::fuzz::du_scan_file` | a disk usage scan file (gzip or plain JSON): the structure checks (parents first, siblings together, kinds in their places, indexes in range), then saved and loaded again to the same items |
 | `ftp_list` | `keel_vfs::fuzz::ftp_list` | an FTP `LIST` reply: bounded lines (8 KiB, a million entries), each parsed as a UNIX `ls -l` or a DOS (IIS) line |
 | `ftp_mlsd` | `keel_vfs::fuzz::ftp_mlsd` | an FTP `MLSD` reply and `MLST` answers: bounded lines of facts (type, size, modify) and names |
+| `recover_ntfs` | `keel_vfs::fuzz::recover_ntfs` | deleted-file recovery on an NTFS volume image: the boot sector, `$MFT` records (update sequence fixups, attributes, data runs), `$Bitmap`, folder paths, then each file's data |
+| `recover_exfat` | `keel_vfs::fuzz::recover_exfat` | deleted-file recovery on an exFAT volume image: directory entry sets and their checksums, FAT chains, the allocation bitmap, then each file's data |
+| `recover_fat` | `keel_vfs::fuzz::recover_fat` | deleted-file recovery on a FAT12/16/32 volume image: the BPB, the FAT, folders and long names, then each file's data |
+| `recycle_bin` | `keel_vfs::fuzz::recycle_bin` | a Windows Recycle Bin `$I` file (versions 1 and 2) |
 | `tiff` | `keel_core::fuzz::tiff` | a TIFF's orientation (first IFD) and metadata |
 | `raw` | `keel_core::fuzz::raw` | camera RAW files: the walk of IFDs and SubIFDs to the embedded JPEG previews (bounded in count and depth), metadata, small previews |
 | `image_meta` | `keel_core::fuzz::image_meta` | photo metadata: EXIF, XMP, dimensions, small thumbnails |
