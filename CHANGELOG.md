@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Configurable keys**: Settings → Keyboard lists every command (the command palette's and the keys it does not list, such as the palette itself, Undo, Esc and the cursor keys) with its keys. Search by name or key, **Record** a key, click a key to remove it, **Reset** one command or **Reset all**. A key another command has is named and only moved after **Use it for "…"**; the command palette, Esc and Leave the terminal always keep a key, and the clipboard's keys, the UI scale's, Tab and plain typing keys cannot be bound. Keys are saved per profile as `[keymap]` in config.toml (only what differs from the defaults, which are the keys Keel had before), and **Export…** / **Import…** share them as a TOML file. The command palette and the context menus show the keys as bound. See [Changing the keys](docs/files.md#changing-the-keys).
+- Two more global hotkeys in Settings → General, both off by default: **New window hotkey** opens another Keel window, **Toggle window hotkey** brings Keel forward or minimizes it when it is in front. **New window** is also a command in the palette.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

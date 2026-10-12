@@ -40,7 +40,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Yes** (unreleased): the preview panel's Inspector tab (Ctrl+I) with source, volume, content id, first seen, last hashed, copies, history and tags ([files.md](files.md#inspector)) |
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
 | Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has** (unreleased): drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
-| Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has**: configurable keys, command palette ([files.md](files.md#keyboard-shortcuts)) |
+| Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (unreleased): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
 | 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
 | Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Part**: fixed Quick access, library Favorites and saved views; no user-arranged sidebar |
 | Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Part**: tags and saved views; no hand-ordered collection |
@@ -213,7 +213,7 @@ Added 2026-10-12 at the owner's request: every feature of voidtools Everything (
 
 The owner also asked for a macOS Finder-style interface: [Phase 14](superpowers/plans/2026-10-12-keel-phase14.md), planned first so the surfaces of Phases 15 to 17 are built in it.
 
-Two rows above were found out of date by the audit and are corrected in Phase 16: the Windows shell menu exists (Atlas table, "Searchable context menus"), and keyboard shortcuts are not configurable beyond the global hotkey (Spacedrive table, "Keybinds").
+Two rows above were found out of date by the audit and are corrected in Phase 16: the Windows shell menu exists (Atlas table, "Searchable context menus"), and keyboard shortcuts were not configurable beyond the global hotkey (Spacedrive table, "Keybinds"; configurable since Phase 16 Task 76).
 
 ## Ranked gaps
 
