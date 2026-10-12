@@ -31,8 +31,13 @@ impl Searcher for Locate {
         if query.regex {
             command.arg("--regex");
         }
-        command.arg("--").arg(&query.text);
-        command_hits(command, query)
+        // `in:<folder>` keeps the hits under it (locate has no such filter of its own).
+        let (within, text) = match query.regex {
+            false => crate::take_within(&query.text),
+            true => (None, query.text.clone()),
+        };
+        command.arg("--").arg(&text);
+        command_hits(command, query, within.as_deref().map(std::path::Path::new))
     }
 
     fn available(&self) -> bool {

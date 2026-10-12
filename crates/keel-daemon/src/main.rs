@@ -65,12 +65,18 @@ fn filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
 }
 
 fn main() -> ExitCode {
+    // `keel.portable` beside the executable: settings, libraries and index beside it (as
+    // for the window). First, before any thread starts.
+    keel_core::portable::apply(keel_api::private::prepare_portable);
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_writer(|| keel_api::crash::tee(std::io::stderr()))
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_env_filter(filter(std::env::var("RUST_LOG").ok().as_deref()))
         .init();
+    if let Some(notice) = keel_core::portable::notice() {
+        tracing::warn!("{notice}");
+    }
     // Panics write <data dir>/crashes/<time>.txt (scrubbed) and log where.
     keel_api::crash::install_panic_hook("keel-daemon", keel_api::crash::dir());
     let cfg = match HostConfig::load(&args.profile) {

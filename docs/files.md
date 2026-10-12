@@ -429,6 +429,9 @@ Symbolic links on Windows need Developer Mode (Settings → System → For devel
 
 ```
 keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE] [--check-update] [--here]
+keel --url LINK
+keel --register-url-protocol | --unregister-url-protocol
+keel es [switches] [search]
 ```
 
 | Flag | Meaning |
@@ -436,8 +439,12 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE]
 | `FOLDER` | Open this folder (a file opens its folder with the file selected). Relative paths are resolved against where you ran `keel` |
 | `--new-window` | Start a separate window even if Keel is already running |
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
+| `--search QUERY` | Open a search tab with this query. With FOLDER it searches only in FOLDER and its subfolders: the query starts with `in:"FOLDER"`, which you can see and edit (every search backend reads `in:`; with Everything it becomes a path term) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
 | `--filelist FILE` | Open this file list (EFU, TXT, CSV, TSV, M3U) as a tab ([File lists](#file-lists)) |
+| `--url LINK` | Open a `keel:` link ([Links](#keel-links)); nothing else may be on the command line |
+| `--register-url-protocol`, `--unregister-url-protocol` | Windows: make this Keel open `keel:` links for your user, or stop (removes the handler only when it is this Keel's) |
+| `es …` | Search the whole disk from the terminal with Everything's `es.exe` switches ([`keel es`](api.md#keel-es-everything-style-search)) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |
@@ -445,6 +452,28 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE]
 Inside a WSL distribution, the Linux build hands FOLDER to the Windows `keel.exe` (`/mnt/c/...` becomes `C:\...`, other paths `\\wsl.localhost\<distribution>\...`), and `keel.exe .` started there opens the distribution's folder: [WSL](wsl.md#keel-inside-wsl).
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkeys**, which work from any app: **Global hotkey** (default Ctrl+Shift+Alt+K) brings Keel forward, **New window hotkey** opens another Keel window on the same profile (as `keel --new-window`), and **Toggle window hotkey** brings Keel forward, or minimizes it when it is already in front (both off by default). Empty disables one. Each needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts. **New window** is also in the command palette.
+
+## keel: links
+
+A `keel:` link opens a search or a folder in Keel, from a web page, a note, a chat message or a script:
+
+| Link | Opens |
+| --- | --- |
+| `keel:search?q=invoice+ext%3Apdf` | A search tab with `invoice ext:pdf` |
+| `keel:search?q=report&path=D%3A%5CWork` | A search for `report` in `D:\Work` only |
+| `keel:open?path=C%3A%5CUsers%5CPublic` | That folder in a new tab |
+
+Values are percent-encoded (`+` is a space); `keel://search/?q=…` works too. A link can only search or show a folder: there is nothing that runs, changes or deletes anything. A file's path opens its folder with the file selected, never the file itself. Only full local paths are taken (`C:\…` on Windows, `/…` elsewhere): network paths (`\\server\share`, `//server/share`, which would make Windows contact that server and offer it your sign-in), device paths, relative paths and `..` are refused, as are unknown actions and a parameter given twice; a refused link opens Keel without doing anything (the log says why). Links are at most 4096 characters.
+
+Nothing handles `keel:` links until you ask: on Windows run `keel --register-url-protocol` (or install with `-UrlProtocol`, see [Install](../README.md)); it writes `HKCU\Software\Classes\keel` for your user only, no administrator rights needed. The handler runs `keel.exe --url-handler -- "<link>"`, and Keel refuses that command line unless the link is the only thing after `--`, so a link with a `"` in it (which some launchers pass on unencoded) cannot add options or a subcommand. Invalid links are rejected before CLI dispatch; literal quotes and whitespace must be percent-encoded (encoded values are search text only). `keel --unregister-url-protocol` (or uninstalling) removes it when it points at this Keel. On Linux and macOS the handler is not registered yet; `keel --url LINK` works on every system.
+
+## Portable mode
+
+Put an empty file named `keel.portable` beside `keel.exe` (and `keel-daemon.exe`) and Keel keeps everything in a `keel-data` folder beside them instead of your user profile: settings, profiles, open tabs and window position (`keel-data/config`), libraries, crash reports and the archive and media caches (`keel-data/data`), and the search index (`keel-data/index`). Run it from a USB stick or an unzipped folder; nothing is written to `%APPDATA%` or `%LOCALAPPDATA%`. To use another folder, write its name (relative to the executable's folder, or a full path) on the first line of `keel.portable`; lines starting with `#` are comments. The file may be UTF-8 or UTF-16 (what Notepad's "Unicode" and Windows PowerShell's `>` write); a name that is not readable text is ignored and `keel-data` is used.
+
+The portable folder must be yours alone to change. Keel makes it (and its `config`, `data` and `index` folders) for your user only when it is missing. When one of them already exists and other users of the computer can write to it (a folder made by hand under `C:\` or `D:\`, `C:\Users\Public`, `/tmp`), portable mode stays off and Keel says so, because another user could otherwise plant settings that run as you; delete the folder and let Keel make it, or pick another. On Linux and macOS the folders must be owned by you and not writable by group or others. FAT and exFAT drives (most USB sticks) have no permissions and are accepted: anyone holding the stick can read and change what is on it.
+
+A portable Keel is its own instance: it never hands a folder or search to an installed Keel (or another portable copy) that is already running. `KEEL_CONFIG_DIR`, `KEEL_DATA_DIR` and `KEEL_INDEX_DIR` still win when they are set. Passwords, key passphrases, cloud tokens and the device identity stay in the system keychain, which is not a folder; on another computer you sign in to remotes and clouds again.
 
 ## Profiles
 

@@ -34,11 +34,15 @@ mod inspect;
 mod integrity;
 mod jobs;
 mod library;
+/// `keel:` links (the URL protocol): search or show a folder, nothing else.
+pub mod link;
 mod media;
 mod oplog;
 #[cfg(test)]
 mod perf_tests;
 mod plan;
+/// Portable mode (`keel.portable` beside the executable).
+pub mod portable;
 mod protect;
 mod search;
 mod sidecar_job;

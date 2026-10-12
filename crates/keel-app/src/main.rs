@@ -98,6 +98,10 @@ mod quick_search;
 mod single_instance;
 mod tray;
 // --- end Task 24 ---
+// --- Task 79 ---
+mod es;
+mod url_protocol;
+// --- end Task 79 ---
 
 // `crate::chips` for `chip_row` (keel-web has its own copy of the module at that path).
 use keel_core::chips;
@@ -107,6 +111,10 @@ use settings::Settings;
 use std::path::Path;
 
 fn main() -> eframe::Result<()> {
+    // Task 79: `keel.portable` beside the executable keeps everything beside it. First, before
+    // any thread starts (it sets the folder variables). A folder other users can change is
+    // refused (`notice` says why).
+    keel_core::portable::apply(keel_api::private::prepare_portable);
     // --- Task 24 ---
     let cli = cli::Cli::from_env();
     if let Some(name) = &cli.profile {
@@ -137,6 +145,9 @@ fn main() -> eframe::Result<()> {
         std::process::exit(commands::run(cmd, &cli::profile(), cli.json));
     }
     // --- end Task 37 ---
+    if cli.register_url_protocol || cli.unregister_url_protocol {
+        std::process::exit(url_protocol::cli(cli.register_url_protocol));
+    }
     if cli.check_update {
         #[cfg(windows)]
         keel_vfs::desktop::attach_parent_console();
@@ -152,6 +163,9 @@ fn main() -> eframe::Result<()> {
         .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();
+    if let Some(notice) = keel_core::portable::notice() {
+        tracing::warn!("{notice}");
+    }
     // --- Task 24 ---
     // `keel --index-service <dir>`: the elevated indexer, no window.
     if let Some(dir) = &cli.index_service {
@@ -213,12 +227,17 @@ fn main() -> eframe::Result<()> {
     }
     let opts = eframe::NativeOptions {
         viewport,
+        // With KEEL_CONFIG_DIR (portable mode, tests) the window state lives there too.
+        persistence_path: settings::config_dir_override().map(|d| d.join("window")),
         ..Default::default()
     };
     let boot = app::Boot {
         settings,
         session,
-        notices: settings_notice.into_iter().chain(session_notice).collect(),
+        notices: (keel_core::portable::notice().map(str::to_owned).into_iter())
+            .chain(settings_notice)
+            .chain(session_notice)
+            .collect(),
         home,
         saved: Some(saved),
         // --- Task 24 ---

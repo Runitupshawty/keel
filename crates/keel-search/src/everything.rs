@@ -159,11 +159,24 @@ impl EverythingSearcher {
 /// with the SDK, the same switches as its Search menu); Match Diacritics has no SDK
 /// flag, so it is Everything's `diacritics:` modifier over the whole search as a group.
 /// Keel's "Match whole filename when using wildcards" is Everything's own setting there.
+/// Keel's `in:<folder>` (outside regex mode) becomes Everything's path term
+/// `"<folder>\"`: a term with a backslash matches the full path.
 fn search_text(query: &Query) -> (String, bool) {
-    let text = if query.match_diacritics && !query.regex && !query.text.trim().is_empty() {
-        format!("diacritics:<{}>", query.text)
+    let text = match crate::take_within(&query.text) {
+        (Some(folder), rest) if !query.regex => {
+            let sep = if folder.ends_with(['\\', '/']) {
+                ""
+            } else {
+                "\\"
+            };
+            format!("\"{folder}{sep}\" {rest}").trim_end().to_owned()
+        }
+        _ => query.text.clone(),
+    };
+    let text = if query.match_diacritics && !query.regex && !text.trim().is_empty() {
+        format!("diacritics:<{text}>")
     } else {
-        query.text.clone()
+        text
     };
     match (query.folders_only, query.regex) {
         (true, true) => (format!("folder: regex:{text}"), false),
@@ -326,5 +339,22 @@ mod tests {
         // A regex has no accents to fold; an empty search stays empty.
         assert_eq!(q("^caf", false, true), ("^caf".into(), true));
         assert_eq!(q("", false, false), ("".into(), false));
+    }
+
+    #[test]
+    fn in_becomes_a_path_term() {
+        let text = |text: &str, regex: bool| {
+            search_text(&Query {
+                text: text.into(),
+                regex,
+                ..Query::default()
+            })
+            .0
+        };
+        assert_eq!(text(r#"in:"C:\a b" report"#, false), r#""C:\a b\" report"#);
+        assert_eq!(text(r"report in:D:\", false), r#""D:\" report"#);
+        assert_eq!(text(r"in:C:\x", false), r#""C:\x\""#);
+        // A regex is the whole text.
+        assert_eq!(text(r"in:C:\x", true), r"in:C:\x");
     }
 }

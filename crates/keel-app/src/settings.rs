@@ -314,10 +314,18 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(base.config_dir().join(app_dir()))
 }
 
+/// `KEEL_CONFIG_DIR` when it is set (portable mode, tests): eframe's window state
+/// (`app.ron`) then goes to its `window` folder instead of eframe's own storage folder.
+pub fn config_dir_override() -> Option<PathBuf> {
+    std::env::var_os("KEEL_CONFIG_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Where session.json lives: `KEEL_CONFIG_DIR` too when set (one folder for a
 /// portable or test setup), else `%LOCALAPPDATA%\Keel`, `~/Library/Caches/Keel`,
 /// `~/.cache/keel` (spec 2.9). eframe keeps its own window state (`app.ron`) in its
-/// storage folder; `KEEL_CONFIG_DIR` does not move that.
+/// storage folder, or in `<KEEL_CONFIG_DIR>/window` when that is set.
 pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("KEEL_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(dir.into());

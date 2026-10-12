@@ -20,16 +20,21 @@ impl Spotlight {
 
 impl Searcher for Spotlight {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
+        // `in:<folder>` is Spotlight's own `-onlyin`.
+        let (within, text) = match query.regex {
+            false => crate::take_within(&query.text),
+            true => (None, query.text.clone()),
+        };
         let mut command = Command::new("mdfind");
-        command.args(["-onlyin", "/"]);
-        if query.folders_only && query.text.is_empty() {
+        command.arg("-onlyin").arg(within.as_deref().unwrap_or("/"));
+        if query.folders_only && text.is_empty() {
             command.arg("kMDItemContentTypeTree == \"public.folder\"");
         } else if query.folders_only {
-            command.arg("-name").arg(&query.text);
+            command.arg("-name").arg(&text);
         } else {
-            command.arg(&query.text);
+            command.arg(&text);
         }
-        command_hits(command, query)
+        command_hits(command, query, None)
     }
 
     fn available(&self) -> bool {

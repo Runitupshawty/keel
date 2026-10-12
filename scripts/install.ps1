@@ -10,6 +10,7 @@
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1))) -Desktop -AddToPath
 .PARAMETER Desktop     Also create a Desktop shortcut.
 .PARAMETER AddToPath   Add the install folder to your user PATH, so `keel` works in a terminal.
+.PARAMETER UrlProtocol Open keel: links (keel:search?q=..., keel:open?path=...) with Keel, for this user.
 .PARAMETER Uninstall   Remove Keel: files, shortcuts, PATH entry and the Settings -> Apps entry.
 .PARAMETER InstallDir  Default: %LOCALAPPDATA%\Programs\Keel
 .PARAMETER NoRegister  Skip the Settings -> Apps (uninstall) registry entry.
@@ -21,6 +22,7 @@
 param(
   [switch]$Desktop,
   [switch]$AddToPath,
+  [switch]$UrlProtocol,
   [switch]$Uninstall,
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Keel'),
   [switch]$NoRegister,
@@ -46,6 +48,25 @@ $DesktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$lnkName.lnk"
 # Whether $Path is inside the folder $Dir (not a sibling such as ...\Keel2 of ...\Keel).
 function Test-Inside([string]$Path, [string]$Dir) {
   [bool]$Path -and $Path.StartsWith($Dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+# The per-user keel: link handler (as `keel --register-url-protocol` writes it). Removing
+# leaves another install's handler alone.
+$UrlKey = 'HKCU:\Software\Classes\keel'
+function Set-UrlProtocol([string]$Exe, [bool]$On) {
+  if ($On) {
+    New-Item "$UrlKey\shell\open\command" -Force | Out-Null
+    New-Item "$UrlKey\DefaultIcon" -Force | Out-Null
+    Set-Item $UrlKey -Value 'URL:Keel link'
+    New-ItemProperty $UrlKey -Name 'URL Protocol' -Value '' -Force | Out-Null
+    Set-Item "$UrlKey\DefaultIcon" -Value "$Exe,0"
+    Set-Item "$UrlKey\shell\open\command" -Value "`"$Exe`" --url-handler -- `"%1`""
+  } else {
+    $cmd = (Get-Item "$UrlKey\shell\open\command" -ErrorAction SilentlyContinue).GetValue('')
+    if ($cmd -and $cmd.ToLowerInvariant().Contains($Exe.ToLowerInvariant())) {
+      Remove-Item $UrlKey -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 function Stop-Keel {
@@ -154,6 +175,7 @@ if ($Uninstall) {
   Stop-Keel
   foreach ($f in $Lnk, $DesktopLnk) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
   Set-UserPath $InstallDir $false
+  Set-UrlProtocol (Join-Path $InstallDir 'keel.exe') $false
   Remove-Item $RegPath -Recurse -Force -ErrorAction SilentlyContinue
   # Everything but this script first (it may be the running one), then the folder itself.
   if (Test-Path $InstallDir) {
@@ -214,6 +236,7 @@ try {
   New-Shortcut $Lnk $exe
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }
   if ($AddToPath) { Set-UserPath $InstallDir $true }
+  if ($UrlProtocol) { Set-UrlProtocol $exe $true }
 
   if (-not $NoRegister) {
     $ver = $tag.TrimStart('v')

@@ -486,6 +486,7 @@ page shows "Not encrypted".
 
 ```
 keel search <query> [--max N] [--json]
+keel es [es.exe switches] [search]          # the whole disk; see keel es below
 keel du <path> [--top N] [--json]
 keel du --scan <paths…> | --all-drives | --load-from <file> [--top N] [--save <file>] [--save-to <file.csv|.json>]
         [--save-types-to <file>] [--save-largest-to <file>] [--report <file.html> [--mail]] [--bom] [--size-on-disk]
@@ -541,7 +542,7 @@ not be written ([Exports and reports](files.md#exports-and-reports)). Exit codes
 1 the operation failed, 2 usage, and for `keel du --strict` 3: written, but the scan is
 partial. Typed at a terminal, a lone argument that names an existing folder opens that
 folder in the window even when it is a subcommand name (`keel devices` where `devices` is
-a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the
+a folder), except `mcp`, `execute`, `daemon`, `search` and `es`, which are always the
 subcommand; without a terminal (an agent starting `keel mcp`, a script) a name is never
 taken as a folder. `keel ./name` always means the folder. `keel plan` prints the preview, the plan id and hash; `keel execute` reads them
 from its arguments or from piped `keel plan` output (text or `--json`) and waits for the
@@ -571,6 +572,51 @@ on the path or the old path (any case on Windows); `--search` is part of a path,
 `--watch` then keeps printing new entries as the index applies them (checked twice a
 second) until Ctrl+C. A missing journal prints nothing. Exit codes: 0, 1 the journal could
 not be read, 2 usage (an unknown action, a time or pattern that does not parse).
+
+### `keel es`: Everything-style search
+
+```
+keel es [switches] [search]
+```
+
+`keel search` searches the library; `keel es` searches the whole disk through the system search backend the window uses (Everything when it runs, else Keel's NTFS index on Windows; Spotlight, `locate` or Keel's folder index elsewhere), with the switches of voidtools' `es.exe`, so scripts written for `es.exe` mostly run unchanged. `-library` searches the library instead. Switches start with `-` (or `--`), or `/`, and their case does not matter; everything else is the search (a word with spaces is a phrase; after `--` everything is the search). `keel es -help` lists them.
+
+| Switches | Meaning |
+| --- | --- |
+| `-r`, `-regex <search>` | The search is a regular expression |
+| `-i`, `-case` (`-no-case`) | Match case |
+| `-w`, `-ww`, `-whole-word` (`-no-whole-word`) | Whole words only |
+| `-p`, `-match-path` (`-no-match-path`) | Match the full path, not just the name. Needs Everything running (Keel's own index matches names); otherwise an error says so |
+| `-a`, `-diacritics` (`-no-diacritics`) | Match diacritics (`é` is not `e`). Keel's own index always does; with Everything the results are filtered |
+| `-prefix`, `-suffix` | The name starts or ends with the search word (one word) |
+| `-path <folder>` | In this folder and its subfolders |
+| `-parent-path <path>` | In the folder that holds this path (and its subfolders) |
+| `-parent <folder>` | Directly in this folder |
+| `/ad`, `/a-d` | Folders only, files only (other `/a` attributes are refused: the index has none) |
+| `-n`, `-max-results <n>`; `-o`, `-offset <n>` | At most n results; skip the first n |
+| `-sort <name\|path\|size\|extension\|date-modified>[-ascending\|-descending]`, `-sort-ascending`, `-sort-descending`, `/on /o-n /os /o-s /oe /o-e /od /o-d` | Sort order (default: name, ascending, as Everything) |
+| `-name -path-column -full-path-and-name -extension -size -date-modified` | Columns, in the order given (default: the full path; `-ext` and `-dm` are short forms) |
+| `-size-format <n>` | 0 auto (`1.2 MB`), 1 bytes (default), 2 KB, 3 MB |
+| `-date-format <n>` | 0 local `2026-10-12 14:03` (default on screen), 1 ISO-8601 local, 2 FILETIME (default in exports), 3 ISO-8601 UTC |
+| `-csv -efu -json -m3u -m3u8 -tsv -txt` | Output format; `-export-csv <file>` (and `-export-efu`, `-export-json`, …) writes it to a file |
+| `-no-header`, `-utf8-bom` | Leave out the header line (CSV, TSV, EFU, M3U); start with a UTF-8 byte order mark |
+| `-count`, `-get-result-count` | Print only the number of results |
+| `-get-total-size` | Print only the total size of the files found |
+| `-get-folder-size <folder>` | Print the total size of a folder (walked) |
+| `-timeout <ms>` | Wait this long for an index that is still being built (default 10000) |
+| `-no-result-error` | Exit 1 when nothing was found |
+| `-ipc1`, `-ipc2`, `-ipc3` | Accepted and ignored |
+
+Exports write sizes in bytes and dates as FILETIME unless `-size-format`/`-date-format` asks otherwise; CSV quotes text and doubles quotes inside it; JSON is an array of objects keyed `name`, `path`, `filename`, `extension`, `size`, `date_modified` (`null` when unknown, such as a folder's size); EFU is Everything's file list (`Filename,Size,Date Modified,Attributes`, 16 for folders); M3U lists files only. The global `--json` is the same as `-json`.
+
+Results are read from the backend (at most 250,000; a note on stderr says when that limit cut the list), filtered, sorted, and then `-o`/`-n` pick the page, so counts and sorting cover every match. Sizes and dates the backend did not report are read from the disk, for every result when sorting by size or date or summing sizes, else for the page shown. `-path` and `-parent` are passed to the backend as `in:"folder"` and checked again on each result. Not supported yet: the other sort keys and columns (created, accessed, attributes, run count), `-highlight`, column colours and widths, run counts, `-save-db`, `-reindex` and the journal switches (each is refused as an unknown switch). Exit codes: 0 ok, 1 failed (or nothing found with `-no-result-error`), 2 usage.
+
+```
+keel es -n 20 -sort size-descending -size -name ext:mp4
+keel es -path D:\Photos /a-d -export-csv photos.csv -name -size -dm
+keel es -get-result-count *.pdf
+keel es -w -i Report -json
+```
 
 ### `keel op`: any operation by name
 

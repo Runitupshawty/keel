@@ -1026,3 +1026,66 @@ fn a_job_cut_short_by_the_command_ending_is_named() {
         "{err}"
     );
 }
+
+/// Review 1 blocker: the `keel:` handler (`"keel.exe" --url-handler -- "%1"`) given a link
+/// with a `"` in it, as a `.url` file or `start` passes it, must not run `keel es` (which
+/// would truncate the file) or anything else: the real binary refuses the command line.
+#[test]
+fn a_keel_link_with_quotes_cannot_run_a_subcommand() {
+    let env = env();
+    let victim = env.files.path().join("notes.txt");
+    let shown = victim.display().to_string();
+    assert!(!shown.contains(' ') && !shown.contains('"'), "{shown}");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_keel"));
+    c.env("KEEL_CONFIG_DIR", env.config.path())
+        .env("KEEL_DATA_DIR", env.data.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The link `keel:search?q=a" es -export-txt <victim> -n 0 x` put into `"%1"`.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(format!(
+            "--url-handler -- \"keel:search?q=a\" es -export-txt {shown} -n 0 x\""
+        ));
+    }
+    // Elsewhere: the arguments Windows would make of it.
+    #[cfg(not(windows))]
+    c.args([
+        "--url-handler",
+        "--",
+        "keel:search?q=a",
+        "es",
+        "-export-txt",
+        &shown,
+        "-n",
+        "0",
+        "x",
+    ]);
+    let mut child = c.spawn().unwrap();
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = child.kill();
+            panic!("keel kept running (it took the command line)");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--url takes one keel: link"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&victim).unwrap(), b"notes");
+}

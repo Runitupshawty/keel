@@ -79,7 +79,7 @@ impl Drop for Local {
 /// keel-daemon for the profile, else the library in-process (keel-net only then, so one
 /// node per profile).
 /// `wait`: how long the daemon's answers are waited for.
-fn connect(cfg: &HostConfig, wait: Duration) -> anyhow::Result<Box<dyn Backend>> {
+pub(crate) fn connect(cfg: &HostConfig, wait: Duration) -> anyhow::Result<Box<dyn Backend>> {
     if let Ok(mut client) = Client::connect(&cfg.socket_name()) {
         client.timeout = wait;
         return Ok(Box::new(client));
@@ -158,6 +158,10 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         let mut out: Out = Box::new(std::io::stdout());
         let file = keel_search::journal::default_path();
         return crate::journal_cli::run(file, &args, &mut out, &|| true);
+    }
+    // `keel es` searches the system index: no library unless it asks for `-library`.
+    if let Command::Es { args } = &cmd {
+        return crate::es::run(args, profile, json);
     }
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
@@ -1060,7 +1064,8 @@ fn command(
         | Command::Mcp { .. }
         | Command::Op { .. }
         | Command::Filelist(_)
-        | Command::Journal { .. } => {
+        | Command::Journal { .. }
+        | Command::Es { .. } => {
             unreachable!("handled by run")
         }
     };
