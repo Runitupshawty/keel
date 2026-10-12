@@ -394,7 +394,7 @@ mod tests {
         let aces: Vec<Ace> = vec![
             ("SYSTEM".into(), false, 0x001F_01FF, true),
             ("PC\\ana".into(), false, 0x0012_0089, false),
-            ("PC\\ana".into(), false, 0x0010_0116 | 0x0001_0040, true),
+            ("PC\\ana".into(), false, 0x0001_0136, true),
             ("Users".into(), true, 0x0010_0116, false),
             ("Users".into(), false, 0x0012_00A9, true),
         ];

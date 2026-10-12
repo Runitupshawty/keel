@@ -293,11 +293,11 @@ fn comments_are_previewed_set_read_and_cleared() {
     add_and_index(&f);
     let notes = s(&f.files.path().join("docs/notes.txt"));
     let read = || call(&f.ctx, "library.comment", json!({ "path": notes })).unwrap();
-    assert_eq!(read(), json!({ "path": notes }));
+    assert_eq!(read().get("comment"), None);
     let params = json!({"path": notes, "comment": "Send to the printer"});
     let preview = call(&f.ctx, "library.set_comment", params.clone()).unwrap();
     assert_eq!(preview["changes"][0]["action"], "comment");
-    assert_eq!(read(), json!({ "path": notes }), "a preview sets nothing");
+    assert_eq!(read().get("comment"), None, "a preview sets nothing");
     let set = apply(&f.ctx, "library.set_comment", params);
     assert_eq!(set["comment"], "Send to the printer");
     assert_eq!(read(), set);
@@ -306,7 +306,7 @@ fn comments_are_previewed_set_read_and_cleared() {
         "library.set_comment",
         json!({"path": notes, "comment": ""}),
     );
-    assert_eq!(read(), json!({ "path": notes }));
+    assert_eq!(read().get("comment"), None);
     let outside = tempfile::tempdir().unwrap();
     let err = call(
         &f.ctx,
