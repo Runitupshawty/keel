@@ -260,7 +260,9 @@ pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Cont
     });
 }
 
-type SearchJob = (Arc<dyn Searcher>, Query, u64);
+/// A query, the filter applied to it (`search_filters::apply`: its extensions are checked
+/// on every backend's hits) and the request id.
+type SearchJob = (Arc<dyn Searcher>, Query, crate::search_filters::Applied, u64);
 
 /// One search thread for the whole app. Queries wait their turn (Everything serves one
 /// at a time); a query whose tab has moved on to a newer one is dropped unrun, so typing
@@ -280,12 +282,13 @@ impl SearchWorker {
         let live: Arc<Mutex<HashSet<u64>>> = Arc::default();
         let wanted = live.clone();
         spawn("keel-search", move || {
-            while let Ok((searcher, query, id)) = rx.recv() {
+            while let Ok((searcher, query, applied, id)) = rx.recv() {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
                 let mut result = searcher.query(&query);
                 if let Ok(hits) = &mut result {
+                    hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
                     if wanted.lock().contains(&id) {
                         fill_missing_meta(hits);
                     }
@@ -298,13 +301,20 @@ impl SearchWorker {
     }
 
     /// Queues query `id`, superseding `replaces` (the tab's previous request).
-    pub fn search(&self, searcher: Arc<dyn Searcher>, query: Query, id: u64, replaces: u64) {
+    pub fn search(
+        &self,
+        searcher: Arc<dyn Searcher>,
+        query: Query,
+        applied: crate::search_filters::Applied,
+        id: u64,
+        replaces: u64,
+    ) {
         {
             let mut live = self.live.lock();
             live.remove(&replaces);
             live.insert(id);
         }
-        let _ = self.jobs.send((searcher, query, id));
+        let _ = self.jobs.send((searcher, query, applied, id));
     }
 }
 

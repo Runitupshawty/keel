@@ -5,8 +5,10 @@
 //! `worker::SearchWorker`. The first query asks for `PAGE` results; Load more asks for
 //! more, up to the Most results setting.
 
+use crate::bookmarks::FindCmd;
 use crate::keys::Action;
 use crate::pane::Pane;
+use crate::search_history::SUGGESTIONS;
 use crate::tab::{Nav, TabKind};
 use egui::{Key, Modifiers};
 use keel_search::{Query, Searcher};
@@ -47,7 +49,32 @@ pub struct Toggles {
     pub regex: bool,
 }
 
+/// The toggles as a bookmark or filter keeps them (`keel_core::MatchToggles`).
+pub fn match_toggles(t: Toggles) -> keel_core::MatchToggles {
+    keel_core::MatchToggles {
+        case: t.match_case,
+        whole_words: t.whole_word,
+        path: t.match_path,
+        diacritics: t.match_diacritics,
+        regex: t.regex,
+        ..Default::default()
+    }
+}
+
+/// The tab's toggles for a bookmark's or filter's (`prefix`, `suffix`, `ignore_punctuation`
+/// and `ignore_whitespace` are the HTTP search's and not the search tab's).
+pub fn toggles_of(m: keel_core::MatchToggles) -> Toggles {
+    Toggles {
+        match_case: m.case,
+        whole_word: m.whole_words,
+        match_path: m.path,
+        match_diacritics: m.diacritics,
+        regex: m.regex,
+    }
+}
+
 /// One of the [`Toggles`].
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Toggle {
     Case,
@@ -286,6 +313,19 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
     );
 }
 
+/// Task 76: the suggestions dropdown of one search field.
+#[derive(Clone, Default)]
+struct Suggest {
+    /// The row Up/Down moved to (Enter picks it).
+    highlight: Option<usize>,
+    /// Esc (or a pick) closed it for this text; typing opens it again.
+    dismissed: Option<String>,
+    /// Alt+Down opened it although suggestions are off.
+    forced: bool,
+    /// The text last put in the history from this field.
+    remembered: Option<String>,
+}
+
 /// The query box. Editing schedules the query after the search delay (when searching as
 /// you type); Enter runs it now; Up/Down move the result cursor while typing. The toggles
 /// and the Search menu follow; with the Library backend the filter chips (`chip_row`)
@@ -318,6 +358,7 @@ pub fn bar(
     };
     // Task 77: a file list tab searches its list: (shown, entries in the list).
     let list = (tab.filelist.as_ref()).map(|s| (s.label().to_owned(), s.len()));
+    let shared = crate::bookmarks::published(ui.ctx()); // Task 76
     ui.horizontal(|ui| {
         if let Some((label, _)) = &list {
             ui.label(format!("File list: {label}"));
@@ -351,8 +392,51 @@ pub fn bar(
             ui.ctx().request_repaint();
         }
         let id = ui.id().with("search");
-        if ui.memory(|m| m.has_focus(id)) {
+        // Task 76: earlier searches in a dropdown under the field (`Suggest`).
+        let sid = id.with("suggest");
+        let popup = id.with("suggest-popup");
+        let mut st: Suggest = ui.data(|d| d.get_temp(sid)).unwrap_or_default();
+        if st.dismissed.as_deref().is_some_and(|d| d != query.as_str()) {
+            st.dismissed = None;
+            st.forced = false;
+        }
+        let focused = ui.memory(|m| m.has_focus(id));
+        let shown = ui.memory(|m| m.is_popup_open(popup));
+        let sugg: Vec<String> = match focused || shown {
+            true => crate::bookmarks::suggestions(&shared.history, query, SUGGESTIONS),
+            false => Vec::new(),
+        };
+        if focused && ui.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowDown)) {
+            st.forced = true;
+            st.dismissed = None;
+        }
+        let open = focused
+            && !sugg.is_empty()
+            && st.dismissed.is_none()
+            && (shared.suggestions || st.forced);
+        if !open {
+            st.highlight = None;
+        }
+        let mut picked: Option<String> = None;
+        if focused {
             ui.input_mut(|i| {
+                if open {
+                    if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                        let last = sugg.len() - 1;
+                        st.highlight = Some(st.highlight.map_or(0, |h| (h + 1).min(last)));
+                    }
+                    if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                        st.highlight = st.highlight.and_then(|h| h.checked_sub(1));
+                    }
+                    if let Some(h) = st.highlight {
+                        if i.consume_key(Modifiers::NONE, Key::Enter) {
+                            picked = sugg.get(h).cloned();
+                        }
+                    }
+                    if i.consume_key(Modifiers::NONE, Key::Escape) {
+                        st.dismissed = Some(query.clone());
+                    }
+                }
                 for (key, nav) in [(Key::ArrowUp, Nav::Prev), (Key::ArrowDown, Nav::Next)] {
                     if i.consume_key(Modifiers::NONE, key) {
                         out.push(Action::Move(nav, i.modifiers.shift));
@@ -366,15 +450,14 @@ pub fn bar(
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 300.0).max(120.0))
+                .desired_width((ui.available_width() - 520.0).max(120.0))
                 .hint_text(if list.is_some() {
                     LIST_HINT
                 } else {
                     hint(name, tab.library_search)
                 }),
         );
-        if focus {
-            r.request_focus();
+        let to_end = |ui: &egui::Ui, query: &str| {
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
                 let end = egui::text::CCursor::new(query.chars().count());
                 state
@@ -382,6 +465,10 @@ pub fn bar(
                     .set_char_range(Some(egui::text::CCursorRange::one(end)));
                 state.store(ui.ctx(), id);
             }
+        };
+        if focus {
+            r.request_focus();
+            to_end(ui, query);
         }
         if r.changed() {
             *limit = 0;
@@ -390,11 +477,59 @@ pub fn bar(
                 ui.ctx().request_repaint_after(delay);
             }
         }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+        if r.lost_focus() && enter {
             *limit = 0;
             *due = Some(Instant::now());
             ui.ctx().request_repaint();
         }
+        // Task 76: a search run with Enter, or left for its results, goes into the history
+        // (once per text; not while a suggestion is being clicked).
+        let text = query.trim();
+        if r.lost_focus()
+            && !text.is_empty()
+            && !shown
+            && (enter || st.remembered.as_deref() != Some(text))
+        {
+            out.push(Action::Find(FindCmd::Remember(text.to_owned())));
+            st.remembered = Some(text.to_owned());
+        }
+        if open {
+            ui.memory_mut(|m| m.open_popup(popup));
+        } else if shown && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+            ui.memory_mut(|m| m.close_popup());
+        }
+        egui::popup_below_widget(
+            ui,
+            popup,
+            &r,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(r.rect.width());
+                for (i, text) in sugg.iter().enumerate() {
+                    if ui
+                        .selectable_label(st.highlight == Some(i), text.as_str())
+                        .clicked()
+                    {
+                        picked = Some(text.clone());
+                    }
+                }
+            },
+        );
+        if let Some(text) = picked {
+            query.clone_from(&text);
+            *limit = 0;
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+            out.push(Action::Find(FindCmd::Remember(text.clone())));
+            st.dismissed = Some(text.clone());
+            st.remembered = Some(text);
+            st.highlight = None;
+            ui.memory_mut(|m| m.close_popup());
+            r.request_focus();
+            to_end(ui, query);
+        }
+        ui.data_mut(|d| d.insert_temp(sid, st));
         // The toggles (Everything's Search menu); the library has its own terms.
         ui.add_enabled_ui(!tab.library_search, |ui| {
             for t in Toggle::ALL {
@@ -417,6 +552,35 @@ pub fn bar(
         let capped = *limit > 0 && count as u32 >= *limit;
         let can_more = capped && *more && !tab.library_search;
         ui.menu_button("Search", |ui| search_menu(ui, *toggles, can_more, out));
+        // Task 76: the filter (Everything, Audio, …, the profile's own) and bookmarks.
+        let before = tab.search_filter.clone();
+        let names = match shared.filters.is_empty() {
+            true => crate::search_filters::names(&[]),
+            false => shared.filters.clone(),
+        };
+        let combo = egui::ComboBox::from_id_salt("search-filter")
+            .width(100.0)
+            .selected_text(crate::search_filters::shown(&tab.search_filter))
+            .show_ui(ui, |ui| {
+                for name in &names {
+                    let value = match name.as_str() {
+                        "Everything" => String::new(),
+                        n => n.to_owned(),
+                    };
+                    ui.selectable_value(&mut tab.search_filter, value, name.as_str());
+                }
+                ui.separator();
+                if ui.button("Edit filters…").clicked() {
+                    out.push(Action::Find(FindCmd::EditFilters));
+                }
+            });
+        let _ = crate::a11y::Named::named(combo.response, "Filter");
+        if tab.search_filter != before {
+            *limit = 0;
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+        }
+        crate::bookmarks::menu(ui, out);
         if busy {
             crate::anim::spinner(ui);
         }

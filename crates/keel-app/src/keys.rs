@@ -259,6 +259,9 @@ pub enum Action {
     FileList(crate::filelist_ui::FileListCmd),
     /// Phase 14 Task 67: Quick Look, the path bar, Go to Folder (`finder.rs`).
     Finder(crate::finder::FinderCmd),
+    // --- Task 76 ---
+    /// Bookmarks, filters and search history (`bookmarks.rs`).
+    Find(crate::bookmarks::FindCmd),
 }
 
 /// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.
@@ -272,6 +275,13 @@ fn label_for(text: &str, mac: bool) -> String {
     } else {
         text.to_owned()
     }
+}
+
+/// Task 76: whether Keel itself uses exactly this key by default (a bookmark may not take
+/// it): the default keymap's keys, the moving keys included.
+pub fn is_builtin(mods: egui::Modifiers, key: Key) -> bool {
+    let keys = crate::keymap::Keymap::default().bindings();
+    keys.main().any(|b| b.chord.key == key && b.mods() == mods)
 }
 
 /// A search tab's keys (`keymap::Scope::Search`; by default Everything's toggles Ctrl+I,

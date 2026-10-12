@@ -1320,14 +1320,133 @@ pub struct SetCommentParams {
     pub comment: String,
 }
 
-/// A saved view (sidebar).
+/// A saved view: a bookmark of a search (the window's Bookmarks list and sidebar).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ViewInfo {
     pub id: i64,
     pub name: String,
-    /// A `search` query.
+    /// A `search` query (backend `library`), or the platform search's text (`system`).
     pub query: String,
     pub layout: String,
+    /// `library` (the library index) or `system` (the platform's search: Everything or the
+    /// Keel index on Windows, Spotlight, locate).
+    #[serde(default = "library_backend")]
+    pub backend: String,
+    /// `<column>` or `<column>:desc`, up to three comma-separated keys; `""`: default order.
+    #[serde(default)]
+    pub sort: String,
+    /// Column names in order; empty: the default columns.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// The match toggles that are on.
+    #[serde(default)]
+    pub matching: MatchInfo,
+    /// The filter's name (`Audio`, `Document`, a custom filter); `""`: Everything.
+    #[serde(default)]
+    pub filter: String,
+    /// Folder in the Bookmarks list, `/`-separated; `""`: the top level.
+    #[serde(default)]
+    pub folder: String,
+    /// Order inside the folder (ascending).
+    #[serde(default)]
+    pub position: i64,
+    /// Shortcut key in the window (`Ctrl+Shift+1`); `""`: none.
+    #[serde(default)]
+    pub shortcut: String,
+}
+
+fn library_backend() -> String {
+    "library".into()
+}
+
+/// Search match toggles; omitted ones are off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MatchInfo {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub case: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub whole_words: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub path: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub diacritics: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub regex: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prefix: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub suffix: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_punctuation: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_whitespace: bool,
+}
+
+/// `views.create`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ViewCreateParams {
+    pub name: String,
+    pub query: String,
+    /// Default `details`.
+    #[serde(default)]
+    pub layout: Option<String>,
+    /// `library` (default; the query must be a valid `search` query) or `system`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub sort: Option<String>,
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub matching: Option<MatchInfo>,
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Omitted: last in its folder.
+    #[serde(default)]
+    pub position: Option<i64>,
+    #[serde(default)]
+    pub shortcut: Option<String>,
+}
+
+/// `views.update`: omitted fields stay as they are.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ViewUpdateParams {
+    pub id: i64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub sort: Option<String>,
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub matching: Option<MatchInfo>,
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub position: Option<i64>,
+    /// `""` removes the shortcut.
+    #[serde(default)]
+    pub shortcut: Option<String>,
+}
+
+/// `views.delete`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ViewIdParams {
+    pub id: i64,
 }
 
 /// The copies of one file.

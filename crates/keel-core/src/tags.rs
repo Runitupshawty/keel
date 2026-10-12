@@ -40,15 +40,217 @@ pub struct Tag {
     pub parent: Option<TagId>,
 }
 
-/// A saved query with its layout (shown in the sidebar).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A saved search (a bookmark, Task 76): its query with the backend, layout, sort, columns,
+/// match toggles and filter it opens with, and its place in the Bookmarks list (folder,
+/// position, shortcut key). The app keeps the same record in a profile for bookmarks of
+/// System-backend searches made without a library.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct View {
     pub id: i64,
     pub name: String,
-    /// A [`LibraryQuery`] string.
+    /// A [`LibraryQuery`] string for the library backend; the platform search's text for
+    /// the system backend.
     pub query: String,
     /// The app's layout name (`details`, `grid`, ...).
     pub layout: String,
+    #[serde(default)]
+    pub backend: ViewBackend,
+    /// `<column>` or `<column>:desc`, up to three comma-separated keys (secondary and
+    /// tertiary sort); empty for the default order.
+    #[serde(default)]
+    pub sort: String,
+    /// Column names in order; empty for the default set.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub matching: MatchToggles,
+    /// The filter's name; empty for Everything (no filter).
+    #[serde(default)]
+    pub filter: String,
+    /// Folder in the Bookmarks list, `/`-separated (`Work/Reports`); empty at the top.
+    #[serde(default)]
+    pub folder: String,
+    /// Order inside the folder (ascending; ties by id).
+    #[serde(default)]
+    pub position: i64,
+    /// Shortcut key (`Ctrl+Shift+1`); empty for none. Unique among views.
+    #[serde(default)]
+    pub shortcut: String,
+}
+
+/// Where a saved view searches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewBackend {
+    /// The library index.
+    #[default]
+    Library,
+    /// The platform's search (Everything or the Keel index on Windows, Spotlight, locate).
+    System,
+}
+
+impl ViewBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViewBackend::Library => "library",
+            ViewBackend::System => "system",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ViewBackend> {
+        match s {
+            "library" => Some(ViewBackend::Library),
+            "system" => Some(ViewBackend::System),
+            _ => None,
+        }
+    }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The search match toggles (Everything's Search menu) a bookmark or filter turns on.
+/// Stored as JSON holding only the toggles that are on (`{"case":true}`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MatchToggles {
+    #[serde(skip_serializing_if = "is_false")]
+    pub case: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub whole_words: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub path: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub diacritics: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub regex: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub prefix: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub suffix: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub ignore_punctuation: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub ignore_whitespace: bool,
+}
+
+impl MatchToggles {
+    /// The toggles on in either.
+    pub fn or(self, other: MatchToggles) -> MatchToggles {
+        MatchToggles {
+            case: self.case || other.case,
+            whole_words: self.whole_words || other.whole_words,
+            path: self.path || other.path,
+            diacritics: self.diacritics || other.diacritics,
+            regex: self.regex || other.regex,
+            prefix: self.prefix || other.prefix,
+            suffix: self.suffix || other.suffix,
+            ignore_punctuation: self.ignore_punctuation || other.ignore_punctuation,
+            ignore_whitespace: self.ignore_whitespace || other.ignore_whitespace,
+        }
+    }
+}
+
+/// Longest bookmark name and filter name, query, folder path and shortcut (characters),
+/// and most columns.
+const NAME_MAX: usize = 200;
+const QUERY_MAX: usize = 4096;
+const FOLDER_MAX: usize = 255;
+const SHORTCUT_MAX: usize = 32;
+const COLUMNS_MAX: usize = 64;
+
+fn plain(s: &str) -> bool {
+    !s.chars().any(char::is_control)
+}
+
+/// A sort spec: empty, or up to three `<column>[:asc|:desc]` keys separated by commas.
+pub fn valid_sort(s: &str) -> bool {
+    s.is_empty()
+        || (s.split(',').count() <= 3
+            && s.split(',').all(|key| {
+                let (col, dir) = key.split_once(':').unwrap_or((key, "asc"));
+                valid_column(col) && matches!(dir, "asc" | "desc")
+            }))
+}
+
+/// A column name: 1 to 64 ASCII letters, digits, `_`, `-` or `.`.
+pub fn valid_column(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// Checks a view's fields (not the uniqueness of its shortcut): the name, the query (a
+/// library view's must parse), the layout, sort, columns, filter, folder and shortcut.
+pub fn check_view(view: &View) -> Result<()> {
+    check_name(&view.name)?;
+    anyhow::ensure!(
+        view.name.chars().count() <= NAME_MAX,
+        "the name is longer than {NAME_MAX} characters"
+    );
+    anyhow::ensure!(
+        view.query.chars().count() <= QUERY_MAX && plain(&view.query),
+        "the query is longer than {QUERY_MAX} characters or holds control characters"
+    );
+    if view.backend == ViewBackend::Library {
+        LibraryQuery::parse(&view.query, 0)?;
+    }
+    anyhow::ensure!(
+        view.layout.len() <= 32
+            && (view.layout.bytes()).all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        "invalid layout {:?}",
+        view.layout
+    );
+    anyhow::ensure!(valid_sort(&view.sort), "invalid sort {:?}", view.sort);
+    anyhow::ensure!(
+        view.columns.len() <= COLUMNS_MAX && view.columns.iter().all(|c| valid_column(c)),
+        "invalid columns (at most {COLUMNS_MAX} names of letters, digits, '_', '-', '.')"
+    );
+    anyhow::ensure!(
+        view.filter.chars().count() <= NAME_MAX && plain(&view.filter),
+        "invalid filter name {:?}",
+        view.filter
+    );
+    anyhow::ensure!(
+        view.folder.is_empty()
+            || (view.folder.chars().count() <= FOLDER_MAX
+                && plain(&view.folder)
+                && (view.folder.split('/')).all(|p| !p.trim().is_empty() && p.trim() == p)),
+        "invalid folder {:?} (names separated by '/')",
+        view.folder
+    );
+    anyhow::ensure!(
+        view.shortcut.chars().count() <= SHORTCUT_MAX
+            && plain(&view.shortcut)
+            && view.shortcut.trim() == view.shortcut,
+        "invalid shortcut {:?}",
+        view.shortcut
+    );
+    Ok(())
+}
+
+pub(crate) const VIEW_COLUMNS: &str =
+    "id, name, query, layout, backend, sort, columns, matching, filter, folder, position, shortcut";
+
+pub(crate) fn view_of(r: &rusqlite::Row) -> rusqlite::Result<View> {
+    let backend: String = r.get(4)?;
+    let columns: String = r.get(6)?;
+    let matching: String = r.get(7)?;
+    Ok(View {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        query: r.get(2)?,
+        layout: r.get(3)?,
+        backend: ViewBackend::parse(&backend).unwrap_or_default(),
+        sort: r.get(5)?,
+        columns: serde_json::from_str(&columns).unwrap_or_default(),
+        matching: serde_json::from_str(&matching).unwrap_or_default(),
+        filter: r.get(8)?,
+        folder: r.get(9)?,
+        position: r.get(10)?,
+        shortcut: r.get(11)?,
+    })
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -630,44 +832,91 @@ impl Library {
         Ok(out)
     }
 
-    /// Saves a view; `query` must parse as a [`LibraryQuery`].
+    /// Saves a library view; `query` must parse as a [`LibraryQuery`].
     pub fn create_view(&self, name: &str, query: &str, layout: &str) -> Result<View> {
-        check_name(name)?;
-        LibraryQuery::parse(query, 0)?;
-        let c = self.shared.db.get()?;
-        c.execute(
-            "INSERT INTO view(name, query, layout) VALUES (?1, ?2, ?3)",
-            params![name, query, layout],
-        )?;
-        Ok(View {
-            id: c.last_insert_rowid(),
+        self.add_view(&View {
             name: name.to_owned(),
             query: query.to_owned(),
             layout: layout.to_owned(),
+            ..View::default()
         })
     }
 
-    /// Saved views, in creation order.
+    /// Saves `view` as a new view (its `id` is ignored; a `position` of 0 puts it last in
+    /// its folder). Checked by [`check_view`]; a shortcut another view has is refused.
+    pub fn add_view(&self, view: &View) -> Result<View> {
+        check_view(view)?;
+        let c = self.shared.db.get()?;
+        check_shortcut(&c, &view.shortcut, None)?;
+        let mut out = view.clone();
+        // One statement: two saves at once never take the same last place.
+        (out.id, out.position) = c.query_row(
+            "INSERT INTO view(name, query, layout, backend, sort, columns, matching, filter, \
+             folder, position, shortcut) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+             CASE WHEN ?10 = 0 THEN (SELECT coalesce(max(position), 0) + 1 FROM view \
+             WHERE folder = ?9) ELSE ?10 END, ?11) RETURNING id, position",
+            params![
+                out.name,
+                out.query,
+                out.layout,
+                out.backend.as_str(),
+                out.sort,
+                serde_json::to_string(&out.columns)?,
+                serde_json::to_string(&out.matching)?,
+                out.filter,
+                out.folder,
+                out.position,
+                out.shortcut,
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(out)
+    }
+
+    /// Saved views by folder, then position.
     pub fn views(&self) -> Result<Vec<View>> {
         let c = self.shared.db.get()?;
-        let mut stmt = c.prepare("SELECT id, name, query, layout FROM view ORDER BY id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(View {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                query: r.get(2)?,
-                layout: r.get(3)?,
-            })
-        })?;
+        let mut stmt = c.prepare(&format!(
+            "SELECT {VIEW_COLUMNS} FROM view ORDER BY folder, position, id"
+        ))?;
+        let rows = stmt.query_map([], view_of)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// One saved view.
+    pub fn view(&self, id: i64) -> Result<Option<View>> {
+        let c = self.shared.db.get()?;
+        Ok(c.query_row(
+            &format!("SELECT {VIEW_COLUMNS} FROM view WHERE id = ?1"),
+            [id],
+            view_of,
+        )
+        .optional()?)
+    }
+
+    /// Replaces every field of view `view.id` (checked as in [`Library::add_view`]).
     pub fn update_view(&self, view: &View) -> Result<()> {
-        check_name(&view.name)?;
-        LibraryQuery::parse(&view.query, 0)?;
-        let n = self.shared.db.get()?.execute(
-            "UPDATE view SET name = ?2, query = ?3, layout = ?4 WHERE id = ?1",
-            params![view.id, view.name, view.query, view.layout],
+        check_view(view)?;
+        let c = self.shared.db.get()?;
+        check_shortcut(&c, &view.shortcut, Some(view.id))?;
+        let n = c.execute(
+            "UPDATE view SET name = ?2, query = ?3, layout = ?4, backend = ?5, sort = ?6, \
+             columns = ?7, matching = ?8, filter = ?9, folder = ?10, position = ?11, \
+             shortcut = ?12 WHERE id = ?1",
+            params![
+                view.id,
+                view.name,
+                view.query,
+                view.layout,
+                view.backend.as_str(),
+                view.sort,
+                serde_json::to_string(&view.columns)?,
+                serde_json::to_string(&view.matching)?,
+                view.filter,
+                view.folder,
+                view.position,
+                view.shortcut,
+            ],
         )?;
         anyhow::ensure!(n == 1, "no view {}", view.id);
         Ok(())
@@ -681,6 +930,24 @@ impl Library {
             .execute("DELETE FROM view WHERE id = ?1", [id])?;
         anyhow::ensure!(n == 1, "no view {id}");
         Ok(())
+    }
+}
+
+/// Refuses a shortcut another view (not `except`) already has (in any case).
+fn check_shortcut(c: &rusqlite::Connection, shortcut: &str, except: Option<i64>) -> Result<()> {
+    if shortcut.is_empty() {
+        return Ok(());
+    }
+    let taken: Option<String> = c
+        .query_row(
+            "SELECT name FROM view WHERE shortcut = ?1 COLLATE NOCASE AND id <> ?2",
+            params![shortcut, except.unwrap_or(0)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match taken {
+        Some(name) => anyhow::bail!("the shortcut {shortcut} is taken by the view \"{name}\""),
+        None => Ok(()),
     }
 }
 

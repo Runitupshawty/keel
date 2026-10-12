@@ -94,7 +94,9 @@ pub use sync::{
     plain_text, valid_device, valid_tag_name, SyncApplied, SyncEntry, SyncOp, SyncPage, SyncPeer,
     SyncTarget, FAVORITES_UID, MAX_LAMPORT, SYNC_PAGE, TOMBSTONE_SECS,
 };
-pub use tags::{Tag, TagId, View, FAVORITES};
+pub use tags::{
+    check_view, valid_column, valid_sort, MatchToggles, Tag, TagId, View, ViewBackend, FAVORITES,
+};
 pub use text_job::{
     ExtractFn, TextCaps, TextCounts, TextExtractor, TextJob, TextOutcome, TEXT_CAPS,
 };

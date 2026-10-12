@@ -131,6 +131,10 @@ impl App {
             .is_some()
             .then(|| crate::hotkey::Hotkey::new(&cc.egui_ctx, not_server))
             .flatten();
+        // Task 76: the search history file (tests keep theirs in memory).
+        if persist.is_some() {
+            state.find.history.open(&crate::profiles::current());
+        }
         // --- Task 29 ---: the library opens on a worker (not in tests: no persist).
         if persist.is_some() && state.settings.library.enabled {
             let name = state.settings.library.name.clone();
@@ -238,6 +242,9 @@ impl App {
         s.drain();
         s.tick();
         s.jobs.tick();
+        // Task 76: the search bar and sidebar read bookmarks, filters and history.
+        let views = (s.library.is_open()).then_some(s.library.views.as_slice());
+        s.find.publish(ctx, &s.settings, views);
         // Every frame, so key state stays right while a modal is open.
         // A context menu acts on what it was opened on: no key may move the focus or
         // selection under it (Task 23: the columns view's keyboard column).
@@ -257,6 +264,7 @@ impl App {
             && !ctx.is_context_menu_open();
         let terminal = s.terminal.focused(ctx);
         s.assign_keys(ctx, keys_on && !terminal); // Task 58
+        s.bookmark_keys(ctx, keys_on && !terminal); // Task 76: Ctrl+D, bookmark shortcuts
         s.sync_keys(ctx);
         let bindings = s.keys.clone();
         ctx.data_mut(|d| {
@@ -578,6 +586,7 @@ impl App {
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
         crate::dialogs::properties::windows(ctx, s, &mut acts); // Task 67
+        crate::bookmarks::windows(ctx, s, &mut acts); // Task 76
         out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {
@@ -637,6 +646,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.state.find.history.flush(); // Task 76
         if let Some(persist) = &mut self.persist {
             let session = self.save_session.then(|| Session::of(&self.state));
             persist.finish(&self.state.settings, session);

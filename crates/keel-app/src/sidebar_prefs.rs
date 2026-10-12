@@ -119,6 +119,7 @@ pub enum Section {
     Favorites,
     Locations,
     Library,
+    Bookmarks,
     Tags,
 }
 
@@ -128,6 +129,7 @@ impl Section {
             Section::Favorites => "Favorites",
             Section::Locations => "Locations",
             Section::Library => "Library",
+            Section::Bookmarks => "Bookmarks",
             Section::Tags => "Tags",
         }
     }

@@ -344,6 +344,8 @@ pub struct AppState {
     pub info: crate::dialogs::properties::InfoWindows,
     /// Phase 14 Task 67: Quick Look and Go to Folder.
     pub finder: crate::finder::Finder,
+    /// Task 76: bookmarks, filters and search history.
+    pub find: crate::bookmarks::Find,
 }
 
 impl AppState {
@@ -470,6 +472,7 @@ impl AppState {
             viewer: None,
             sizes: Default::default(),
             finder: Default::default(),
+            find: Default::default(),
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -519,6 +522,7 @@ impl AppState {
             self.keyboard.recording = None;
             return;
         }
+        let mut find = Vec::new(); // Task 76
         let theme_changed = crate::settings::window(
             ctx,
             &mut self.settings_open,
@@ -534,6 +538,7 @@ impl AppState {
             &self.themes.list(),
             &mut self.color_themes,
             &mut self.keyboard,
+            &mut find,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -556,6 +561,9 @@ impl AppState {
             self.library_cmd(self.active, cmd);
         }
         self.library.apply_hashing(&self.settings.library);
+        for cmd in find {
+            self.find_cmd(self.active, cmd);
+        }
     }
 
     /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
@@ -1098,26 +1106,47 @@ impl AppState {
         *due = None;
         self.next_req += 1;
         let replaces = std::mem::replace(req, self.next_req);
-        let text = query.trim().to_owned();
-        if text.is_empty() && tab.filelist.is_none() {
+        // Task 76: the tab's filter and match toggles; a filter alone also searches.
+        use crate::search_filters::Target;
+        let target = match &searcher {
+            _ if tab.library_search => Target::Library,
+            Some(s) => Target::system(s.name()),
+            None => Target::Plain,
+        };
+        let applied = crate::search_filters::apply(
+            query,
+            &tab.search_filter,
+            &self.settings.filters,
+            target,
+            crate::search_tab::match_toggles(*toggles),
+        );
+        if applied.text.is_empty() && tab.filelist.is_none() {
             tab.set_listing(Listing::new(Vec::new()));
             tab.loading = false;
             tab.highlight = None;
             return;
         }
         tab.loading = true;
-        // Task 76: the toggles, and the first page or what Load more asked for.
+        // Task 76: the toggles (the filter's own included), and the first page or what
+        // Load more asked for.
         *limit = settings.limit(*limit);
         *more = *limit < settings.max();
-        let q = settings.query(text.clone(), *toggles, *limit);
+        let mut q = settings.query(
+            applied.text.clone(),
+            crate::search_tab::toggles_of(applied.matching),
+            *limit,
+        );
+        q.folders_only = applied.folders_only;
         tab.highlight = keel_search::Highlighter::new(&q);
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => self.search.search(searcher, q, self.next_req, replaces),
+            Some(searcher) => self
+                .search
+                .search(searcher, q, applied, self.next_req, replaces),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
-                text,
+                applied.text,
                 self.next_req,
                 self.remotes.search_gen.clone(),
                 tx,
@@ -1486,6 +1515,7 @@ impl AppState {
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
         self.media_tick(); // Task 32
+        self.find.history.tick(&self.settings.search_history); // Task 76
         self.remote_tick();
         self.cloud_tick();
         self.devices_tick();
@@ -2479,6 +2509,7 @@ impl AppState {
             Action::Mount(cmd) => self.mount_cmd(cmd),
             Action::FileList(cmd) => self.filelist_cmd(p, cmd),
             Action::Finder(cmd) => crate::finder::run(self, p, cmd),
+            Action::Find(cmd) => self.find_cmd(p, cmd), // Task 76
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

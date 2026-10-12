@@ -130,6 +130,9 @@ pub struct Tab {
     // --- end Task 23 ---
     /// Task 29: a search tab querying the library instead of the platform backend.
     pub library_search: bool,
+    // --- Task 76 ---
+    /// The search filter: a built-in or custom filter's name ("" = Everything).
+    pub search_filter: String,
     /// Task 62: a library search's snippets of the text inside documents, by hit path.
     pub snippets: std::collections::HashMap<VPath, keel_search::Snippet>,
     /// A search tab's matched parts of names (and of folders with Match Path), from its
@@ -151,6 +154,23 @@ pub struct Tab {
     cache: Vec<usize>,
     /// Bumped whenever `cache` changes (Task 32: the media view's layout cache).
     cache_gen: u64,
+}
+
+impl Tab {
+    /// A search tab's match toggles as a bookmark or filter keeps them (none: a folder tab).
+    pub fn match_toggles(&self) -> keel_core::MatchToggles {
+        match &self.kind {
+            TabKind::Search { toggles, .. } => crate::search_tab::match_toggles(*toggles),
+            _ => Default::default(),
+        }
+    }
+
+    /// Sets a search tab's match toggles from a bookmark's.
+    pub fn set_match_toggles(&mut self, m: keel_core::MatchToggles) {
+        if let TabKind::Search { toggles, .. } = &mut self.kind {
+            *toggles = crate::search_tab::toggles_of(m);
+        }
+    }
 }
 
 impl Tab {
@@ -189,6 +209,7 @@ impl Tab {
             left_search: None,
             columns: Default::default(),
             library_search: false,
+            search_filter: String::new(),
             snippets: Default::default(),
             highlight: None,
             filelist: None,

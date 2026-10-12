@@ -598,4 +598,56 @@ mod tests {
             .unwrap();
         assert_eq!(row, (vec![0xaa], 1_700_000_000, None));
     }
+
+    /// Task 76: saved views of a version-8 library become library bookmarks at the top level,
+    /// in creation order, with the default sort, columns, match toggles and no shortcut.
+    #[test]
+    fn version_8_views_become_bookmarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(Store::Library)
+                .into_iter()
+                .filter(|(v, _)| *v <= 8)
+            {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO view(id, name, query, layout) VALUES (3, 'PDFs', 'ext:pdf', 'grid'),
+                     (5, 'Big', 'size:>1g', 'details');",
+            )
+            .unwrap();
+        }
+        let pool = Pool::open(&path, Store::Library).unwrap();
+        let c = pool.get().unwrap();
+        let mut stmt = c
+            .prepare(&format!(
+                "SELECT {} FROM view ORDER BY folder, position, id",
+                crate::tags::VIEW_COLUMNS
+            ))
+            .unwrap();
+        let views: Vec<crate::View> = stmt
+            .query_map([], crate::tags::view_of)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let want = |id, name: &str, query: &str, layout: &str| crate::View {
+            id,
+            name: name.into(),
+            query: query.into(),
+            layout: layout.into(),
+            position: id,
+            ..crate::View::default()
+        };
+        assert_eq!(
+            views,
+            [
+                want(3, "PDFs", "ext:pdf", "grid"),
+                want(5, "Big", "size:>1g", "details")
+            ]
+        );
+        assert_eq!(views[0].backend, crate::ViewBackend::Library);
+    }
 }

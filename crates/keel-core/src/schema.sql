@@ -395,3 +395,20 @@ CREATE TABLE record_comment(record INTEGER PRIMARY KEY, text TEXT NOT NULL);
 CREATE TRIGGER record_comment_ad AFTER DELETE ON record BEGIN
     DELETE FROM record_comment WHERE record = old.id;
 END;
+
+-- @library 9
+-- Bookmarks (Task 76): a saved view also keeps its search backend (`library` searches the
+-- library index, `system` the platform's), sort (`<column>` or `<column>:desc`, '' = the
+-- default), columns (a JSON array of column names, '[]' = the default set), match toggles
+-- (a JSON object of the toggles that are on, '{}' = none), the filter it applies ('' =
+-- Everything), and where it sits in the Bookmarks list: a folder ('/'-separated, '' = top
+-- level), its position there and an optional shortcut key ('' = none, else unique).
+ALTER TABLE view ADD COLUMN backend TEXT NOT NULL DEFAULT 'library';
+ALTER TABLE view ADD COLUMN sort TEXT NOT NULL DEFAULT '';
+ALTER TABLE view ADD COLUMN columns TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE view ADD COLUMN matching TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE view ADD COLUMN filter TEXT NOT NULL DEFAULT '';
+ALTER TABLE view ADD COLUMN folder TEXT NOT NULL DEFAULT '';
+ALTER TABLE view ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE view ADD COLUMN shortcut TEXT NOT NULL DEFAULT '';
+UPDATE view SET position = id;

@@ -101,6 +101,14 @@ pub struct Settings {
     pub sidebar: crate::sidebar_prefs::SidebarSettings,
     /// `[finder]`: Quick Look on Space, the path bar, spring-loaded folders (Phase 14).
     pub finder: crate::finder::FinderSettings,
+    // --- Task 76 ---
+    /// `[[bookmarks]]`: bookmarks of System-backend searches kept in this profile (library
+    /// bookmarks are the library's saved views).
+    pub bookmarks: Vec<keel_core::View>,
+    /// `[[filters]]`: the profile's own search filters.
+    pub filters: Vec<crate::search_filters::CustomFilter>,
+    /// `[search_history]`: saving, size and order of the search history.
+    pub search_history: crate::search_history::HistorySettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -244,6 +252,9 @@ impl Default for Settings {
             quote_copied_paths: false,
             sidebar: Default::default(),
             finder: Default::default(),
+            bookmarks: Vec::new(),
+            filters: Vec::new(),
+            search_history: Default::default(),
         }
     }
 }
@@ -395,18 +406,23 @@ fn library_name(text: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Parses config.toml with each `[[clouds]]` / `[[remotes]]` entry on its own: an invalid
-/// one is left out and named in the returned list instead of failing the whole file.
+/// Parses config.toml with each `[[clouds]]`, `[[remotes]]`, `[[bookmarks]]` and `[[filters]]`
+/// entry on its own: an invalid one is left out and named in the returned list instead of
+/// failing the whole file.
 pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     let mut table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut dropped = Vec::new();
     let clouds = entries(&mut table, "clouds", &mut dropped);
     let remotes = entries(&mut table, "remotes", &mut dropped);
+    let bookmarks = entries(&mut table, "bookmarks", &mut dropped);
+    let filters = entries(&mut table, "filters", &mut dropped);
     let mut s: Settings = toml::Value::Table(table)
         .try_into()
         .map_err(|e: toml::de::Error| e.to_string())?;
     s.clouds = clouds;
     s.remotes = remotes;
+    s.bookmarks = bookmarks;
+    s.filters = filters;
     s.devices.migrate();
     // A hand-edited keymap: unknown commands and bad keys are left out, and an essential
     // command (the palette, Esc) never ends up without a key.
@@ -630,6 +646,8 @@ pub enum Page {
     Library,
     Devices,
     Keyboard,
+    /// Task 76: search history, filters and bookmarks.
+    Search,
 }
 
 /// Settings → Appearance (Task 64): the style and the accent color. The look follows
@@ -712,6 +730,7 @@ pub fn window(
     themes: &[(String, String)], // Task 47: (name, label)
     color_themes: &mut crate::color_theme::ColorThemes,
     keyboard: &mut crate::keymap::KeymapUi, // Phase 16 Task 76
+    find: &mut Vec<crate::bookmarks::FindCmd>, // Task 76
 ) -> bool {
     let mut theme_changed = false;
     // Recording a key: the press is the new key, and Esc only stops the recording.
@@ -738,6 +757,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
                 ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
                 ui.selectable_value(&mut remotes.page, Page::Keyboard, "Keyboard");
+                ui.selectable_value(&mut remotes.page, Page::Search, "Search");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -749,6 +769,7 @@ pub fn window(
                     Page::Devices => crate::devices::settings_page(ui, s, devices),
                     Page::Keyboard => keyboard.page(ui, &mut s.keymap),
                     Page::Appearance => appearance_page(ui, s),
+                    Page::Search => crate::bookmarks::settings_page(ui, s, find),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

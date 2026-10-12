@@ -395,6 +395,7 @@ impl AppState {
             }
         }
         set_current(&name);
+        self.find.history.follow(&name); // Task 76
         let mut session = session.unwrap_or_else(|| Session::single(self.home.clone()));
         session.repair(&self.home);
         self.remotes.sync(&self.router, &settings.remotes);

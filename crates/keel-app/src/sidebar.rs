@@ -170,6 +170,13 @@ impl Sidebar {
             if header(ui, Section::Library, prefs, theme, out, |_, _| ()) {
                 crate::library_ui::sidebar(ui, library, current, out);
             }
+            // Task 76: bookmarks of searches (nothing while there are none).
+            if !crate::bookmarks::published(ui.ctx()).bookmarks.is_empty() {
+                ui.add_space(SECTION_GAP);
+                if header(ui, Section::Bookmarks, prefs, theme, out, |_, _| ()) {
+                    crate::bookmarks::sidebar(ui, out);
+                }
+            }
             if library.is_open() && !library.tags.is_empty() {
                 ui.add_space(SECTION_GAP);
                 if header(ui, Section::Tags, prefs, theme, out, |_, _| ()) {

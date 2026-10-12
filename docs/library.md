@@ -30,6 +30,8 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 ### Searching
 
+**Saved views are bookmarks.** A saved view keeps a search with its backend (`library`, or `system` for the platform's search), sort, columns, match toggles, filter, folder, position and shortcut key. Ctrl+D in a search tab saves one (see [Bookmarks](files.md#bookmarks-filters-and-search-history)); the API creates, changes and deletes them with `views.create`, `views.update` and `views.delete` (previewed, like every change). A library view's query must be a valid library query; a `system` view keeps the text as typed. Opening this library in this version takes `library.db` to version 9 (the views' new fields); an older Keel then refuses it ("newer than this Keel").
+
 Ctrl+F opens a search tab; the menu at the left of the box switches it to **Library**. A row of **filter chips** then sits under the box, so you can narrow a search without learning the syntax:
 
 - **Kind**: Image, Video, Audio, Document, Archive or Folder (one at a time).
