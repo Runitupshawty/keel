@@ -603,6 +603,20 @@ mod tests {
     use keel_vfs::recover::testimg::{NtfsImg, NT_ROOT};
 
     #[test]
+    fn image_scan_does_not_save_on_its_source_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("volume.img");
+        let mut nt = NtfsImg::new();
+        std::fs::write(&image, nt.image()).unwrap();
+        let save = dir.path().join("scan.json");
+        assert!(matches!(
+            scan(image.to_str().unwrap(), Some(&save), false),
+            Err(Fail::Usage(_))
+        ));
+        assert!(!save.exists());
+    }
+
+    #[test]
     fn scan_saves_the_list_and_restore_checks_ids_folder_and_volume() {
         let dir = tempfile::tempdir().unwrap();
         let mut nt = NtfsImg::new();

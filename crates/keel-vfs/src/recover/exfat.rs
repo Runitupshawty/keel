@@ -18,6 +18,30 @@ const MAX_DIR_ENTRIES: u64 = 1 << 21;
 /// Most fragments one file's data is followed through (more: left out as damaged).
 const MAX_RUNS: usize = 1 << 16;
 
+#[cfg(test)]
+mod hostile_tests {
+    use super::*;
+
+    #[test]
+    fn a_contiguous_fat_chain_has_a_step_limit_too() {
+        let count = 100_000u32;
+        let mut fat = vec![0u8; (count as usize + 2) * 4];
+        for c in 2..count + 1 {
+            fat[c as usize * 4..c as usize * 4 + 4].copy_from_slice(&(c + 1).to_le_bytes());
+        }
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        let mut walk = Walk {
+            r: &mut reader,
+            geo: Geo { cluster: 512, fat_off: 0, fat_len: fat.len() as u64,
+                heap_off: 0, clusters: u64::from(count), root: 2, total: u64::from(count) * 512 },
+            fat, alloc: None, seen: HashSet::new(), budget: 1 << 24,
+            list: List::new(1 << 20), bad_sets: 0, no_data: 0,
+        };
+        assert!(walk.runs(2, u64::from(count) * 512, false).is_none());
+        assert_eq!(walk.runs(2, u64::from(count) * 512, true), Some(vec![(2, u64::from(count))]));
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Geo {
     pub cluster: u64,
