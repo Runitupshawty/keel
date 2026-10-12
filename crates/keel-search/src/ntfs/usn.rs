@@ -147,17 +147,8 @@ pub(crate) fn keep_linked(records: &mut [Record], exists: impl Fn(u64) -> bool) 
 }
 
 /// Size, dates and attributes of a changed file, looked up by file id (off the index
-/// lock) after the journal said it changed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Stat {
-    pub size: u64,
-    pub allocated: u64,
-    pub created: i64,
-    pub modified: i64,
-    pub accessed: i64,
-    pub attributes: u32,
-    pub links: u16,
-}
+/// lock) after the journal said it changed: by this process, or by the index service.
+pub(crate) use crate::proto::Stat;
 
 /// The files to look up after `records`: each one the batch touched and did not
 /// delete, once, at most `max`.

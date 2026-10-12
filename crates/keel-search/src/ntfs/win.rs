@@ -409,6 +409,23 @@ impl Volume {
         }
     }
 
+    /// One `FSCTL_READ_USN_JOURNAL` call from `start` (administrator): the raw output,
+    /// the next USN then whole records, for the index service to hand over unparsed.
+    pub fn read_journal_raw(&self, journal_id: u64, start: i64) -> io::Result<Vec<u8>> {
+        let mut out = vec![0u8; BUFFER];
+        let input = ReadUsnJournalDataV0 {
+            start_usn: start,
+            reason_mask: u32::MAX,
+            return_only_on_close: 0,
+            timeout: 0,
+            bytes_to_wait_for: 0,
+            journal_id,
+        };
+        let n = ioctl(&self.file, FSCTL_READ_USN_JOURNAL, &input, &mut out)?;
+        out.truncate(n);
+        Ok(out)
+    }
+
     /// Reads journal records from `start` up to the current end. Returns the records
     /// and the USN to resume from. Errors with ERROR_JOURNAL_ENTRY_DELETED (1181)
     /// when `start` was already truncated away.

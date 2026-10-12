@@ -45,6 +45,7 @@ crate's `fuzzing` feature.
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images), then the same file through `extract_text`, the library's text reader |
 | `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
 | `mft_record` | `keel_search::fuzz::mft_record` | NTFS MFT `FILE` records as the index service reads them from a volume: the update sequence, every attribute (standard information, file names, data streams, reparse point, attribute list), data runs, and records cut into 1 KiB pieces merged into files (extension records, hard links) |
+| `index_proto` | `keel_search::fuzz::index_proto` | the index service's pipe protocol as both ends read it: length-prefixed frames (bounded in size), every request and response (drive letters, counts checked against the bytes left, file names that must be one path component), and each message that decodes encoded again to the same message |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,

@@ -10,9 +10,12 @@
 //! and no elevation it falls back to walking the user's folders (`walk`);
 //! [`request_full_index`] runs the MFT read elevated (`keel --index-service`).
 
+mod acl;
 mod db;
 mod index;
 mod pattern;
+mod service;
+mod svcwin;
 mod usn;
 mod walk;
 mod win;
@@ -27,12 +30,18 @@ use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
 use crate::mft;
+use crate::proto::Row;
 use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index, Info};
 use usn::Changes;
 use win::{Journal, Volume, VolumeId};
 
+pub use acl::set_hide_unlistable;
+pub use svcwin::{
+    install_service, request_service_change, run_service, service_state, uninstall_service,
+    ServiceState,
+};
 pub(crate) use win::file_meta;
 pub use win::is_elevated;
 
@@ -55,6 +64,8 @@ const STAT_LIMIT: usize = 2_000;
 /// rest keep what the index had (a huge batch, such as an archive unpacked).
 const STAT_BATCH: usize = 20_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
+/// Least time between two tries to reach the index service.
+const SERVICE_RETRY: Duration = Duration::from_secs(60);
 const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
 
 /// Where the index lives: `KEEL_INDEX_DIR`, else `KEEL_CONFIG_DIR\index` (portable
@@ -246,17 +257,8 @@ fn read_mft(volume: &Volume, mut each: impl FnMut(mft::Entry)) -> anyhow::Result
     Ok(())
 }
 
-/// Puts one file read from the MFT in the index (its first name; the others are
-/// counted as hard links).
-fn add_entry(index: &mut Index, entry: &mft::Entry) {
-    let number = entry.frn & mft::RECORD_MASK;
-    if number < FIRST_USER_RECORD && number != ROOT_RECORD {
-        return;
-    }
-    let Some(name) = entry.names.first() else {
-        return;
-    };
-    index.upsert(entry.frn, name.parent, &name.name, entry.is_dir);
+/// The index columns of one file read from the MFT.
+fn info_of(entry: &mft::Entry) -> Info {
     let times = &entry.standard;
     // Data kept inside the record takes no clusters; Windows reports its size rounded
     // up to 8 bytes, and so does the index, matching the journal's lookups by id.
@@ -268,19 +270,94 @@ fn add_entry(index: &mut Index, entry: &mft::Entry) {
     } else {
         entry.data.allocated
     };
+    Info {
+        size: entry.data.size,
+        allocated,
+        created: times.created as i64,
+        modified: times.modified as i64,
+        accessed: times.accessed as i64,
+        changed: 0,
+        attributes: entry.attributes(),
+        links: entry.links(),
+        streams: entry.streams,
+        reparse: entry.reparse,
+    }
+}
+
+/// NTFS's own files (records 0 to 15) are not indexed, except the root folder.
+fn system_record(frn: u64) -> bool {
+    let number = frn & mft::RECORD_MASK;
+    number < FIRST_USER_RECORD && number != ROOT_RECORD
+}
+
+/// Puts one file read from the MFT in the index (its first name; the others are
+/// counted as hard links).
+fn add_entry(index: &mut Index, entry: &mft::Entry) {
+    if system_record(entry.frn) {
+        return;
+    }
+    let Some(name) = entry.names.first() else {
+        return;
+    };
+    index.upsert(entry.frn, name.parent, &name.name, entry.is_dir);
+    index.set_info(entry.frn, info_of(entry));
+}
+
+/// One file read from the MFT as the index service sends it (see [`add_entry`]).
+fn row_of(entry: &mft::Entry) -> Option<Row> {
+    if system_record(entry.frn) {
+        return None;
+    }
+    let name = entry.names.first()?;
+    let info = info_of(entry);
+    Some(Row {
+        frn: entry.frn,
+        parent: name.parent,
+        name: name.name.clone(),
+        is_dir: entry.is_dir,
+        size: info.size,
+        allocated: info.allocated,
+        created: info.created,
+        modified: info.modified,
+        accessed: info.accessed,
+        attributes: info.attributes,
+        links: info.links,
+        streams: info.streams,
+        reparse: info.reparse,
+    })
+}
+
+/// An entry of `FSCTL_ENUM_USN_DATA` (names and attributes only) as a row.
+fn row_of_record(r: &usn::Record) -> Row {
+    Row {
+        frn: r.frn,
+        parent: r.parent,
+        name: r.name.clone(),
+        is_dir: r.is_dir,
+        attributes: r.attributes,
+        ..Row::default()
+    }
+}
+
+/// Puts a row from the index service in the index.
+fn add_row(index: &mut Index, row: &Row) {
+    if system_record(row.frn) {
+        return;
+    }
+    index.upsert(row.frn, row.parent, &row.name, row.is_dir);
     index.set_info(
-        entry.frn,
+        row.frn,
         Info {
-            size: entry.data.size,
-            allocated,
-            created: times.created as i64,
-            modified: times.modified as i64,
-            accessed: times.accessed as i64,
+            size: row.size,
+            allocated: row.allocated,
+            created: row.created,
+            modified: row.modified,
+            accessed: row.accessed,
             changed: 0,
-            attributes: entry.attributes(),
-            links: entry.links(),
-            streams: entry.streams,
-            reparse: entry.reparse,
+            attributes: row.attributes,
+            links: row.links,
+            streams: row.streams,
+            reparse: row.reparse,
         },
     );
 }
@@ -330,6 +407,47 @@ fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
             })?;
             false
         }
+    };
+    index.settle();
+    let meta = Meta {
+        journal_id: journal.id,
+        next_usn: journal.next_usn,
+        root,
+        volume: id.drive(),
+        full,
+    };
+    Ok((index, meta))
+}
+
+/// [`build_volume`] through the index service (not elevated): the service reads the
+/// MFT and this process builds the index from its re-validated rows.
+fn build_volume_remote(
+    id: VolumeId,
+    client: &mut service::Client<std::fs::File>,
+) -> std::io::Result<(Index, Meta)> {
+    let journal = match client.query_journal(id.letter) {
+        Ok(j) => j,
+        Err(e) if e.raw_os_error() == Some(ERROR_JOURNAL_NOT_ACTIVE) => Journal {
+            id: 0,
+            next_usn: 0,
+            lowest_valid_usn: 0,
+        },
+        Err(e) => return Err(e),
+    };
+    let root = win::root_frn(id.letter)?;
+    let mut index = Index::new(id.drive(), root);
+    index.begin_bulk();
+    let full = {
+        let index = std::cell::RefCell::new(&mut index);
+        client.read_mft(
+            id.letter,
+            |row| add_row(&mut **index.borrow_mut(), &row),
+            || {
+                let mut index = index.borrow_mut();
+                **index = Index::new(id.drive(), root);
+                index.begin_bulk();
+            },
+        )?
     };
     index.settle();
     let meta = Meta {
@@ -411,6 +529,8 @@ impl Shared {
 /// Searcher over Keel's own index (see the module docs).
 pub struct NtfsSearcher {
     shared: Arc<Shared>,
+    /// Review focus 2: folders this user may list ([`set_hide_unlistable`]).
+    access: acl::FolderAccess,
 }
 
 fn load_volume(dir: &Path, id: VolumeId) -> Option<Part> {
@@ -449,7 +569,10 @@ impl NtfsSearcher {
         let _ = std::thread::Builder::new()
             .name("keel-index".into())
             .spawn(move || run(weak));
-        Self { shared }
+        Self {
+            shared,
+            access: acl::FolderAccess::new(acl::can_list),
+        }
     }
 
     /// Entries indexed so far, over all volumes (or the user-folder walk).
@@ -471,6 +594,9 @@ impl Searcher for NtfsSearcher {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         let matcher = pattern::compile(query)?;
         let max = query.max as usize;
+        // Hidden entries make room for the next ones: fetch more when filtering.
+        let filter = acl::enabled();
+        let fetch = if filter { max.saturating_mul(2) } else { max };
         let mut found: Vec<Found> = {
             let parts = self.shared.parts.read();
             if parts.is_empty() {
@@ -479,10 +605,13 @@ impl Searcher for NtfsSearcher {
             }
             parts
                 .iter()
-                .flat_map(|part| part.index().search(&matcher, max))
+                .flat_map(|part| part.index().search(&matcher, fetch))
                 .collect()
         };
         found.sort_by(rank);
+        if filter {
+            self.access.retain(&mut found, max);
+        }
         found.truncate(max);
         let mut hits: Vec<Hit> = found
             .into_iter()
@@ -542,6 +671,10 @@ struct Worker {
     /// [`RESCAN_GAP`]).
     rescan: bool,
     rescanned: Option<Instant>,
+    /// The index service, when installed and this process is not elevated.
+    service: Option<service::Client<std::fs::File>>,
+    /// When connecting to it was last tried.
+    service_tried: Option<Instant>,
 }
 
 /// The background thread: bring saved volumes current (or build them when
@@ -556,6 +689,8 @@ fn run(weak: Weak<Shared>) {
         events: None,
         rescan: false,
         rescanned: None,
+        service: None,
+        service_tried: None,
     };
     let mut first = true;
     loop {
@@ -633,16 +768,24 @@ impl Worker {
             .map(|(_, v)| v)
     }
 
-    /// Re-reads a volume's MFT when elevated; otherwise marks its index stale.
+    /// Re-reads a volume's MFT when elevated, or through the index service when it
+    /// reads this volume; otherwise marks its index stale.
     fn rebuild(&mut self, shared: &Shared, id: VolumeId) {
-        if !self.elevated {
-            if has_volume(shared, id.serial) {
-                self.freeze(shared, id.serial);
+        let built = if self.elevated {
+            build_volume(id)
+        } else {
+            match self.remote(id, |client| build_volume_remote(id, client)) {
+                Some(built) => built.map_err(anyhow::Error::from),
+                None => {
+                    if has_volume(shared, id.serial) {
+                        self.freeze(shared, id.serial);
+                    }
+                    return;
+                }
             }
-            return;
-        }
+        };
         let db = db_path(&shared.dir, id);
-        match build_volume(id) {
+        match built {
             Ok((index, meta)) => {
                 if let Err(e) = db::save_full(&db, &index, &meta) {
                     warn(&format!("saving {}: {e:#}", db.display()));
@@ -660,6 +803,55 @@ impl Worker {
             }
             Err(e) => warn(&format!("indexing {}: {e:#}", id.drive())),
         }
+    }
+
+    /// The index service's connection: made (and the service started) when it is
+    /// installed, at most every [`SERVICE_RETRY`]; never for an elevated process,
+    /// which reads the volumes itself.
+    fn service(&mut self) -> Option<&mut service::Client<std::fs::File>> {
+        if self.elevated {
+            return None;
+        }
+        if self.service.as_ref().is_some_and(|c| c.broken()) {
+            self.service = None;
+        }
+        if self.service.is_none()
+            && self
+                .service_tried
+                .is_none_or(|at| at.elapsed() >= SERVICE_RETRY)
+        {
+            self.service_tried = Some(Instant::now());
+            match svcwin::connect_service() {
+                Ok(client) => self.service = Some(client),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => warn(&format!("connecting to the index service: {e}")),
+            }
+        }
+        self.service.as_mut()
+    }
+
+    /// Runs `f` with the index service when it reads volume `id` (same letter and
+    /// serial as this process sees). None when there is no service for it.
+    fn remote<T>(
+        &mut self,
+        id: VolumeId,
+        f: impl FnOnce(&mut service::Client<std::fs::File>) -> std::io::Result<T>,
+    ) -> Option<std::io::Result<T>> {
+        let client = self.service()?;
+        if !client.serves(id) {
+            // Volumes come and go: ask again, once.
+            if client.refresh_volumes().is_err() || !client.serves(id) {
+                return None;
+            }
+        }
+        Some(f(client))
+    }
+
+    /// Whether journal reads for `id` go through the service: this process cannot
+    /// read the volume itself and the service reads it.
+    fn via_service(&mut self, id: VolumeId) -> bool {
+        let privileged = self.volume(id.serial).is_some_and(|v| v.privileged());
+        !privileged && self.remote(id, |_| Ok(())).is_some()
     }
 
     fn freeze(&mut self, shared: &Shared, serial: u32) {
@@ -687,11 +879,21 @@ impl Worker {
             if self.frozen.contains(&id.serial) {
                 continue;
             }
-            let Some(volume) = self.volume(id.serial) else {
+            if self.volume(id.serial).is_none() {
                 self.freeze(shared, id.serial);
                 continue;
+            }
+            let remote = self.via_service(id);
+            let read = if remote {
+                self.remote(id, |c| c.read_journal(id.letter, journal_id, from))
+                    .unwrap_or_else(|| Err(std::io::Error::other("the index service went away")))
+            } else {
+                self.volume(id.serial)
+                    .map_or_else(|| Err(std::io::ErrorKind::NotFound.into()), |v| {
+                        v.read_journal(journal_id, from)
+                    })
             };
-            let (mut records, next) = match volume.read_journal(journal_id, from) {
+            let (mut records, next) = match read {
                 Ok(read) => read,
                 Err(e) if e.raw_os_error() == Some(ERROR_JOURNAL_ENTRY_DELETED) => {
                     self.rebuild(shared, id);
@@ -705,18 +907,40 @@ impl Worker {
             if records.is_empty() && next == from {
                 continue;
             }
-            if !volume.privileged() {
-                let parts = shared.parts.read();
-                if let Some(part) = parts.iter().find(|p| p.serial() == Some(id.serial)) {
-                    usn::fill_names(&mut records, part.index(), |frn| volume.name_of(frn));
+            let stats: HashMap<u64, usn::Stat> = if remote {
+                // The service's journal read has the names; it also looks up which
+                // deleted names are hard links of a file that is still there.
+                let deleted: Vec<u64> = records
+                    .iter()
+                    .filter(|r| r.reason & usn::REASON_FILE_DELETE != 0)
+                    .map(|r| r.frn)
+                    .collect();
+                let alive = self
+                    .remote(id, |c| c.stat(id.letter, &deleted))
+                    .and_then(Result::ok)
+                    .unwrap_or_default();
+                usn::keep_linked(&mut records, |frn| alive.contains_key(&frn));
+                let wanted = usn::to_stat(&records, STAT_BATCH);
+                self.remote(id, |c| c.stat(id.letter, &wanted))
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+            } else {
+                let Some(volume) = self.volume(id.serial) else {
+                    continue;
+                };
+                if !volume.privileged() {
+                    let parts = shared.parts.read();
+                    if let Some(part) = parts.iter().find(|p| p.serial() == Some(id.serial)) {
+                        usn::fill_names(&mut records, part.index(), |frn| volume.name_of(frn));
+                    }
                 }
-            }
-            usn::keep_linked(&mut records, |frn| volume.name_of(frn).is_some());
-            // Sizes and dates of the changed files, read before the index is locked.
-            let stats: HashMap<u64, usn::Stat> = usn::to_stat(&records, STAT_BATCH)
-                .into_iter()
-                .filter_map(|frn| Some((frn, volume.stat(frn)?)))
-                .collect();
+                usn::keep_linked(&mut records, |frn| volume.name_of(frn).is_some());
+                // Sizes and dates of the changed files, read before the index is locked.
+                usn::to_stat(&records, STAT_BATCH)
+                    .into_iter()
+                    .filter_map(|frn| Some((frn, volume.stat(frn)?)))
+                    .collect()
+            };
             let mut changes = Changes::default();
             if let Some(Part::Volume { index, meta, .. }) = shared
                 .parts

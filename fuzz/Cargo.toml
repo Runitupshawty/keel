@@ -153,3 +153,10 @@ path = "fuzz_targets/mft_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "index_proto"
+path = "fuzz_targets/index_proto.rs"
+test = false
+doc = false
+bench = false

@@ -19,6 +19,10 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
+/// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/proto.rs"]
+mod proto;
 #[cfg(target_os = "macos")]
 mod spotlight;
 mod walkindex;
@@ -28,8 +32,9 @@ pub use everything::EverythingSearcher;
 pub use fuzzy::Fuzzy;
 #[cfg(windows)]
 pub use ntfs::{
-    index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
-    FROZEN_STATUS,
+    index_dir, install_service, is_elevated, request_full_index, request_service_change,
+    run_index_service, run_service, service_state, set_hide_unlistable, uninstall_service,
+    NtfsSearcher, ServiceState, FALLBACK_STATUS, FROZEN_STATUS,
 };
 pub use walkindex::{home_root, index_dir as walk_index_dir, WalkIndexSearcher};
 

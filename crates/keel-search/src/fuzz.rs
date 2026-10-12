@@ -1,6 +1,6 @@
 //! Fuzz entry points (docs/fuzzing.md), shared by `fuzz/` and the in-tree runs.
 
-use crate::mft;
+use crate::{mft, proto};
 
 /// MFT `FILE` records as the elevated volume read hands them over: the whole input as
 /// one record (update sequence, every attribute, the data runs), then the input cut
@@ -24,6 +24,28 @@ pub fn mft_record(data: &[u8]) {
     }
 }
 
+/// The index service's protocol as both ends read it: the input as a stream of
+/// frames, and as one request and one response payload. Whatever decodes must encode
+/// back to the same message.
+pub fn index_proto(data: &[u8]) {
+    let mut stream = data;
+    while let Ok(Some(frame)) = proto::read_frame(&mut stream, proto::MAX_RESPONSE) {
+        decode_both(&frame);
+    }
+    decode_both(data);
+}
+
+fn decode_both(payload: &[u8]) {
+    if let Ok(request) = proto::Request::decode(payload) {
+        let again = proto::Request::decode(&request.encode());
+        assert_eq!(again.as_ref(), Ok(&request), "request round trip");
+    }
+    if let Ok(response) = proto::Response::decode(payload) {
+        let again = proto::Response::decode(&response.encode());
+        assert_eq!(again.as_ref(), Ok(&response), "response round trip");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -34,5 +56,10 @@ mod tests {
     #[test]
     fn fuzz_mft_record() {
         run("mft_record", super::mft_record);
+    }
+
+    #[test]
+    fn fuzz_index_proto() {
+        run("index_proto", super::index_proto);
     }
 }
