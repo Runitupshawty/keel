@@ -2523,3 +2523,22 @@ fn views_are_created_updated_and_deleted() {
         );
     }
 }
+
+/// Review 1: a download signed in with the weaker HTTP login stays out of Keel's own folders
+/// (`files::in_keel_folders`: the configuration folder and the data folder).
+#[test]
+fn keel_folders_are_told_from_the_rest() {
+    let f = fixture(None);
+    let data = f.ctx.data_dir.clone().unwrap();
+    let inside = |p: &std::path::Path| crate::files::in_keel_folders(&f.ctx, &s(p));
+    assert!(inside(&f.cfg.path().join("daemon.token")));
+    let key = data.join("device.key");
+    std::fs::write(&key, b"k").unwrap();
+    assert!(inside(&key));
+    assert!(inside(&data));
+    assert!(!inside(&f.files.path().join("docs/invoice-2026.pdf")));
+    assert!(
+        inside(std::path::Path::new("relative/path")),
+        "unresolvable: counts as inside"
+    );
+}

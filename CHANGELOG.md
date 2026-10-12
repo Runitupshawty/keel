@@ -82,6 +82,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - `library.db` is now at version 9 (saved views gain backend, sort, columns, match toggles, filter, folder, position and shortcut); a library this Keel opened is refused by an older Keel ("newer than this Keel"). Existing views keep their order at the top level.
 - Library saved views are listed under **Bookmarks** in the sidebar instead of the library's Views section, and Ctrl+D in a search tab adds a bookmark instead of toggling Favorites (it still toggles Favorites in folder tabs).
 - The home-folder name index (macOS and Linux, and Windows without an NTFS index) has a new layout with created times and attributes: it is walked once again after the update.
+- `--web` has no TLS, so keel-daemon refuses a non-loopback address unless the profile's `config.toml` has `[web] allow_plaintext = true`, and then prints a warning at start. On such a bind the Everything endpoint takes no Basic auth (the HTTP login, or the token as a Basic password, would cross the network readable): only `Authorization: Bearer <token>`. Behind a TLS proxy on a loopback bind Basic auth works.
+- Wrong Everything credentials are no longer slowed by a sleep that held a connection place: an address that sends 5 in a row is locked out (429 with `Retry-After`) for a time that doubles up to 15 minutes, and a flood from many addresses refuses credentials for a minute. A request that has signed in gives its unauthenticated place back at once.
+- A download signed in with the HTTP login may only name a file a recent search listed, and never one in Keel's configuration or data folder (the daemon token is not held to this).
 
 ### Fixed
 

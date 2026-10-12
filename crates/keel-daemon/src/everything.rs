@@ -16,8 +16,12 @@
 //! Every request needs the daemon token (`Authorization: Bearer <token>`, or Basic with
 //! the token as the password and any user name), or the HTTP login set with
 //! `keel-daemon --set-http-login USER` (user and password in the OS keychain) as Basic
-//! auth, for tools that only know Basic. Downloads (`/everything/file?path=...`) work only
-//! while `[web] allow_downloads = true` is in the profile's config.toml.
+//! auth, for tools that only know Basic. Basic auth is refused on a non-loopback bind
+//! (plain http there; behind a TLS proxy the bind is loopback). Repeated wrong
+//! credentials from one address lock it out for a growing time (`web::AuthGuard`).
+//! Downloads (`/everything/file?path=...`) work only while `[web] allow_downloads = true`
+//! is in the profile's config.toml; signed in with the HTTP login, only a file a recent
+//! search listed ([`Recent`]) and nothing in Keel's own folders.
 
 use keel_api::system::{Found, MAX_COUNT};
 use keel_api::types::{SystemSearchParams, SystemSort};
@@ -25,10 +29,11 @@ use keel_vfs::cloud::SecretStore;
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Said when `--web` answers on a non-loopback address: it has no TLS.
+/// Said when `--web` answers on a non-loopback address (`[web] allow_plaintext = true`): it
+/// has no TLS.
 pub const UNENCRYPTED: &str = "--web is bound to a network address without TLS: the token, \
-the HTTP login, search results and files cross the network unencrypted. Put it behind a TLS \
-proxy or use a private network (a tailnet).";
+search results and files cross the network unencrypted, and Basic sign-in (the HTTP login) is \
+refused there. Use a private network (a tailnet), or bind a loopback address behind a TLS proxy.";
 
 /// Longest query string accepted.
 pub const MAX_QUERY_STRING: usize = 8 * 1024;
@@ -444,30 +449,42 @@ pub fn to_html(r: &Request, found: Result<&Found, &str>, page: &Page) -> String 
     h
 }
 
+/// How a request signed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Who {
+    /// The daemon token (bearer, or the Basic password): the same power as the API.
+    Token,
+    /// The HTTP login, a password for third-party tools.
+    Login,
+}
+
 /// Who may search: the daemon token as a bearer token or as a Basic password, or the HTTP
 /// login (`login`: user and password) as Basic auth.
 pub fn authorized(header: Option<&str>, token: &str, login: Option<&(String, String)>) -> bool {
-    let Some(header) = header.map(str::trim) else {
-        return false;
-    };
+    signed_in(header, token, login).is_some()
+}
+
+/// [`authorized`], and by which credential.
+pub fn signed_in(
+    header: Option<&str>,
+    token: &str,
+    login: Option<&(String, String)>,
+) -> Option<Who> {
+    let header = header.map(str::trim)?;
     let (scheme, rest) = header.split_once(' ').unwrap_or((header, ""));
     let rest = rest.trim();
     if scheme.eq_ignore_ascii_case("bearer") {
-        return crate::ws::same(rest.as_bytes(), token.as_bytes());
+        return crate::ws::same(rest.as_bytes(), token.as_bytes()).then_some(Who::Token);
     }
     if !scheme.eq_ignore_ascii_case("basic") || rest.len() > 4096 {
-        return false;
+        return None;
     }
     use base64::Engine;
-    let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(rest) else {
-        return false;
-    };
-    let Ok(text) = String::from_utf8(raw) else {
-        return false;
-    };
-    let Some((user, password)) = text.split_once(':') else {
-        return false;
-    };
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(rest)
+        .ok()?;
+    let text = String::from_utf8(raw).ok()?;
+    let (user, password) = text.split_once(':')?;
     let by_token = crate::ws::same(password.as_bytes(), token.as_bytes());
     let by_login = login.is_some_and(|(u, p)| {
         // Both compared in full, whatever the first gives.
@@ -475,7 +492,66 @@ pub fn authorized(header: Option<&str>, token: &str, login: Option<&(String, Str
         let pass_ok = crate::ws::same(password.as_bytes(), p.as_bytes());
         user_ok & pass_ok
     });
-    by_token || by_login
+    if by_token {
+        Some(Who::Token)
+    } else if by_login {
+        Some(Who::Login)
+    } else {
+        None
+    }
+}
+
+/// Whether the header asks to sign in with Basic auth.
+pub fn is_basic(header: Option<&str>) -> bool {
+    header.is_some_and(|h| {
+        h.trim_start()
+            .get(..6)
+            .is_some_and(|s| s.eq_ignore_ascii_case("basic "))
+    })
+}
+
+/// The most paths [`Recent`] keeps.
+pub const RECENT_MAX: usize = 20_000;
+
+/// The files recent searches listed. A download signed in with the HTTP login (a password
+/// meant for third-party search tools) may only name one of these, not any file the
+/// daemon's user can read; the daemon token, which is the whole API anyway, is not held
+/// to it.
+#[derive(Default)]
+pub struct Recent(
+    parking_lot::Mutex<(
+        std::collections::VecDeque<String>,
+        std::collections::HashSet<String>,
+    )>,
+);
+
+impl Recent {
+    /// How paths are compared: Windows ignores case and takes `/` for `\`.
+    fn key(path: &str) -> String {
+        if cfg!(windows) {
+            path.replace('/', "\\").to_lowercase()
+        } else {
+            path.to_owned()
+        }
+    }
+
+    /// Remembers `path`, forgetting the oldest beyond [`RECENT_MAX`].
+    pub fn remember(&self, path: &str) {
+        let key = Self::key(path);
+        let mut g = self.0.lock();
+        if g.1.insert(key.clone()) {
+            g.0.push_back(key);
+            while g.0.len() > RECENT_MAX {
+                if let Some(old) = g.0.pop_front() {
+                    g.1.remove(&old);
+                }
+            }
+        }
+    }
+
+    pub fn contains(&self, path: &str) -> bool {
+        self.0.lock().1.contains(&Self::key(path))
+    }
 }
 
 /// The keychain entry of a profile's HTTP login.
@@ -709,5 +785,45 @@ mod tests {
         assert!(login(&store, "other").unwrap().is_none(), "per profile");
         clear_login(&store, "p").unwrap();
         assert!(login(&store, "p").unwrap().is_none());
+    }
+
+    #[test]
+    fn the_credential_is_told_apart() {
+        use base64::Engine;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let token = "t".repeat(64);
+        let creds = ("me".to_owned(), "correct horse".to_owned());
+        let who = |h: &str| signed_in(Some(h), &token, Some(&creds));
+        assert_eq!(who(&format!("Bearer {token}")), Some(Who::Token));
+        assert_eq!(
+            who(&format!("Basic {}", b64(&format!("x:{token}")))),
+            Some(Who::Token)
+        );
+        assert_eq!(
+            who(&format!("Basic {}", b64("me:correct horse"))),
+            Some(Who::Login)
+        );
+        assert_eq!(who("Bearer correct horse"), None);
+        assert_eq!(signed_in(None, &token, Some(&creds)), None);
+        assert!(is_basic(Some(" basic abc")) && !is_basic(Some("Bearer x")) && !is_basic(None));
+    }
+
+    #[test]
+    fn recent_remembers_a_bounded_number_of_paths() {
+        let r = Recent::default();
+        assert!(!r.contains("/a/b.txt"));
+        r.remember("/a/b.txt");
+        r.remember("/a/b.txt");
+        assert!(r.contains("/a/b.txt") && !r.contains("/a/b.txt2") && !r.contains("/a"));
+        if cfg!(windows) {
+            assert!(r.contains(r"\A\B.TXT"), "case and separators do not matter");
+        }
+        for i in 0..RECENT_MAX {
+            r.remember(&format!("/f/{i}"));
+        }
+        assert!(!r.contains("/a/b.txt"), "the oldest went");
+        assert!(r.contains("/f/0") && r.contains(&format!("/f/{}", RECENT_MAX - 1)));
+        let g = r.0.lock();
+        assert_eq!((g.0.len(), g.1.len()), (RECENT_MAX, RECENT_MAX));
     }
 }
