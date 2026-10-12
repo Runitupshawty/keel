@@ -118,6 +118,8 @@ mod native {
 
     /// Keel's own icon (resource 1 in `keel.rc`) at the small-icon size; Windows' default
     /// application icon when it cannot be loaded.
+    // MAKEINTRESOURCE(1): the pointer value is a resource ID, never dereferenced as memory.
+    #[allow(clippy::manual_dangling_ptr)]
     unsafe fn app_icon() -> HICON {
         use windows::{core::PCWSTR, Win32::System::LibraryLoader::GetModuleHandleW};
         let module = GetModuleHandleW(None).unwrap_or_default();
