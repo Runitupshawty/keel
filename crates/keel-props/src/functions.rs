@@ -419,7 +419,7 @@ mod tests {
         let docs =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/properties.md");
         let text = std::fs::read_to_string(&docs)
-            .unwrap()
+            .unwrap_or_default()
             .replace("\r\n", "\n");
         let mut missing = String::new();
         for g in [
