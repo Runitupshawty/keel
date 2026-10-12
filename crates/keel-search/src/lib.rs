@@ -200,6 +200,50 @@ fn walk_index_or(none: Unavailable) -> Box<dyn Searcher> {
     }
 }
 
+/// Splits the first `in:<folder>` term (`in:"a folder"` when it has spaces) off a query
+/// that is not a regex: the folder, and the rest of the text as typed. Keel's own indexes
+/// read `in:` themselves; the backends whose syntax has none use this (Everything gets a
+/// path term, Spotlight `-onlyin`, locate a path filter).
+pub fn take_within(text: &str) -> (Option<String>, String) {
+    let mut start = None;
+    let mut quoted = false;
+    let mut found = None;
+    for (i, c) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && (!quoted || i == text.len()) => {
+                if let Some(s) = start.take() {
+                    let term = &text[s..i];
+                    if term
+                        .get(..3)
+                        .is_some_and(|head| head.eq_ignore_ascii_case("in:"))
+                    {
+                        found = Some((s, i));
+                        break;
+                    }
+                }
+            }
+            _ if start.is_none() => start = Some(i),
+            _ => {}
+        }
+        if c == '"' && start.is_none() {
+            start = Some(i);
+        }
+    }
+    let Some((s, e)) = found else {
+        return (None, text.to_owned());
+    };
+    let folder: String = text[s + 3..e].chars().filter(|&c| c != '"').collect();
+    let rest = format!("{} {}", text[..s].trim_end(), text[e..].trim_start());
+    (
+        Some(folder).filter(|f| !f.is_empty()),
+        rest.trim().to_owned(),
+    )
+}
+
 /// Last resort: walk the home folder on every query.
 struct HomeWalk(std::path::PathBuf);
 
@@ -306,9 +350,14 @@ fn hit_for_path(path: &Path) -> Option<Hit> {
 }
 
 /// Runs a tool that prints one path per line and keeps up to `query.max` hits
-/// (directories only when `folders_only`), then kills it.
+/// (directories only when `folders_only`, and only under `within` when given), then
+/// kills it.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn command_hits(mut command: std::process::Command, query: &Query) -> anyhow::Result<Vec<Hit>> {
+fn command_hits(
+    mut command: std::process::Command,
+    query: &Query,
+    within: Option<&Path>,
+) -> anyhow::Result<Vec<Hit>> {
     use std::io::BufRead;
     use std::os::unix::ffi::OsStrExt;
     use std::process::Stdio;
@@ -325,7 +374,11 @@ fn command_hits(mut command: std::process::Command, query: &Query) -> anyhow::Re
             break;
         }
         let line = line?;
-        match hit_for_path(Path::new(std::ffi::OsStr::from_bytes(&line))) {
+        let path = Path::new(std::ffi::OsStr::from_bytes(&line));
+        if within.is_some_and(|w| !path.starts_with(w)) {
+            continue;
+        }
+        match hit_for_path(path) {
             Some(hit) if hit.is_dir || !query.folders_only => hits.push(hit),
             _ => {}
         }
@@ -417,6 +470,36 @@ mod tests {
         assert!(walk(&root, &query(r"needle\.txt")).is_empty());
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn takes_the_in_term_off_a_query() {
+        use super::take_within;
+        assert_eq!(take_within("report"), (None, "report".into()));
+        assert_eq!(
+            take_within(r"in:C:\Users report"),
+            (Some(r"C:\Users".into()), "report".into())
+        );
+        assert_eq!(
+            take_within(r#"two "words here" IN:"C:\a b" ext:pdf"#),
+            (Some(r"C:\a b".into()), r#"two "words here" ext:pdf"#.into())
+        );
+        assert_eq!(
+            take_within("x in:/home/me"),
+            (Some("/home/me".into()), "x".into())
+        );
+        // Only the first; a quoted "in:" is a phrase; an empty one is dropped.
+        assert_eq!(
+            take_within("in:/a in:/b"),
+            (Some("/a".into()), "in:/b".into())
+        );
+        assert_eq!(take_within(r#""in:x" y"#), (None, r#""in:x" y"#.into()));
+        assert_eq!(take_within("in: y"), (None, "y".into()));
+        assert_eq!(
+            take_within(r#"in:"/a b"#),
+            (Some("/a b".into()), String::new())
+        );
+        assert_eq!(take_within("ünï in:/ü"), (Some("/ü".into()), "ünï".into()));
     }
 
     #[test]

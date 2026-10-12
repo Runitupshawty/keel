@@ -151,11 +151,24 @@ impl EverythingSearcher {
 
 /// Everything search string and whether whole-string regex mode is on.
 /// `regex:` scopes the regex to the text so a `folder:` prefix stays a filter.
+/// Keel's `in:<folder>` (outside regex mode) becomes Everything's path term
+/// `"<folder>\"`: a term with a backslash matches the full path.
 fn search_text(query: &Query) -> (String, bool) {
+    let text = match crate::take_within(&query.text) {
+        (Some(folder), rest) if !query.regex => {
+            let sep = if folder.ends_with(['\\', '/']) {
+                ""
+            } else {
+                "\\"
+            };
+            format!("\"{folder}{sep}\" {rest}").trim_end().to_owned()
+        }
+        _ => query.text.clone(),
+    };
     match (query.folders_only, query.regex) {
-        (true, true) => (format!("folder: regex:{}", query.text), false),
-        (true, false) => (format!("folder: {}", query.text), false),
-        (false, regex) => (query.text.clone(), regex),
+        (true, true) => (format!("folder: regex:{text}"), false),
+        (true, false) => (format!("folder: {text}"), false),
+        (false, regex) => (text, regex),
     }
 }
 
@@ -287,5 +300,22 @@ mod tests {
         assert_eq!(text(true, false), ("folder: ^ab+c$".into(), false));
         assert_eq!(text(false, true), ("^ab+c$".into(), true));
         assert_eq!(text(false, false), ("^ab+c$".into(), false));
+    }
+
+    #[test]
+    fn in_becomes_a_path_term() {
+        let text = |text: &str, regex: bool| {
+            search_text(&Query {
+                text: text.into(),
+                regex,
+                ..Query::default()
+            })
+            .0
+        };
+        assert_eq!(text(r#"in:"C:\a b" report"#, false), r#""C:\a b\" report"#);
+        assert_eq!(text(r"report in:D:\", false), r#""D:\" report"#);
+        assert_eq!(text(r"in:C:\x", false), r#""C:\x\""#);
+        // A regex is the whole text.
+        assert_eq!(text(r"in:C:\x", true), r"in:C:\x");
     }
 }
