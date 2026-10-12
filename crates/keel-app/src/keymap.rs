@@ -474,13 +474,7 @@ pub fn commands() -> Vec<Command> {
             &["Ctrl+R"],
         )
         .search(),
-        cmd(
-            "search.more",
-            "Search: Load more results",
-            SearchMore,
-            &[],
-        )
-        .search(),
+        cmd("search.more", "Search: Load more results", SearchMore, &[]).search(),
         // --- the palette, always ---
         cmd("go.up", "Go to parent folder", Up, &["Alt+Up"]).global(),
         cmd("go.back", "Back", Back, &["Alt+Left"]).global(),
