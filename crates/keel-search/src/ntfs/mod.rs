@@ -441,7 +441,7 @@ fn build_volume_remote(
         let index = std::cell::RefCell::new(&mut index);
         client.read_mft(
             id.letter,
-            |row| add_row(&mut **index.borrow_mut(), &row),
+            |row| add_row(&mut index.borrow_mut(), &row),
             || {
                 let mut index = index.borrow_mut();
                 **index = Index::new(id.drive(), root);
@@ -899,10 +899,10 @@ impl Worker {
                 self.remote(id, |c| c.read_journal(id.letter, journal_id, from))
                     .unwrap_or_else(|| Err(std::io::Error::other("the index service went away")))
             } else {
-                self.volume(id.serial)
-                    .map_or_else(|| Err(std::io::ErrorKind::NotFound.into()), |v| {
-                        v.read_journal(journal_id, from)
-                    })
+                self.volume(id.serial).map_or_else(
+                    || Err(std::io::ErrorKind::NotFound.into()),
+                    |v| v.read_journal(journal_id, from),
+                )
             };
             let (mut records, next) = match read {
                 Ok(read) => read,

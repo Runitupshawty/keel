@@ -95,8 +95,14 @@ pub(crate) struct Row {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Response {
     /// `code`: a Windows error code, or one of the `E_*` codes.
-    Error { code: u32, message: String },
-    Hello { pid: u32, version: String },
+    Error {
+        code: u32,
+        message: String,
+    },
+    Hello {
+        pid: u32,
+        version: String,
+    },
     Volumes(Vec<(char, u32)>),
     Journal {
         id: u64,
@@ -114,7 +120,10 @@ pub(crate) enum Response {
     MftReset,
     /// The end of a [`Request::ReadMft`] stream: whether the rows came from the MFT
     /// itself (`full`) or the enumeration fallback, and how many rows were sent.
-    MftEnd { full: bool, rows: u64 },
+    MftEnd {
+        full: bool,
+        rows: u64,
+    },
 }
 
 /// A message that does not decode.
@@ -261,7 +270,9 @@ impl Request {
         match self {
             Request::Hello => Out::new(REQ_HELLO).0,
             Request::Volumes => Out::new(REQ_VOLUMES).0,
-            Request::QueryJournal { letter } => Out::new(REQ_QUERY_JOURNAL).letter(*letter).0.clone(),
+            Request::QueryJournal { letter } => {
+                Out::new(REQ_QUERY_JOURNAL).letter(*letter).0.clone()
+            }
             Request::ReadJournal {
                 letter,
                 journal_id,
@@ -273,7 +284,8 @@ impl Request {
             }
             Request::Stat { letter, frns } => {
                 let mut o = Out::new(REQ_STAT);
-                o.letter(*letter).u16(frns.len().min(u16::MAX as usize) as u16);
+                o.letter(*letter)
+                    .u16(frns.len().min(u16::MAX as usize) as u16);
                 for &frn in frns {
                     o.u64(frn);
                 }
@@ -695,7 +707,12 @@ pub(crate) mod tests {
             ]),
             Response::Rows(vec![
                 sample_row(0x0005_0000_0000_0010, 5, "Users", true),
-                sample_row(0x0001_0000_0000_0011, 0x0005_0000_0000_0010, "naïve é.txt", false),
+                sample_row(
+                    0x0001_0000_0000_0011,
+                    0x0005_0000_0000_0010,
+                    "naïve é.txt",
+                    false,
+                ),
             ]),
             Response::MftReset,
             Response::MftEnd {
@@ -759,7 +776,16 @@ pub(crate) mod tests {
     #[test]
     fn responses_are_decoded_strictly() {
         let rows = |name: &str| Response::Rows(vec![sample_row(20, 5, name, false)]).encode();
-        for bad in ["", ".", "..", "a\\b", "a/b", "nul\0", "tab\t", &"x".repeat(256)] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a\\b",
+            "a/b",
+            "nul\0",
+            "tab\t",
+            &"x".repeat(256),
+        ] {
             assert!(Response::decode(&rows(bad)).is_err(), "{bad:?}");
         }
         assert!(Response::decode(&rows(&"x".repeat(255))).is_ok());

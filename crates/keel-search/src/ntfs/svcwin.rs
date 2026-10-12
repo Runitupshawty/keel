@@ -35,16 +35,15 @@ use windows::Win32::Foundation::{
     HANDLE, HLOCAL, NO_ERROR,
 };
 use windows::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
-    SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{
     LookupAccountSidW, SidTypeUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     SECURITY_ATTRIBUTES, SID_NAME_USE,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_MODE,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    CreateFileW, FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_MODE, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Pipes::{
@@ -57,12 +56,11 @@ use windows::Win32::System::Services::{
     RegisterServiceCtrlHandlerExW, SetServiceObjectSecurity, SetServiceStatus,
     StartServiceCtrlDispatcherW, StartServiceW, SC_HANDLE, SC_MANAGER_CONNECT,
     SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_ALL_ACCESS, SERVICE_CHANGE_CONFIG,
-    SERVICE_CONFIG_DESCRIPTION, SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO,
-    SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP,
-    SERVICE_DEMAND_START, SERVICE_DESCRIPTIONW, SERVICE_ERROR_NORMAL, SERVICE_QUERY_STATUS,
-    SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
-    SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STATUS_HANDLE,
+    SERVICE_ACCEPT_STOP, SERVICE_ALL_ACCESS, SERVICE_CHANGE_CONFIG, SERVICE_CONFIG_DESCRIPTION,
+    SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_SHUTDOWN,
+    SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_DESCRIPTIONW, SERVICE_ERROR_NORMAL,
+    SERVICE_QUERY_STATUS, SERVICE_REQUIRED_PRIVILEGES_INFOW, SERVICE_RUNNING, SERVICE_START,
+    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STATUS_HANDLE,
     SERVICE_STATUS_PROCESS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING,
     SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
 };
@@ -646,8 +644,7 @@ impl Scm for WinScm {
         let service = Self::open(SERVICE_STOP)?;
         let mut status = SERVICE_STATUS::default();
         // SAFETY: a live service handle and an out struct.
-        match unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) }
-            .map_err(win32)
+        match unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) }.map_err(win32)
         {
             Err(e) if is_code(&e, ERROR_SERVICE_NOT_ACTIVE) => Ok(()),
             other => other,
@@ -761,10 +758,9 @@ pub(crate) fn uninstall_with(scm: &dyn Scm, dir: &Path) -> io::Result<bool> {
 /// environment, which the user controls).
 fn install_dir() -> io::Result<PathBuf> {
     // SAFETY: a known folder id; the returned string is freed below.
-    let path = unsafe {
-        SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, HANDLE::default())
-    }
-    .map_err(win32)?;
+    let path =
+        unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, HANDLE::default()) }
+            .map_err(win32)?;
     // SAFETY: a NUL-terminated string from the shell.
     let text = unsafe { path.to_string() };
     // SAFETY: allocated by SHGetKnownFolderPath.
@@ -977,14 +973,13 @@ fn serve_service() -> anyhow::Result<()> {
         .get()
         .ok_or_else(|| anyhow::anyhow!("no service user"))?;
     let control = CONTROL.get_or_init(|| Control::new(PIPE_NAME)).clone();
-    let server = PipeServer::bind(PIPE_NAME, &pipe_sddl(sid))
-        .map_err(|e| {
-            if is_code(&e, ERROR_ACCESS_DENIED) {
-                anyhow::anyhow!("another process holds the pipe name {PIPE_NAME}")
-            } else {
-                anyhow::Error::from(e)
-            }
-        })?;
+    let server = PipeServer::bind(PIPE_NAME, &pipe_sddl(sid)).map_err(|e| {
+        if is_code(&e, ERROR_ACCESS_DENIED) {
+            anyhow::anyhow!("another process holds the pipe name {PIPE_NAME}")
+        } else {
+            anyhow::Error::from(e)
+        }
+    })?;
     report(SERVICE_RUNNING, false);
     let idle = control.clone();
     let _ = std::thread::Builder::new()
@@ -1060,7 +1055,10 @@ mod tests {
         let service = service_sddl(sid);
         assert!(service.ends_with("(A;;CCLCSWRPWPLOCRRC;;;S-1-5-21-1-2-3-1001)"));
         // Only SYSTEM and administrators may reconfigure or delete it.
-        for entry in service.split(')').filter(|e| e.contains("DC") || e.contains("SD")) {
+        for entry in service
+            .split(')')
+            .filter(|e| e.contains("DC") || e.contains("SD"))
+        {
             assert!(entry.ends_with(";;;BA"), "{entry}");
         }
         assert!(Sd::from_sddl(&pipe).is_ok());
@@ -1098,7 +1096,11 @@ mod tests {
         assert_eq!(client.pid, pid);
         let rows = RefCell::new(Vec::new());
         assert!(client
-            .read_mft('C', |r| rows.borrow_mut().push(r), || rows.borrow_mut().clear())
+            .read_mft(
+                'C',
+                |r| rows.borrow_mut().push(r),
+                || rows.borrow_mut().clear()
+            )
             .unwrap());
         assert_eq!(rows.into_inner().len(), 1);
         assert_eq!(client.query_journal('C').unwrap().id, 42);

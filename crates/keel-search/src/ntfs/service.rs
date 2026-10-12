@@ -323,10 +323,7 @@ pub(crate) struct Client<S: Read + Write> {
 }
 
 fn invalid(what: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("index service: {what}"),
-    )
+    io::Error::new(io::ErrorKind::InvalidData, format!("index service: {what}"))
 }
 
 impl<S: Read + Write> Client<S> {
@@ -422,7 +419,10 @@ impl<S: Read + Write> Client<S> {
         if valid_letter(letter) {
             Ok(())
         } else {
-            Err(io::Error::new(io::ErrorKind::InvalidInput, "bad drive letter"))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bad drive letter",
+            ))
         }
     }
 
@@ -738,8 +738,20 @@ pub(crate) mod tests {
                 Request::QueryJournal { letter: 'C' }.encode(),
             ],
         );
-        assert!(matches!(answers[0], Response::Error { code: E_BAD_VOLUME, .. }));
-        assert!(matches!(answers[1], Response::Error { code: E_BAD_VOLUME, .. }));
+        assert!(matches!(
+            answers[0],
+            Response::Error {
+                code: E_BAD_VOLUME,
+                ..
+            }
+        ));
+        assert!(matches!(
+            answers[1],
+            Response::Error {
+                code: E_BAD_VOLUME,
+                ..
+            }
+        ));
         assert!(matches!(answers[2], Response::Journal { id: 42, .. }));
     }
 
@@ -748,13 +760,20 @@ pub(crate) mod tests {
         let mock = Mock::default();
         let answers = exchange(
             &mock,
-            &[
-                vec![crate::proto::VERSION, 0x7f],
-                Request::Hello.encode(),
-            ],
+            &[vec![crate::proto::VERSION, 0x7f], Request::Hello.encode()],
         );
-        assert_eq!(answers.len(), 1, "nothing after the bad request is answered");
-        assert!(matches!(answers[0], Response::Error { code: E_BAD_REQUEST, .. }));
+        assert_eq!(
+            answers.len(),
+            1,
+            "nothing after the bad request is answered"
+        );
+        assert!(matches!(
+            answers[0],
+            Response::Error {
+                code: E_BAD_REQUEST,
+                ..
+            }
+        ));
         // An oversized frame is refused before it is read.
         let mut input = Vec::new();
         input.extend_from_slice(&((MAX_REQUEST + 1) as u32).to_le_bytes());
@@ -780,13 +799,25 @@ pub(crate) mod tests {
         let mut mismatch = sample_row(43, 5, "mismatch", false);
         mismatch.attributes |= 0x10;
         let mock = Mock {
-            rows: vec![dir.clone(), file.clone(), system, own_parent, orphan, sized_dir, mismatch],
+            rows: vec![
+                dir.clone(),
+                file.clone(),
+                system,
+                own_parent,
+                orphan,
+                sized_dir,
+                mismatch,
+            ],
             ..Mock::default()
         };
         let mut c = client(&mock);
         let got = RefCell::new(Vec::new());
         let full = c
-            .read_mft('C', |r| got.borrow_mut().push(r), || got.borrow_mut().clear())
+            .read_mft(
+                'C',
+                |r| got.borrow_mut().push(r),
+                || got.borrow_mut().clear(),
+            )
             .unwrap();
         assert!(full);
         assert_eq!(got.into_inner(), vec![dir.clone(), file.clone()]);
@@ -801,7 +832,11 @@ pub(crate) mod tests {
         let mut c = client(&torn);
         let got = RefCell::new(Vec::new());
         assert!(!c
-            .read_mft('C', |r| got.borrow_mut().push(r), || got.borrow_mut().clear())
+            .read_mft(
+                'C',
+                |r| got.borrow_mut().push(r),
+                || got.borrow_mut().clear()
+            )
             .unwrap());
         assert_eq!(got.into_inner(), vec![dir]);
     }
@@ -842,7 +877,11 @@ pub(crate) mod tests {
         let mut long = sample_row(60, 5, "x", false);
         long.name = "y".repeat(MAX_NAME_UNITS + 1);
         let mock = Mock {
-            rows: vec![sample_row(61, 5, "a\\b", false), long, sample_row(62, 5, "ok", false)],
+            rows: vec![
+                sample_row(61, 5, "a\\b", false),
+                long,
+                sample_row(62, 5, "ok", false),
+            ],
             ..Mock::default()
         };
         let answers = exchange(&mock, &[Request::ReadMft { letter: 'C' }.encode()]);
@@ -876,7 +915,11 @@ pub(crate) mod tests {
         let (records, next) = c.read_journal('C', 42, 100).unwrap();
         assert_eq!(next, 300);
         let names: Vec<&str> = records.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["new.txt", "two.txt"], "a name with a separator dropped");
+        assert_eq!(
+            names,
+            ["new.txt", "two.txt"],
+            "a name with a separator dropped"
+        );
 
         // The service's own error code survives (the journal was truncated).
         let err = c.read_journal('C', 41, 100).unwrap_err();

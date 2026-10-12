@@ -185,7 +185,11 @@ mod tests {
         let paths: Vec<&str> = hits.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(
             paths,
-            [r"C:\Users\me\a.txt", r"C:\Users\Other", r"C:\Users\me\b.txt"]
+            [
+                r"C:\Users\me\a.txt",
+                r"C:\Users\Other",
+                r"C:\Users\me\b.txt"
+            ]
         );
         // C:\, C:\Users, C:\Users\me, C:\Users\Other: once each (case-insensitive);
         // the denied folder stops the walk before C:\Users\other\Desktop.
@@ -214,8 +218,7 @@ mod tests {
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
         use windows::Win32::Security::{
-            SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-            SECURITY_ATTRIBUTES,
+            SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         };
         use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 
