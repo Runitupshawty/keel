@@ -74,6 +74,10 @@ semver = "1"
 interprocess = "2.4.4"
 global-hotkey = "0.8.0"
 
+# Explorer's folder menu (Task 85): per-user registry keys (already built for keel-vfs).
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Security"] }
+
 # Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
 [target.'cfg(not(windows))'.dependencies]
 arboard = { version = "3.6", default-features = false }
