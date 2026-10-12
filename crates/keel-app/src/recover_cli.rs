@@ -83,7 +83,10 @@ fn scan(source: &str, json: bool) -> Result<i32, Fail> {
     let is_drive = cfg!(windows) && recover::drive_letter(&spec).is_some();
     if !is_drive && Path::new(&spec).is_dir() {
         let items = recycle::list(Path::new(&spec))?;
-        print_recycle(&items, json, true);
+        match json {
+            true => println!("{}", json!({ "recycle_bin": recycle_json(&items) })),
+            false => print_recycle(&items, true),
+        }
         return Ok(OK);
     }
     let mut src = Source::open(&spec)?;
@@ -107,10 +110,7 @@ fn scan(source: &str, json: bool) -> Result<i32, Fail> {
     let text = serde_json::to_vec(&saved)
         .map_err(|e| Fail::Recover(RecoverError::Unrecoverable(e.to_string())))?;
     std::fs::write(&file, text)?;
-    print_scan(&saved, json);
-    if !bin.is_empty() || json {
-        print_recycle(&bin, json, false);
-    }
+    print_scan(&saved, &bin, json);
     Ok(OK)
 }
 
@@ -143,7 +143,8 @@ fn candidate_json(id: usize, c: &Candidate) -> serde_json::Value {
     })
 }
 
-fn print_scan(saved: &Saved, json: bool) {
+/// The scan (and the drive's Recycle Bin items): one JSON document with `json`.
+fn print_scan(saved: &Saved, bin: &[recycle::Item], json: bool) {
     let s = &saved.scan;
     if json {
         let files: Vec<_> = s
@@ -161,6 +162,7 @@ fn print_scan(saved: &Saved, json: bool) {
                 "volume_size": s.volume_size,
                 "files": files,
                 "notes": s.notes,
+                "recycle_bin": recycle_json(bin),
             })
         );
         return;
@@ -197,25 +199,27 @@ fn print_scan(saved: &Saved, json: bool) {
     if !s.candidates.is_empty() {
         println!("Restore with `keel recover restore <ID>... --to <folder on another drive>`.");
     }
+    if !bin.is_empty() {
+        print_recycle(bin, false);
+    }
 }
 
-fn print_recycle(items: &[recycle::Item], json: bool, alone: bool) {
-    if json {
-        let list: Vec<_> = items
-            .iter()
-            .map(|i| {
-                json!({
-                    "original": i.info.original,
-                    "size": i.info.size,
-                    "deleted": i.info.deleted,
-                    "info_file": i.info_file,
-                    "data_file": i.data_file,
-                })
+fn recycle_json(items: &[recycle::Item]) -> serde_json::Value {
+    items
+        .iter()
+        .map(|i| {
+            json!({
+                "original": i.info.original,
+                "size": i.info.size,
+                "deleted": i.info.deleted,
+                "info_file": i.info_file,
+                "data_file": i.data_file,
             })
-            .collect();
-        println!("{}", json!({ "recycle_bin": list }));
-        return;
-    }
+        })
+        .collect()
+}
+
+fn print_recycle(items: &[recycle::Item], alone: bool) {
     if alone || !items.is_empty() {
         println!(
             "Recycle Bin: {} item{}",

@@ -501,7 +501,7 @@ fn extents(
                     return None;
                 }
                 extents.push(Extent {
-                    offset: Some(l * geo.cluster),
+                    offset: Some(l.checked_mul(geo.cluster)?),
                     len: bytes,
                 });
                 clusters.push((l, take));
