@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(opened.load(Ordering::Relaxed), 0, "Everything answers");
         up.store(false, Ordering::Relaxed);
         assert_eq!(who(&search, "x"), "index");
-        assert_eq!(*seen.lock().unwrap(), [settings.clone()]);
+        assert_eq!(*seen.lock().unwrap(), std::slice::from_ref(&settings));
         search.set_index_settings(&IndexSettings::default());
         assert_eq!(seen.lock().unwrap().len(), 2, "forwarded once open");
     }

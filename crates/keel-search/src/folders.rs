@@ -588,7 +588,7 @@ mod tests {
         };
         assert_eq!(dbs(), 2);
         f.set_index_settings(&s);
-        assert_eq!(f.roots(), [folder.clone()]);
+        assert_eq!(f.roots(), std::slice::from_ref(&folder));
         assert!(names(&f, "notes").is_empty());
         let end = Instant::now() + Duration::from_secs(10);
         while dbs() != 1 {
