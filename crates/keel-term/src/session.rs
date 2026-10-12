@@ -408,10 +408,13 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("keel-cd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let shell = available_shells()
+        let mut shell = available_shells()
             .into_iter()
             .find(|s| s.kind == ShellKind::Cmd)
             .unwrap();
+        // The idle detector recognizes cmd's default prompt. An inherited PROMPT
+        // (for example from SSH) must not change what this test exercises.
+        shell.args = vec!["/d".into(), "/k".into(), "prompt $P$G".into()];
         let mut session =
             Session::spawn(&shell, &std::env::temp_dir(), 120, 24, Arc::new(|| {})).unwrap();
         let wait = |session: &Session, needle: &str| {
