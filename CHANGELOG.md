@@ -27,6 +27,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - `date-deleted:` for items in a Windows Recycle Bin (from the `$I` record, on any platform) and a freedesktop.org Trash (from the `.trashinfo` file).
 - `soundex:` matching by American Soundex (`keel_props::soundex`). `pinyin:` is not supported yet: no pinyin table is among Keel's dependencies.
 - Fuzz targets `file_signature`, `lnk`, `pe_version`, `audio_tags`, `content_match`, `recycle_info` and `trash_info` ([fuzzing](docs/fuzzing.md)).
+- `keel du --scan <folders or drives…>` and `keel du --all-drives`: Keel's disk usage scanner, without the library. Several roots are walked in parallel into one result; each item has its size on disk next to its size (compressed and sparse files by what they really take); a file with several hard links counts once; symlinks, junctions and mount points are listed but not followed unless `--follow-links` is given (a link leading back into a folder it is in is not entered); cloud placeholders are never downloaded; drives scanned from their root show their free space and the used space the scan did not find. `--top N` lists the biggest items of each root, `--exclude GLOB` leaves names out, a terminal shows progress (files, bytes, files per second, the folder being read), and `--save FILE` / `keel du --load FILE` keep a scan to show again without walking. See [Disk usage scans](docs/files.md#disk-usage-scans).
+- `keel du <path> --top N` keeps the N biggest children.
 
 ### Changed
 

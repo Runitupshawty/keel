@@ -12,6 +12,8 @@ pub mod drag_out;
 /// `file://` URIs and `text/uri-list` (Linux clipboard and drag-out).
 pub mod file_uri;
 // --- end Task 24 ---
+/// Disk usage scans: parallel multi-root walks into one tree (Phase 17 Task 81).
+pub mod du;
 /// FTP and FTPS remotes (`ftp://<host id>/...`).
 pub mod ftp;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).

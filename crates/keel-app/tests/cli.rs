@@ -618,6 +618,54 @@ fn du_reports_an_unreadable_folder_as_unknown() {
     assert_eq!(v["bytes"], 14, "the readable part: {v}");
 }
 
+/// Task 81: `keel du --scan` walks several roots into one result without the library,
+/// saves the scan, and `--load` shows the same again; `--exclude` leaves names out.
+#[test]
+fn du_scan_several_roots_save_and_load() {
+    let env = env();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("big.bin"), vec![0u8; 3000]).unwrap();
+    let saved = tempfile::tempdir().unwrap();
+    let file = saved.path().join("scan.keeldu");
+    let (a, b, f) = (s(env.files.path()), s(other.path()), s(&file));
+    let args = ["du", "--scan", &a, &b, "--top", "1", "--save", &f, "--json"];
+    let v: Value = serde_json::from_str(&env.ok(&args)).unwrap();
+    assert_eq!(v["bytes"], 3014, "{v}");
+    assert_eq!(v["files"], 3, "{v}");
+    assert_eq!(v["complete"], true, "{v}");
+    let roots = v["roots"].as_array().unwrap();
+    assert_eq!(roots.len(), 2, "{v}");
+    assert_eq!(roots[0]["children"][0]["name"], "docs", "{v}");
+    assert_eq!(roots[0]["children"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(roots[0]["truncated"], true, "{v}");
+    assert_eq!(roots[1]["bytes"], 3000, "{v}");
+    assert!(roots[1]["allocated"].as_u64().unwrap() > 0, "{v}");
+    let loaded: Value =
+        serde_json::from_str(&env.ok(&["du", "--load", &f, "--top", "1", "--json"])).unwrap();
+    assert_eq!(loaded["roots"], v["roots"]);
+    let text = env.ok(&[
+        "du",
+        "--scan",
+        &b,
+        &a,
+        "--exclude",
+        "*.BIN",
+        "--exclude",
+        "*.bin",
+    ]);
+    assert!(!text.contains("big.bin"), "{text}");
+    assert!(
+        text.contains("invoice-2026.pdf") || text.contains("docs"),
+        "{text}"
+    );
+    assert!(text.contains("(all roots)"), "{text}");
+    assert_eq!(
+        env.run(&["du"]).status.code(),
+        Some(2),
+        "a folder or a scan"
+    );
+}
+
 /// Task 53: `keel library backup` and `keel library restore`, in-process: a restore never
 /// replaces a library (`--as` names another), and on a fresh data folder (another machine)
 /// it needs no `--as`; the tags come back.

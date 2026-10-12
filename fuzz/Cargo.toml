@@ -44,6 +44,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "du_scan_file"
+path = "fuzz_targets/du_scan_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ftp_list"
 path = "fuzz_targets/ftp_list.rs"
 test = false

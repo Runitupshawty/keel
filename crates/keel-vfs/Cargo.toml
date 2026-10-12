@@ -11,9 +11,9 @@ path = "src/lib.rs"
 
 [features]
 default = ["zip", "sevenz", "tar", "rar", "cloud"]
-zip = ["dep:zip", "dep:flate2"]
+zip = ["dep:zip"]
 sevenz = ["dep:sevenz-rust2", "sevenz-rust2/compress", "sevenz-rust2/util"]
-tar = ["dep:tar", "dep:flate2", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
+tar = ["dep:tar", "dep:bzip2", "dep:lzma-rs", "dep:ruzstd"]
 # libunrar is C++ built with `cc`; cross-target checks from Windows build without it.
 rar = ["dep:unrar_sys"]
 # `memory::MemoryProvider`, an in-memory provider for other crates' tests.
@@ -33,7 +33,6 @@ cloud = [
     "dep:base64",
     "dep:getrandom",
     "dep:url",
-    "dep:serde_json",
     "dep:http",
 ]
 
@@ -43,7 +42,8 @@ zip = { workspace = true, optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sevenz-rust2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
-flate2 = { workspace = true, optional = true }
+# Gzip for zip/tar entries and disk usage scan files (`du`).
+flate2.workspace = true
 bzip2 = { workspace = true, optional = true }
 lzma-rs = { workspace = true, optional = true }
 ruzstd = { workspace = true, optional = true }
@@ -84,7 +84,7 @@ open = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 # Requests of chunked uploads (signed by reqsign, sent by reqwest).
 http = { version = "1", optional = true }
 toml.workspace = true
@@ -92,6 +92,8 @@ notify = "6"
 notify-debouncer-mini = "0.4"
 natord = "1"
 rayon = "1"
+# Disk usage scans (`du`): the path filter.
+regex.workspace = true
 walkdir = "2"
 same-file = "1"
 trash = "5"

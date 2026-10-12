@@ -134,6 +134,24 @@ pub fn ftp_mlsd(data: &[u8]) {
     }
 }
 
+/// A disk usage scan file (`du::load_from`, gzip or plain JSON): a scan that loads must
+/// save and load again to the same items, and its summary and paths must be computable.
+pub fn du_scan_file(data: &[u8]) {
+    let Ok(tree) = crate::du::load_from(data) else {
+        return;
+    };
+    let _ = tree.summary(10);
+    for (id, _) in tree.nodes().take(10_000) {
+        let _ = tree.path(id);
+        let _ = tree.sorted_children(id);
+    }
+    let mut out = Vec::new();
+    crate::du::save_to(&tree, &mut out, false).expect("a loaded scan saves");
+    let again = crate::du::load_from(&out[..]).expect("a saved scan loads");
+    assert_eq!(again.live(), tree.live());
+    assert_eq!(again.node(crate::du::TOP), tree.node(crate::du::TOP));
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fuzz_harness::{run, Capped};
@@ -148,6 +166,10 @@ mod tests {
     #[test]
     fn fuzz_ssh_config() {
         run("ssh_config", super::ssh_config);
+    }
+    #[test]
+    fn fuzz_du_scan_file() {
+        run("du_scan_file", super::du_scan_file);
     }
     #[test]
     fn fuzz_ftp_list() {

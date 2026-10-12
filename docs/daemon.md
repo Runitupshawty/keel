@@ -19,6 +19,7 @@ Everything the library can do is also a typed operation (62 of them: search (als
 ```sh
 keel search "invoice ext:pdf" --max 20
 keel du ~/Photos
+keel du --scan ~/Projects /mnt/data --top 10 --save projects.keeldu
 keel tag add receipts ~/Docs/invoice-2026.pdf
 keel plan move ~/Downloads/old.iso --to /mnt/archive | keel execute
 keel plan delete ~/old-photos --json
@@ -33,7 +34,7 @@ keel op library.stats
 keel op tags.set --params '{"paths": ["/home/me/Docs/invoice-2026.pdf"], "tags": ["receipts"]}'
 ```
 
-`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel library backup|restore`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel op <name> --params '<json>'` runs any operation of the [API](api.md#keel-op-any-operation-by-name): one that changes something stops at its preview unless `--execute` is given. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
+`--json` prints machine-readable output; `--profile NAME` selects a profile. Exit codes: 0 ok, 1 the operation failed, 2 usage. `keel tag`, `keel sources add|remove|index`, `keel library backup|restore`, `keel mount` and `keel unmount` show their preview and apply it, since typing the command is the confirmation; `keel plan` stops at the preview. `keel op <name> --params '<json>'` runs any operation of the [API](api.md#keel-op-any-operation-by-name): one that changes something stops at its preview unless `--execute` is given. `keel du <path>` lists a folder's children by size, biggest first, with the folder's total last: from the library index inside a source (`library.folder_sizes`, the 1000 biggest), else by walking the folder (a child folder that cannot be read shows `?`); `keel du --scan <paths…>` runs the disk usage scanner on several folders or drives at once instead, with size on disk and hard links counted once ([Disk usage scans](files.md#disk-usage-scans)). `keel mcp`, `keel execute`, `keel daemon` and `keel search` are always the subcommand, even in a folder with a subfolder of that name; write `keel ./mcp` to open such a folder.
 
 **MCP for agents.** `keel mcp` is an MCP server on stdio with one tool per operation. For Claude Code:
 
