@@ -30,13 +30,6 @@ pub struct State {
     error: String,
 }
 
-impl State {
-    #[cfg(test)]
-    pub fn report(&self) -> Option<&Report> {
-        self.report.as_ref()
-    }
-}
-
 /// A row worth a look: everyone may write, it does not inherit, it has its own entries, or
 /// it could not be read.
 pub fn flagged(r: &Row) -> bool {

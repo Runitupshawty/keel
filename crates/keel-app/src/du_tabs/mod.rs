@@ -36,18 +36,6 @@ pub enum Outcome {
     Plans(Vec<keel_core::Op>),
 }
 
-impl Outcome {
-    /// The app actions for the first step (the window queues the rest).
-    pub fn first_action(&self) -> Option<crate::keys::Action> {
-        match self {
-            Outcome::Plans(ops) => Some(crate::keys::Action::Library(
-                crate::library::LibCmd::Plan(ops.first()?.clone()),
-            )),
-            Outcome::Select(_) => None,
-        }
-    }
-}
-
 /// A job on a worker thread whose progress and Cancel go through a [`ScanHandle`]; dropping
 /// it cancels the job.
 pub struct Worker<T> {
