@@ -666,6 +666,164 @@ fn du_scan_several_roots_save_and_load() {
     );
 }
 
+/// Task 86: unattended `keel du`: every export and the report written in one run, nothing
+/// printed with --quiet; the JSON tree loads again with --load-from; bad outputs and
+/// filters are usage errors (exit 2) before anything is scanned or written; an output that
+/// cannot be written fails the run (exit 1) without stopping the others.
+#[test]
+fn du_exports_and_report_unattended() {
+    let env = env();
+    let out = tempfile::tempdir().unwrap();
+    let o = |name: &str| s(&out.path().join(name));
+    let root = s(env.files.path());
+    let (tree, types, big, report) = (o("tree.csv"), o("types.json"), o("big.csv"), o("r.html"));
+    let run = env.run(&[
+        "du",
+        "--scan",
+        &root,
+        "--save-to",
+        &tree,
+        "--save-types-to",
+        &types,
+        "--save-largest-to",
+        &big,
+        "--report",
+        &report,
+        "--bom",
+        "--top",
+        "1",
+        "--quiet",
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        run.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+    let csv = std::fs::read_to_string(&tree).unwrap();
+    assert!(
+        csv.starts_with("\u{feff}\"id\",\"parent\",\"path\""),
+        "{csv}"
+    );
+    assert!(csv.contains("\"invoice-2026.pdf\""), "{csv}");
+    assert!(csv.contains("\r\n"));
+    let types: Value = serde_json::from_str(&std::fs::read_to_string(&types).unwrap()).unwrap();
+    let ext = |e: &str| {
+        (types.as_array().unwrap().iter())
+            .find(|t| t["extension"] == e)
+            .cloned()
+            .unwrap_or_else(|| panic!("{e}: {types}"))
+    };
+    assert_eq!(ext("pdf")["bytes"], 9);
+    assert_eq!(ext("txt")["files"], 1);
+    let big = std::fs::read_to_string(&big).unwrap();
+    assert_eq!(big.lines().count(), 2, "--top 1: {big}");
+    assert!(big.contains("invoice-2026.pdf"), "{big}");
+    let html = std::fs::read_to_string(&report).unwrap();
+    assert!(html.starts_with("<!doctype html>"), "{html}");
+    assert!(
+        html.contains("Largest files") && html.contains("<svg"),
+        "{html}"
+    );
+
+    // The tree as JSON is a scan file; --load-from shows it again.
+    let json_tree = o("tree.json");
+    env.ok(&["du", "--scan", &root, "--save-to", &json_tree, "--quiet"]);
+    let again = o("again.csv");
+    let args = ["du", "--load-from", &json_tree, "--json", "--save-types-to", &again];
+    let v: Value = serde_json::from_str(&env.ok(&args)).unwrap();
+    assert_eq!(v["bytes"], 14, "{v}");
+    assert_eq!(v["written"][0]["what"], "file types", "{v}");
+    let text = env.ok(&["du", "--load-from", &json_tree, "--report", &o("again.html")]);
+    assert!(text.contains("Wrote the report to "), "{text}");
+
+    // Usage errors: nothing is written.
+    let code = |args: &[&str]| env.run(args).status.code();
+    let (bad, x, same) = (o("bad.txt"), o("x.csv"), o("same.csv"));
+    assert_eq!(code(&["du", "--scan", &root, "--save-to", &bad]), Some(2));
+    let pdf = o("r.pdf");
+    assert_eq!(code(&["du", "--scan", &root, "--report", &pdf]), Some(2));
+    let regex = ["du", "--scan", &root, "--exclude-regex", "(", "--save-to", &x];
+    assert_eq!(code(&regex), Some(2));
+    let twice = ["du", "--scan", &root, "--save-to", &same, "--save-types-to", &same];
+    assert_eq!(code(&twice), Some(2));
+    let loaded = ["du", "--load-from", &json_tree, "--exclude", "*.pdf"];
+    assert_eq!(code(&loaded), Some(2));
+    assert_eq!(code(&["du", "--scan", &root, "--min-size", "lots"]), Some(2));
+    for f in ["bad.txt", "r.pdf", "x.csv", "same.csv"] {
+        assert!(!out.path().join(f).exists(), "{f}");
+    }
+    // A folder that does not exist: the other outputs are still written.
+    let missing = s(&out.path().join("no/such/folder/t.csv"));
+    let ok = o("ok.csv");
+    let run = env.run(&[
+        "du",
+        "--scan",
+        &root,
+        "--save-to",
+        &missing,
+        "--save-types-to",
+        &ok,
+        "-q",
+    ]);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&run.stderr).contains("t.csv"));
+    assert!(out.path().join("ok.csv").exists());
+    // Filters on the command line.
+    let filtered = ["du", "--scan", &root, "--min-size", "6", "--json"];
+    let v: Value = serde_json::from_str(&env.ok(&filtered)).unwrap();
+    assert_eq!(v["files"], 1, "{v}");
+    assert_eq!(v["excluded"], 1, "{v}");
+}
+
+/// Task 86: `--strict` exits 3 when a folder could not be read (0 without it).
+#[test]
+fn du_strict_exits_3_for_a_partial_scan() {
+    let env = env();
+    let locked = env.files.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("secret.bin"), b"0123456789").unwrap();
+    #[cfg(windows)]
+    let lock = |on: bool| {
+        let arg: &[&str] = if on {
+            &["/deny", "*S-1-1-0:(RD)"]
+        } else {
+            &["/remove:d", "*S-1-1-0"]
+        };
+        Command::new("icacls")
+            .arg(&locked)
+            .args(arg)
+            .stdout(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    #[cfg(unix)]
+    let lock = |on: bool| {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if on { 0o000 } else { 0o755 };
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(mode)).is_ok()
+    };
+    if !lock(true) {
+        return eprintln!("skipped: cannot lock a folder here");
+    }
+    if std::fs::read_dir(&locked).is_ok() {
+        lock(false);
+        return eprintln!("skipped: the locked folder is still readable");
+    }
+    let root = s(env.files.path());
+    let lenient = env.run(&["du", "--scan", &root, "-q"]).status.code();
+    let strict = env.run(&["du", "--scan", &root, "--strict", "-q"]);
+    lock(false);
+    assert_eq!(lenient, Some(0));
+    assert_eq!(strict.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&strict.stderr).contains("partial"));
+}
+
 /// Task 53: `keel library backup` and `keel library restore`, in-process: a restore never
 /// replaces a library (`--as` names another), and on a fresh data folder (another machine)
 /// it needs no `--as`; the tags come back.

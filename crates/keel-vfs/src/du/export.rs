@@ -310,7 +310,13 @@ fn csv_row(w: &mut impl Write, r: Row) -> Result<()> {
 }
 
 /// Writes `list` of `tree` to `w`.
-pub fn write(tree: &Tree, list: List, format: Format, options: Options, w: impl Write) -> Result<()> {
+pub fn write(
+    tree: &Tree,
+    list: List,
+    format: Format,
+    options: Options,
+    w: impl Write,
+) -> Result<()> {
     let mut w = w;
     if format == Format::Csv && options.bom {
         w.write_all("\u{feff}".as_bytes())?;
@@ -338,7 +344,10 @@ pub fn write(tree: &Tree, list: List, format: Format, options: Options, w: impl 
             w.write_all(b"\n")?;
         }
         (List::Types, Format::Csv) => {
-            csv_record(&mut w, &["extension", "files", "bytes", "allocated", "percent"])?;
+            csv_record(
+                &mut w,
+                &["extension", "files", "bytes", "allocated", "percent"],
+            )?;
             for t in file_types(tree, options.size_on_disk) {
                 csv_record(
                     &mut w,

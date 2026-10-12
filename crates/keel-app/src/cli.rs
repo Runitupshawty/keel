@@ -60,35 +60,21 @@ pub enum Command {
     /// Folder sizes: each child of PATH by size, biggest first (from the library index;
     /// a folder outside the library is walked). With --scan, --all-drives or --load: the
     /// disk usage scanner (several roots walked in parallel, size on disk, hard links
-    /// counted once, no library needed).
+    /// counted once, no library needed), with exports and an HTML report for unattended
+    /// runs. Exit codes: 0 ok, 1 failed (not everything was written), 2 usage, 3 (with
+    /// --strict) written, but some folders could not be read or the scan was cut short.
     Du {
         /// The folder whose children are listed.
         #[arg(
             required_unless_present_any = ["scan", "all_drives", "load"],
-            conflicts_with_all = ["scan", "all_drives", "load", "save"]
+            conflicts_with_all = [
+                "scan", "all_drives", "load", "save", "save_to", "save_types_to",
+                "save_largest_to", "report",
+            ]
         )]
         path: Option<String>,
-        /// Scan these folders or drives with the disk usage scanner.
-        #[arg(long, num_args = 1.., value_name = "PATH")]
-        scan: Vec<String>,
-        /// Scan every local fixed drive (with the disk usage scanner).
-        #[arg(long)]
-        all_drives: bool,
-        /// At most N items of each folder or scanned root, biggest first (scans: 20).
-        #[arg(long, value_name = "N")]
-        top: Option<usize>,
-        /// Save the whole scan to FILE (gzip-compressed JSON) to show again with --load.
-        #[arg(long, value_name = "FILE")]
-        save: Option<PathBuf>,
-        /// Show a scan saved with --save instead of scanning.
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["scan", "all_drives"])]
-        load: Option<PathBuf>,
-        /// Leave out files and folders whose name matches GLOB (`*`, `?`; repeatable).
-        #[arg(long, value_name = "GLOB")]
-        exclude: Vec<String>,
-        /// Follow symbolic links, junctions and mount points (not followed by default).
-        #[arg(long)]
-        follow_links: bool,
+        #[command(flatten)]
+        scan: DuArgs,
     },
     /// Tag or untag indexed files.
     #[command(subcommand)]
@@ -162,6 +148,172 @@ pub enum Command {
         #[arg(long)]
         allow_execute: bool,
     },
+}
+
+/// `keel du`'s disk usage scanner options (Phase 17 Tasks 81 and 86).
+#[derive(clap::Args, Debug, Clone, PartialEq, Default)]
+pub struct DuArgs {
+    /// Scan these folders or drives with the disk usage scanner.
+    #[arg(long, num_args = 1.., value_name = "PATH")]
+    pub scan: Vec<String>,
+    /// Scan every local fixed drive (with the disk usage scanner).
+    #[arg(long)]
+    pub all_drives: bool,
+    /// At most N items of each folder or scanned root, biggest first (scans: 20); with
+    /// --save-largest-to and --report also the number of largest files, top folders and
+    /// file types (exports: 100, report: 20; 0: all).
+    #[arg(long, value_name = "N")]
+    pub top: Option<usize>,
+    /// Save the whole scan to FILE (gzip-compressed JSON) to show again with --load.
+    #[arg(long, value_name = "FILE")]
+    pub save: Option<PathBuf>,
+    /// Show a scan saved with --save or --save-to FILE.json instead of scanning.
+    #[arg(
+        long,
+        visible_alias = "load-from",
+        value_name = "FILE",
+        conflicts_with_all = ["scan", "all_drives"]
+    )]
+    pub load: Option<PathBuf>,
+    /// Export every item of the scan to FILE.csv or FILE.json (JSON is a scan file that
+    /// --load-from reads).
+    #[arg(long, value_name = "FILE")]
+    pub save_to: Option<PathBuf>,
+    /// Export the file types (one row per extension) to FILE.csv or FILE.json.
+    #[arg(long, value_name = "FILE")]
+    pub save_types_to: Option<PathBuf>,
+    /// Export the largest files (--top, default 100) to FILE.csv or FILE.json.
+    #[arg(long, value_name = "FILE")]
+    pub save_largest_to: Option<PathBuf>,
+    /// Write an HTML report (totals, top folders, file types, largest files, a chart).
+    #[arg(long, value_name = "FILE.html")]
+    pub report: Option<PathBuf>,
+    /// Open a new mail in the default mail client with a summary and the report's location.
+    #[arg(long, requires = "report")]
+    pub mail: bool,
+    /// Start CSV exports with a UTF-8 byte order mark (for spreadsheet programs).
+    #[arg(long)]
+    pub bom: bool,
+    /// Rank by size on disk instead of size (listing, exports and report).
+    #[arg(long)]
+    pub size_on_disk: bool,
+    /// Leave out files and folders whose name matches GLOB (`*`, `?`; repeatable).
+    #[arg(long, value_name = "GLOB")]
+    pub exclude: Vec<String>,
+    /// Leave out this folder or file and what is below it (repeatable).
+    #[arg(long, value_name = "PATH")]
+    pub exclude_path: Vec<PathBuf>,
+    /// Leave out items whose full path matches this regular expression.
+    #[arg(long, value_name = "REGEX")]
+    pub exclude_regex: Option<String>,
+    /// Leave out files smaller than SIZE (500, 10k, 1.5MB, 2GiB).
+    #[arg(long, value_name = "SIZE", value_parser = parse_size)]
+    pub min_size: Option<u64>,
+    /// Leave out files last written more than AGE ago (90s, 30m, 12h, 30d, 2w, 1y; a bare
+    /// number is days).
+    #[arg(long, value_name = "AGE", value_parser = parse_age)]
+    pub older_than: Option<u64>,
+    /// Leave out files last written less than AGE ago.
+    #[arg(long, value_name = "AGE", value_parser = parse_age)]
+    pub newer_than: Option<u64>,
+    /// Leave out hidden files and folders.
+    #[arg(long)]
+    pub no_hidden: bool,
+    /// Leave out files and folders with the system attribute (Windows).
+    #[arg(long)]
+    pub no_system: bool,
+    /// Follow symbolic links, junctions and mount points (not followed by default).
+    #[arg(long)]
+    pub follow_links: bool,
+    /// Follow symbolic links.
+    #[arg(long)]
+    pub follow_symlinks: bool,
+    /// Follow junctions (Windows).
+    #[arg(long)]
+    pub follow_junctions: bool,
+    /// Follow mount points (another drive or filesystem mounted in a folder).
+    #[arg(long)]
+    pub follow_mount_points: bool,
+    /// Count every name of a hard-linked file (by default a file counts once).
+    #[arg(long)]
+    pub count_hardlinks_each: bool,
+    /// Exit 3 when the outputs were written but some folders could not be read or the
+    /// scan was cut short.
+    #[arg(long)]
+    pub strict: bool,
+    /// Print nothing but errors (for scheduled runs that only write files).
+    #[arg(long, short)]
+    pub quiet: bool,
+}
+
+impl DuArgs {
+    /// Any option that changes how a scan walks (they do not apply to a loaded scan).
+    pub fn walks_differently(&self) -> bool {
+        !self.exclude.is_empty()
+            || !self.exclude_path.is_empty()
+            || self.exclude_regex.is_some()
+            || self.min_size.is_some()
+            || self.older_than.is_some()
+            || self.newer_than.is_some()
+            || self.no_hidden
+            || self.no_system
+            || self.follow_links
+            || self.follow_symlinks
+            || self.follow_junctions
+            || self.follow_mount_points
+            || self.count_hardlinks_each
+    }
+}
+
+/// A size: a number with an optional unit, decimal (`k`, `kB`, `M`, `MB`, `G`, `T`) or
+/// binary (`KiB`, `MiB`, `GiB`, `TiB`; `Ki` ...), any case; `B` or none for bytes.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    let bad = || format!("{s:?}: a size is a number with an optional unit (500, 10k, 1.5MB, 2GiB)");
+    let t = s.trim();
+    let split = t
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(t.len());
+    let (num, unit) = t.split_at(split);
+    let num: f64 = num.parse().map_err(|_| bad())?;
+    let unit = unit.trim().to_ascii_lowercase();
+    let unit = unit.strip_suffix('b').unwrap_or(&unit);
+    let mult: f64 = match unit {
+        "" => 1.0,
+        "k" => 1e3,
+        "m" => 1e6,
+        "g" => 1e9,
+        "t" => 1e12,
+        "ki" => 1024.0,
+        "mi" => 1024f64.powi(2),
+        "gi" => 1024f64.powi(3),
+        "ti" => 1024f64.powi(4),
+        _ => return Err(bad()),
+    };
+    let v = (num * mult).round();
+    if !v.is_finite() || v >= u64::MAX as f64 {
+        return Err(bad());
+    }
+    Ok(v as u64)
+}
+
+/// An age in seconds: a number with a unit `s`, `m` (minutes), `h`, `d`, `w` or `y` (365
+/// days); a bare number is days.
+pub fn parse_age(s: &str) -> Result<u64, String> {
+    let bad = || format!("{s:?}: an age is a number with a unit (90s, 30m, 12h, 30d, 2w, 1y)");
+    let t = s.trim().to_ascii_lowercase();
+    let split = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let (num, unit) = t.split_at(split);
+    let num: u64 = num.parse().map_err(|_| bad())?;
+    let secs: u64 = match unit.trim() {
+        "s" | "sec" | "secs" => 1,
+        "m" | "min" | "mins" => 60,
+        "h" | "hour" | "hours" => 3600,
+        "" | "d" | "day" | "days" => 86_400,
+        "w" | "week" | "weeks" => 7 * 86_400,
+        "y" | "year" | "years" => 365 * 86_400,
+        _ => return Err(bad()),
+    };
+    num.checked_mul(secs).ok_or_else(bad)
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq)]
@@ -491,6 +643,140 @@ mod tests {
         Cli::try_parse_from(std::iter::once("keel").chain(args.iter().copied()))
     }
 
+    /// `keel du`'s scanner options (Task 86).
+    fn du(args: &[&str]) -> Result<DuArgs, clap::Error> {
+        let all: Vec<&str> = std::iter::once("du").chain(args.iter().copied()).collect();
+        match parse(&all)?.command {
+            Some(Command::Du { path: None, scan }) => Ok(scan),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_du_report_options() {
+        let a = du(&[
+            "--scan",
+            "C:/data",
+            "D:/",
+            "--save-to",
+            "tree.csv",
+            "--save-types-to",
+            "types.json",
+            "--save-largest-to",
+            "big.csv",
+            "--report",
+            "r.html",
+            "--mail",
+            "--bom",
+            "--top",
+            "50",
+            "--size-on-disk",
+            "--exclude",
+            "*.tmp",
+            "--exclude-path",
+            "C:/data/cache",
+            "--exclude-regex",
+            r"\\node_modules\\",
+            "--min-size",
+            "10k",
+            "--older-than",
+            "30d",
+            "--newer-than",
+            "2h",
+            "--no-hidden",
+            "--no-system",
+            "--follow-symlinks",
+            "--follow-junctions",
+            "--follow-mount-points",
+            "--count-hardlinks-each",
+            "--strict",
+            "-q",
+        ])
+        .unwrap();
+        assert_eq!(
+            a,
+            DuArgs {
+                scan: vec!["C:/data".into(), "D:/".into()],
+                save_to: Some("tree.csv".into()),
+                save_types_to: Some("types.json".into()),
+                save_largest_to: Some("big.csv".into()),
+                report: Some("r.html".into()),
+                mail: true,
+                bom: true,
+                top: Some(50),
+                size_on_disk: true,
+                exclude: vec!["*.tmp".into()],
+                exclude_path: vec!["C:/data/cache".into()],
+                exclude_regex: Some(r"\\node_modules\\".into()),
+                min_size: Some(10_000),
+                older_than: Some(30 * 86_400),
+                newer_than: Some(2 * 3600),
+                no_hidden: true,
+                no_system: true,
+                follow_symlinks: true,
+                follow_junctions: true,
+                follow_mount_points: true,
+                count_hardlinks_each: true,
+                strict: true,
+                quiet: true,
+                ..DuArgs::default()
+            }
+        );
+        assert!(a.walks_differently());
+        // --load-from is --load; a loaded scan takes exports and a report.
+        let a = du(&["--load-from", "s.json", "--save-to", "t.csv", "--report", "r.html"]).unwrap();
+        assert_eq!(a.load, Some("s.json".into()));
+        assert!(!a.walks_differently());
+        assert!(du(&["--all-drives", "--save-types-to", "t.csv"]).unwrap().all_drives);
+        // Usage errors.
+        assert!(du(&["--scan", "a", "--mail"]).is_err(), "--mail needs --report");
+        assert!(du(&["--load-from", "f", "--scan", "a"]).is_err());
+        assert!(du(&["--scan", "a", "--min-size", "ten"]).is_err());
+        assert!(du(&["--scan", "a", "--older-than", "3 fortnights"]).is_err());
+        assert!(parse(&["du", "x", "--report", "r.html"]).is_err(), "folder sizes: no report");
+        assert!(parse(&["du", "x", "--save-to", "t.csv"]).is_err());
+    }
+
+    #[test]
+    fn parses_sizes_and_ages() {
+        for (s, want) in [
+            ("0", 0),
+            ("500", 500),
+            ("500B", 500),
+            ("10k", 10_000),
+            ("10 kB", 10_000),
+            ("1.5MB", 1_500_000),
+            ("2G", 2_000_000_000),
+            ("1T", 1_000_000_000_000),
+            ("1KiB", 1024),
+            ("1ki", 1024),
+            ("2MiB", 2 << 20),
+            ("1.5GiB", 3 << 29),
+            ("1TiB", 1 << 40),
+        ] {
+            assert_eq!(parse_size(s), Ok(want), "{s}");
+        }
+        for bad in ["", "k", "-1", "1.2.3", "5 apples", "1e3", "99999999999T"] {
+            assert!(parse_size(bad).is_err(), "{bad}");
+        }
+        for (s, want) in [
+            ("90s", 90),
+            ("30m", 1800),
+            ("12h", 43_200),
+            ("30d", 30 * 86_400),
+            ("30", 30 * 86_400),
+            ("2w", 14 * 86_400),
+            ("1y", 365 * 86_400),
+            ("3 days", 3 * 86_400),
+            ("1H", 3600),
+        ] {
+            assert_eq!(parse_age(s), Ok(want), "{s}");
+        }
+        for bad in ["", "d", "-1d", "1.5d", "2 months", "99999999999999999999y"] {
+            assert!(parse_age(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn parses_flags() {
         assert_eq!(
@@ -771,26 +1057,19 @@ mod tests {
             cmd(&["du", "photos"]),
             Command::Du {
                 path: Some("photos".into()),
-                scan: vec![],
-                all_drives: false,
-                top: None,
-                save: None,
-                load: None,
-                exclude: vec![],
-                follow_links: false,
+                scan: DuArgs::default(),
             }
         );
         assert_eq!(
             cmd(&["du", "--scan", "a", "b", "--top", "5", "--exclude", "*.tmp"]),
             Command::Du {
                 path: None,
-                scan: vec!["a".into(), "b".into()],
-                all_drives: false,
-                top: Some(5),
-                save: None,
-                load: None,
-                exclude: vec!["*.tmp".into()],
-                follow_links: false,
+                scan: DuArgs {
+                    scan: vec!["a".into(), "b".into()],
+                    top: Some(5),
+                    exclude: vec!["*.tmp".into()],
+                    ..DuArgs::default()
+                },
             }
         );
         assert!(parse(&["du"]).is_err(), "a folder or a scan");

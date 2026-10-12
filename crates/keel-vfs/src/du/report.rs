@@ -102,10 +102,17 @@ pub fn write(tree: &Tree, options: Options, w: impl Write) -> Result<()> {
         ));
     }
     if tree.info.excluded > 0 {
-        notes.push(format!("{} items were left out by filters", tree.info.excluded));
+        notes.push(format!(
+            "{} items were left out by filters",
+            tree.info.excluded
+        ));
     }
     if !notes.is_empty() {
-        let _ = writeln!(s, "<p class=\"meta\">Note: {}.</p>", escape(&notes.join("; ")));
+        let _ = writeln!(
+            s,
+            "<p class=\"meta\">Note: {}.</p>",
+            escape(&notes.join("; "))
+        );
     }
     let ranked = match options.size_on_disk {
         true => "size on disk",
@@ -171,7 +178,8 @@ pub fn write(tree: &Tree, options: Options, w: impl Write) -> Result<()> {
         }
         if shown < types.len() {
             let rest = &types[shown..];
-            let sum = |f: fn(&export::FileType) -> u64| rest.iter().map(f).fold(0, u64::saturating_add);
+            let sum =
+                |f: fn(&export::FileType) -> u64| rest.iter().map(f).fold(0, u64::saturating_add);
             let _ = writeln!(
                 s,
                 "<tr><td>{} more types</td><td class=\"n\">{}</td><td class=\"n\">{}</td>\
@@ -215,8 +223,10 @@ fn rows_table(s: &mut String, rows: &[Row], tree: &Tree, options: Options, what:
     for r in rows {
         let share = match total {
             0 => 0.0,
-            _ => export::metric(r.bytes, r.allocated, options.size_on_disk) as f64 / total as f64
-                * 100.0,
+            _ => {
+                export::metric(r.bytes, r.allocated, options.size_on_disk) as f64 / total as f64
+                    * 100.0
+            }
         };
         let files = match r.kind {
             "file" => String::new(),
@@ -300,7 +310,11 @@ pub fn mailto(tree: &Tree, report: &Path) -> Result<String> {
         body.push_str("The scan was cancelled: not everything was scanned.\r\n");
     }
     if tree.info.unreadable > 0 {
-        let _ = write!(body, "{} folders could not be read.\r\n", tree.info.unreadable);
+        let _ = write!(
+            body,
+            "{} folders could not be read.\r\n",
+            tree.info.unreadable
+        );
     }
     let _ = write!(
         body,

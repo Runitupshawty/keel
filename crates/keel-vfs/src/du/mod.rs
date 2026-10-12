@@ -648,7 +648,7 @@ impl Tree {
                     .collect();
                 if size_on_disk {
                     // Stable: equal sizes on disk keep the order by size, then name.
-                    kids.sort_by(|&a, &b| self.node(b).allocated.cmp(&self.node(a).allocated));
+                    kids.sort_by_key(|&a| std::cmp::Reverse(self.node(a).allocated));
                 }
                 let pseudo = |k: NodeKind| {
                     self.children(r.node)

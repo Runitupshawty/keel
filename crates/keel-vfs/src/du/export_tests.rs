@@ -76,7 +76,10 @@ fn parse_csv(text: &str) -> Vec<Vec<String>> {
 #[test]
 fn format_by_extension() {
     assert_eq!(Format::from_path(Path::new("a.csv")).unwrap(), Format::Csv);
-    assert_eq!(Format::from_path(Path::new("x/a.JSON")).unwrap(), Format::Json);
+    assert_eq!(
+        Format::from_path(Path::new("x/a.JSON")).unwrap(),
+        Format::Json
+    );
     assert!(Format::from_path(Path::new("a.txt")).is_err());
     assert!(Format::from_path(Path::new("csv")).is_err());
 }
@@ -85,7 +88,10 @@ fn format_by_extension() {
 fn tree_csv_quotes_everything_and_keeps_the_structure() {
     let t = fixture();
     let text = out(&t, List::Tree, Format::Csv, Options::default());
-    assert!(!text.starts_with('\u{feff}'), "no byte order mark unless asked");
+    assert!(
+        !text.starts_with('\u{feff}'),
+        "no byte order mark unless asked"
+    );
     assert!(text.starts_with("\"id\",\"parent\",\"path\",\"name\",\"kind\""));
     let rows = parse_csv(&text);
     assert_eq!(rows.len(), 1 + t.live());
@@ -103,7 +109,10 @@ fn tree_csv_quotes_everything_and_keeps_the_structure() {
     let formula = by_name("'=SUM(A1).txt");
     assert_eq!(formula[col("extension")], "txt");
     assert_eq!(formula[col("modified")], "2023-11-14T22:13:20Z");
-    assert!(formula[col("path")].starts_with("/r"), "a path starts with its root");
+    assert!(
+        formula[col("path")].starts_with("/r"),
+        "a path starts with its root"
+    );
     assert_eq!(formula[parent], a[id], "a file's parent is its folder's id");
     let sparse = by_name("sparse.txt");
     assert_eq!(sparse[col("notes")], "sparse");
@@ -148,7 +157,11 @@ fn file_types_aggregate_by_extension() {
         .collect();
     assert_eq!(
         got,
-        [("txt", 2, 25_000, 8192), ("bin", 2, 10_300, 8192), ("", 1, 1, 4096)]
+        [
+            ("txt", 2, 25_000, 8192),
+            ("bin", 2, 10_300, 8192),
+            ("", 1, 1, 4096)
+        ]
     );
     assert_eq!(types[0].percent, 70.82);
     let sum: f64 = types.iter().map(|t| t.percent).sum();
@@ -245,7 +258,9 @@ fn save_replaces_the_file_and_checks_the_extension() {
     let csv = tmp.path().join("types.csv");
     fs::write(&csv, "old").unwrap();
     export::save(&t, List::Types, Options::default(), &csv).unwrap();
-    assert!(fs::read_to_string(&csv).unwrap().starts_with("\"extension\""));
+    assert!(fs::read_to_string(&csv)
+        .unwrap()
+        .starts_with("\"extension\""));
     let json = tmp.path().join("tree.json");
     export::save(&t, List::Tree, Options::default(), &json).unwrap();
     assert_eq!(load(&json).unwrap().node(TOP).size, 35_301);
@@ -266,7 +281,10 @@ fn sizes_read_as_keel_shows_them() {
     assert_eq!(report::human(35_301), "35.30 kB");
     assert_eq!(report::human(999_999), "1.00 MB");
     assert_eq!(report::human(u64::MAX), "18.45 EB");
-    assert_eq!(report::escape("<a href='x'>&\""), "&lt;a href=&#39;x&#39;&gt;&amp;&quot;");
+    assert_eq!(
+        report::escape("<a href='x'>&\""),
+        "&lt;a href=&#39;x&#39;&gt;&amp;&quot;"
+    );
 }
 
 #[test]
@@ -297,10 +315,15 @@ fn report_is_self_contained_html() {
     for external in ["src=", "href=", "url(", "@import"] {
         assert!(!html.contains(external), "{external}");
     }
-    assert!(!html.replace("http://www.w3.org/2000/svg", "").contains("http"));
+    assert!(!html
+        .replace("http://www.w3.org/2000/svg", "")
+        .contains("http"));
     // One bar per top folder, the biggest first.
     assert_eq!(html.matches("<rect").count(), 2);
-    let (docs, a) = (html.find(">docs<").unwrap(), html.find(">a,&quot;b&quot;<").unwrap());
+    let (docs, a) = (
+        html.find(">docs<").unwrap(),
+        html.find(">a,&quot;b&quot;<").unwrap(),
+    );
     assert!(docs < a);
     // Ranked on disk, `a,"b"` (12 kB) comes before docs (8 kB).
     let mut v = Vec::new();
@@ -323,7 +346,9 @@ fn report_save_and_mail_link() {
     let t = fixture();
     let file = tmp.path().join("report é.html");
     report::save(&t, Options::default(), &file).unwrap();
-    assert!(fs::read_to_string(&file).unwrap().contains("Disk usage report"));
+    assert!(fs::read_to_string(&file)
+        .unwrap()
+        .contains("Disk usage report"));
     let uri = report::mailto(&t, &file).unwrap();
     let prefix = "mailto:?subject=Disk%20usage%20report&body=";
     assert!(uri.starts_with(prefix), "{uri}");
