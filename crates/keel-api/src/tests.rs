@@ -2093,7 +2093,10 @@ fn folder_dates_preview_then_execute() {
     let detail = changes[0]["detail"].as_str().unwrap();
     assert!(detail.starts_with("2014-05-13T16:53:20Z, was "), "{detail}");
     let summary = preview["summary"].as_str().unwrap();
-    assert!(summary.starts_with("Set the dates of 1 folder in"), "{summary}");
+    assert!(
+        summary.starts_with("Set the dates of 1 folder in"),
+        "{summary}"
+    );
     let info = run_file_plan(&f, &preview);
     assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
     assert_eq!(std::fs::metadata(&docs).unwrap().modified().unwrap(), old);

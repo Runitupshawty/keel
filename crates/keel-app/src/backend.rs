@@ -344,8 +344,7 @@ impl Planned {
                 .enumerate()
                 .map(|(i, c)| {
                     use keel_core::Action as A;
-                    if let (A::SetFolderDate, Op::FolderDates { dates, .. }) =
-                        (c.action, &plan.op)
+                    if let (A::SetFolderDate, Op::FolderDates { dates, .. }) = (c.action, &plan.op)
                     {
                         let when = |ns: i64| local_time(keel_core::ns_time(ns));
                         let (to, was) = dates.get(i).map_or((String::new(), String::new()), |d| {
@@ -405,7 +404,10 @@ impl Planned {
                         "link" => "Link to".to_owned(),
                         "set_folder_date" => {
                             let when = c.detail.as_deref().unwrap_or_default();
-                            return format!("Set date of {} → {when}", c.path.as_deref().unwrap_or_default());
+                            return format!(
+                                "Set date of {} → {when}",
+                                c.path.as_deref().unwrap_or_default()
+                            );
                         }
                         _ => verb,
                     };
