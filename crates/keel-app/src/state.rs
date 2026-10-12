@@ -1887,7 +1887,8 @@ impl AppState {
             Action::Settings => self.settings_open = !self.settings_open,
             Action::NewWindow => {
                 if let Err(e) = crate::single_instance::new_window() {
-                    self.toasts.error(format!("Could not start a new window: {e}"));
+                    self.toasts
+                        .error(format!("Could not start a new window: {e}"));
                 }
             }
             Action::SwitchProfile(name) => self.profiles.switch(&name),

@@ -245,7 +245,11 @@ mod tests {
         let mut p = Palette::default();
         p.show(false, &Bindings::default());
         let refresh = |p: &Palette| {
-            let i = p.items.iter().find(|i| i.action == Action::Refresh).unwrap();
+            let i = p
+                .items
+                .iter()
+                .find(|i| i.action == Action::Refresh)
+                .unwrap();
             i.shortcut.clone()
         };
         assert_eq!(refresh(&p), "F5");

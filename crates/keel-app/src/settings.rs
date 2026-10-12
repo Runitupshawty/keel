@@ -390,7 +390,12 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     s.devices.migrate();
     // A hand-edited keymap: unknown commands and bad keys are left out, and an essential
     // command (the palette, Esc) never ends up without a key.
-    dropped.extend(s.keymap.sanitize().into_iter().map(|n| format!("[keymap] {n}")));
+    dropped.extend(
+        s.keymap
+            .sanitize()
+            .into_iter()
+            .map(|n| format!("[keymap] {n}")),
+    );
     Ok((s, dropped))
 }
 

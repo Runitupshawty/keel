@@ -123,7 +123,11 @@ impl Hotkey {
         let read = ids.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             if e.state == HotKeyState::Pressed {
-                let kind = read.lock().iter().find(|(id, _)| *id == e.id).map(|(_, k)| *k);
+                let kind = read
+                    .lock()
+                    .iter()
+                    .find(|(id, _)| *id == e.id)
+                    .map(|(_, k)| *k);
                 if let Some(kind) = kind {
                     kind.run(&ctx);
                 }

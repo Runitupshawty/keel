@@ -115,7 +115,11 @@ impl Chord {
     /// "Ctrl+Shift+P", "Alt+Up", "F5" (reads back with `parse`).
     pub fn text(self) -> String {
         let mut s = String::new();
-        for (on, name) in [(self.command, "Ctrl+"), (self.shift, "Shift+"), (self.alt, "Alt+")] {
+        for (on, name) in [
+            (self.command, "Ctrl+"),
+            (self.shift, "Shift+"),
+            (self.alt, "Alt+"),
+        ] {
             if on {
                 s.push_str(name);
             }
@@ -272,7 +276,12 @@ pub struct Command {
 pub const ESCAPE_ID: &str = "cancel";
 pub const PALETTE_ID: &str = "palette";
 
-fn cmd(id: &'static str, label: &'static str, action: Action, defaults: &'static [&'static str]) -> Command {
+fn cmd(
+    id: &'static str,
+    label: &'static str,
+    action: Action,
+    defaults: &'static [&'static str],
+) -> Command {
     Command {
         id,
         label,
@@ -330,7 +339,13 @@ pub fn commands() -> Vec<Command> {
         // --- the palette, with a selection ---
         cmd("file.open", "Open", Enter, &["Enter"]).ctx(),
         cmd("file.open_with", "Open with…", OpenWith, &["Ctrl+Shift+O"]).ctx(),
-        cmd("file.open_location", "Open location", OpenLocation, &["Ctrl+Enter"]).ctx(),
+        cmd(
+            "file.open_location",
+            "Open location",
+            OpenLocation,
+            &["Ctrl+Enter"],
+        )
+        .ctx(),
         cmd("edit.copy", "Copy", Copy, &[]).ctx().fixed("Ctrl+C"),
         cmd("edit.cut", "Cut", Cut, &[]).ctx().fixed("Ctrl+X"),
         cmd("file.rename", "Rename", Rename, &["F2"]).ctx(),
@@ -338,84 +353,342 @@ pub fn commands() -> Vec<Command> {
         cmd("file.trash", "Move to trash", Delete, &["Delete"]).ctx(),
         cmd("file.properties", "Properties", Properties, &[]).ctx(),
         cmd("archive.extract_here", "Extract here", ExtractHere, &[]).ctx(),
-        cmd("archive.extract_folder", "Extract to folder", ExtractToFolder, &[]).ctx(),
+        cmd(
+            "archive.extract_folder",
+            "Extract to folder",
+            ExtractToFolder,
+            &[],
+        )
+        .ctx(),
         cmd("archive.extract_to", "Extract to…", ExtractTo, &[]).ctx(),
-        cmd("archive.extract_other", "Extract to the other pane", ExtractToOther, &[]).ctx(),
+        cmd(
+            "archive.extract_other",
+            "Extract to the other pane",
+            ExtractToOther,
+            &[],
+        )
+        .ctx(),
         cmd("archive.add_zip", "Add to zip", AddToZip, &[]).ctx(),
         cmd("archive.compress", "Compress to zip…", CompressToZip, &[]).ctx(),
-        cmd("library.tag", "Tag…", Library(LibCmd::TagPicker), &["Ctrl+Shift+T"]).ctx(),
-        cmd("library.favorite", "Toggle favorite", Library(LibCmd::ToggleFavorite), &["Ctrl+D"]).ctx(),
-        cmd("folder.merge", "Merge into…", Library(LibCmd::FolderOp(Kind::Merge)), &[]).ctx(),
-        cmd("folder.flatten", "Flatten…", Library(LibCmd::FolderOp(Kind::Flatten)), &[]).ctx(),
-        cmd("folder.organize", "Organize by…", Library(LibCmd::FolderOp(Kind::Organize)), &[]).ctx(),
-        cmd("folder.attributes", "Attributes…", Library(LibCmd::FolderOp(Kind::Attributes)), &[]).ctx(),
-        cmd("folder.link", "Create link…", Library(LibCmd::FolderOp(Kind::Link)), &[]).ctx(),
+        cmd(
+            "library.tag",
+            "Tag…",
+            Library(LibCmd::TagPicker),
+            &["Ctrl+Shift+T"],
+        )
+        .ctx(),
+        cmd(
+            "library.favorite",
+            "Toggle favorite",
+            Library(LibCmd::ToggleFavorite),
+            &["Ctrl+D"],
+        )
+        .ctx(),
+        cmd(
+            "folder.merge",
+            "Merge into…",
+            Library(LibCmd::FolderOp(Kind::Merge)),
+            &[],
+        )
+        .ctx(),
+        cmd(
+            "folder.flatten",
+            "Flatten…",
+            Library(LibCmd::FolderOp(Kind::Flatten)),
+            &[],
+        )
+        .ctx(),
+        cmd(
+            "folder.organize",
+            "Organize by…",
+            Library(LibCmd::FolderOp(Kind::Organize)),
+            &[],
+        )
+        .ctx(),
+        cmd(
+            "folder.attributes",
+            "Attributes…",
+            Library(LibCmd::FolderOp(Kind::Attributes)),
+            &[],
+        )
+        .ctx(),
+        cmd(
+            "folder.link",
+            "Create link…",
+            Library(LibCmd::FolderOp(Kind::Link)),
+            &[],
+        )
+        .ctx(),
         // --- the palette, always ---
         cmd("go.up", "Go to parent folder", Up, &["Alt+Up"]).global(),
         cmd("go.back", "Back", Back, &["Alt+Left"]).global(),
         cmd("go.forward", "Forward", Forward, &["Alt+Right"]).global(),
         cmd("view.refresh", "Refresh", Refresh, &["F5"]).global(),
-        cmd("tab.new", "New tab", NewTab, &["Ctrl+T"]).global().typing(),
-        cmd("tab.close", "Close tab", CloseTab, &["Ctrl+W"]).global().typing(),
-        cmd("pane.dual", "Toggle dual pane", ToggleDual, &["Ctrl+Shift+D"]).global().typing(),
+        cmd("tab.new", "New tab", NewTab, &["Ctrl+T"])
+            .global()
+            .typing(),
+        cmd("tab.close", "Close tab", CloseTab, &["Ctrl+W"])
+            .global()
+            .typing(),
+        cmd(
+            "pane.dual",
+            "Toggle dual pane",
+            ToggleDual,
+            &["Ctrl+Shift+D"],
+        )
+        .global()
+        .typing(),
         cmd("pane.switch", "Switch pane", SwitchPane, &["F6"]).global(),
-        cmd("view.preview", "Toggle preview panel", TogglePreview, &["F3"]).global().typing(),
-        cmd("view.inspector", "Show inspector", ToggleInspector, &["Ctrl+I"]).global().typing(),
-        cmd("dropzone.toggle", "Toggle drop zone", ToggleDropZone, &["Ctrl+Shift+Z"]).global(),
-        cmd("dropzone.stash", "Stash selection in the drop zone", StashSelection, &["Ctrl+Shift+S"]).global(),
-        cmd("dropzone.paste", "Paste the drop zone here", StashPaste { mv: false }, &[]).global(),
-        cmd("dropzone.move", "Move the drop zone here", StashPaste { mv: true }, &[]).global(),
+        cmd(
+            "view.preview",
+            "Toggle preview panel",
+            TogglePreview,
+            &["F3"],
+        )
+        .global()
+        .typing(),
+        cmd(
+            "view.inspector",
+            "Show inspector",
+            ToggleInspector,
+            &["Ctrl+I"],
+        )
+        .global()
+        .typing(),
+        cmd(
+            "dropzone.toggle",
+            "Toggle drop zone",
+            ToggleDropZone,
+            &["Ctrl+Shift+Z"],
+        )
+        .global(),
+        cmd(
+            "dropzone.stash",
+            "Stash selection in the drop zone",
+            StashSelection,
+            &["Ctrl+Shift+S"],
+        )
+        .global(),
+        cmd(
+            "dropzone.paste",
+            "Paste the drop zone here",
+            StashPaste { mv: false },
+            &[],
+        )
+        .global(),
+        cmd(
+            "dropzone.move",
+            "Move the drop zone here",
+            StashPaste { mv: true },
+            &[],
+        )
+        .global(),
         cmd("dropzone.clear", "Clear the drop zone", ClearStash, &[]).global(),
         cmd("view.hidden", "Toggle hidden files", ToggleHidden, HIDDEN).global(),
         cmd("filter", "Filter this folder", FocusFilter, &["Ctrl+E"]).global(),
         cmd("go.path", "Edit path", FocusPath, &["Ctrl+L"]).global(),
         // Not "with Everything": Windows uses Keel's own index when Everything is not running.
-        cmd("search", "Search files", Search, &["Ctrl+F"]).global().typing(),
-        cmd("go.jump", "Jump to folder or file", JumpFolder, &["Ctrl+P"]).global().typing(),
-        cmd("go.reindex", "Rebuild folder and file lists", ReindexFolders, &[]).global(),
+        cmd("search", "Search files", Search, &["Ctrl+F"])
+            .global()
+            .typing(),
+        cmd("go.jump", "Jump to folder or file", JumpFolder, &["Ctrl+P"])
+            .global()
+            .typing(),
+        cmd(
+            "go.reindex",
+            "Rebuild folder and file lists",
+            ReindexFolders,
+            &[],
+        )
+        .global(),
         cmd("select.all", "Select all", SelectAll, &["Ctrl+A"]).global(),
         cmd("select.invert", "Invert selection", InvertSelection, &[]).global(),
-        cmd("edit.paste", "Paste", Paste, &[]).global().fixed("Ctrl+V"),
-        cmd("edit.copy_path", "Copy path", CopyPath, &[]).global(),
-        cmd("file.new_folder", "New folder", NewFolder, &["Ctrl+Shift+N"]).global(),
-        cmd("file.new_file", "New file", NewFile, &[]).global(),
-        cmd("file.reveal", "Show in system file manager", RevealInSystem, &[]).global(),
-        cmd("terminal.open", "Open terminal here", OpenTerminal, &[]).global(),
-        cmd("terminal.toggle", "Toggle terminal", ToggleTerminal, &["Ctrl+`"])
+        cmd("edit.paste", "Paste", Paste, &[])
             .global()
-            .typing()
-            .scope(Scope::Both),
+            .fixed("Ctrl+V"),
+        cmd("edit.copy_path", "Copy path", CopyPath, &[]).global(),
+        cmd(
+            "file.new_folder",
+            "New folder",
+            NewFolder,
+            &["Ctrl+Shift+N"],
+        )
+        .global(),
+        cmd("file.new_file", "New file", NewFile, &[]).global(),
+        cmd(
+            "file.reveal",
+            "Show in system file manager",
+            RevealInSystem,
+            &[],
+        )
+        .global(),
+        cmd("terminal.open", "Open terminal here", OpenTerminal, &[]).global(),
+        cmd(
+            "terminal.toggle",
+            "Toggle terminal",
+            ToggleTerminal,
+            &["Ctrl+`"],
+        )
+        .global()
+        .typing()
+        .scope(Scope::Both),
         cmd("view.theme", "Toggle dark / light theme", ToggleTheme, &[]).global(),
-        cmd("view.sizes_calc", "Calculate sizes", CalculateSizes { fresh: true }, &[]).global(),
-        cmd("view.sizes", "Sizes view", View(crate::pane::ViewMode::Sizes), &[]).global(),
-        cmd("view.details", "Details view", View(crate::pane::ViewMode::Details), &[]).global(),
-        cmd("settings", "Settings", Settings, &["Ctrl+,"]).global().typing(),
+        cmd(
+            "view.sizes_calc",
+            "Calculate sizes",
+            CalculateSizes { fresh: true },
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.sizes",
+            "Sizes view",
+            View(crate::pane::ViewMode::Sizes),
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.details",
+            "Details view",
+            View(crate::pane::ViewMode::Details),
+            &[],
+        )
+        .global(),
+        cmd("settings", "Settings", Settings, &["Ctrl+,"])
+            .global()
+            .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
-        cmd("library.overview", "Library overview", Library(LibCmd::Overview), &[]).global(),
-        cmd("library.add_source", "Add library source…", Library(LibCmd::AddSource), &[]).global(),
-        cmd("library.duplicates", "Find duplicates", Library(LibCmd::Duplicates), &[]).global(),
-        cmd("library.assign", "Assign tags with number keys", Library(LibCmd::AssignMode), &["Ctrl+Shift+A"]).global(),
-        cmd("library.backup", "Back up library…", Library(LibCmd::Backup), &[]).global(),
-        cmd("library.restore", "Restore library…", Library(LibCmd::Restore), &[]).global(),
-        cmd("library.favorites", "Favorites", Library(LibCmd::Query(crate::library::FAVORITES_QUERY.into())), &[]).global(),
-        cmd("library.recents", "Recents", Library(LibCmd::Query(crate::library::RECENTS_QUERY.into())), &[]).global(),
+        cmd(
+            "library.overview",
+            "Library overview",
+            Library(LibCmd::Overview),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.add_source",
+            "Add library source…",
+            Library(LibCmd::AddSource),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.duplicates",
+            "Find duplicates",
+            Library(LibCmd::Duplicates),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.assign",
+            "Assign tags with number keys",
+            Library(LibCmd::AssignMode),
+            &["Ctrl+Shift+A"],
+        )
+        .global(),
+        cmd(
+            "library.backup",
+            "Back up library…",
+            Library(LibCmd::Backup),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.restore",
+            "Restore library…",
+            Library(LibCmd::Restore),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.favorites",
+            "Favorites",
+            Library(LibCmd::Query(crate::library::FAVORITES_QUERY.into())),
+            &[],
+        )
+        .global(),
+        cmd(
+            "library.recents",
+            "Recents",
+            Library(LibCmd::Query(crate::library::RECENTS_QUERY.into())),
+            &[],
+        )
+        .global(),
         // --- keys the palette does not list ---
-        cmd(PALETTE_ID, "Command palette", Palette, &["Ctrl+Shift+P"]).typing().essential(),
-        cmd("edit.undo", "Undo", Undo, &["Ctrl+Z"]),
-        cmd("go.backspace", "Parent folder (in a search: delete a character)", Backspace, &["Backspace"]),
-        cmd("select.toggle", "Select or deselect the cursor item", ToggleSelect, &["Space"]),
-        cmd(ESCAPE_ID, "Cancel: close the filter or a rename", ClearFilter, &["Escape"]).essential(),
-        cmd("terminal.leave", "Leave the terminal", LeaveTerminal, &["F6", "Shift+Escape"])
-            .scope(Scope::Terminal)
+        cmd(PALETTE_ID, "Command palette", Palette, &["Ctrl+Shift+P"])
+            .typing()
             .essential(),
+        cmd("edit.undo", "Undo", Undo, &["Ctrl+Z"]),
+        cmd(
+            "go.backspace",
+            "Parent folder (in a search: delete a character)",
+            Backspace,
+            &["Backspace"],
+        ),
+        cmd(
+            "select.toggle",
+            "Select or deselect the cursor item",
+            ToggleSelect,
+            &["Space"],
+        ),
+        cmd(
+            ESCAPE_ID,
+            "Cancel: close the filter or a rename",
+            ClearFilter,
+            &["Escape"],
+        )
+        .essential(),
+        cmd(
+            "terminal.leave",
+            "Leave the terminal",
+            LeaveTerminal,
+            &["F6", "Shift+Escape"],
+        )
+        .scope(Scope::Terminal)
+        .essential(),
         cmd("cursor.up", "Cursor up", Move(Nav::Prev, false), &["Up"]),
-        cmd("cursor.down", "Cursor down", Move(Nav::Next, false), &["Down"]),
-        cmd("cursor.left", "Cursor left", Move(Nav::Left, false), &["Left"]),
-        cmd("cursor.right", "Cursor right", Move(Nav::Right, false), &["Right"]),
-        cmd("cursor.page_up", "Cursor one page up", Move(Nav::PageUp, false), &["PageUp"]),
-        cmd("cursor.page_down", "Cursor one page down", Move(Nav::PageDown, false), &["PageDown"]),
-        cmd("cursor.home", "Cursor to the first item", Move(Nav::Home, false), &["Home"]),
-        cmd("cursor.end", "Cursor to the last item", Move(Nav::End, false), &["End"]),
+        cmd(
+            "cursor.down",
+            "Cursor down",
+            Move(Nav::Next, false),
+            &["Down"],
+        ),
+        cmd(
+            "cursor.left",
+            "Cursor left",
+            Move(Nav::Left, false),
+            &["Left"],
+        ),
+        cmd(
+            "cursor.right",
+            "Cursor right",
+            Move(Nav::Right, false),
+            &["Right"],
+        ),
+        cmd(
+            "cursor.page_up",
+            "Cursor one page up",
+            Move(Nav::PageUp, false),
+            &["PageUp"],
+        ),
+        cmd(
+            "cursor.page_down",
+            "Cursor one page down",
+            Move(Nav::PageDown, false),
+            &["PageDown"],
+        ),
+        cmd(
+            "cursor.home",
+            "Cursor to the first item",
+            Move(Nav::Home, false),
+            &["Home"],
+        ),
+        cmd(
+            "cursor.end",
+            "Cursor to the last item",
+            Move(Nav::End, false),
+            &["End"],
+        ),
     ];
     #[cfg(windows)]
     v.push(cmd(
@@ -550,7 +823,11 @@ impl Keymap {
     /// Removes `chord` from `id`; refused when it is an essential command's last key.
     pub fn remove(&mut self, id: &str, chord: Chord) -> Result<(), String> {
         let me = find(id).ok_or("no such command")?;
-        let left: Vec<Chord> = self.chords(&me).into_iter().filter(|c| *c != chord).collect();
+        let left: Vec<Chord> = self
+            .chords(&me)
+            .into_iter()
+            .filter(|c| *c != chord)
+            .collect();
         if me.essential && left.is_empty() {
             return Err(format!(
                 "\"{}\" must keep a key: add another one before removing {}",
@@ -838,7 +1115,10 @@ impl KeymapUi {
         self.conflict = None;
         self.notice = match map.bind(id, chord, false) {
             Ok(Bind::Done) => None,
-            Ok(Bind::Already) => Some((format!("{} is already this command's", chord.label()), false)),
+            Ok(Bind::Already) => Some((
+                format!("{} is already this command's", chord.label()),
+                false,
+            )),
             Ok(Bind::Conflict(others)) => {
                 self.conflict = Some((id, chord, others));
                 None
@@ -869,7 +1149,10 @@ impl KeymapUi {
                             if notes.is_empty() {
                                 ("Keymap imported".into(), false)
                             } else {
-                                (format!("Keymap imported; skipped: {}", notes.join("; ")), true)
+                                (
+                                    format!("Keymap imported; skipped: {}", notes.join("; ")),
+                                    true,
+                                )
                             }
                         }
                         Err(e) => (format!("Could not import {}: {e}", path.display()), true),
@@ -915,7 +1198,10 @@ impl KeymapUi {
                     ui.visuals().warn_fg_color,
                     format!("{} is already \"{}\".", chord.label(), names.join("\", \"")),
                 );
-                if ui.button(format!("Use it for \"{}\"", label_of(id))).clicked() {
+                if ui
+                    .button(format!("Use it for \"{}\"", label_of(id)))
+                    .clicked()
+                {
                     self.conflict = None;
                     if let Err(e) = map.bind(id, chord, true) {
                         self.notice = Some((e, true));
@@ -992,7 +1278,10 @@ impl KeymapUi {
                                     });
                                 }
                                 if ui
-                                    .add_enabled(!map.is_default(c.id), egui::Button::new("Reset").small())
+                                    .add_enabled(
+                                        !map.is_default(c.id),
+                                        egui::Button::new("Reset").small(),
+                                    )
                                     .on_hover_text("Back to the default keys")
                                     .clicked()
                                 {
@@ -1119,7 +1408,11 @@ mod tests {
             assert!(moves.contains(&(Modifiers::NONE, *key, Action::Move(*nav, false))));
         }
         // The same window-level keys work from a text box.
-        let mut typing: Vec<Action> = b.main().filter(|k| k.typing).map(|k| k.action.clone()).collect();
+        let mut typing: Vec<Action> = b
+            .main()
+            .filter(|k| k.typing)
+            .map(|k| k.action.clone())
+            .collect();
         typing.dedup();
         assert_eq!(typing.len(), OLD_WHILE_TYPING.len());
         for a in OLD_WHILE_TYPING {
@@ -1142,7 +1435,12 @@ mod tests {
         for (i, x) in b.keys.iter().enumerate() {
             for y in &b.keys[i + 1..] {
                 if x.chord.key == y.chord.key {
-                    assert!(x.chord.count() >= y.chord.count(), "{:?} / {:?}", x.chord, y.chord);
+                    assert!(
+                        x.chord.count() >= y.chord.count(),
+                        "{:?} / {:?}",
+                        x.chord,
+                        y.chord
+                    );
                 }
             }
         }
@@ -1162,7 +1460,11 @@ mod tests {
         let all = commands();
         for (i, c) in all.iter().enumerate() {
             assert!(all[i + 1..].iter().all(|o| o.id != c.id), "{}", c.id);
-            assert!(all[i + 1..].iter().all(|o| o.action != c.action), "{}", c.id);
+            assert!(
+                all[i + 1..].iter().all(|o| o.action != c.action),
+                "{}",
+                c.id
+            );
         }
         assert!(all.iter().filter(|c| c.palette != Pal::None).count() > 50);
     }
@@ -1194,8 +1496,14 @@ mod tests {
     #[test]
     fn keymap_round_trips_through_config_and_export() {
         let mut map = Keymap::default();
-        assert_eq!(map.bind("view.theme", Chord::new(CMD, Key::K), false), Ok(Bind::Done));
-        assert_eq!(map.remove("view.refresh", Chord::new(Modifiers::NONE, Key::F5)), Ok(()));
+        assert_eq!(
+            map.bind("view.theme", Chord::new(CMD, Key::K), false),
+            Ok(Bind::Done)
+        );
+        assert_eq!(
+            map.remove("view.refresh", Chord::new(Modifiers::NONE, Key::F5)),
+            Ok(())
+        );
         // Only differences are stored; an emptied command is an empty list.
         assert_eq!(map.0.len(), 2);
         assert_eq!(map.0["view.theme"], ["Ctrl+K"]);
@@ -1218,12 +1526,16 @@ mod tests {
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(imported, map);
         let b = imported.bindings();
-        assert_eq!(b.label(&Action::ToggleTheme), Chord::new(CMD, Key::K).label());
+        assert_eq!(
+            b.label(&Action::ToggleTheme),
+            Chord::new(CMD, Key::K).label()
+        );
         assert_eq!(b.label(&Action::Refresh), "");
         // A partial file: the rest keeps its defaults; unknown and bad entries are reported.
-        let (partial, notes) =
-            import_text("[keymap]\n\"view.theme\" = [\"Ctrl+K\", \"Ctrl+Nope\"]\nfuture = [\"F9\"]\n")
-                .unwrap();
+        let (partial, notes) = import_text(
+            "[keymap]\n\"view.theme\" = [\"Ctrl+K\", \"Ctrl+Nope\"]\nfuture = [\"F9\"]\n",
+        )
+        .unwrap();
         assert_eq!(partial.0.len(), 1);
         assert_eq!(partial.0["view.theme"], ["Ctrl+K"]);
         assert_eq!(notes.len(), 2, "{notes:?}");
@@ -1253,8 +1565,14 @@ mod tests {
         let f6 = Chord::new(Modifiers::NONE, Key::F6);
         assert!(map.conflicts("terminal.leave", f6).is_empty());
         // Ctrl+` works in both, so it meets both.
-        assert_eq!(map.conflicts("terminal.leave", Chord::new(CMD, Key::Backtick)), ["terminal.toggle"]);
-        assert_eq!(map.conflicts("pane.switch", Chord::new(CMD, Key::Backtick)), ["terminal.toggle"]);
+        assert_eq!(
+            map.conflicts("terminal.leave", Chord::new(CMD, Key::Backtick)),
+            ["terminal.toggle"]
+        );
+        assert_eq!(
+            map.conflicts("pane.switch", Chord::new(CMD, Key::Backtick)),
+            ["terminal.toggle"]
+        );
         // Reset puts it back.
         map.reset("view.theme");
         map.reset("filter");
@@ -1281,7 +1599,9 @@ mod tests {
         // Leaving the terminal keeps a key too.
         let mut t = Keymap::default();
         t.remove("terminal.leave", f6()).unwrap();
-        assert!(t.remove("terminal.leave", Chord::new(Modifiers::SHIFT, Key::Escape)).is_err());
+        assert!(t
+            .remove("terminal.leave", Chord::new(Modifiers::SHIFT, Key::Escape))
+            .is_err());
         // Reserved: the clipboard's, the zoom keys, Tab, and keys that type text.
         for bad in [
             "Ctrl+C",
@@ -1307,7 +1627,9 @@ mod tests {
         // A hand-edited file that unbinds the palette gets its default back.
         let mut edited = Keymap::default();
         edited.0.insert(PALETTE_ID.into(), vec![]);
-        edited.0.insert("view.theme".into(), vec!["Escape".into(), "Ctrl+K".into()]);
+        edited
+            .0
+            .insert("view.theme".into(), vec!["Escape".into(), "Ctrl+K".into()]);
         let notes = edited.sanitize();
         assert_eq!(notes.len(), 2, "{notes:?}");
         assert!(edited.is_default(PALETTE_ID));
@@ -1357,7 +1679,10 @@ mod tests {
             },
             |ctx| ui.capture(ctx, &mut map),
         );
-        assert_eq!(ui.conflict.as_ref().map(|c| c.2.clone()), Some(vec!["filter"]));
+        assert_eq!(
+            ui.conflict.as_ref().map(|c| c.2.clone()),
+            Some(vec!["filter"])
+        );
         assert_eq!(map.0["view.theme"], ["Ctrl+J"]);
         // Esc cancels.
         ui.recording = Some("view.theme");

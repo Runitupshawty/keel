@@ -424,15 +424,18 @@ mod tests {
             vec![Event::Copy, Event::Cut, Event::Paste("text".into())],
             vec![v(false, CMD)],
         ] {
-            let _ = ctx.run(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ctx| {
-                    assert!(actions_with_terminal(ctx, true, true, &Bindings::default()).is_empty());
-                },
-            );
+            let _ =
+                ctx.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        assert!(
+                            actions_with_terminal(ctx, true, true, &Bindings::default()).is_empty()
+                        );
+                    },
+                );
         }
     }
 
