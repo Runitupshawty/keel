@@ -11,6 +11,17 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **System cleanups** on Windows (a drive's Clean up menu in the sidebar, or the palette): disable hibernation (shows the size of `hiberfil.sys`), analyze and clean up the component store with DISM, and optimize a VHD/VHDX (`Optimize-VHD`, or a `diskpart` compact). Each shows a preview with its size and commands and a second confirmation, and runs through a one-shot elevated helper.
 - Launchers for Disk Cleanup, Storage settings, Installed apps and Programs and Features (Windows) and Storage settings (macOS).
 
+### Security
+
+- The elevated system cleanup helper runs nothing a program without administrator rights could swap after you confirm: the diskpart script goes to diskpart on standard input instead of a file in your temporary folder, programs start by their full System32 path, PowerShell gets only the system module folder with auto-loading off and the Hyper-V module from System32, .NET profiler variables are not inherited, and the helper writes its report only directly into its own temporary folder (not through a link, never into a folder its command line names).
+- Replace with hard links keeps both files open from the byte compare until the duplicate is replaced (refusing writers on Windows) and checks that the link is the kept file compared and that neither changed, so an edit or save during a long compare can no longer replace the duplicate with the changed file. A read-only kept copy is refused; pairs whose permissions, owner or attributes differ, or whose duplicate has alternate data streams, are left alone.
+- Delete permanently lists OneDrive and other cloud placeholder folders like any folder and says how many cloud items it deletes (it counted them as one empty file and then deleted their contents), walks without recursion, and deletes exactly the items it counted, one at a time.
+
+### Fixed
+
+- A late preview of a system cleanup no longer replaces the task of a dialog opened since.
+- Undo of hard links works when the linked file became read-only.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
