@@ -443,6 +443,13 @@ mod tests {
         };
         set_attributes(&shared, &bits).unwrap();
         assert_eq!(mode(), 0o1775, "{:o}", mode());
+        // A setuid program stays setuid when made read-only.
+        let tool = dir.path().join("tool");
+        fs::write(&tool, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o4755)).unwrap();
+        set_attributes(&tool, &ro).unwrap();
+        let tool_mode = fs::metadata(&tool).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(tool_mode, 0o4555, "{tool_mode:o}");
     }
 
     #[cfg(unix)]

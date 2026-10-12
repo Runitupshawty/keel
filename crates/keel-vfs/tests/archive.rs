@@ -1593,6 +1593,11 @@ fn extracted_files_get_the_usual_mode() {
     extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap();
     fs::write(dst.join("plain.txt"), b"x").unwrap();
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    if mode(&dst.join("plain.txt")) & 0o077 == 0 {
+        // A umask of 077 makes every new file 0600: nothing here tells the two apart.
+        eprintln!("skipped: the umask gives new files no group or other bits");
+        return;
+    }
     assert_eq!(
         mode(&dst.join("index.html")),
         mode(&dst.join("plain.txt")),
