@@ -562,6 +562,32 @@ impl Library {
         Ok(())
     }
 
+    /// When the app last opened each remembered record (unix seconds), by the record's
+    /// path, newest first; records that are gone are left out. At most the last
+    /// `OPENED_KEPT` opens are remembered (the list view's Date Last Opened column).
+    pub fn last_opened(&self) -> Result<Vec<(VPath, i64)>> {
+        let rows: Vec<(RecordRef, i64)> = {
+            let c = self.shared.db.get()?;
+            let mut stmt =
+                c.prepare("SELECT source, record, ts FROM opened ORDER BY ts DESC, rowid DESC")?;
+            let rows = stmt.query_map([], |r| {
+                let record = RecordRef {
+                    source: crate::SourceId(r.get(0)?),
+                    id: r.get(1)?,
+                };
+                Ok((record, r.get::<_, i64>(2)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut out = Vec::with_capacity(rows.len());
+        for (record, ts) in rows {
+            if let Some(hit) = self.record(&record)? {
+                out.push((hit.path, ts));
+            }
+        }
+        Ok(out)
+    }
+
     /// Recently opened records and records produced by executed operations (copy and move
     /// destinations, renamed items), newest first, each once. Opened records that are gone
     /// are forgotten.
