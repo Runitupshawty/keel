@@ -9,6 +9,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Settings → **Appearance** → **Style**: **Finder-style** (Finder's spacing scale, rounder corners, 13 px body text, and the Finder colors on the built-in dark and light themes) or **Classic** (the look so far). New profiles start in Finder-style; existing profiles keep Classic until switched. Color themes apply on top of either style. See [Appearance](docs/files.md#appearance).
 - Settings → Appearance → **Accent color**: Automatic, System (the Windows, macOS or GNOME accent color, read at start; blue where there is none), Theme or Custom. An accent that would be hard to read is made darker or lighter until it reaches 4.5:1.
 - Design tokens for the interface (spacing, corner radii, row heights, type scale, the eight Finder tag colors and semantic colors for light and dark), with contrast tests for the Finder and Classic token sets.
+- Finder-style has one **toolbar in the title bar**: sidebar, back / forward, the folder's name with a menu of its parent folders, the views as a segmented control (Media and Sizes behind its chevron), Group and Sort, Share, Tags, Action and a search field that opens on click. Items that do not fit fold into a **»** menu. See [Window and toolbar](docs/files.md#window-and-toolbar).
+- On Windows, Finder-style draws its own minimize, maximize and close buttons in the toolbar: drag and double-click the empty toolbar, resize from every edge, and the Windows 11 snap layouts on the maximize button; rounded corners, a shadow and the Mica backdrop on Windows 11. On macOS the toolbar sits beside the window's own buttons under a transparent title bar. Linux keeps the window manager's title bar.
+- **Customize Toolbar…** (Action menu, Settings → Appearance, the palette, or right-click on the toolbar on macOS and Linux): add, remove and reorder items by dragging or with buttons, Icon Only or Icon and Text, Restore Default. Saved per profile.
+- **Ctrl+Alt+S** (Cmd+Option+S on macOS) shows or hides the sidebar, in either style; **Ctrl+[** and **Ctrl+]** go back and forward. The palette has "Show / hide sidebar", "Customize toolbar…" and the Grid, Columns and Media views.
+
+### Changed
+
+- In Finder-style the panes no longer repeat the back and forward arrows and view buttons the toolbar has; Classic is unchanged.
 
 ## [0.22.0] - 2026-10-11
 
