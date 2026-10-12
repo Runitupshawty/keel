@@ -4,7 +4,7 @@ Everything Keel does, with links to the reference for each part. New to Keel? St
 
 ## Feature list
 
-- **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, sidebar with home folders and drives.
+- **Dual pane and tabs**: two panes (Ctrl+Shift+D for one), any number of tabs per pane (drag to reorder), back/forward history, breadcrumb or editable path (Ctrl+L), details and grid views with thumbnails, a Finder-style sidebar with your own Favorites, drives (eject for removable ones), hosts, clouds, devices, the library and its tags.
 - **Search**: Ctrl+F opens a search tab. Windows uses [Everything](https://www.voidtools.com/) when it is running and otherwise Keel's own index (see [Search without Everything](files.md#search-without-everything)), macOS uses Spotlight (`mdfind`), Linux uses `plocate`/`locate` when installed, otherwise a folder walk. Ctrl+Enter opens a result's folder with the file selected.
 - **Fuzzy finder**: Ctrl+P matches against every folder the search index knows (or a walk of your home folder), the files in and below the current folder, and the library's files; Enter on a file opens its folder with the file selected and previewed.
 - **Command palette**: Ctrl+Shift+P lists every action by name with its shortcut.

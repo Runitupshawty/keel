@@ -21,6 +21,33 @@ Reference for the file panes and everything around them. The [getting-started gu
 
 The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
 
+## Sidebar
+
+The sidebar has four sections, each under a header. Point at a header (or reach it with the keyboard) and it shows **Hide** or **Show**; a click hides or shows the section. Which sections are hidden is kept per [profile](#profiles).
+
+- **Favorites**: your own list. A new profile starts with Recents, Applications (macOS) or Programs (Windows), Desktop, Documents, Downloads and Home (Linux has no Applications folder, so that row is left out there). **Add folders** by dragging them from a pane into the list: a line shows where the folder will go. Dropping on the middle of a folder row copies or moves the items into that folder instead, as a drop on a folder in a pane does. **Add to Sidebar** in the command palette (Ctrl+Shift+P) adds the selected folders, or the current folder when nothing is selected; right-click the Favorites header for **Add current folder** and **Restore default favorites**. **Reorder** by dragging a row up or down, or with **Move up** and **Move down** in its context menu. **Remove** with **Remove from Sidebar** in its context menu. Files cannot be added, only folders. Recents lists the files you opened lately and needs the [library](library.md).
+- **Locations**: this computer's drives (a thin bar under each shows how full it is; hover for the free space), the Recycle Bin or Trash, each installed WSL distribution on Windows ([WSL](wsl.md)), the archives you are browsing, your SFTP and FTP hosts with their bookmarks below them, your cloud accounts and your paired [devices](devices.md). Hosts and clouds show their connection status as a dot at the right. Removable drives (USB sticks, SD cards) and optical discs have an **eject** button: on Windows it runs the shell's Eject (as Explorer does) and waits for the drive to go; on macOS `diskutil eject`; on Linux `gio mount --eject`, or `umount` where gio is missing. If the drive is still in use, Keel says so and the drive stays. Mapped network drives show a network icon. While no host or cloud account is set up, **Add server or cloud…** opens Settings → Remotes or Cloud; afterwards these are in the Locations header's context menu.
+- **Library**: Overview, ★ Favorites (files you marked with Ctrl+D), each source with its status dot, your saved views, and **Add source…** ([Library](library.md)).
+- **Tags**: the library's first eight tags with their color dots, and **All Tags…** for the full list. A click lists everything with that tag. The section is there while the library has tags.
+
+A click opens a row in the active pane and a middle-click in a new tab; the current folder's row has a rounded highlight. The sidebar is one Tab stop: Tab enters it on the Favorites header, the arrow keys move between its rows and headers, Enter or Space opens a row or hides a section, and the context-menu entries are the keyboard path for reordering and removing.
+
+Favorites and hidden sections are saved in the profile's `config.toml`:
+
+```toml
+[sidebar]
+hidden = ["tags"]
+
+[[sidebar.favorites]]
+place = "recents"
+
+[[sidebar.favorites]]
+folder = { scheme = "file", authority = "", path = "D:/Work" }
+name = "Work"   # optional; the folder's own name when left out
+```
+
+`place` is one of `recents`, `applications`, `desktop`, `documents`, `downloads` and `home`, resolved on each computer. An entry Keel does not understand is skipped and the rest of the list loads.
+
 ## Columns view and drop zone
 
 Switch a pane to **Columns** from the view buttons in the pane header. Column 0 is the tab's folder; selecting a folder lists it in the next column, and selecting a file shows its preview in the last one. Left/Right move between columns, Enter opens a folder, Up or Backspace step back one column, and the column dividers can be dragged (widths are saved). All file actions work on the column you are in.
@@ -74,7 +101,7 @@ Open **Recycle Bin** (Windows) or **Trash** (macOS; Linux, any freedesktop-compl
 
 ## Terminal
 
-A terminal pane sits under the file panes. It starts in the active pane's folder and, with "Follow pane" on, changes directory when you navigate. Shells: PowerShell, Windows PowerShell, cmd and each installed WSL distribution on Windows (the same list as the sidebar's WSL section, see [WSL](wsl.md)); `$SHELL`, zsh or bash on macOS; `$SHELL`, bash or sh on Linux.
+A terminal pane sits under the file panes. It starts in the active pane's folder and, with "Follow pane" on, changes directory when you navigate. Shells: PowerShell, Windows PowerShell, cmd and each installed WSL distribution on Windows (the same list as the WSL entries in the sidebar's Locations, see [WSL](wsl.md)); `$SHELL`, zsh or bash on macOS; `$SHELL`, bash or sh on Linux.
 
 | Key | Action |
 | --- | --- |

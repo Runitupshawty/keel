@@ -2,6 +2,19 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A Finder-style sidebar with four sections: **Favorites**, **Locations**, **Library** and **Tags**. Each section's header shows **Hide** or **Show** when you point at it; hidden sections are kept per profile. Rows have a rounded highlight and icons in the accent colour. See [Sidebar](docs/files.md#sidebar).
+- **Favorites** you arrange yourself, kept per profile (`[sidebar]` in `config.toml`): a new profile starts with Recents, Applications (macOS) or Programs (Windows), Desktop, Documents, Downloads and Home. Drag folders from a pane into the list to add them (a drop on the middle of a folder row copies or moves into it instead), drag rows to reorder them, and right-click for **Remove from Sidebar**, **Move up**, **Move down** and **Open in new tab**. **Add to Sidebar** in the command palette adds the selected folders, or the current folder; the Favorites header's context menu has **Add current folder** and **Restore default favorites**.
+- An **eject** button on removable drives and optical discs in Locations (Windows: the shell's Eject; macOS: `diskutil eject`; Linux: `gio mount --eject` or `umount`). Mapped network drives show a network icon.
+- **Tags** in the sidebar show their color dots, with **All Tags…** for the full list.
+
+### Changed
+
+- The sidebar's Quick access, Drives, WSL, Open archives, Remotes, Cloud and Devices sections are now one **Locations** section; Quick access became Favorites (Pictures is no longer there by default: drag it in to keep it). The library's Recents moved from the Library section to Favorites, and its tags to their own Tags section. While no host or cloud account is set up, Locations shows **Add server or cloud…** instead of two "None configured" lines; paired devices show while devices are on.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

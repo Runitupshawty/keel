@@ -103,7 +103,7 @@ Inside WSL, installing the Linux build makes `keel <folder>` open the folder in 
 
 Keel opens on your home folder in both panes.
 
-- **Sidebar** (left): the **Library** section (Overview, ★ Favorites, Recents, your sources, tags and saved views), then **Quick access** (Home, Desktop, Documents, Downloads, Pictures and the Recycle Bin or Trash), **Drives** with a bar showing how full each one is, **WSL** with each installed WSL distribution on Windows ([WSL](wsl.md)), **Open archives** while you browse inside one, **Remotes**, **Cloud** and **Devices**. A click opens the folder in the active pane, a middle-click opens it in a new tab.
+- **Sidebar** (left): **Favorites** (Recents, Applications or Programs, Desktop, Documents, Downloads and Home to start with; drag folders in to add them, drag rows to reorder, right-click to remove), **Locations** (your drives with a bar showing how full each one is and an eject button on removable ones, the Recycle Bin or Trash, each installed WSL distribution on Windows ([WSL](wsl.md)), the archives you are browsing, your SFTP hosts, cloud accounts and devices), **Library** (Overview, ★ Favorites, your sources and saved views) and **Tags**. Point at a section's header to **Hide** or **Show** it. A click opens the folder in the active pane, a middle-click opens it in a new tab. See [Sidebar](files.md#sidebar).
 - **Two panes**: click a pane, or press F6, to make it the active one. Ctrl+Shift+D switches between one and two panes.
 - **Tabs**: Ctrl+T opens a tab, Ctrl+W closes it, drag tabs to reorder them. Your tabs are restored the next time Keel starts.
 - **Path bar**: the arrows go back, forward and up (Alt+Left, Alt+Right, Alt+Up); click a part of the path to go there (the parts that do not fit are in the **…** menu at its start, nearest parent first), or press Ctrl+L to type a path. Backspace goes to the parent folder.
@@ -206,7 +206,7 @@ Press Enter on a `.zip`, `.7z`, `.tar` (also `.tar.gz`, `.tgz`, `.tar.bz2`, `.ta
 
 ### The terminal pane
 
-Ctrl+` opens a terminal under the panes, started in the active folder. With **Follow pane** on it changes directory as you navigate. F6 or Shift+Esc goes back to the file panes; plain Esc stays in the terminal for programs such as vim or less. Ctrl+` again hides it and keeps the shell running; the × button ends it. **Open terminal here** in a folder's context menu starts it there. On Windows you can pick PowerShell, Windows PowerShell, cmd or an installed WSL distribution; the distributions' files are also in the sidebar's **WSL** section ([WSL](wsl.md)).
+Ctrl+` opens a terminal under the panes, started in the active folder. With **Follow pane** on it changes directory as you navigate. F6 or Shift+Esc goes back to the file panes; plain Esc stays in the terminal for programs such as vim or less. Ctrl+` again hides it and keeps the shell running; the × button ends it. **Open terminal here** in a folder's context menu starts it there. On Windows you can pick PowerShell, Windows PowerShell, cmd or an installed WSL distribution; the distributions' files are also in the sidebar's **Locations** section ([WSL](wsl.md)).
 
 ### Remote hosts over SFTP
 
@@ -215,7 +215,7 @@ Any machine with an SSH server (a NAS, a Mac with Remote Login, a Linux server) 
 1. Open Settings (Ctrl+,) → **Remotes** → **Add host…**.
 2. Enter a label, the host (an alias from your `~/.ssh/config` works: **Use ~/.ssh/config** is on by default and the dialog shows what the alias resolves to, including `ProxyJump` hosts), the port and your user name.
 3. Choose **SSH agent**, **Key file** or **Password**. Passwords and key passphrases go to the system keychain, never to the settings file.
-4. Click the host in the sidebar's **Remotes** section. The first time, Keel shows the server's host-key fingerprint; compare it with what the server's administrator gives you before you choose Trust. The key is then recorded in `~/.ssh/known_hosts`.
+4. Click the host in the sidebar's **Locations** section. The first time, Keel shows the server's host-key fingerprint; compare it with what the server's administrator gives you before you choose Trust. The key is then recorded in `~/.ssh/known_hosts`.
 
 Copy and drag between remote and local panes as usual. The dot next to the host shows its state: grey disconnected, yellow connecting, green connected, red failed. Details, jump hosts and the security notes are in [Remotes over SSH](remotes.md#remotes-over-ssh).
 
@@ -223,7 +223,7 @@ Copy and drag between remote and local panes as usual. The dot next to the host 
 
 ### Cloud accounts
 
-Settings → **Cloud** → **Add account…** adds Google Drive, Dropbox, an S3-compatible bucket or a WebDAV server (Nextcloud, ownCloud, Synology and others) as a folder in the sidebar's **Cloud** section. Google Drive and Dropbox need your own free OAuth client id, because Keel ships none; S3 takes an access key, WebDAV an address, user name and password (**Test connection** checks them first). Tokens, keys and passwords stay in the system keychain. Right-click a cloud file for **Copy link**. How to register the client ids: [Cloud accounts](../README.md#cloud-accounts-bring-your-own-client-id).
+Settings → **Cloud** → **Add account…** adds Google Drive, Dropbox, an S3-compatible bucket or a WebDAV server (Nextcloud, ownCloud, Synology and others) as a folder in the sidebar's **Locations** section. Google Drive and Dropbox need your own free OAuth client id, because Keel ships none; S3 takes an access key, WebDAV an address, user name and password (**Test connection** checks them first). Tokens, keys and passwords stay in the system keychain. Right-click a cloud file for **Copy link**. How to register the client ids: [Cloud accounts](../README.md#cloud-accounts-bring-your-own-client-id).
 
 ## The library
 
@@ -250,7 +250,7 @@ The library is an index of your **sources**: local folders and drives, SSH hosts
 Keel can connect your own computers directly, without an account or a server of ours: devices talk over an encrypted peer-to-peer link and use public relays only when no direct path works.
 
 1. On both computers open Settings → **Devices** and tick **Devices (pairing, shares, Spacedrop)**. Give each one a name under **This device**. Devices need the library to be on.
-2. On the first computer click **Pair…** in the sidebar's **Devices** section and choose **Show code**. Keel shows a short code and a QR code.
+2. On the first computer click **Pair…** under the devices in the sidebar's **Locations** section and choose **Show code**. Keel shows a short code and a QR code.
 3. On the second computer click **Pair…**, choose **Enter code** and type the short code (or paste the full code), then **Pair**.
 
 A code works once, for ten minutes; treat it like a password until it is used. Two computers on the same Wi-Fi or LAN pair with the short code even without internet. Paired devices appear in the sidebar with a status dot and a storage bar.
