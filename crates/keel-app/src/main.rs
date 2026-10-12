@@ -26,6 +26,7 @@ mod icons;
 mod inspector;
 mod jobs;
 mod jump;
+mod keymap; // Phase 16 Task 76: configurable keys
 mod keys;
 mod library;
 mod library_ui;

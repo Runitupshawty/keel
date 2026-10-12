@@ -19,7 +19,20 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+S | Stash the selection in the drop zone |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
 
-The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
+These are the defaults. The full list, with your bindings, is in the command palette (Ctrl+Shift+P) and in Settings → Keyboard. Cmd replaces Ctrl on macOS.
+
+### Changing the keys
+
+Settings → **Keyboard** lists every command Keel has: the command palette's, plus the keys the palette does not list (the palette itself, Undo, Backspace, Space, Esc, the cursor keys, Leave the terminal). Type in **Search commands or keys** to narrow the list by name or by key ("ctrl+e" finds what Ctrl+E does).
+
+- **Record** adds a key: press it (Esc cancels the recording). A command can have several keys, or none.
+- Click a key (`Ctrl+E ×`) to remove it. **Reset** puts one command's default keys back, **Reset all** every command's. Commands you changed are shown in bold.
+- A key another command already has is not taken silently: Keel names that command and offers **Use it for "…"** (the key moves) or **Cancel**. Keys only clash where they work: F6 is Switch pane in the file panes and Leave the terminal in the terminal, and that is not a conflict; ``Ctrl+` `` (the terminal) works in both.
+- Some commands must stay reachable: the command palette, Esc (closes the filter, a rename, dialogs and menus) and Leave the terminal always keep at least one key, so removing or moving their last key is refused. Plain Esc belongs to Esc alone.
+- Some keys cannot be bound: Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Insert, Shift+Insert and Shift+Delete (the clipboard's; Copy, Cut and Paste always have them and can get more), Ctrl+= / Ctrl+- / Ctrl+0 (the UI scale), Tab and Shift+Tab (keyboard focus), and a letter, digit or punctuation key without Ctrl or Alt (it types into the filter).
+- **Export…** writes every command's keys to a TOML file; **Import…** reads one back (commands it leaves out get their defaults; unknown commands and keys are skipped and named). The file is the same `[keymap]` table that config.toml keeps.
+
+Keys are per profile: config.toml holds only the commands whose keys differ from the defaults, as `[keymap]` with the command's id (shown when you hover its name) and a list of keys, for example `"view.theme" = ["Ctrl+K"]` (an empty list: no key). A hand-edited entry that would break the rules above is skipped at start, with a notice, and the original file kept as `config.toml.bad`. "Ctrl" in the file is Cmd on macOS. Keys inside popups (Ctrl+P's Tab and F5, assign mode's number keys, the media viewer's) and the global hotkeys are set elsewhere.
 
 ## Columns view and drop zone
 
@@ -154,7 +167,7 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] 
 
 Inside a WSL distribution, the Linux build hands FOLDER to the Windows `keel.exe` (`/mnt/c/...` becomes `C:\...`, other paths `\\wsl.localhost\<distribution>\...`), and `keel.exe .` started there opens the distribution's folder: [WSL](wsl.md#keel-inside-wsl).
 
-By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
+By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkeys**, which work from any app: **Global hotkey** (default Ctrl+Shift+Alt+K) brings Keel forward, **New window hotkey** opens another Keel window on the same profile (as `keel --new-window`), and **Toggle window hotkey** brings Keel forward, or minimizes it when it is already in front (both off by default). Empty disables one. Each needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts. **New window** is also in the command palette.
 
 ## Profiles
 

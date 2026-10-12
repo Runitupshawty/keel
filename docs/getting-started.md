@@ -149,6 +149,8 @@ Keel opens on your home folder in both panes.
 | Tab / Shift+Tab | Next / previous control (Enter or Space presses it, Esc returns to the files) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Larger / smaller / normal UI scale |
 
+Every key except the clipboard's, the UI scale's and Tab can be changed in Settings → Keyboard: see [Changing the keys](files.md#changing-the-keys).
+
 ### Keyboard only and screen readers
 
 Everything in Keel can be done without a mouse. Tab and Shift+Tab move through the window: the status bar, the sidebar, each pane's tabs, arrows, view buttons, path bar and column headers, and the file list itself. The sidebar is one Tab stop; inside it the arrow keys move between its items. In the file list the arrow keys, Page Up, Page Down, Home and End move the cursor, Space selects, Enter opens. While a button or sidebar item has the focus, Enter or Space presses it and the arrow keys move between controls; Esc gives the keys back to the file list. A ring marks the focused control while you use the keyboard. Dialogs open with the focus on their main button or first field and Esc cancels them; Esc also closes the Settings window and the library and devices windows. Context menu actions are in the command palette (Ctrl+Shift+P), which lists the actions for the selection first.

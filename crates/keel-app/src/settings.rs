@@ -80,6 +80,13 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    // --- Phase 16 Task 76 ---
+    /// `[keymap]`: the keys that differ from the defaults, command id → keys (`keymap`).
+    pub keymap: crate::keymap::Keymap,
+    /// Global hotkey that starts a new Keel window ("" = none).
+    pub hotkey_new_window: String,
+    /// Global hotkey that shows Keel, or minimizes it when it is in front ("" = none).
+    pub hotkey_toggle_window: String,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +221,9 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            keymap: Default::default(),
+            hotkey_new_window: String::new(),
+            hotkey_toggle_window: String::new(),
         }
     }
 }
@@ -378,6 +388,14 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     s.clouds = clouds;
     s.remotes = remotes;
     s.devices.migrate();
+    // A hand-edited keymap: unknown commands and bad keys are left out, and an essential
+    // command (the palette, Esc) never ends up without a key.
+    dropped.extend(
+        s.keymap
+            .sanitize()
+            .into_iter()
+            .map(|n| format!("[keymap] {n}")),
+    );
     Ok((s, dropped))
 }
 
@@ -590,9 +608,11 @@ pub enum Page {
     Icons,
     Library,
     Devices,
+    Keyboard,
 }
 
-/// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
+/// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles, Icons, Library,
+/// Devices and Keyboard pages.
 /// Returns true when the theme was changed.
 #[allow(clippy::too_many_arguments)]
 pub fn window(
@@ -609,9 +629,18 @@ pub fn window(
     devices: &crate::devices::Devices, // Task 36
     themes: &[(String, String)], // Task 47: (name, label)
     color_themes: &mut crate::color_theme::ColorThemes,
+    keyboard: &mut crate::keymap::KeymapUi, // Phase 16 Task 76
 ) -> bool {
     let mut theme_changed = false;
-    crate::a11y::esc_closes(ctx, "Settings", open);
+    // Recording a key: the press is the new key, and Esc only stops the recording.
+    if remotes.page != Page::Keyboard {
+        keyboard.recording = None;
+    }
+    let recording = keyboard.recording.is_some();
+    keyboard.capture(ctx, &mut s.keymap);
+    if !recording {
+        crate::a11y::esc_closes(ctx, "Settings", open);
+    }
     egui::Window::new("Settings")
         .open(open)
         .collapsible(false)
@@ -625,6 +654,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
                 ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
+                ui.selectable_value(&mut remotes.page, Page::Keyboard, "Keyboard");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -634,6 +664,7 @@ pub fn window(
                     Page::Icons => icons.settings_page(ui, s),
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
                     Page::Devices => crate::devices::settings_page(ui, s, devices),
+                    Page::Keyboard => keyboard.page(ui, &mut s.keymap),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
@@ -709,9 +740,16 @@ pub fn window(
                         );
                     ui.end_row();
                     // --- Task 24 ---
-                    let label = ui.label("Global hotkey");
-                    let _ = crate::hotkey::field(ui, &mut s.hotkey).labelled_by(label.id);
-                    ui.end_row();
+                    for kind in crate::hotkey::Kind::ALL {
+                        let label = ui.label(kind.label());
+                        let text = match kind {
+                            crate::hotkey::Kind::Show => &mut s.hotkey,
+                            crate::hotkey::Kind::NewWindow => &mut s.hotkey_new_window,
+                            crate::hotkey::Kind::Toggle => &mut s.hotkey_toggle_window,
+                        };
+                        let _ = crate::hotkey::field(ui, kind, text).labelled_by(label.id);
+                        ui.end_row();
+                    }
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");

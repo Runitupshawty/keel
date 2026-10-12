@@ -267,6 +267,11 @@ pub struct AppState {
     pub search_reason: Option<String>,
     pub jump: Jump,
     pub palette: Palette,
+    /// The keys as bound now (`sync_keys`), and the keymap they were built from.
+    pub keys: Arc<crate::keymap::Bindings>,
+    keys_from: crate::keymap::Keymap,
+    /// Settings → Keyboard.
+    pub keyboard: crate::keymap::KeymapUi,
     pub jobs: Jobs,
     pub clipboard: Clipboard,
     /// A clipboard paste is being planned; further Ctrl+V wait (no double move of a cut).
@@ -415,6 +420,9 @@ impl AppState {
             search_reason: None,
             jump,
             palette: Palette::default(),
+            keys: Arc::new(settings.keymap.bindings()),
+            keys_from: settings.keymap.clone(),
+            keyboard: Default::default(),
             jobs: Jobs::new(ctx.clone()),
             clipboard: Clipboard::with_writer(tx.clone(), ctx.clone()),
             paste_pending: false,
@@ -466,6 +474,16 @@ impl AppState {
 
     /// Shows the Settings window (when open) on a copy of the live options and applies
     /// what the user changed.
+    /// Rebuilds the keys when the keymap changed (Settings → Keyboard, an import, a profile
+    /// switch) and publishes them for the menus that show shortcuts.
+    pub fn sync_keys(&mut self, ctx: &egui::Context) {
+        if self.keys_from != self.settings.keymap {
+            self.keys_from = self.settings.keymap.clone();
+            self.keys = Arc::new(self.keys_from.bindings());
+        }
+        crate::keymap::publish(ctx, &self.keys);
+    }
+
     pub fn settings_ui(&mut self, ctx: &egui::Context) {
         self.profiles_tick();
         self.mount_tick();
@@ -487,6 +505,7 @@ impl AppState {
         s.dual = self.dual;
         s.preview_open = self.preview.open;
         if !self.settings_open {
+            self.keyboard.recording = None;
             return;
         }
         let theme_changed = crate::settings::window(
@@ -503,6 +522,7 @@ impl AppState {
             &self.devices,
             &self.themes.list(),
             &mut self.color_themes,
+            &mut self.keyboard,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -1865,6 +1885,12 @@ impl AppState {
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
+            Action::NewWindow => {
+                if let Err(e) = crate::single_instance::new_window() {
+                    self.toasts
+                        .error(format!("Could not start a new window: {e}"));
+                }
+            }
             Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
@@ -2290,7 +2316,7 @@ impl AppState {
                 let selection = !self.tab(p).targets().is_empty();
                 self.palette.undo = self.undo.label();
                 // The "Shell: …" entries follow on the first "shell" typed (palette_shell).
-                self.palette.show(selection);
+                self.palette.show(selection, &self.keys);
             }
             #[cfg(windows)]
             Action::ShellMenu { extended, keyboard } => self.shell_menu(p, extended, keyboard),

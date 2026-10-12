@@ -30,7 +30,8 @@ pub fn context_menu(ui: &mut egui::Ui, entry: Option<&Entry>, out: &mut Vec<Acti
             ui.separator();
             continue;
         }
-        let button = egui::Button::new(text).shortcut_text(crate::keys::shortcut_label(shortcut));
+        let keys = crate::keymap::shortcut(ui.ctx(), &action, shortcut);
+        let button = egui::Button::new(text).shortcut_text(keys);
         if ui.add(button).clicked() {
             out.push(action);
             ui.close_menu();

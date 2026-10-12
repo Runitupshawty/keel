@@ -615,7 +615,8 @@ pub fn context_menu(
     }
     let search = tab.is_search();
     let mut item = |ui: &mut egui::Ui, text: &str, shortcut: &str, action: Action| {
-        let button = egui::Button::new(text).shortcut_text(crate::keys::shortcut_label(shortcut));
+        let keys = crate::keymap::shortcut(ui.ctx(), &action, shortcut);
+        let button = egui::Button::new(text).shortcut_text(keys);
         if ui.add(button).clicked() {
             out.push(action);
             ui.close_menu();
@@ -751,7 +752,8 @@ pub fn context_menu(
             Ok(_) => item(ui, "More options", "Shift+F10", shell),
             Err(why) => {
                 // Shown, not a tooltip: egui shows none on a disabled menu item.
-                let b = egui::Button::new("More options").shortcut_text("Shift+F10");
+                let keys = crate::keymap::shortcut(ui.ctx(), &shell, "Shift+F10");
+                let b = egui::Button::new("More options").shortcut_text(keys);
                 ui.add_enabled(false, b);
                 ui.add(egui::Label::new(egui::RichText::new(why).small().weak()).wrap());
             }

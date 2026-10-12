@@ -243,6 +243,21 @@ pub fn bring_to_front(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// Starts another Keel window: this executable with `--new-window` and the current profile
+/// (the palette's New window, the New window hotkey). Callable from any thread.
+pub fn new_window() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(exe)
+        .args(new_window_args(&crate::profiles::current()))
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
+fn new_window_args(profile: &str) -> [String; 3] {
+    ["--new-window".into(), "--profile".into(), profile.into()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +273,18 @@ mod tests {
         };
         let (tx, rx) = crossbeam_channel::unbounded();
         (serve(listener, name, move |r| tx.send(r).unwrap()), rx)
+    }
+
+    /// The command line a new window starts with parses back as a new window on the same
+    /// profile.
+    #[test]
+    fn new_window_command_line() {
+        use clap::Parser;
+        let args = std::iter::once("keel".to_owned()).chain(new_window_args("work"));
+        let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+        assert!(cli.new_window);
+        assert_eq!(cli.profile.as_deref(), Some("work"));
+        assert_eq!(cli.folder, None);
     }
 
     #[test]
