@@ -19,6 +19,8 @@ pub mod backup;
 /// Filter chips for library search (shared with keel-web by path).
 pub mod chips;
 mod db;
+/// Set folder dates to the newest change below (a plan like the folder operations).
+mod folder_dates;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -46,6 +48,7 @@ mod text_job;
 mod totals;
 
 pub use arrange::{attributes_text, FolderOp, OrganizeBy};
+pub use folder_dates::{ns_time, FolderDate};
 pub use backup::{
     BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
 };

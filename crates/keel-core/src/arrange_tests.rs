@@ -574,3 +574,65 @@ fn folder_operations_refuse_archives_and_remote_attributes() {
     let err = validate_preview_execute(&lib, op).unwrap_err();
     assert!(format!("{err:#}").contains("this computer"), "{err:#}");
 }
+
+/// Set folder dates: the preview lists each folder whose time changes, the job sets them,
+/// a file changed since the preview refuses it, and a second preview has nothing to do.
+#[test]
+fn folder_dates_run_as_plans() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("r");
+    let stamp = |rel: &str, secs: u64| {
+        write(&root.join(rel), rel);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(root.join(rel))
+            .unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    };
+    stamp("a/one.txt", 1_000_000_000);
+    stamp("a/b/two.txt", 1_400_000_000);
+    stamp("c/three.txt", 1_200_000_000);
+    let (_data, lib, _src) = library_with(folder("f", files.path()));
+    let op = Op::folder_dates(v(&root));
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    assert!(plan
+        .changes
+        .iter()
+        .all(|c| c.action == Action::SetFolderDate));
+    assert_eq!(plan.changes.len(), 4, "{:?}", plan.changes);
+    let headline = plan.headline().unwrap();
+    assert!(
+        headline.starts_with("Set the dates of 4 folders in"),
+        "{headline}"
+    );
+    // A newer file since the preview: refused with the fresh preview.
+    stamp("c/four.txt", 1_500_000_000);
+    let err = plan.execute(&lib, true).unwrap_err();
+    let fresh = err.downcast::<PlanChanged>().unwrap().0;
+    let id = fresh.execute(&lib, true).unwrap();
+    let info = lib.jobs().wait(id).unwrap();
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let at = |rel: &str| {
+        std::fs::metadata(root.join(rel))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    assert_eq!(at("a/b"), 1_400_000_000);
+    assert_eq!(at("a"), 1_400_000_000);
+    assert_eq!(at("c"), 1_500_000_000);
+    assert_eq!(at(""), 1_500_000_000);
+    let err = validate_preview_execute(&lib, op).unwrap_err();
+    assert!(format!("{err:#}").contains("nothing to change"), "{err:#}");
+    // Local folders only, never inside an archive.
+    let remote = Op::folder_dates(VPath::parse("sftp://host/dir").unwrap());
+    let err = validate_preview_execute(&lib, remote).unwrap_err();
+    assert!(format!("{err:#}").contains("this computer"), "{err:#}");
+    let inside = Op::folder_dates(VPath::join_archive(&v(&root.join("x.zip")), "dir"));
+    assert!(validate_preview_execute(&lib, inside).is_err());
+}
