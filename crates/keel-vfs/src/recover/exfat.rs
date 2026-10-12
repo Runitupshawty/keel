@@ -7,8 +7,8 @@
 
 use super::alloc::Alloc;
 use super::{
-    civil, read_up_to, u16_at, u32_at, u64_at, utf16_units, Candidate, Confidence, Data, Extent, FsKind,
-    RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
+    civil, read_up_to, u16_at, u32_at, u64_at, utf16_units, Candidate, Confidence, Data, Extent,
+    FsKind, RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
 };
 use std::collections::HashSet;
 use std::io::{Read, Seek};
