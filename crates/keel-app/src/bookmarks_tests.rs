@@ -300,7 +300,9 @@ fn library_bookmarks_are_saved_views() {
         .enumerate()
     {
         // One after the other: each save runs on its own worker.
-        pump_until(&mut s, "the save before", |_| lib.views().unwrap().len() == n);
+        pump_until(&mut s, "the save before", |_| {
+            lib.views().unwrap().len() == n
+        });
         let mut v = ed.view.clone();
         v.name = name.into();
         v.query = query.into();
