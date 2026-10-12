@@ -2,6 +2,15 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Gallery view**: a big preview of the selected item over a strip of thumbnails, with its details and **Quick Actions** (Open, Open with…, Extract here, Compress…, Show in system file manager, Properties) on the right; folders show a big folder icon and the arrow keys move through the items. See [Views](docs/files.md#views).
+- Grid (icon) view: an icon size slider (16 to 512 points, with sharper thumbnails for big icons), grid spacing, labels under or right of the icons, names in up to two lines shortened in the middle (`from th…mmer.jpg`), and **Arrange**: Sort by, Snap to grid or free arrangement by dragging icons, with **Clean Up** and **Clean Up By** Name, Kind, Size or Date Modified. Options and icon positions are kept per folder; **Use as defaults** applies a folder's options to all others.
+- **Always open in** a view, per folder: Grid view's View options, Gallery view's details column, or the palette's "Always open this folder in the current view". Folder view settings are saved in the profile (`[views]` in `config.toml`).
+- Palette entries for the Grid and Gallery views.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

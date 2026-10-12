@@ -21,6 +21,32 @@ Reference for the file panes and everything around them. The [getting-started gu
 
 The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
 
+## Views
+
+Each pane shows its folder in one of the views from the buttons in the pane header (or the command palette): **Details**, **Grid** (icons), **Columns**, **Gallery**, **Media** and **Sizes**.
+
+### Grid (icon) view
+
+The bar above the icons holds:
+
+- **Arrange**: **Sort by** keeps the icons in the folder's sort order (the default); **Snap to grid** lets you drag icons to another place, where they land on the nearest free grid cell; **None** lets you drag them anywhere. **Clean Up** moves every icon to the nearest free grid cell (so nothing overlaps and the arrangement keeps its shape); **Clean Up By** Name, Kind, Size (largest first) or Date Modified (newest first) lines them up once in that order, folders first, and keeps them arranged by hand. The same items are in the right-click menu of the empty space between icons. Dropping icons on a folder still moves them into it.
+- **Size**: the icon size, from 16 to 512 points. Picture, PDF and video thumbnails are made sharper for big sizes.
+- **View options**: **Grid spacing** (0 to 64 points), **Label position** (under the icon or right of it), **Always open in Grid view** (see below) and **Use as defaults**.
+
+Names take up to two lines under an icon; a name too long for that is shortened in the middle, so its start and its extension stay visible (`holiday photos` / `from th…mmer.jpg`). Hover an icon for its whole name.
+
+The options are kept per folder, like in Finder: changing them changes only the folder you are in. **Use as defaults** makes them the options of every folder that has none of its own. Icon positions are kept per folder too, by name (a renamed item goes back to the next free cell). A folder with more than 5,000 items is always shown in its sort order. The arrow keys move through the icons in the sort order.
+
+### Gallery view
+
+A big preview of the selected item (pictures, PDF pages, video frames, audio, text, documents: what the [preview panel](getting-started.md) shows) with a strip of thumbnails under it and the item's details on the right: name, kind, size, modified date, where it is, and what the preview found (video and audio details, page count, lines of text). A folder shows a big folder icon. The arrow keys (all four), Home, End, PageUp and PageDown move through the items, and the preview follows; double-click the preview or press Enter to open the item.
+
+**Quick Actions** under the details run Keel's own commands on the selection: Open, Open with… (files), Extract here (archives), Compress… (local folders), Show in system file manager and Properties. Actions Keel does not have (rotating or marking up a picture, trimming a video) are not shown. Media view stays the photo and video grid.
+
+### Always open in
+
+**Always open in Grid view** (Grid view's View options), **Always open in Gallery view** (Gallery view's details column) and the palette's **Always open this folder in the current view** make a folder open in that view whenever a pane shows it; the pane goes back to the view it had when you leave for a folder without one. These folder settings are saved in the profile's `config.toml` under `[views]` (up to 1,000 folders; the least recently changed one is forgotten first).
+
 ## Columns view and drop zone
 
 Switch a pane to **Columns** from the view buttons in the pane header. Column 0 is the tab's folder; selecting a folder lists it in the next column, and selecting a file shows its preview in the last one. Left/Right move between columns, Enter opens a folder, Up or Backspace step back one column, and the column dividers can be dragged (widths are saved). All file actions work on the column you are in.
