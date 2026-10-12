@@ -665,8 +665,36 @@ mod tests {
         let paths = vec![VPath::local(d.join("t"))];
         let m = measure(&paths, &AtomicBool::new(false));
         ioctl(FSCTL_DELETE_REPARSE_POINT, b"").unwrap();
-        assert!(m.is_err(), "{m:?}");
+        let error = m.unwrap_err().to_string();
+        assert!(error.contains("placeholder or reparse point"), "{error}");
         assert!(odd.join("inside.txt").exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_files_are_refused_before_any_item_is_deleted() {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
+        }
+        let d = tmp("offline");
+        let file = d.join("offline.bin");
+        std::fs::write(&file, b"leave me").unwrap();
+        let paths = vec![VPath::local(&d)];
+        let cancel = AtomicBool::new(false);
+        let confirmed = measure(&paths, &cancel).unwrap();
+        let wide: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: a NUL-terminated path in this test's temporary directory.
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_OFFLINE) }, 0);
+        let measured = measure(&paths, &cancel);
+        let deleted = run(&confirmed, &|_| {}, &cancel);
+        // Restore the ordinary attribute before asserting or cleaning up the fixture.
+        assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), 0x80) }, 0);
+        assert!(measured.unwrap_err().to_string().contains("placeholder or reparse point"));
+        assert!(deleted.is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"leave me");
+        std::fs::remove_dir_all(d).unwrap();
     }
 }
