@@ -37,7 +37,3 @@ toml.workspace = true
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
 windows = { workspace = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_Com", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Pipes", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Shell"] }
-
-[features]
-# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/` (docs/fuzzing.md).
-fuzzing = []
