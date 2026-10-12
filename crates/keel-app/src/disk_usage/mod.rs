@@ -20,6 +20,7 @@
 pub mod model;
 mod os;
 pub mod picker;
+pub mod steps;
 #[cfg(test)]
 mod tests;
 pub mod ui;
@@ -46,6 +47,53 @@ pub enum DuCmd {
     Scan(Vec<Root>),
     /// The palette: scans the active pane's folder (local folders only).
     ScanCurrent,
+    /// An analysis tab's operations, run one step at a time (`steps`).
+    Plans(Vec<keel_core::Op>),
+}
+
+/// The views in the window's main area: the tree, or one of the analysis tabs
+/// (`crate::du_tabs`, Task 84).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Tree,
+    Largest,
+    Duplicates,
+    Search,
+    Storage,
+    Permissions,
+}
+
+impl Tab {
+    pub const ALL: [Self; 6] = [
+        Self::Tree,
+        Self::Largest,
+        Self::Duplicates,
+        Self::Search,
+        Self::Storage,
+        Self::Permissions,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tree => "Tree",
+            Self::Largest => "Largest files",
+            Self::Duplicates => "Duplicates",
+            Self::Search => "Search",
+            Self::Storage => "Storage analytics",
+            Self::Permissions => "Permissions",
+        }
+    }
+}
+
+/// The analysis tabs' own states (kept across scans; each notices a new scan itself).
+#[derive(Default)]
+pub struct Tabs {
+    pub largest: crate::du_tabs::largest::State,
+    pub duplicates: crate::du_tabs::duplicates::State,
+    pub search: crate::du_tabs::search::State,
+    pub storage: crate::du_tabs::storage::State,
+    pub permissions: crate::du_tabs::permissions::State,
 }
 
 /// How the window is arranged.
@@ -198,6 +246,16 @@ pub struct DiskUsage {
     pub rect: Option<egui::Rect>,
     /// Bring the window to the front next frame.
     pub raise: bool,
+    pub tab: Tab,
+    pub tabs: Tabs,
+    /// Operations through the library's previews, one at a time.
+    pub steps: steps::Steps,
+    /// The next step to preview (sent by `AppState::disk_usage_tick`).
+    pub next_plan: Option<keel_core::Op>,
+    /// Operations confirmed and run by the window itself (no library).
+    pub fallback: Option<steps::Fallback>,
+    /// The last steps' outcome, shown until dismissed.
+    pub note: Option<String>,
 }
 
 impl DiskUsage {
@@ -212,8 +270,8 @@ impl DiskUsage {
                 }
             }
             DuCmd::Scan(roots) => self.start(roots),
-            // Resolved by `AppState` into `Scan`.
-            DuCmd::ScanCurrent => {}
+            // Resolved by `AppState`.
+            DuCmd::ScanCurrent | DuCmd::Plans(_) => {}
         }
     }
 

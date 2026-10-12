@@ -7,9 +7,6 @@
 //! plan flow, `LibCmd::Plan`). Slow work (hashing, reading permissions, saving reports)
 //! runs on a worker thread with progress and Cancel.
 
-// The Disk Usage window (Task 82) hosts the tabs; until it lands only the tests use them.
-#![allow(dead_code)]
-
 pub mod duplicates;
 pub mod largest;
 pub mod permissions;

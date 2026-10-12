@@ -1020,6 +1020,44 @@ impl AppState {
         }
     }
 
+    /// Phase 17 Task 82: the operations a Disk Usage tab asks for, one step at a time
+    /// through the library's previews, or the window's own confirmation and runner when
+    /// the library is not open (`disk_usage::steps`).
+    fn disk_usage_plans(&mut self, p: usize, ops: Vec<keel_core::Op>) {
+        if ops.is_empty() {
+            return;
+        }
+        if !self.library.is_open() {
+            self.disk_usage.fallback = Some(crate::disk_usage::steps::Fallback::new(ops));
+            return;
+        }
+        if self.library.plan.is_some() || self.disk_usage.steps.active() {
+            return self
+                .toasts
+                .error("Another preview is open: confirm or cancel it first");
+        }
+        if let Some(op) = self.disk_usage.steps.start(ops) {
+            self.run(p, Action::Library(crate::library::LibCmd::Plan(op)));
+        }
+    }
+
+    /// Every frame: follows the Disk Usage steps' previews and sends the next step.
+    pub fn disk_usage_tick(&mut self) {
+        let open = self.library.plan.is_some();
+        if let Some(why) = self.disk_usage.steps.tick(open) {
+            self.toasts.info(why);
+        }
+        if let Some(op) = self.disk_usage.next_plan.take() {
+            if open {
+                self.disk_usage.steps.stop();
+                return self
+                    .toasts
+                    .error("Another preview is open: the next steps were not run");
+            }
+            self.run(self.active, Action::Library(crate::library::LibCmd::Plan(op)));
+        }
+    }
+
     /// Runs the due query of search tab `t` in pane `p`.
     fn start_search(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
@@ -1879,6 +1917,7 @@ impl AppState {
                         .error("Disk usage scans local folders and drives only"),
                 }
             }
+            Action::DiskUsage(crate::disk_usage::DuCmd::Plans(ops)) => self.disk_usage_plans(p, ops),
             Action::DiskUsage(cmd) => self.disk_usage.command(cmd, &self.sidebar.drives),
             Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {

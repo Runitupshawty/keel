@@ -527,6 +527,7 @@ impl App {
         let mut acts = Vec::new();
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
+        s.disk_usage_tick();
         crate::disk_usage::ui::window(
             ctx,
             &mut s.disk_usage,

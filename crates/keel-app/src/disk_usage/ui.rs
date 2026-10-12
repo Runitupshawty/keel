@@ -3,7 +3,7 @@
 
 use super::model::{attributes, Column, FileType, Model};
 use super::picker::Answer;
-use super::{DiskUsage, DuSettings, Layout, TITLE};
+use super::{DiskUsage, DuSettings, Layout, Tab, TITLE};
 use crate::a11y::Named;
 use crate::keys::Action;
 use crate::theme::Theme;
@@ -85,6 +85,12 @@ pub fn window(
     out: &mut Vec<Action>,
 ) {
     du.poll(ctx, settings);
+    if let Some(f) = &mut du.fallback {
+        if let Some(done) = f.ui(ctx) {
+            du.fallback = None;
+            du.note = done.map(|d| format!("{d}. Rescan to see the change."));
+        }
+    }
     if let Some(p) = &mut du.picker {
         match p.ui(ctx, theme.accent()) {
             Some(Answer::Scan(roots)) => du.start(roots),
@@ -215,7 +221,7 @@ fn body(
                 .show_inside(ui, |ui| types_area(ui, du, group, out));
             remember(&mut settings.types_width, r.response.rect.width());
             egui::CentralPanel::default()
-                .show_inside(ui, |ui| tree_area(ui, du, settings, theme, keys, out));
+                .show_inside(ui, |ui| main_area(ui, du, settings, theme, keys, out));
         }
         Layout::TreemapLeft => {
             let r = egui::SidePanel::left("keel-du-treemap-left")
@@ -228,7 +234,7 @@ fn body(
                 .resizable(true)
                 .default_height(settings.tree_height)
                 .height_range(100.0..=2000.0)
-                .show_inside(ui, |ui| tree_area(ui, du, settings, theme, keys, out));
+                .show_inside(ui, |ui| main_area(ui, du, settings, theme, keys, out));
             remember(&mut settings.tree_height, r.response.rect.height());
             egui::CentralPanel::default().show_inside(ui, |ui| types_area(ui, du, group, out));
         }
@@ -240,7 +246,7 @@ fn body(
                 .show_inside(ui, |ui| types_area(ui, du, group, out));
             remember(&mut settings.types_width, r.response.rect.width());
             egui::CentralPanel::default()
-                .show_inside(ui, |ui| tree_area(ui, du, settings, theme, keys, out));
+                .show_inside(ui, |ui| main_area(ui, du, settings, theme, keys, out));
         }
     }
 }
@@ -545,6 +551,80 @@ fn right(row: &mut egui_extras::TableRow<'_, '_>, text: &str) {
             ui.add(egui::Label::new(text).truncate());
         });
     });
+}
+
+/// The tab strip, the steps' progress and the tree or the analysis tab shown.
+fn main_area(
+    ui: &mut Ui,
+    du: &mut DiskUsage,
+    settings: &mut DuSettings,
+    theme: &Theme,
+    keys: bool,
+    out: &mut Vec<Action>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        for t in Tab::ALL {
+            ui.selectable_value(&mut du.tab, t, t.label());
+        }
+    });
+    if let Some(status) = du.steps.status() {
+        ui.horizontal(|ui| {
+            crate::anim::spinner(ui);
+            ui.label(status);
+            if !du.steps.queue.is_empty()
+                && ui
+                    .button("Stop after this step")
+                    .on_hover_text("The steps after this one are not run")
+                    .clicked()
+            {
+                du.steps.queue.clear();
+            }
+        });
+    }
+    let mut dismiss = false;
+    if let Some(note) = &du.note {
+        ui.horizontal(|ui| {
+            ui.label(note);
+            dismiss = ui.small_button("✕").named("Dismiss").clicked();
+        });
+    }
+    if dismiss {
+        du.note = None;
+    }
+    ui.separator();
+    if du.tab == Tab::Tree {
+        return tree_area(ui, du, settings, theme, keys, out);
+    }
+    let Some(tree) = du.model.as_ref().map(|m| m.tree.clone()) else {
+        return;
+    };
+    use crate::du_tabs::{self as tabs, Outcome};
+    let t = &mut du.tabs;
+    let outcome = match du.tab {
+        Tab::Tree => None,
+        Tab::Largest => tabs::largest::ui(ui, &tree, &mut t.largest),
+        Tab::Duplicates => tabs::duplicates::ui(ui, &tree, &mut t.duplicates),
+        Tab::Search => tabs::search::ui(ui, &tree, &mut t.search),
+        Tab::Storage => {
+            tabs::storage::ui(ui, &tree, &mut t.storage);
+            None
+        }
+        Tab::Permissions => tabs::permissions::ui(ui, &tree, &mut t.permissions),
+    };
+    match outcome {
+        Some(Outcome::Select(id)) => {
+            if let Some(m) = &mut du.model {
+                m.reveal(id);
+            }
+            du.scroll_tree = true;
+            du.scroll_types = true;
+        }
+        Some(Outcome::Plans(ops)) => {
+            du.note = None;
+            out.push(Action::DiskUsage(super::DuCmd::Plans(ops)));
+        }
+        None => {}
+    }
 }
 
 enum TreeEvent {

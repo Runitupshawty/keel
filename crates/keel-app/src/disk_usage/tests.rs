@@ -345,3 +345,94 @@ fn the_window_draws_the_tree_and_takes_its_keys() {
     h.run_steps(2);
     assert!(!h.state().0.open);
 }
+
+fn delete(paths: &[&Path]) -> keel_core::Op {
+    keel_core::Op::Delete {
+        paths: paths.iter().map(keel_vfs::VPath::local).collect(),
+    }
+}
+
+fn link(target: &Path, at: &Path) -> keel_core::Op {
+    keel_core::Op::Link {
+        target: keel_vfs::VPath::local(target),
+        link: keel_vfs::VPath::local(at),
+        kind: keel_vfs::LinkKind::Hardlink,
+    }
+}
+
+/// Through the library, a step is previewed only after the previous one's job is done;
+/// a cancelled preview or a failed job drops the rest.
+#[test]
+fn steps_wait_for_each_job_before_the_next_preview() {
+    use super::steps::{Phase, Steps};
+    use keel_core::JobStatus;
+    let (a, b) = (Path::new("/k/a"), Path::new("/k/b"));
+    let ops = vec![delete(&[b]), link(a, b)];
+    let mut s = Steps::default();
+    assert_eq!(s.start(ops.clone()), Some(ops[0].clone()));
+    assert_eq!(s.phase, Phase::Preview { shown: false });
+    assert_eq!(s.tick(false), None, "the preview is not up yet");
+    s.tick(true);
+    assert_eq!(s.phase, Phase::Preview { shown: true });
+    s.executing();
+    assert_eq!(s.tick(false), None, "confirmed: the dialog closed");
+    s.started(7);
+    assert_eq!(s.phase, Phase::Running(7));
+    assert_eq!(s.finished(8, JobStatus::Done), Ok(None), "another job");
+    assert_eq!(s.status().as_deref(), Some("Step 1 of 2: running"));
+    assert_eq!(s.finished(7, JobStatus::Done), Ok(Some(ops[1].clone())));
+    assert_eq!(s.current, 2);
+    s.tick(true);
+    s.executing();
+    s.started(9);
+    assert_eq!(s.finished(9, JobStatus::Done), Ok(None));
+    assert!(!s.active(), "all steps ran");
+
+    // A cancelled preview drops the steps after it.
+    s.start(ops.clone());
+    s.tick(true);
+    assert!(s.tick(false).is_some());
+    assert!(!s.active() && s.queue.is_empty());
+    // A failed job too.
+    s.start(ops.clone());
+    s.tick(true);
+    s.executing();
+    s.started(3);
+    assert!(s.finished(3, JobStatus::Failed).is_err());
+    assert!(!s.active());
+    // A failed preview too.
+    s.start(ops);
+    assert!(s.failed().is_some());
+    assert!(!s.active());
+}
+
+/// Without the library: the confirmation lists every path, and the runner stops at the
+/// first failure, so a file that was not trashed is never replaced by a link.
+#[test]
+fn steps_without_the_library_stop_at_the_first_failure() {
+    use super::steps::{describe, run, runs_without_library};
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().join("kept.bin");
+    std::fs::write(&kept, b"same").unwrap();
+    let missing = dir.path().join("missing.bin");
+    let ops = vec![delete(&[&missing]), link(&kept, &missing)];
+    assert!(runs_without_library(&ops));
+    let lines = describe(&ops);
+    assert!(lines[0].starts_with("Move 1 item(s)"), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("missing.bin")));
+    assert!(lines.last().unwrap().starts_with("Make the hard link"));
+    let err = run(&ops, &ScanHandle::new()).unwrap_err();
+    assert!(format!("{err:#}").contains("0 link(s) made"), "{err:#}");
+    assert!(!missing.exists(), "no link after the failed trash step");
+    // A link step alone runs.
+    let twin = dir.path().join("twin.bin");
+    let done = run(&[link(&kept, &twin)], &ScanHandle::new()).unwrap();
+    assert!(done.contains("1 link(s) made"), "{done}");
+    assert_eq!(std::fs::read(&twin).unwrap(), b"same");
+    // Other operations need the library.
+    let other = keel_core::Op::Rename {
+        path: keel_vfs::VPath::local(&kept),
+        new_name: "x".into(),
+    };
+    assert!(!runs_without_library(&[other]));
+}
