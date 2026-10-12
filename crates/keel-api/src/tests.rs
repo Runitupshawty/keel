@@ -124,6 +124,9 @@ fn registry_is_preview_first() {
         "spacedrop.answer",
         "tags.tagged",
         "views.list",
+        "views.create",
+        "views.update",
+        "views.delete",
         "recents.note",
         "redundancy.folder",
         "library.stats",
@@ -2208,4 +2211,119 @@ fn crafted_documents_fail_and_leave_no_trace() {
     let data = f.ctx.data_dir.clone().unwrap();
     assert!(files_holding(&data, MARKER.as_bytes()).is_empty());
     assert!(files_holding(f.cfg.path(), MARKER.as_bytes()).is_empty());
+}
+
+/// Task 76: views (bookmarks) are created, updated and deleted through the API, preview
+/// first; refused input is a typed error at the preview; MCP lists the new tools.
+#[test]
+fn views_are_created_updated_and_deleted() {
+    let f = fixture(None);
+    let preview = call(
+        &f.ctx,
+        "views.create",
+        json!({"name": "Invoices", "query": "invoice ext:pdf", "folder": "Work"}),
+    )
+    .unwrap();
+    assert_eq!(preview["summary"], "Save the view Work/Invoices: invoice ext:pdf");
+    assert_eq!(call(&f.ctx, "views.list", Value::Null).unwrap(), json!([]));
+    let created = apply(
+        &f.ctx,
+        "views.create",
+        json!({"name": "Invoices", "query": "invoice ext:pdf", "folder": "Work",
+               "sort": "modified:desc", "columns": ["name", "size"],
+               "matching": {"case": true}, "filter": "Document", "shortcut": "Ctrl+Shift+1"}),
+    );
+    let id = created["id"].as_i64().unwrap();
+    assert_eq!(
+        created,
+        json!({"id": id, "name": "Invoices", "query": "invoice ext:pdf", "layout": "details",
+               "backend": "library", "sort": "modified:desc", "columns": ["name", "size"],
+               "matching": {"case": true}, "filter": "Document", "folder": "Work",
+               "position": 1, "shortcut": "Ctrl+Shift+1"})
+    );
+    assert_eq!(
+        call(&f.ctx, "views.list", Value::Null).unwrap(),
+        json!([created])
+    );
+    // A System-backend view keeps Everything syntax the library would refuse.
+    let logs = apply(
+        &f.ctx,
+        "views.create",
+        json!({"name": "Logs", "query": "ext:log size:lots", "backend": "system"}),
+    );
+    assert_eq!(logs["backend"], "system");
+
+    // Refused at the preview: a bad library query, backend, sort, a taken shortcut.
+    for bad in [
+        json!({"name": "Bad", "query": "size:lots"}),
+        json!({"name": "Bad", "query": "x", "backend": "web"}),
+        json!({"name": "Bad", "query": "x", "sort": "name:up"}),
+        json!({"name": "", "query": "x"}),
+        json!({"name": "Bad", "query": "x", "shortcut": "ctrl+shift+1"}),
+    ] {
+        let e = call(&f.ctx, "views.create", bad.clone()).unwrap_err();
+        assert_eq!(e.code, ApiError::INVALID_PARAMS, "{bad}: {e}");
+    }
+
+    // Update: omitted fields stay; "" removes the shortcut.
+    let preview = call(
+        &f.ctx,
+        "views.update",
+        json!({"id": id, "name": "Invoices 2026", "folder": ""}),
+    )
+    .unwrap();
+    assert_eq!(
+        preview["summary"],
+        "Change the view Work/Invoices to Invoices 2026"
+    );
+    let updated = apply(
+        &f.ctx,
+        "views.update",
+        json!({"id": id, "name": "Invoices 2026", "folder": "", "shortcut": "",
+               "matching": {"regex": true, "whole_words": true}}),
+    );
+    assert_eq!(updated["name"], "Invoices 2026");
+    assert_eq!(updated["query"], "invoice ext:pdf");
+    assert_eq!(updated["sort"], "modified:desc");
+    assert_eq!(updated["shortcut"], "");
+    assert_eq!(updated["matching"], json!({"whole_words": true, "regex": true}));
+    let e = call(&f.ctx, "views.update", json!({"id": 999, "name": "x"})).unwrap_err();
+    assert_eq!(e.code, ApiError::NOT_FOUND);
+    // The shortcut is free again.
+    apply(
+        &f.ctx,
+        "views.update",
+        json!({"id": logs["id"], "shortcut": "Ctrl+Shift+1"}),
+    );
+
+    // Delete previews, then answers what it deleted.
+    let preview = call(&f.ctx, "views.delete", json!({"id": id})).unwrap();
+    assert_eq!(preview["summary"], "Delete the view Invoices 2026");
+    assert_eq!(
+        call(&f.ctx, "views.list", Value::Null)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let deleted = apply(&f.ctx, "views.delete", json!({"id": id}));
+    assert_eq!(deleted["name"], "Invoices 2026");
+    let left = call(&f.ctx, "views.list", Value::Null).unwrap();
+    assert_eq!(left.as_array().unwrap().len(), 1);
+    assert_eq!(left[0]["name"], "Logs");
+    let e = call(&f.ctx, "views.delete", json!({"id": id})).unwrap_err();
+    assert_eq!(e.code, ApiError::NOT_FOUND);
+
+    // MCP lists them as tools (registry names with `_`).
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+    let init = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}});
+    let input = format!("{init}\n{list}\n");
+    let mut out = Vec::new();
+    let mut ctx = f.ctx;
+    crate::mcp::serve(&mut ctx, input.as_bytes(), &mut out, Default::default()).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    for tool in ["views_create", "views_update", "views_delete", "views_list"] {
+        assert!(out.contains(&format!("\"name\":\"{tool}\"")), "{tool} missing");
+    }
 }

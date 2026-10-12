@@ -84,8 +84,14 @@ pub static OPS: &[Operation] = &[
         TagsListParams => Vec<TagInfo>, tags_list, json!({})),
     now!("tags.tagged", "Every tagged path (Favorites included) with its tag ids.",
         NoParams => Vec<TaggedPath>, tags_tagged, json!({})),
-    now!("views.list", "Saved views (a name and a search query each).",
+    now!("views.list", "Saved views (bookmarks): a name and a search query each, with the backend, sort, columns, match toggles and filter they open with and their folder, position and shortcut in the Bookmarks list.",
         NoParams => Vec<ViewInfo>, views_list, json!({})),
+    previewed!("views.create", "Saves a search as a view (a bookmark); a library view's query must be a valid search query. Changes only the library.",
+        ViewCreateParams => ViewInfo, views_create_preview, views_create, json!({"name": "Invoices", "query": "invoice ext:pdf", "sort": "modified:desc", "folder": "Work"})),
+    previewed!("views.update", "Changes a saved view; omitted fields stay as they are. Changes only the library.",
+        ViewUpdateParams => ViewInfo, views_update_preview, views_update, json!({"id": 1, "name": "Invoices 2026", "query": "invoice ext:pdf dm:2026"})),
+    previewed!("views.delete", "Deletes a saved view (the files it finds are never touched).",
+        ViewIdParams => ViewInfo, views_delete_preview, views_delete, json!({"id": 1})),
     previewed!("tags.add", "Tags indexed paths (creating the tag when missing; no paths: only creates it).",
         TagParams => Tagged, tags_add_preview, tags_add, json!({"tag": "receipts", "paths": [example_file()]})),
     previewed!("tags.remove", "Removes a tag from indexed paths.",
@@ -829,17 +835,198 @@ fn set_folder_style(ctx: &Ctx, p: SetFolderStyleParams) -> Result<FolderStyleInf
 }
 
 fn views_list(ctx: &Ctx, _: NoParams) -> Result<Vec<ViewInfo>> {
-    Ok(ctx
+    Ok(ctx.lib.views()?.into_iter().map(view_info).collect())
+}
+
+/// Task 76: a core view as the API shows it.
+pub(crate) fn view_info(v: keel_core::View) -> ViewInfo {
+    let m = v.matching;
+    ViewInfo {
+        id: v.id,
+        name: v.name,
+        query: v.query,
+        layout: v.layout,
+        backend: v.backend.as_str().to_owned(),
+        sort: v.sort,
+        columns: v.columns,
+        matching: MatchInfo {
+            case: m.case,
+            whole_words: m.whole_words,
+            path: m.path,
+            diacritics: m.diacritics,
+            regex: m.regex,
+            prefix: m.prefix,
+            suffix: m.suffix,
+            ignore_punctuation: m.ignore_punctuation,
+            ignore_whitespace: m.ignore_whitespace,
+        },
+        filter: v.filter,
+        folder: v.folder,
+        position: v.position,
+        shortcut: v.shortcut,
+    }
+}
+
+fn match_toggles(m: MatchInfo) -> keel_core::MatchToggles {
+    keel_core::MatchToggles {
+        case: m.case,
+        whole_words: m.whole_words,
+        path: m.path,
+        diacritics: m.diacritics,
+        regex: m.regex,
+        prefix: m.prefix,
+        suffix: m.suffix,
+        ignore_punctuation: m.ignore_punctuation,
+        ignore_whitespace: m.ignore_whitespace,
+    }
+}
+
+fn view_backend(s: &str) -> Result<keel_core::ViewBackend> {
+    keel_core::ViewBackend::parse(s).ok_or_else(|| {
+        ApiError::invalid_params(format!("backend must be library or system, not {s:?}"))
+    })
+}
+
+/// The view `views.create` would save (checked, not saved).
+fn new_view(p: &ViewCreateParams) -> Result<keel_core::View> {
+    let v = keel_core::View {
+        id: 0,
+        name: p.name.trim().to_owned(),
+        query: p.query.clone(),
+        layout: p.layout.clone().unwrap_or_else(|| "details".into()),
+        backend: view_backend(p.backend.as_deref().unwrap_or("library"))?,
+        sort: p.sort.clone().unwrap_or_default(),
+        columns: p.columns.clone().unwrap_or_default(),
+        matching: match_toggles(p.matching.unwrap_or_default()),
+        filter: p.filter.clone().unwrap_or_default(),
+        folder: p.folder.clone().unwrap_or_default(),
+        position: p.position.unwrap_or(0),
+        shortcut: p.shortcut.clone().unwrap_or_default(),
+    };
+    keel_core::check_view(&v).map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok(v)
+}
+
+fn existing_view(ctx: &Ctx, id: i64) -> Result<keel_core::View> {
+    ctx.lib
+        .view(id)?
+        .ok_or_else(|| ApiError::not_found(format!("no view {id}")))
+}
+
+/// The view after `views.update` (checked, not saved).
+fn updated_view(ctx: &Ctx, p: &ViewUpdateParams) -> Result<(keel_core::View, keel_core::View)> {
+    let old = existing_view(ctx, p.id)?;
+    let mut v = old.clone();
+    if let Some(name) = &p.name {
+        v.name = name.trim().to_owned();
+    }
+    let fields: [(&Option<String>, &mut String); 6] = [
+        (&p.query, &mut v.query),
+        (&p.layout, &mut v.layout),
+        (&p.sort, &mut v.sort),
+        (&p.filter, &mut v.filter),
+        (&p.folder, &mut v.folder),
+        (&p.shortcut, &mut v.shortcut),
+    ];
+    for (new, field) in fields {
+        if let Some(new) = new {
+            new.clone_into(field);
+        }
+    }
+    if let Some(backend) = &p.backend {
+        v.backend = view_backend(backend)?;
+    }
+    if let Some(columns) = &p.columns {
+        v.columns = columns.clone();
+    }
+    if let Some(m) = p.matching {
+        v.matching = match_toggles(m);
+    }
+    if let Some(position) = p.position {
+        v.position = position;
+    }
+    keel_core::check_view(&v).map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok((old, v))
+}
+
+/// A view's place for a preview: `Work/Invoices` (folder and name).
+fn view_place(v: &keel_core::View) -> String {
+    match v.folder.as_str() {
+        "" => v.name.clone(),
+        folder => format!("{folder}/{}", v.name),
+    }
+}
+
+/// Refuses a shortcut another view already has, at the preview.
+fn free_shortcut(ctx: &Ctx, v: &keel_core::View) -> Result<()> {
+    let clash = (ctx.lib.views()?.into_iter())
+        .find(|o| o.id != v.id && !v.shortcut.is_empty() && o.shortcut.eq_ignore_ascii_case(&v.shortcut));
+    match clash {
+        Some(o) => Err(ApiError::invalid_params(format!(
+            "the shortcut {} is taken by the view {:?}",
+            v.shortcut, o.name
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn views_create_preview(ctx: &Ctx, p: &ViewCreateParams) -> Result<Preview> {
+    let v = new_view(p)?;
+    free_shortcut(ctx, &v)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Save the view {}: {}", view_place(&v), v.query),
+        changes: vec![change("view.create", None, Some(view_place(&v)))],
+        warnings: Vec::new(),
+    })
+}
+
+fn views_create(ctx: &Ctx, p: ViewCreateParams) -> Result<ViewInfo> {
+    let v = new_view(&p)?;
+    let saved = ctx
         .lib
-        .views()?
-        .into_iter()
-        .map(|v| ViewInfo {
-            id: v.id,
-            name: v.name,
-            query: v.query,
-            layout: v.layout,
-        })
-        .collect())
+        .add_view(&v)
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok(view_info(saved))
+}
+
+fn views_update_preview(ctx: &Ctx, p: &ViewUpdateParams) -> Result<Preview> {
+    let (old, v) = updated_view(ctx, p)?;
+    free_shortcut(ctx, &v)?;
+    let summary = match view_place(&old) == view_place(&v) {
+        true => format!("Change the view {}", view_place(&v)),
+        false => format!("Change the view {} to {}", view_place(&old), view_place(&v)),
+    };
+    Ok(Preview {
+        pin: None,
+        summary,
+        changes: vec![change("view.update", None, Some(view_place(&v)))],
+        warnings: Vec::new(),
+    })
+}
+
+fn views_update(ctx: &Ctx, p: ViewUpdateParams) -> Result<ViewInfo> {
+    let (_, v) = updated_view(ctx, &p)?;
+    ctx.lib
+        .update_view(&v)
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok(view_info(v))
+}
+
+fn views_delete_preview(ctx: &Ctx, p: &ViewIdParams) -> Result<Preview> {
+    let v = existing_view(ctx, p.id)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Delete the view {}", view_place(&v)),
+        changes: vec![change("view.delete", None, Some(view_place(&v)))],
+        warnings: Vec::new(),
+    })
+}
+
+fn views_delete(ctx: &Ctx, p: ViewIdParams) -> Result<ViewInfo> {
+    let v = existing_view(ctx, p.id)?;
+    ctx.lib.delete_view(p.id)?;
+    Ok(view_info(v))
 }
 
 fn tag_changes(action: &str, hits: &[LibraryHit], detail: &str) -> Vec<Change> {

@@ -631,16 +631,43 @@ impl LibraryBackend {
                         parent: t.parent,
                     })
                     .collect();
-                let views = (views.into_iter())
-                    .map(|v| View {
-                        id: v.id,
-                        name: v.name,
-                        query: v.query,
-                        layout: v.layout,
-                    })
-                    .collect();
+                let views = views.into_iter().map(view_of_info).collect();
                 Ok((tags, views, tagged))
             }
+        }
+    }
+
+    /// Task 76: saves `view` as a new saved view (a library bookmark).
+    pub fn add_view(&self, view: &View) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.add_view(view).map(drop),
+            LibraryBackend::Daemon(r) => {
+                let mut params = view_params(view);
+                if view.position == 0 {
+                    params.as_object_mut().expect("object").remove("position");
+                }
+                r.apply("views.create", params).map(drop)
+            }
+        }
+    }
+
+    /// Task 76: replaces saved view `view.id`.
+    pub fn update_view(&self, view: &View) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.update_view(view),
+            LibraryBackend::Daemon(r) => {
+                let mut params = view_params(view);
+                params["id"] = json!(view.id);
+                r.apply("views.update", params).map(drop)
+            }
+        }
+    }
+
+    /// Task 76: deletes saved view `id`.
+    pub fn delete_view(&self, id: i64) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.delete_view(id),
+            LibraryBackend::Daemon(r) => r.apply("views.delete", json!({ "id": id })).map(drop),
         }
     }
 
@@ -1506,6 +1533,43 @@ fn counts(t: Option<api::TextStats>) -> keel_core::TextCounts {
         skipped: t.skipped,
         failed: t.failed,
         chars: t.chars,
+    })
+}
+
+/// Task 76: a saved view as the daemon lists it.
+fn view_of_info(v: api::ViewInfo) -> View {
+    View {
+        id: v.id,
+        name: v.name,
+        query: v.query,
+        layout: v.layout,
+        backend: keel_core::ViewBackend::parse(&v.backend).unwrap_or_default(),
+        sort: v.sort,
+        columns: v.columns,
+        matching: serde_json::to_value(v.matching)
+            .and_then(serde_json::from_value)
+            .unwrap_or_default(),
+        filter: v.filter,
+        folder: v.folder,
+        position: v.position,
+        shortcut: v.shortcut,
+    }
+}
+
+/// Task 76: `views.create` / `views.update` parameters for `view` (every field).
+fn view_params(v: &View) -> Value {
+    json!({
+        "name": v.name,
+        "query": v.query,
+        "layout": v.layout,
+        "backend": v.backend.as_str(),
+        "sort": v.sort,
+        "columns": v.columns,
+        "matching": v.matching,
+        "filter": v.filter,
+        "folder": v.folder,
+        "position": v.position,
+        "shortcut": v.shortcut,
     })
 }
 
