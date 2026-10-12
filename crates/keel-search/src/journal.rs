@@ -513,7 +513,7 @@ fn trim(conn: &Connection, max: u64) -> anyhow::Result<()> {
             "DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?1)",
             [drop],
         )?;
-        vacuum(&conn)?;
+        vacuum(conn)?;
     }
     Ok(())
 }
