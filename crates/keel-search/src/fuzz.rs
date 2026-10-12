@@ -17,7 +17,11 @@ pub fn mft_record(data: &[u8]) {
             let before = mft::parse_fixed(&fixed);
             let mut blanked = fixed.clone();
             if mft::blank_fixed(&mut blanked) == Ok(true) {
-                assert_eq!(mft::parse_fixed(&blanked), before, "blanking changed the parse");
+                assert_eq!(
+                    mft::parse_fixed(&blanked),
+                    before,
+                    "blanking changed the parse"
+                );
                 batch.push(number as u64, &blanked);
             }
         }

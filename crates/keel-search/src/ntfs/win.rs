@@ -515,7 +515,12 @@ pub(crate) fn serve_pipe(name: &str) -> io::Result<File> {
     // the pipe handle is owned by the returned File.
     unsafe {
         let mut sd = PSECURITY_DESCRIPTOR::default();
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(&sddl, SDDL_REVISION_1, &mut sd, None)?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            &sddl,
+            SDDL_REVISION_1,
+            &mut sd,
+            None,
+        )?;
         let sa = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd.0,

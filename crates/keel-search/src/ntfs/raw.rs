@@ -612,8 +612,15 @@ pub(crate) mod tests {
         let size = 32 * RECORD;
         for valid in [0, RECORD - 1, size - 1] {
             let mut image = Image::new(48, valid);
-            image.put(&[(MFT_LCN, 8)], 0, &mft_zero(size, runs(&[(Some(MFT_LCN), 8)]), None));
-            assert!(layout(&image).unwrap_err().to_string().contains("valid length"));
+            image.put(
+                &[(MFT_LCN, 8)],
+                0,
+                &mft_zero(size, runs(&[(Some(MFT_LCN), 8)]), None),
+            );
+            assert!(layout(&image)
+                .unwrap_err()
+                .to_string()
+                .contains("valid length"));
         }
         for (offset, value) in [(0x16, 0u64), (0x20, 1u64)] {
             let mut image = Image::new(48, size);
@@ -624,7 +631,10 @@ pub(crate) mod tests {
                 zero[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
             }
             image.put(&[(MFT_LCN, 8)], 0, &zero);
-            assert!(layout(&image).unwrap_err().to_string().contains("base record"));
+            assert!(layout(&image)
+                .unwrap_err()
+                .to_string()
+                .contains("base record"));
         }
     }
 
@@ -647,8 +657,15 @@ pub(crate) mod tests {
         let size = MFT_CHUNK + CLUSTER;
         let clusters = size / CLUSTER;
         let mut image = Image::new(MFT_LCN + clusters, size);
-        image.put(&[(MFT_LCN, clusters)], 0, &mft_zero(size, runs(&[(Some(MFT_LCN), clusters)]), None));
-        let measured = Measured { image, largest: Cell::new(0) };
+        image.put(
+            &[(MFT_LCN, clusters)],
+            0,
+            &mft_zero(size, runs(&[(Some(MFT_LCN), clusters)]), None),
+        );
+        let measured = Measured {
+            image,
+            largest: Cell::new(0),
+        };
         let layout = layout(&measured).unwrap();
         let mut next = 0;
         read_records(&measured, &layout, |number, record| {
@@ -656,7 +673,8 @@ pub(crate) mod tests {
             assert_eq!(record.len(), RECORD as usize);
             next += 1;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(next, size / RECORD);
         assert_eq!(measured.largest.get(), MFT_CHUNK as usize);
     }

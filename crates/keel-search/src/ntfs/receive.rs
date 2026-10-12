@@ -75,10 +75,7 @@ pub(crate) struct Receiver<F: FnMut(VolumeId, Index, Meta)> {
 /// A name the index can show: one path component (the root folder's own name aside).
 fn plausible(frn: u64, name: &str) -> bool {
     frn & mft::RECORD_MASK == super::ROOT_RECORD
-        || !(name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains(['\\', '/', '\0']))
+        || !(name.is_empty() || name == "." || name == ".." || name.contains(['\\', '/', '\0']))
 }
 
 impl<F: FnMut(VolumeId, Index, Meta)> Receiver<F> {
@@ -114,7 +111,10 @@ impl<F: FnMut(VolumeId, Index, Meta)> Receiver<F> {
     /// Takes one frame's payload. An error means the stream cannot be trusted: stop
     /// reading it.
     pub fn frame(&mut self, payload: &[u8]) -> anyhow::Result<()> {
-        ensure!(!self.complete, "index helper sent more after its last frame");
+        ensure!(
+            !self.complete,
+            "index helper sent more after its last frame"
+        );
         match Frame::decode(payload)? {
             Frame::Volume { letter, serial } => {
                 ensure!(
@@ -313,7 +313,15 @@ mod tests {
             1,
             1 << 48,
             1,
-            &[A::NonResident("", 8, size, size, None, 0, runs(&[(Some(40), 8)]))],
+            &[A::NonResident(
+                "",
+                8,
+                size,
+                size,
+                None,
+                0,
+                runs(&[(Some(40), 8)]),
+            )],
         );
         image.put(&all, 20, &ext);
         let root = record(
@@ -365,7 +373,13 @@ mod tests {
     /// record (skipped, not fatal).
     #[test]
     fn the_receiver_refuses_what_it_did_not_ask_for() {
-        let vol = |l, s| Frame::Volume { letter: l, serial: s }.encode();
+        let vol = |l, s| {
+            Frame::Volume {
+                letter: l,
+                serial: s,
+            }
+            .encode()
+        };
         let batch = |numbers: &[u64], rec: &[u8]| {
             let mut b = Batch::new(1024);
             for &n in numbers {
@@ -403,7 +417,9 @@ mod tests {
             ([vol('C', 1), end.clone()].concat(), "incomplete"),
         ];
         for (stream, says) in cases {
-            let err = receive(vec![start('C', 1)], &stream).unwrap_err().to_string();
+            let err = receive(vec![start('C', 1)], &stream)
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(says), "{says}: {err}");
         }
         // A volume not asked for is skipped (here with the same serial on another

@@ -290,7 +290,9 @@ const FIRST_USER_RECORD: u64 = 16;
 const ROOT_RECORD: u64 = 5;
 
 /// Puts one file read from the MFT in the index (its first name; the others are
-/// counted as hard links).
+/// counted as hard links). Every entry is stored whatever the user may list: the
+/// per-user filter (a folder the user cannot open hides what is under it) is applied
+/// to results by the index service, branch `p15-service`, not here.
 fn add_entry(index: &mut Index, entry: &mft::Entry) {
     let number = entry.frn & mft::RECORD_MASK;
     if number < FIRST_USER_RECORD && number != ROOT_RECORD {

@@ -93,7 +93,7 @@ Reading the whole file table needs administrator rights. Until you grant them Ke
 
 The helper does as little as it can with administrator rights. It reads the first record of the file table and, on a volume whose table is so fragmented that its list of extents does not fit there, the extra records that hold the rest of that list, to find where the table lies. Before a record leaves the helper it blanks everything the index does not use: the contents of small files and alternate data streams kept inside the record, extended attributes, security descriptors and the unused tail of the record. Names, sizes, dates and attributes go through. Keel then checks everything it receives as untrusted input (only the volumes it asked for, records in order, every record through the same parser that is fuzzed against hostile bytes, names that are a single path component) before it builds and saves the index.
 
-The full index lists every file on the volume, also those in folders your account cannot open (another user's profile, for example), with their sizes and dates. Hiding entries in folders you cannot list is planned and not in this build yet.
+The full index lists every file on the volume, also those in folders your account cannot open (another user's profile, for example), with their sizes and dates. This build does not hide them: the filter that leaves out results inside folders your account cannot list (checked with your rights, as Explorer would, and on by default) comes with the index service, branch `p15-service`, which builds on this one.
 
 ### What the index stores
 

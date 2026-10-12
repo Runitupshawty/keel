@@ -23,13 +23,13 @@ mod ntfs;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/raw.rs"]
 mod raw;
+#[cfg(target_os = "macos")]
+mod spotlight;
+mod walkindex;
 /// What the elevated index helper hands the unelevated Keel: raw MFT records.
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/wire.rs"]
 mod wire;
-#[cfg(target_os = "macos")]
-mod spotlight;
-mod walkindex;
 
 #[cfg(windows)]
 pub use everything::EverythingSearcher;

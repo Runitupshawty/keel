@@ -78,7 +78,10 @@ impl<'a> Records<'a> {
         let bytes: &'a [u8] = self.bytes;
         bytes.chunks_exact(8 + self.size).map(|c| {
             let (number, record) = c.split_at(8);
-            (u64::from_le_bytes(number.try_into().unwrap_or_default()), record)
+            (
+                u64::from_le_bytes(number.try_into().unwrap_or_default()),
+                record,
+            )
         })
     }
 
@@ -108,14 +111,20 @@ impl<'a> Frame<'a> {
             "index helper protocol {version}, this Keel speaks {VERSION}"
         );
         let exact = |n: usize| {
-            ensure!(rest.len() == n, "index helper frame of kind {kind} has a bad length");
+            ensure!(
+                rest.len() == n,
+                "index helper frame of kind {kind} has a bad length"
+            );
             Ok(())
         };
         Ok(match *kind {
             VOLUME => {
                 exact(5)?;
                 let letter = char::from(rest[0]);
-                ensure!(letter.is_ascii_uppercase(), "bad drive letter in index helper frame");
+                ensure!(
+                    letter.is_ascii_uppercase(),
+                    "bad drive letter in index helper frame"
+                );
                 let serial = u32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]);
                 Frame::Volume { letter, serial }
             }
@@ -300,7 +309,10 @@ pub(crate) fn send_volume(
     }
 }
 
-fn send_mft(volume: &dyn RawVolume, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> Result<(), Stop> {
+fn send_mft(
+    volume: &dyn RawVolume,
+    out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> Result<(), Stop> {
     let layout = layout(volume).map_err(Stop::Read)?;
     let mut batch = Batch::new(layout.record as usize);
     let mut lost = None;
@@ -376,10 +388,13 @@ pub(crate) mod tests {
         let Frame::Records(r) = Frame::decode(&frames[0]).unwrap() else {
             panic!("not records");
         };
-        let got: Vec<u64> = r.iter().map(|(n, b)| {
-            assert_eq!(b, &record[..]);
-            n
-        }).collect();
+        let got: Vec<u64> = r
+            .iter()
+            .map(|(n, b)| {
+                assert_eq!(b, &record[..]);
+                n
+            })
+            .collect();
         assert_eq!(got, [16, 17]);
         assert_eq!(
             Frame::decode(&frames[1]).unwrap(),
@@ -453,7 +468,11 @@ pub(crate) mod tests {
             panic!("not records");
         };
         let sent: Vec<(u64, &[u8])> = r.iter().collect();
-        assert_eq!(sent.len(), 1, "record 0 and the free record stay in the helper");
+        assert_eq!(
+            sent.len(),
+            1,
+            "record 0 and the free record stay in the helper"
+        );
         let (number, bytes) = sent[0];
         assert_eq!(number, 20);
         // The resident contents ('x' and 'y' bytes) did not leave.
@@ -493,7 +512,11 @@ pub(crate) mod tests {
         // Sparse MFT: the layout is refused.
         let size = 32 * RECORD;
         let mut image = Image::new(24, size);
-        image.put(&[(10, 4)], 0, &mft_zero(size, runs(&[(Some(10), 4), (None, 4)]), None));
+        image.put(
+            &[(10, 4)],
+            0,
+            &mft_zero(size, runs(&[(Some(10), 4), (None, 4)]), None),
+        );
         let listing = Listing(image);
         let mut stream = Vec::new();
         send_volume(&listing, 'D', 2, &mut |f| {
@@ -515,7 +538,10 @@ pub(crate) mod tests {
         })
         .unwrap();
         let frames = payloads(&stream);
-        assert!(matches!(Frame::decode(&frames[2]).unwrap(), Frame::Failed(_)));
+        assert!(matches!(
+            Frame::decode(&frames[2]).unwrap(),
+            Frame::Failed(_)
+        ));
 
         // The reader went away.
         let mut calls = 0;

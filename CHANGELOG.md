@@ -13,6 +13,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Index all drives** no longer builds the index with administrator rights. The elevated helper only reads each volume's file table and sends its records, with file contents kept inside them blanked, to Keel over a pipe only your account and administrators can open; Keel checks them as untrusted input and builds the index as you. See [Search without Everything](docs/files.md#search-without-everything).
 - The index file in the cache folder is now at version 1 (the metadata columns): an index from an older Keel is upgraded when opened, with its new columns empty until the next full index; one from a newer Keel is rebuilt.
 
+### Known limits
+
+- The full index lists files in folders your account cannot open (other users' profiles, system folders) with their sizes, dates and folder totals. Hiding them per user is done by the index service (branch `p15-service`), not by this change alone.
+
 ### Fixed
 
 - A volume whose file table (`$MFT`) is so fragmented that its list of extents continues in other records was indexed only up to its first extent, and the index was still marked complete. Keel now follows every extent, and reads the volume by enumeration instead when the extents do not cover the whole table.
