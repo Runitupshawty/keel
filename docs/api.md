@@ -425,7 +425,8 @@ claimed before a restart; unclaimed uploads left by an earlier run are deleted a
 
 ```
 keel search <query> [--max N] [--json]
-keel du <path> [--json]
+keel du <path> [--top N] [--json]
+keel du --scan <paths…> | --all-drives | --load <file> [--top N] [--save <file>] [--exclude GLOB…] [--follow-links] [--json]
 keel tag add|remove <tag> <paths…>
 keel plan copy|move <src…> --to <dir> [--on-conflict skip|overwrite|rename] [--json]
 keel plan delete <paths…> [--json]
@@ -458,7 +459,16 @@ the last completed walk, under the name `library.stats` uses), but is kept while
 source is offline, where `indexed_at` is absent. `keel du` answers as `library.folder_sizes`
 does (the 1000 biggest children); a local folder in no source is walked instead (each
 child's total and the folder's, in the same shape; a child folder that cannot be read has
-no `bytes` and the folder's total counts what could be read). Exit codes: 0 ok, 1 the operation failed,
+no `bytes` and the folder's total counts what could be read); `--top N` keeps the N
+biggest children (`truncated` true when there were more). `keel du --scan` (and
+`--all-drives`, `--load`) uses the disk usage scanner instead, without the library
+([Disk usage scans](files.md#disk-usage-scans)); its JSON is `{complete, elapsed_ms,
+bytes, allocated, files, folders, items, unreadable, excluded, roots}`, each root
+`{path, bytes, allocated, files, folders, items, newest?, free?, unknown?, notes?,
+children, truncated}` and each child `{name, path?, kind ("dir", "file", "link"), bytes,
+allocated, files, folders, items, newest?, notes?}` (`allocated`: bytes on disk;
+`newest`: the newest change below, unix seconds; `free` and `unknown` only for drive
+roots). Exit codes: 0 ok, 1 the operation failed,
 2 usage. Typed at a terminal, a lone argument that names an existing folder opens that
 folder in the window even when it is a subcommand name (`keel devices` where `devices` is
 a folder), except `mcp`, `execute`, `daemon` and `search`, which are always the

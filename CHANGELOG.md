@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `keel du --scan <folders or drives…>` and `keel du --all-drives`: Keel's disk usage scanner, without the library. Several roots are walked in parallel into one result; each item has its size on disk next to its size (compressed and sparse files by what they really take); a file with several hard links counts once; symlinks, junctions and mount points are listed but not followed unless `--follow-links` is given (a link leading back into a folder it is in is not entered); cloud placeholders are never downloaded; drives scanned from their root show their free space and the used space the scan did not find. `--top N` lists the biggest items of each root, `--exclude GLOB` leaves names out, a terminal shows progress (files, bytes, files per second, the folder being read), and `--save FILE` / `keel du --load FILE` keep a scan to show again without walking. See [Disk usage scans](docs/files.md#disk-usage-scans).
+- `keel du <path> --top N` keeps the N biggest children.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

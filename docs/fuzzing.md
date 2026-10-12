@@ -29,6 +29,7 @@ crate's `fuzzing` feature.
 |---|---|---|
 | `archive` | `keel_vfs::fuzz::archive` | zip (zip64), tar, tar.gz/.bz2/.xz/.zst, 7z, RAR: listing, every body, and the zip rewriter deleting, renaming and adding entries |
 | `ssh_config` | `keel_vfs::fuzz::ssh_config` | `~/.ssh/config` with `Include`s, resolved for the aliases it names |
+| `du_scan_file` | `keel_vfs::fuzz::du_scan_file` | a disk usage scan file (gzip or plain JSON): the structure checks (parents first, siblings together, kinds in their places, indexes in range), then saved and loaded again to the same items |
 | `ftp_list` | `keel_vfs::fuzz::ftp_list` | an FTP `LIST` reply: bounded lines (8 KiB, a million entries), each parsed as a UNIX `ls -l` or a DOS (IIS) line |
 | `ftp_mlsd` | `keel_vfs::fuzz::ftp_mlsd` | an FTP `MLSD` reply and `MLST` answers: bounded lines of facts (type, size, modify) and names |
 | `tiff` | `keel_core::fuzz::tiff` | a TIFF's orientation (first IFD) and metadata |
