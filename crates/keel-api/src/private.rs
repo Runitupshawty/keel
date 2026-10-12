@@ -70,6 +70,57 @@ pub fn is_private_dir(dir: &Path) -> io::Result<bool> {
     }
 }
 
+/// Whether nobody but this user (and the system: SYSTEM, Administrators, root) can change
+/// what is in folder `dir`. Unix: owned by this user (or root) and not writable by group or
+/// others. Windows: owned by the user, the token's owner or Administrators, and no allow
+/// entry that grants writing, deleting or changing permissions names anyone else, whether
+/// it applies to the folder or only to what is created in it. A file system without
+/// permissions (FAT, exFAT) passes: anyone holding the medium can read and change it anyway.
+pub fn others_cannot_write(dir: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(dir)?;
+        let uid = meta.uid();
+        Ok(meta.is_dir()
+            && (uid == unsafe { libc::geteuid() } || uid == 0)
+            && meta.mode() & 0o022 == 0)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS: needed to open a folder.
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x0200_0000)
+            .open(dir)?;
+        Ok(f.metadata()?.is_dir() && win::no_other_writers(&f)?)
+    }
+}
+
+/// Portable mode's folders (`keel_core::portable::apply`): makes the portable root and its
+/// config, data and index folders (each this user's alone when this creates it) and refuses
+/// them when someone else could change one: another user could otherwise plant settings (a
+/// terminal shell, say) that run as this user, or swap the libraries. The error says which
+/// folder and what to do.
+pub fn prepare_portable(dirs: &keel_core::portable::Dirs) -> Result<(), String> {
+    for dir in [&dirs.root, &dirs.config, &dirs.data, &dirs.index] {
+        create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        match others_cannot_write(dir) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "other users of this computer can change {}; use a folder only you can \
+                     write to (Keel makes one for your user when the folder is missing)",
+                    dir.display()
+                ))
+            }
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Replaces `path` with `bytes`: a private temporary file renamed over it (the rename
 /// carries the private permissions along).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -147,13 +198,14 @@ mod win {
     };
     use windows::Win32::Security::{
         EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsWellKnownSid,
-        TokenOwner, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE,
-        ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-        OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        TokenOwner, TokenUser, WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinLocalSystemSid,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+        INHERITED_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
         SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+        CreateDirectoryW, CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -270,6 +322,104 @@ mod win {
             let _ = LocalFree(HLOCAL(sd.0));
             ok
         }
+    }
+
+    /// Rights that change a folder or what is in it: write data / add file, append data /
+    /// add subfolder, write extended attributes, delete child, write attributes, DELETE,
+    /// WRITE_DAC, WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE.
+    const CHANGE: u32 = 0x2
+        | 0x4
+        | 0x10
+        | 0x40
+        | 0x100
+        | 0x1_0000
+        | 0x4_0000
+        | 0x8_0000
+        | 0x1000_0000
+        | 0x4000_0000;
+    /// `FILE_PERSISTENT_ACLS`: the file system keeps permissions (not FAT or exFAT).
+    const PERSISTENT_ACLS: u32 = 0x8;
+
+    /// `others_cannot_write` for an open folder.
+    pub fn no_other_writers(dir: &File) -> io::Result<bool> {
+        let handle = HANDLE(dir.as_raw_handle());
+        let mut flags = 0u32;
+        unsafe { GetVolumeInformationByHandleW(handle, None, None, None, Some(&mut flags), None) }
+            .map_err(win32)?;
+        if flags & PERSISTENT_ACLS == 0 {
+            return Ok(true);
+        }
+        let (user_buf, owner_buf) = token_sids()?;
+        unsafe {
+            let user = (*(user_buf.as_ptr() as *const TOKEN_USER)).User.Sid;
+            let token_owner = (*(owner_buf.as_ptr() as *const TOKEN_OWNER)).Owner;
+            let mut owner = PSID::default();
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            let err = GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                Some(&mut dacl),
+                None,
+                Some(&mut sd),
+            );
+            if err != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(err.0 as i32));
+            }
+            let ok = writers(owner, dacl, user, token_owner);
+            let _ = LocalFree(HLOCAL(sd.0));
+            ok
+        }
+    }
+
+    unsafe fn writers(
+        owner: PSID,
+        dacl: *mut ACL,
+        user: PSID,
+        token_owner: PSID,
+    ) -> io::Result<bool> {
+        let is = |a: PSID, b: PSID| EqualSid(a, b).is_ok();
+        let known = |s: PSID, k| IsWellKnownSid(s, k).as_bool();
+        if !(is(owner, user) || is(owner, token_owner) || known(owner, WinBuiltinAdministratorsSid))
+        {
+            return Ok(false);
+        }
+        // A null DACL grants everyone everything.
+        if dacl.is_null() {
+            return Ok(false);
+        }
+        for i in 0..u32::from((*dacl).AceCount) {
+            let mut ace = std::ptr::null_mut();
+            GetAce(dacl, i, &mut ace).map_err(win32)?;
+            let header = &*(ace as *const ACE_HEADER);
+            match header.AceType {
+                // Deny entries only take access away.
+                1 => continue,
+                0 => {}
+                // Object and callback entries: not judged here, so not trusted.
+                _ => return Ok(false),
+            }
+            let allow = &*(ace as *const ACCESS_ALLOWED_ACE);
+            if allow.Mask & CHANGE == 0 {
+                continue;
+            }
+            let sid = PSID(std::ptr::addr_of!(allow.SidStart) as *mut _);
+            // CREATOR OWNER: whoever creates something in the folder, who needed the right
+            // to write here already.
+            let trusted = is(sid, user)
+                || is(sid, token_owner)
+                || is(sid, owner)
+                || known(sid, WinBuiltinAdministratorsSid)
+                || known(sid, WinLocalSystemSid)
+                || known(sid, WinCreatorOwnerSid);
+            if !trusted {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     unsafe fn check(
@@ -401,5 +551,47 @@ mod tests {
         assert!(!is_private_dir(&plain).unwrap());
         create_dir_all(&plain).unwrap();
         assert!(!is_private_dir(&plain).unwrap(), "left as it was");
+    }
+
+    /// Opens `dir` to everyone: Unix mode 0777, Windows an inherited "Everyone: Modify".
+    fn open_to_all(dir: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("icacls.exe")
+                .arg(dir)
+                .args(["/grant", "*S-1-1-0:(OI)(CI)M"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+    }
+
+    /// Review 1: the portable folder was used whoever could write to it.
+    #[test]
+    fn portable_folders_others_can_change_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // Made here: this user's alone.
+        let dirs = keel_core::portable::Dirs::under(dir.path().join("exe").join("keel-data"));
+        prepare_portable(&dirs).unwrap();
+        for d in [&dirs.root, &dirs.config, &dirs.data, &dirs.index] {
+            assert!(is_private_dir(d).unwrap(), "{}", d.display());
+        }
+        prepare_portable(&dirs).unwrap();
+        // An existing folder others may write to.
+        let shared = keel_core::portable::Dirs::under(dir.path().join("shared"));
+        std::fs::create_dir(&shared.root).unwrap();
+        open_to_all(&shared.root);
+        assert!(!others_cannot_write(&shared.root).unwrap());
+        let err = prepare_portable(&shared).unwrap_err();
+        assert!(err.contains("other users"), "{err}");
+        // A subfolder opened to others inside a private root.
+        open_to_all(&dirs.config);
+        let err = prepare_portable(&dirs).unwrap_err();
+        assert!(err.contains("config"), "{err}");
     }
 }

@@ -88,8 +88,9 @@ use std::path::Path;
 
 fn main() -> eframe::Result<()> {
     // Task 79: `keel.portable` beside the executable keeps everything beside it. First, before
-    // any thread starts (it sets the folder variables).
-    keel_core::portable::apply();
+    // any thread starts (it sets the folder variables). A folder other users can change is
+    // refused (`notice` says why).
+    keel_core::portable::apply(keel_api::private::prepare_portable);
     // --- Task 24 ---
     let cli = cli::Cli::from_env();
     if let Some(name) = &cli.profile {
@@ -138,6 +139,9 @@ fn main() -> eframe::Result<()> {
         .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();
+    if let Some(notice) = keel_core::portable::notice() {
+        tracing::warn!("{notice}");
+    }
     // --- Task 24 ---
     // `keel --index-service <dir>`: the elevated indexer, no window.
     if let Some(dir) = &cli.index_service {
@@ -206,7 +210,10 @@ fn main() -> eframe::Result<()> {
     let boot = app::Boot {
         settings,
         session,
-        notices: settings_notice.into_iter().chain(session_notice).collect(),
+        notices: (keel_core::portable::notice().map(str::to_owned).into_iter())
+            .chain(settings_notice)
+            .chain(session_notice)
+            .collect(),
         home,
         saved: Some(saved),
         // --- Task 24 ---

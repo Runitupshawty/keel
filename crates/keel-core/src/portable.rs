@@ -57,6 +57,11 @@ impl Dirs {
 /// the folder (relative to the executable's folder, or absolute); without one it is
 /// `keel-data`.
 pub fn dirs_for(exe: &Path) -> Option<Dirs> {
+    marker_dirs(exe).map(|(dirs, _)| dirs)
+}
+
+/// [`dirs_for`], and why the marker's folder name was not taken (then it is `keel-data`).
+fn marker_dirs(exe: &Path) -> Option<(Dirs, Option<String>)> {
     let dir = exe.parent()?;
     let marker = dir.join(MARKER);
     if !std::fs::metadata(&marker).ok()?.is_file() {
@@ -67,7 +72,19 @@ pub fn dirs_for(exe: &Path) -> Option<Dirs> {
         .lines()
         .map(|l| l.trim_start_matches('\u{feff}').trim())
         .find(|l| !l.is_empty() && !l.starts_with('#'));
-    Some(Dirs::under(dir.join(name.unwrap_or(DEFAULT_FOLDER))))
+    // NUL or other control characters (a file in an encoding this does not read) would make
+    // `set_var` panic or name a folder nobody meant.
+    let (name, note) = match name {
+        Some(n) if n.chars().any(|c| c.is_control() || c == '\u{fffd}') => (
+            DEFAULT_FOLDER,
+            Some(format!(
+                "{MARKER}: the folder name is not readable text (save the file as UTF-8); \
+                 using {DEFAULT_FOLDER}"
+            )),
+        ),
+        n => (n.unwrap_or(DEFAULT_FOLDER), None),
+    };
+    Some((Dirs::under(dir.join(name)), note))
 }
 
 /// The first [`MARKER_READ`] bytes of `path` as text (empty when unreadable).
@@ -77,7 +94,29 @@ fn read_start(path: &Path) -> String {
     if let Ok(f) = std::fs::File::open(path) {
         let _ = f.take(MARKER_READ as u64).read_to_end(&mut buf);
     }
-    String::from_utf8_lossy(&buf).into_owned()
+    decode(&buf)
+}
+
+/// The marker's bytes as text: UTF-8, or UTF-16 with a byte order mark (what Notepad's
+/// "Unicode" and Windows PowerShell 5.1's `>` write), or UTF-16LE without one when the text
+/// starts with an ASCII character (`D`, NUL, `:`, NUL, ...).
+fn decode(buf: &[u8]) -> String {
+    let utf16 = |bytes: &[u8], be: bool| {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| match be {
+                true => u16::from_be_bytes([c[0], c[1]]),
+                false => u16::from_le_bytes([c[0], c[1]]),
+            })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match buf {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
+        [a, 0, ..] if *a != 0 && a.is_ascii() => utf16(buf, false),
+        _ => String::from_utf8_lossy(buf).into_owned(),
+    }
 }
 
 /// Sets each folder variable of `dirs` that `is_set` says is unset, through `set`, and
@@ -90,7 +129,8 @@ pub fn apply_dirs(
 ) -> Vec<&'static str> {
     let mut done = Vec::new();
     for (var, dir) in dirs.vars() {
-        if is_set(var) {
+        // A NUL makes `set_var` panic (`dirs_for` already keeps it out of the name).
+        if is_set(var) || dir.as_os_str().as_encoded_bytes().contains(&0) {
             continue;
         }
         let _ = std::fs::create_dir_all(dir);
@@ -100,29 +140,62 @@ pub fn apply_dirs(
     done
 }
 
-static ACTIVE: OnceLock<Option<Dirs>> = OnceLock::new();
+/// Portable mode as [`apply`] found it.
+struct State {
+    dirs: Option<Dirs>,
+    notice: Option<String>,
+}
 
-/// Portable mode for this process: when `keel.portable` sits beside the executable, sets
-/// the folder variables (those not already set). Call it first in `main`, before any
-/// thread starts (it changes the environment). Returns the portable folders, or None.
-pub fn apply() -> Option<&'static Dirs> {
+static ACTIVE: OnceLock<State> = OnceLock::new();
+
+/// Portable mode for this process: when `keel.portable` sits beside the executable,
+/// `prepare` makes the portable folder (for this user only) and checks that nobody else can
+/// change it (`keel_api::private::prepare_portable`); then the folder variables not already
+/// set are set. When `prepare` refuses, portable mode stays off and [`notice`] says why.
+/// Call it first in `main`, before any thread starts (it changes the environment). Returns
+/// the portable folders, or None.
+pub fn apply(prepare: impl FnOnce(&Dirs) -> Result<(), String>) -> Option<&'static Dirs> {
     ACTIVE
         .get_or_init(|| {
-            let exe = std::env::current_exe().ok()?;
-            let dirs = dirs_for(&exe)?;
+            let off = State {
+                dirs: None,
+                notice: None,
+            };
+            let Ok(exe) = std::env::current_exe() else {
+                return off;
+            };
+            let Some((dirs, note)) = marker_dirs(&exe) else {
+                return off;
+            };
+            if let Err(why) = prepare(&dirs) {
+                return State {
+                    dirs: None,
+                    notice: Some(format!("Portable mode is off: {why}")),
+                };
+            }
             apply_dirs(
                 &dirs,
                 |var| std::env::var_os(var).is_some_and(|v| !v.is_empty()),
                 |var, dir| std::env::set_var(var, dir),
             );
-            Some(dirs)
+            State {
+                dirs: Some(dirs),
+                notice: note,
+            }
         })
+        .dirs
         .as_ref()
 }
 
 /// The portable folders [`apply`] found, if any (None before it ran).
 pub fn active() -> Option<&'static Dirs> {
-    ACTIVE.get().and_then(Option::as_ref)
+    ACTIVE.get().and_then(|s| s.dirs.as_ref())
+}
+
+/// What to tell the user about portable mode: why it is off although `keel.portable` is
+/// there, or that the marker's folder name was not taken.
+pub fn notice() -> Option<&'static str> {
+    ACTIVE.get().and_then(|s| s.notice.as_deref())
 }
 
 #[cfg(test)]
@@ -174,6 +247,51 @@ mod tests {
         std::fs::write(dir.path().join(MARKER), "# nothing\n").unwrap();
         let dirs = dirs_for(&dir.path().join("keel")).unwrap();
         assert_eq!(dirs.root, dir.path().join(DEFAULT_FOLDER));
+    }
+
+    /// Review 1: Windows PowerShell 5.1's `>` and Notepad's "Unicode" write UTF-16LE; that
+    /// name was read with a NUL after each character, and `set_var` panicked at startup.
+    #[test]
+    fn utf16_markers_are_read_and_unreadable_names_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("keel.exe");
+        let le = |s: &str| {
+            s.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>()
+        };
+        let be = |s: &str| {
+            s.encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<u8>>()
+        };
+        let cases: [Vec<u8>; 3] = [
+            [&[0xFF, 0xFE][..], &le("Keel Data\r\n")].concat(),
+            [&[0xFE, 0xFF][..], &be("# c\nKeel Data\n")].concat(),
+            le("Keel Data\r\n"),
+        ];
+        for bytes in cases {
+            std::fs::write(dir.path().join(MARKER), &bytes).unwrap();
+            let (dirs, note) = marker_dirs(&exe).unwrap();
+            assert_eq!(dirs.root, dir.path().join("Keel Data"), "{bytes:?}");
+            assert_eq!(note, None);
+        }
+        // NULs, other control characters or undecodable bytes: the default folder, and why.
+        for bytes in [&b"ab\0c"[..], b"\x01x", b"\xff\xffname", b"x\xc3("] {
+            std::fs::write(dir.path().join(MARKER), bytes).unwrap();
+            let (dirs, note) = marker_dirs(&exe).unwrap();
+            assert_eq!(dirs.root, dir.path().join(DEFAULT_FOLDER), "{bytes:?}");
+            assert!(note.is_some_and(|n| n.contains("UTF-8")), "{bytes:?}");
+            assert_eq!(dirs_for(&exe).unwrap(), dirs);
+        }
+    }
+
+    #[test]
+    fn a_folder_with_a_nul_is_never_set() {
+        let dirs = Dirs::under(PathBuf::from("/x\0y"));
+        let mut set = Vec::new();
+        let done = apply_dirs(&dirs, |_| false, |var, _| set.push(var.to_owned()));
+        assert!(done.is_empty() && set.is_empty());
     }
 
     #[test]
