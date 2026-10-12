@@ -91,6 +91,7 @@ fn context_items() -> Vec<Item> {
 }
 
 fn global_items() -> Vec<Item> {
+    use crate::finder::FinderCmd;
     use Action::*;
     [
         ("Go to parent folder", "Alt+Up", Up),
@@ -102,6 +103,10 @@ fn global_items() -> Vec<Item> {
         ("Toggle dual pane", "Ctrl+Shift+D", ToggleDual),
         ("Switch pane", "F6", SwitchPane),
         ("Toggle preview panel", "F3", TogglePreview),
+        // Phase 14 Task 67.
+        ("Quick Look", "Space", Finder(FinderCmd::QuickLook)),
+        ("Go to folder…", "Ctrl+Shift+G", Finder(FinderCmd::GoToFolder)),
+        ("Show / hide path bar", "", Finder(FinderCmd::TogglePathBar)),
         ("Show inspector", "Ctrl+I", ToggleInspector),
         ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
         (

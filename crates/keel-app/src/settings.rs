@@ -80,6 +80,8 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[finder]`: Quick Look on Space, the path bar, spring-loaded folders (Phase 14).
+    pub finder: crate::finder::FinderSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +216,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            finder: Default::default(),
         }
     }
 }
@@ -672,6 +675,18 @@ pub fn window(
                     ui.end_row();
                     ui.label("");
                     ui.checkbox(&mut s.preview_open, "Preview panel");
+                    ui.end_row();
+                    // Phase 14 Task 67.
+                    ui.label("");
+                    ui.checkbox(&mut s.finder.path_bar, "Path bar");
+                    ui.end_row();
+                    ui.label("Space");
+                    ui.checkbox(&mut s.finder.space_quick_look, "Opens Quick Look")
+                        .on_hover_text("Off: Space selects the cursor row (Ctrl+Space always does)");
+                    ui.end_row();
+                    ui.label("Dragging");
+                    ui.checkbox(&mut s.finder.spring_loaded, "Spring-loaded folders")
+                        .on_hover_text("A drag resting on a folder for 0.6 s opens it");
                     ui.end_row();
                     // --- Task 23 ---
                     ui.label("Motion");

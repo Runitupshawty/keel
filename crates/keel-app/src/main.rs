@@ -17,10 +17,12 @@ mod devices;
 mod dialogs;
 mod dropzone;
 mod folder_ops; // Task 60: folder operation dialogs
+mod finder; // Phase 14 Task 67: Quick Look, path bar, spring-loading, Go to Folder
 mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)
 #[cfg(test)]
 mod fuzz_tests;
+mod goto; // Phase 14 Task 67
 mod icon_theme;
 mod icons;
 mod inspector;
@@ -34,9 +36,11 @@ mod media_viewer;
 mod mount_ui;
 mod palette;
 mod pane;
+mod path_bar; // Phase 14 Task 67
 mod platform;
 mod preview_panel;
 mod profiles;
+mod quicklook; // Phase 14 Task 67
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
@@ -47,6 +51,7 @@ mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
 mod sidebar_remotes;
 mod sizes; // Task 46: folder sizes
+mod spring; // Phase 14 Task 67: spring-loaded folders
 mod state;
 mod tab;
 mod term_pane;

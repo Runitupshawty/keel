@@ -330,6 +330,8 @@ pub struct AppState {
     pub sizes: crate::sizes::Sizes,
     /// Task 47: the VS Code color theme installer (Settings → General).
     pub color_themes: crate::color_theme::ColorThemes,
+    /// Phase 14 Task 67: Quick Look and Go to Folder.
+    pub finder: crate::finder::Finder,
 }
 
 impl AppState {
@@ -451,6 +453,7 @@ impl AppState {
             media,
             viewer: None,
             sizes: Default::default(),
+            finder: Default::default(),
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -1600,6 +1603,10 @@ impl AppState {
         if let Some(why) = self.archive_write_refusal(p, &action) {
             return self.toasts.error(why);
         }
+        // Phase 14 Task 67: Space (Quick Look), and Quick Look's keys while it is open.
+        let Some(action) = crate::finder::intercept(self, p, action) else {
+            return;
+        };
         // --- Task 32 ---: Space / Enter on a photo or video in the media view.
         let Some(action) = crate::media_viewer::intercept(self, p, action) else {
             return;
@@ -2382,6 +2389,7 @@ impl AppState {
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::Mount(cmd) => self.mount_cmd(cmd),
+            Action::Finder(cmd) => crate::finder::run(self, p, cmd),
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

@@ -238,6 +238,8 @@ pub enum Action {
     Devices(crate::devices::DevCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
+    /// Phase 14 Task 67: Quick Look, the path bar, Go to Folder (`finder.rs`).
+    Finder(crate::finder::FinderCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -279,6 +281,11 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD_SHIFT, Key::N, Action::NewFolder),
     (CMD_SHIFT, Key::O, Action::OpenWith),
     (CMD_SHIFT, Key::Z, Action::ToggleDropZone),
+    (
+        CMD_SHIFT,
+        Key::G,
+        Action::Finder(crate::finder::FinderCmd::GoToFolder),
+    ),
     // After Ctrl+Shift+Z: egui ignores an unrequested Shift. In a text field Ctrl+Z stays
     // the field's own undo (not in WHILE_TYPING).
     (CMD, Key::Z, Action::Undo),
@@ -331,7 +338,13 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     ),
     (Modifiers::NONE, Key::Delete, Action::Delete),
     (Modifiers::NONE, Key::Enter, Action::Enter),
-    (Modifiers::NONE, Key::Space, Action::ToggleSelect),
+    // Space: Quick Look (or the selection toggle, Settings); Ctrl+Space always selects.
+    (CMD, Key::Space, Action::ToggleSelect),
+    (
+        Modifiers::NONE,
+        Key::Space,
+        Action::Finder(crate::finder::FinderCmd::Space),
+    ),
     (Modifiers::NONE, Key::Escape, Action::ClearFilter),
 ];
 
@@ -434,7 +447,7 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
                 // egui-winit turns Shift+Delete into Cut on Windows; Phase 1 trashes.
                 Event::Cut if i.modifiers.shift && !i.modifiers.command => out.push(Action::Delete),
                 Event::Cut => out.push(Action::Cut),
-                // Space toggles selection; it never starts a filter.
+                // Space never starts a filter.
                 Event::Text(t) if typing_allowed && !t.trim().is_empty() => {
                     out.push(Action::Type(t.clone()))
                 }

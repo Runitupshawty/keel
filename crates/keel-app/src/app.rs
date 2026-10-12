@@ -262,6 +262,11 @@ impl App {
         let mut out: Vec<(usize, Action)> = Vec::new();
         let mut pane_rects: Vec<Rect> = Vec::new();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| status_bar(ui, s, &mut out));
+        // Phase 14 Task 67: the path bar, above the status bar.
+        if s.settings.finder.path_bar {
+            egui::TopBottomPanel::bottom("pathbar")
+                .show(ctx, |ui| crate::path_bar::ui(ui, s, &mut out));
+        }
         if let Some(updates) = &mut self.updates {
             updates.tick(&mut s.settings.updates, ctx, crate::update::LATEST_URL);
             updates.banner(ctx, &mut s.settings.updates);
@@ -305,9 +310,13 @@ impl App {
         // --- Task 23 ---: the columns view previews inline while the panel is closed.
         let inline = !s.preview.open && crate::view_columns::wants_preview(&s.panes[s.active]);
         let inspecting = s.preview.open && s.preview.tab == crate::inspector::PanelTab::Inspector;
+        // Phase 14 Task 67: Quick Look shows the preview too.
+        let quick_look = s.finder.quicklook.open;
         if inspecting {
             // Task 59: the inspector follows the selection instead of the preview.
-            s.preview.stop_sound();
+            if !quick_look {
+                s.preview.stop_sound();
+            }
             let target = s.preview_target();
             if let Some((path, req, max)) = s.preview.inspector.follow(ctx, target.as_ref()) {
                 if !s.library.inspect(path, req, max) {
@@ -315,8 +324,9 @@ impl App {
                     s.preview.inspector.answered(req, Err(off));
                 }
             }
-        } else if s.preview.open || inline {
-            let target = s.preview_target();
+        }
+        if quick_look || (!inspecting && (s.preview.open || inline)) {
+            let target = crate::quicklook::target(s);
             if s.preview.follow(ctx, target.as_ref()) {
                 s.toasts.error(crate::preview_panel::LOCKED);
             }
@@ -329,7 +339,11 @@ impl App {
             .default_width(s.settings.preview_width)
             .width_range(200.0..=1000.0)
             .show_animated(ctx, s.preview.open, |ui| {
-                s.preview.width_px = (ui.available_width() * ctx.pixels_per_point()).round() as u32;
+                // Quick Look sets the render width while it is open.
+                if !s.finder.quicklook.open {
+                    s.preview.width_px =
+                        (ui.available_width() * ctx.pixels_per_point()).round() as u32;
+                }
                 // Task 59: Preview | Inspector.
                 use crate::inspector::PanelTab;
                 ui.horizontal(|ui| {
@@ -489,6 +503,10 @@ impl App {
                     }
                 }
             });
+        // Phase 14 Task 67: a drag resting on a folder opens it.
+        if let Some((p, dir)) = crate::spring::tick(ctx, s.settings.finder.spring_loaded) {
+            out.push((p, Action::Navigate(dir)));
+        }
         // --- Task 24 ---
         self.drag_out.check(ctx, s);
         if let Some(e) = (self.hotkey.as_mut()).and_then(|h| h.sync(&s.settings.hotkey)) {
@@ -503,7 +521,10 @@ impl App {
                 ctx,
                 egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("keel-drag")),
                 egui::Id::new("keel-drag-tip"),
-                |ui| ui.label(drag_verb(&drag, over, shift)),
+                |ui| {
+                    let verb = crate::path_bar::drag_verb(ctx);
+                    ui.label(verb.unwrap_or_else(|| drag_verb(&drag, over, shift)))
+                },
             );
         }
         // Recent "Open with" apps for the context menu (read by `pane::context_menu`).
@@ -512,6 +533,12 @@ impl App {
         // Task 56: the library's folder styles for context menus and Ctrl+P.
         crate::folder_style::publish(ctx, &s.library);
         s.viewer_ui(ctx); // Task 32
+        // Phase 14 Task 67.
+        crate::quicklook::ui(ctx, s, &mut out);
+        let router = s.router.clone();
+        if let Some(action) = s.finder.goto.ui(ctx, &router) {
+            out.push((s.active, action));
+        }
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
         }
@@ -647,7 +674,12 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .map(|&i| count(&tab.entries()[i]))
                 .sum()
         };
-        let mut left = vec![crate::jobs::items(n)];
+        // Phase 14 Task 67: "12 items, 431.2 GB available".
+        let mut count_line = crate::jobs::items(n);
+        if let Some((_, _, free, _)) = s.sidebar.drive_of(&tab.dir) {
+            count_line = format!("{count_line}, {} available", format_size(*free, DECIMAL));
+        }
+        let mut left = vec![count_line];
         if picked {
             left.push(format!("{} selected", tab.selected.len()));
         }
@@ -865,7 +897,10 @@ mod tests {
             .with_size(egui::vec2(1280.0, 800.0))
             .build_eframe(|cc| App::new(cc, Boot::at(start)));
         wait_listed(&mut harness);
-        egui_kittest::kittest::Queryable::get_by_label(&harness, "1 item");
+        // "1 item", or "1 item, 12.3 GB available" once the drives are read.
+        let node = egui_kittest::kittest::Queryable::get_by_label_contains(&harness, "1 item");
+        let label = node.label().unwrap_or_default();
+        assert!(label == "1 item" || label.starts_with("1 item, "), "{label}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
