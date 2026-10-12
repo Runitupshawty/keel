@@ -154,3 +154,43 @@ fn rar_and_unknown_formats_are_refused() {
     assert!(add(&tmp.path().join("x.tar.xz"), &[a], "").is_err());
     assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
 }
+
+/// Tarballs made with `tar -C dir .` name their entries `./a.txt`, and zips made on
+/// Windows `dir\a.txt`: adding `a.txt` replaces that entry instead of leaving both (the
+/// old one listed first, so it is the one the archive folder shows and reads).
+#[cfg(feature = "zip")]
+#[test]
+fn adding_replaces_an_entry_spelled_another_way() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = tmp.path().join("a.txt");
+    fs::write(&a, "new").unwrap();
+
+    let tarball = tmp.path().join("t.tar");
+    let mut builder = tar::Builder::new(fs::File::create(&tarball).unwrap());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(3);
+    header.set_mode(0o644);
+    // Raw bytes: `append_data` would drop the `./`.
+    header.as_old_mut().name[..7].copy_from_slice(b"./a.txt");
+    header.set_cksum();
+    builder.append(&header, &b"old"[..]).unwrap();
+    builder.into_inner().unwrap();
+
+    let zip_file = tmp.path().join("z.zip");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&zip_file).unwrap());
+    writer
+        .start_file("dir\\a.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut writer, b"old").unwrap();
+    writer.finish().unwrap();
+
+    for (archive, at, want) in [(&tarball, "", "a.txt"), (&zip_file, "dir", "dir/a.txt")] {
+        add(archive, std::slice::from_ref(&a), at).unwrap();
+        let normalised: Vec<String> = names(archive)
+            .iter()
+            .map(|n| keel_vfs::archive::safe_name(n).unwrap())
+            .collect();
+        assert_eq!(normalised, [want], "{}", archive.display());
+        assert_eq!(read(archive, want), "new");
+    }
+}

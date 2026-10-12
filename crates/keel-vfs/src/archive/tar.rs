@@ -198,9 +198,7 @@ fn build<W: std::io::Write>(sink: W, job: Job<'_>) -> Result<W> {
             cancelled()?;
             let mut entry = entry?;
             let path = entry.path()?.into_owned();
-            let key = String::from_utf8_lossy(&entry.path_bytes())
-                .trim_end_matches('/')
-                .to_owned();
+            let key = super::replaced_key(&String::from_utf8_lossy(&entry.path_bytes()));
             if replaced.contains(&key) {
                 continue;
             }

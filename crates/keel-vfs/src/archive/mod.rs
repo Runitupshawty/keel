@@ -656,6 +656,13 @@ impl Read for StreamReader {
 /// characters, `<>"|?*`, trailing dots/spaces and device names (CON, `con .txt`, COM¹,
 /// CONIN$…). A deliberately portable subset, refused on every OS, so an archive extracted
 /// anywhere stays safe to copy to Windows.
+/// The name an added entry replaces `raw` under (`./a.txt` and `a\b` are `a.txt` and
+/// `a/b`), without a trailing `/`; an unsafe name as it is.
+#[cfg(any(feature = "zip", feature = "sevenz", feature = "tar"))]
+pub(crate) fn replaced_key(raw: &str) -> String {
+    safe_name(raw).unwrap_or_else(|_| raw.trim_end_matches('/').to_owned())
+}
+
 pub fn safe_name(name: &str) -> Result<String> {
     let name = name.replace('\\', "/");
     anyhow::ensure!(

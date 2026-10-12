@@ -151,13 +151,13 @@ pub(crate) fn rewrite(job: crate::ops::Rewrite<'_>) -> Result<()> {
             .collect();
         for e in entries.iter().filter(|e| e.is_dir) {
             cancelled()?;
-            if !replaced.contains(e.inner.trim_end_matches('/')) {
+            if !replaced.contains(&super::replaced_key(&e.inner)) {
                 writer.push_archive_entry::<&[u8]>(entry(&e.inner, true, e.modified), None)?;
             }
         }
         let mut scratch = state.clone();
         reader.visit(
-            &|raw| !replaced.contains(raw.trim_end_matches('/')),
+            &|raw| !replaced.contains(&super::replaced_key(raw)),
             &mut |raw, body| {
                 cancelled()?;
                 let e = entry(raw, false, modified.get(raw).copied().flatten());

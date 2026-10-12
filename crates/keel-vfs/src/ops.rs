@@ -2871,7 +2871,13 @@ pub fn add_to_zip(
         for index in 0..old.len() {
             check_cancel(cancel)?;
             let entry = old.by_index_raw(index)?;
-            if !files.contains_key(entry.name()) {
+            let key = crate::archive::replaced_key(entry.name());
+            let key = if entry.is_dir() {
+                format!("{key}/")
+            } else {
+                key
+            };
+            if !files.contains_key(&key) {
                 output.raw_copy_file(entry)?;
             }
         }
