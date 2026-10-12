@@ -559,6 +559,7 @@ fn column(
         selection.gamma_multiply(0.55)
     };
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
+    let radius = crate::design::tokens(ui.ctx()).radius.selection_row;
     let muted = cx.theme.muted();
     // The row that just got the cursor fades its highlight in.
     let fade = crate::anim::fade_in(ui.ctx(), ui.id().with("fade"), col.cursor.as_deref());
@@ -583,9 +584,9 @@ fn column(
                             1.0
                         };
                         ui.painter()
-                            .rect_filled(rect, 2.0, selection.gamma_multiply(t));
+                            .rect_filled(rect, radius, selection.gamma_multiply(t));
                     } else if r.hovered() {
-                        ui.painter().rect_filled(rect, 2.0, hover);
+                        ui.painter().rect_filled(rect, radius, hover);
                     }
                     let icon = Rect::from_center_size(
                         egui::pos2(rect.left() + 14.0, rect.center().y),

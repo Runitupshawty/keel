@@ -174,6 +174,7 @@ pub fn ui(
 
     let selection = ui.visuals().selection.bg_fill;
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
+    let radius = crate::design::tokens(ui.ctx()).radius.selection;
     let placeholder = ui.visuals().extreme_bg_color;
     let text = ui.visuals().text_color();
     let muted = cx.theme.muted();
@@ -276,9 +277,9 @@ pub fn ui(
                                 1.0
                             };
                             ui.painter()
-                                .rect_filled(back, 4.0, selection.gamma_multiply(t));
+                                .rect_filled(back, radius, selection.gamma_multiply(t));
                         } else if resp.hovered() {
-                            ui.painter().rect_filled(back, 4.0, hover);
+                            ui.painter().rect_filled(back, radius, hover);
                         }
                         let img = rect.shrink(2.0);
                         match media::media_type(e) {

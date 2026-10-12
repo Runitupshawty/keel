@@ -3343,3 +3343,36 @@ fn organize_by_type_then_undo() {
     assert!(back, "everything is back: {:?}", tree_of(&a));
     close_library(&mut h);
 }
+
+/// Task 64: a new profile opens in Finder-style (Finder's spacing and type, the Finder
+/// palette on the stock dark theme); Settings → Appearance → Classic switches back to the
+/// look before at once. One screenshot per style.
+#[test]
+fn appearance_style_finder_and_classic() {
+    use crate::design::{Style, CLASSIC, FINDER};
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    h.run_steps(2);
+    let ctx = s(&h).ctx.clone();
+    assert_eq!(s(&h).settings.style, Style::Finder, "the default");
+    assert_eq!(crate::design::look(&ctx).style, Style::Finder);
+    assert_eq!(ctx.style().spacing.interact_size.y, FINDER.interact_height);
+    assert_eq!(
+        ctx.style().visuals.extreme_bg_color,
+        egui::Color32::from_rgb(0x1e, 0x1e, 0x1e)
+    );
+    shot(&mut h, "style-finder");
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Appearance");
+    click(&mut h, "Classic");
+    h.run_steps(2);
+    assert_eq!(s(&h).settings.style, Style::Classic);
+    assert_eq!(crate::design::look(&ctx).style, Style::Classic);
+    assert_eq!(ctx.style().spacing.interact_size.y, CLASSIC.interact_height);
+    let bg = crate::theme::rgb(s(&h).theme.bg);
+    assert_eq!(ctx.style().visuals.extreme_bg_color, bg, "the theme's own");
+    shot(&mut h, "style-classic");
+    click(&mut h, "Finder-style");
+    h.run_steps(2);
+    assert_eq!(ctx.style().spacing.interact_size.y, FINDER.interact_height);
+}

@@ -1515,8 +1515,8 @@ fn dev(cmd: DevCmd) -> Action {
 
 fn dot_color(ui: &egui::Ui, link: Link) -> egui::Color32 {
     match link {
-        Link::Lan => egui::Color32::from_rgb(70, 180, 90),
-        Link::Relay => egui::Color32::from_rgb(230, 180, 40),
+        Link::Lan => crate::design::STATUS_OK,
+        Link::Relay => crate::design::STATUS_BUSY,
         Link::Offline => ui.visuals().weak_text_color(),
     }
 }

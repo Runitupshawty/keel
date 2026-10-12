@@ -56,8 +56,8 @@ pub fn rows(
 fn dot_color(ui: &egui::Ui, s: ConnStatus) -> egui::Color32 {
     match s {
         ConnStatus::Disconnected => ui.visuals().weak_text_color(),
-        ConnStatus::Connecting => egui::Color32::from_rgb(230, 180, 40),
-        ConnStatus::Connected => egui::Color32::from_rgb(70, 180, 90),
+        ConnStatus::Connecting => crate::design::STATUS_BUSY,
+        ConnStatus::Connected => crate::design::STATUS_OK,
         ConnStatus::Failed => ui.visuals().error_fg_color,
     }
 }

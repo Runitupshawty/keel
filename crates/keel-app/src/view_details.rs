@@ -11,9 +11,9 @@ use egui_extras::{Column, TableBuilder};
 use keel_core::{SourceStatus, FAVORITES};
 use keel_vfs::{Entry, Kind};
 
-pub const ROW_H: f32 = 22.0;
+pub const ROW_H: f32 = crate::design::CLASSIC.rows.list;
 /// A library search hit with a snippet of its text under the name (Task 62).
-pub const SNIPPET_ROW_H: f32 = 40.0;
+pub const SNIPPET_ROW_H: f32 = crate::design::CLASSIC.rows.snippet;
 
 pub fn size_text(e: &Entry) -> String {
     if e.kind == Kind::Dir {
