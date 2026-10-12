@@ -432,10 +432,15 @@ pub fn actions(ctx: &egui::Context, enabled: bool) -> Vec<Action> {
         });
     }
     let list = crate::a11y::list_has_keys(ctx);
+    // Task 83: a focused chart zooms out with Backspace.
+    let chart = crate::treemap::keys_owned(ctx);
     let mut out = ctx.input_mut(|i| {
         let mut out = Vec::new();
         for (mods, key, action) in SHORTCUTS {
             if !list && *mods == Modifiers::NONE && matches!(key, Key::Enter | Key::Space) {
+                continue;
+            }
+            if chart && *mods == Modifiers::NONE && *key == Key::Backspace {
                 continue;
             }
             if i.consume_key(*mods, *key) {

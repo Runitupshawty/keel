@@ -2980,6 +2980,14 @@ impl LibraryUi {
         self.sizes.get(real).copied()
     }
 
+    /// Task 83: asks for the indexed totals of the folders in `real` (a folder of a source)
+    /// when not asked yet; they arrive like the views' (`sizes_gen`).
+    pub fn want_children(&self, real: &VPath) {
+        if !self.size_asked.contains(real) && source_of(&self.sources, real).is_some() {
+            self.size_wanted.lock().insert(real.clone());
+        }
+    }
+
     /// Reads the folder totals the views asked for, on a worker.
     fn ask_sizes(&mut self) {
         let wanted: Vec<VPath> = self.size_wanted.lock().drain().collect();
