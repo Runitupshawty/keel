@@ -48,6 +48,8 @@ pub struct Cli {
 
 /// `keel <subcommand>`: talks to keel-daemon when it runs for the profile, else opens the
 /// library in this process. Exit codes: 0 ok, 1 operation error, 2 usage.
+// Parsed once per run: `Du`'s many flags are not worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, Clone, PartialEq)]
 pub enum Command {
     /// Search the library index.
@@ -724,16 +726,34 @@ mod tests {
         );
         assert!(a.walks_differently());
         // --load-from is --load; a loaded scan takes exports and a report.
-        let a = du(&["--load-from", "s.json", "--save-to", "t.csv", "--report", "r.html"]).unwrap();
+        let a = du(&[
+            "--load-from",
+            "s.json",
+            "--save-to",
+            "t.csv",
+            "--report",
+            "r.html",
+        ])
+        .unwrap();
         assert_eq!(a.load, Some("s.json".into()));
         assert!(!a.walks_differently());
-        assert!(du(&["--all-drives", "--save-types-to", "t.csv"]).unwrap().all_drives);
+        assert!(
+            du(&["--all-drives", "--save-types-to", "t.csv"])
+                .unwrap()
+                .all_drives
+        );
         // Usage errors.
-        assert!(du(&["--scan", "a", "--mail"]).is_err(), "--mail needs --report");
+        assert!(
+            du(&["--scan", "a", "--mail"]).is_err(),
+            "--mail needs --report"
+        );
         assert!(du(&["--load-from", "f", "--scan", "a"]).is_err());
         assert!(du(&["--scan", "a", "--min-size", "ten"]).is_err());
         assert!(du(&["--scan", "a", "--older-than", "3 fortnights"]).is_err());
-        assert!(parse(&["du", "x", "--report", "r.html"]).is_err(), "folder sizes: no report");
+        assert!(
+            parse(&["du", "x", "--report", "r.html"]).is_err(),
+            "folder sizes: no report"
+        );
         assert!(parse(&["du", "x", "--save-to", "t.csv"]).is_err());
     }
 

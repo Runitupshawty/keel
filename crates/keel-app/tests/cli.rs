@@ -735,11 +735,24 @@ fn du_exports_and_report_unattended() {
     let json_tree = o("tree.json");
     env.ok(&["du", "--scan", &root, "--save-to", &json_tree, "--quiet"]);
     let again = o("again.csv");
-    let args = ["du", "--load-from", &json_tree, "--json", "--save-types-to", &again];
+    let args = [
+        "du",
+        "--load-from",
+        &json_tree,
+        "--json",
+        "--save-types-to",
+        &again,
+    ];
     let v: Value = serde_json::from_str(&env.ok(&args)).unwrap();
     assert_eq!(v["bytes"], 14, "{v}");
     assert_eq!(v["written"][0]["what"], "file types", "{v}");
-    let text = env.ok(&["du", "--load-from", &json_tree, "--report", &o("again.html")]);
+    let text = env.ok(&[
+        "du",
+        "--load-from",
+        &json_tree,
+        "--report",
+        &o("again.html"),
+    ]);
     assert!(text.contains("Wrote the report to "), "{text}");
 
     // Usage errors: nothing is written.
@@ -748,13 +761,32 @@ fn du_exports_and_report_unattended() {
     assert_eq!(code(&["du", "--scan", &root, "--save-to", &bad]), Some(2));
     let pdf = o("r.pdf");
     assert_eq!(code(&["du", "--scan", &root, "--report", &pdf]), Some(2));
-    let regex = ["du", "--scan", &root, "--exclude-regex", "(", "--save-to", &x];
+    let regex = [
+        "du",
+        "--scan",
+        &root,
+        "--exclude-regex",
+        "(",
+        "--save-to",
+        &x,
+    ];
     assert_eq!(code(&regex), Some(2));
-    let twice = ["du", "--scan", &root, "--save-to", &same, "--save-types-to", &same];
+    let twice = [
+        "du",
+        "--scan",
+        &root,
+        "--save-to",
+        &same,
+        "--save-types-to",
+        &same,
+    ];
     assert_eq!(code(&twice), Some(2));
     let loaded = ["du", "--load-from", &json_tree, "--exclude", "*.pdf"];
     assert_eq!(code(&loaded), Some(2));
-    assert_eq!(code(&["du", "--scan", &root, "--min-size", "lots"]), Some(2));
+    assert_eq!(
+        code(&["du", "--scan", &root, "--min-size", "lots"]),
+        Some(2)
+    );
     for f in ["bad.txt", "r.pdf", "x.csv", "same.csv"] {
         assert!(!out.path().join(f).exists(), "{f}");
     }

@@ -433,7 +433,11 @@ fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
     let exports: Vec<(export::List, &PathBuf, &str)> = [
         (export::List::Tree, a.save_to.as_ref(), "items"),
         (export::List::Types, a.save_types_to.as_ref(), "file types"),
-        (export::List::Largest, a.save_largest_to.as_ref(), "largest files"),
+        (
+            export::List::Largest,
+            a.save_largest_to.as_ref(),
+            "largest files",
+        ),
     ]
     .into_iter()
     .filter_map(|(list, path, what)| path.map(|p| (list, p, what)))
@@ -445,7 +449,10 @@ fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
         let html = (r.extension().and_then(|e| e.to_str()))
             .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
         if !html {
-            return Err(usage(format!("{}: a report file ends in .html", r.display())));
+            return Err(usage(format!(
+                "{}: a report file ends in .html",
+                r.display()
+            )));
         }
     }
     let mut targets: Vec<String> = (exports.iter().map(|e| e.1))
@@ -473,9 +480,7 @@ fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
         ));
     }
     let opts = du_scan_options(&a);
-    opts.filters
-        .check()
-        .map_err(|e| usage(format!("{e:#}")))?;
+    opts.filters.check().map_err(|e| usage(format!("{e:#}")))?;
 
     let tree = match &a.load {
         Some(file) => du::load(file).map_err(fail)?,
@@ -560,7 +565,11 @@ fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
         eprintln!(
             "keel: the scan is partial ({} folders could not be read{})",
             tree.info.unreadable,
-            if tree.info.complete { "" } else { ", cut short" }
+            if tree.info.complete {
+                ""
+            } else {
+                ", cut short"
+            }
         );
         return Ok(PARTIAL);
     }
