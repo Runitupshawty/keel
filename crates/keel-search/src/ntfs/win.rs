@@ -5,23 +5,36 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+use windows::Win32::Foundation::{
+    CloseHandle, LocalFree, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL,
+};
+use windows::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::{
+    GetTokenInformation, TokenElevation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    TOKEN_ELEVATION, TOKEN_QUERY,
+};
 use windows::Win32::Storage::FileSystem::{
     FileBasicInfo, FileCompressionInfo, FileIdType, FileNameInfo, FileStandardInfo, GetDriveTypeW,
     GetFileAttributesExW, GetFileExInfoStandard, GetFileInformationByHandle,
     GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW, OpenFileById,
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, PIPE_ACCESS_INBOUND, SECURITY_IDENTIFICATION,
     WIN32_FILE_ATTRIBUTE_DATA,
 };
 use windows::Win32::System::Ioctl::{
     FSCTL_ENUM_USN_DATA, FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_QUERY_USN_JOURNAL,
     FSCTL_READ_UNPRIVILEGED_USN_JOURNAL, FSCTL_READ_USN_JOURNAL,
+};
+use windows::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
@@ -344,28 +357,12 @@ impl Volume {
 
     /// Streams every MFT entry with a name (`FSCTL_ENUM_USN_DATA`; administrator).
     pub fn enumerate(&self, mut each: impl FnMut(Vec<Record>)) -> io::Result<()> {
-        let mut out = vec![0u8; BUFFER];
-        let mut input = MftEnumDataV0 {
-            start_frn: 0,
-            low_usn: 0,
-            high_usn: i64::MAX,
-        };
-        loop {
-            let n = match ioctl(&self.file, FSCTL_ENUM_USN_DATA, &input, &mut out) {
-                Ok(n) => n,
-                // ERROR_HANDLE_EOF: past the last MFT record.
-                Err(e) if e.raw_os_error() == Some(38) => return Ok(()),
-                Err(e) => return Err(e),
-            };
-            let Some((next, records)) = parse_buffer(&out[..n]) else {
-                return Ok(());
-            };
-            if records.is_empty() && next == input.start_frn {
-                return Ok(());
+        self.enumerate_raw(&mut |buf| {
+            if let Some((_, records)) = parse_buffer(buf) {
+                each(records);
             }
-            each(records);
-            input.start_frn = next;
-        }
+            Ok(())
+        })
     }
 
     /// Reads journal records from `start` up to the current end. Returns the records
@@ -434,6 +431,36 @@ impl RawVolume for Volume {
         }
         Ok(())
     }
+
+    /// `FSCTL_ENUM_USN_DATA` over the whole MFT (administrator), each output buffer
+    /// as it comes: the next start FRN, then `USN_RECORD`s.
+    fn enumerate_raw(&self, each: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let mut out = vec![0u8; BUFFER];
+        let mut input = MftEnumDataV0 {
+            start_frn: 0,
+            low_usn: 0,
+            high_usn: i64::MAX,
+        };
+        loop {
+            let n = match ioctl(&self.file, FSCTL_ENUM_USN_DATA, &input, &mut out) {
+                Ok(n) => n,
+                // ERROR_HANDLE_EOF: past the last MFT record.
+                Err(e) if e.raw_os_error() == Some(38) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            let Some(next) = out.get(..n).and_then(|b| b.first_chunk::<8>()) else {
+                return Ok(());
+            };
+            let next = u64::from_le_bytes(*next);
+            if n > 8 {
+                each(&out[..n])?;
+            }
+            if next == input.start_frn {
+                return Ok(());
+            }
+            input.start_frn = next;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -458,6 +485,114 @@ impl Volume {
             .map(|b| format!("{b:02x}"))
             .collect()
     }
+}
+
+/// Start of the pipe the unelevated Keel serves for the index helper; the name goes
+/// on with `<process id>-<16 hex digits>`.
+pub(crate) const HELPER_PIPE: &str = r"\\.\pipe\keel-index-";
+
+/// The unelevated end of the index helper's pipe: a new single-instance inbound pipe
+/// under a fresh name, which only this user and administrators may open, from this
+/// machine only. Returns its path and the server handle.
+pub(crate) fn helper_pipe() -> io::Result<(String, File)> {
+    use std::hash::BuildHasher;
+    let pid = std::process::id();
+    let nonce = std::collections::hash_map::RandomState::new()
+        .hash_one((pid, std::time::SystemTime::now()));
+    let name = format!("{HELPER_PIPE}{pid}-{nonce:016x}");
+    let pipe = serve_pipe(&name)?;
+    Ok((name, pipe))
+}
+
+/// Creates the server end of pipe `name` (see [`helper_pipe`]).
+pub(crate) fn serve_pipe(name: &str) -> io::Result<File> {
+    let sddl = HSTRING::from(format!(
+        "D:P(A;;GA;;;{})(A;;GA;;;BA)",
+        keel_vfs::pipe::user_sid()?
+    ));
+    let path = HSTRING::from(name);
+    // SAFETY: the strings outlive the calls; `sd` is freed once the pipe exists, and
+    // the pipe handle is owned by the returned File.
+    unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(&sddl, SDDL_REVISION_1, &mut sd, None)?;
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: false.into(),
+        };
+        let pipe = CreateNamedPipeW(
+            &path,
+            PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            0,
+            1 << 20,
+            0,
+            Some(&sa),
+        );
+        let made = if pipe.is_invalid() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(File::from_raw_handle(pipe.0))
+        };
+        let _ = LocalFree(HLOCAL(sd.0));
+        made
+    }
+}
+
+/// Waits until the helper connects to `pipe` (or [`poke_pipe`] does).
+pub(crate) fn accept_pipe(pipe: &File) -> io::Result<()> {
+    // SAFETY: a valid pipe handle, no overlapped I/O.
+    match unsafe { ConnectNamedPipe(handle(pipe), None) } {
+        Ok(()) => Ok(()),
+        // Connected before the call, or connected and already gone (the read then
+        // sees the end).
+        Err(e)
+            if e.code() == ERROR_PIPE_CONNECTED.to_hresult()
+                || e.code() == ERROR_NO_DATA.to_hresult() =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Connects to the pipe and hangs up, so an [`accept_pipe`] still waiting returns: the
+/// helper is gone without connecting. Does nothing when the helper is connected.
+pub(crate) fn poke_pipe(name: &str) {
+    let _ = std::fs::OpenOptions::new().write(true).open(name);
+}
+
+/// The helper's end of the pipe `name` (made by [`helper_pipe`]): opened for writing
+/// only, the server may identify but never impersonate this elevated process, and the
+/// server must be the process the name says.
+pub(crate) fn open_helper_pipe(name: &str) -> io::Result<File> {
+    let bad = || io::Error::new(io::ErrorKind::InvalidInput, "not an index helper pipe");
+    let rest = name.strip_prefix(HELPER_PIPE).ok_or_else(bad)?;
+    let (pid, nonce) = rest.split_once('-').ok_or_else(bad)?;
+    if pid.is_empty()
+        || !pid.bytes().all(|b| b.is_ascii_digit())
+        || nonce.len() != 16
+        || !nonce.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(bad());
+    }
+    let pid: u32 = pid.parse().map_err(|_| bad())?;
+    let pipe = std::fs::OpenOptions::new()
+        .write(true)
+        .security_qos_flags(SECURITY_IDENTIFICATION.0)
+        .open(name)?;
+    let mut server = 0;
+    // SAFETY: a valid handle and out value.
+    unsafe { GetNamedPipeServerProcessId(handle(&pipe), &mut server) }?;
+    if server != pid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("the index pipe is served by process {server}, not {pid}"),
+        ));
+    }
+    Ok(pipe)
 }
 
 /// Whether this process runs with an elevated (administrator) token.

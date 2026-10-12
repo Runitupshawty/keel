@@ -27,7 +27,7 @@ rusqlite.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
-windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
+windows = { workspace = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # The in-tree fuzz runs (`keel_vfs::fuzz_harness`).

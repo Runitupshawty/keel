@@ -39,6 +39,12 @@ pub(crate) trait RawVolume {
     fn ntfs_data(&self) -> io::Result<NtfsData>;
     /// Fills `buf` from byte `offset` of the volume.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+    /// The fallback when the MFT cannot be read: every raw `FSCTL_ENUM_USN_DATA`
+    /// output buffer in turn, unparsed.
+    fn enumerate_raw(&self, each: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let _ = each;
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// Where the MFT's records are on the volume.
