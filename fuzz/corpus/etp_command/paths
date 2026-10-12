@@ -1,0 +1,10 @@
+me:pass@[::1]:2121
+CWD a\..\..\b/./c//d
+MLST /
+NLST -a
+STOR x
+PORT 127,0,0,1,4,1
+SITE CHMOD 777 x
+AUTH TLS
+PROT P
+REST 100

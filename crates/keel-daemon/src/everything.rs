@@ -574,6 +574,16 @@ pub fn set_login(
     user: &str,
     password: &str,
 ) -> anyhow::Result<()> {
+    store_login(store, &login_key(profile), user, password)
+}
+
+/// Checks a login as [`set_login`] does and stores it under `key` (the ETP login too).
+pub(crate) fn store_login(
+    store: &dyn SecretStore,
+    key: &str,
+    user: &str,
+    password: &str,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         !user.is_empty()
             && user.len() <= 128
@@ -587,7 +597,7 @@ pub fn set_login(
             && !password.chars().any(char::is_control),
         "the password must be at least {MIN_PASSWORD} characters, on one line"
     );
-    store.set(&login_key(profile), &format!("{user}:{password}"))
+    store.set(key, &format!("{user}:{password}"))
 }
 
 /// Removes the profile's HTTP login.

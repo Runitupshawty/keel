@@ -63,6 +63,59 @@ pub fn everything_query(data: &[u8]) {
     let _ = everything::to_json(&found, &r).to_string();
 }
 
+/// ETP command lines (`--etp`): each line parsed as the server parses it, `SITE
+/// EVERYTHING` settings applied, paths resolved from the current folder (never above `/`,
+/// never `..` or empty parts), and a `QUERY` reply written; the same lines read back by
+/// the ETP client (`keel_search::etp`), and the first one as its `-connect` target.
+pub fn etp_command(data: &[u8]) {
+    use crate::etp::{fs::Virtual, proto};
+    let text = String::from_utf8_lossy(data);
+    let mut opts = proto::Options::default();
+    let mut cwd = Virtual::default();
+    let mut lines = Vec::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        lines.push(line.to_owned());
+        let Ok(cmd) = proto::parse(line) else {
+            continue;
+        };
+        let arg = match &cmd {
+            proto::Command::Everything(e) => {
+                let _ = opts.apply(e);
+                continue;
+            }
+            proto::Command::Cwd(a) | proto::Command::Retr(a) | proto::Command::Mlst(a) => a.clone(),
+            proto::Command::List(a) | proto::Command::Nlst(a) => proto::list_target(a).to_owned(),
+            _ => continue,
+        };
+        let v = Virtual::resolve(&cwd, &arg);
+        assert!(
+            v.0.iter()
+                .all(|p| !p.is_empty() && p != "." && p != ".." && !p.contains('/')),
+            "{v:?}"
+        );
+        cwd = v;
+    }
+    let p = opts.params();
+    assert!(p.count.unwrap_or(0) <= proto::MAX_COUNT as usize);
+    let _ = opts.filter_params();
+    let item = proto::Item {
+        name: "a.txt".into(),
+        path: "Media\\x".into(),
+        size: Some(1),
+        ..proto::Item::default()
+    };
+    let reply = proto::results(3, &[item.clone(), item], &opts);
+    let reply_lines: Vec<&str> = reply.split("\r\n").collect();
+    let read = keel_search::etp::parse_results(&reply_lines).expect("its own reply parses");
+    assert_eq!((read.total, read.items.len()), (3, 2));
+    let _ = keel_search::etp::parse_results(&lines);
+    if let Some(first) = lines.first() {
+        let _ = keel_search::etp::Target::parse(first);
+    }
+    let _ = proto::welcome(&text);
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -78,5 +131,10 @@ mod tests {
     #[test]
     fn fuzz_everything_query() {
         run("everything_query", super::everything_query);
+    }
+
+    #[test]
+    fn fuzz_etp_command() {
+        run("etp_command", super::etp_command);
     }
 }

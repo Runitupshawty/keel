@@ -29,6 +29,10 @@ rusqlite.workspace = true
 # Settings → Search is saved in the profile's config.toml.
 serde.workspace = true
 
+# The ETP client (`etp`): TLS through keel-vfs's FTPS connector, which implements
+# suppaftp's TLS traits (already in the tree through keel-vfs).
+suppaftp = { version = "12", default-features = false, features = ["secure"] }
+
 [dev-dependencies]
 # The in-tree fuzz runs' harness (`keel_vfs::fuzz_harness`).
 keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }

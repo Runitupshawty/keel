@@ -281,3 +281,10 @@ path = "fuzz_targets/recycle_bin.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "etp_command"
+path = "fuzz_targets/etp_command.rs"
+test = false
+doc = false
+bench = false

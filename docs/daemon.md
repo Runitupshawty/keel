@@ -63,6 +63,56 @@ Use the full path to `keel` when it is not on `PATH`. Every mutating tool return
 
 Limits: a window that opened the library in-process keeps it until it closes or switches (Settings → Library → Run the library in a background daemon hands it over at once).
 
+## ETP/FTP server for Everything clients
+
+keel-daemon can answer Everything's ETP clients (Everything's **Connect to ETP server**, and any FTP client): an FTP server with Everything's `SITE EVERYTHING` search extension, searching this computer with the window's search backend (Everything, Keel's index, Spotlight or locate) and serving only the folders you list. It is off by default, read-only, and stricter than Everything's own server:
+
+- it binds to loopback (`127.0.0.1:21` on Windows, `127.0.0.1:2121` elsewhere) unless `[etp] bind` or `--etp ADDR` says otherwise;
+- it always needs a user and password (Everything's accepts anyone when they are empty), kept in the OS keychain: `keel-daemon --set-etp-login USER` reads the password from the first line of standard input (at least 10 characters), `--clear-etp-login` removes it. Three failed sign-ins close the connection, each after a pause;
+- nothing outside the listed folders can be named, found or read: each folder is a top folder under its own name (SUBST-style: `/Media/...`; a root named `C:` for `C:\` gives Everything's own layout), `..` never climbs above `/`, and a link inside a folder that points out of it is refused. Search results outside the folders are never sent;
+- no command changes anything (`STOR`, `DELE`, `MKD`, `RNFR`... are refused), and files are sent (`RETR`) only while `[etp] allow_downloads = true`; browsing (`LIST`, `MLSD`, `SIZE`, `MDTM`) and searching work either way. The switch is read for every download, so turning it off applies at once;
+- passive mode only (`PASV`, `EPSV`), and a data connection is accepted only from the control connection's address;
+- explicit FTPS (`AUTH TLS`, `PBSZ 0`, `PROT P`) with your certificate: set `tls_cert` and `tls_key` (PEM files; a certificate from your own CA, `mkcert` or `openssl` works, Keel does not make one). With TLS configured, sign-in and transfers need it (`require_tls`, on by default; Everything's own client cannot use TLS, so turn it off for Everything clients on a trusted network);
+- a network address without required TLS is refused unless `allow_unencrypted = true` accepts that the user name, password, searches and files cross the network readable; the daemon then logs a warning at start.
+
+In the profile's `config.toml`:
+
+```toml
+[etp]
+enabled = true                 # start with the daemon (or run keel-daemon --etp)
+bind = "127.0.0.1:2121"
+welcome = "Keel files"         # several lines allowed
+allow_downloads = false
+log = true                     # every command (passwords hidden) at info level
+# tls_cert = "etp-cert.pem"    # relative to the profile folder
+# tls_key = "etp-key.pem"
+# require_tls = true
+# allow_unencrypted = false
+
+[[etp.roots]]
+path = 'D:\Media'
+name = "Media"                 # default: the folder's name, or C: for a drive
+
+[[etp.roots]]
+path = 'C:\Users\you\Documents'
+```
+
+Then `keel-daemon --etp` (or with `enabled = true`, just `keel-daemon`); `--etp 127.0.0.1:2121` overrides `bind`. At most 32 connections at once, 8 from one remote address. The search behaves as `system.search`: Everything's match switches (`CASE`, `WHOLE_WORD`, `PATH`, `DIACRITICS`, `PREFIX`, `SUFFIX`, `IGNORE_PUNCTUATION`, `IGNORE_WHITESPACE`, `REGEX`), `FILTER_SEARCH` and its switches, `SORT` (name, path, size and date modified; extension, attributes and the others sort by name, date created by date modified), `OFFSET`, `COUNT` (at most 1000 per query) and the `PATH`, `SIZE`, `DATE_MODIFIED`, `DATE_CREATED` and `ATTRIBUTES` columns. At most 10,000 hits are read from the backend per search, before the folders are applied (with Everything as the backend the folders go into its search, so they are all its hits); `RESULT_COUNT` counts those. `PATH` matching sees the folder's real path. On Linux and macOS, names holding `\` are left out of results and listings (Everything's paths use it as the separator).
+
+### Searching an ETP server
+
+`keel search QUERY --etp [USER@]HOST[:PORT]` searches an ETP server, Everything's or Keel's, instead of the library, and prints `ftp://` paths (`--json` for JSON). Without a server it uses the one in the profile's `config.toml`:
+
+```toml
+[search]
+etp = "you@nas.example:2121"
+etp_tls = true                 # AUTH TLS, never falling back to plain FTP
+# etp_pin = "AB:CD:..."        # SHA-256 fingerprint of a certificate the OS does not trust
+# etp_remote = "nas"           # the FTP remote (id or label) the results open through
+```
+
+The password comes from `KEEL_ETP_PASSWORD`, or from the keychain of the FTP or FTPS remote with the same host and port (or `etp_remote`), which also lends its user name and TLS setting and opens the results (`ftp://<remote id>/...`). An FTPS server's certificate is checked against the OS trust store or the fingerprint pinned for that host (`ftps_known_hosts`, as for FTPS remotes, or `etp_pin`); an untrusted one is refused with its fingerprint. A plain FTP server without the `EVERYTHING` feature is refused. `keel_search::etp::EtpSearcher` is the same backend for code. The search window cannot use it yet.
+
 ## Mounts
 
 keel-daemon can serve a library source, or a folder in it, as a drive letter or mount folder that any program can open:

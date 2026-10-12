@@ -206,6 +206,8 @@ pub struct Daemon {
     name: String,
     ws_addr: Option<SocketAddr>,
     web_addr: Option<SocketAddr>,
+    /// The ETP server's bound address, once [`Daemon::start_etp`] started it.
+    etp_addr: Mutex<Option<SocketAddr>>,
     requests: Receiver<()>,
 }
 
@@ -305,6 +307,7 @@ impl Daemon {
             name,
             ws_addr,
             web_addr,
+            etp_addr: Mutex::new(None),
             requests,
         })
     }
@@ -322,6 +325,35 @@ impl Daemon {
     /// The web client's bound address (`--web`).
     pub fn web_addr(&self) -> Option<SocketAddr> {
         self.web_addr
+    }
+
+    /// Starts the ETP server (`crate::etp`) with the profile's `[etp]` settings (`bind`
+    /// replaces `[etp] bind`) and its ETP login from the keychain; returns its address.
+    pub fn start_etp(&self, bind: Option<SocketAddr>) -> anyhow::Result<SocketAddr> {
+        let mut cfg = crate::etp::Config::read(&self.shared.cfg)?;
+        if let Some(bind) = bind {
+            cfg.bind = bind;
+        }
+        let store = self.shared.secrets.lock().clone();
+        let login = crate::etp::login(&*store, &self.shared.cfg.profile)
+            .context("reading the ETP login from the keychain")?
+            .context("no ETP login: set one with keel-daemon --set-etp-login USER")?;
+        let s = self.shared.clone();
+        let search: crate::etp::SearchFn = Arc::new(move || s.ctx().system.get());
+        // Read per download, so switching it off applies at once.
+        let s = self.shared.clone();
+        let downloads: crate::etp::DownloadsFn =
+            Arc::new(move || crate::etp::Config::read(&s.cfg).is_ok_and(|c| c.allow_downloads));
+        let s = self.shared.clone();
+        let stop: crate::etp::StopFn = Arc::new(move || s.stop.load(Ordering::Acquire));
+        let addr = crate::etp::serve(cfg, login, search, downloads, stop)?;
+        *self.etp_addr.lock() = Some(addr);
+        Ok(addr)
+    }
+
+    /// The ETP server's bound address (`--etp`, `[etp] enabled`).
+    pub fn etp_addr(&self) -> Option<SocketAddr> {
+        *self.etp_addr.lock()
     }
 
     /// The library and keel-net the daemon serves (tests).
@@ -353,7 +385,8 @@ impl Daemon {
             .broadcast("daemon.stopping", json!({ "pid": std::process::id() }));
         // Wakes the accept loops, which then see `stop` and let go of the socket.
         let _ = socket::connect(&self.name, Duration::from_millis(500));
-        for addr in self.ws_addr.iter().chain(&self.web_addr) {
+        let etp = *self.etp_addr.lock();
+        for addr in self.ws_addr.iter().chain(&self.web_addr).chain(&etp) {
             let _ = std::net::TcpStream::connect_timeout(addr, Duration::from_millis(500));
         }
         if !self.shared.host.close() {
