@@ -85,10 +85,12 @@ impl State {
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// Hashes everything `r` yields with each of `algos` in one pass; returns lowercase hex
@@ -134,7 +136,10 @@ mod tests {
         assert_eq!(hash_bytes(d, HashAlgo::Crc32), "cbf43926");
         assert_eq!(hash_bytes(d, HashAlgo::Crc64), "995dc9bbdf1939fa");
         let abc = b"abc";
-        assert_eq!(hash_bytes(abc, HashAlgo::Md5), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(
+            hash_bytes(abc, HashAlgo::Md5),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
         assert_eq!(
             hash_bytes(abc, HashAlgo::Sha1),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
@@ -143,12 +148,17 @@ mod tests {
             hash_bytes(abc, HashAlgo::Sha256),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        assert_eq!(hash_bytes(b"", HashAlgo::Md5), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(
+            hash_bytes(b"", HashAlgo::Md5),
+            "d41d8cd98f00b204e9800998ecf8427e"
+        );
     }
 
     #[test]
     fn streaming_matches_one_shot() {
-        let data: Vec<u8> = (0..(CHUNK * 2 + 77)).map(|i| (i * 31 % 251) as u8).collect();
+        let data: Vec<u8> = (0..(CHUNK * 2 + 77))
+            .map(|i| (i * 31 % 251) as u8)
+            .collect();
         let got = hash_reader(&data[..], &HashAlgo::ALL, &Cancel::default()).unwrap();
         for (algo, h) in HashAlgo::ALL.iter().zip(&got) {
             assert_eq!(h, &hash_bytes(&data, *algo), "{}", algo.name());

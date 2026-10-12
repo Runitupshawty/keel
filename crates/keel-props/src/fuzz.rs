@@ -21,7 +21,11 @@ pub fn lnk(data: &[u8]) {
 /// A PE image's version resource, and the bytes as a bare `VS_VERSIONINFO`.
 pub fn pe_version(data: &[u8]) {
     if let Ok(v) = crate::pe::version_info(&mut Cursor::new(data), data.len() as u64) {
-        let _ = (v.file_version(), v.product_version(), v.string("CompanyName"));
+        let _ = (
+            v.file_version(),
+            v.product_version(),
+            v.string("CompanyName"),
+        );
     }
     let _ = crate::pe::parse_version_resource(data);
 }
@@ -75,9 +79,21 @@ mod tests {
         };
         let seeds: Vec<(&str, &str, Vec<u8>)> = vec![
             ("lnk", "local-unicode-env.lnk", fx::lnk(&lnk_spec)),
-            ("pe_version", "pe32.exe", fx::pe_with_version(false, &fx::VERSION_STRINGS)),
-            ("pe_version", "pe32plus.exe", fx::pe_with_version(true, &fx::VERSION_STRINGS)),
-            ("pe_version", "versioninfo.bin", fx::version_resource(&fx::VERSION_STRINGS)),
+            (
+                "pe_version",
+                "pe32.exe",
+                fx::pe_with_version(false, &fx::VERSION_STRINGS),
+            ),
+            (
+                "pe_version",
+                "pe32plus.exe",
+                fx::pe_with_version(true, &fx::VERSION_STRINGS),
+            ),
+            (
+                "pe_version",
+                "versioninfo.bin",
+                fx::version_resource(&fx::VERSION_STRINGS),
+            ),
             ("audio_tags", "id3v23.mp3", fx::mp3(3, false, 3)),
             ("audio_tags", "id3v24-xing.mp3", fx::mp3(4, true, 2)),
             ("audio_tags", "id3v22.mp3", fx::mp3(2, false, 2)),
@@ -97,9 +113,13 @@ mod tests {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, &bytes).unwrap();
             }
-            let on_disk = std::fs::read(&path)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert!(on_disk == bytes, "{} differs from its fixture", path.display());
+            let on_disk =
+                std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert!(
+                on_disk == bytes,
+                "{} differs from its fixture",
+                path.display()
+            );
         }
     }
 }

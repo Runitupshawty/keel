@@ -99,11 +99,15 @@ fn join(base: &str, suffix: &str) -> String {
 }
 
 fn u16_at(b: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(off..off.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        b.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(b: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        b.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 /// A NUL-terminated ANSI (Windows-1252) string starting at `off`, within `b`.
@@ -128,7 +132,10 @@ fn utf16_z(b: &[u8], off: usize) -> Option<String> {
 }
 
 pub(crate) fn decode_ansi(b: &[u8]) -> String {
-    encoding_rs::WINDOWS_1252.decode_without_bom_handling(b).0.into_owned()
+    encoding_rs::WINDOWS_1252
+        .decode_without_bom_handling(b)
+        .0
+        .into_owned()
 }
 
 /// Parses a `.lnk` file's bytes.

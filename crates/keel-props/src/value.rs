@@ -73,7 +73,9 @@ impl Prop {
 
 impl From<Option<u64>> for Prop {
     fn from(v: Option<u64>) -> Prop {
-        v.map_or(Prop::Unknown, |n| Prop::Int(i64::try_from(n).unwrap_or(i64::MAX)))
+        v.map_or(Prop::Unknown, |n| {
+            Prop::Int(i64::try_from(n).unwrap_or(i64::MAX))
+        })
     }
 }
 
@@ -160,7 +162,10 @@ mod tests {
         assert_eq!(Prop::Unknown.to_string(), "");
         assert_eq!(Prop::Int(42).to_string(), "42");
         assert_eq!(Prop::Bool(true).to_string(), "yes");
-        assert_eq!(Prop::Duration(Duration::from_secs(3725)).to_string(), "1:02:05");
+        assert_eq!(
+            Prop::Duration(Duration::from_secs(3725)).to_string(),
+            "1:02:05"
+        );
         assert_eq!(Prop::Duration(Duration::from_secs(65)).to_string(), "1:05");
         let list = Prop::List(vec![Prop::Str("a".into()), Prop::Str("b".into())]);
         assert_eq!(list.to_string(), "a; b");

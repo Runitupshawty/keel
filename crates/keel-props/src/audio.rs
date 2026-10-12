@@ -119,9 +119,10 @@ impl AudioInfo {
                 return;
             }
             Field::Compilation => {
-                self.compilation = self
-                    .compilation
-                    .or(Some(matches!(value.as_str(), "1" | "true" | "TRUE" | "yes")));
+                self.compilation = self.compilation.or(Some(matches!(
+                    value.as_str(),
+                    "1" | "true" | "TRUE" | "yes"
+                )));
                 return;
             }
             Field::LengthMs => {
@@ -142,7 +143,12 @@ impl AudioInfo {
 }
 
 fn leading_number(s: &str) -> Option<u32> {
-    let digits: String = s.trim().chars().take_while(char::is_ascii_digit).take(9).collect();
+    let digits: String = s
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(9)
+        .collect();
     digits.parse().ok()
 }
 
@@ -210,11 +216,15 @@ fn be_u32(b: &[u8]) -> Option<u32> {
 }
 
 fn le_u32(b: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        b.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn le_u16(b: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(off..off.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        b.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 /// Removes ID3 unsynchronisation (`FF 00` becomes `FF`).
@@ -237,7 +247,10 @@ fn decode_text(enc: u8, b: &[u8]) -> String {
         1 | 2 => {
             let mut le = enc == 1;
             let mut out = String::new();
-            let units = b.chunks_exact(2).take(MAX_VALUE_CHARS * 4).map(|c| [c[0], c[1]]);
+            let units = b
+                .chunks_exact(2)
+                .take(MAX_VALUE_CHARS * 4)
+                .map(|c| [c[0], c[1]]);
             let mut buf: Vec<u16> = Vec::new();
             for pair in units {
                 // Each value of a UTF-16 frame may start with its own byte order mark.
@@ -340,7 +353,10 @@ pub fn parse_id3v2(tag: &[u8], info: &mut AudioInfo) {
                 body = body.get(n.saturating_add(4)..).unwrap_or(&[]);
             }
             _ => {
-                let n = body.get(..4).and_then(synchsafe).map_or(usize::MAX, |n| n as usize);
+                let n = body
+                    .get(..4)
+                    .and_then(synchsafe)
+                    .map_or(usize::MAX, |n| n as usize);
                 body = body.get(n..).unwrap_or(&[]);
             }
         }
@@ -352,15 +368,17 @@ pub fn parse_id3v2(tag: &[u8], info: &mut AudioInfo) {
         let h = &body[pos..pos + header];
         let id_len = if major == 2 { 3 } else { 4 };
         let id = &h[..id_len];
-        if !id.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        if !id
+            .iter()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
             break; // padding or garbage
         }
         let size = match major {
             2 => be_u24(&h[3..6]),
             3 => be_u32(&h[4..8]).unwrap_or(0) as usize,
             // ID3v2.4 sizes are synchsafe; some writers store plain integers.
-            _ => synchsafe(&h[4..8]).map_or_else(|| be_u32(&h[4..8]).unwrap_or(0), |n| n)
-                as usize,
+            _ => synchsafe(&h[4..8]).map_or_else(|| be_u32(&h[4..8]).unwrap_or(0), |n| n) as usize,
         };
         let start = pos + header;
         let Some(end) = start.checked_add(size).filter(|&e| e <= body.len()) else {
@@ -444,7 +462,9 @@ fn genre_name(raw: &str) -> String {
         match n {
             "RX" => Some("Remix".into()),
             "CR" => Some("Cover".into()),
-            _ => GENRES.get(n.parse::<usize>().ok()?).map(|s| (*s).to_owned()),
+            _ => GENRES
+                .get(n.parse::<usize>().ok()?)
+                .map(|s| (*s).to_owned()),
         }
     };
     if let Some(rest) = raw.strip_prefix('(') {
@@ -463,23 +483,132 @@ fn genre_name(raw: &str) -> String {
 
 /// ID3v1 genres (0-79) and the Winamp extensions (80-125).
 const GENRES: [&str; 126] = [
-    "Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge", "Hip-Hop", "Jazz",
-    "Metal", "New Age", "Oldies", "Other", "Pop", "R&B", "Rap", "Reggae", "Rock", "Techno",
-    "Industrial", "Alternative", "Ska", "Death Metal", "Pranks", "Soundtrack", "Euro-Techno",
-    "Ambient", "Trip-Hop", "Vocal", "Jazz+Funk", "Fusion", "Trance", "Classical", "Instrumental",
-    "Acid", "House", "Game", "Sound Clip", "Gospel", "Noise", "AlternRock", "Bass", "Soul",
-    "Punk", "Space", "Meditative", "Instrumental Pop", "Instrumental Rock", "Ethnic", "Gothic",
-    "Darkwave", "Techno-Industrial", "Electronic", "Pop-Folk", "Eurodance", "Dream",
-    "Southern Rock", "Comedy", "Cult", "Gangsta", "Top 40", "Christian Rap", "Pop/Funk",
-    "Jungle", "Native American", "Cabaret", "New Wave", "Psychadelic", "Rave", "Showtunes",
-    "Trailer", "Lo-Fi", "Tribal", "Acid Punk", "Acid Jazz", "Polka", "Retro", "Musical",
-    "Rock & Roll", "Hard Rock", "Folk", "Folk-Rock", "National Folk", "Swing", "Fast Fusion",
-    "Bebob", "Latin", "Revival", "Celtic", "Bluegrass", "Avantgarde", "Gothic Rock",
-    "Progressive Rock", "Psychedelic Rock", "Symphonic Rock", "Slow Rock", "Big Band", "Chorus",
-    "Easy Listening", "Acoustic", "Humour", "Speech", "Chanson", "Opera", "Chamber Music",
-    "Sonata", "Symphony", "Booty Bass", "Primus", "Porn Groove", "Satire", "Slow Jam", "Club",
-    "Tango", "Samba", "Folklore", "Ballad", "Power Ballad", "Rhythmic Soul", "Freestyle", "Duet",
-    "Punk Rock", "Drum Solo", "A capella", "Euro-House", "Dance Hall",
+    "Blues",
+    "Classic Rock",
+    "Country",
+    "Dance",
+    "Disco",
+    "Funk",
+    "Grunge",
+    "Hip-Hop",
+    "Jazz",
+    "Metal",
+    "New Age",
+    "Oldies",
+    "Other",
+    "Pop",
+    "R&B",
+    "Rap",
+    "Reggae",
+    "Rock",
+    "Techno",
+    "Industrial",
+    "Alternative",
+    "Ska",
+    "Death Metal",
+    "Pranks",
+    "Soundtrack",
+    "Euro-Techno",
+    "Ambient",
+    "Trip-Hop",
+    "Vocal",
+    "Jazz+Funk",
+    "Fusion",
+    "Trance",
+    "Classical",
+    "Instrumental",
+    "Acid",
+    "House",
+    "Game",
+    "Sound Clip",
+    "Gospel",
+    "Noise",
+    "AlternRock",
+    "Bass",
+    "Soul",
+    "Punk",
+    "Space",
+    "Meditative",
+    "Instrumental Pop",
+    "Instrumental Rock",
+    "Ethnic",
+    "Gothic",
+    "Darkwave",
+    "Techno-Industrial",
+    "Electronic",
+    "Pop-Folk",
+    "Eurodance",
+    "Dream",
+    "Southern Rock",
+    "Comedy",
+    "Cult",
+    "Gangsta",
+    "Top 40",
+    "Christian Rap",
+    "Pop/Funk",
+    "Jungle",
+    "Native American",
+    "Cabaret",
+    "New Wave",
+    "Psychadelic",
+    "Rave",
+    "Showtunes",
+    "Trailer",
+    "Lo-Fi",
+    "Tribal",
+    "Acid Punk",
+    "Acid Jazz",
+    "Polka",
+    "Retro",
+    "Musical",
+    "Rock & Roll",
+    "Hard Rock",
+    "Folk",
+    "Folk-Rock",
+    "National Folk",
+    "Swing",
+    "Fast Fusion",
+    "Bebob",
+    "Latin",
+    "Revival",
+    "Celtic",
+    "Bluegrass",
+    "Avantgarde",
+    "Gothic Rock",
+    "Progressive Rock",
+    "Psychedelic Rock",
+    "Symphonic Rock",
+    "Slow Rock",
+    "Big Band",
+    "Chorus",
+    "Easy Listening",
+    "Acoustic",
+    "Humour",
+    "Speech",
+    "Chanson",
+    "Opera",
+    "Chamber Music",
+    "Sonata",
+    "Symphony",
+    "Booty Bass",
+    "Primus",
+    "Porn Groove",
+    "Satire",
+    "Slow Jam",
+    "Club",
+    "Tango",
+    "Samba",
+    "Folklore",
+    "Ballad",
+    "Power Ballad",
+    "Rhythmic Soul",
+    "Freestyle",
+    "Duet",
+    "Punk Rock",
+    "Drum Solo",
+    "A capella",
+    "Euro-House",
+    "Dance Hall",
 ];
 
 /// One MPEG audio frame header.
@@ -517,12 +646,20 @@ fn frame_header(h: &[u8]) -> Option<Frame> {
         return None;
     }
     const V1: [[u32; 15]; 3] = [
-        [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
-        [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
-        [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+        [
+            0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
+        ],
+        [
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
+        ],
+        [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ],
     ];
     const V2: [[u32; 15]; 2] = [
-        [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+        [
+            0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
+        ],
         [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
     ];
     let bitrate = if version == 1 {
@@ -566,9 +703,10 @@ fn mpeg(scan: &[u8], scan_start: u64, audio_end: u64, info: &mut AudioInfo) {
         if f.len < 4 {
             continue;
         }
-        match scan.get(i + f.len..).and_then(|rest| {
-            (rest.len() >= 4).then(|| frame_header(rest))
-        }) {
+        match scan
+            .get(i + f.len..)
+            .and_then(|rest| (rest.len() >= 4).then(|| frame_header(rest)))
+        {
             Some(Some(next))
                 if next.version == f.version
                     && next.layer == f.layer
@@ -658,7 +796,8 @@ fn flac<R: Read + Seek>(r: &mut R, len: u64, mut pos: u64, info: &mut AudioInfo)
             0 => {
                 let s = read_at(r, len, body_at, 34)?;
                 if s.len() == 34 {
-                    let rate = (u32::from(s[10]) << 12) | (u32::from(s[11]) << 4) | u32::from(s[12] >> 4);
+                    let rate =
+                        (u32::from(s[10]) << 12) | (u32::from(s[11]) << 4) | u32::from(s[12] >> 4);
                     let channels = u16::from((s[12] >> 1) & 7) + 1;
                     let bits = u16::from(((s[12] & 1) << 4) | (s[13] >> 4)) + 1;
                     let total = (u64::from(s[13] & 0x0f) << 32)
@@ -670,9 +809,10 @@ fn flac<R: Read + Seek>(r: &mut R, len: u64, mut pos: u64, info: &mut AudioInfo)
                         if total > 0 {
                             let secs = total as f64 / f64::from(rate);
                             info.length = Some(Duration::from_secs_f64(secs));
-                            info.bitrate =
-                                Some((len.saturating_sub(pos) as f64 * 8.0 / secs / 1000.0).round()
-                                    as u32);
+                            info.bitrate = Some(
+                                (len.saturating_sub(pos) as f64 * 8.0 / secs / 1000.0).round()
+                                    as u32,
+                            );
                         }
                     }
                 }
@@ -883,7 +1023,14 @@ mod tests {
     #[test]
     fn id3v1_only() {
         let mut b = vec![0u8; 64];
-        b.extend_from_slice(&fixtures::id3v1("Old Title", "Old Artist", "Old Album", "1999", 7, 13));
+        b.extend_from_slice(&fixtures::id3v1(
+            "Old Title",
+            "Old Artist",
+            "Old Album",
+            "1999",
+            7,
+            13,
+        ));
         let a = run(&b);
         assert_eq!(a.title.as_deref(), Some("Old Title"));
         assert_eq!(a.artist.as_deref(), Some("Old Artist"));
@@ -943,7 +1090,10 @@ mod tests {
     #[test]
     fn text_encodings() {
         assert_eq!(text_values(b"\x00caf\xe9").as_deref(), Some("caf\u{e9}"));
-        assert_eq!(text_values(b"\x03caf\xc3\xa9").as_deref(), Some("caf\u{e9}"));
+        assert_eq!(
+            text_values(b"\x03caf\xc3\xa9").as_deref(),
+            Some("caf\u{e9}")
+        );
         assert_eq!(
             text_values(b"\x01\xff\xfeA\0\0\0\xfe\xff\0B").as_deref(),
             Some("A; B")

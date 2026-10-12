@@ -326,7 +326,10 @@ mod tests {
     #[test]
     fn counts_lines_and_words() {
         let s = run(b"one two\nthree\n");
-        assert_eq!((s.lines, s.words, s.encoding), (Some(2), Some(3), Encoding::Ascii));
+        assert_eq!(
+            (s.lines, s.words, s.encoding),
+            (Some(2), Some(3), Encoding::Ascii)
+        );
         let s = run(b"one two\nthree");
         assert_eq!((s.lines, s.words), (Some(2), Some(3)));
         let s = run(b"");
@@ -339,9 +342,15 @@ mod tests {
 
     #[test]
     fn encodings() {
-        assert_eq!(run("caf\u{e9} cr\u{e8}me\n".as_bytes()).encoding, Encoding::Utf8);
+        assert_eq!(
+            run("caf\u{e9} cr\u{e8}me\n".as_bytes()).encoding,
+            Encoding::Utf8
+        );
         let s = run(b"\xef\xbb\xbfhello world");
-        assert_eq!((s.encoding, s.words, s.lines), (Encoding::Utf8Bom, Some(2), Some(1)));
+        assert_eq!(
+            (s.encoding, s.words, s.lines),
+            (Encoding::Utf8Bom, Some(2), Some(1))
+        );
         assert_eq!(run(b"caf\xe9 au lait\n").encoding, Encoding::Ansi);
         assert_eq!(run(b"a\0b\0c\x01\x02\0\0").encoding, Encoding::Binary);
         assert_eq!(run(b"a\0b\0c\x01\x02\0\0").lines, None);
@@ -351,12 +360,24 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         let s = run(&utf16);
-        assert_eq!((s.encoding, s.lines, s.words), (Encoding::Utf16Le, Some(2), Some(3)));
+        assert_eq!(
+            (s.encoding, s.lines, s.words),
+            (Encoding::Utf16Le, Some(2), Some(3))
+        );
 
-        let be: Vec<u8> = "no bom here\nok".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let be: Vec<u8> = "no bom here\nok"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
         let s = run(&be);
-        assert_eq!((s.encoding, s.lines, s.words), (Encoding::Utf16Be, Some(2), Some(4)));
-        let le: Vec<u8> = "no bom here".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(
+            (s.encoding, s.lines, s.words),
+            (Encoding::Utf16Be, Some(2), Some(4))
+        );
+        let le: Vec<u8> = "no bom here"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         assert_eq!(run(&le).encoding, Encoding::Utf16Le);
     }
 
@@ -366,7 +387,10 @@ mod tests {
         let mut b = vec![b'a'; SNIFF_LEN - 2];
         b.extend_from_slice(" \u{e9}t\u{e9} fin\n".as_bytes());
         let s = run(&b);
-        assert_eq!((s.encoding, s.words, s.lines), (Encoding::Utf8, Some(3), Some(1)));
+        assert_eq!(
+            (s.encoding, s.words, s.lines),
+            (Encoding::Utf8, Some(3), Some(1))
+        );
         // Invalid UTF-8 after the sniffed part makes it ANSI.
         let mut b = vec![b'a'; SNIFF_LEN + 10];
         b.extend_from_slice(b" \xe9t\xe9\n");
@@ -384,6 +408,9 @@ mod tests {
         let big = vec![b'y'; SNIFF_LEN + CHUNK];
         let c = Cancel::default();
         c.cancel();
-        assert!(matches!(stats(&big[..], u64::MAX, &c), Err(Error::Cancelled)));
+        assert!(matches!(
+            stats(&big[..], u64::MAX, &c),
+            Err(Error::Cancelled)
+        ));
     }
 }

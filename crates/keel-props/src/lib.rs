@@ -382,7 +382,11 @@ impl<'a> FileProps<'a> {
         }
         Ok(algos
             .iter()
-            .map(|a| self.hashes.get(a).map_or(Prop::Unknown, |h| Prop::Str(h.clone())))
+            .map(|a| {
+                self.hashes
+                    .get(a)
+                    .map_or(Prop::Unknown, |h| Prop::Str(h.clone()))
+            })
             .collect())
     }
 
@@ -450,7 +454,10 @@ impl<'a> FileProps<'a> {
             return Ok(Prop::Unknown);
         }
         let fast_only = !self.opts.allow_recall && is_placeholder(self.meta()?);
-        Ok(convert(winprops::get(&self.path, canonical, fast_only)?, conv))
+        Ok(convert(
+            winprops::get(&self.path, canonical, fast_only)?,
+            conv,
+        ))
     }
 
     #[cfg(not(windows))]

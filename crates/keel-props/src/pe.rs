@@ -94,11 +94,15 @@ impl VersionInfo {
 }
 
 fn u16_at(b: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(off..off.checked_add(2)?)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        b.get(off..off.checked_add(2)?)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(b: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        b.get(off..off.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn read_at<R: Read + Seek>(r: &mut R, len: u64, off: u64, n: usize) -> Result<Vec<u8>, PeError> {
@@ -207,7 +211,8 @@ fn dir_entries<R: Read + Seek>(
 ) -> Result<Vec<(u32, u32)>, PeError> {
     let at = base + u64::from(off);
     let head = read_at(r, len, at, 16)?;
-    let n = usize::from(u16_at(&head, 12).unwrap_or(0)) + usize::from(u16_at(&head, 14).unwrap_or(0));
+    let n =
+        usize::from(u16_at(&head, 12).unwrap_or(0)) + usize::from(u16_at(&head, 14).unwrap_or(0));
     if n > MAX_DIR_ENTRIES {
         return Err(PeError::Malformed("resource directory too large"));
     }
@@ -252,7 +257,11 @@ fn block(b: &[u8]) -> Option<Block<'_>> {
     let value_start = align4(pos).min(b.len());
     // Text values count words; some linkers write bytes, so the value runs to the block's
     // end for text and is cut at its NUL when decoded.
-    let value_bytes = if value_type == 1 { value_len * 2 } else { value_len };
+    let value_bytes = if value_type == 1 {
+        value_len * 2
+    } else {
+        value_len
+    };
     let value_end = value_start.saturating_add(value_bytes).min(b.len());
     let children_start = align4(value_end).min(b.len());
     let value = if value_type == 1 {

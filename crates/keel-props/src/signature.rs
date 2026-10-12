@@ -212,7 +212,11 @@ pub fn detect(head: &[u8]) -> Option<Signature> {
         return Some(sig("lz4", "application/x-lz4", "compressed"));
     }
     if at(h, 0, b"MSCF") {
-        return Some(sig("cab", "application/vnd.ms-cab-compressed", "compressed"));
+        return Some(sig(
+            "cab",
+            "application/vnd.ms-cab-compressed",
+            "compressed",
+        ));
     }
     if at(h, 257, b"ustar") {
         return Some(sig("tar", "application/x-tar", "compressed"));
@@ -405,9 +409,17 @@ fn pe_kind(h: &[u8]) -> Signature {
         if at(h, off, b"PE\0\0") {
             let chars = u16le(h, off + 22).unwrap_or(0);
             if chars & 0x2000 != 0 {
-                return sig("dll", "application/vnd.microsoft.portable-executable", "application");
+                return sig(
+                    "dll",
+                    "application/vnd.microsoft.portable-executable",
+                    "application",
+                );
             }
-            return sig("exe", "application/vnd.microsoft.portable-executable", "application");
+            return sig(
+                "exe",
+                "application/vnd.microsoft.portable-executable",
+                "application",
+            );
         }
     }
     sig("exe", "application/x-msdownload", "application")
@@ -453,7 +465,9 @@ mod tests {
         assert_eq!(id(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
         assert_eq!(id(b"\0\0\0\x18ftypheic\0\0\0\0"), Some("heic"));
         assert_eq!(id(b"\0\0\0\x18ftypavif\0\0\0\0"), Some("avif"));
-        let ico = [0u8, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 22, 0, 0, 0];
+        let ico = [
+            0u8, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 22, 0, 0, 0,
+        ];
         assert_eq!(id(&ico), Some("ico"));
         let s = detect(b"  <?xml version='1.0'?><svg xmlns='x'/>").unwrap();
         assert_eq!((s.id, s.perceived), ("svg", "image"));

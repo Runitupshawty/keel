@@ -145,7 +145,7 @@ impl Function {
 }
 
 use AudioField as A;
-use Conv::{Kbps, Perceived, PerThousand, Same, Ticks};
+use Conv::{Kbps, PerThousand, Perceived, Same, Ticks};
 use Group::{Date, Document, FileInfo, Image, Media};
 
 const fn f(
@@ -179,7 +179,14 @@ const fn audio(name: &'static str, field: AudioField, canonical: Option<&'static
 }
 
 const fn pe(name: &'static str, field: PeField, canonical: &'static str) -> Function {
-    f(name, &[], FileInfo, Reader::Pe(field), Some(canonical), Same)
+    f(
+        name,
+        &[],
+        FileInfo,
+        Reader::Pe(field),
+        Some(canonical),
+        Same,
+    )
 }
 
 /// Every property function, in audit Part 1's order within each group.
@@ -327,9 +334,9 @@ pub static FUNCTIONS: &[Function] = &[
 /// The function `name` (or an alias) names, case-insensitive, with or without the colon.
 pub fn lookup(name: &str) -> Option<&'static Function> {
     let n = name.trim().trim_end_matches(':');
-    FUNCTIONS
-        .iter()
-        .find(|f| f.name.eq_ignore_ascii_case(n) || f.aliases.iter().any(|a| a.eq_ignore_ascii_case(n)))
+    FUNCTIONS.iter().find(|f| {
+        f.name.eq_ignore_ascii_case(n) || f.aliases.iter().any(|a| a.eq_ignore_ascii_case(n))
+    })
 }
 
 /// True for a Windows Property System canonical name (`System.Music.Artist`), which
@@ -339,10 +346,15 @@ pub fn is_canonical_name(name: &str) -> bool {
     let first = parts.next().unwrap_or("");
     let rest: Vec<&str> = parts.collect();
     !first.is_empty()
-        && first.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && first
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
         && !rest.is_empty()
         && rest.iter().all(|p| !p.is_empty())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
 /// The docs table (`docs/properties.md`) for one group: function, aliases, own reader,
@@ -358,7 +370,9 @@ pub fn markdown_table(group: Group) -> String {
             "" => "no".to_owned(),
             r => r.to_owned(),
         };
-        let win = f.windows.map_or_else(|| "no".to_owned(), |w| format!("`{w}`"));
+        let win = f
+            .windows
+            .map_or_else(|| "no".to_owned(), |w| format!("`{w}`"));
         s.push_str(&format!("| {name} | {own} | {win} |\n"));
     }
     s
@@ -375,11 +389,17 @@ mod tests {
             for n in std::iter::once(&f.name).chain(f.aliases) {
                 assert!(seen.insert(*n), "duplicate {n}");
                 assert_eq!(lookup(n).unwrap().name, f.name);
-                assert_eq!(lookup(&format!("{}:", n.to_uppercase())).unwrap().name, f.name);
+                assert_eq!(
+                    lookup(&format!("{}:", n.to_uppercase())).unwrap().name,
+                    f.name
+                );
             }
         }
         assert!(lookup("no-such-function").is_none());
-        assert_eq!(lookup("crc:").unwrap().reader, Reader::Hash(HashAlgo::Crc64));
+        assert_eq!(
+            lookup("crc:").unwrap().reader,
+            Reader::Hash(HashAlgo::Crc64)
+        );
         assert_eq!(lookup("Duration").unwrap().name, "length");
     }
 
@@ -396,15 +416,27 @@ mod tests {
     /// The tables in docs/properties.md are generated from [`FUNCTIONS`].
     #[test]
     fn docs_table_is_current() {
-        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/properties.md");
-        let text = std::fs::read_to_string(&docs).unwrap().replace("\r\n", "\n");
+        let docs =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/properties.md");
+        let text = std::fs::read_to_string(&docs)
+            .unwrap()
+            .replace("\r\n", "\n");
         let mut missing = String::new();
-        for g in [Group::FileInfo, Group::Date, Group::Image, Group::Media, Group::Document] {
+        for g in [
+            Group::FileInfo,
+            Group::Date,
+            Group::Image,
+            Group::Media,
+            Group::Document,
+        ] {
             let table = markdown_table(g);
             if !text.contains(&table) {
                 missing.push_str(&format!("### {}\n\n{table}\n", g.title()));
             }
         }
-        assert!(missing.is_empty(), "docs/properties.md is out of date; expected:\n\n{missing}");
+        assert!(
+            missing.is_empty(),
+            "docs/properties.md is out of date; expected:\n\n{missing}"
+        );
     }
 }

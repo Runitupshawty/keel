@@ -39,7 +39,10 @@ fn text_cap_makes_counts_unknown() {
         ..Options::default()
     };
     assert_eq!(get_with(&txt, "line-count", &opts).unwrap(), Prop::Unknown);
-    assert_eq!(get_with(&txt, "character-encoding", &opts).unwrap(), s("ASCII"));
+    assert_eq!(
+        get_with(&txt, "character-encoding", &opts).unwrap(),
+        s("ASCII")
+    );
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn hashes_one_pass_cache_and_limits() {
     assert_eq!(get_with(&p, "md5", &small).unwrap(), Prop::Unknown);
     let cancelled = Options::default();
     cancelled.cancel.cancel();
-    assert!(matches!(get_with(&p, "sha1", &cancelled), Err(Error::Cancelled)));
+    assert!(matches!(
+        get_with(&p, "sha1", &cancelled),
+        Err(Error::Cancelled)
+    ));
     // Folders have no content hash.
     assert_eq!(get(dir.path(), "md5").unwrap(), Prop::Unknown);
 }
@@ -82,7 +88,10 @@ fn shortcut_targets() {
             env_target: None,
         }),
     );
-    assert_eq!(get(&link, "shortcut-target").unwrap(), s(r"C:\Tools\app.exe"));
+    assert_eq!(
+        get(&link, "shortcut-target").unwrap(),
+        s(r"C:\Tools\app.exe")
+    );
     assert_eq!(get(&link, "file-signature").unwrap(), s("lnk"));
     let target = write(dir.path(), "real.txt", b"x");
     let sym = dir.path().join("sym.txt");
@@ -115,7 +124,11 @@ fn internet_shortcuts() {
 #[test]
 fn pe_version_properties() {
     let dir = tempfile::tempdir().unwrap();
-    let exe = write(dir.path(), "tool.exe", &fx::pe_with_version(true, &fx::VERSION_STRINGS));
+    let exe = write(
+        dir.path(),
+        "tool.exe",
+        &fx::pe_with_version(true, &fx::VERSION_STRINGS),
+    );
     assert_eq!(get(&exe, "version").unwrap(), s("1.2.3.4"));
     assert_eq!(get(&exe, "product-version").unwrap(), s("1.2 beta"));
     assert_eq!(get(&exe, "product-name").unwrap(), s("Keel Test Tool"));
@@ -149,19 +162,28 @@ fn audio_properties() {
     assert!(matches!(p.get("duration").unwrap(), Prop::Duration(_)));
 
     let flac = write(dir.path(), "tones.flac", &fx::flac());
-    assert_eq!(get(&flac, "length").unwrap(), Prop::Duration(Duration::from_secs(10)));
+    assert_eq!(
+        get(&flac, "length").unwrap(),
+        Prop::Duration(Duration::from_secs(10))
+    );
     assert_eq!(get(&flac, "audio-bits-per-sample").unwrap(), Prop::Int(24));
     assert_eq!(get(&flac, "artist").unwrap(), s("One; Two"));
     let wav = write(dir.path(), "beep.wav", &fx::wav());
     assert_eq!(get(&wav, "title").unwrap(), s("Wav Title"));
-    assert_eq!(get(&wav, "length").unwrap(), Prop::Duration(Duration::from_millis(250)));
+    assert_eq!(
+        get(&wav, "length").unwrap(),
+        Prop::Duration(Duration::from_millis(250))
+    );
 }
 
 #[test]
 fn unknown_names_missing_files_and_unknown_values() {
     let dir = tempfile::tempdir().unwrap();
     let txt = write(dir.path(), "a.txt", b"hello");
-    assert!(matches!(get(&txt, "no-such-function"), Err(Error::UnknownFunction(_))));
+    assert!(matches!(
+        get(&txt, "no-such-function"),
+        Err(Error::UnknownFunction(_))
+    ));
     assert!(matches!(
         get(&dir.path().join("missing.txt"), "md5"),
         Err(Error::Io(_))
@@ -196,7 +218,10 @@ fn windows_value_conversions() {
         convert(Prop::Int(30_000_000), Conv::Ticks),
         Prop::Duration(Duration::from_secs(3))
     );
-    assert_eq!(convert(Prop::Int(29_970), Conv::PerThousand), Prop::Float(29.97));
+    assert_eq!(
+        convert(Prop::Int(29_970), Conv::PerThousand),
+        Prop::Float(29.97)
+    );
     assert_eq!(convert(Prop::Int(3), Conv::Perceived), s("audio"));
     assert_eq!(convert(s("x"), Conv::Kbps), s("x"));
 }
@@ -207,7 +232,11 @@ fn every_function_reads_without_error() {
     let files = [
         write(dir.path(), "a.txt", b"hello world\n"),
         write(dir.path(), "a.mp3", &fx::mp3(4, true, 3)),
-        write(dir.path(), "a.exe", &fx::pe_with_version(false, &fx::VERSION_STRINGS)),
+        write(
+            dir.path(),
+            "a.exe",
+            &fx::pe_with_version(false, &fx::VERSION_STRINGS),
+        ),
     ];
     for f in &files {
         for func in FUNCTIONS {
@@ -231,6 +260,9 @@ fn placeholders_are_not_regular_files_here() {
 #[test]
 fn display_paths() {
     assert_eq!(display_path(Path::new(r"\\?\C:\x\y")), r"C:\x\y");
-    assert_eq!(display_path(Path::new(r"\\?\UNC\srv\share\f")), r"\\srv\share\f");
+    assert_eq!(
+        display_path(Path::new(r"\\?\UNC\srv\share\f")),
+        r"\\srv\share\f"
+    );
     assert_eq!(display_path(Path::new("relative/t")), "relative/t");
 }

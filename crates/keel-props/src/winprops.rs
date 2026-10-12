@@ -7,9 +7,7 @@ use crate::{Error, Prop};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::core::PCWSTR;
-use windows::Win32::System::Com::{
-    CoInitializeEx, CoUninitialize, IBindCtx, COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IBindCtx, COINIT_MULTITHREADED};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IPropertyStore, PSGetPropertyKeyFromName, SHGetPropertyStoreFromParsingName, GPS_BESTEFFORT,
     GPS_FASTPROPERTIESONLY, PROPERTYKEY,
@@ -74,7 +72,9 @@ pub fn get(path: &Path, canonical: &str, fast_only: bool) -> Result<Prop, Error>
     } {
         Ok(s) => s,
         Err(_) if !path.exists() => {
-            return Err(Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound)))
+            return Err(Error::Io(std::io::Error::from(
+                std::io::ErrorKind::NotFound,
+            )))
         }
         Err(_) => return Ok(Prop::Unknown),
     };
@@ -120,11 +120,11 @@ fn convert(v: &windows::core::PROPVARIANT) -> Prop {
     match vt {
         VT_EMPTY | VT_NULL => Prop::Unknown,
         VT_BOOL => bool::try_from(v).map_or(Prop::Unknown, Prop::Bool),
-        VT_I1 | VT_I2 | VT_I4 | VT_I8 | VT_INT => {
-            i64::try_from(v).map_or(Prop::Unknown, Prop::Int)
-        }
+        VT_I1 | VT_I2 | VT_I4 | VT_I8 | VT_INT => i64::try_from(v).map_or(Prop::Unknown, Prop::Int),
         VT_UI1 | VT_UI2 | VT_UI4 | VT_UINT | VT_UI8 => u64::try_from(v)
-            .map_or(Prop::Unknown, |n| Prop::Int(i64::try_from(n).unwrap_or(i64::MAX))),
+            .map_or(Prop::Unknown, |n| {
+                Prop::Int(i64::try_from(n).unwrap_or(i64::MAX))
+            }),
         VT_R4 | VT_R8 => f64::try_from(v).map_or(Prop::Unknown, Prop::Float),
         VT_FILETIME => {
             // SAFETY: for VT_FILETIME the union holds a FILETIME (two u32, low first).
@@ -172,7 +172,10 @@ mod tests {
             Prop::Str(s) => assert!(s.starts_with("note"), "{s}"),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(get(&p, "System.DateModified", false).unwrap(), Prop::Date(_)));
+        assert!(matches!(
+            get(&p, "System.DateModified", false).unwrap(),
+            Prop::Date(_)
+        ));
         assert!(matches!(
             get(&p, "System.NoSuchPropertyForKeel", false),
             Err(Error::UnknownProperty(_))

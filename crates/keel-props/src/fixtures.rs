@@ -119,7 +119,10 @@ pub fn lnk(spec: &LnkSpec<'_>) -> Vec<u8> {
         assert_eq!(li.len(), size);
         b.extend_from_slice(&li);
     }
-    for s in [spec.name, spec.working_dir, spec.arguments].into_iter().flatten() {
+    for s in [spec.name, spec.working_dir, spec.arguments]
+        .into_iter()
+        .flatten()
+    {
         let units: Vec<u16> = s.encode_utf16().collect();
         b.extend_from_slice(&(units.len() as u16).to_le_bytes());
         b.extend(units.iter().flat_map(|u| u.to_le_bytes()));
