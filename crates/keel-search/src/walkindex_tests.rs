@@ -186,7 +186,10 @@ fn search_toggles() {
     assert!(with("note", |q| q.whole_word = true).is_empty());
     assert_eq!(with("notes", |q| q.whole_word = true), ["report notes.txt"]);
     assert_eq!(names(&s, &q("oldies")), ["oldies"]);
-    assert_eq!(with("oldies", |q| q.match_path = true), ["oldies", "report.pdf"]);
+    assert_eq!(
+        with("oldies", |q| q.match_path = true),
+        ["oldies", "report.pdf"]
+    );
     assert_eq!(
         with("oldies pdf", |q| q.match_path = true),
         ["report.pdf"],
