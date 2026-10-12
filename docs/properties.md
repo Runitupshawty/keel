@@ -88,7 +88,7 @@ Function names are Everything's (audit Part 1), with their aliases in parenthese
 | Function | Keel's own reader (every platform) | Windows Property System |
 |---|---|---|
 | `date-run:` | no | no |
-| `date-deleted:` | no | `System.Recycle.DateDeleted` |
+| `date-deleted:` | Recycle Bin `$I` record, Trash `.trashinfo` | `System.Recycle.DateDeleted` |
 | `date-saved:` | no | `System.Document.DateSaved` |
 | `date-printed:` | no | `System.Document.DatePrinted` |
 | `date-received:` | no | `System.Message.DateReceived` |
