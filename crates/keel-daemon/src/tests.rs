@@ -1411,3 +1411,46 @@ fn web_answers_everything_searches() {
     let file = format!("/everything/file?path={secret}");
     assert_eq!(auth(&file).0, "HTTP/1.1 404 Not Found");
 }
+
+/// Task 78: the ETP server through the daemon: `[etp]` from the profile's config.toml, the
+/// ETP login from the keychain (none: no server), the system search limited to the roots.
+#[test]
+fn daemon_serves_etp() {
+    let env = env();
+    let daemon = web_daemon(&env);
+    let search = std::sync::Arc::new(FolderSearch(env.files.path().to_owned()));
+    daemon.ctx().system.set(search);
+    let store = std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default());
+    daemon.set_secret_store(store.clone());
+    let bind = Some("127.0.0.1:0".parse().unwrap());
+    let e = daemon.start_etp(bind).unwrap_err();
+    assert!(format!("{e:#}").contains("--set-etp-login"), "{e:#}");
+    crate::etp::set_login(&*store, &env.cfg.profile, "me", "a long password").unwrap();
+    let e = daemon.start_etp(bind).unwrap_err();
+    assert!(format!("{e:#}").contains("[[etp.roots]]"), "{e:#}");
+    let profile = env.config.path().join("profiles").join(&env.cfg.profile);
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(
+        profile.join("config.toml"),
+        format!(
+            "[[etp.roots]]\npath = '{}'\nname = \"Files\"\n",
+            env.files.path().display()
+        ),
+    )
+    .unwrap();
+    let addr = daemon.start_etp(bind).unwrap();
+    assert_eq!(daemon.etp_addr(), Some(addr));
+    let mut t = keel_search::etp::Target::parse(&format!("me:a long password@{addr}")).unwrap();
+    t.timeout = Duration::from_secs(10);
+    let etp = keel_search::etp::EtpSearcher::new(t);
+    use keel_api::system::Searcher;
+    let hits = etp
+        .query(&keel_api::system::Query {
+            text: "invoice".into(),
+            ..keel_api::system::Query::default()
+        })
+        .unwrap();
+    let paths: Vec<&str> = hits.iter().map(|h| h.path.path.as_str()).collect();
+    assert_eq!(paths, ["/Files/invoice-2026.pdf"]);
+    daemon.shutdown();
+}
