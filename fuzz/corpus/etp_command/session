@@ -1,0 +1,12 @@
+USER me
+PASS secret words
+SYST
+FEAT
+PWD
+CWD /Media/Music
+CDUP
+TYPE I
+EPSV
+LIST -la /Media
+RETR ../../etc/passwd
+QUIT

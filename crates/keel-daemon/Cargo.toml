@@ -48,6 +48,13 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 httparse = "1"
 # --web's Everything-compatible search: Basic auth (already in the tree).
 base64.workspace = true
+# --etp: the system search backends (keel-api's, here for the ETP client in tests and
+# fuzzing), `[etp]` in config.toml, and explicit FTPS with rustls (graviola crypto), all
+# already in the tree.
+keel-search = { path = "../keel-search" }
+toml.workspace = true
+rustls.workspace = true
+rustls-graviola.workspace = true
 # SIGTERM / Ctrl-C / console close.
 ctrlc = { version = "3.5", features = ["termination"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

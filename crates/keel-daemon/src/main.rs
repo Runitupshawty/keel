@@ -48,6 +48,18 @@ struct Args {
     /// Remove the HTTP login from the OS keychain, then exit.
     #[arg(long)]
     clear_http_login: bool,
+    /// Serve the ETP/FTP server for Everything clients on this address (default: [etp]
+    /// bind in the profile's config.toml, else 127.0.0.1:21 on Windows, 127.0.0.1:2121
+    /// elsewhere), even when [etp] enabled is off. Needs [[etp.roots]] and the ETP login.
+    #[arg(long, value_name = "ADDR", num_args = 0..=1)]
+    etp: Option<Option<SocketAddr>>,
+    /// Store the ETP login in the OS keychain: this user name, the password read from the
+    /// first line of standard input. Then exit.
+    #[arg(long, value_name = "USER", conflicts_with = "clear_etp_login")]
+    set_etp_login: Option<String>,
+    /// Remove the ETP login from the OS keychain, then exit.
+    #[arg(long)]
+    clear_etp_login: bool,
 }
 
 /// Profile names become a folder name (`keel_api::config::valid_profile`).
@@ -84,7 +96,10 @@ fn main() -> ExitCode {
         return status(&cfg);
     }
     if args.set_http_login.is_some() || args.clear_http_login {
-        return http_login(&cfg, args.set_http_login.as_deref());
+        return http_login(&cfg, args.set_http_login.as_deref(), Login::Http);
+    }
+    if args.set_etp_login.is_some() || args.clear_etp_login {
+        return http_login(&cfg, args.set_etp_login.as_deref(), Login::Etp);
     }
     // PDF previews (`preview.render`, the web client): pdfium next to this executable,
     // where the release archives and the build's deps step put it, as for the window.
@@ -123,6 +138,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if args.etp.is_some() || keel_daemon::etp::enabled(&cfg) {
+        if let Err(e) = daemon.start_etp(args.etp.flatten()) {
+            eprintln!("keel-daemon: ETP server: {e:#}");
+            daemon.shutdown();
+            return ExitCode::FAILURE;
+        }
+    }
     let (tx, signals) = crossbeam_channel::bounded(1);
     if let Err(e) = ctrlc::set_handler(move || {
         let _ = tx.try_send(());
@@ -142,6 +164,10 @@ fn main() -> ExitCode {
                 .web_addr()
                 .map(|a| format!(", web client on http://{a}/"))
                 .unwrap_or_default()
+            + &daemon
+                .etp_addr()
+                .map(|a| format!(", ETP server on ftp://{a}/"))
+                .unwrap_or_default()
     );
     crossbeam_channel::select! {
         recv(signals) -> _ => tracing::info!("signal: stopping"),
@@ -151,24 +177,37 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `--set-http-login USER` (the password from stdin) or `--clear-http-login`.
-fn http_login(cfg: &HostConfig, user: Option<&str>) -> ExitCode {
-    use keel_daemon::everything;
+/// Which keychain login `--set-*-login` / `--clear-*-login` change.
+#[derive(Clone, Copy)]
+enum Login {
+    Http,
+    Etp,
+}
+
+/// `--set-http-login USER` / `--set-etp-login USER` (the password from stdin), or
+/// `--clear-http-login` / `--clear-etp-login`.
+fn http_login(cfg: &HostConfig, user: Option<&str>, which: Login) -> ExitCode {
+    use keel_daemon::{etp, everything};
     let store = keel_vfs::cloud::KeyringStore;
+    let (label, set, clear): (&str, SetLogin, ClearLogin) = match which {
+        Login::Http => ("HTTP", everything::set_login, everything::clear_login),
+        Login::Etp => ("ETP", etp::set_login, etp::clear_login),
+    };
     let done = match user {
         Some(user) => {
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {
                 Ok(_) => {
                     let password = line.trim_end_matches(['\r', '\n']);
-                    everything::set_login(&store, &cfg.profile, user, password)
-                        .map(|()| format!("HTTP login for {user} stored (profile {})", cfg.profile))
+                    set(&store, &cfg.profile, user, password).map(|()| {
+                        format!("{label} login for {user} stored (profile {})", cfg.profile)
+                    })
                 }
                 Err(e) => Err(e.into()),
             }
         }
-        None => everything::clear_login(&store, &cfg.profile)
-            .map(|()| format!("HTTP login removed (profile {})", cfg.profile)),
+        None => clear(&store, &cfg.profile)
+            .map(|()| format!("{label} login removed (profile {})", cfg.profile)),
     };
     match done {
         Ok(said) => {
@@ -181,6 +220,9 @@ fn http_login(cfg: &HostConfig, user: Option<&str>) -> ExitCode {
         }
     }
 }
+
+type SetLogin = fn(&dyn keel_vfs::cloud::SecretStore, &str, &str, &str) -> anyhow::Result<()>;
+type ClearLogin = fn(&dyn keel_vfs::cloud::SecretStore, &str) -> anyhow::Result<()>;
 
 fn status(cfg: &HostConfig) -> ExitCode {
     let running = Client::connect(&cfg.socket_name())
