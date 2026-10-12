@@ -4762,6 +4762,7 @@ dependencies = [
  "keel-mount",
  "keel-net",
  "keel-preview",
+ "keel-search",
  "keel-vfs",
  "libc",
  "parking_lot",
@@ -4879,6 +4880,7 @@ name = "keel-daemon"
 version = "0.22.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "crossbeam-channel",
@@ -5067,6 +5069,7 @@ dependencies = [
  "rand 0.10.3",
  "rayon",
  "reflink-copy",
+ "regex",
  "reqsign-aws-v4",
  "reqsign-core",
  "reqwest",
