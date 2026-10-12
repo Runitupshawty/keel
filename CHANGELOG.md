@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A second built-in icon theme, **Keel Finder** (Settings → Icons): rounded blue folders with a darker tab; Desktop, Documents, Downloads, Pictures, Music, Videos, Home and Program Files / Applications folders with an embossed glyph; drives, network shares, cloud accounts and an empty or full Recycle Bin / Trash in the sidebar and in listings; documents with a folded corner and a band naming the extension, colored by kind. Icons are drawn for the size they are shown at, from 16 to 512 pixels, in light and dark variants, and a folder color draws the folder in that color. Original artwork, MIT OR Apache-2.0 like the rest of Keel. See [Icon themes](docs/files.md#icon-themes).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

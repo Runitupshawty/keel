@@ -169,4 +169,4 @@ The web client also has a browser test (CI job `web-e2e`, not part of the requir
 
 ## License
 
-Licensed under either the MIT License or the Apache License 2.0, at your option. Third-party components: see [THIRD_PARTY.md](THIRD_PARTY.md).
+Licensed under either the MIT License or the Apache License 2.0, at your option. This includes the artwork of the built-in Keel Finder icon theme, which is drawn for Keel. Third-party components: see [THIRD_PARTY.md](THIRD_PARTY.md).
