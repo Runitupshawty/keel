@@ -4979,6 +4979,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-query"
+version = "0.22.0"
+dependencies = [
+ "chrono",
+ "regex",
+]
+
+[[package]]
 name = "keel-search"
 version = "0.22.0"
 dependencies = [

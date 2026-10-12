@@ -1,0 +1,1 @@
+dm:today dc:lastweek da:2024-01-01..2024-06-30 rc:past3days dmyear:2020-2024 dcdow:monday..friday datime:9am..5pm dm:*-*-*T9:00..*-*-*T17:00 dm:>=02/29/2024 dmdate:yesterday
