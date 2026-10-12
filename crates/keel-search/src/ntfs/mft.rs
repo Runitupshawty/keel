@@ -168,7 +168,7 @@ pub(crate) struct FileRecord {
 /// update sequence array.
 pub(crate) fn fixup(record: &mut [u8]) -> Result<(), MftError> {
     let len = record.len();
-    if len == 0 || len > MAX_RECORD || len % STRIDE != 0 {
+    if len == 0 || len > MAX_RECORD || !len.is_multiple_of(STRIDE) {
         return Err(MftError::Size);
     }
     match record.get(..4) {
@@ -291,7 +291,7 @@ fn each_attribute<'a>(r: &'a [u8], mut each: impl FnMut(Attr<'a>)) -> Result<(),
         }
         let len = u32_at(r, at + 4).ok_or(MftError::Attribute)? as usize;
         // The smallest attribute (resident, no name, no value) is 0x18 bytes.
-        if len < 0x18 || len % 8 != 0 {
+        if len < 0x18 || !len.is_multiple_of(8) {
             return Err(MftError::Attribute);
         }
         let raw = r.get(at..at + len).ok_or(MftError::Attribute)?;
@@ -322,8 +322,10 @@ fn file_name(v: &[u8]) -> Option<(Name, u32)> {
     let namespace = *v.get(0x41)?;
     let wide: Vec<u16> = v
         .get(0x42..0x42 + 2 * chars)?
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let name = Name {
         parent,

@@ -12,7 +12,7 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::{
-    FileIdType, FileNameInfo, GetDriveTypeW, GetFileAttributesExW, GetFileExInfoStandard,
+    FileBasicInfo, FileIdType, FileNameInfo, FileStandardInfo, GetDriveTypeW, GetFileAttributesExW, GetFileExInfoStandard,
     GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives,
     GetVolumeInformationW, OpenFileById, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE,
@@ -29,10 +29,11 @@ use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-use super::usn::{parse_buffer, Record};
+use super::usn::{parse_buffer, Record, Stat};
 
 const DRIVE_FIXED: u32 = 3;
 const GENERIC_READ: u32 = 0x8000_0000;
+const FILE_READ_ATTRIBUTES: u32 = 0x0080;
 const BUFFER: usize = 1 << 20;
 
 /// A fixed NTFS volume by drive letter and serial number.
@@ -103,13 +104,18 @@ pub(crate) fn file_meta(path: &Path) -> Option<(u64, Option<std::time::SystemTim
 
 /// The root directory's file reference number (`C:\`).
 pub(crate) fn root_frn(letter: char) -> io::Result<u64> {
-    let dir = std::fs::OpenOptions::new()
+    frn_of(Path::new(&format!("{letter}:\\")))
+}
+
+/// The file reference number of a file or folder.
+pub(crate) fn frn_of(path: &Path) -> io::Result<u64> {
+    let file = std::fs::OpenOptions::new()
         .access_mode(0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
-        .open(format!("{letter}:\\"))?;
+        .open(path)?;
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: valid handle and out struct.
-    unsafe { GetFileInformationByHandle(handle(&dir), &mut info) }?;
+    unsafe { GetFileInformationByHandle(handle(&file), &mut info) }?;
     Ok(u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow))
 }
 
@@ -201,26 +207,82 @@ impl Volume {
         self.privileged
     }
 
-    /// The current name of a file by its reference number (the unprivileged journal
-    /// read leaves names out). None when it is gone or this user cannot open it.
-    pub fn name_of(&self, frn: u64) -> Option<String> {
+    /// Opens a file by reference number with `access`; the caller closes the handle.
+    fn open_id(&self, frn: u64, access: u32) -> Option<HANDLE> {
         let id = FILE_ID_DESCRIPTOR {
             dwSize: size_of::<FILE_ID_DESCRIPTOR>() as u32,
             Type: FileIdType,
             Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: frn as i64 },
         };
-        // SAFETY: `id` outlives the call; the returned handle is closed below.
-        let file = unsafe {
+        // SAFETY: `id` outlives the call.
+        unsafe {
             OpenFileById(
                 handle(&self.file),
                 &id,
-                0,
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 FILE_FLAG_BACKUP_SEMANTICS,
             )
         }
-        .ok()?;
+        .ok()
+    }
+
+    /// Size, dates, attributes and link count of a file by reference number (the
+    /// journal says what changed, not the new size). None when it is gone or this
+    /// user cannot open it.
+    pub fn stat(&self, frn: u64) -> Option<Stat> {
+        let file = self.open_id(frn, FILE_READ_ATTRIBUTES)?;
+        // FILE_BASIC_INFO (four FILETIMEs, then the attributes) and FILE_STANDARD_INFO
+        // (allocation size, end of file, link count, two flags), 8-aligned.
+        let mut basic = [0u64; 5];
+        let mut standard = [0u64; 3];
+        // SAFETY: both buffers are live, 8-aligned and as large as the structs the
+        // classes fill; the handle is closed below.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file,
+                FileBasicInfo,
+                basic.as_mut_ptr() as *mut c_void,
+                size_of_val(&basic) as u32,
+            )
+            .is_ok()
+                && GetFileInformationByHandleEx(
+                    file,
+                    FileStandardInfo,
+                    standard.as_mut_ptr() as *mut c_void,
+                    size_of_val(&standard) as u32,
+                )
+                .is_ok()
+        };
+        // SAFETY: opened above.
+        let _ = unsafe { CloseHandle(file) };
+        if !ok {
+            return None;
+        }
+        let attributes = basic[4] as u32;
+        let file_bytes = |n: u64| {
+            if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                0
+            } else {
+                n
+            }
+        };
+        Some(Stat {
+            size: file_bytes(standard[1]),
+            allocated: file_bytes(standard[0]),
+            created: basic[0] as i64,
+            accessed: basic[1] as i64,
+            modified: basic[2] as i64,
+            attributes,
+            links: u16::try_from(standard[2] & 0xFFFF_FFFF).unwrap_or(u16::MAX),
+        })
+    }
+
+    /// The current name of a file by its reference number (the unprivileged journal
+    /// read leaves names out). None when it is gone or this user cannot open it.
+    pub fn name_of(&self, frn: u64) -> Option<String> {
+        let file = self.open_id(frn, 0)?;
         // FILE_NAME_INFO: a u32 byte length, then the volume-relative path.
         let mut buf = vec![0u32; 8 * 1024];
         // SAFETY: `buf` is a live, u32-aligned buffer of the size passed.

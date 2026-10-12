@@ -15,6 +15,7 @@ mod usn;
 mod walk;
 mod win;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -25,7 +26,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
-use index::{rank, Found, Index};
+use index::{rank, Found, Index, Info};
 use usn::Changes;
 use win::{Journal, Volume, VolumeId};
 
@@ -47,6 +48,9 @@ const BATCH: Duration = Duration::from_millis(20);
 const RESCAN_GAP: Duration = Duration::from_secs(60);
 /// Hits beyond this many skip the per-file size/date lookup (a huge `max`).
 const STAT_LIMIT: usize = 2_000;
+/// Most changed files whose size and dates one journal poll looks up by file id; the
+/// rest keep what the index had (a huge batch, such as an archive unpacked).
+const STAT_BATCH: usize = 20_000;
 const ERROR_JOURNAL_NOT_ACTIVE: i32 = 1179;
 const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
 
@@ -190,16 +194,24 @@ fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
     };
     let root = win::root_frn(id.letter)?;
     let mut index = Index::new(id.drive(), root);
+    index.begin_bulk();
     volume.enumerate(|records| {
         for r in records {
             index.upsert(r.frn, r.parent, &r.name, r.is_dir);
+            let info = Info {
+                attributes: r.attributes,
+                ..Info::default()
+            };
+            index.set_info(r.frn, info);
         }
     })?;
+    index.settle();
     let meta = Meta {
         journal_id: journal.id,
         next_usn: journal.next_usn,
         root,
         volume: id.drive(),
+        full: false,
     };
     Ok((index, meta))
 }
@@ -574,6 +586,11 @@ impl Worker {
                 }
             }
             usn::keep_linked(&mut records, |frn| volume.name_of(frn).is_some());
+            // Sizes and dates of the changed files, read before the index is locked.
+            let stats: HashMap<u64, usn::Stat> = usn::to_stat(&records, STAT_BATCH)
+                .into_iter()
+                .filter_map(|frn| Some((frn, volume.stat(frn)?)))
+                .collect();
             let mut changes = Changes::default();
             if let Some(Part::Volume { index, meta, .. }) = shared
                 .parts
@@ -581,7 +598,7 @@ impl Worker {
                 .iter_mut()
                 .find(|p| p.serial() == Some(id.serial))
             {
-                usn::apply(index, &records, &mut changes);
+                usn::apply_with(index, &records, &stats, &mut changes);
                 meta.next_usn = next;
             }
             if let Some(Part::Volume {
@@ -732,6 +749,7 @@ mod tests {
             next_usn: 1_000,
             root: 5,
             volume: "C:".into(),
+            full: false,
         };
         let journal = |id, lowest, next| Journal {
             id,
@@ -956,6 +974,7 @@ mod tests {
             next_usn: 0,
             root: 5,
             volume: id.drive(),
+            full: false,
         };
         db::save_full(&db_path(&dir, id), &index, &meta).unwrap();
         let searcher = NtfsSearcher::open(dir.clone());

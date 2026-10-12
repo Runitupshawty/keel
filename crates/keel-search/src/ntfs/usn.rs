@@ -21,6 +21,10 @@ pub(crate) struct Record {
     pub reason: u32,
     pub is_dir: bool,
     pub name: String,
+    /// When the change happened (FILETIME).
+    pub time: i64,
+    /// The file's Win32 attributes after the change.
+    pub attributes: u32,
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {
@@ -39,12 +43,13 @@ fn u64_at(b: &[u8], at: usize) -> Option<u64> {
 /// references, V3 128-bit ones (NTFS leaves the high half zero, so the low half is
 /// kept). Other versions (V4 range records) yield `None`.
 pub(crate) fn parse_record(rec: &[u8]) -> Option<Record> {
-    // Offsets of: frn, parent, usn, reason, attributes, name length, name offset.
-    let (frn, parent, usn, reason, attrs, name_len, name_off) = match u16_at(rec, 4)? {
-        2 => (8, 16, 24, 40, 52, 56, 58),
-        3 => (8, 24, 40, 56, 68, 72, 74),
+    // Offsets of: frn, parent, usn, time, reason, attributes, name length, name offset.
+    let (frn, parent, usn, time, reason, attrs, name_len, name_off) = match u16_at(rec, 4)? {
+        2 => (8, 16, 24, 32, 40, 52, 56, 58),
+        3 => (8, 24, 40, 48, 56, 68, 72, 74),
         _ => return None,
     };
+    let attributes = u32_at(rec, attrs)?;
     let len = usize::from(u16_at(rec, name_len)?);
     let off = usize::from(u16_at(rec, name_off)?);
     let wide: Vec<u16> = rec
@@ -59,8 +64,10 @@ pub(crate) fn parse_record(rec: &[u8]) -> Option<Record> {
         parent: u64_at(rec, parent)?,
         usn: u64_at(rec, usn)? as i64,
         reason: u32_at(rec, reason)?,
-        is_dir: u32_at(rec, attrs)? & FILE_ATTRIBUTE_DIRECTORY != 0,
+        is_dir: attributes & FILE_ATTRIBUTE_DIRECTORY != 0,
         name: String::from_utf16_lossy(&wide),
+        time: u64_at(rec, time)? as i64,
+        attributes,
     })
 }
 
@@ -139,30 +146,96 @@ pub(crate) fn keep_linked(records: &mut [Record], exists: impl Fn(u64) -> bool) 
     }
 }
 
+/// Size, dates and attributes of a changed file, looked up by file id (off the index
+/// lock) after the journal said it changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Stat {
+    pub size: u64,
+    pub allocated: u64,
+    pub created: i64,
+    pub modified: i64,
+    pub accessed: i64,
+    pub attributes: u32,
+    pub links: u16,
+}
+
+/// The files to look up after `records`: each one the batch touched and did not
+/// delete, once, at most `max`.
+pub(crate) fn to_stat(records: &[Record], max: usize) -> Vec<u64> {
+    let mut last: HashMap<u64, bool> = HashMap::new();
+    for r in records {
+        last.insert(r.frn, r.reason & REASON_FILE_DELETE == 0);
+    }
+    let mut frns: Vec<u64> = last
+        .into_iter()
+        .filter_map(|(frn, alive)| alive.then_some(frn))
+        .collect();
+    frns.sort_unstable();
+    frns.truncate(max);
+    frns
+}
+
+/// [`apply_with`] without any lookups.
+#[cfg(test)]
+pub(crate) fn apply(index: &mut Index, records: &[Record], changes: &mut Changes) {
+    apply_with(index, records, &HashMap::new(), changes);
+}
+
+fn changed(frn: u64, changes: &mut Changes) {
+    changes.removes.remove(&frn);
+    changes.upserts.insert(frn);
+}
+
 /// Applies journal records in order: a delete removes the entry, the old-name half
 /// of a rename is skipped (its new-name record follows), a create or new name
 /// upserts the entry's name and parent. Any other record (data, attributes, a hard
 /// link added or removed) only adds a missing entry: it may name another hard link
-/// of the file, which must not move the indexed one.
-pub(crate) fn apply(index: &mut Index, records: &[Record], changes: &mut Changes) {
+/// of the file, which must not move the indexed one. Every record dates its entry
+/// (recently changed) and sets its attributes; then `stats` (looked up after the
+/// records) give changed files their size and dates, and folder totals and fast-sort
+/// orders are brought up to date.
+pub(crate) fn apply_with(
+    index: &mut Index,
+    records: &[Record],
+    stats: &HashMap<u64, Stat>,
+    changes: &mut Changes,
+) {
     for r in records {
         if r.reason & REASON_FILE_DELETE != 0 {
-            if index.remove(r.frn) {
+            if index.remove_at(r.frn, r.time) {
                 changes.upserts.remove(&r.frn);
                 changes.removes.insert(r.frn);
             }
             continue;
         }
+        if r.reason & REASON_RENAME_OLD_NAME != 0 {
+            continue;
+        }
         let moves = r.reason & (REASON_FILE_CREATE | REASON_RENAME_NEW_NAME) != 0;
-        if r.reason & REASON_RENAME_OLD_NAME == 0
-            && !r.name.is_empty()
+        let named = !r.name.is_empty()
             && (moves || index.get(r.frn).is_none())
-            && index.upsert(r.frn, r.parent, &r.name, r.is_dir)
-        {
-            changes.removes.remove(&r.frn);
-            changes.upserts.insert(r.frn);
+            && index.upsert_at(r.frn, r.parent, &r.name, r.is_dir, r.time);
+        let noted = index.note(r.frn, r.time, r.attributes);
+        if named || noted {
+            changed(r.frn, changes);
         }
     }
+    for (&frn, stat) in stats {
+        let Some(mut info) = index.info(frn) else {
+            continue;
+        };
+        info.size = stat.size;
+        info.allocated = stat.allocated;
+        info.created = stat.created;
+        info.modified = stat.modified;
+        info.accessed = stat.accessed;
+        info.attributes = stat.attributes;
+        info.links = stat.links;
+        if index.set_info(frn, info) {
+            changed(frn, changes);
+        }
+    }
+    index.settle();
 }
 
 #[cfg(test)]
@@ -224,7 +297,9 @@ pub(crate) mod tests {
                     usn: 0x0005_0000_0000_1234_i64 * 10,
                     reason: 0x100,
                     is_dir: false,
-                    name: "Report.PDF".into()
+                    name: "Report.PDF".into(),
+                    time: 0,
+                    attributes: 0x20,
                 },
                 Record {
                     frn: 42,
@@ -232,7 +307,9 @@ pub(crate) mod tests {
                     usn: 420,
                     reason: 0x2000,
                     is_dir: true,
-                    name: "Ünïcødé dir".into()
+                    name: "Ünïcødé dir".into(),
+                    time: 0,
+                    attributes: 0x10,
                 },
             ]
         );
@@ -261,6 +338,8 @@ pub(crate) mod tests {
         assert_eq!(r.reason, 0x100);
         assert!(!r.is_dir);
         assert_eq!(r.name, "keel-live-a.txt");
+        assert_eq!(r.time, 0x01dd_5808_7b5e_b8c8);
+        assert_eq!(r.attributes, 0x20);
     }
 
     #[test]
@@ -275,6 +354,8 @@ pub(crate) mod tests {
             reason,
             is_dir: false,
             name: String::new(),
+            time: 0,
+            attributes: 0,
         };
         let mut records = vec![
             nameless(10, 0x1),                    // data change: indexed name
@@ -326,6 +407,8 @@ pub(crate) mod tests {
             reason,
             is_dir: false,
             name: name.into(),
+            time: 0,
+            attributes: 0,
         };
         // A write through the second link (b\link.txt), a new link, then the
         // first link removed while the file lives on as b\link.txt.
