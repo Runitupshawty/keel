@@ -839,14 +839,14 @@ impl Launcher {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
     Windows,
-    MacOs,
+    Mac,
     Linux,
 }
 
 pub const OS: Os = if cfg!(windows) {
     Os::Windows
 } else if cfg!(target_os = "macos") {
-    Os::MacOs
+    Os::Mac
 } else {
     Os::Linux
 };
@@ -868,7 +868,7 @@ pub fn launchers(os: Os) -> &'static [Launcher] {
             Launcher::InstalledApps,
             Launcher::ProgramsAndFeatures,
         ],
-        Os::MacOs => &[Launcher::StorageSettings],
+        Os::Mac => &[Launcher::StorageSettings],
         Os::Linux => &[],
     }
 }
@@ -890,7 +890,7 @@ pub fn launch_for(os: Os, l: Launcher, drive: Option<&str>) -> Option<Launch> {
             Some(Launch::Program("control.exe", vec!["appwiz.cpl".into()]))
         }
         (Os::Windows, Launcher::StorageSettings) => Some(Launch::Url("ms-settings:storagesense")),
-        (Os::MacOs, Launcher::StorageSettings) => Some(Launch::Url(
+        (Os::Mac, Launcher::StorageSettings) => Some(Launch::Url(
             "x-apple.systempreferences:com.apple.settings.Storage",
         )),
         _ => None,
@@ -1429,13 +1429,13 @@ The operation completed successfully.
         );
         assert_eq!(w(Launcher::StorageSettings), Some(Url("ms-settings:storagesense")));
         assert_eq!(
-            launch_for(Os::MacOs, Launcher::StorageSettings, None),
+            launch_for(Os::Mac, Launcher::StorageSettings, None),
             Some(Url("x-apple.systempreferences:com.apple.settings.Storage"))
         );
-        assert_eq!(launch_for(Os::MacOs, Launcher::DiskCleanup, None), None);
+        assert_eq!(launch_for(Os::Mac, Launcher::DiskCleanup, None), None);
         assert!(launchers(Os::Linux).is_empty());
-        for l in launchers(Os::Windows).iter().chain(launchers(Os::MacOs)) {
-            let os = if launchers(Os::MacOs).contains(l) { Os::MacOs } else { Os::Windows };
+        for l in launchers(Os::Windows).iter().chain(launchers(Os::Mac)) {
+            let os = if launchers(Os::Mac).contains(l) { Os::Mac } else { Os::Windows };
             assert!(launch_for(os, *l, None).is_some(), "{l:?}");
         }
     }
