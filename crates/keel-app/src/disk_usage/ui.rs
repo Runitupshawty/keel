@@ -12,7 +12,7 @@ use egui_extras::{Column as Col, TableBuilder};
 use humansize::{format_size, DECIMAL};
 use keel_vfs::du::{NodeId, NodeKind, Root, UNKNOWN_TIME};
 use keel_vfs::VPath;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 const ROW_H: f32 = 22.0;
 const INDENT: f32 = 14.0;

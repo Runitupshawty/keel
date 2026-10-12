@@ -292,8 +292,8 @@ impl Fallback {
                 }
                 None => {
                     ui.horizontal(|ui| {
-                        let run = ui.add_enabled(can_run, egui::Button::new("Run"));
-                        if run.clicked() {
+                        let button = ui.add_enabled(can_run, egui::Button::new("Run"));
+                        if button.clicked() {
                             let ops = self.ops.clone();
                             self.job = Some(Worker::spawn(ui.ctx(), "keel-du-steps", move |h| {
                                 run(&ops, &h)
