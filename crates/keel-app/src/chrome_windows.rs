@@ -12,9 +12,10 @@
 //! system would draw its own old-style button over Keel's. Hover is tracked here too,
 //! because the pointer over a nonclient area never reaches egui.
 //!
-//! The subclass runs on the UI thread, which owns the window. Its data is boxed in
-//! [`Native`] and outlives the subclass: it is removed when `Native` drops or when the
-//! window is destroyed (`WM_NCDESTROY`), whichever comes first.
+//! The subclass runs on the UI thread, which owns the window. Its data is leaked from a
+//! box into [`Native`] (a raw pointer, so no `&mut` to it is held while the system calls
+//! back into the subclass) and freed when `Native` drops, after the subclass is removed
+//! (which also happens at `WM_NCDESTROY`, whichever comes first).
 
 use super::{Hit, Layout};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -63,7 +64,8 @@ struct Data {
 
 pub struct Native {
     hwnd: HWND,
-    data: Box<Data>,
+    /// From `Box::into_raw`, freed in `Drop`. Only the UI thread touches it.
+    data: *mut Data,
     /// (enabled, dark) last handed to the DWM.
     applied: Option<(bool, bool)>,
 }
@@ -75,7 +77,7 @@ impl Native {
             return None;
         };
         let hwnd = HWND(handle.hwnd.get() as *mut _);
-        let mut data = Box::new(Data {
+        let data = Box::into_raw(Box::new(Data {
             layout: Layout::default(),
             scale: 1.0,
             enabled: false,
@@ -84,14 +86,14 @@ impl Native {
             pressed: false,
             tracking: false,
             ctx: cc.egui_ctx.clone(),
-        });
-        let ptr: *mut Data = &mut *data;
+        }));
         // SAFETY: on the thread that owns the window (eframe creates the app there). The
-        // box does not move when `Native` does, and `Drop` removes the subclass before it
-        // is freed.
-        let ok = unsafe { SetWindowSubclass(hwnd, Some(subclass), SUBCLASS, ptr as usize) };
+        // data lives until `Drop`, which removes the subclass before freeing it.
+        let ok = unsafe { SetWindowSubclass(hwnd, Some(subclass), SUBCLASS, data as usize) };
         if !ok.as_bool() {
             tracing::warn!("window chrome: could not subclass the window");
+            // SAFETY: from `into_raw` above; nothing else has the pointer.
+            drop(unsafe { Box::from_raw(data) });
             return None;
         }
         Some(Self {
@@ -101,26 +103,39 @@ impl Native {
         })
     }
 
+    /// The data the subclass shares. Short-lived: never held across a call into the system,
+    /// which can call the subclass back.
+    fn data_mut(&mut self) -> &mut Data {
+        // SAFETY: valid until `Drop`; UI thread only.
+        unsafe { &mut *self.data }
+    }
+
     pub fn publish(&mut self, layout: Layout, scale: f32) {
-        self.data.layout = layout;
-        self.data.scale = scale.max(0.1);
+        let data = self.data_mut();
+        data.layout = layout;
+        data.scale = scale.max(0.1);
     }
 
     pub fn hovered(&self) -> bool {
-        self.data.enabled && self.data.hover
+        // SAFETY: as in `data_mut`.
+        let data = unsafe { &*self.data };
+        data.enabled && data.hover
     }
 
     /// Hit testing on or off, and the frame the DWM draws: rounded corners and a shadow
     /// (a one-pixel frame extended into the client area) and the Mica backdrop on Windows
     /// 11 (22H2 and later; older versions refuse the attribute and nothing changes).
     pub fn sync(&mut self, enabled: bool, dark: bool) {
-        if !self.data.alive {
-            return;
-        }
-        self.data.enabled = enabled;
-        if !enabled {
-            self.data.hover = false;
-            self.data.pressed = false;
+        {
+            let data = self.data_mut();
+            if !data.alive {
+                return;
+            }
+            data.enabled = enabled;
+            if !enabled {
+                data.hover = false;
+                data.pressed = false;
+            }
         }
         if self.applied == Some((enabled, dark)) {
             return;
@@ -162,11 +177,13 @@ impl Native {
 
 impl Drop for Native {
     fn drop(&mut self) {
-        if self.data.alive {
-            // SAFETY: on the UI thread, before the data the subclass points to is freed.
-            unsafe {
+        // SAFETY: on the UI thread. The subclass is removed before the data it points to is
+        // freed; once the window is gone (`alive` false) it removed itself.
+        unsafe {
+            if (*self.data).alive {
                 let _ = RemoveWindowSubclass(self.hwnd, Some(subclass), SUBCLASS);
             }
+            drop(Box::from_raw(self.data));
         }
     }
 }
