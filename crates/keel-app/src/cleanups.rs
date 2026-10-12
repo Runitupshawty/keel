@@ -180,7 +180,7 @@ pub enum Shell {
     /// `sh -c`: the word after `-c` is a POSIX shell script.
     Posix,
     /// `powershell -Command`: the words after it are a PowerShell script.
-    PowerShell,
+    Pwsh,
 }
 
 /// The shell `program` is (by its file name).
@@ -194,7 +194,7 @@ pub fn shell_of(program: &str) -> Shell {
     match stem {
         "cmd" if cfg!(windows) => Shell::Cmd,
         "sh" | "bash" | "zsh" | "dash" | "ksh" => Shell::Posix,
-        "powershell" | "pwsh" => Shell::PowerShell,
+        "powershell" | "pwsh" => Shell::Pwsh,
         _ => Shell::Direct,
     }
 }
@@ -283,7 +283,7 @@ pub fn expand(template: &str, target: &Target) -> Result<Expanded, String> {
                 });
             }
         }
-        Shell::PowerShell => {
+        Shell::Pwsh => {
             let at = script_at(&|w| {
                 let w = w.to_ascii_lowercase();
                 w.len() >= 2 && "-command".starts_with(&w) && w.starts_with("-c")
@@ -1091,7 +1091,7 @@ mod tests {
     #[test]
     fn shells_are_known_by_file_name() {
         assert_eq!(shell_of("/bin/bash"), Shell::Posix);
-        assert_eq!(shell_of(r"C:\Program Files\PowerShell\7\pwsh.exe"), Shell::PowerShell);
+        assert_eq!(shell_of(r"C:\Program Files\PowerShell\7\pwsh.exe"), Shell::Pwsh);
         assert_eq!(shell_of("git"), Shell::Direct);
         assert_eq!(shell_of("CMD.EXE") == Shell::Cmd, cfg!(windows));
     }
