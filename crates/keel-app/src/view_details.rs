@@ -330,16 +330,20 @@ pub fn ui(
                             folder = format!("{} · {folder}", s.label);
                         }
                         // Task 76: with Match Path, the parts of the folder it matched.
-                        match tab.highlight.as_ref().filter(|h| h.path) {
+                        let label = match tab.highlight.as_ref().filter(|h| h.path) {
                             Some(h) => {
                                 let marks = h.marks(&folder);
-                                let job =
-                                    crate::search_tab::highlighted(ui, &folder, &marks, Some(muted));
-                                ui.add(egui::Label::new(job).truncate())
+                                let job = crate::search_tab::highlighted(
+                                    ui,
+                                    &folder,
+                                    &marks,
+                                    Some(muted),
+                                );
+                                egui::Label::new(job)
                             }
-                            None => ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate()),
-                        }
-                        .on_hover_text(folder);
+                            None => egui::Label::new(cell(&folder, Some(muted))),
+                        };
+                        ui.add(label.truncate()).on_hover_text(folder);
                     } else if trash {
                         let from = crate::trash_ui::original_location(e);
                         ui.add(egui::Label::new(cell(&from, Some(muted))).truncate())

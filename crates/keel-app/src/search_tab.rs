@@ -155,7 +155,7 @@ impl SearchSettings {
     /// The wait after an edit before the query runs; None when only Enter runs it.
     pub fn delay(&self) -> Option<Duration> {
         self.as_you_type
-            .then(|| Duration::from_millis(self.delay_ms.min(2_000)))
+            .then_some(Duration::from_millis(self.delay_ms.min(2_000)))
     }
 
     pub fn max(&self) -> u32 {

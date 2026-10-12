@@ -2,6 +2,27 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- The search tab has Everything's search toggles beside the query box and in a new **Search** menu: **Match case** (Ctrl+I), **Match whole words** (Ctrl+B), **Match path** (Ctrl+U), **Match diacritics** (Ctrl+M) and **Regular expression** (Ctrl+R). They are per tab, in the command palette, and new search tabs start with the ones chosen in Settings → General → New searches (per profile). Keel's own index and the home-folder walk apply them; Everything gets them as its own search switches (and `diacritics:`). With Match diacritics off (the default) `cafe` finds `café` and the other way round. See [The search tab](docs/files.md#the-search-tab).
+- Search options in Settings → General: **Search as you type** with its delay, and **Match whole filename when using wildcards** (off: `*.pd` finds `report.pdf`).
+- Search results highlight the parts of each name the query matched, and of the Folder column with Match path.
+- **Load more** in the search bar: a search shows its first 1,000 results and asks for more on demand, up to **Most results** (10,000 by default).
+- The status bar of a search tab shows the results' total size beside the selection's.
+- **Copy name** (context menu, palette, Search menu), and **Copy path: In double quotes** in Settings → General.
+
+### Changed
+
+- A search is no longer capped at 500 results (see Load more). Remote host and cloud name searches still stop at 500.
+- In a search tab Ctrl+I is Match case (Everything's key); the Inspector stays on Ctrl+I elsewhere and in the command palette.
+- Keel's own index matches letters with their accented forms by default (Match diacritics off, like Everything).
+
+### Fixed
+
+- The search box hint on Windows advertised `ext:` and `dm:` even when Keel's own index answered, which does not understand them; the hint now names what the active backend understands.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
