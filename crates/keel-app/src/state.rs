@@ -232,6 +232,8 @@ pub enum Msg {
     External(crate::cli::Request),
     // --- Task 29 ---
     Library(crate::library::LibMsg),
+    /// Task 85: Delete permanently, hard-link dedup and the system cleanups.
+    System(crate::system_cleanup::SysMsg),
     // --- Task 36 ---
     Devices(crate::devices::DevMsg),
     Mount(crate::mount_ui::MountMsg),
@@ -1033,6 +1035,7 @@ impl AppState {
             // --- Task 24 ---
             Msg::External(req) => self.external(req),
             Msg::Library(msg) => self.library_msg(msg),
+            Msg::System(msg) => self.system_msg(msg),
             Msg::Devices(msg) => self.devices_msg(msg),
             Msg::Mount(msg) => self.mount_msg(msg),
             Msg::FileList(msg) => self.filelist_msg(msg),
@@ -2275,6 +2278,7 @@ impl AppState {
                 }
             }
             Action::Remote { host, cmd } => self.remote_cmd(host, cmd),
+            Action::System(cmd) => self.system_cmd(p, cmd),
             Action::Cloud { id, cmd } => self.cloud_cmd(id, cmd),
             Action::Trash(paths) => {
                 self.jobs

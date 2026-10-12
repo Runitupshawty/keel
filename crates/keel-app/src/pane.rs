@@ -704,6 +704,13 @@ pub fn context_menu(
         item(ui, "Rename", "F2", Action::Rename);
         item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
         item(ui, "Delete", "Del", Action::Delete);
+        // Task 85: never on a key, never the menu's own Delete.
+        if tab.dir.to_local_path().is_some() {
+            ui.menu_button("More delete options", |ui| {
+                let now = Action::System(crate::system_cleanup::SysCmd::DeletePermanently);
+                item(ui, "Delete permanently…", "", now);
+            });
+        }
         // Task 60: folder operations, as library plans (local folders and library views).
         if tab.dir.to_local_path().is_some() || tab.dir.scheme == "library" {
             use crate::folder_ops::Kind;

@@ -67,6 +67,9 @@ pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
 pub use walkindex::{
     home_root, index_dir as walk_index_dir, EntryInfo, WalkIndexSearcher, WalkOptions,
 };
+// Task 85: the system cleanups' one-shot elevated helper.
+#[cfg(windows)]
+pub use ntfs::run_elevated;
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

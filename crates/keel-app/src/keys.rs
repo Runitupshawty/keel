@@ -61,6 +61,9 @@ pub enum Action {
     /// Confirmed: delete these for good (a remote host, a cloud, a WSL folder: no trash
     /// there).
     DeleteRemote(Vec<VPath>),
+    /// Task 85: Delete permanently, hard-link dedup, system cleanups and launchers
+    /// (`system_cleanup`). Never on a key.
+    System(crate::system_cleanup::SysCmd),
     /// Sidebar: open this WSL distribution (started first when stopped), on a worker.
     OpenWsl(String),
     /// Sidebar command on a configured remote host (by id).

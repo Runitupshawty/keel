@@ -28,6 +28,7 @@ mod fonts; // also the web client's (keel-web includes it by path)
 #[cfg(test)]
 mod fuzz_tests;
 mod goto; // Phase 14 Task 67
+mod hardlink_dedup; // Task 85: replace duplicates with hard links
 mod icon_theme;
 mod icons;
 mod inspector;
@@ -44,6 +45,7 @@ mod mount_ui;
 mod palette;
 mod pane;
 mod path_bar; // Phase 14 Task 67
+mod permanent_delete; // Task 85: Delete permanently
 mod platform;
 mod preview_panel;
 mod profiles;
@@ -66,6 +68,7 @@ mod sidebar_remotes;
 mod sizes; // Task 46: folder sizes
 mod spring; // Phase 14 Task 67: spring-loaded folders
 mod state;
+mod system_cleanup; // Task 85: system cleanups and launchers
 mod tab;
 /// Task 67: Finder tag colors, dots and macOS native tags.
 mod tag_dots;
@@ -200,6 +203,12 @@ fn main() -> eframe::Result<()> {
                 1
             }
         });
+    }
+    // Task 85: `keel --system-cleanup <task> --cleanup-report <file>`: the one-shot
+    // elevated helper of the system cleanups, no window.
+    if let Some(task) = &cli.system_cleanup {
+        let report = cli.cleanup_report.as_deref();
+        std::process::exit(system_cleanup::helper_main(task, report));
     }
     let home = directories::BaseDirs::new()
         .map(|b| b.home_dir().to_owned())

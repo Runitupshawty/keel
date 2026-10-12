@@ -59,6 +59,8 @@ pub enum Dialog {
     },
     /// Task 60: a folder operation (`folder_ops`).
     FolderOp(Box<crate::folder_ops::FolderDialog>),
+    /// Task 85: Delete permanently, hard-link dedup, a system cleanup (`system_cleanup`).
+    System(Box<crate::system_cleanup::SysDialog>),
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -277,6 +279,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::ExportList(d) => out = crate::filelist_ui::dialog_ui(ui, d, &mut cancel),
             Dialog::FolderOp(d) => out = crate::folder_ops::ui(ui, d, &mut cancel),
+            Dialog::System(d) => out = crate::system_cleanup::dialog_ui(ui, d, &mut cancel),
             Dialog::BulkRename(m) => {
                 if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
                     out = Some(Action::BulkRenameApply { renames });

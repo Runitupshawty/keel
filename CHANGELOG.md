@@ -78,6 +78,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A fuzz target for the index service's protocol (`index_proto`).
 - **Recover deleted files** from the command line (Phase 17): `keel recover scan <drive or image>` lists the deleted files an NTFS, exFAT or FAT12/16/32 drive, device or volume image still describes, each with its name, folder, size, dates and a confidence (whether its clusters are still free or were reused); `keel recover restore <id>... --to <folder>` writes them to a folder on another drive. **Needs administrator rights** (root elsewhere) to read a drive, opens it read-only, and **never recovers onto the same drive** (a destination there, or on a loop device or virtual disk backed by a file there, is refused; the folder is checked on an open handle and the file created through it) and never saves its scan list there (`--save` and `restore --from` take a file on another drive). The scan keeps a bounded amount of memory on hostile images (folders are named once, a 512 MiB cap), and restore reads the drive again instead of trusting the saved list. Names from the drive are shown with control characters escaped. A scan of a Recycle Bin folder lists its items with their original path, size and date. See [Recovering deleted files](docs/files.md#recovering-deleted-files).
 - Fuzz targets `recover_ntfs`, `recover_exfat`, `recover_fat` and `recycle_bin` for the recovery parsers.
+- **Delete permanently** for local files and folders: More delete options → Delete permanently… in the context menu, or the command palette; never on a key. Keel counts what the selection holds, names the count and the bytes, and deletes only after you type `delete <count>`; nothing is deleted when the items changed since. See [Delete permanently](docs/files.md#delete-permanently-hard-links-and-system-cleanups).
+- **Replace with hard links…** in the duplicate finder: copies on one volume become hard links to one copy kept, after a preview and a byte-by-byte comparison of each pair; Ctrl+Z gives each its own copy back.
+- **System cleanups** on Windows (a drive's Clean up menu in the sidebar, or the palette): disable hibernation (shows the size of `hiberfil.sys`), analyze and clean up the component store with DISM, and optimize a VHD/VHDX (`Optimize-VHD`, or a `diskpart` compact). Each shows a preview with its size and commands and a second confirmation, and runs through a one-shot elevated helper.
+- Launchers for Disk Cleanup, Storage settings, Installed apps and Programs and Features (Windows) and Storage settings (macOS).
 
 ### Changed
 
@@ -107,6 +111,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - `keel FOLDER --search QUERY` searched the whole disk; it now searches only in FOLDER (the query starts with `in:"FOLDER"`, which shows in the search box).
 - With `KEEL_CONFIG_DIR` set, the window's size and position (eframe's `app.ron`) were still saved in eframe's own folder; they now go to `<KEEL_CONFIG_DIR>/window`.
 - A volume whose file table (`$MFT`) is so fragmented that its list of extents continues in other records was indexed only up to its first extent, and the index was still marked complete. Keel now follows every extent, and reads the volume by enumeration instead when the extents do not cover the whole table.
+- A late preview of a system cleanup no longer replaces the task of a dialog opened since.
+- Undo of hard links works when the linked file became read-only.
+
+### Security
+
+- The elevated system cleanup helper runs nothing a program without administrator rights could swap after you confirm: the diskpart script goes to diskpart on standard input instead of a file in your temporary folder, programs start by their full System32 path, PowerShell gets only the system module folder with auto-loading off and the Hyper-V module from System32, .NET profiler variables are not inherited, and the helper writes its report only directly into its own temporary folder (not through a link, never into a folder its command line names).
+- Replace with hard links keeps both files open from the byte compare until the duplicate is replaced (refusing writers on Windows) and checks that the link is the kept file compared and that neither changed, so an edit or save during a long compare can no longer replace the duplicate with the changed file. A read-only kept copy is refused; pairs whose permissions, owner or attributes differ, or whose duplicate has alternate data streams, are left alone.
+- Delete permanently refuses OneDrive and other cloud placeholders (folders that are reparse points but no links, offline and on-access files) instead of counting them as one empty file and then deleting their contents, walks without recursion, and deletes exactly the items it counted, one at a time.
 
 ## [0.22.0] - 2026-10-11
 

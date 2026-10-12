@@ -335,6 +335,10 @@ impl Sidebar {
             }
             let r = r.on_hover_text(tip);
             clicked(&r, &path, out);
+            // Task 85: Clean up (system cleanups and launchers; none on Linux).
+            if crate::system_cleanup::DRIVE_MENU {
+                r.context_menu(|ui| crate::system_cleanup::drive_menu(ui, name, out));
+            }
         }
         if keel_vfs::trashbin::SUPPORTED {
             let root = keel_vfs::trashbin::root();
