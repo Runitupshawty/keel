@@ -245,11 +245,13 @@ impl<'a> Walker<'a> {
         b: &mut Batch,
     ) {
         let name = raw.name.to_string_lossy().into_owned();
-        let path = dir.join(&raw.name);
-        if self.filters.excludes(&name, &path, raw.attrs) {
+        // Joined only when needed: most files never need their full path.
+        let joined = || dir.join(&raw.name);
+        if self.filters.excludes(&name, raw.attrs, joined) {
             return self.skip();
         }
         if let Some(kind) = raw.link {
+            let path = joined();
             return self.link(kind, raw, name, path, cluster, depth, anc, b);
         }
         let deep = depth + 1 > MAX_DEPTH;
@@ -267,7 +269,7 @@ impl<'a> Walker<'a> {
                     b.nodes.len(),
                     Job {
                         node: NONE,
-                        path,
+                        path: joined(),
                         cluster,
                         drive: false,
                     },
@@ -283,7 +285,7 @@ impl<'a> Walker<'a> {
         n.attributes = raw.attrs;
         n.modified = raw.mtime;
         n.size = raw.size;
-        n.allocated = sys::allocated(raw.attrs, raw.size, raw.alloc, &path, cluster);
+        n.allocated = sys::allocated(raw.attrs, raw.size, raw.alloc, joined, cluster);
         n.flags |= file_flags(raw.attrs);
         if let Some(e) = ext_of(&n.name) {
             b.exts.push((b.nodes.len(), e));

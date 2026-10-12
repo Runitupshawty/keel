@@ -85,8 +85,9 @@ impl Compiled {
         })
     }
 
-    /// Whether the item named `name` at `path` (with `attrs`) is left out.
-    pub(super) fn excludes(&self, name: &str, path: &Path, attrs: u32) -> bool {
+    /// Whether the item named `name` (with `attrs`) at `path()` is left out; `path` is
+    /// called only when a path filter needs it.
+    pub(super) fn excludes(&self, name: &str, attrs: u32, path: impl FnOnce() -> PathBuf) -> bool {
         if (self.hidden && attrs & attr::HIDDEN != 0) || (self.system && attrs & attr::SYSTEM != 0)
         {
             return true;
@@ -100,11 +101,12 @@ impl Compiled {
         if self.paths.is_empty() && self.regex.is_none() {
             return false;
         }
+        let path = path();
         let full = path.to_string_lossy();
         if self.regex.as_ref().is_some_and(|r| r.is_match(&full)) {
             return true;
         }
-        !self.paths.is_empty() && self.paths.contains(&key(path))
+        !self.paths.is_empty() && self.paths.contains(&key(&path))
     }
 
     /// Whether a file of `size` bytes last written at `mtime` is left out.

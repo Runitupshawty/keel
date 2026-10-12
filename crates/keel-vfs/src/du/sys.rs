@@ -5,7 +5,7 @@
 
 use super::{attr, LinkKind, UNKNOWN_TIME};
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One directory entry, as listed (links not followed).
 #[derive(Clone, Debug)]
@@ -49,14 +49,15 @@ pub(super) struct Target {
     pub id: Option<u128>,
 }
 
-/// On-disk bytes of a file entry: nothing for a cloud placeholder (never opened);
+/// On-disk bytes of a file entry (`path` is called only when the file must be asked):
+/// nothing for a cloud placeholder (never opened);
 /// Windows compressed and sparse files by `GetCompressedFileSizeW`, rounded up to the
 /// cluster; else the listed allocation, or the length rounded up to the cluster.
 pub(super) fn allocated(
     attrs: u32,
     size: u64,
     alloc: Option<u64>,
-    path: &Path,
+    path: impl FnOnce() -> PathBuf,
     cluster: u64,
 ) -> u64 {
     if attrs & attr::CLOUD != 0 {
@@ -64,7 +65,7 @@ pub(super) fn allocated(
     }
     #[cfg(windows)]
     if attrs & (attr::COMPRESSED | attr::SPARSE) != 0 {
-        if let Some(c) = imp::compressed_size(path) {
+        if let Some(c) = imp::compressed_size(&path()) {
             return round_up(c, cluster);
         }
     }
