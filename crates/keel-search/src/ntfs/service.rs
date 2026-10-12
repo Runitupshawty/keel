@@ -3,27 +3,30 @@
 //! that does the elevated reads ([`Elevated`]; [`LocalVolumes`] in the service), and
 //! [`Client`] is what the unelevated Keel uses, re-validating every answer.
 //!
-//! The service only reads: it hands back the journal's raw buffers (parsed by the
-//! client), sizes and dates by file id, and the MFT as index rows. It never returns
-//! file contents (a small file's data kept inside its MFT record stays in the
-//! service: rows carry only the columns the index stores), never writes, and takes
-//! requests only for drive letters that are fixed local NTFS volumes in the
+//! The service only reads, and parses nothing a disk holds: it hands back the
+//! journal's raw buffers (parsed by the client), sizes and dates by file id, and the
+//! MFT as raw records in the one-shot helper's frames ([`crate::wire`]) with the
+//! update sequence applied and file contents kept inside records blanked. Keel
+//! decodes, parses and indexes those (`receive`), so a hostile volume cannot reach
+//! parsing code running as SYSTEM. It never returns file contents, never writes, and
+//! takes requests only for drive letters that are fixed local NTFS volumes in the
 //! service's own (global) drive namespace. See `docs/index-service.md`.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
-use std::cell::RefCell;
-
 use parking_lot::Mutex;
 
-use crate::mft;
 use crate::proto::{
-    read_frame, valid_letter, valid_name, write_frame, Request, Response, Row, Stat, E_BAD_REQUEST,
-    E_BAD_VOLUME, E_FAILED, MAX_JOURNAL, MAX_REQUEST, MAX_RESPONSE, MAX_ROWS, MAX_STAT,
+    read_frame, valid_letter, valid_name, write_frame, Request, Response, Stat, E_BAD_REQUEST,
+    E_BAD_VOLUME, E_FAILED, MAX_JOURNAL, MAX_REQUEST, MAX_RESPONSE, MAX_STAT,
 };
+use crate::wire;
 
+use super::db::Meta;
+use super::index::Index;
+use super::receive::{Receiver, Start};
 use super::usn::{parse_buffer, Record};
 use super::win::{self, Journal, Volume, VolumeId};
 
@@ -36,16 +39,14 @@ pub(crate) trait Elevated: Send + Sync {
     /// One raw `FSCTL_READ_USN_JOURNAL` buffer from `start`.
     fn read_journal(&self, letter: char, journal_id: u64, start: i64) -> io::Result<Vec<u8>>;
     fn stat(&self, letter: char, frns: &[u64]) -> Vec<Option<Stat>>;
-    /// Every file of the volume as a row, in MFT order; `Ok(true)` when they came
-    /// from the MFT itself, `Ok(false)` from the enumeration fallback. `reset` is
-    /// called when rows already handed over must be dropped (the MFT read failed half
-    /// way and the enumeration starts over).
-    fn read_mft(
+    /// The volume's MFT as `wire` frames, one `out` call per whole frame (length
+    /// prefix included): [`wire::send_volume`]. Errors when `out` fails, or, before
+    /// any frame was sent, when the volume cannot be read at all.
+    fn send_mft(
         &self,
         letter: char,
-        row: &mut dyn FnMut(Row),
-        reset: &mut dyn FnMut(),
-    ) -> anyhow::Result<bool>;
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()>;
 }
 
 /// Answers requests on one connection until the client closes it. A request that
@@ -88,8 +89,6 @@ fn os_error(e: &io::Error) -> Response {
     }
 }
 
-/// Bytes of rows per [`Response::Rows`] frame, well under [`MAX_RESPONSE`].
-const ROWS_BYTES: usize = MAX_RESPONSE / 2;
 
 fn answer(
     conn: &mut (impl Read + Write),
@@ -135,79 +134,22 @@ fn answer(
     send(conn, &response)
 }
 
-/// Sends the volume's rows in frames of at most [`MAX_ROWS`] rows and about
-/// [`ROWS_BYTES`] bytes, then [`Response::MftEnd`]. A failed write stops sending (the
-/// read itself runs to its end: it cannot be interrupted half way).
+/// Streams the volume's raw MFT records to the client as the elevated helper's frames
+/// ([`wire`]): the service locates the MFT, applies each record's update sequence and
+/// blanks file contents kept inside records, and parses nothing; Keel does that.
+/// A backend that fails before the first frame gets an error answer; a failed write
+/// ends the connection.
 fn stream_mft(conn: &mut impl Write, backend: &dyn Elevated, letter: char) -> io::Result<()> {
-    struct Batch<'a, W: Write> {
-        conn: &'a mut W,
-        rows: Vec<Row>,
-        bytes: usize,
-        sent: u64,
-        failed: Option<io::Error>,
+    let mut started = false;
+    let sent = backend.send_mft(letter, &mut |frame| {
+        started = true;
+        conn.write_all(frame)
+    });
+    match sent {
+        Ok(()) => conn.flush(),
+        Err(e) if !started => send(conn, &os_error(&e)),
+        Err(e) => Err(e),
     }
-    impl<W: Write> Batch<'_, W> {
-        fn flush(&mut self) {
-            if self.rows.is_empty() || self.failed.is_some() {
-                self.rows.clear();
-                self.bytes = 0;
-                return;
-            }
-            let rows = std::mem::take(&mut self.rows);
-            self.sent += rows.len() as u64;
-            self.bytes = 0;
-            if let Err(e) = send(&mut *self.conn, &Response::Rows(rows)) {
-                self.failed = Some(e);
-            }
-        }
-    }
-    let mut batch = Batch {
-        conn,
-        rows: Vec::new(),
-        bytes: 0,
-        sent: 0,
-        failed: None,
-    };
-    let batch = RefCell::new(&mut batch);
-    let result = backend.read_mft(
-        letter,
-        &mut |row| {
-            // Names that would not survive the client's checks are not sent.
-            if !valid_name(&row.name) {
-                return;
-            }
-            let mut b = batch.borrow_mut();
-            b.bytes += 80 + row.name.len();
-            b.rows.push(row);
-            if b.rows.len() >= MAX_ROWS || b.bytes >= ROWS_BYTES {
-                b.flush();
-            }
-        },
-        &mut || {
-            let mut b = batch.borrow_mut();
-            b.rows.clear();
-            b.bytes = 0;
-            if b.failed.is_none() {
-                if let Err(e) = send(&mut *b.conn, &Response::MftReset) {
-                    b.failed = Some(e);
-                }
-            }
-            b.sent = 0;
-        },
-    );
-    let batch = batch.into_inner();
-    batch.flush();
-    if let Some(e) = batch.failed.take() {
-        return Err(e);
-    }
-    let end = match result {
-        Ok(full) => Response::MftEnd {
-            full,
-            rows: batch.sent,
-        },
-        Err(e) => Response::error(E_FAILED, format!("{e:#}")),
-    };
-    send(&mut *batch.conn, &end)
 }
 
 /// The service's backend: the volumes of this machine, read as SYSTEM.
@@ -220,8 +162,13 @@ pub(crate) struct LocalVolumes {
 impl LocalVolumes {
     /// A volume handle (cached), only for a letter that is a fixed NTFS volume now.
     fn volume(&self, letter: char) -> io::Result<Arc<Volume>> {
-        if let Some((_, v)) = self.handles.lock().get(&letter) {
-            return Ok(v.clone());
+        self.volume_and_serial(letter).map(|(_, v)| v)
+    }
+
+    /// [`Self::volume`] with the volume serial the letter has.
+    fn volume_and_serial(&self, letter: char) -> io::Result<(u32, Arc<Volume>)> {
+        if let Some((serial, v)) = self.handles.lock().get(&letter) {
+            return Ok((*serial, v.clone()));
         }
         let serial = self
             .volumes()
@@ -236,7 +183,7 @@ impl LocalVolumes {
             ));
         }
         self.handles.lock().insert(letter, (serial, volume.clone()));
-        Ok(volume)
+        Ok((serial, volume))
     }
 }
 
@@ -266,37 +213,13 @@ impl Elevated for LocalVolumes {
         }
     }
 
-    fn read_mft(
+    fn send_mft(
         &self,
         letter: char,
-        row: &mut dyn FnMut(Row),
-        reset: &mut dyn FnMut(),
-    ) -> anyhow::Result<bool> {
-        let volume = self.volume(letter)?;
-        let mut sent = false;
-        let direct = super::read_mft(&volume, |entry| {
-            if let Some(r) = super::row_of(&entry) {
-                sent = true;
-                row(r);
-            }
-        });
-        match direct {
-            Ok(()) => Ok(true),
-            Err(e) => {
-                super::warn(&format!(
-                    "reading the MFT of {letter}: directly: {e:#}; enumerating instead"
-                ));
-                if sent {
-                    reset();
-                }
-                volume.enumerate(|records| {
-                    for r in records {
-                        row(super::row_of_record(&r));
-                    }
-                })?;
-                Ok(false)
-            }
-        }
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (serial, volume) = self.volume_and_serial(letter)?;
+        wire::send_volume(&*volume, letter, serial, out)
     }
 }
 
@@ -384,15 +307,19 @@ impl<S: Read + Write> Client<S> {
         r
     }
 
-    /// Reads one response; an error response becomes an `io::Error` (a Windows code
-    /// keeps its raw OS error, so ERROR_JOURNAL_ENTRY_DELETED still reads as such).
-    fn receive(&mut self) -> io::Result<Response> {
+    /// The next frame's payload.
+    fn next_frame(&mut self) -> io::Result<Vec<u8>> {
         let frame = read_frame(&mut self.conn, MAX_RESPONSE);
-        let frame = match self.transport(frame)? {
-            Some(f) => f,
-            None => return Err(self.fail("the service closed the connection")),
-        };
-        let response = Response::decode(&frame).map_err(io::Error::from);
+        match self.transport(frame)? {
+            Some(f) => Ok(f),
+            None => Err(self.fail("the service closed the connection")),
+        }
+    }
+
+    /// Decodes a response; an error response becomes an `io::Error` (a Windows code
+    /// keeps its raw OS error, so ERROR_JOURNAL_ENTRY_DELETED still reads as such).
+    fn answer(&mut self, frame: &[u8]) -> io::Result<Response> {
+        let response = Response::decode(frame).map_err(io::Error::from);
         match self.transport(response)? {
             // A Windows error code keeps its raw value, so ERROR_JOURNAL_ENTRY_DELETED
             // still reads as such.
@@ -407,6 +334,12 @@ impl<S: Read + Write> Client<S> {
             }
             r => Ok(r),
         }
+    }
+
+    /// Reads one response.
+    fn receive(&mut self) -> io::Result<Response> {
+        let frame = self.next_frame()?;
+        self.answer(&frame)
     }
 
     fn call(&mut self, request: &Request) -> io::Result<Response> {
@@ -504,36 +437,51 @@ impl<S: Read + Write> Client<S> {
         Ok(out)
     }
 
-    /// The volume's rows (see [`Request::ReadMft`]); `reset` when the service starts
-    /// over. Returns whether they came from the MFT itself.
-    pub fn read_mft(
-        &mut self,
-        letter: char,
-        mut row: impl FnMut(Row),
-        mut reset: impl FnMut(),
-    ) -> io::Result<bool> {
+    /// Builds the volume's index from the service's raw MFT records. The service
+    /// only locates the MFT and blanks what the index never reads; everything from
+    /// there (decoding the frames, parsing each record, merging files, the index) is
+    /// done here by the same code and checks as for the one-shot helper
+    /// ([`Receiver`]), treating every byte as untrusted. `start` is the volume as
+    /// this process sees it (letter, serial, root, journal position taken before the
+    /// read); a stream for another volume builds nothing. The service reporting that
+    /// it could not read the volume is an error that leaves the client usable; a
+    /// stream out of protocol breaks it.
+    pub fn read_mft(&mut self, start: Start) -> io::Result<(Index, Meta)> {
+        let letter = start.id.letter;
         self.check_letter(letter)?;
         let sent = write_frame(&mut self.conn, &Request::ReadMft { letter }.encode());
         self.transport(sent)?;
-        let mut count = 0u64;
+        let mut built = None;
+        let mut rx = Receiver::new(vec![start], |_, index, meta| built = Some((index, meta)));
         loop {
-            match self.receive()? {
-                Response::Rows(rows) => {
-                    count += rows.len() as u64;
-                    for r in rows {
-                        if plausible_row(&r) {
-                            row(r);
-                        }
-                    }
-                }
-                Response::MftReset => {
-                    count = 0;
-                    reset();
-                }
-                Response::MftEnd { full, rows } if rows == count => return Ok(full),
-                _ => return Err(self.fail("bad MFT stream")),
+            let frame = self.next_frame()?;
+            // An answer instead of the stream: the service could not start it.
+            if frame.get(1).is_some_and(|&kind| kind >= 0x80) {
+                self.answer(&frame)?;
+                return Err(self.fail("an answer in the MFT stream"));
+            }
+            let last = match wire::Frame::decode(&frame) {
+                Ok(wire::Frame::End { .. } | wire::Frame::Failed(_)) => true,
+                // Only the one-shot helper ends its stream with Done.
+                Ok(wire::Frame::Done) => return Err(self.fail("an unexpected end of the stream")),
+                Ok(_) => false,
+                Err(e) => return Err(self.fail(&format!("bad MFT stream: {e:#}"))),
+            };
+            if let Err(e) = rx.frame(&frame) {
+                return Err(self.fail(&format!("bad MFT stream: {e:#}")));
+            }
+            if last {
+                break;
             }
         }
+        let failed = std::mem::take(&mut rx.failed);
+        drop(rx);
+        built.ok_or_else(|| {
+            io::Error::other(format!(
+                "index service: {}",
+                failed.first().map_or("nothing was read", String::as_str)
+            ))
+        })
     }
 }
 
@@ -544,33 +492,57 @@ fn plausible(stat: &Stat) -> bool {
     stat.attributes & FILE_ATTRIBUTE_DIRECTORY == 0 || (stat.size == 0 && stat.allocated == 0)
 }
 
-/// What the index takes from a row: not one of NTFS's own files (records 0 to 15,
-/// except the root folder 5), not its own parent (but the root, which is), a folder bit that agrees with the
-/// attributes, and no size on a folder. The name was checked by the decoder.
-fn plausible_row(r: &Row) -> bool {
-    let number = r.frn & mft::RECORD_MASK;
-    let dir_attr = r.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    let root = number == super::ROOT_RECORD;
-    (number >= super::FIRST_USER_RECORD || root)
-        && (r.frn != r.parent || root)
-        && r.parent != 0
-        && dir_attr == r.is_dir
-        && (!r.is_dir || (r.size == 0 && r.allocated == 0))
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::proto::tests::sample_row;
-    use crate::proto::MAX_NAME_UNITS;
+    use crate::mft::tests::{record, A};
+    use crate::mft::Standard;
+    use crate::raw::tests::{file, mft_zero, runs, Image, RECORD};
     use std::collections::VecDeque;
+
+    const ROOT: u64 = 5 | 5 << 48;
+
+    /// A small NTFS volume image: the root folder and files in records 30 and 31.
+    pub(crate) fn sample_image() -> Image {
+        let size = 64 * RECORD;
+        let all = [(10, 16)];
+        let mut image = Image::new(48, size);
+        image.put(&all, 0, &mft_zero(size, runs(&[(Some(10), 16)]), None));
+        let root = record(
+            5,
+            0,
+            3,
+            &[A::Standard(Standard::default()), A::Name(ROOT, ".", 3)],
+        );
+        image.put(&all, 5, &root);
+        image.put(&all, 30, &file("near.txt"));
+        image.put(&all, 31, &file("other.txt"));
+        image
+    }
+
+    /// What Keel knows about volume `C:` before it asks for the MFT.
+    pub(crate) fn start(serial: u32) -> Start {
+        Start {
+            id: VolumeId {
+                letter: 'C',
+                serial,
+            },
+            root: ROOT,
+            journal: Journal {
+                id: 7,
+                next_usn: 1_000,
+                lowest_valid_usn: 0,
+            },
+        }
+    }
 
     /// A fake elevated backend: volume C: (serial 7) with fixed answers.
     #[derive(Default)]
     pub(crate) struct Mock {
-        pub rows: Vec<Row>,
-        /// Rows sent before the "MFT read" fails and the enumeration starts over.
-        pub torn: Vec<Row>,
+        /// The volume the MFT frames are made from ([`wire::send_volume`]).
+        pub image: Option<Image>,
+        /// Frames sent as they are instead (a service that misbehaves).
+        pub frames: Vec<Vec<u8>>,
         /// Raw journal buffers, one per call; then an empty one at `end`.
         pub journal: Mutex<VecDeque<Vec<u8>>>,
         pub end: i64,
@@ -601,18 +573,19 @@ pub(crate) mod tests {
         fn stat(&self, _: char, frns: &[u64]) -> Vec<Option<Stat>> {
             frns.iter().map(|f| self.stats.get(f).copied()).collect()
         }
-        fn read_mft(
+        fn send_mft(
             &self,
-            _: char,
-            row: &mut dyn FnMut(Row),
-            reset: &mut dyn FnMut(),
-        ) -> anyhow::Result<bool> {
-            if !self.torn.is_empty() {
-                self.torn.iter().cloned().for_each(&mut *row);
-                reset();
+            letter: char,
+            out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        ) -> io::Result<()> {
+            if let Some(image) = &self.image {
+                return wire::send_volume(image, letter, 7, out);
             }
-            self.rows.iter().cloned().for_each(row);
-            Ok(self.torn.is_empty())
+            if self.frames.is_empty() {
+                // ERROR_ACCESS_DENIED before anything was sent.
+                return Err(io::Error::from_raw_os_error(5));
+            }
+            self.frames.iter().try_for_each(|f| out(f))
         }
     }
 
@@ -785,116 +758,183 @@ pub(crate) mod tests {
         assert!(conn.output.is_empty());
     }
 
+    /// The wire frames `serve` writes for a `ReadMft` request, decoded.
+    fn mft_frames(backend: &dyn Elevated) -> Vec<Vec<u8>> {
+        let mut input = Vec::new();
+        write_frame(&mut input, &Request::ReadMft { letter: 'C' }.encode()).unwrap();
+        let mut conn = Duplex {
+            input: &input,
+            output: Vec::new(),
+        };
+        serve(&mut conn, backend).unwrap();
+        let mut out = &conn.output[..];
+        let mut frames = Vec::new();
+        while let Some(frame) = read_frame(&mut out, MAX_RESPONSE).unwrap() {
+            frames.push(frame);
+        }
+        frames
+    }
+
     #[test]
-    fn mft_rows_stream_and_are_revalidated() {
-        let dir = sample_row(0x0002_0000_0000_0020, 0x0005_0000_0000_0005, "Users", true);
-        let file = sample_row(0x0001_0000_0000_0021, dir.frn, "a.txt", false);
-        // Each of these is dropped by the client: a system record, its own parent,
-        // no parent, a folder with a size, a folder bit that disagrees.
-        let system = sample_row(3, 5, "$Volume", false);
-        let own_parent = sample_row(40, 40, "loop", false);
-        let orphan = sample_row(41, 0, "orphan", false);
-        let mut sized_dir = sample_row(42, 5, "sized", true);
-        sized_dir.size = 1;
-        let mut mismatch = sample_row(43, 5, "mismatch", false);
-        mismatch.attributes |= 0x10;
+    fn the_service_streams_raw_records_and_keel_builds_the_index() {
         let mock = Mock {
-            rows: vec![
-                dir.clone(),
-                file.clone(),
-                system,
-                own_parent,
-                orphan,
-                sized_dir,
-                mismatch,
-            ],
+            image: Some(sample_image()),
+            ..Mock::default()
+        };
+        // What leaves the service: the volume header, raw `FILE` records, the end.
+        let frames = mft_frames(&mock);
+        let decoded: Vec<_> = frames
+            .iter()
+            .map(|f| wire::Frame::decode(f).unwrap())
+            .collect();
+        assert_eq!(
+            decoded[0],
+            wire::Frame::Volume {
+                letter: 'C',
+                serial: 7
+            }
+        );
+        assert_eq!(decoded.last(), Some(&wire::Frame::End { full: true }));
+        let mut numbers = Vec::new();
+        for frame in &decoded[1..decoded.len() - 1] {
+            let wire::Frame::Records(records) = frame else {
+                panic!("{frame:?}")
+            };
+            for (number, bytes) in records.iter() {
+                assert!(bytes.starts_with(b"FILE"));
+                numbers.push(number);
+            }
+        }
+        assert_eq!(numbers, [5, 30, 31], "system records are not sent");
+
+        // Keel parses them, as it does for the one-shot helper.
+        let mut c = client(&mock);
+        let (index, meta) = c.read_mft(start(7)).unwrap();
+        assert!(meta.full);
+        assert_eq!((meta.journal_id, meta.next_usn), (7, 1_000));
+        assert_eq!(index.path(30 | 1 << 48).unwrap(), r"C:\near.txt");
+        assert_eq!(index.path(31 | 1 << 48).unwrap(), r"C:\other.txt");
+        assert_eq!(index.info(30 | 1 << 48).unwrap().size, 5);
+        assert!(!c.broken());
+        // The connection is still good for the next request.
+        assert!(c.query_journal('C').is_ok());
+    }
+
+    #[test]
+    fn a_stream_for_another_volume_builds_nothing() {
+        let mock = Mock {
+            image: Some(sample_image()),
             ..Mock::default()
         };
         let mut c = client(&mock);
-        let got = RefCell::new(Vec::new());
-        let full = c
-            .read_mft(
-                'C',
-                |r| got.borrow_mut().push(r),
-                || got.borrow_mut().clear(),
-            )
-            .unwrap();
-        assert!(full);
-        assert_eq!(got.into_inner(), vec![dir.clone(), file.clone()]);
+        // This process sees drive C: as another volume (serial 8): not taken.
+        let err = c.read_mft(start(8)).unwrap_err();
+        assert!(err.to_string().contains("nothing was read"), "{err}");
+        assert!(!c.broken(), "a well-formed stream is not a protocol error");
+    }
+
+    #[test]
+    fn a_service_that_cannot_read_the_volume_is_not_a_protocol_error() {
+        // It refuses before any frame: an error answer with the Windows code.
+        let mut c = client(&Mock::default());
+        let err = c.read_mft(start(7)).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(5));
         assert!(!c.broken());
-
-        // A torn MFT read: the client drops what came before the reset.
-        let torn = Mock {
-            torn: vec![sample_row(50, 5, "half", false)],
-            rows: vec![dir.clone()],
-            ..Mock::default()
-        };
-        let mut c = client(&torn);
-        let got = RefCell::new(Vec::new());
-        assert!(!c
-            .read_mft(
-                'C',
-                |r| got.borrow_mut().push(r),
-                || got.borrow_mut().clear()
-            )
-            .unwrap());
-        assert_eq!(got.into_inner(), vec![dir]);
-    }
-
-    #[test]
-    fn mft_rows_are_batched_under_the_frame_limit() {
-        let rows: Vec<Row> = (0..40_000u64)
-            .map(|i| sample_row(100 + i, 5, &format!("{:0>200}", i), false))
-            .collect();
-        let mock = Mock {
-            rows: rows.clone(),
-            ..Mock::default()
-        };
-        let answers = exchange(&mock, &[Request::ReadMft { letter: 'C' }.encode()]);
-        let batches = answers.len() - 1;
-        assert!(batches >= 3, "{batches} frames");
-        let mut got = Vec::new();
-        for a in &answers[..batches] {
-            let Response::Rows(r) = a else {
-                panic!("{a:?}")
-            };
-            assert!(r.len() <= MAX_ROWS);
-            assert!(a.encode().len() <= MAX_RESPONSE);
-            got.extend(r.iter().cloned());
-        }
-        assert_eq!(got, rows);
-        assert_eq!(
-            answers[batches],
-            Response::MftEnd {
-                full: true,
-                rows: 40_000
-            }
-        );
-    }
-
-    #[test]
-    fn the_service_never_sends_a_bad_name() {
-        let mut long = sample_row(60, 5, "x", false);
-        long.name = "y".repeat(MAX_NAME_UNITS + 1);
-        let mock = Mock {
-            rows: vec![
-                sample_row(61, 5, "a\\b", false),
-                long,
-                sample_row(62, 5, "ok", false),
+        // It starts the volume and reports that the read failed.
+        let failed = Mock {
+            frames: vec![
+                wire::Frame::Volume {
+                    letter: 'C',
+                    serial: 7,
+                }
+                .encode(),
+                wire::Frame::Failed("cannot open the volume".into()).encode(),
             ],
             ..Mock::default()
         };
-        let answers = exchange(&mock, &[Request::ReadMft { letter: 'C' }.encode()]);
-        assert_eq!(
-            answers,
-            vec![
-                Response::Rows(vec![sample_row(62, 5, "ok", false)]),
-                Response::MftEnd {
-                    full: true,
-                    rows: 1
-                }
-            ]
-        );
+        let mut c = client(&failed);
+        let err = c.read_mft(start(7)).unwrap_err();
+        assert!(err.to_string().contains("cannot open the volume"), "{err}");
+        assert!(!c.broken());
+        assert!(c.query_journal('C').is_ok());
+    }
+
+    #[test]
+    fn a_stream_out_of_protocol_breaks_the_client() {
+        let volume = wire::Frame::Volume {
+            letter: 'C',
+            serial: 7,
+        }
+        .encode();
+        let end = wire::Frame::End { full: true }.encode();
+        let cases: [(&str, Vec<Vec<u8>>); 6] = [
+            // Records before any volume.
+            (
+                "records first",
+                vec![wire::Frame::Enum(&[0; 8]).encode(), end.clone()],
+            ),
+            // The helper's final frame: a service never sends it.
+            ("done", vec![volume.clone(), wire::Frame::Done.encode()]),
+            // An unknown frame kind, a short frame, another protocol version.
+            ("unknown kind", vec![vec![2, 0, 0, 0, 1, 0x77]]),
+            ("short", vec![vec![1, 0, 0, 0, 1]]),
+            ("version", vec![vec![2, 0, 0, 0, 9, 1]]),
+            // An enumeration buffer nobody asked for.
+            (
+                "enum unasked",
+                vec![volume.clone(), wire::Frame::Enum(&[0; 8]).encode(), end],
+            ),
+        ];
+        for (what, frames) in cases {
+            let mock = Mock {
+                frames,
+                ..Mock::default()
+            };
+            let mut c = client(&mock);
+            assert!(c.read_mft(start(7)).is_err(), "{what}");
+            assert!(c.broken(), "{what}");
+        }
+        // A response of another kind in the middle of the stream.
+        let mut c = client(&Mock {
+            frames: vec![write_response(&Response::Volumes(vec![]))],
+            ..Mock::default()
+        });
+        assert!(c.read_mft(start(7)).is_err());
+        assert!(c.broken());
+    }
+
+    fn write_response(r: &Response) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_frame(&mut out, &r.encode()).unwrap();
+        out
+    }
+
+    #[test]
+    fn mft_frames_fit_the_response_limit() {
+        // 5000 records are about 5 MiB: more than one batch.
+        let all = [(10, 1280)];
+        let size = 5120 * RECORD;
+        let mut image = Image::new(1300, size);
+        image.put(&all, 0, &mft_zero(size, runs(&[(Some(10), 1280)]), None));
+        for number in 16..5100 {
+            image.put(&all, number, &file("f.txt"));
+        }
+        let mock = Mock {
+            image: Some(image),
+            ..Mock::default()
+        };
+        let frames = mft_frames(&mock);
+        let batches = frames.len() - 2;
+        assert!(batches >= 2, "{batches} frames");
+        let mut records = 0;
+        for f in &frames[1..frames.len() - 1] {
+            assert!(f.len() <= MAX_RESPONSE);
+            let Ok(wire::Frame::Records(r)) = wire::Frame::decode(f) else {
+                panic!("not records")
+            };
+            records += r.len();
+        }
+        assert_eq!(records, 5100 - 16);
     }
 
     #[test]
@@ -992,13 +1032,12 @@ pub(crate) mod tests {
             fn stat(&self, _: char, _: &[u64]) -> Vec<Option<Stat>> {
                 Vec::new()
             }
-            fn read_mft(
+            fn send_mft(
                 &self,
                 _: char,
-                _: &mut dyn FnMut(Row),
-                _: &mut dyn FnMut(),
-            ) -> anyhow::Result<bool> {
-                anyhow::bail!("refused")
+                _: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+            ) -> io::Result<()> {
+                Err(io::Error::other("refused"))
             }
         }
         let mut c = client(&Short);
@@ -1009,7 +1048,7 @@ pub(crate) mod tests {
         // A journal read shorter than its USN is an error answer, not a crash.
         assert!(c.read_journal('C', 1, 0).is_err());
         // A failed MFT read is reported, and the connection stays usable.
-        assert!(c.read_mft('C', |_| {}, || {}).is_err());
+        assert!(c.read_mft(start(7)).is_err());
         assert!(!c.broken());
         assert!(c.query_journal('C').is_err());
     }

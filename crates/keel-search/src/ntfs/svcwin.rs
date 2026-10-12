@@ -1003,9 +1003,7 @@ fn serve_service() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ntfs::service::tests::Mock;
-    use crate::proto::tests::sample_row;
-    use std::cell::RefCell;
+    use crate::ntfs::service::tests::{sample_image, Mock};
 
     #[test]
     fn user_sids_are_checked_before_they_reach_sddl() {
@@ -1083,7 +1081,7 @@ mod tests {
         // The name is taken now: a second server (a squatter) cannot share it.
         assert!(PipeServer::bind(&name, &pipe_sddl(&me)).is_err());
         let backend: Arc<dyn Elevated> = Arc::new(Mock {
-            rows: vec![sample_row(0x0001_0000_0000_0020, 5, "a.txt", false)],
+            image: Some(sample_image()),
             ..Mock::default()
         });
         let control = Control::new(&name);
@@ -1098,15 +1096,11 @@ mod tests {
         let pipe = connect_pipe(&name, Duration::from_secs(5), |p| p == pid).unwrap();
         let mut client = Client::handshake(pipe).unwrap();
         assert_eq!(client.pid, pid);
-        let rows = RefCell::new(Vec::new());
-        assert!(client
-            .read_mft(
-                'C',
-                |r| rows.borrow_mut().push(r),
-                || rows.borrow_mut().clear()
-            )
-            .unwrap());
-        assert_eq!(rows.into_inner().len(), 1);
+        let (index, meta) = client
+            .read_mft(crate::ntfs::service::tests::start(7))
+            .unwrap();
+        assert!(meta.full);
+        assert_eq!(index.path(30 | 1 << 48).unwrap(), r"C:\near.txt");
         assert_eq!(client.query_journal('C').unwrap().id, 42);
         // Two clients at once.
         let pipe = connect_pipe(&name, Duration::from_secs(5), |p| p == pid).unwrap();

@@ -25,7 +25,7 @@ pub(crate) const MAX_RECORD: usize = 64 * 1024;
 const ATTR_STANDARD_INFORMATION: u32 = 0x10;
 const ATTR_ATTRIBUTE_LIST: u32 = 0x20;
 const ATTR_FILE_NAME: u32 = 0x30;
-const ATTR_DATA: u32 = 0x80;
+pub(crate) const ATTR_DATA: u32 = 0x80;
 const ATTR_REPARSE_POINT: u32 = 0xC0;
 const ATTR_END: u32 = 0xFFFF_FFFF;
 
@@ -218,6 +218,73 @@ pub(crate) fn fixup(record: &mut [u8]) -> Result<(), MftError> {
 pub(crate) fn parse(record: &mut [u8]) -> Result<FileRecord, MftError> {
     fixup(record)?;
     parse_fixed(record)
+}
+
+/// Blanks, in a fixed-up record, every byte the index never reads, so a record can
+/// leave the elevated helper without carrying file contents: the value of every
+/// resident attribute but `$STANDARD_INFORMATION`, `$ATTRIBUTE_LIST` and `$FILE_NAME`
+/// (a small file's data, an alternate stream's, extended attributes, security
+/// descriptors, a small folder's index), a reparse point's data after its tag, and the
+/// slack after the record's last attribute. [`parse_fixed`] gives the same result on
+/// the blanked record. Returns false, leaving the record untouched, for a free record;
+/// errors on one whose attributes do not walk.
+pub(crate) fn blank_fixed(r: &mut [u8]) -> Result<bool, MftError> {
+    let header = MftError::Header;
+    let bad = MftError::Attribute;
+    if u16_at(r, 0x16).ok_or(header)? & RECORD_IN_USE == 0 {
+        return Ok(false);
+    }
+    let first = usize::from(u16_at(r, 0x14).ok_or(header)?);
+    let used = u32_at(r, 0x18).ok_or(header)? as usize;
+    if used > r.len() || first < 0x18 || first > used {
+        return Err(header);
+    }
+    // First find every range to clear, then clear: a bad attribute leaves no change.
+    let mut clear: Vec<(usize, usize)> = Vec::new();
+    let mut at = first;
+    loop {
+        let kind = u32_at(&r[..used], at).ok_or(bad)?;
+        if kind == ATTR_END {
+            break;
+        }
+        let len = u32_at(&r[..used], at + 4).ok_or(bad)? as usize;
+        if len < 0x18 || !len.is_multiple_of(8) {
+            return Err(bad);
+        }
+        let end = at.checked_add(len).filter(|&e| e <= used).ok_or(bad)?;
+        let raw = &r[at..end];
+        if *raw.get(8).ok_or(bad)? == 0 {
+            let name_chars = usize::from(*raw.get(9).ok_or(bad)?);
+            let name_at = usize::from(u16_at(raw, 0x0A).ok_or(bad)?);
+            let value_len = u32_at(raw, 0x10).ok_or(bad)? as usize;
+            let value_at = usize::from(u16_at(raw, 0x14).ok_or(bad)?);
+            let value_end = value_at.checked_add(value_len).ok_or(bad)?;
+            let name_end = if name_chars > 0 {
+                name_at + 2 * name_chars
+            } else {
+                0
+            };
+            // A value that overlaps the attribute's header or name is not NTFS's.
+            if value_end > len || (value_len > 0 && value_at < name_end.max(0x18)) {
+                return Err(bad);
+            }
+            let keep = match kind {
+                ATTR_STANDARD_INFORMATION | ATTR_ATTRIBUTE_LIST | ATTR_FILE_NAME => value_len,
+                ATTR_REPARSE_POINT => value_len.min(4),
+                _ => 0,
+            };
+            clear.push((at + value_at + keep, at + value_end));
+        }
+        at = end;
+    }
+    // The slack, but never the header fields `parse_fixed` reads.
+    clear.push((used.max(0x30), r.len()));
+    for (from, to) in clear {
+        if from < to {
+            r[from..to].fill(0);
+        }
+    }
+    Ok(true)
 }
 
 /// One attribute's body.
@@ -518,11 +585,23 @@ pub(crate) fn decode_runs(bytes: &[u8]) -> Result<Vec<Run>, MftError> {
 }
 
 /// The unnamed `$DATA` stream's size and data runs in a fixed-up record, all its
-/// extents in this record in order. Record 0 (the `$MFT` itself) says where the MFT
-/// lies on the volume.
+/// extents in this record in order.
 pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
+    let (size, extents) = data_extents(r)?;
+    let runs = extents.into_iter().flat_map(|(_, runs)| runs).collect();
+    Ok((size.ok_or(MftError::Runs)?, runs))
+}
+
+/// Extents of a non-resident attribute: (start VCN, runs).
+pub(crate) type Extents = Vec<(u64, Vec<Run>)>;
+
+/// The extents of the unnamed `$DATA` stream that are in this fixed-up record, in
+/// record order, and the stream's size when its first extent (VCN 0) is here. Record
+/// 0 (the `$MFT` itself) and the extension records its `$ATTRIBUTE_LIST` names say
+/// where the MFT lies on the volume.
+pub(crate) fn data_extents(r: &[u8]) -> Result<(Option<u64>, Extents), MftError> {
     let mut size = None;
-    let mut runs = Vec::new();
+    let mut extents = Vec::new();
     let mut failed = None;
     each_attribute(r, |a| {
         if a.kind != ATTR_DATA || a.named || failed.is_some() {
@@ -539,7 +618,7 @@ pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
                 size = Some(s);
             }
             match decode_runs(bytes) {
-                Ok(more) => runs.extend(more),
+                Ok(runs) => extents.push((start_vcn, runs)),
                 Err(e) => failed = Some(e),
             }
         }
@@ -547,7 +626,7 @@ pub(crate) fn data_runs(r: &[u8]) -> Result<(u64, Vec<Run>), MftError> {
     if let Some(e) = failed {
         return Err(e);
     }
-    Ok((size.ok_or(MftError::Runs)?, runs))
+    Ok((size, extents))
 }
 
 /// One file, merged from its base record and any extension records: what the index

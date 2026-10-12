@@ -2,6 +2,8 @@
 //! MFT (administrator only): the raw `FILE` records through the volume handle
 //! ([`crate::mft`]: names, hard links, sizes, dates, attributes, streams), or, when
 //! that read is refused or fails, `FSCTL_ENUM_USN_DATA` (names and attributes only).
+//! The elevated helper only reads: it hands the raw records to the unelevated
+//! process, which parses them and builds the index ([`crate::wire`], `receive`).
 //! The index is persisted to `<cache>/index/<serial>.db`. Any later start loads that db and catches up from
 //! the USN journal, then polls it every 2 s; this works without elevation too
 //! (`FSCTL_READ_UNPRIVILEGED_USN_JOURNAL` on a root-folder handle, names restored by
@@ -14,6 +16,7 @@ mod acl;
 mod db;
 mod index;
 mod pattern;
+mod receive;
 mod service;
 mod svcwin;
 mod usn;
@@ -29,8 +32,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context};
 use parking_lot::{Mutex, RwLock};
 
-use crate::mft;
-use crate::proto::Row;
+use crate::{mft, wire};
 use crate::{Hit, Query, SearchState, Searcher};
 use db::Meta;
 use index::{rank, Found, Index, Info};
@@ -100,57 +102,163 @@ fn in_test_binary() -> bool {
         .unwrap_or(false)
 }
 
-/// Relaunches this executable as `keel --index-service <index dir>` through the UAC
-/// prompt and waits for it; a running [`NtfsSearcher`] picks the result up within
-/// seconds. Blocks: call off the UI thread.
+/// Indexes every fixed NTFS volume in full: relaunches this executable as `keel
+/// --index-service <pipe>` through the UAC prompt, and builds each volume's index
+/// here, unelevated, from the raw MFT records the helper sends over the pipe
+/// ([`crate::wire`]), writing `<serial>.db.svc`; a running [`NtfsSearcher`] picks
+/// them up within seconds. Blocks: call off the UI thread.
 pub fn request_full_index() -> anyhow::Result<()> {
     let dir = index_dir().ok_or_else(|| anyhow!("no cache folder"))?;
     std::fs::create_dir_all(&dir)?;
     let exe = std::env::current_exe()?;
-    let code = win::run_elevated(&exe, &format!("--index-service \"{}\"", dir.display()))
-        .context("starting the elevated index service")?;
-    if code != 0 {
-        bail!("the index service exited with code {code}");
+    let starts = starts(&win::fixed_ntfs_volumes());
+    if starts.is_empty() {
+        bail!("no fixed NTFS volume to index");
     }
-    Ok(())
+    let (name, pipe) = win::helper_pipe().context("creating the index helper's pipe")?;
+    let launch = {
+        let name = name.clone();
+        std::thread::spawn(move || {
+            let code = win::run_elevated(&exe, &format!("--index-service \"{name}\""));
+            // The helper is gone: wake the accept below if it never connected.
+            win::poke_pipe(&name);
+            code
+        })
+    };
+    let received = match win::accept_pipe(&pipe) {
+        Ok(()) => receive_all(&dir, starts, pipe),
+        Err(e) => {
+            drop(pipe);
+            Err(e.into())
+        }
+    };
+    let code = launch
+        .join()
+        .map_err(|_| anyhow!("the index service launcher panicked"))?
+        .context("starting the elevated index service")?;
+    match received {
+        Err(e) if code != 0 => Err(e.context(format!("the index service exited with code {code}"))),
+        other => other,
+    }
 }
 
-/// Body of `keel --index-service <dir>` (elevated): reads the MFT of every fixed NTFS
-/// volume into `<dir>/<serial>.db.svc`. The user's own process then copies each to
-/// `<serial>.db`, so the index files belong to the user.
-pub fn run_index_service(dir: &Path) -> anyhow::Result<()> {
+/// Reads the helper's stream from `pipe` and saves each volume it sends as
+/// `<serial>.db.svc` in `dir`. Errors when no volume could be saved; problems with
+/// single volumes are logged.
+fn receive_all(
+    dir: &Path,
+    starts: Vec<receive::Start>,
+    mut pipe: impl std::io::Read,
+) -> anyhow::Result<()> {
+    let mut saved = 0;
+    let mut problems: Vec<String> = Vec::new();
+    let mut rx = receive::Receiver::new(starts, |id, index, meta| {
+        let db = db_path(dir, id).with_extension("db.svc");
+        match db::save_full(&db, &index, &meta) {
+            Ok(()) => saved += 1,
+            Err(e) => problems.push(format!("saving {}: {e:#}", db.display())),
+        }
+    });
+    let mut buf = Vec::new();
+    let read: anyhow::Result<()> = loop {
+        match wire::read_frame(&mut pipe, &mut buf) {
+            Ok(true) => {
+                if let Err(e) = rx.frame(&buf) {
+                    break Err(e);
+                }
+            }
+            Ok(false) if rx.complete => break Ok(()),
+            Ok(false) => break Err(anyhow!("the index service stopped before it was done")),
+            Err(e) => break Err(e.into()),
+        }
+    };
+    // Closing the pipe stops a helper still writing.
+    drop(pipe);
+    let failed = std::mem::take(&mut rx.failed);
+    drop(rx);
+    if let Err(e) = read {
+        problems.push(format!("{e:#}"));
+    }
+    problems.extend(failed);
+    for p in &problems {
+        warn(p);
+    }
+    match problems.into_iter().next() {
+        Some(first) if saved == 0 => Err(anyhow!(first)),
+        _ if saved == 0 => Err(anyhow!("the index service read no volume")),
+        _ => Ok(()),
+    }
+}
+
+/// Body of `keel --index-service <pipe>` (elevated): connects to the pipe the
+/// unelevated Keel made and sends it every fixed NTFS volume's raw MFT records
+/// ([`wire::send_volume`]). This process only locates the MFT and blanks what the
+/// index never reads; it builds nothing and writes no file.
+pub fn run_index_service(pipe: &Path) -> anyhow::Result<()> {
+    use std::io::Write;
     if !is_elevated() {
         bail!("the index service needs administrator rights");
     }
-    std::fs::create_dir_all(dir)?;
-    each_volume(&win::fixed_ntfs_volumes(), |id| {
-        let (index, meta) = build_volume(id)?;
-        db::save_full(&db_path(dir, id).with_extension("db.svc"), &index, &meta)
-    })
-}
-
-/// Runs `index` on every volume; a failure is logged and the rest still run. Errors
-/// only when every volume failed.
-fn each_volume(
-    ids: &[VolumeId],
-    mut index: impl FnMut(VolumeId) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    let mut last = None;
-    let mut done = 0;
-    for &id in ids {
-        match index(id) {
-            Ok(()) => done += 1,
-            Err(e) => {
-                let e = e.context(format!("indexing {}", id.drive()));
-                warn(&format!("{e:#}"));
-                last = Some(e);
+    let name = pipe
+        .to_str()
+        .ok_or_else(|| anyhow!("not an index helper pipe"))?;
+    let pipe = win::open_helper_pipe(name).context("connecting to Keel")?;
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, pipe);
+    let mut send = |frame: &[u8]| out.write_all(frame);
+    for id in win::fixed_ntfs_volumes() {
+        match Volume::open(id.letter) {
+            Ok(volume) if volume.privileged() => {
+                wire::send_volume(&volume, id.letter, id.serial, &mut send)?;
+            }
+            _ => {
+                let header = wire::Frame::Volume {
+                    letter: id.letter,
+                    serial: id.serial,
+                };
+                send(&header.encode())?;
+                send(&wire::Frame::Failed("cannot open the volume".into()).encode())?;
             }
         }
     }
-    match last {
-        Some(e) if done == 0 => Err(e),
-        _ => Ok(()),
-    }
+    send(&wire::Frame::Done.encode())?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Each volume's journal position and root folder, taken before the MFT is read so
+/// changes made meanwhile are replayed afterwards. A volume this process cannot ask
+/// is left out.
+fn starts(ids: &[VolumeId]) -> Vec<receive::Start> {
+    ids.iter()
+        .filter_map(|&id| {
+            let volume = Volume::open(id.letter).ok()?;
+            match start_of(id, &volume) {
+                Ok(start) => Some(start),
+                Err(e) => {
+                    warn(&format!("indexing {}: {e:#}", id.drive()));
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+fn start_of(id: VolumeId, volume: &Volume) -> anyhow::Result<receive::Start> {
+    let journal = match volume.query_journal() {
+        Ok(j) => j,
+        // No journal: a snapshot that is never updated.
+        Err(e) if e.raw_os_error() == Some(ERROR_JOURNAL_NOT_ACTIVE) => Journal {
+            id: 0,
+            next_usn: 0,
+            lowest_valid_usn: 0,
+        },
+        Err(e) => return Err(e.into()),
+    };
+    Ok(receive::Start {
+        id,
+        root: win::root_frn(id.letter)?,
+        journal,
+    })
 }
 
 fn db_path(dir: &Path, id: VolumeId) -> PathBuf {
@@ -186,79 +294,24 @@ fn adopt(dir: &Path) -> Vec<PathBuf> {
     adopted
 }
 
-/// Bytes of the MFT read per volume read call.
-const MFT_CHUNK: u64 = 4 << 20;
 /// System files in records 0 to 15 (`$MFT` to `$Extend`; 5 is the root folder) are
 /// not indexed; what lives under `$Extend` is then unreachable and never listed.
 const FIRST_USER_RECORD: u64 = 16;
 const ROOT_RECORD: u64 = 5;
 
-/// Reads every `FILE` record of the volume's MFT straight from disk (administrator)
-/// and hands each file over as an [`mft::Entry`]. Records torn by a write during the
-/// read are skipped (the journal replay after the build brings them back). Errors on
-/// a layout this reader does not take (records split across MFT extents, a sparse
-/// MFT), so the caller can enumerate instead.
-fn read_mft(volume: &Volume, mut each: impl FnMut(mft::Entry)) -> anyhow::Result<()> {
-    let data = volume.ntfs_data()?;
-    let (cluster, record) = (data.bytes_per_cluster, data.bytes_per_record);
-    if cluster == 0
-        || !cluster.is_power_of_two()
-        || cluster > MFT_CHUNK
-        || record < 512
-        || record > mft::MAX_RECORD as u64
-        || !record.is_power_of_two()
-    {
-        bail!("unexpected NTFS geometry: {cluster} B clusters, {record} B records");
+/// Puts one file read from the MFT in the index (its first name; the others are
+/// counted as hard links). Every entry is stored whatever the user may list: the
+/// per-user filter (a folder the user cannot open hides what is under it) is applied
+/// to results by the index service, branch `p15-service`, not here.
+fn add_entry(index: &mut Index, entry: &mft::Entry) {
+    let number = entry.frn & mft::RECORD_MASK;
+    if number < FIRST_USER_RECORD && number != ROOT_RECORD {
+        return;
     }
-    let start = data
-        .mft_start_lcn
-        .checked_mul(cluster)
-        .ok_or_else(|| anyhow!("MFT start out of range"))?;
-    let mut buf = vec![0u8; cluster.max(record) as usize];
-    volume.read_at(start, &mut buf)?;
-    let mut zero = buf[..record as usize].to_vec();
-    mft::fixup(&mut zero)?;
-    let (size, runs) = mft::data_runs(&zero)?;
-    let count = size.min(data.mft_valid_length) / record;
-    let mut scan = mft::Scan::default();
-    let mut number = 0u64;
-    for run in runs {
-        let lcn = run.lcn.ok_or_else(|| anyhow!("sparse MFT run"))?;
-        let mut offset = lcn
-            .checked_mul(cluster)
-            .ok_or_else(|| anyhow!("MFT run out of range"))?;
-        let mut left = run
-            .clusters
-            .checked_mul(cluster)
-            .ok_or_else(|| anyhow!("MFT run out of range"))?;
-        if left % record != 0 {
-            bail!("an MFT record spans two extents");
-        }
-        while left > 0 && number < count {
-            let len = left.min(MFT_CHUNK);
-            buf.resize(len as usize, 0);
-            volume.read_at(offset, &mut buf)?;
-            for chunk in buf.chunks_exact_mut(record as usize) {
-                if number >= count {
-                    break;
-                }
-                if let Ok(Some(entry)) = scan.add(number, chunk) {
-                    each(entry);
-                }
-                number += 1;
-            }
-            offset += len;
-            left -= len;
-        }
-    }
-    for entry in scan.finish() {
-        each(entry);
-    }
-    Ok(())
-}
-
-/// The index columns of one file read from the MFT.
-fn info_of(entry: &mft::Entry) -> Info {
+    let Some(name) = entry.names.first() else {
+        return;
+    };
+    index.upsert(entry.frn, name.parent, &name.name, entry.is_dir);
     let times = &entry.standard;
     // Data kept inside the record takes no clusters; Windows reports its size rounded
     // up to 8 bytes, and so does the index, matching the journal's lookups by id.
@@ -270,101 +323,27 @@ fn info_of(entry: &mft::Entry) -> Info {
     } else {
         entry.data.allocated
     };
-    Info {
-        size: entry.data.size,
-        allocated,
-        created: times.created as i64,
-        modified: times.modified as i64,
-        accessed: times.accessed as i64,
-        changed: 0,
-        attributes: entry.attributes(),
-        links: entry.links(),
-        streams: entry.streams,
-        reparse: entry.reparse,
-    }
-}
-
-/// NTFS's own files (records 0 to 15) are not indexed, except the root folder.
-fn system_record(frn: u64) -> bool {
-    let number = frn & mft::RECORD_MASK;
-    number < FIRST_USER_RECORD && number != ROOT_RECORD
-}
-
-/// Puts one file read from the MFT in the index (its first name; the others are
-/// counted as hard links).
-fn add_entry(index: &mut Index, entry: &mft::Entry) {
-    if system_record(entry.frn) {
-        return;
-    }
-    let Some(name) = entry.names.first() else {
-        return;
-    };
-    index.upsert(entry.frn, name.parent, &name.name, entry.is_dir);
-    index.set_info(entry.frn, info_of(entry));
-}
-
-/// One file read from the MFT as the index service sends it (see [`add_entry`]).
-fn row_of(entry: &mft::Entry) -> Option<Row> {
-    if system_record(entry.frn) {
-        return None;
-    }
-    let name = entry.names.first()?;
-    let info = info_of(entry);
-    Some(Row {
-        frn: entry.frn,
-        parent: name.parent,
-        name: name.name.clone(),
-        is_dir: entry.is_dir,
-        size: info.size,
-        allocated: info.allocated,
-        created: info.created,
-        modified: info.modified,
-        accessed: info.accessed,
-        attributes: info.attributes,
-        links: info.links,
-        streams: info.streams,
-        reparse: info.reparse,
-    })
-}
-
-/// An entry of `FSCTL_ENUM_USN_DATA` (names and attributes only) as a row.
-fn row_of_record(r: &usn::Record) -> Row {
-    Row {
-        frn: r.frn,
-        parent: r.parent,
-        name: r.name.clone(),
-        is_dir: r.is_dir,
-        attributes: r.attributes,
-        ..Row::default()
-    }
-}
-
-/// Puts a row from the index service in the index.
-fn add_row(index: &mut Index, row: &Row) {
-    if system_record(row.frn) {
-        return;
-    }
-    index.upsert(row.frn, row.parent, &row.name, row.is_dir);
     index.set_info(
-        row.frn,
+        entry.frn,
         Info {
-            size: row.size,
-            allocated: row.allocated,
-            created: row.created,
-            modified: row.modified,
-            accessed: row.accessed,
+            size: entry.data.size,
+            allocated,
+            created: times.created as i64,
+            modified: times.modified as i64,
+            accessed: times.accessed as i64,
             changed: 0,
-            attributes: row.attributes,
-            links: row.links,
-            streams: row.streams,
-            reparse: row.reparse,
+            attributes: entry.attributes(),
+            links: entry.links(),
+            streams: entry.streams,
+            reparse: entry.reparse,
         },
     );
 }
 
-/// Reads one volume's MFT into a fresh index (administrator): the raw records when
-/// they can be read, else `FSCTL_ENUM_USN_DATA`. The journal position is taken
-/// first, so changes made during the read are replayed afterwards.
+/// Reads one volume's MFT into a fresh index, in this (elevated) process: the same
+/// raw records and the same checks as through the helper's pipe, else
+/// `FSCTL_ENUM_USN_DATA`. The journal position is taken first, so changes made
+/// during the read are replayed afterwards.
 fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
     let volume = Volume::open(id.letter)?;
     if !volume.privileged() {
@@ -373,54 +352,22 @@ fn build_volume(id: VolumeId) -> anyhow::Result<(Index, Meta)> {
             id.drive()
         );
     }
-    let journal = match volume.query_journal() {
-        Ok(j) => j,
-        // No journal: a snapshot that is never updated.
-        Err(e) if e.raw_os_error() == Some(ERROR_JOURNAL_NOT_ACTIVE) => Journal {
-            id: 0,
-            next_usn: 0,
-            lowest_valid_usn: 0,
-        },
-        Err(e) => return Err(e.into()),
-    };
-    let root = win::root_frn(id.letter)?;
-    let mut index = Index::new(id.drive(), root);
-    index.begin_bulk();
-    let full = match read_mft(&volume, |entry| add_entry(&mut index, &entry)) {
-        Ok(()) => true,
-        Err(e) => {
-            warn(&format!(
-                "reading the MFT of {} directly: {e:#}; enumerating instead",
-                id.drive()
-            ));
-            index = Index::new(id.drive(), root);
-            index.begin_bulk();
-            volume.enumerate(|records| {
-                for r in records {
-                    index.upsert(r.frn, r.parent, &r.name, r.is_dir);
-                    let info = Info {
-                        attributes: r.attributes,
-                        ..Info::default()
-                    };
-                    index.set_info(r.frn, info);
-                }
-            })?;
-            false
-        }
-    };
-    index.settle();
-    let meta = Meta {
-        journal_id: journal.id,
-        next_usn: journal.next_usn,
-        root,
-        volume: id.drive(),
-        full,
-    };
-    Ok((index, meta))
+    let start = start_of(id, &volume)?;
+    let mut built = None;
+    let mut rx = receive::Receiver::new(vec![start], |_, index, meta| built = Some((index, meta)));
+    wire::send_volume(&volume, id.letter, id.serial, &mut |frame| {
+        rx.frame(&frame[4..])
+            .map_err(|e| std::io::Error::other(format!("{e:#}")))
+    })?;
+    let failed = rx.failed.pop();
+    drop(rx);
+    built.ok_or_else(|| anyhow!(failed.unwrap_or_else(|| "nothing was read".into())))
 }
 
-/// [`build_volume`] through the index service (not elevated): the service reads the
-/// MFT and this process builds the index from its re-validated rows.
+/// [`build_volume`] through the index service (not elevated): the service sends the
+/// MFT's raw records (it parses nothing) and this process parses, checks and indexes
+/// them exactly as it does for the one-shot helper. The journal position is taken
+/// first, so changes made during the read are replayed afterwards.
 fn build_volume_remote(
     id: VolumeId,
     client: &mut service::Client<std::fs::File>,
@@ -435,29 +382,7 @@ fn build_volume_remote(
         Err(e) => return Err(e),
     };
     let root = win::root_frn(id.letter)?;
-    let mut index = Index::new(id.drive(), root);
-    index.begin_bulk();
-    let full = {
-        let index = std::cell::RefCell::new(&mut index);
-        client.read_mft(
-            id.letter,
-            |row| add_row(&mut index.borrow_mut(), &row),
-            || {
-                let mut index = index.borrow_mut();
-                **index = Index::new(id.drive(), root);
-                index.begin_bulk();
-            },
-        )?
-    };
-    index.settle();
-    let meta = Meta {
-        journal_id: journal.id,
-        next_usn: journal.next_usn,
-        root,
-        volume: id.drive(),
-        full,
-    };
-    Ok((index, meta))
+    client.read_mft(receive::Start { id, root, journal })
 }
 
 /// What a saved index needs to become current.
@@ -1388,7 +1313,7 @@ mod tests {
             let read_start = (unix.as_nanos() / 100) as i64 + 116_444_736_000_000_000;
             let started = Instant::now();
             let mut raw: HashMap<u64, (u64, String, bool, u64, u64)> = HashMap::new();
-            read_mft(&volume, |e| {
+            crate::raw::read_mft(&volume, |e| {
                 let mut index = Index::new("", 0);
                 add_entry(&mut index, &e);
                 let allocated = index.info(e.frn).map_or(0, |i| i.allocated);
@@ -1481,31 +1406,95 @@ mod tests {
         }
     }
 
+    /// The helper's pipe: the helper side checks who serves it and writes; this side
+    /// reads what it wrote. A name naming another process, or not a helper pipe, is
+    /// refused; a poke wakes an accept nobody else will answer.
     #[test]
-    fn one_failing_volume_does_not_stop_the_others() {
-        let ids = [
-            VolumeId {
-                letter: 'C',
-                serial: 1,
+    fn the_helper_pipe_carries_frames_and_checks_its_server() {
+        use std::io::{Read, Write};
+        let (name, mut pipe) = win::helper_pipe().unwrap();
+        assert!(name.starts_with(win::HELPER_PIPE));
+        let writer = {
+            let name = name.clone();
+            std::thread::spawn(move || {
+                let mut out = win::open_helper_pipe(&name).unwrap();
+                out.write_all(&wire::Frame::Done.encode()).unwrap();
+            })
+        };
+        win::accept_pipe(&pipe).unwrap();
+        let mut got = Vec::new();
+        pipe.read_to_end(&mut got).unwrap();
+        writer.join().unwrap();
+        assert_eq!(got, wire::Frame::Done.encode());
+
+        // A pipe served by this process under a name that claims another process:
+        // someone squatting the name the helper was given.
+        let (name, pipe) = win::helper_pipe().unwrap();
+        let (_, nonce) = name[win::HELPER_PIPE.len()..].split_once('-').unwrap();
+        let lie = format!("{}{}-{nonce}", win::HELPER_PIPE, std::process::id() + 4);
+        let squat = win::serve_pipe(&lie).unwrap();
+        let err = win::open_helper_pipe(&lie).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+        drop(squat);
+        for bad in [
+            r"\\.\pipe\other".to_string(),
+            format!(r"{name}\..\x"),
+            format!("{}{}-xyz", win::HELPER_PIPE, std::process::id()),
+            r"C:\Windows\Temp\x".to_string(),
+        ] {
+            let err = win::open_helper_pipe(&bad).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{bad}");
+        }
+        // Nobody connects: the poke ends the wait.
+        win::poke_pipe(&name);
+        win::accept_pipe(&pipe).unwrap();
+    }
+
+    /// The unelevated side of a full index: a helper stream for one volume is saved
+    /// as `<serial>.db.svc`, which `adopt` and `db::load` take; a stream that stops
+    /// early with nothing saved is an error.
+    #[test]
+    fn received_volumes_are_saved_for_adoption() {
+        use crate::raw::tests::{file, mft_zero, runs, Image, RECORD};
+        let dir = std::env::temp_dir().join(format!("keel-ntfs-receive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let size = 32 * RECORD;
+        let mut image = Image::new(24, size);
+        image.put(&[(10, 8)], 0, &mft_zero(size, runs(&[(Some(10), 8)]), None));
+        image.put(&[(10, 8)], 17, &file("KeelReceived.txt"));
+        let id = VolumeId {
+            letter: 'K',
+            serial: 0x0123_4567,
+        };
+        let start = receive::Start {
+            id,
+            root: 5 | 5 << 48,
+            journal: Journal {
+                id: 3,
+                next_usn: 40,
+                lowest_valid_usn: 0,
             },
-            VolumeId {
-                letter: 'D',
-                serial: 2,
-            },
-        ];
-        let mut seen = Vec::new();
-        let ok = each_volume(&ids, |id| {
-            seen.push(id.letter);
-            if id.letter == 'C' {
-                bail!("bad volume")
-            }
+        };
+        let mut stream = Vec::new();
+        wire::send_volume(&image, 'K', id.serial, &mut |f| {
+            stream.extend(f);
             Ok(())
-        });
-        assert!(ok.is_ok());
-        assert_eq!(seen, ['C', 'D']);
-        let all = each_volume(&ids, |_| bail!("bad volume")).unwrap_err();
-        assert!(format!("{all:#}").contains("bad volume"));
-        assert!(each_volume(&[], |_| bail!("never")).is_ok());
+        })
+        .unwrap();
+        stream.extend(wire::Frame::Done.encode());
+        receive_all(&dir, vec![start], &stream[..]).unwrap();
+        assert_eq!(adopt(&dir), [dir.join("01234567.db")]);
+        let (index, meta) = db::load(&dir.join("01234567.db")).unwrap().unwrap();
+        assert!(meta.full);
+        assert_eq!((meta.journal_id, meta.next_usn), (3, 40));
+        let path = index.path(17 | 1 << 48).unwrap();
+        assert!(path.ends_with("KeelReceived.txt"), "{path}");
+
+        let cut = &stream[..stream.len() - 20];
+        assert!(receive_all(&dir, vec![start], cut).is_err());
+        assert!(adopt(&dir).is_empty(), "nothing saved");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1903,7 +1892,8 @@ mod tests {
     }
 
     /// The `--index-service` round trip in two runs over `%TEMP%\keel-index-test`:
-    /// elevated, it writes `<serial>.db.svc` for every volume; then, not elevated,
+    /// elevated, the helper's side runs on a thread and sends every volume over a
+    /// real pipe, and this side writes `<serial>.db.svc`; then, not elevated,
     /// `NtfsSearcher::open` adopts and loads them and the queries are timed.
     /// `cargo test -p keel-search --release -- --ignored --nocapture live_index_service`
     #[test]
@@ -1911,8 +1901,16 @@ mod tests {
     fn live_index_service() {
         let dir = std::env::temp_dir().join("keel-index-test");
         if is_elevated() {
+            std::fs::create_dir_all(&dir).unwrap();
             let started = Instant::now();
-            run_index_service(&dir).unwrap();
+            let (name, pipe) = win::helper_pipe().unwrap();
+            let helper = {
+                let name = name.clone();
+                std::thread::spawn(move || run_index_service(Path::new(&name)))
+            };
+            win::accept_pipe(&pipe).unwrap();
+            receive_all(&dir, starts(&win::fixed_ntfs_volumes()), pipe).unwrap();
+            helper.join().unwrap().unwrap();
             println!("index service: {:.2?}", started.elapsed());
             return;
         }

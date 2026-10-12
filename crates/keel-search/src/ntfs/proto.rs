@@ -20,8 +20,6 @@ pub(crate) const MAX_REQUEST: usize = 16 * 1024;
 pub(crate) const MAX_RESPONSE: usize = 8 << 20;
 /// Most file ids in one [`Request::Stat`].
 pub(crate) const MAX_STAT: usize = 1024;
-/// Most rows in one [`Response::Rows`] frame.
-pub(crate) const MAX_ROWS: usize = 16 * 1024;
 /// Largest raw journal buffer in one [`Response::JournalData`].
 pub(crate) const MAX_JOURNAL: usize = 1 << 20;
 /// Longest file name in UTF-16 units (NTFS's limit).
@@ -55,8 +53,9 @@ pub(crate) enum Request {
     },
     /// Size, dates and attributes of files by id (`OpenFileById`).
     Stat { letter: char, frns: Vec<u64> },
-    /// The volume's MFT as index rows: some [`Response::Rows`], then
-    /// [`Response::MftEnd`] (or an error).
+    /// The volume's MFT as the elevated side reads it: not a [`Response`] but a run of
+    /// `wire` frames (raw records, never parsed there) ending with `End` or `Failed`,
+    /// or one [`Response::Error`].
     ReadMft { letter: char },
 }
 
@@ -71,26 +70,6 @@ pub(crate) struct Stat {
     pub attributes: u32,
     pub links: u16,
 }
-
-/// One file of a volume as the index stores it (from the MFT, or from
-/// `FSCTL_ENUM_USN_DATA` with only the name, folder and attributes).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Row {
-    pub frn: u64,
-    pub parent: u64,
-    pub name: String,
-    pub is_dir: bool,
-    pub size: u64,
-    pub allocated: u64,
-    pub created: i64,
-    pub modified: i64,
-    pub accessed: i64,
-    pub attributes: u32,
-    pub links: u16,
-    pub streams: u16,
-    pub reparse: u32,
-}
-
 /// What the service answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Response {
@@ -114,16 +93,6 @@ pub(crate) enum Response {
     JournalData(Vec<u8>),
     /// One per requested id, in order; `None` when the file is gone.
     Stats(Vec<Option<Stat>>),
-    Rows(Vec<Row>),
-    /// The MFT read failed after some rows were sent and the service starts over by
-    /// enumeration: the client drops the rows it has.
-    MftReset,
-    /// The end of a [`Request::ReadMft`] stream: whether the rows came from the MFT
-    /// itself (`full`) or the enumeration fallback, and how many rows were sent.
-    MftEnd {
-        full: bool,
-        rows: u64,
-    },
 }
 
 /// A message that does not decode.
@@ -257,12 +226,6 @@ const RES_VOLUMES: u8 = 0x82;
 const RES_JOURNAL: u8 = 0x83;
 const RES_JOURNAL_DATA: u8 = 0x84;
 const RES_STATS: u8 = 0x85;
-const RES_ROWS: u8 = 0x86;
-const RES_MFT_END: u8 = 0x87;
-const RES_MFT_RESET: u8 = 0x88;
-
-/// Bytes of a row on the wire before its name.
-const ROW_FIXED: usize = 8 + 8 + 1 + 8 * 5 + 4 + 2 + 2 + 4 + 2;
 const STAT_SIZE: usize = 8 * 5 + 4 + 2;
 
 impl Request {
@@ -407,34 +370,6 @@ impl Response {
                 }
                 o.0
             }
-            Response::Rows(rows) => {
-                let mut o = Out::new(RES_ROWS);
-                let rows = &rows[..rows.len().min(MAX_ROWS)];
-                o.u32(rows.len() as u32);
-                for r in rows {
-                    o.u64(r.frn)
-                        .u64(r.parent)
-                        .u8(u8::from(r.is_dir))
-                        .u64(r.size)
-                        .u64(r.allocated)
-                        .i64(r.created)
-                        .i64(r.modified)
-                        .i64(r.accessed)
-                        .u32(r.attributes)
-                        .u16(r.links)
-                        .u16(r.streams)
-                        .u32(r.reparse)
-                        .str(&r.name, MAX_NAME_UNITS * 3);
-                }
-                o.0
-            }
-            Response::MftReset => Out::new(RES_MFT_RESET).0,
-            Response::MftEnd { full, rows } => {
-                let mut o = Out::new(RES_MFT_END);
-                o.u8(u8::from(*full)).u64(*rows);
-                o.0
-            }
-        }
     }
 
     /// Strict decode: see the module docs.
@@ -501,22 +436,6 @@ impl Response {
                 }
                 Response::Stats(stats)
             }
-            RES_ROWS => {
-                let n = c.u32()? as usize;
-                if n > MAX_ROWS {
-                    return Err(Malformed("too many rows"));
-                }
-                c.need(n, ROW_FIXED + 1)?;
-                let mut rows = Vec::with_capacity(n);
-                for _ in 0..n {
-                    rows.push(c.row()?);
-                }
-                Response::Rows(rows)
-            }
-            RES_MFT_RESET => Response::MftReset,
-            RES_MFT_END => Response::MftEnd {
-                full: c.bool()?,
-                rows: c.u64()?,
             },
             _ => return Err(Malformed("unknown response")),
         };
@@ -580,12 +499,6 @@ impl<'a> In<'a> {
     fn i64(&mut self) -> Result<i64, Malformed> {
         Ok(self.u64()? as i64)
     }
-    fn bool(&mut self) -> Result<bool, Malformed> {
-        match self.u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(Malformed("bad flag")),
-        }
     }
     fn letter(&mut self) -> Result<char, Malformed> {
         let c = char::from(self.u8()?);
@@ -605,29 +518,6 @@ impl<'a> In<'a> {
             .map(str::to_owned)
             .map_err(|_| Malformed("string not UTF-8"))
     }
-    fn row(&mut self) -> Result<Row, Malformed> {
-        let mut row = Row {
-            frn: self.u64()?,
-            parent: self.u64()?,
-            is_dir: self.bool()?,
-            size: self.u64()?,
-            allocated: self.u64()?,
-            created: self.i64()?,
-            modified: self.i64()?,
-            accessed: self.i64()?,
-            attributes: self.u32()?,
-            links: self.u16()?,
-            streams: self.u16()?,
-            reparse: self.u32()?,
-            name: String::new(),
-        };
-        row.name = self.str(MAX_NAME_UNITS * 3)?;
-        if !valid_name(&row.name) {
-            return Err(Malformed("bad file name"));
-        }
-        Ok(row)
-    }
-    fn end(&self) -> Result<(), Malformed> {
         if self.at == self.buf.len() {
             Ok(())
         } else {
@@ -637,29 +527,12 @@ impl<'a> In<'a> {
 }
 
 // The fixed sizes above match what `encode` writes.
-const _: () = assert!(STAT_SIZE == 46 && ROW_FIXED == 71);
+const _: () = assert!(STAT_SIZE == 46);
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn sample_row(frn: u64, parent: u64, name: &str, is_dir: bool) -> Row {
-        Row {
-            frn,
-            parent,
-            name: name.into(),
-            is_dir,
-            size: if is_dir { 0 } else { 1234 },
-            allocated: if is_dir { 0 } else { 4096 },
-            created: 132_000_000_000_000_000,
-            modified: 133_000_000_000_000_000,
-            accessed: 133_100_000_000_000_000,
-            attributes: if is_dir { 0x10 } else { 0x20 },
-            links: 1,
-            streams: 0,
-            reparse: 0,
-        }
-    }
 
     pub(crate) fn all_requests() -> Vec<Request> {
         vec![
@@ -705,21 +578,6 @@ pub(crate) mod tests {
                     links: 2,
                 }),
             ]),
-            Response::Rows(vec![
-                sample_row(0x0005_0000_0000_0010, 5, "Users", true),
-                sample_row(
-                    0x0001_0000_0000_0011,
-                    0x0005_0000_0000_0010,
-                    "naïve é.txt",
-                    false,
-                ),
-            ]),
-            Response::MftReset,
-            Response::MftEnd {
-                full: true,
-                rows: 2,
-            },
-        ]
     }
 
     #[test]
@@ -775,31 +633,17 @@ pub(crate) mod tests {
 
     #[test]
     fn responses_are_decoded_strictly() {
-        let rows = |name: &str| Response::Rows(vec![sample_row(20, 5, name, false)]).encode();
-        for bad in [
-            "",
-            ".",
-            "..",
-            "a\\b",
-            "a/b",
-            "nul\0",
-            "tab\t",
-            &"x".repeat(256),
-        ] {
-            assert!(Response::decode(&rows(bad)).is_err(), "{bad:?}");
-        }
-        assert!(Response::decode(&rows(&"x".repeat(255))).is_ok());
-        // 255 UTF-16 units of a 3-byte character still fit.
-        assert!(Response::decode(&rows(&"€".repeat(255))).is_ok());
-        // Not UTF-8.
-        let mut bytes = rows("ab");
+        // A string that is not UTF-8.
+        let mut bytes = Response::error(5, "ab").encode();
         let n = bytes.len();
         bytes[n - 1] = 0xFF;
         assert!(Response::decode(&bytes).is_err());
-        // A row count larger than the frame.
-        let mut liar = vec![VERSION, RES_ROWS];
-        liar.extend_from_slice(&u32::MAX.to_le_bytes());
-        assert!(Response::decode(&liar).is_err());
+        // A string longer than its limit.
+        let mut long = Response::error(5, "").encode();
+        let n = long.len();
+        long[n - 2..].copy_from_slice(&((MAX_MESSAGE + 1) as u16).to_le_bytes());
+        long.extend(vec![b'x'; MAX_MESSAGE + 1]);
+        assert!(Response::decode(&long).is_err());
         // Volumes listed twice, or a bad letter.
         let twice = Response::Volumes(vec![('C', 1), ('C', 2)]).encode();
         assert!(Response::decode(&twice).is_err());
@@ -809,8 +653,6 @@ pub(crate) mod tests {
         let mut huge = vec![VERSION, RES_JOURNAL_DATA];
         huge.extend_from_slice(&((MAX_JOURNAL + 1) as u32).to_le_bytes());
         assert!(Response::decode(&huge).is_err());
-        // Flags are 0 or 1.
-        assert!(Response::decode(&[VERSION, RES_MFT_END, 2, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
         assert!(Response::decode(&[VERSION, RES_STATS, 1, 0, 7]).is_err());
     }
 
@@ -840,11 +682,6 @@ pub(crate) mod tests {
             frns: vec![u64::MAX; MAX_STAT],
         };
         assert!(stat.encode().len() <= MAX_REQUEST);
-        let rows = Response::Rows(vec![sample_row(1, 5, &"€".repeat(255), false); MAX_ROWS]);
-        // Rows of ordinary names fit; the service cuts batches by size too.
-        assert!(rows.encode().len() > MAX_RESPONSE);
-        let rows = Response::Rows(vec![sample_row(1, 5, &"x".repeat(200), false); MAX_ROWS]);
-        assert!(rows.encode().len() <= MAX_RESPONSE);
         let journal = Response::JournalData(vec![0; MAX_JOURNAL]);
         assert!(journal.encode().len() <= MAX_RESPONSE);
     }
