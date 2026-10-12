@@ -353,8 +353,13 @@ pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> 
     };
     if p.regex {
         let re = build(&p.query, p.match_case)?;
-        backend.text = p.query.clone();
-        backend.regex = true;
+        // The backends match names only, so a regex meant for the whole path would find
+        // almost nothing there: they send every name (bounded by the scan, which `capped`
+        // reports) and the filter applies the regex to the full path.
+        if !p.match_path {
+            backend.text = p.query.clone();
+            backend.regex = true;
+        }
         return Ok(Plan {
             backend,
             filter: Filter {
@@ -730,6 +735,56 @@ mod tests {
         .is_err());
         // Backend syntax is passed on and not checked here.
         assert_eq!(n(q("ext:pdf report")).len(), 3);
+    }
+
+    /// Review 1: `regex=1&path=1` sent the regex to a backend that matches names only, so
+    /// `\docs\.*\.pdf$` found nothing. The backend now gets every name; the regex runs on
+    /// the full path.
+    #[test]
+    fn a_path_regex_is_matched_on_the_full_path_not_by_the_backend() {
+        let sep = if cfg!(windows) { r"\\" } else { "/" };
+        let re = format!(r"{sep}docs{sep}.*\.pdf$");
+        let params = SystemSearchParams {
+            regex: true,
+            match_path: true,
+            ..q(&re)
+        };
+        let b = compile(&params, false).unwrap().backend;
+        assert_eq!((b.text.as_str(), b.regex), ("", false), "every name");
+        // A backend like the real ones: the query's text against the name only.
+        struct Names(Vec<Hit>);
+        impl Searcher for Names {
+            fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+                let re = q.regex.then(|| Regex::new(&q.text).unwrap());
+                Ok(self
+                    .0
+                    .iter()
+                    .filter(|h| match &re {
+                        Some(re) => re.is_match(h.path.name()),
+                        None => h.path.name().contains(&q.text),
+                    })
+                    .cloned()
+                    .collect())
+            }
+            fn available(&self) -> bool {
+                true
+            }
+            fn name(&self) -> &'static str {
+                "Names"
+            }
+        }
+        let hits = fake().0;
+        let f = run(&Names(hits.clone()), &params, MAX_SCAN).unwrap();
+        assert_eq!(names(&f), ["Report-Final.pdf"], "{:?}", f.total);
+        // Without path=1 the regex still goes to the backend and matches names.
+        let by_name = SystemSearchParams {
+            match_path: false,
+            ..params.clone()
+        };
+        let b = compile(&by_name, false).unwrap().backend;
+        assert_eq!((b.text.as_str(), b.regex), (re.as_str(), true));
+        let f = run(&Names(hits), &by_name, MAX_SCAN).unwrap();
+        assert!(f.hits.is_empty(), "the name has no folder in it");
     }
 
     #[test]
