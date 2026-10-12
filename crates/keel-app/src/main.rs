@@ -7,6 +7,7 @@ mod a11y_tests; // AccessKit tree and keyboard-only use
 mod anim;
 mod app;
 mod backend; // the library in-process or in keel-daemon
+mod bookmarks; // Task 76: bookmarks, filters and search history in the window
 mod bulk_rename;
 mod chip_row; // Task 57: library search filter chips (keel-web includes it by path)
 mod clipboard;
@@ -40,6 +41,8 @@ mod profiles;
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
+mod search_filters; // Task 76
+mod search_history; // Task 76
 mod search_tab;
 mod session;
 mod settings;

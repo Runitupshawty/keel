@@ -235,13 +235,6 @@ pub fn sidebar(
             }
         });
     }
-    if !l.views.is_empty() {
-        ui.add_space(6.0);
-        section(ui, "Views", theme);
-        for v in &l.views {
-            row(ui, &v.name, LibCmd::Query(v.query.clone()), out);
-        }
-    }
     ui.add_space(8.0);
 }
 

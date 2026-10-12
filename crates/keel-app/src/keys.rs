@@ -238,6 +238,9 @@ pub enum Action {
     Devices(crate::devices::DevCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
+    // --- Task 76 ---
+    /// Bookmarks, filters and search history (`bookmarks.rs`).
+    Find(crate::bookmarks::FindCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -334,6 +337,12 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::NONE, Key::Space, Action::ToggleSelect),
     (Modifiers::NONE, Key::Escape, Action::ClearFilter),
 ];
+
+/// Task 76: whether Keel itself uses exactly this key (a bookmark may not take it).
+pub fn is_builtin(mods: Modifiers, key: Key) -> bool {
+    SHORTCUTS.iter().any(|(m, k, _)| *k == key && *m == mods)
+        || (mods == Modifiers::NONE && MOVES.iter().any(|(k, _)| *k == key))
+}
 
 /// Shortcuts that never mean anything to a focused text box.
 const WHILE_TYPING: &[Action] = &[

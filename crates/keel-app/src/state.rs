@@ -330,6 +330,8 @@ pub struct AppState {
     pub sizes: crate::sizes::Sizes,
     /// Task 47: the VS Code color theme installer (Settings → General).
     pub color_themes: crate::color_theme::ColorThemes,
+    /// Task 76: bookmarks, filters and search history.
+    pub find: crate::bookmarks::Find,
 }
 
 impl AppState {
@@ -451,6 +453,7 @@ impl AppState {
             media,
             viewer: None,
             sizes: Default::default(),
+            find: Default::default(),
         };
         state.dropzone.set_items(session.stash); // Task 23
         state.jobs.one_per_drive = state.settings.one_transfer_per_drive;
@@ -489,6 +492,7 @@ impl AppState {
         if !self.settings_open {
             return;
         }
+        let mut find = Vec::new(); // Task 76
         let theme_changed = crate::settings::window(
             ctx,
             &mut self.settings_open,
@@ -503,6 +507,7 @@ impl AppState {
             &self.devices,
             &self.themes.list(),
             &mut self.color_themes,
+            &mut find,
         );
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
@@ -525,6 +530,9 @@ impl AppState {
             self.library_cmd(self.active, cmd);
         }
         self.library.apply_hashing(&self.settings.library);
+        for cmd in find {
+            self.find_cmd(self.active, cmd);
+        }
     }
 
     /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
@@ -1049,8 +1057,21 @@ impl AppState {
         *due = None;
         self.next_req += 1;
         let replaces = std::mem::replace(req, self.next_req);
-        let text = query.trim().to_owned();
-        if text.is_empty() {
+        // Task 76: the tab's filter and match toggles; a filter alone also searches.
+        use crate::search_filters::Target;
+        let target = match &searcher {
+            _ if tab.library_search => Target::Library,
+            Some(s) => Target::system(s.name()),
+            None => Target::Plain,
+        };
+        let applied = crate::search_filters::apply(
+            query,
+            &tab.search_filter,
+            &self.settings.filters,
+            target,
+            tab.matching,
+        );
+        if applied.text.is_empty() {
             tab.set_listing(Listing::new(Vec::new()));
             tab.loading = false;
             return;
@@ -1058,11 +1079,13 @@ impl AppState {
         tab.loading = true;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => self.search.search(searcher, text, self.next_req, replaces),
+            Some(searcher) => self
+                .search
+                .search(searcher, applied, self.next_req, replaces),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
-                text,
+                applied.text,
                 self.next_req,
                 self.remotes.search_gen.clone(),
                 tx,
@@ -1428,6 +1451,7 @@ impl AppState {
     /// Per-frame housekeeping: due watcher refreshes, drive list, watchers.
     pub fn tick(&mut self) {
         self.media_tick(); // Task 32
+        self.find.history.tick(&self.settings.search_history); // Task 76
         self.remote_tick();
         self.cloud_tick();
         self.devices_tick();
@@ -2382,6 +2406,7 @@ impl AppState {
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::Mount(cmd) => self.mount_cmd(cmd),
+            Action::Find(cmd) => self.find_cmd(p, cmd), // Task 76
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

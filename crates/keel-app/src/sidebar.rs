@@ -108,6 +108,7 @@ impl Sidebar {
             ui.style_mut().interaction.selectable_labels = false;
             // --- Task 29 ---
             crate::library_ui::sidebar(ui, library, theme, current, out);
+            crate::bookmarks::sidebar(ui, theme, out); // Task 76
             let item = |ui: &mut egui::Ui, path: &VPath, text: &str| {
                 let icon = if path == current {
                     crate::icons::folder_open()

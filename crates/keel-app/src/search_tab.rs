@@ -1,8 +1,10 @@
 //! Search tab: a query box over the active pane's results table. Typing is debounced
 //! (`DEBOUNCE`); `AppState::tick` sends due queries to `worker::spawn_search`.
 
+use crate::bookmarks::FindCmd;
 use crate::keys::Action;
 use crate::pane::Pane;
+use crate::search_history::SUGGESTIONS;
 use crate::tab::{Nav, TabKind};
 use egui::{Key, Modifiers};
 use keel_search::{Query, Searcher};
@@ -45,6 +47,19 @@ pub fn probe(searcher: &dyn Searcher) -> Option<String> {
         .map(|e| banner(&format!("{e:#}")))
 }
 
+/// Task 76: the suggestions dropdown of one search field.
+#[derive(Clone, Default)]
+struct Suggest {
+    /// The row Up/Down moved to (Enter picks it).
+    highlight: Option<usize>,
+    /// Esc (or a pick) closed it for this text; typing opens it again.
+    dismissed: Option<String>,
+    /// Alt+Down opened it although suggestions are off.
+    forced: bool,
+    /// The text last put in the history from this field.
+    remembered: Option<String>,
+}
+
 /// The query box. Editing schedules the query `DEBOUNCE` later; Enter runs it now;
 /// Up/Down move the result cursor while typing. With the Library backend the filter chips
 /// (`chip_row`) follow; a chip runs the query now.
@@ -62,6 +77,7 @@ pub fn bar(
     let TabKind::Search { query, due, .. } = &mut tab.kind else {
         return;
     };
+    let shared = crate::bookmarks::published(ui.ctx()); // Task 76
     ui.horizontal(|ui| {
         // Task 29: the backend (the platform's, or the library index).
         let platform = platform.unwrap_or("System");
@@ -87,8 +103,51 @@ pub fn bar(
             ui.ctx().request_repaint();
         }
         let id = ui.id().with("search");
-        if ui.memory(|m| m.has_focus(id)) {
+        // Task 76: earlier searches in a dropdown under the field (`Suggest`).
+        let sid = id.with("suggest");
+        let popup = id.with("suggest-popup");
+        let mut st: Suggest = ui.data(|d| d.get_temp(sid)).unwrap_or_default();
+        if st.dismissed.as_deref().is_some_and(|d| d != query.as_str()) {
+            st.dismissed = None;
+            st.forced = false;
+        }
+        let focused = ui.memory(|m| m.has_focus(id));
+        let shown = ui.memory(|m| m.is_popup_open(popup));
+        let list: Vec<String> = match focused || shown {
+            true => crate::bookmarks::suggestions(&shared.history, query, SUGGESTIONS),
+            false => Vec::new(),
+        };
+        if focused && ui.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowDown)) {
+            st.forced = true;
+            st.dismissed = None;
+        }
+        let open = focused
+            && !list.is_empty()
+            && st.dismissed.is_none()
+            && (shared.suggestions || st.forced);
+        if !open {
+            st.highlight = None;
+        }
+        let mut picked: Option<String> = None;
+        if focused {
             ui.input_mut(|i| {
+                if open {
+                    if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                        let last = list.len() - 1;
+                        st.highlight = Some(st.highlight.map_or(0, |h| (h + 1).min(last)));
+                    }
+                    if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                        st.highlight = st.highlight.and_then(|h| h.checked_sub(1));
+                    }
+                    if let Some(h) = st.highlight {
+                        if i.consume_key(Modifiers::NONE, Key::Enter) {
+                            picked = list.get(h).cloned();
+                        }
+                    }
+                    if i.consume_key(Modifiers::NONE, Key::Escape) {
+                        st.dismissed = Some(query.clone());
+                    }
+                }
                 for (key, nav) in [(Key::ArrowUp, Nav::Prev), (Key::ArrowDown, Nav::Next)] {
                     if i.consume_key(Modifiers::NONE, key) {
                         out.push(Action::Move(nav, i.modifiers.shift));
@@ -102,11 +161,10 @@ pub fn bar(
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 110.0).max(120.0))
+                .desired_width((ui.available_width() - 250.0).max(120.0))
                 .hint_text(HINT),
         );
-        if focus {
-            r.request_focus();
+        let to_end = |ui: &egui::Ui, query: &str| {
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
                 let end = egui::text::CCursor::new(query.chars().count());
                 state
@@ -114,15 +172,94 @@ pub fn bar(
                     .set_char_range(Some(egui::text::CCursorRange::one(end)));
                 state.store(ui.ctx(), id);
             }
+        };
+        if focus {
+            r.request_focus();
+            to_end(ui, query);
         }
         if r.changed() {
             *due = Some(Instant::now() + DEBOUNCE);
             ui.ctx().request_repaint_after(DEBOUNCE);
         }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+        if r.lost_focus() && enter {
             *due = Some(Instant::now());
             ui.ctx().request_repaint();
         }
+        // Task 76: a search run with Enter, or left for its results, goes into the history
+        // (once per text; not while a suggestion is being clicked).
+        let text = query.trim();
+        if r.lost_focus()
+            && !text.is_empty()
+            && !shown
+            && (enter || st.remembered.as_deref() != Some(text))
+        {
+            out.push(Action::Find(FindCmd::Remember(text.to_owned())));
+            st.remembered = Some(text.to_owned());
+        }
+        if open {
+            ui.memory_mut(|m| m.open_popup(popup));
+        } else if shown && !ui.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+            ui.memory_mut(|m| m.close_popup());
+        }
+        egui::popup_below_widget(
+            ui,
+            popup,
+            &r,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(r.rect.width());
+                for (i, text) in list.iter().enumerate() {
+                    if ui
+                        .selectable_label(st.highlight == Some(i), text.as_str())
+                        .clicked()
+                    {
+                        picked = Some(text.clone());
+                    }
+                }
+            },
+        );
+        if let Some(text) = picked {
+            query.clone_from(&text);
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+            out.push(Action::Find(FindCmd::Remember(text.clone())));
+            st.dismissed = Some(text.clone());
+            st.remembered = Some(text);
+            st.highlight = None;
+            ui.memory_mut(|m| m.close_popup());
+            r.request_focus();
+            to_end(ui, query);
+        }
+        ui.data_mut(|d| d.insert_temp(sid, st));
+        // Task 76: the filter (Everything, Audio, …, the profile's own) and bookmarks.
+        let before = tab.search_filter.clone();
+        let names = match shared.filters.is_empty() {
+            true => crate::search_filters::names(&[]),
+            false => shared.filters.clone(),
+        };
+        let combo = egui::ComboBox::from_id_salt("search-filter")
+            .width(100.0)
+            .selected_text(crate::search_filters::shown(&tab.search_filter))
+            .show_ui(ui, |ui| {
+                for name in &names {
+                    let value = match name.as_str() {
+                        "Everything" => String::new(),
+                        n => n.to_owned(),
+                    };
+                    ui.selectable_value(&mut tab.search_filter, value, name.as_str());
+                }
+                ui.separator();
+                if ui.button("Edit filters…").clicked() {
+                    out.push(Action::Find(FindCmd::EditFilters));
+                }
+            });
+        let _ = crate::a11y::Named::named(combo.response, "Filter");
+        if tab.search_filter != before {
+            *due = Some(Instant::now());
+            ui.ctx().request_repaint();
+        }
+        crate::bookmarks::menu(ui, out);
         if busy {
             crate::anim::spinner(ui);
         }

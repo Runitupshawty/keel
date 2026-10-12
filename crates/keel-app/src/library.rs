@@ -1142,7 +1142,7 @@ impl LibraryUi {
     }
 
     /// Like `spawn`, but an error becomes a toast.
-    fn spawn_try(
+    pub(crate) fn spawn_try(
         &self,
         name: &str,
         what: &'static str,

@@ -257,7 +257,8 @@ pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Cont
     });
 }
 
-type SearchJob = (Arc<dyn Searcher>, String, u64);
+/// Task 76: the query with its filter applied (`search_filters::apply`).
+type SearchJob = (Arc<dyn Searcher>, crate::search_filters::Applied, u64);
 
 /// One search thread for the whole app. Queries wait their turn (Everything serves one
 /// at a time); a query whose tab has moved on to a newer one is dropped unrun, so typing
@@ -274,14 +275,22 @@ impl SearchWorker {
         let live: Arc<Mutex<HashSet<u64>>> = Arc::default();
         let wanted = live.clone();
         spawn("keel-search", move || {
-            while let Ok((searcher, text, id)) = rx.recv() {
+            while let Ok((searcher, applied, id)) = rx.recv() {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
                 let result = searcher.query(&Query {
-                    text,
+                    text: applied.text.clone(),
+                    folders_only: applied.folders_only,
+                    regex: applied.matching.regex,
+                    match_case: applied.matching.case,
                     max: crate::search_tab::MAX_HITS,
                     ..Query::default()
+                });
+                // A filter's extensions are checked on every backend's hits.
+                let result = result.map(|mut hits| {
+                    hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
+                    hits
                 });
                 wanted.lock().remove(&id);
                 send(&tx, &ctx, Msg::Search { id, result });
@@ -291,13 +300,19 @@ impl SearchWorker {
     }
 
     /// Queues query `id`, superseding `replaces` (the tab's previous request).
-    pub fn search(&self, searcher: Arc<dyn Searcher>, text: String, id: u64, replaces: u64) {
+    pub fn search(
+        &self,
+        searcher: Arc<dyn Searcher>,
+        applied: crate::search_filters::Applied,
+        id: u64,
+        replaces: u64,
+    ) {
         {
             let mut live = self.live.lock();
             live.remove(&replaces);
             live.insert(id);
         }
-        let _ = self.jobs.send((searcher, text, id));
+        let _ = self.jobs.send((searcher, applied, id));
     }
 }
 
