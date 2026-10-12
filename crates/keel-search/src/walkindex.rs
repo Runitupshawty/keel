@@ -1,10 +1,19 @@
-//! A persistent name index built by walking the file system (macOS and Linux, and
-//! the last resort on Windows). Names, parents, sizes and dates live in memory for
-//! queries and in SQLite (`<cache>/index/walk-<hash of roots>.db`) for restarts.
-//! A `notify` watcher keeps it current in 500 ms batches; a full rebuild runs when
-//! the db is older than a week or on demand. Same query syntax as the NTFS index
-//! (substring, `*`/`?` glob, `regex:`, `folder:`, `in:`) and the same skip rules as
-//! [`crate::walk`] (hidden and ignored entries are left out).
+//! A persistent name index built by walking the file system: the home folder on
+//! macOS and Linux (and the last resort on Windows), and every folder and non-NTFS
+//! volume of Settings → Search ([`crate::folders`]). Names, parents, sizes, dates
+//! (modified and created) and attributes live in memory for queries and in SQLite
+//! (`<cache>/index/walk-<hash of roots>.db`) for restarts.
+//!
+//! A watcher keeps it current in 500 ms batches (ReadDirectoryChangesW with the
+//! chosen buffer on Windows, FSEvents / inotify through `notify` elsewhere); an
+//! overflowed buffer rescans. Rescans also run on a schedule (every N hours or daily
+//! at a time), and a fast rescan lists only the folders whose modified time moved. A
+//! root that is missing (an unplugged drive, a share that is down) is offline: its
+//! last scan stays searchable, nothing is deleted, and it is rescanned when it is back.
+//!
+//! The home index keeps [`crate::walk`]'s skip rules (hidden and git-ignored entries are
+//! left out); configured roots use the Exclude tab's [`ExcludeRules`] instead. Same
+//! query syntax as the NTFS index (substring, `*`/`?` glob, `regex:`, `folder:`, `in:`).
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -19,12 +28,22 @@ use parking_lot::RwLock;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{params, Connection};
 
+use crate::exclude::{attr, ExcludeRules};
+use crate::index_settings::ScanOptions;
+use crate::schedule::{Clock, SystemClock};
 use crate::{Hit, Query, SearchState, Searcher};
 
 const NONE: u32 = u32::MAX;
 const NO_TIME: i64 = i64::MIN;
 const BATCH: Duration = Duration::from_millis(500);
-const MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+/// The home index is walked again when its db is older than this.
+const MAX_AGE_SECS: i64 = 7 * 24 * 3600;
+/// How often an offline root is checked for coming back.
+const OFFLINE_POLL: Duration = Duration::from_secs(10);
+/// Longest sleep of the worker between checks (schedule due, roots still online).
+const IDLE: Duration = Duration::from_secs(60);
+/// The db layout: version 2 added `created` and `attrs`.
+const VERSION: &str = "2";
 const MAX_DEPTH: usize = 512;
 /// Name buffers smaller than this are scanned on the calling thread only.
 const PARALLEL_BYTES: usize = 1 << 20;
@@ -69,13 +88,25 @@ pub fn home_root() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------------
 // The in-memory table
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Meta {
     is_dir: bool,
     size: u64,
     /// Milliseconds since the epoch, `NO_TIME` when unknown.
     mtime: i64,
+    /// Creation time, milliseconds since the epoch, `NO_TIME` when unknown.
+    created: i64,
+    /// [`attr`] bits.
+    attrs: u32,
 }
+
+const DIR_META: Meta = Meta {
+    is_dir: true,
+    size: 0,
+    mtime: NO_TIME,
+    created: NO_TIME,
+    attrs: attr::DIRECTORY,
+};
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -96,11 +127,13 @@ const DEAD: Entry = Entry {
         is_dir: false,
         size: 0,
         mtime: NO_TIME,
+        created: NO_TIME,
+        attrs: 0,
     },
 };
 
-/// A row as stored in the db: (parent, name, is_dir, size, mtime).
-type Row = (i64, String, bool, i64, i64);
+/// A row as stored in the db: (parent, name, is_dir, size, mtime, created, attrs).
+type Row = (i64, String, bool, i64, i64, i64, u32);
 
 fn clean(name: &str) -> Cow<'_, str> {
     if name.contains('\n') {
@@ -147,13 +180,8 @@ impl Table {
 
     fn new(roots: &[PathBuf]) -> Self {
         let mut t = Self::empty();
-        let dir = Meta {
-            is_dir: true,
-            size: 0,
-            mtime: NO_TIME,
-        };
         for root in roots {
-            let slot = t.add(NONE, &root.to_string_lossy(), dir);
+            let slot = t.add(NONE, &root.to_string_lossy(), DIR_META);
             t.roots.push((root.clone(), slot));
         }
         t
@@ -172,23 +200,28 @@ impl Table {
         (at, len)
     }
 
+    /// The slot of `name` directly under `parent`.
+    fn child(&self, parent: u32, name: &str) -> Option<u32> {
+        self.children.get(&parent)?.get(&*clean(name)).copied()
+    }
+
+    /// Sets an entry's meta (a changed type drops what was below a folder).
+    fn set_meta(&mut self, slot: u32, meta: Meta) {
+        let e = self.entries[slot as usize];
+        if e.meta != meta {
+            if e.meta.is_dir && !meta.is_dir {
+                self.remove_children(slot);
+            }
+            self.entries[slot as usize].meta = meta;
+            self.dirty.insert(slot);
+        }
+    }
+
     /// Adds `name` under `parent`, or updates it when present. Returns its slot.
     fn add(&mut self, parent: u32, name: &str, meta: Meta) -> u32 {
         let name = clean(name);
-        let known = self
-            .children
-            .get(&parent)
-            .and_then(|c| c.get(&*name))
-            .copied();
-        if let Some(slot) = known {
-            let e = self.entries[slot as usize];
-            if e.meta != meta {
-                if e.meta.is_dir && !meta.is_dir {
-                    self.remove_children(slot);
-                }
-                self.entries[slot as usize].meta = meta;
-                self.dirty.insert(slot);
-            }
+        if let Some(slot) = self.child(parent, &name) {
+            self.set_meta(slot, meta);
             return slot;
         }
         let slot = self.free.pop().unwrap_or(self.entries.len() as u32);
@@ -211,6 +244,19 @@ impl Table {
         self.dirty.insert(slot);
         self.live += 1;
         slot
+    }
+
+    /// [`add`](Self::add) from a change notice or a parent's listing: a known folder
+    /// keeps its stored modified time, which records when its own entries were last
+    /// listed (a fast rescan relies on it).
+    fn refresh(&mut self, parent: u32, name: &str, mut meta: Meta) -> u32 {
+        if let Some(slot) = self.child(parent, name) {
+            let old = self.entries[slot as usize].meta;
+            if old.is_dir && meta.is_dir {
+                meta.mtime = old.mtime;
+            }
+        }
+        self.add(parent, name, meta)
     }
 
     fn remove_children(&mut self, slot: u32) {
@@ -297,8 +343,7 @@ impl Table {
     fn lookup(&self, path: &Path) -> Option<u32> {
         let (mut cur, rel) = self.root_of(path)?;
         for c in rel.components() {
-            let name = c.as_os_str().to_string_lossy();
-            cur = *self.children.get(&cur)?.get(&*clean(&name))?;
+            cur = self.child(cur, &c.as_os_str().to_string_lossy())?;
         }
         Some(cur)
     }
@@ -321,13 +366,15 @@ impl Table {
             m.is_dir,
             m.size as i64,
             m.mtime,
+            m.created,
+            m.attrs,
         ))
     }
 
     /// Rows must come in ascending slot order.
     fn from_rows(roots: &[PathBuf], rows: Vec<(u32, Row)>) -> Option<Self> {
         let mut t = Self::empty();
-        for (slot, (parent, name, is_dir, size, mtime)) in rows {
+        for (slot, (parent, name, is_dir, size, mtime, created, attrs)) in rows {
             while t.entries.len() < slot as usize {
                 t.free.push(t.entries.len() as u32);
                 t.entries.push(DEAD);
@@ -343,6 +390,8 @@ impl Table {
                     is_dir,
                     size: size as u64,
                     mtime,
+                    created,
+                    attrs,
                 },
             });
             t.children.entry(parent).or_default().insert(name, slot);
@@ -401,18 +450,7 @@ impl Table {
                 return None;
             }
         }
-        let quality = match &m.literal {
-            Some(lit) if eq_case(name, lit, m.match_case) => 0,
-            Some(lit)
-                if name
-                    .get(..lit.len())
-                    .is_some_and(|head| eq_case(head, lit, m.match_case)) =>
-            {
-                1
-            }
-            _ => 2,
-        };
-        Some((quality, slot))
+        Some((m.quality(name), slot))
     }
 
     fn scan_range(&self, m: &Matcher, range: Range<usize>) -> Vec<(u8, u32)> {
@@ -505,6 +543,23 @@ struct Matcher {
     folders_only: bool,
     /// `in:` path prefix, lowercased with `/` separators.
     within: Option<String>,
+}
+
+impl Matcher {
+    /// 0 for an exact name, 1 for a prefix, 2 otherwise.
+    fn quality(&self, name: &str) -> u8 {
+        match &self.literal {
+            Some(lit) if eq_case(name, lit, self.match_case) => 0,
+            Some(lit)
+                if name
+                    .get(..lit.len())
+                    .is_some_and(|head| eq_case(head, lit, self.match_case)) =>
+            {
+                1
+            }
+            _ => 2,
+        }
+    }
 }
 
 enum Term {
@@ -638,13 +693,71 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
     })
 }
 
+/// Merges hits of several backends answering `query`: one copy of each path, ranked
+/// like one index would (exact name, then prefix, then the rest, each by path), at
+/// most `query.max`.
+pub(crate) fn merge_hits(query: &Query, hits: Vec<Hit>) -> Vec<Hit> {
+    let quality = compile(query).ok();
+    let key = |h: &Hit| {
+        let path = h.path.display();
+        // Windows paths ignore case; elsewhere `A` and `a` are two files.
+        let same = if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path.clone()
+        };
+        let rank = quality.as_ref().map_or(2, |m| m.quality(h.path.name()));
+        (rank, path.to_lowercase(), same)
+    };
+    let mut keyed: Vec<((u8, String, String), Hit)> = hits.into_iter().map(|h| (key(&h), h)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut seen = HashSet::new();
+    keyed
+        .into_iter()
+        .filter(|((_, _, same), _)| seen.insert(same.clone()))
+        .map(|(_, h)| h)
+        .take(query.max as usize)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------
 // Walking
 
+fn millis(t: std::io::Result<SystemTime>) -> i64 {
+    t.ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(NO_TIME, |d| d.as_millis() as i64)
+}
+
+#[cfg(windows)]
+fn attrs_of(md: &std::fs::Metadata, _path: &Path) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    md.file_attributes()
+}
+
+#[cfg(not(windows))]
+fn attrs_of(md: &std::fs::Metadata, path: &Path) -> u32 {
+    let mut a = 0;
+    if md.is_dir() {
+        a |= attr::DIRECTORY;
+    }
+    if md.permissions().readonly() {
+        a |= attr::READONLY;
+    }
+    if path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+    {
+        a |= attr::HIDDEN;
+    }
+    a
+}
+
 fn meta_of(md: &std::fs::Metadata, path: &Path) -> Meta {
     // A link counts as what it points at, like `walk` does.
+    let link = md.file_type().is_symlink();
     let followed;
-    let md = if md.file_type().is_symlink() {
+    let md = if link {
         followed = std::fs::metadata(path);
         followed.as_ref().unwrap_or(md)
     } else {
@@ -653,21 +766,52 @@ fn meta_of(md: &std::fs::Metadata, path: &Path) -> Meta {
     Meta {
         is_dir: md.is_dir(),
         size: if md.is_dir() { 0 } else { md.len() },
-        mtime: md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(NO_TIME, |d| d.as_millis() as i64),
+        mtime: millis(md.modified()),
+        created: millis(md.created()),
+        attrs: attrs_of(md, path) | if link { attr::REPARSE_POINT } else { 0 },
     }
 }
 
-/// Walks every root into a fresh table (the same skip rules as [`crate::walk`]).
-fn scan(roots: &[PathBuf], progress: &AtomicUsize, stop: &AtomicBool) -> Table {
+/// The rules an index walks by: `None` is the home index's (skip hidden and
+/// git-ignored entries), `Some` the Exclude tab's.
+type Rules = Option<Arc<ExcludeRules>>;
+
+fn rules_key(rules: &Rules) -> String {
+    rules.as_ref().map_or_else(|| "standard".into(), |r| r.key())
+}
+
+/// A walk of `root` (to `depth` levels) by `rules`.
+fn walker(root: &Path, rules: &Rules, depth: Option<usize>) -> ignore::Walk {
+    let mut b = ignore::WalkBuilder::new(root);
+    b.max_depth(depth);
+    if let Some(rules) = rules {
+        let rules = rules.clone();
+        b.standard_filters(false).filter_entry(move |e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+            let attrs = if rules.needs_attrs() {
+                e.metadata().map_or(0, |m| attrs_of(&m, e.path()))
+            } else {
+                0
+            };
+            rules.admit(e.path(), is_dir, attrs)
+        });
+    }
+    b.build()
+}
+
+/// Walks every root into a fresh table.
+fn scan(roots: &[PathBuf], rules: &Rules, progress: &AtomicUsize, stop: &AtomicBool) -> Table {
     let mut t = Table::new(roots);
     for (root, root_slot) in t.roots.clone() {
+        if let Ok(md) = std::fs::metadata(&root) {
+            t.set_meta(root_slot, meta_of(&md, &root));
+        }
         // stack[depth] = slot of the folder at that depth.
         let mut stack = vec![root_slot];
-        for entry in ignore::WalkBuilder::new(&root).build().flatten() {
+        for entry in walker(&root, rules, None).flatten() {
             let depth = entry.depth();
             if depth == 0 {
                 continue;
@@ -692,6 +836,36 @@ fn scan(roots: &[PathBuf], progress: &AtomicUsize, stop: &AtomicBool) -> Table {
     t
 }
 
+/// The entries directly in `dir` that the rules admit: (name, path, meta).
+fn listing(dir: &Path, rules: &Rules) -> Vec<(String, PathBuf, Meta)> {
+    walker(dir, rules, Some(1))
+        .flatten()
+        .filter(|e| e.depth() == 1)
+        .filter_map(|e| {
+            let meta = meta_of(&e.metadata().ok()?, e.path());
+            Some((
+                e.file_name().to_string_lossy().into_owned(),
+                e.path().to_path_buf(),
+                meta,
+            ))
+        })
+        .collect()
+}
+
+/// Everything below `dir` that the rules admit, parents before children.
+fn subtree(dir: &Path, rules: &Rules) -> Vec<(PathBuf, Meta)> {
+    walker(dir, rules, None)
+        .flatten()
+        .filter(|e| e.depth() > 0)
+        .filter_map(|e| {
+            Some((
+                e.path().to_path_buf(),
+                meta_of(&e.metadata().ok()?, e.path()),
+            ))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------
 // SQLite
 
@@ -699,12 +873,6 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     name.into()
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 fn roots_key(roots: &[PathBuf]) -> String {
@@ -724,13 +892,37 @@ fn db_path(dir: &Path, roots: &[PathBuf]) -> PathBuf {
     dir.join(format!("walk-{h:016x}.db"))
 }
 
+/// Deletes the saved index of `root` (an offline volume removed from Settings).
+pub(crate) fn delete_db(dir: &Path, root: &Path) {
+    let db = db_path(dir, &normalize_roots(vec![root.to_path_buf()]));
+    // Its worker may still be closing the db (Windows refuses to delete an open file).
+    for _ in 0..20 {
+        for suffix in ["", "-wal", "-shm", ".tmp"] {
+            let _ = std::fs::remove_file(sibling(&db, suffix));
+        }
+        if !db.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY, parent INTEGER NOT NULL, name TEXT NOT NULL,
-    is_dir INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL);
+    is_dir INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+    created INTEGER NOT NULL, attrs INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
-fn save_full(path: &Path, t: &Table, roots: &[PathBuf], built: u64) -> anyhow::Result<()> {
+/// What a db says about itself besides its rows.
+struct Stamp {
+    /// Unix seconds of the last full walk and of the last scan of any kind.
+    built: i64,
+    scanned: i64,
+    rules: String,
+}
+
+fn save_full(path: &Path, t: &Table, roots: &[PathBuf], stamp: &Stamp) -> anyhow::Result<()> {
     let tmp = sibling(path, ".tmp");
     let _ = std::fs::remove_file(&tmp);
     {
@@ -739,16 +931,24 @@ fn save_full(path: &Path, t: &Table, roots: &[PathBuf], built: u64) -> anyhow::R
         conn.execute_batch(SCHEMA)?;
         let tx = conn.transaction()?;
         {
-            let mut insert = tx.prepare("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+            let mut insert =
+                tx.prepare("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
             for slot in 0..t.entries.len() as u32 {
-                if let Some((parent, name, is_dir, size, mtime)) = t.row(slot) {
-                    insert.execute(params![slot, parent, name, is_dir, size, mtime])?;
+                if let Some((parent, name, is_dir, size, mtime, created, attrs)) = t.row(slot) {
+                    insert.execute(params![slot, parent, name, is_dir, size, mtime, created, attrs])?;
                 }
             }
         }
         tx.execute(
-            "INSERT INTO meta VALUES ('built', ?1), ('roots', ?2)",
-            params![built.to_string(), roots_key(roots)],
+            "INSERT INTO meta VALUES ('version', ?1), ('built', ?2), ('scanned', ?3), \
+             ('roots', ?4), ('rules', ?5)",
+            params![
+                VERSION,
+                stamp.built.to_string(),
+                stamp.scanned.to_string(),
+                roots_key(roots),
+                stamp.rules
+            ],
         )?;
         tx.commit()?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
@@ -760,18 +960,23 @@ fn save_full(path: &Path, t: &Table, roots: &[PathBuf], built: u64) -> anyhow::R
     Ok(())
 }
 
-fn save_changes(path: &Path, changes: Vec<(u32, Option<Row>)>) -> anyhow::Result<()> {
+/// Writes changed rows, and the time of a rescan when `scanned` is given.
+fn save_changes(
+    path: &Path,
+    changes: Vec<(u32, Option<Row>)>,
+    scanned: Option<i64>,
+) -> anyhow::Result<()> {
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     let tx = conn.transaction()?;
     {
         let mut delete = tx.prepare("DELETE FROM files WHERE id = ?1")?;
         let mut upsert =
-            tx.prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+            tx.prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
         for (slot, row) in changes {
             match row {
-                Some((parent, name, is_dir, size, mtime)) => {
-                    upsert.execute(params![slot, parent, name, is_dir, size, mtime])?;
+                Some((parent, name, is_dir, size, mtime, created, attrs)) => {
+                    upsert.execute(params![slot, parent, name, is_dir, size, mtime, created, attrs])?;
                 }
                 None => {
                     delete.execute([slot])?;
@@ -779,12 +984,19 @@ fn save_changes(path: &Path, changes: Vec<(u32, Option<Row>)>) -> anyhow::Result
             }
         }
     }
+    if let Some(scanned) = scanned {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta VALUES ('scanned', ?1)",
+            [scanned.to_string()],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
 
-/// The saved table and when it was built; None when absent, for other roots, or bad.
-fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, u64)> {
+/// The saved table and its stamp; None when absent, for other roots, of an older
+/// layout, or bad.
+fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, Stamp)> {
     if !path.is_file() {
         return None;
     }
@@ -793,24 +1005,41 @@ fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, u64)> {
         conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
             .ok()
     };
-    if meta("roots")? != roots_key(roots) {
+    if meta("version")? != VERSION || meta("roots")? != roots_key(roots) {
         return None;
     }
-    let built = meta("built")?.parse().ok()?;
+    let built: i64 = meta("built")?.parse().ok()?;
+    let stamp = Stamp {
+        built,
+        scanned: meta("scanned")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(built),
+        rules: meta("rules").unwrap_or_default(),
+    };
     let mut stmt = conn
-        .prepare("SELECT id, parent, name, is_dir, size, mtime FROM files ORDER BY id")
+        .prepare(
+            "SELECT id, parent, name, is_dir, size, mtime, created, attrs FROM files ORDER BY id",
+        )
         .ok()?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
                 r.get::<_, u32>(0)?,
-                (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?),
+                (
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ),
             ))
         })
         .ok()?
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    Some((Table::from_rows(roots, rows)?, built))
+    Some((Table::from_rows(roots, rows)?, stamp))
 }
 
 // ---------------------------------------------------------------------------------
@@ -818,7 +1047,17 @@ fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, u64)> {
 
 enum Cmd {
     Paths(Vec<PathBuf>),
+    /// A full walk (Force rebuild).
     Rebuild,
+    /// A rescan as scheduled: fast when Fast rescan is on.
+    Rescan,
+    /// The change buffer overflowed: changes were lost.
+    Overflow,
+    /// The watch ended (the root or its volume went away, or the watcher failed).
+    Lost,
+    /// Check the schedule and whether the roots are online now; the sender, when
+    /// given, hears when that is done (tests).
+    Tick(Option<mpsc::Sender<()>>),
     Stop,
 }
 
@@ -830,19 +1069,77 @@ struct Shared {
     progress: AtomicUsize,
     swapped: AtomicBool,
     unwatched: AtomicBool,
+    /// A root is missing: the last scan is served, nothing is rescanned.
+    offline: AtomicBool,
+    /// Changes were lost (an overflow with Rescan on overflow off).
+    missed: AtomicBool,
+    /// Rescans and rebuilds run so far (tests).
+    scans: AtomicUsize,
     stop: AtomicBool,
+}
+
+/// How a walk index is kept.
+#[derive(Clone)]
+pub struct WalkOptions {
+    /// `None`: the home index's rules (hidden and git-ignored entries are skipped).
+    /// `Some`: the Exclude tab's rules, and nothing else is skipped.
+    pub rules: Option<ExcludeRules>,
+    pub scan: ScanOptions,
+    /// A full walk when the last one is older than this many seconds.
+    pub max_age_secs: Option<i64>,
+    pub clock: Arc<dyn Clock>,
+}
+
+impl Default for WalkOptions {
+    /// The home index: skip rules, watched, rebuilt weekly.
+    fn default() -> Self {
+        Self {
+            rules: None,
+            scan: ScanOptions::default(),
+            max_age_secs: Some(MAX_AGE_SECS),
+            clock: Arc::new(SystemClock),
+        }
+    }
+}
+
+/// An indexed entry's stored columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntryInfo {
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    /// [`crate::attr`] bits.
+    pub attributes: u32,
+}
+
+fn time_of(ms: i64) -> Option<SystemTime> {
+    (ms != NO_TIME).then(|| {
+        if ms >= 0 {
+            UNIX_EPOCH + Duration::from_millis(ms as u64)
+        } else {
+            UNIX_EPOCH - Duration::from_millis(ms.unsigned_abs())
+        }
+    })
 }
 
 /// A persistent, watched name index over one or more root folders.
 pub struct WalkIndexSearcher {
     shared: Arc<Shared>,
     tx: mpsc::Sender<Cmd>,
+    roots: Vec<PathBuf>,
 }
 
 impl WalkIndexSearcher {
-    /// Opens (or starts building) the index of `roots` with its db in `dir`. Returns
-    /// at once; the saved db loads, or the walk runs, on a background thread.
+    /// Opens (or starts building) the home-style index of `roots` with its db in
+    /// `dir`. Returns at once; the saved db loads, or the walk runs, on a background
+    /// thread.
     pub fn open(dir: PathBuf, roots: Vec<PathBuf>) -> anyhow::Result<Self> {
+        Self::open_with(dir, roots, WalkOptions::default())
+    }
+
+    /// [`open`](Self::open) with explicit rules, watching, schedule and clock.
+    pub fn open_with(dir: PathBuf, roots: Vec<PathBuf>, opts: WalkOptions) -> anyhow::Result<Self> {
         let roots = normalize_roots(roots);
         anyhow::ensure!(!roots.is_empty(), "no folders to index");
         std::fs::create_dir_all(&dir)?;
@@ -854,25 +1151,37 @@ impl WalkIndexSearcher {
             progress: AtomicUsize::new(0),
             swapped: AtomicBool::new(false),
             unwatched: AtomicBool::new(false),
+            offline: AtomicBool::new(false),
+            missed: AtomicBool::new(false),
+            scans: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
         });
         let (tx, rx) = mpsc::channel();
         let worker = Worker {
             shared: shared.clone(),
             db,
-            roots,
+            roots: roots.clone(),
+            rules: opts.rules.clone().map(Arc::new),
+            opts,
             built: 0,
+            scanned: 0,
+            events: tx.clone(),
+            watch: None,
         };
-        let events = tx.clone();
         std::thread::Builder::new()
             .name("keel-walk-index".into())
-            .spawn(move || worker.run(rx, events))?;
-        Ok(Self { shared, tx })
+            .spawn(move || worker.run(rx))?;
+        Ok(Self { shared, tx, roots })
     }
 
     /// Walks everything again in the background; queries keep using the old index.
     pub fn rebuild(&self) {
         let _ = self.tx.send(Cmd::Rebuild);
+    }
+
+    /// Rescans in the background as a schedule would (fast when Fast rescan is on).
+    pub fn rescan(&self) {
+        let _ = self.tx.send(Cmd::Rescan);
     }
 
     /// Blocks until an index serves queries (tests, tools).
@@ -886,6 +1195,33 @@ impl WalkIndexSearcher {
         }
         true
     }
+
+    /// The stored columns of `path`, None when it is not indexed.
+    pub fn info(&self, path: &Path) -> Option<EntryInfo> {
+        let t = self.shared.table.read();
+        let m = t.entries[t.lookup(path)? as usize].meta;
+        Some(EntryInfo {
+            is_dir: m.is_dir,
+            size: m.size,
+            modified: time_of(m.mtime),
+            created: time_of(m.created),
+            attributes: m.attrs,
+        })
+    }
+
+    /// The indexed roots.
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// Makes the worker check its schedule and roots now and waits until it has
+    /// (tests drive a fake clock with it).
+    #[cfg(test)]
+    fn tick(&self) {
+        let (tx, rx) = mpsc::channel();
+        let _ = self.tx.send(Cmd::Tick(Some(tx)));
+        let _ = rx.recv_timeout(Duration::from_secs(60));
+    }
 }
 
 impl Drop for WalkIndexSearcher {
@@ -897,15 +1233,24 @@ impl Drop for WalkIndexSearcher {
 
 /// Absolute, resolved (macOS reports `/private/var/...` for `/var/...`), sorted, and
 /// without roots that sit inside another root.
-fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+pub(crate) fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = roots
         .into_iter()
         .filter_map(|r| {
             let abs = std::path::absolute(&r).ok()?;
             #[cfg(windows)]
             return Some(abs);
+            // A missing root (an offline volume) resolves through its parent, so it
+            // keeps the name its saved index has.
             #[cfg(not(windows))]
-            return Some(std::fs::canonicalize(&abs).unwrap_or(abs));
+            return Some(
+                std::fs::canonicalize(&abs)
+                    .ok()
+                    .or_else(|| {
+                        Some(std::fs::canonicalize(abs.parent()?).ok()?.join(abs.file_name()?))
+                    })
+                    .unwrap_or(abs),
+            );
         })
         .collect();
     roots.sort();
@@ -933,8 +1278,7 @@ impl Searcher for WalkIndexSearcher {
                     path: keel_vfs::VPath::local(path),
                     is_dir: m.is_dir,
                     size: m.size,
-                    modified: (m.mtime != NO_TIME)
-                        .then(|| UNIX_EPOCH + Duration::from_millis(m.mtime as u64)),
+                    modified: time_of(m.mtime),
                     snippet: None,
                 }
             })
@@ -946,12 +1290,18 @@ impl Searcher for WalkIndexSearcher {
     }
 
     fn status(&self) -> Option<String> {
-        if self.shared.building.load(Relaxed) {
+        let sh = &self.shared;
+        if sh.offline.load(Relaxed) {
+            let roots: Vec<String> = self.roots.iter().map(|r| r.display().to_string()).collect();
             Some(format!(
-                "indexing {} files\u{2026}",
-                self.shared.progress.load(Relaxed)
+                "{} is offline; showing its files from the last scan",
+                roots.join(", ")
             ))
-        } else if self.shared.unwatched.load(Relaxed) {
+        } else if sh.building.load(Relaxed) {
+            Some(format!("indexing {} files\u{2026}", sh.progress.load(Relaxed)))
+        } else if sh.missed.load(Relaxed) {
+            Some("some changes were missed (the change buffer overflowed); they show after the next rescan".into())
+        } else if sh.unwatched.load(Relaxed) {
             Some("changes are not tracked live (watch failed); rebuilds weekly".into())
         } else {
             None
@@ -977,91 +1327,233 @@ impl Searcher for WalkIndexSearcher {
     fn take_ready(&self) -> bool {
         self.shared.swapped.swap(false, Relaxed)
     }
+
+    fn offline_roots(&self) -> Vec<PathBuf> {
+        if self.shared.offline.load(Relaxed) {
+            self.roots.clone()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// The live watch of the roots.
+enum Watch {
+    Notify(#[allow(dead_code)] notify::RecommendedWatcher),
+    #[cfg(windows)]
+    Rdcw(#[allow(dead_code)] Vec<crate::rdcw::Watch>),
 }
 
 struct Worker {
     shared: Arc<Shared>,
     db: PathBuf,
     roots: Vec<PathBuf>,
-    /// Unix seconds of the last full walk.
-    built: u64,
+    rules: Rules,
+    opts: WalkOptions,
+    /// Unix seconds (by the clock) of the last full walk and of the last scan.
+    built: i64,
+    scanned: i64,
+    events: mpsc::Sender<Cmd>,
+    watch: Option<Watch>,
 }
 
 impl Worker {
-    fn run(mut self, rx: mpsc::Receiver<Cmd>, events: mpsc::Sender<Cmd>) {
+    fn run(mut self, rx: mpsc::Receiver<Cmd>) {
         let sh = self.shared.clone();
-        if let Some((table, built)) = load(&self.db, &self.roots) {
+        let mut rules_ok = false;
+        if let Some((table, stamp)) = load(&self.db, &self.roots) {
             sh.progress.store(table.live, Relaxed);
             *sh.table.write() = table;
-            self.built = built;
+            self.built = stamp.built;
+            self.scanned = stamp.scanned;
+            rules_ok = stamp.rules == rules_key(&self.rules);
             sh.ready.store(true, Relaxed);
             sh.swapped.store(true, Relaxed);
         }
-        // Started before the first walk so changes made meanwhile queue up.
-        let _watcher = self.watch(events);
-        if !sh.ready.load(Relaxed) || self.stale() {
-            self.rebuild();
+        if !self.online() {
+            // Serve the last scan (if any); never walk a missing root.
+            sh.offline.store(true, Relaxed);
+            sh.building.store(false, Relaxed);
         } else {
+            // Started before the first walk so changes made meanwhile queue up.
+            self.start_watch();
+            if !sh.ready.load(Relaxed) || self.stale() || !rules_ok {
+                self.rebuild();
+            } else if self.opts.scan.fast_rescan {
+                // Catch up with what changed while Keel was closed.
+                self.rescan();
+            }
             sh.building.store(false, Relaxed);
         }
-        let mut pending: HashSet<PathBuf> = HashSet::new();
         loop {
-            match rx.recv_timeout(Duration::from_secs(3600)) {
-                Ok(Cmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if self.stale() {
-                        self.rebuild();
-                    }
-                }
-                Ok(Cmd::Rebuild) => self.rebuild(),
-                Ok(Cmd::Paths(paths)) => {
-                    pending.extend(paths);
-                    let (mut rescan, mut stop) = (false, false);
-                    let deadline = Instant::now() + BATCH;
-                    loop {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        match rx.recv_timeout(left) {
-                            Ok(Cmd::Paths(p)) => pending.extend(p),
-                            Ok(Cmd::Rebuild) => rescan = true,
-                            Ok(Cmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                stop = true;
-                                break;
-                            }
-                            Err(mpsc::RecvTimeoutError::Timeout) => break,
-                        }
-                    }
-                    if stop {
-                        break;
-                    }
-                    if rescan {
-                        pending.clear();
-                        self.rebuild();
-                    } else {
-                        self.apply(std::mem::take(&mut pending));
-                    }
-                }
+            let cmd = match rx.recv_timeout(self.wait()) {
+                Ok(cmd) => cmd,
+                Err(mpsc::RecvTimeoutError::Timeout) => Cmd::Tick(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            if !self.handle(cmd, &rx) {
+                break;
             }
         }
     }
 
-    fn stale(&self) -> bool {
-        now_secs().saturating_sub(self.built) > MAX_AGE_SECS
+    /// Runs one command; false when the worker should stop.
+    fn handle(&mut self, cmd: Cmd, rx: &mpsc::Receiver<Cmd>) -> bool {
+        match cmd {
+            Cmd::Stop => return false,
+            Cmd::Tick(ack) => {
+                self.periodic();
+                if let Some(ack) = ack {
+                    let _ = ack.send(());
+                }
+            }
+            Cmd::Rebuild => {
+                if self.online() {
+                    self.rebuild();
+                }
+            }
+            Cmd::Rescan => self.rescan(),
+            Cmd::Overflow => {
+                if self.opts.scan.rescan_on_overflow {
+                    self.rescan();
+                } else {
+                    self.shared.missed.store(true, Relaxed);
+                }
+            }
+            Cmd::Lost => {
+                self.watch = None;
+                if self.online() {
+                    // The watcher failed: watch again and catch up.
+                    self.start_watch();
+                    self.rescan();
+                } else {
+                    self.shared.offline.store(true, Relaxed);
+                }
+            }
+            Cmd::Paths(paths) => {
+                let mut pending: HashSet<PathBuf> = paths.into_iter().collect();
+                let mut later = Vec::new();
+                let deadline = Instant::now() + BATCH;
+                loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match rx.recv_timeout(left) {
+                        Ok(Cmd::Paths(p)) => pending.extend(p),
+                        Ok(Cmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                        Ok(other) => later.push(other),
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    }
+                }
+                self.apply(pending);
+                for cmd in later {
+                    if !self.handle(cmd, rx) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
-    fn watch(&self, tx: mpsc::Sender<Cmd>) -> Option<notify::RecommendedWatcher> {
+    fn now(&self) -> i64 {
+        self.opts.clock.now()
+    }
+
+    fn online(&self) -> bool {
+        self.roots.iter().all(|r| r.is_dir())
+    }
+
+    fn stale(&self) -> bool {
+        self.opts
+            .max_age_secs
+            .is_some_and(|age| self.now().saturating_sub(self.built) > age)
+    }
+
+    /// How long to sleep before the next check.
+    fn wait(&self) -> Duration {
+        if self.shared.offline.load(Relaxed) {
+            return OFFLINE_POLL;
+        }
+        let due = self
+            .opts
+            .scan
+            .schedule
+            .wait(self.scanned, self.now(), self.opts.clock.as_ref())
+            .map_or(IDLE, Duration::from_secs);
+        due.clamp(Duration::from_secs(1), IDLE)
+    }
+
+    /// The schedule, the weekly rebuild, and roots going offline or coming back.
+    fn periodic(&mut self) {
+        let sh = self.shared.clone();
+        if !self.online() {
+            if !sh.offline.swap(true, Relaxed) {
+                self.watch = None;
+            }
+            return;
+        }
+        if sh.offline.swap(false, Relaxed) {
+            // Back: watch again and catch up with what changed meanwhile.
+            self.start_watch();
+            self.rescan();
+            return;
+        }
+        if self.stale() {
+            self.rebuild();
+        } else if self
+            .opts
+            .scan
+            .schedule
+            .due(self.scanned, self.now(), self.opts.clock.as_ref())
+        {
+            self.rescan();
+        }
+    }
+
+    fn start_watch(&mut self) {
+        self.watch = None;
+        if !self.opts.scan.monitor {
+            self.shared.unwatched.store(false, Relaxed);
+            return;
+        }
+        #[cfg(windows)]
+        if self.opts.rules.is_some() {
+            // Configured roots: our own ReadDirectoryChangesW, with the chosen buffer.
+            let buffer = self.opts.scan.buffer_kib as usize * 1024;
+            let watches: Option<Vec<_>> = self
+                .roots
+                .iter()
+                .map(|root| {
+                    let tx = self.events.clone();
+                    crate::rdcw::watch(root, buffer, move |e| {
+                        let _ = tx.send(match e {
+                            crate::rdcw::Event::Paths(p) => Cmd::Paths(p),
+                            crate::rdcw::Event::Overflow => Cmd::Overflow,
+                            crate::rdcw::Event::Lost => Cmd::Lost,
+                        });
+                    })
+                    .ok()
+                })
+                .collect();
+            if let Some(watches) = watches {
+                self.shared.unwatched.store(false, Relaxed);
+                self.watch = Some(Watch::Rdcw(watches));
+                return;
+            }
+        }
         use notify::{EventKind, RecursiveMode, Watcher};
+        let tx = self.events.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(ev) if ev.need_rescan() => {
-                    let _ = tx.send(Cmd::Rebuild);
+                    let _ = tx.send(Cmd::Overflow);
                 }
                 Ok(ev) if !matches!(ev.kind, EventKind::Access(_)) => {
                     let _ = tx.send(Cmd::Paths(ev.paths));
                 }
                 Ok(_) => {}
-                // Lost events: walk again.
+                // Lost events: walk again (or note the root went offline).
                 Err(_) => {
-                    let _ = tx.send(Cmd::Rebuild);
+                    let _ = tx.send(Cmd::Lost);
                 }
             })
             .ok();
@@ -1071,24 +1563,154 @@ impl Worker {
                 .all(|r| w.watch(r, RecursiveMode::Recursive).is_ok())
         });
         self.shared.unwatched.store(!watched, Relaxed);
-        watcher
+        self.watch = watcher.filter(|_| watched).map(Watch::Notify);
+    }
+
+    /// A rescan: fast (changed folders only) when on and an index is loaded, else a
+    /// full walk. Skipped while a root is offline.
+    fn rescan(&mut self) {
+        if !self.online() {
+            self.shared.offline.store(true, Relaxed);
+            return;
+        }
+        if self.opts.scan.fast_rescan && self.shared.ready.load(Relaxed) {
+            self.fast_rescan();
+        } else {
+            self.rebuild();
+        }
     }
 
     fn rebuild(&mut self) {
-        let sh = &self.shared;
+        let sh = self.shared.clone();
+        if !self.online() {
+            sh.offline.store(true, Relaxed);
+            return;
+        }
         sh.building.store(true, Relaxed);
         sh.progress.store(0, Relaxed);
-        let table = scan(&self.roots, &sh.progress, &sh.stop);
+        let table = scan(&self.roots, &self.rules, &sh.progress, &sh.stop);
         if sh.stop.load(Relaxed) {
             return;
         }
-        self.built = now_secs();
+        sh.building.store(false, Relaxed);
+        if !self.online() {
+            // The root went away during the walk: keep the last full scan.
+            sh.offline.store(true, Relaxed);
+            return;
+        }
+        self.built = self.now();
+        self.scanned = self.built;
+        let stamp = Stamp {
+            built: self.built,
+            scanned: self.scanned,
+            rules: rules_key(&self.rules),
+        };
         // Best effort: without a db the index just does not survive a restart.
-        let _ = save_full(&self.db, &table, &self.roots, self.built);
+        let _ = save_full(&self.db, &table, &self.roots, &stamp);
         *sh.table.write() = table;
+        sh.missed.store(false, Relaxed);
+        sh.scans.fetch_add(1, Relaxed);
         sh.ready.store(true, Relaxed);
         sh.swapped.store(true, Relaxed);
-        sh.building.store(false, Relaxed);
+    }
+
+    /// Lists again only the folders whose modified time differs from the one stored
+    /// when they were last listed (an entry added, removed or renamed in a folder
+    /// moves its time); new folders are walked whole. A file that changed in place
+    /// (same folder time) keeps its old size and date until a full rescan.
+    fn fast_rescan(&mut self) {
+        let sh = self.shared.clone();
+        let folders: Vec<(u32, PathBuf, i64)> = {
+            let t = sh.table.read();
+            (0..t.entries.len() as u32)
+                .filter(|&s| {
+                    let e = t.entries[s as usize];
+                    e.live && e.meta.is_dir
+                })
+                .filter_map(|s| Some((s, t.path_of(s)?, t.entries[s as usize].meta.mtime)))
+                .collect()
+        };
+        struct Changed {
+            slot: u32,
+            meta: Meta,
+            kids: Vec<(String, PathBuf, Meta)>,
+        }
+        let mut changed = Vec::new();
+        for (slot, path, mtime) in folders {
+            if sh.stop.load(Relaxed) {
+                return;
+            }
+            // Gone: its parent's listing drops it.
+            let Ok(md) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let meta = meta_of(&md, &path);
+            if !meta.is_dir || (meta.mtime == mtime && mtime != NO_TIME) {
+                continue;
+            }
+            changed.push(Changed {
+                slot,
+                meta,
+                kids: listing(&path, &self.rules),
+            });
+        }
+        let fresh: Vec<PathBuf> = {
+            let t = sh.table.read();
+            changed
+                .iter()
+                .flat_map(|c| {
+                    c.kids
+                        .iter()
+                        .filter(|(name, _, m)| m.is_dir && t.child(c.slot, name).is_none())
+                        .map(|(_, path, _)| path.clone())
+                })
+                .collect()
+        };
+        let below: Vec<Vec<(PathBuf, Meta)>> =
+            fresh.iter().map(|d| subtree(d, &self.rules)).collect();
+        if !self.online() {
+            sh.offline.store(true, Relaxed);
+            return;
+        }
+        let changes = {
+            let mut t = sh.table.write();
+            for c in changed {
+                if !t.entries[c.slot as usize].live {
+                    continue;
+                }
+                t.set_meta(c.slot, c.meta);
+                let names: HashSet<String> = c.kids.iter().map(|(n, _, _)| clean(n).into_owned()).collect();
+                let gone: Vec<u32> = t
+                    .children
+                    .get(&c.slot)
+                    .map(|k| {
+                        k.iter()
+                            .filter(|(n, _)| !names.contains(*n))
+                            .map(|(_, s)| *s)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for s in gone {
+                    t.remove(s);
+                }
+                for (name, _, m) in c.kids {
+                    t.refresh(c.slot, &name, m);
+                }
+            }
+            for (p, m) in below.into_iter().flatten() {
+                let parent = p.parent().and_then(|d| t.lookup(d));
+                if let (Some(parent), Some(name)) = (parent, p.file_name()) {
+                    t.add(parent, &name.to_string_lossy(), m);
+                }
+            }
+            sh.progress.store(t.live, Relaxed);
+            t.take_dirty()
+        };
+        self.scanned = self.now();
+        let _ = save_changes(&self.db, changes, Some(self.scanned));
+        sh.missed.store(false, Relaxed);
+        sh.scans.fetch_add(1, Relaxed);
+        sh.swapped.store(true, Relaxed);
     }
 
     /// Reconciles the table with the file system for each path an event named:
@@ -1117,7 +1739,7 @@ impl Worker {
             let admitted = path.file_name().is_some_and(|name| {
                 listings
                     .entry(parent)
-                    .or_insert_with_key(|p| list_admitted(p))
+                    .or_insert_with_key(|p| list_admitted(p, &self.rules))
                     .contains(name)
             });
             let md = admitted
@@ -1129,7 +1751,7 @@ impl Worker {
             };
             let meta = meta_of(&md, &path);
             let sub = if meta.is_dir && !known {
-                subtree(&path)
+                subtree(&path, &self.rules)
             } else {
                 Vec::new()
             };
@@ -1151,7 +1773,7 @@ impl Worker {
                         for (p, m) in std::iter::once((path, meta)).chain(sub) {
                             let parent = p.parent().and_then(|d| t.lookup(d));
                             if let (Some(parent), Some(name)) = (parent, p.file_name()) {
-                                t.add(parent, &name.to_string_lossy(), m);
+                                t.refresh(parent, &name.to_string_lossy(), m);
                             }
                         }
                     }
@@ -1160,345 +1782,20 @@ impl Worker {
             t.take_dirty()
         };
         if !changes.is_empty() {
-            let _ = save_changes(&self.db, changes);
+            let _ = save_changes(&self.db, changes, None);
         }
     }
 }
 
-/// Names in `dir` that the walk rules admit (hidden and ignored ones are not).
-fn list_admitted(dir: &Path) -> HashSet<OsString> {
-    ignore::WalkBuilder::new(dir)
-        .max_depth(Some(1))
-        .build()
+/// Names in `dir` that the walk rules admit.
+fn list_admitted(dir: &Path, rules: &Rules) -> HashSet<OsString> {
+    walker(dir, rules, Some(1))
         .flatten()
         .filter(|e| e.depth() == 1)
         .map(|e| e.file_name().to_owned())
         .collect()
 }
 
-/// Everything below `dir` that the walk rules admit, parents before children.
-fn subtree(dir: &Path) -> Vec<(PathBuf, Meta)> {
-    ignore::WalkBuilder::new(dir)
-        .build()
-        .flatten()
-        .filter(|e| e.depth() > 0)
-        .filter_map(|e| {
-            Some((
-                e.path().to_path_buf(),
-                meta_of(&e.metadata().ok()?, e.path()),
-            ))
-        })
-        .collect()
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::folder_index;
-    use std::sync::atomic::AtomicU32;
-
-    struct Dirs {
-        root: PathBuf,
-        idx: PathBuf,
-    }
-
-    impl Dirs {
-        fn new() -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let base = std::env::temp_dir().join(format!(
-                "keel-walkidx-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Relaxed)
-            ));
-            let _ = std::fs::remove_dir_all(&base);
-            let (root, idx) = (base.join("root"), base.join("idx"));
-            std::fs::create_dir_all(&root).unwrap();
-            Self { root, idx }
-        }
-
-        fn file(&self, rel: &str, body: &[u8]) {
-            let p = self.root.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, body).unwrap();
-        }
-
-        fn open(&self) -> WalkIndexSearcher {
-            let s = WalkIndexSearcher::open(self.idx.clone(), vec![self.root.clone()]).unwrap();
-            assert!(s.wait_ready(Duration::from_secs(60)));
-            s
-        }
-
-        fn sample() -> Self {
-            let d = Self::new();
-            d.file("docs/Report.PDF", b"12345");
-            d.file("docs/report notes.txt", b"x");
-            d.file("docs/old/report.pdf", b"x");
-            d.file("src/main.rs", b"fn main(){}");
-            d.file(".hidden/report.secret", b"x");
-            d
-        }
-    }
-
-    impl Drop for Dirs {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(self.root.parent().unwrap());
-        }
-    }
-
-    fn q(text: &str) -> Query {
-        Query {
-            text: text.into(),
-            ..Query::default()
-        }
-    }
-
-    fn names(s: &WalkIndexSearcher, query: &Query) -> Vec<String> {
-        s.query(query)
-            .unwrap()
-            .iter()
-            .map(|h| h.path.name().to_owned())
-            .collect()
-    }
-
-    /// Polls until the query's names equal `want` (the watcher batches for 500 ms).
-    fn settle(s: &WalkIndexSearcher, query: &Query, want: &[&str]) {
-        let end = Instant::now() + Duration::from_secs(30);
-        loop {
-            let got = s.query(query).map(|_| names(s, query)).unwrap_or_default();
-            if got == want && s.available() {
-                return;
-            }
-            assert!(Instant::now() < end, "wanted {want:?}, still {got:?}");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    #[test]
-    fn substring_glob_regex_and_filters() {
-        let d = Dirs::sample();
-        let s = d.open();
-        // Exact name first, then prefix, then the rest; hidden entries are skipped.
-        assert_eq!(
-            names(&s, &q("report")),
-            ["report.pdf", "report notes.txt", "Report.PDF"]
-        );
-        assert_eq!(names(&s, &q("*.pdf")), ["report.pdf", "Report.PDF"]);
-        assert_eq!(names(&s, &q("report* pdf")), ["report.pdf", "Report.PDF"]);
-        let re = Query {
-            regex: true,
-            ..q(r"^report\s")
-        };
-        assert_eq!(names(&s, &re), ["report notes.txt"]);
-        let bad = Query {
-            regex: true,
-            ..q("(")
-        };
-        assert!(s.query(&bad).is_err());
-        let case = Query {
-            match_case: true,
-            ..q("Report")
-        };
-        assert_eq!(names(&s, &case), ["Report.PDF"]);
-        assert_eq!(names(&s, &q(r"regex:main\.rs$")), ["main.rs"]);
-        assert_eq!(names(&s, &q("folder:o")), ["old", "docs"]);
-        let within = format!(
-            "report in:\"{}\"",
-            d.root.join("docs").join("old").display()
-        );
-        assert_eq!(names(&s, &q(&within)), ["report.pdf"]);
-        let capped = Query {
-            max: 2,
-            ..q("report")
-        };
-        assert_eq!(names(&s, &capped).len(), 2);
-        // Size and date come from the index, no file system call.
-        let hit = &s.query(&case).unwrap()[0];
-        assert_eq!((hit.size, hit.is_dir), (5, false));
-        assert!(hit.modified.is_some());
-    }
-
-    #[test]
-    fn rename_delete_and_create_show_up_after_the_watcher_batch() {
-        let d = Dirs::sample();
-        let s = d.open();
-        assert!(!s.shared.unwatched.load(Relaxed), "watcher failed to start");
-        let docs = d.root.join("docs");
-        std::fs::rename(docs.join("report notes.txt"), docs.join("minutes.txt")).unwrap();
-        std::fs::remove_file(docs.join("old/report.pdf")).unwrap();
-        d.file("fresh/deep/report-new.md", b"x");
-        settle(&s, &q("report"), &["Report.PDF", "report-new.md"]);
-        settle(&s, &q("minutes"), &["minutes.txt"]);
-        // A renamed folder takes its children along.
-        std::fs::rename(d.root.join("fresh"), d.root.join("renamed")).unwrap();
-        let end = Instant::now() + Duration::from_secs(30);
-        loop {
-            let hits = s.query(&q("report-new")).unwrap();
-            if hits.len() == 1 && hits[0].path.display().contains("renamed") {
-                break;
-            }
-            assert!(Instant::now() < end, "still {:?}", hits.len());
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        std::fs::remove_dir_all(d.root.join("renamed")).unwrap();
-        settle(&s, &q("report-new"), &[]);
-        // Hidden files created later stay out.
-        d.file(".hidden/more.txt", b"x");
-        d.file("late.txt", b"x");
-        settle(&s, &q("txt"), &["minutes.txt", "late.txt"]);
-    }
-
-    #[test]
-    fn restart_loads_the_db_and_rebuild_picks_up_offline_changes() {
-        let d = Dirs::sample();
-        {
-            let s = d.open();
-            d.file("watched.txt", b"x");
-            settle(&s, &q("watched"), &["watched.txt"]);
-            // Let the batch reach the db before closing.
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        std::fs::remove_file(d.root.join("src/main.rs")).unwrap();
-        d.file("added-offline.txt", b"x");
-        let s = d.open();
-        // A fresh db is served as saved; the watcher only sees later changes.
-        assert_eq!(names(&s, &q("watched")), ["watched.txt"]);
-        assert_eq!(names(&s, &q("main.rs")), ["main.rs"]);
-        s.rebuild();
-        settle(&s, &q("main.rs"), &[]);
-        settle(&s, &q("added-offline"), &["added-offline.txt"]);
-        assert!(s.take_ready());
-    }
-
-    #[test]
-    fn a_db_older_than_a_week_rebuilds_on_open() {
-        let d = Dirs::sample();
-        drop(d.open());
-        let db = db_path(&d.idx, &normalize_roots(vec![d.root.clone()]));
-        Connection::open(&db)
-            .unwrap()
-            .execute("UPDATE meta SET value = '1' WHERE key = 'built'", [])
-            .unwrap();
-        d.file("after.txt", b"x");
-        let s = WalkIndexSearcher::open(d.idx.clone(), vec![d.root.clone()]).unwrap();
-        settle(&s, &q("after.txt"), &["after.txt"]);
-    }
-
-    #[test]
-    fn folder_index_lists_folders_only() {
-        let d = Dirs::sample();
-        let s = d.open();
-        let mut rel: Vec<String> = folder_index(&s)
-            .unwrap()
-            .iter()
-            .map(|f| {
-                f.replace('\\', "/")
-                    .rsplit("/root/")
-                    .next()
-                    .unwrap()
-                    .to_owned()
-            })
-            .collect();
-        rel.sort();
-        // No files, no hidden folder, not the root itself.
-        assert_eq!(rel, ["docs", "docs/old", "src"]);
-    }
-
-    #[test]
-    fn status_says_indexing_while_building() {
-        let d = Dirs::sample();
-        let s = d.open();
-        assert_eq!(s.state(), SearchState::Ready);
-        assert_eq!(s.status(), None);
-        s.shared.building.store(true, Relaxed);
-        s.shared.progress.store(1234, Relaxed);
-        assert_eq!(s.status().as_deref(), Some("indexing 1234 files\u{2026}"));
-        s.shared.ready.store(false, Relaxed);
-        assert!(s.query(&q("a")).is_err());
-        assert_eq!(s.state(), SearchState::Indexing { done: 1234 });
-        s.shared.ready.store(true, Relaxed);
-        s.shared.building.store(false, Relaxed);
-    }
-
-    #[test]
-    fn table_remove_reuses_slots_and_round_trips_rows() {
-        let mut t = Table::new(&[PathBuf::from("/r")]);
-        let dir = Meta {
-            is_dir: true,
-            size: 0,
-            mtime: NO_TIME,
-        };
-        let file = Meta {
-            is_dir: false,
-            size: 3,
-            mtime: 7,
-        };
-        let root = t.roots[0].1;
-        let a = t.add(root, "a", dir);
-        let f = t.add(a, "f.txt", file);
-        assert_eq!(
-            t.path_of(f).unwrap(),
-            PathBuf::from("/r").join("a").join("f.txt")
-        );
-        t.remove(a);
-        assert_eq!((t.live, t.lookup(Path::new("/r/a/f.txt"))), (1, None));
-        let b = t.add(root, "b\nb", file);
-        assert!(b == a || b == f, "slot reused");
-        assert_eq!(t.lookup(Path::new("/r/b b")), Some(b));
-        t.compact();
-        assert_eq!(t.search(&compile(&q("b")).unwrap(), 10).len(), 1);
-        let rows: Vec<_> = (0..t.entries.len() as u32)
-            .filter_map(|s| Some((s, t.row(s)?)))
-            .collect();
-        let back = Table::from_rows(&[PathBuf::from("/r")], rows).unwrap();
-        assert_eq!(back.live, t.live);
-        assert_eq!(back.lookup(Path::new("/r/b b")), Some(b));
-    }
-
-    /// `cargo test -p keel-search --release bench -- --ignored --nocapture`
-    /// (`KEEL_BENCH_FILES`, default 100000).
-    #[test]
-    #[ignore]
-    fn bench_synthetic_tree() {
-        let n: usize = std::env::var("KEEL_BENCH_FILES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(100_000);
-        let d = Dirs::new();
-        let start = Instant::now();
-        for i in 0..n {
-            let dir = d.root.join(format!("d{}/s{}", i / 1000, (i / 50) % 20));
-            if i % 50 == 0 {
-                std::fs::create_dir_all(&dir).unwrap();
-            }
-            std::fs::write(dir.join(format!("file{i}-{}.dat", i % 97)), b"x").unwrap();
-        }
-        println!("created {n} files in {:?}", start.elapsed());
-        let start = Instant::now();
-        let s = d.open();
-        println!(
-            "indexed in {:?} ({} entries)",
-            start.elapsed(),
-            s.shared.table.read().live
-        );
-        for text in [
-            "file4242",
-            "*-33.dat",
-            "regex:^file9\\d+-1\\.dat$",
-            "zzzzz",
-            "d7 file1",
-            "a",
-        ] {
-            let mut best = Duration::MAX;
-            let mut count = 0;
-            for _ in 0..20 {
-                let t = Instant::now();
-                count = s.query(&q(text)).unwrap().len();
-                best = best.min(t.elapsed());
-            }
-            println!("query {text:?}: {count} hits, best of 20 {best:?}");
-        }
-        let t = Instant::now();
-        let folders = folder_index(&s).unwrap().len();
-        println!("folder_index: {folders} folders in {:?}", t.elapsed());
-    }
-}
+#[path = "walkindex_tests.rs"]
+mod tests;
