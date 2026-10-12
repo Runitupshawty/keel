@@ -460,9 +460,10 @@ mod sys {
         let lznt1 = std::fs::metadata(path)
             .map(|m| m.file_attributes() & FILE_ATTRIBUTE_COMPRESSED != 0)
             .unwrap_or(false);
+        // Read before the file is opened for writing, which ends WOF compression itself.
+        let wof = action == Action::Uncompress && is_wof(path);
         with_open(path, false, |f| match action {
             Action::Uncompress => {
-                let wof = wof_backed(f);
                 drop_wof(f)?;
                 if lznt1 {
                     set_lznt1(f, false).map_err(|e| anyhow::anyhow!(e.message()))?;
@@ -537,11 +538,14 @@ mod sys {
         if meta.file_attributes() & FILE_ATTRIBUTE_COMPRESSED != 0 {
             return true;
         }
-        meta.is_file()
-            && crate::local::long(path)
-                .ok()
-                .and_then(|l| open_read(&l).ok())
-                .is_some_and(|f| wof_backed(&f))
+        meta.is_file() && is_wof(path)
+    }
+
+    fn is_wof(path: &Path) -> bool {
+        crate::local::long(path)
+            .ok()
+            .and_then(|l| open_read(&l).ok())
+            .is_some_and(|f| wof_backed(&f))
     }
 
     fn open_read(path: &Path) -> std::io::Result<std::fs::File> {
