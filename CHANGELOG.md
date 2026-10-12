@@ -11,6 +11,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - With `KEEL_CONFIG_DIR` set (tests, harnesses, portable runs), Keel still saved the window's size and position in the user's own `app.ron` (`%APPDATA%\Keel\data`, `~/Library/Application Support/Keel`, `~/.local/share/keel`). It is now saved as `app.ron` in `KEEL_CONFIG_DIR`.
 - `keel --version | head -1` (and `keel --check-update` into a reader that stops early) ended with "failed printing to stdout: The pipe is being closed"; output into a closed pipe now stops quietly and the command exits 0, like every other `keel` command's.
 - A crafted legacy Excel workbook (`.xls`) of a few kilobytes could crash Keel or keel-daemon when it was previewed: its reader reserves room for the cells the file claims (a 32-bit row count) and lays out every cell between the first and the last. The preview now checks those claims before the reader opens the file, refusing a workbook that claims more than a full sheet (65,536 rows by 256 columns) as "damaged or too large to preview", and an `.xls` over 32 MiB as too big.
+- `keel daemon stop` said "stopped" as soon as keel-daemon let go of its socket, while it was still closing the library: a `keel daemon start` right after could find the library still open (its new daemon exited at once), and `ps` showed two keel-daemon processes for a moment. `daemon stop` now returns once the library is closed.
+- On Windows, `keel daemon start` with its output piped (`| tee`, a script reading it) did not end until the keel-daemon it started stopped: the daemon inherited the pipe. A daemon started by `keel` (or the window) now inherits none of its standard handles.
 
 ## [0.22.0] - 2026-10-11
 

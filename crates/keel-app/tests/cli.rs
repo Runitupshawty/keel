@@ -154,6 +154,45 @@ fn json_output_is_one_document() {
     );
 }
 
+/// `keel daemon stop` says "stopped" once the daemon has closed its library, not when it
+/// lets go of its socket (it does that first): the library is free the moment the command
+/// ends, so a `daemon start` right after never meets the old daemon. Needs keel-daemon next
+/// to keel (`cargo build -p keel-daemon`); skipped without it.
+#[test]
+fn daemon_stop_waits_until_the_library_is_closed() {
+    let exe = Path::new(env!("CARGO_BIN_EXE_keel"));
+    let daemon = exe.with_file_name(format!("keel-daemon{}", std::env::consts::EXE_SUFFIX));
+    if !daemon.is_file() {
+        eprintln!("skipped: no keel-daemon next to keel (cargo build -p keel-daemon)");
+        return;
+    }
+    let env = env();
+    struct Stop<'a>(&'a Env);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&env);
+    for _ in 0..3 {
+        env.ok(&["daemon", "start"]);
+        let status: Value = serde_json::from_str(&env.ok(&["daemon", "status", "--json"])).unwrap();
+        let library = status["version"]["library"].as_str().unwrap().to_owned();
+        env.ok(&["daemon", "stop"]);
+        let lock = env
+            .data
+            .path()
+            .join("library")
+            .join(&library)
+            .join("library.lock");
+        let file = std::fs::OpenOptions::new().write(true).open(&lock).unwrap();
+        assert!(
+            file.try_lock().is_ok(),
+            "the library is still held after `daemon stop`"
+        );
+    }
+}
+
 /// Mounts belong to keel-daemon: without one, `keel mounts` lists none and `keel mount`
 /// fails (exit 1, one JSON error document) with what to do.
 #[test]
