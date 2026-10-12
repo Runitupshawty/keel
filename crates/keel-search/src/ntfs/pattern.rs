@@ -91,7 +91,10 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     // Match Whole Words and Match Path (shared with the walk index, `terms.rs`).
     let words = terms::word_terms(&literals(&terms), query, &regex)?;
     if query.match_path {
-        let mut path = terms.iter().map(build).collect::<anyhow::Result<Vec<_>>>()?;
+        let mut path = terms
+            .iter()
+            .map(build)
+            .collect::<anyhow::Result<Vec<_>>>()?;
         path.extend(words);
         return Ok(Matcher {
             scan: None,
@@ -317,7 +320,10 @@ mod tests {
         assert_eq!(find("nOtés"), [r"C:\Users\ann\notes.txt"]);
         assert!(with("notés", |q| q.match_diacritics = true).is_empty());
         assert!(find("*.pd").is_empty());
-        assert_eq!(with("*.pd", |q| q.whole_filename_wildcards = false).len(), 3);
+        assert_eq!(
+            with("*.pd", |q| q.whole_filename_wildcards = false).len(),
+            3
+        );
     }
 
     #[test]

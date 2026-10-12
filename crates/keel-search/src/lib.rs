@@ -19,12 +19,12 @@ mod walkindex;
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
 pub use fuzzy::Fuzzy;
-pub use terms::Highlighter;
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
 };
+pub use terms::Highlighter;
 pub use walkindex::{home_root, index_dir as walk_index_dir, WalkIndexSearcher};
 
 use std::path::Path;

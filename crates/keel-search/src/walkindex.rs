@@ -591,7 +591,10 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
         .collect();
     let words = terms::word_terms(&literals, query, &regex)?;
     if query.match_path {
-        let mut path = terms.iter().map(build).collect::<anyhow::Result<Vec<_>>>()?;
+        let mut path = terms
+            .iter()
+            .map(build)
+            .collect::<anyhow::Result<Vec<_>>>()?;
         path.extend(words);
         return Ok(Matcher {
             scan: None,
@@ -1319,10 +1322,7 @@ mod tests {
         };
         assert_eq!(names(&s, &q("note")), ["report notes.txt"]);
         assert!(with("note", |q| q.whole_word = true).is_empty());
-        assert_eq!(
-            with("notes", |q| q.whole_word = true),
-            ["report notes.txt"]
-        );
+        assert_eq!(with("notes", |q| q.whole_word = true), ["report notes.txt"]);
         assert_eq!(names(&s, &q("old")), ["old"]);
         assert_eq!(with("old", |q| q.match_path = true), ["old", "report.pdf"]);
         assert_eq!(
