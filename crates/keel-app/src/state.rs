@@ -493,7 +493,8 @@ impl AppState {
             return;
         }
         let index_before = s.search_index.clone();
-        self.search_page.offline = (self.searcher.as_ref()).map_or_else(Vec::new, |x| x.offline_roots());
+        self.search_page.offline =
+            (self.searcher.as_ref()).map_or_else(Vec::new, |x| x.offline_roots());
         let theme_changed = crate::settings::window(
             ctx,
             &mut self.settings_open,
@@ -539,7 +540,12 @@ impl AppState {
     /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
     /// load may block).
     pub fn load_searcher(&self, searcher: Option<Arc<dyn Searcher>>) {
-        worker::spawn_searcher(searcher, self.settings.search_index.clone(), self.tx.clone(), self.ctx.clone());
+        worker::spawn_searcher(
+            searcher,
+            self.settings.search_index.clone(),
+            self.tx.clone(),
+            self.ctx.clone(),
+        );
     }
 
     pub fn tab(&self, pane: usize) -> &Tab {

@@ -197,7 +197,10 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
         {
             s.search_index = draft.clone();
         }
-        if ui.add_enabled(edited, egui::Button::new("Revert")).clicked() {
+        if ui
+            .add_enabled(edited, egui::Button::new("Revert"))
+            .clicked()
+        {
             draft = s.search_index.clone();
             page.texts.clear();
         }
