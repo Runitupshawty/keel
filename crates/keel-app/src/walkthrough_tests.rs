@@ -217,14 +217,24 @@ fn tab_pos(h: &H, title: &str) -> Pos2 {
     *tabs.first().unwrap_or_else(|| panic!("no tab {title:?}"))
 }
 
-/// A part of the path bar (pane 0: leftmost).
+/// A part of the path bar (pane 0: leftmost): the pane's own crumbs, else (Finder-style
+/// chrome) the path bar along the bottom of the window, whose buttons read "NAME: PATH".
 fn crumb(h: &H, name: &str) -> Pos2 {
     let crumbs: Vec<Pos2> = in_panes(h, name, 24.0)
         .into_iter()
         .filter(|p| p.y < 50.0)
         .collect();
-    *crumbs
-        .first()
+    if let Some(at) = crumbs.first() {
+        return *at;
+    }
+    let prefix = format!("{name}: ");
+    let mut bar: Vec<Pos2> = h
+        .query_all_by_label_contains(&prefix)
+        .filter(|n| n.label().is_some_and(|l| l.starts_with(&prefix)))
+        .map(|n| center_of(&n))
+        .collect();
+    bar.sort_by(|a, b| a.x.total_cmp(&b.x));
+    *bar.first()
         .unwrap_or_else(|| panic!("no crumb {name:?}"))
 }
 
@@ -1664,6 +1674,7 @@ fn settings_search_applies_folders_and_excludes() {
     let root = demo();
     let mut h = app(&root.join("Documents"), &root.join("Pictures"));
     key(&mut h, CMD, Key::Comma);
+    h.run_steps(3); // the window sizes itself over its first frames
     click_last(&mut h, "Search index");
     click_last(&mut h, "New folder");
     type_text(&mut h, "/data/share");
