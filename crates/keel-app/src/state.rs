@@ -2382,6 +2382,18 @@ impl AppState {
             Action::Library(cmd) => self.library_cmd(p, cmd),
             Action::Devices(cmd) => self.devices_cmd(p, cmd),
             Action::Mount(cmd) => self.mount_cmd(cmd),
+            // --- Task 65 ---
+            Action::ToggleSidebar => self.settings.show_sidebar = !self.settings.show_sidebar,
+            Action::CustomizeToolbar => crate::toolbar::open_customize(&self.ctx),
+            Action::ToolbarSearch(text) => {
+                self.run(p, Action::Search);
+                let pane = &mut self.panes[p];
+                let active = pane.active;
+                if let TabKind::Search { query, due, .. } = &mut pane.tabs[active].kind {
+                    *query = text;
+                    *due = Some(Instant::now());
+                }
+            }
             Action::FocusTab { pane, tab } => {
                 if (pane == 0 || (pane == 1 && self.dual)) && tab < self.panes[pane].tabs.len() {
                     self.active = pane;

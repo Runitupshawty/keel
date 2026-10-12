@@ -137,6 +137,12 @@ fn global_items() -> Vec<Item> {
         ("Calculate sizes", "", CalculateSizes { fresh: true }),
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
+        // --- Task 65 ---
+        ("Grid view", "", View(crate::pane::ViewMode::Grid)),
+        ("Columns view", "", View(crate::pane::ViewMode::Columns)),
+        ("Media view", "", View(crate::pane::ViewMode::Media)),
+        ("Show / hide sidebar", "Ctrl+Alt+S", ToggleSidebar),
+        ("Customize toolbar…", "", CustomizeToolbar),
         ("Settings", "Ctrl+,", Settings),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),

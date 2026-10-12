@@ -35,6 +35,10 @@ pub struct Settings {
     pub dual: bool,
     pub preview_open: bool,
     pub sidebar_width: f32,
+    /// Task 65: the sidebar is shown (Ctrl+Alt+S, the toolbar's sidebar button).
+    pub show_sidebar: bool,
+    /// Task 65: the Finder style's toolbar (Customize Toolbar).
+    pub toolbar: crate::toolbar::Config,
     pub preview_width: f32,
     /// Files larger than this are not previewed (keel-preview's own 64 MB cap still applies).
     pub max_preview_mb: u64,
@@ -198,6 +202,8 @@ impl Default for Settings {
             dual: true,
             preview_open: false,
             sidebar_width: 210.0,
+            show_sidebar: true,
+            toolbar: Default::default(),
             preview_width: 380.0,
             max_preview_mb: keel_preview::MAX_PREVIEW_BYTES / MB,
             terminal_shell: String::new(),
@@ -657,6 +663,25 @@ fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
                 Accent::System => "The accent color of the system (blue where it has none)",
                 Accent::Theme => "The color theme's accent",
                 Accent::Custom(_) => "Made darker or lighter where it would be hard to read",
+            });
+            ui.end_row();
+            // Task 65: the Finder style's toolbar.
+            ui.label("Toolbar");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut s.toolbar.labels, false, "Icon only");
+                ui.radio_value(&mut s.toolbar.labels, true, "Icon and text");
+                if ui.button("Customize toolbar…").clicked() {
+                    crate::toolbar::open_customize(ui.ctx());
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.weak(if cfg!(target_os = "macos") {
+                "Finder-style puts the toolbar in the title bar; a style change moves the title bar at the next start"
+            } else if cfg!(windows) {
+                "Finder-style puts the toolbar in the title bar, with the window buttons at its right"
+            } else {
+                "Finder-style shows the toolbar under the window manager's title bar"
             });
             ui.end_row();
         });

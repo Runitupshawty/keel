@@ -238,11 +238,22 @@ pub enum Action {
     Devices(crate::devices::DevCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
+    // --- Task 65 ---
+    /// Show / hide the sidebar (Ctrl+Alt+S, the toolbar's sidebar button).
+    ToggleSidebar,
+    /// The Customize Toolbar dialog (`toolbar.rs`).
+    CustomizeToolbar,
+    /// The toolbar's search field: a search tab for this query, run now.
+    ToolbarSearch(String),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
 const CMD_SHIFT: Modifiers = Modifiers {
     shift: true,
+    ..Modifiers::COMMAND
+};
+const CMD_ALT: Modifiers = Modifiers {
+    alt: true,
     ..Modifiers::COMMAND
 };
 
@@ -274,6 +285,8 @@ fn label_for(text: &str, mac: bool) -> String {
 /// unrequested Shift/Alt when matching.
 const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::Backtick, Action::ToggleTerminal),
+    // Task 65: show / hide the sidebar (Cmd+Option+S on macOS).
+    (CMD_ALT, Key::S, Action::ToggleSidebar),
     (CMD_SHIFT, Key::P, Action::Palette),
     (CMD_SHIFT, Key::D, Action::ToggleDual),
     (CMD_SHIFT, Key::N, Action::NewFolder),
@@ -314,6 +327,9 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (Modifiers::ALT, Key::ArrowUp, Action::Up),
     (Modifiers::ALT, Key::ArrowLeft, Action::Back),
     (Modifiers::ALT, Key::ArrowRight, Action::Forward),
+    // Task 65: Finder's back / forward.
+    (CMD, Key::OpenBracket, Action::Back),
+    (CMD, Key::CloseBracket, Action::Forward),
     (Modifiers::NONE, Key::Backspace, Action::Backspace),
     (CMD, Key::F2, Action::BulkRename),
     (Modifiers::NONE, Key::F2, Action::Rename),

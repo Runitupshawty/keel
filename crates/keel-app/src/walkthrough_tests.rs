@@ -2120,7 +2120,10 @@ fn window_sizes() {
             boot(
                 &root.join("Documents"),
                 &root.join("Pictures"),
-                Default::default(),
+                crate::settings::Settings {
+                    style: crate::design::Style::Classic,
+                    ..Default::default()
+                },
             ),
             size,
         );
@@ -3386,4 +3389,90 @@ fn appearance_style_finder_and_classic() {
     click(&mut h, "Finder-style");
     h.run_steps(2);
     assert_eq!(ctx.style().spacing.interact_size.y, FINDER.interact_height);
+}
+
+/// Task 65: the Finder style's toolbar. The sidebar button and Ctrl+Alt+S hide and show
+/// the sidebar, the toolbar arrows and Ctrl+[ / Ctrl+] go back and forward, the view
+/// segments switch the active pane's view, the search field opens a search tab, and the
+/// panes leave out the arrows and view buttons the toolbar has (until Customize Toolbar
+/// removes them from it).
+#[test]
+fn finder_toolbar() {
+    use crate::toolbar::Item;
+    const CMD_ALT: Modifiers = Modifiers {
+        alt: true,
+        ..Modifiers::COMMAND
+    };
+    let root = demo();
+    let docs = root.join("Documents");
+    let new_profile = boot(&docs, &root.join("Pictures"), Default::default());
+    let mut h = app_with(new_profile, SIZE);
+    h.run_steps(2);
+    assert_eq!(s(&h).settings.style, crate::design::Style::Finder);
+    for label in [
+        "Hide Sidebar",
+        "Back",
+        "Forward",
+        "View as Icons",
+        "View as List",
+        "View as Columns",
+        "Group and Sort",
+        "Share",
+        "Tags",
+        "Action",
+        "Search",
+    ] {
+        assert!(has(&h, label), "no {label:?} in the toolbar");
+    }
+    assert!(!has(&h, "Back (Alt+Left)") && !has(&h, "Grid"), "not twice");
+    shot(&mut h, "finder-toolbar");
+
+    click(&mut h, "Hide Sidebar");
+    assert!(!s(&h).settings.show_sidebar);
+    assert!(has(&h, "Show Sidebar"));
+    key(&mut h, CMD_ALT, Key::S);
+    assert!(s(&h).settings.show_sidebar, "Ctrl+Alt+S");
+
+    sm(&mut h).run(0, Action::Navigate(VPath::local(docs.join("Projects"))));
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &docs.join("Projects"))));
+    key(&mut h, CMD, Key::OpenBracket);
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &docs)), "Ctrl+[");
+    key(&mut h, CMD, Key::CloseBracket);
+    let projects = docs.join("Projects");
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &projects)), "Ctrl+]");
+    click(&mut h, "Back");
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &docs)), "toolbar back");
+    click(&mut h, "Forward");
+    assert!(
+        wait(&mut h, 10, &|s| dir_is(s, 0, &projects)),
+        "toolbar forward"
+    );
+
+    click(&mut h, "View as Icons");
+    assert_eq!(s(&h).panes[0].view, ViewMode::Grid);
+    click(&mut h, "View as List");
+    assert_eq!(s(&h).panes[0].view, ViewMode::Details);
+
+    click(&mut h, "Search");
+    h.run_steps(2);
+    type_text(&mut h, "readme");
+    key(&mut h, NONE, Key::Enter);
+    let searching = |s: &AppState| matches!(&s.tab(0).kind, crate::tab::TabKind::Search { query, .. } if query == "readme");
+    assert!(wait(&mut h, 10, &searching), "a search tab for the query");
+
+    sm(&mut h).run(0, Action::CustomizeToolbar);
+    h.run_steps(2);
+    click_last(&mut h, "Remove View");
+    h.run_steps(2);
+    assert!(!s(&h).settings.toolbar.items.contains(&Item::Views));
+    assert!(has(&h, "Grid"), "the panes' view buttons are back");
+    click_last(&mut h, "Icon and Text");
+    assert!(s(&h).settings.toolbar.labels);
+    shot(&mut h, "finder-toolbar-customize");
+    click_last(&mut h, "Restore Default");
+    h.run_steps(2);
+    assert_eq!(s(&h).settings.toolbar, crate::toolbar::Config::default());
+    click_last(&mut h, "Done");
+    h.run_steps(2);
+    assert!(!has(&h, "Restore Default"), "closed");
 }
