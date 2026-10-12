@@ -23,6 +23,8 @@ pub enum Reader {
     Text(TextField),
     Hash(HashAlgo),
     Audio(AudioField),
+    /// The Recycle Bin's `$I` record or the Trash's `.trashinfo` file.
+    DateDeleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +142,7 @@ impl Function {
             Reader::Text(_) => "text stats",
             Reader::Hash(_) => "hash (streamed)",
             Reader::Audio(_) => "ID3v2/ID3v1, MPEG, FLAC, WAV",
+            Reader::DateDeleted => "Recycle Bin `$I` record, Trash `.trashinfo`",
         }
     }
 }
@@ -234,7 +237,7 @@ pub static FUNCTIONS: &[Function] = &[
     none("details", FileInfo),
     // Dates held by properties (the file system dates come from the index).
     none("date-run", Date),
-    win("date-deleted", Date, "System.Recycle.DateDeleted"),
+    f("date-deleted", &[], Date, Reader::DateDeleted, Some("System.Recycle.DateDeleted"), Same),
     win("date-saved", Date, "System.Document.DateSaved"),
     win("date-printed", Date, "System.Document.DatePrinted"),
     win("date-received", Date, "System.Message.DateReceived"),

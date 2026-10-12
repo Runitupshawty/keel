@@ -278,3 +278,74 @@ fn display_paths() {
     );
     assert_eq!(display_path(Path::new("relative/t")), "relative/t");
 }
+
+#[test]
+fn content_match_property() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = write(
+        dir.path(),
+        "notes.txt",
+        &fx::encode("Hello wide world\n", fx::FxEncoding::Utf16LeBom),
+    );
+    let yes = Prop::Bool(true);
+    let no = Prop::Bool(false);
+    assert_eq!(get(&p, "content-match:WIDE").unwrap(), yes);
+    assert_eq!(get(&p, "content-match:case:WIDE").unwrap(), no);
+    assert_eq!(get(&p, "utf8content-match:wide").unwrap(), no);
+    assert_eq!(get(&p, "utf16content-match:ww:wide").unwrap(), yes);
+    assert_eq!(get(&p, "utf16content-match:ww:wid").unwrap(), no);
+    assert_eq!(get(&p, "Content-Match:hex:ff fe 48 00").unwrap(), yes);
+    assert_eq!(get(&p, "content-match:regex:^hello").unwrap(), yes);
+    assert_eq!(get(&p, "content-match:regex:each-line:^world").unwrap(), no);
+    assert!(matches!(
+        get(&p, "content-match:regex:("),
+        Err(Error::Pattern(content::PatternError::Regex(_)))
+    ));
+    assert!(matches!(
+        get(&p, "content-match:"),
+        Err(Error::Pattern(content::PatternError::Empty))
+    ));
+    assert_eq!(get(dir.path(), "content-match:x").unwrap(), Prop::Unknown);
+    assert!(matches!(
+        get(&dir.path().join("missing"), "content-match:x"),
+        Err(Error::Io(_))
+    ));
+    // The library's extracted text is searched instead of the bytes.
+    let opts = Options::default();
+    let mut props = FileProps::new(&p, &opts).with_text("from the library");
+    assert_eq!(props.get("content-match:library").unwrap(), yes);
+    assert_eq!(props.get("content-match:wide").unwrap(), no);
+    assert_eq!(props.get("utf16content-match:wide").unwrap(), yes);
+    // Limits and cancel through the options.
+    let budget = content::Budget::new(
+        content::Limits {
+            max_file_bytes: 6,
+            ..content::Limits::default()
+        },
+        Cancel::default(),
+        false,
+    );
+    let capped = Options {
+        content: Some(budget.clone()),
+        ..Options::default()
+    };
+    assert_eq!(
+        get_with(&p, "content-match:world", &capped).unwrap(),
+        Prop::Unknown
+    );
+    assert_eq!(get_with(&p, "content-match:he", &capped).unwrap(), yes);
+    assert_eq!(budget.bytes_read(), 12);
+    let cancelled = Options::default();
+    cancelled.cancel.cancel();
+    assert!(matches!(
+        get_with(&p, "content-match:world", &cancelled),
+        Err(Error::Cancelled)
+    ));
+    assert!(content_match_spec("binary-match:x").is_none());
+    assert!(content_match_spec("artist").is_none());
+    assert!(content_match_spec("content:x").is_none());
+    assert_eq!(
+        content_match_spec("ansicontent-match:a:b").unwrap().pattern,
+        "a:b"
+    );
+}

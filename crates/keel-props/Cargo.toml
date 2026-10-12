@@ -21,8 +21,12 @@ sha1.workspace = true
 sha2.workspace = true
 crc32fast = "1"
 crc = "3"
-# ANSI strings in .lnk files and ID3v1 tags (Windows-1252).
+# ANSI strings in .lnk files and ID3v1 tags (Windows-1252); content search decoding.
 encoding_rs = "0.8"
+# Content search patterns (bounded size, linear time).
+regex.workspace = true
+# Local deletion times in freedesktop.org .trashinfo files.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_UI_Shell_PropertiesSystem"] }

@@ -11,12 +11,19 @@
 //! content is not read and the property system is asked only for properties it already has,
 //! unless [`Options::allow_recall`] is set.
 //!
+//! Content search (`content:` and its encodings, `binary:`, `hex:`) is the [`content`]
+//! module's [`content::Matcher`], also reachable as a property: `content-match:<pattern>`
+//! is yes, no or unknown. [`soundex`] matches names by sound and [`trash`] reads when a
+//! Recycle Bin or Trash item was deleted (`date-deleted:`).
+//!
 //! ```no_run
 //! let artist = keel_props::get(std::path::Path::new("song.mp3"), "artist")?;
+//! let says_hello = keel_props::get(std::path::Path::new("notes.txt"), "content-match:ww:hello")?;
 //! # Ok::<(), keel_props::Error>(())
 //! ```
 
 pub mod audio;
+pub mod content;
 /// Generated test files (tests and fuzz seeds).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -30,7 +37,9 @@ pub mod hash;
 pub mod lnk;
 pub mod pe;
 pub mod signature;
+pub mod soundex;
 pub mod text;
+pub mod trash;
 mod value;
 #[cfg(windows)]
 pub mod winprops;
@@ -60,6 +69,8 @@ pub enum Error {
     UnknownProperty(String),
     /// The read was cancelled through [`Options::cancel`].
     Cancelled,
+    /// A `content-match:` pattern that cannot be searched for.
+    Pattern(content::PatternError),
 }
 
 impl fmt::Display for Error {
@@ -69,6 +80,7 @@ impl fmt::Display for Error {
             Error::UnknownFunction(n) => write!(f, "unknown property function: {n}"),
             Error::UnknownProperty(n) => write!(f, "unknown property: {n}"),
             Error::Cancelled => f.write_str("cancelled"),
+            Error::Pattern(e) => write!(f, "{e}"),
         }
     }
 }
@@ -77,6 +89,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Io(e) => Some(e),
+            Error::Pattern(e) => Some(e),
             _ => None,
         }
     }
@@ -116,6 +129,10 @@ pub struct Options {
     pub allow_recall: bool,
     /// Ask the Windows Property System (Windows only). Default true.
     pub system: bool,
+    /// The query-wide limits and totals of `content-match:` reads. Default `None`: each
+    /// read gets [`content::Limits::default`], [`Options::cancel`] and
+    /// [`Options::allow_recall`].
+    pub content: Option<content::Budget>,
 }
 
 impl Default for Options {
@@ -126,12 +143,14 @@ impl Default for Options {
             max_hash_bytes: u64::MAX,
             allow_recall: false,
             system: true,
+            content: None,
         }
     }
 }
 
 /// The property `name` of the file at `path`: an Everything function name (`artist`,
-/// `sha256:`, `width`; see [`FUNCTIONS`]) or, on Windows, a canonical property name
+/// `sha256:`, `width`; see [`FUNCTIONS`]), a content search (`content-match:<pattern>`, see
+/// [`content_match_spec`]) or, on Windows, a canonical property name
 /// (`System.Photo.FNumber`).
 pub fn get(path: &Path, name: &str) -> Result<Prop, Error> {
     get_with(path, name, &Options::default())
@@ -152,6 +171,7 @@ pub struct FileProps<'a> {
     pe: Option<Option<pe::VersionInfo>>,
     text: Option<Option<text::TextStats>>,
     hashes: HashMap<HashAlgo, String>,
+    extracted: Option<&'a str>,
 }
 
 /// Bytes read for `.url` files.
@@ -168,11 +188,22 @@ impl<'a> FileProps<'a> {
             pe: None,
             text: None,
             hashes: HashMap::new(),
+            extracted: None,
         }
+    }
+
+    /// The text a library source extracted from this file: `content-match:` (automatic
+    /// encoding) searches it instead of the file's bytes.
+    pub fn with_text(mut self, text: &'a str) -> Self {
+        self.extracted = Some(text);
+        self
     }
 
     /// See [`get`].
     pub fn get(&mut self, name: &str) -> Result<Prop, Error> {
+        if let Some(spec) = content_match_spec(name) {
+            return self.content_match(spec);
+        }
         if let Some(f) = functions::lookup(name) {
             // A broken symlink still has a target: only the shortcut reader may skip this.
             if f.reader != Reader::ShortcutTarget {
@@ -262,7 +293,23 @@ impl<'a> FileProps<'a> {
             Reader::Text(field) => self.text_field(field)?,
             Reader::Hash(algo) => self.hash(algo)?,
             Reader::Audio(field) => self.audio_field(field)?,
+            Reader::DateDeleted => trash::deleted(&self.path)?
+                .and_then(|d| d.deleted)
+                .map_or(Prop::Unknown, Prop::Date),
         })
+    }
+
+    fn content_match(&mut self, spec: content::Spec) -> Result<Prop, Error> {
+        let m = content::Matcher::new(spec).map_err(Error::Pattern)?;
+        let budget = match &self.opts.content {
+            Some(b) => b.clone(),
+            None => content::Budget::new(
+                content::Limits::default(),
+                self.opts.cancel.clone(),
+                self.opts.allow_recall,
+            ),
+        };
+        Ok(m.match_file(&self.path, self.extracted, &budget)?.to_prop())
     }
 
     fn shortcut_target(&mut self) -> Result<Prop, Error> {
@@ -467,6 +514,19 @@ impl<'a> FileProps<'a> {
     fn system(&mut self, _canonical: &str, _conv: Conv) -> Result<Prop, Error> {
         Ok(Prop::Unknown)
     }
+}
+
+/// The search a `content-match:` property name asks for: `content-match:` (automatic
+/// encoding), `utf8content-match:`, `utf16content-match:`, `utf16becontent-match:` or
+/// `ansicontent-match:`, then [`content::Spec::parse`]'s modifiers and the pattern
+/// (`content-match:case:regex:^fn main`, `content-match:hex:50 4b 03 04`). `None` for other
+/// names.
+pub fn content_match_spec(name: &str) -> Option<content::Spec> {
+    let (func, rest) = name.trim_start().split_once(':')?;
+    let func = func.to_ascii_lowercase();
+    let enc = content::Encoding::from_function(func.strip_suffix("-match")?)
+        .filter(|e| !matches!(e, content::Encoding::Binary | content::Encoding::Hex))?;
+    Some(content::Spec::parse(rest, enc))
 }
 
 /// Applies a function's unit conversion to a Windows property value.

@@ -453,3 +453,72 @@ pub fn wav() -> Vec<u8> {
     b.extend_from_slice(&chunks);
     b
 }
+
+/// How [`encode`] writes text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16LeBom,
+    /// UTF-16LE without a byte order mark (found by the UTF-16 check).
+    Utf16Le,
+    Utf16BeBom,
+    /// Windows-1252.
+    Ansi,
+}
+
+impl FxEncoding {
+    pub const ALL: [FxEncoding; 6] = [
+        FxEncoding::Utf8,
+        FxEncoding::Utf8Bom,
+        FxEncoding::Utf16LeBom,
+        FxEncoding::Utf16Le,
+        FxEncoding::Utf16BeBom,
+        FxEncoding::Ansi,
+    ];
+}
+
+/// `text` in an encoding, as a text file holds it.
+pub fn encode(text: &str, enc: FxEncoding) -> Vec<u8> {
+    let le = |bom: bool| -> Vec<u8> {
+        let bom = bom.then_some(0xfeff);
+        bom.into_iter()
+            .chain(text.encode_utf16())
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    match enc {
+        FxEncoding::Utf8 => text.as_bytes().to_vec(),
+        FxEncoding::Utf8Bom => [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
+        FxEncoding::Utf16LeBom => le(true),
+        FxEncoding::Utf16Le => le(false),
+        FxEncoding::Utf16BeBom => std::iter::once(0xfeff)
+            .chain(text.encode_utf16())
+            .flat_map(u16::to_be_bytes)
+            .collect(),
+        FxEncoding::Ansi => encoding_rs::WINDOWS_1252.encode(text).0.into_owned(),
+    }
+}
+
+/// A Windows Recycle Bin `$I` record: version 1 (path in 260 UTF-16 units) or 2 (counted
+/// path); any other version gets version 2's layout.
+pub fn recycle_info(version: u64, original: &str, size: u64, filetime: u64) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&version.to_le_bytes());
+    b.extend_from_slice(&size.to_le_bytes());
+    b.extend_from_slice(&filetime.to_le_bytes());
+    let path = utf16z(original);
+    if version == 1 {
+        b.extend_from_slice(&path);
+        b.resize(24 + 520, 0);
+    } else {
+        b.extend_from_slice(&((path.len() / 2) as u32).to_le_bytes());
+        b.extend_from_slice(&path);
+    }
+    b
+}
+
+/// A freedesktop.org `.trashinfo` file.
+pub fn trash_info(path: &str, date: &str) -> Vec<u8> {
+    format!("[Trash Info]\nPath={path}\nDeletionDate={date}\n").into_bytes()
+}

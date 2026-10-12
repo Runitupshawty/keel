@@ -4982,11 +4982,13 @@ dependencies = [
 name = "keel-props"
 version = "0.22.0"
 dependencies = [
+ "chrono",
  "crc",
  "crc32fast",
  "encoding_rs",
  "keel-vfs",
  "md-5",
+ "regex",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "tempfile",

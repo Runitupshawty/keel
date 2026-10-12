@@ -39,6 +39,60 @@ pub fn audio_tags(data: &[u8]) {
     crate::audio::vorbis_comments(data, &mut info);
 }
 
+/// Content search over any bytes: the first byte picks the encoding (bits 0-2), `case:`
+/// (3), `whole-words:` (4), `regex:` (5) and the line mode (6-7); the bytes up to the next
+/// NUL are the pattern (at most 64), the rest is the file.
+pub fn content_match(data: &[u8]) {
+    use crate::content::{parse_hex, Budget, Encoding as E, Limits, Lines, Matcher, Spec};
+    let Some((&flags, rest)) = data.split_first() else {
+        return;
+    };
+    let (pattern, body) = match rest.iter().position(|&b| b == 0) {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => (rest, &[][..]),
+    };
+    let pattern = String::from_utf8_lossy(&pattern[..pattern.len().min(64)]);
+    let encodings = [
+        E::Auto,
+        E::Utf8,
+        E::Utf16Le,
+        E::Utf16Be,
+        E::Ansi,
+        E::Binary,
+        E::Hex,
+    ];
+    let mut spec = Spec::new(pattern.as_ref(), encodings[usize::from(flags & 7) % 7]);
+    spec.case = flags & 8 != 0;
+    spec.whole_words = flags & 16 != 0;
+    spec.regex = flags & 32 != 0;
+    spec.lines = match flags >> 6 {
+        0 => Lines::Whole,
+        1 => Lines::MultiLine,
+        _ => Lines::EachLine,
+    };
+    let _ = parse_hex(&pattern);
+    let _ = Spec::parse(&pattern, spec.encoding);
+    if let Ok(m) = Matcher::new(spec) {
+        let _ = m.match_reader(body, &Budget::default());
+        let _ = m.match_text(&String::from_utf8_lossy(body), &Budget::default());
+        let small = Limits {
+            max_file_bytes: (body.len() / 2) as u64,
+            ..Limits::default()
+        };
+        let _ = m.match_reader(body, &Budget::new(small, crate::Cancel::default(), false));
+    }
+}
+
+/// A Windows Recycle Bin `$I` record.
+pub fn recycle_info(data: &[u8]) {
+    let _ = crate::trash::parse_recycle_info(data);
+}
+
+/// A freedesktop.org `.trashinfo` file.
+pub fn trash_info(data: &[u8]) {
+    let _ = crate::trash::parse_trash_info(data);
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -62,11 +116,25 @@ mod tests {
     fn fuzz_audio_tags() {
         run("audio_tags", super::audio_tags);
     }
+    #[test]
+    fn fuzz_content_match() {
+        run("content_match", super::content_match);
+    }
+    #[test]
+    fn fuzz_recycle_info() {
+        run("recycle_info", super::recycle_info);
+    }
+    #[test]
+    fn fuzz_trash_info() {
+        run("trash_info", super::trash_info);
+    }
 
     /// The committed seeds are the generated fixtures (`KEEL_WRITE_CORPUS=1` rewrites them).
     #[test]
     fn corpus_seeds_match_fixtures() {
         use crate::fixtures as fx;
+        /// 2021-06-15T10:20:30Z.
+        const FILETIME: u64 = 132_682_260_300_000_000;
         let lnk_spec = fx::LnkSpec {
             local_base_path: Some(r"C:\Tools\"),
             suffix: "app.exe",
@@ -103,6 +171,36 @@ mod tests {
                 "audio_tags",
                 "id3v1.mp3",
                 fx::id3v1("Title", "Artist", "Album", "1999", 7, 13),
+            ),
+            (
+                "content_match",
+                "utf16-auto.bin",
+                [
+                    b"\0caf\xc3\xa9\0".as_slice(),
+                    &fx::encode("Caf\u{e9} au lait\n", fx::FxEncoding::Utf16LeBom),
+                ]
+                .concat(),
+            ),
+            (
+                "content_match",
+                "regex-each-line.bin",
+                b"\xa0^b.t\0alpha\r\nbeta\n".to_vec(),
+            ),
+            ("content_match", "hex.bin", b"\x0650 4b\0xxPKyy".to_vec()),
+            (
+                "recycle_info",
+                "v1.bin",
+                fx::recycle_info(1, r"C:\Data\a.txt", 10, FILETIME),
+            ),
+            (
+                "recycle_info",
+                "v2.bin",
+                fx::recycle_info(2, r"C:\Data\report.docx", 12_345, FILETIME),
+            ),
+            (
+                "trash_info",
+                "basic.trashinfo",
+                fx::trash_info("/tmp/a%20b.txt", "2021-06-15T10:20:30"),
             ),
         ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
