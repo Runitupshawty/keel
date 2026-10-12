@@ -8,7 +8,10 @@
 //!   `/rpc` is refused), so it cannot leak through history, referrers or logs;
 //! - `/file/<token>`: a download made by `file.get`, valid once for 60 seconds;
 //! - `POST /share`: the PWA's Web Share Target; the files are parked until the signed-in
-//!   client claims them (`crate::share`). The only request that is not a `GET`.
+//!   client claims them (`crate::share`). The only request that is not a `GET`;
+//! - `/everything` (and `/` with Everything's parameters) and `/everything/file`: the
+//!   system search for tools written for Everything's HTTP server (`crate::everything`),
+//!   signed in with the token or the HTTP login on every request.
 //!
 //! Every answer is `no-store` with `Referrer-Policy: no-referrer` and a CSP that allows
 //! only this origin (no CDN, no external fonts; the manifest and the service worker from
@@ -21,6 +24,7 @@
 //! `ws::AUTH_MAX` bytes) and at most `MAX_PER_IP` come from one remote address. No TLS:
 //! put a remote bind behind a TLS proxy or a private network (a tailnet).
 
+use crate::everything;
 use crate::server::Shared;
 use crate::ws;
 use std::collections::HashMap;
@@ -176,6 +180,9 @@ pub(crate) fn serve(
             }
         })?;
     tracing::info!("web client on http://{bound}/");
+    if !bound.ip().is_loopback() {
+        tracing::warn!("{}", everything::UNENCRYPTED);
+    }
     Ok(bound)
 }
 
@@ -281,15 +288,31 @@ fn send(
     extra: &[(&str, String)],
     body: &[u8],
 ) -> io::Result<()> {
+    let csp = format!(
+        "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
+         connect-src 'self' ws://{host} wss://{host}; img-src 'self' blob: data:; \
+         style-src 'self' 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; \
+         base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    );
+    send_csp(stream, status, &csp, extra, body)
+}
+
+/// The Everything pages' policy: no script, inline style, the form to this origin.
+const PAGE_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
+                        base-uri 'none'; frame-ancestors 'none'";
+
+fn send_csp(
+    stream: &mut TcpStream,
+    status: &str,
+    csp: &str,
+    extra: &[(&str, String)],
+    body: &[u8],
+) -> io::Result<()> {
     let mut head = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
          Referrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\
          X-Frame-Options: DENY\r\nCross-Origin-Resource-Policy: same-origin\r\n\
-         Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
-         connect-src 'self' ws://{host} wss://{host}; img-src 'self' blob: data:; \
-         style-src 'self' 'unsafe-inline'; manifest-src 'self'; worker-src 'self'; \
-         base-uri 'none'; form-action 'none'; \
-         frame-ancestors 'none'\r\nConnection: close\r\n",
+         Content-Security-Policy: {csp}\r\nConnection: close\r\n",
         body.len()
     );
     for (name, value) in extra {
@@ -376,6 +399,15 @@ fn client(
     if head.path == "/rpc" {
         return rpc(shared, stream, &head, &host, tokens, pending);
     }
+    if head.path == "/everything/file" {
+        return everything_file(shared, &mut stream, &head, &host, tokens);
+    }
+    if matches!(head.path.as_str(), "/everything" | "/everything/")
+        || (head.path == "/" && head.query.as_deref().is_some_and(everything::is_search))
+    {
+        let unencrypted = !hosts.bound.ip().is_loopback();
+        return everything_search(shared, &mut stream, &head, &host, tokens, unencrypted);
+    }
     if let Some(link) = head.path.strip_prefix("/file/") {
         return download(shared, &mut stream, &host, link);
     }
@@ -401,6 +433,145 @@ fn client(
         None => return refuse(&mut stream, "404 Not Found", &host, "not found"),
     }
     Ok(())
+}
+
+/// How long an Everything request with wrong credentials waits for its answer (guessing
+/// a password stays slow).
+const AUTH_FAIL_WAIT: Duration = Duration::from_millis(if cfg!(test) { 50 } else { 1000 });
+
+/// Signs in an Everything request: the daemon token (bearer, or the Basic password), or
+/// the HTTP login as Basic auth. False when it was answered (401, or 403 for a request
+/// another site's page made).
+fn everything_auth(
+    shared: &Arc<Shared>,
+    stream: &mut TcpStream,
+    head: &Head,
+    host: &str,
+    tokens: &ws::Token,
+) -> anyhow::Result<bool> {
+    // A page on another site may link or embed these URLs; the browser says so.
+    if matches!(
+        head.header("sec-fetch-site"),
+        Some("cross-site" | "same-site")
+    ) {
+        refuse(stream, "403 Forbidden", host, "cross-site request refused")?;
+        return Ok(false);
+    }
+    let token = tokens.current()?;
+    let header = head.header("authorization");
+    if everything::authorized(header, &token, None) {
+        return Ok(true);
+    }
+    let basic = header.is_some_and(|h| {
+        let h = h.trim_start();
+        h.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic "))
+    });
+    if basic && everything::authorized(header, &token, shared.http_login().as_ref()) {
+        return Ok(true);
+    }
+    if header.is_some() {
+        std::thread::sleep(AUTH_FAIL_WAIT);
+    }
+    send_csp(
+        stream,
+        "401 Unauthorized",
+        PAGE_CSP,
+        &[
+            (
+                "WWW-Authenticate",
+                "Basic realm=\"Keel\", charset=\"UTF-8\"".into(),
+            ),
+            ("Content-Type", "text/plain; charset=utf-8".into()),
+        ],
+        b"Sign in with the daemon token, or the HTTP login (keel-daemon --set-http-login).",
+    )?;
+    Ok(false)
+}
+
+/// `/everything` (or `/?search=...`): the system search with Everything's parameters, as
+/// JSON (`json=1`) or an HTML page.
+fn everything_search(
+    shared: &Arc<Shared>,
+    stream: &mut TcpStream,
+    head: &Head,
+    host: &str,
+    tokens: &ws::Token,
+    unencrypted: bool,
+) -> anyhow::Result<()> {
+    if !everything_auth(shared, stream, head, host, tokens)? {
+        return Ok(());
+    }
+    let r = match everything::parse(head.query.as_deref().unwrap_or_default()) {
+        Ok(r) => r,
+        Err(why) => return refuse(stream, "400 Bad Request", host, &why),
+    };
+    let searcher = shared.ctx().system.get();
+    let found = keel_api::system::run(&*searcher, &r.params, keel_api::system::MAX_SCAN);
+    let status = match &found {
+        Ok(_) => "200 OK",
+        Err(e) if e.code == keel_api::ApiError::INVALID_PARAMS => "400 Bad Request",
+        Err(_) => "503 Service Unavailable",
+    };
+    let (ctype, body) = if r.json {
+        let v = match &found {
+            Ok(f) => everything::to_json(f, &r),
+            Err(e) => serde_json::json!({ "error": e.message }),
+        };
+        ("application/json; charset=utf-8", v.to_string())
+    } else {
+        let page = everything::Page {
+            base: "/everything",
+            downloads: shared.allow_downloads(),
+            unencrypted,
+        };
+        let found = found.as_ref().map_err(|e| e.message.as_str());
+        let html = everything::to_html(&r, found, &page);
+        ("text/html; charset=utf-8", html)
+    };
+    send_csp(
+        stream,
+        status,
+        PAGE_CSP,
+        &[("Content-Type", ctype.into())],
+        body.as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// `/everything/file?path=...`: a file, while `[web] allow_downloads` is on.
+fn everything_file(
+    shared: &Arc<Shared>,
+    stream: &mut TcpStream,
+    head: &Head,
+    host: &str,
+    tokens: &ws::Token,
+) -> anyhow::Result<()> {
+    if !everything_auth(shared, stream, head, host, tokens)? {
+        return Ok(());
+    }
+    if !shared.allow_downloads() {
+        return refuse(
+            stream,
+            "403 Forbidden",
+            host,
+            "downloads are off: [web] allow_downloads = true in the profile's config.toml turns them on",
+        );
+    }
+    let query = head.query.as_deref().unwrap_or_default();
+    let Some(path) = everything::param(query, "path") else {
+        return refuse(stream, "400 Bad Request", host, "path=<the file> needed");
+    };
+    // Through file.get: what the read operations may not reach stays out of reach.
+    let link = keel_api::call(
+        shared.ctx(),
+        "file.get",
+        serde_json::json!({ "path": path }),
+    );
+    let link = match link {
+        Ok(v) => v["url"].as_str().unwrap_or_default().to_owned(),
+        Err(e) => return refuse(stream, "404 Not Found", host, &e.message),
+    };
+    download(shared, stream, host, link.trim_start_matches("/file/"))
 }
 
 /// How long a share upload may stall between reads.

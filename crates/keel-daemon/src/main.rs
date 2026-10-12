@@ -40,6 +40,14 @@ struct Args {
     /// Print whether a daemon runs for the profile (exit 0 when it does, 1 when not).
     #[arg(long)]
     status: bool,
+    /// Store the HTTP login for tools written for Everything's HTTP server (Basic auth on
+    /// --web's search) in the OS keychain: this user name, the password read from the
+    /// first line of standard input. Then exit.
+    #[arg(long, value_name = "USER", conflicts_with = "clear_http_login")]
+    set_http_login: Option<String>,
+    /// Remove the HTTP login from the OS keychain, then exit.
+    #[arg(long)]
+    clear_http_login: bool,
 }
 
 /// Profile names become a folder name (`keel_api::config::valid_profile`).
@@ -75,6 +83,9 @@ fn main() -> ExitCode {
     if args.status {
         return status(&cfg);
     }
+    if args.set_http_login.is_some() || args.clear_http_login {
+        return http_login(&cfg, args.set_http_login.as_deref());
+    }
     // PDF previews (`preview.render`, the web client): pdfium next to this executable,
     // where the release archives and the build's deps step put it, as for the window.
     if let Some(dir) = std::env::current_exe()
@@ -87,6 +98,12 @@ fn main() -> ExitCode {
     if args.ws_allow_remote && args.ws.is_none() && args.web.is_none() {
         eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
         return ExitCode::FAILURE;
+    }
+    if args.web.is_some_and(|a| !a.ip().is_loopback()) {
+        eprintln!(
+            "keel-daemon: warning: {}",
+            keel_daemon::everything::UNENCRYPTED
+        );
     }
     if !args.web_host.is_empty() && args.web.is_none() {
         eprintln!("keel-daemon: --web-host needs --web");
@@ -132,6 +149,37 @@ fn main() -> ExitCode {
     }
     daemon.shutdown();
     ExitCode::SUCCESS
+}
+
+/// `--set-http-login USER` (the password from stdin) or `--clear-http-login`.
+fn http_login(cfg: &HostConfig, user: Option<&str>) -> ExitCode {
+    use keel_daemon::everything;
+    let store = keel_vfs::cloud::KeyringStore;
+    let done = match user {
+        Some(user) => {
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(_) => {
+                    let password = line.trim_end_matches(['\r', '\n']);
+                    everything::set_login(&store, &cfg.profile, user, password)
+                        .map(|()| format!("HTTP login for {user} stored (profile {})", cfg.profile))
+                }
+                Err(e) => Err(e.into()),
+            }
+        }
+        None => everything::clear_login(&store, &cfg.profile)
+            .map(|()| format!("HTTP login removed (profile {})", cfg.profile)),
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("keel-daemon: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn status(cfg: &HostConfig) -> ExitCode {

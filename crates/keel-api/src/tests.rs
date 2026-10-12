@@ -2234,10 +2234,16 @@ fn system_search_runs_the_platform_search() {
             .unwrap();
     assert_eq!((r.backend.as_str(), r.total, r.capped), ("Walk", 1, false));
     let hit = &r.hits[0];
-    assert_eq!((hit.name.as_str(), hit.size, hit.is_dir), ("invoice-2026.pdf", 9, false));
+    assert_eq!(
+        (hit.name.as_str(), hit.size, hit.is_dir),
+        ("invoice-2026.pdf", 9, false)
+    );
     assert!(hit.modified.is_some(), "size and date filled in");
     assert_eq!(hit.parent, s(&f.files.path().join("docs")));
-    assert_eq!(hit.path, s(&f.files.path().join("docs/invoice-2026.pdf")));
+    assert_eq!(
+        hit.path,
+        s(&f.files.path().join("docs").join("invoice-2026.pdf"))
+    );
     // Everything: the folder, both files; biggest first, one per page.
     let r: SystemSearchResult = serde_json::from_value(
         call(
@@ -2257,7 +2263,12 @@ fn system_search_runs_the_platform_search() {
     )
     .unwrap();
     assert_eq!(none["total"], 0);
-    let e = call(&f.ctx, "system.search", json!({"query": "(x", "regex": true})).unwrap_err();
+    let e = call(
+        &f.ctx,
+        "system.search",
+        json!({"query": "(x", "regex": true}),
+    )
+    .unwrap_err();
     assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e:?}");
     let e = call(&f.ctx, "system.search", json!({"query": "x", "count": -1})).unwrap_err();
     assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e:?}");

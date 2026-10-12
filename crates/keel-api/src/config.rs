@@ -3,7 +3,7 @@
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `remote_poll_secs`,
 //! `[devices] enabled`,
 //! `[devices] inbox`, `auto_accept`, `relay`, `sync` and `sync_secs`, `[[remotes]]`,
-//! `[[clouds]]`); the daemon's
+//! `[[clouds]]`); `[web] allow_downloads`; the daemon's
 //! socket name and WebSocket token.
 
 use std::path::PathBuf;
@@ -89,6 +89,9 @@ pub struct HostConfig {
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts (non-secret fields only).
     pub clouds: Vec<keel_vfs::CloudAccount>,
+    /// `[web] allow_downloads`: keel-daemon --web's Everything-compatible search may send
+    /// the files it finds (default off).
+    pub allow_downloads: bool,
 }
 
 /// The entries of the array `key` that parse as `T` (a broken one is skipped).
@@ -190,6 +193,9 @@ impl HostConfig {
                 .unwrap_or(DEFAULT_SYNC_SECS),
             remotes: entries(&table, "remotes"),
             clouds: entries(&table, "clouds"),
+            allow_downloads: get("web", "allow_downloads")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         }
     }
 
@@ -365,5 +371,18 @@ sync_secs = 1
         let other = HostConfig::read("work", dir.path().into(), dir.path().join("other"));
         assert_ne!(cfg.socket_name(), other.socket_name());
         assert!(cfg.socket_name().starts_with("keel-daemon-"));
+    }
+
+    #[test]
+    fn downloads_are_off_unless_turned_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = || HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        assert!(!read().allow_downloads);
+        let p = dir.path().join("profiles/work");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("config.toml"), "[web]\nallow_downloads = \"yes\"\n").unwrap();
+        assert!(!read().allow_downloads, "only true turns them on");
+        std::fs::write(p.join("config.toml"), "[web]\nallow_downloads = true\n").unwrap();
+        assert!(read().allow_downloads);
     }
 }

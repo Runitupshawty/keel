@@ -105,11 +105,29 @@ pub(crate) struct Shared {
     cfg: HostConfig,
     /// `--web` share-target uploads waiting for `share.claim`.
     pub(crate) uploads: crate::share::Uploads,
+    /// Where the `--web` HTTP login is kept (the OS keychain; tests swap it).
+    secrets: Mutex<Arc<dyn keel_vfs::cloud::SecretStore>>,
 }
 
 impl Shared {
     pub(crate) fn ctx(&self) -> &Arc<Ctx> {
         &self.host.ctx
+    }
+
+    /// `[web] allow_downloads` in the profile's config.toml, read now (it applies at once).
+    pub(crate) fn allow_downloads(&self) -> bool {
+        let c = &self.cfg;
+        HostConfig::read(&c.profile, c.config_dir.clone(), c.data_dir.clone()).allow_downloads
+    }
+
+    /// The profile's HTTP login (`keel-daemon --set-http-login`), read now; None when
+    /// there is none or the keychain cannot be read.
+    pub(crate) fn http_login(&self) -> Option<(String, String)> {
+        let store = self.secrets.lock().clone();
+        crate::everything::login(&*store, &self.cfg.profile)
+            .inspect_err(|e| tracing::warn!("HTTP login: {e:#}"))
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn dispatch(&self, req: &Request, session: &mut Session) -> keel_api::Result<Value> {
@@ -229,6 +247,7 @@ impl Daemon {
             shutdown,
             cfg: cfg.clone(),
             uploads: crate::share::Uploads::open(cfg.data_dir.join("shares")),
+            secrets: Mutex::new(Arc::new(keel_vfs::cloud::KeyringStore)),
         });
         pump(&shared);
         keep_watched(&shared);
@@ -295,6 +314,12 @@ impl Daemon {
     #[doc(hidden)]
     pub fn ctx(&self) -> &Arc<Ctx> {
         self.shared.ctx()
+    }
+
+    /// Where the HTTP login is read from (tests: an in-memory store).
+    #[doc(hidden)]
+    pub fn set_secret_store(&self, store: Arc<dyn keel_vfs::cloud::SecretStore>) {
+        *self.shared.secrets.lock() = store;
     }
 
     /// Fires when a client called `daemon.shutdown`.

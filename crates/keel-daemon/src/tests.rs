@@ -1208,3 +1208,206 @@ fn backup_and_restore_run_in_the_daemon() {
     let hits = c.call("search", json!({"query": "invoice"})).unwrap();
     assert_eq!(hits.as_array().unwrap().len(), 1, "{hits}");
 }
+
+/// A raw HTTP GET with extra headers; returns the status line, headers and body.
+fn http_get_with(
+    addr: std::net::SocketAddr,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (String, String, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n");
+    for (name, value) in headers {
+        req.push_str(&format!("{name}: {value}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).unwrap();
+    let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8(out[..split].to_vec()).unwrap();
+    let (status, headers) = head.split_once("\r\n").unwrap();
+    (
+        status.to_owned(),
+        headers.to_lowercase(),
+        out[split + 4..].to_vec(),
+    )
+}
+
+/// The files of one folder whose names hold the query text: the platform search in tests.
+struct FolderSearch(std::path::PathBuf);
+
+impl keel_api::system::Searcher for FolderSearch {
+    fn query(&self, q: &keel_api::system::Query) -> anyhow::Result<Vec<keel_api::system::Hit>> {
+        let text = q.text.to_lowercase();
+        let mut hits = Vec::new();
+        for e in std::fs::read_dir(&self.0)?.flatten() {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            if name.contains(&text) && hits.len() < q.max as usize {
+                hits.push(keel_api::system::Hit {
+                    path: keel_vfs::VPath::local(e.path()),
+                    is_dir: e.path().is_dir(),
+                    size: 0,
+                    modified: None,
+                    snippet: None,
+                });
+            }
+        }
+        Ok(hits)
+    }
+    fn available(&self) -> bool {
+        true
+    }
+    fn name(&self) -> &'static str {
+        "Folder"
+    }
+}
+
+/// Task 78: `--web` answers Everything's HTTP search parameters, as Everything's JSON or an
+/// HTML page, only with the token or the HTTP login; counts are bounded; downloads only
+/// while `[web] allow_downloads` is on; `/` without those parameters is the client still.
+#[test]
+fn web_answers_everything_searches() {
+    use base64::Engine;
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let search = std::sync::Arc::new(FolderSearch(env.files.path().to_owned()));
+    daemon.ctx().system.set(search);
+    let store = std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default());
+    daemon.set_secret_store(store.clone());
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let bearer = format!("Bearer {}", token.trim());
+    let auth = |path: &str| http_get_with(addr, path, &[("Authorization", bearer.as_str())]);
+
+    // No credentials, or wrong ones: 401 with a Basic challenge.
+    let (status, headers, _) = http_get_with(addr, "/?search=invoice&json=1", &[]);
+    assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+    assert!(
+        headers.contains("www-authenticate: basic realm=\"keel\""),
+        "{headers}"
+    );
+    let (status, ..) = http_get_with(
+        addr,
+        "/everything?search=x",
+        &[("Authorization", "Bearer nope")],
+    );
+    assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+
+    // The token: Everything's JSON.
+    let (status, headers, body) =
+        auth("/?search=INVOICE&json=1&path_column=1&size_column=1&date_modified_column=1");
+    assert_eq!(
+        status,
+        "HTTP/1.1 200 OK",
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(
+        headers.contains("content-type: application/json"),
+        "{headers}"
+    );
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["totalResults"], 1, "{v}");
+    let hit = &v["results"][0];
+    assert_eq!(hit["type"], "file");
+    assert_eq!(hit["name"], "invoice-2026.pdf");
+    assert_eq!(hit["path"], env.files.path().display().to_string());
+    assert_eq!(hit["size"], "3");
+    let date: u64 = hit["date_modified"].as_str().unwrap().parse().unwrap();
+    assert!(date > 116_444_736_000_000_000, "a FILETIME after 1970");
+    // Short names and the count bound: both files, one shown, the biggest first.
+    let (_, _, body) = auth("/everything?s=&j=1&c=1&sort=size&ascending=0&size_column=1");
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["totalResults"], 2, "{v}");
+    assert_eq!(v["results"].as_array().unwrap().len(), 1);
+    assert_eq!(v["results"][0]["name"], "notes.txt");
+    let (status, ..) = auth("/everything?search=x&count=-1&json=1");
+    assert_eq!(status, "HTTP/1.1 400 Bad Request");
+    let (status, _, body) = auth("/everything?search=(x&regex=1&json=1");
+    assert_eq!(status, "HTTP/1.1 400 Bad Request");
+    assert!(String::from_utf8_lossy(&body).contains("error"));
+
+    // `/` without Everything's parameters is the web client.
+    let (status, headers, body) = http_get_with(addr, "/?share=abc&files=1&bytes=2", &[]);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(headers.contains("text/html"), "{headers}");
+    assert!(String::from_utf8_lossy(&body).contains("<title>Keel</title>"));
+
+    // The HTTP login, as Basic auth: the HTML page, script-free, no download links.
+    let basic = |user: &str, pass: &str| {
+        let b = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        format!("Basic {b}")
+    };
+    let page = |auth: &str| {
+        http_get_with(
+            addr,
+            "/everything?search=invoice",
+            &[("Authorization", auth)],
+        )
+    };
+    let login = basic("tool", "a long password");
+    assert_eq!(page(&login).0, "HTTP/1.1 401 Unauthorized");
+    crate::everything::set_login(&*store, &env.cfg.profile, "tool", "a long password").unwrap();
+    let (status, headers, body) = page(&login);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(
+        headers.contains("content-security-policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"),
+        "{headers}"
+    );
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        html.contains("invoice-2026.pdf") && html.contains("1 result"),
+        "{html}"
+    );
+    assert!(!html.contains("<script") && !html.contains("/everything/file"));
+    assert!(!html.contains("Not encrypted"), "a loopback bind");
+    assert_eq!(
+        page(&basic("tool", "wrong password")).0,
+        "HTTP/1.1 401 Unauthorized"
+    );
+    // The token as a Basic password works too.
+    assert_eq!(page(&basic("any", token.trim())).0, "HTTP/1.1 200 OK");
+    // Another site's page cannot use the browser's stored login.
+    let (status, ..) = http_get_with(
+        addr,
+        "/everything?search=invoice",
+        &[
+            ("Authorization", bearer.as_str()),
+            ("Sec-Fetch-Site", "cross-site"),
+        ],
+    );
+    assert_eq!(status, "HTTP/1.1 403 Forbidden");
+
+    // Downloads: off by default, on with `[web] allow_downloads = true` (read at once).
+    let pdf = env.files.path().join("invoice-2026.pdf");
+    let pdf = crate::everything::encode(&pdf.display().to_string());
+    let file = format!("/everything/file?path={pdf}");
+    assert_eq!(
+        http_get_with(addr, &file, &[]).0,
+        "HTTP/1.1 401 Unauthorized"
+    );
+    assert_eq!(auth(&file).0, "HTTP/1.1 403 Forbidden");
+    let profile = env.config.path().join("profiles").join(&env.cfg.profile);
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(
+        profile.join("config.toml"),
+        "[web]\nallow_downloads = true\n",
+    )
+    .unwrap();
+    let (status, headers, body) = auth(&file);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert!(
+        headers.contains("content-disposition: attachment"),
+        "{headers}"
+    );
+    assert_eq!(body, b"pdf");
+    let html = String::from_utf8_lossy(&auth("/everything?search=invoice").2).into_owned();
+    assert!(html.contains("/everything/file?path="), "{html}");
+    // Keel's configuration folder stays out of reach.
+    let secret = env.config.path().join("daemon.token");
+    let secret = crate::everything::encode(&secret.display().to_string());
+    let file = format!("/everything/file?path={secret}");
+    assert_eq!(auth(&file).0, "HTTP/1.1 404 Not Found");
+}

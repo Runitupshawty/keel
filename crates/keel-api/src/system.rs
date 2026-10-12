@@ -11,7 +11,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::types::{SystemSearchParams, SystemSort};
-use keel_search::{Hit, Query, Searcher};
+pub use keel_search::{Hit, Query, Searcher};
 use parking_lot::Mutex;
 use regex::{Regex, RegexBuilder};
 use std::sync::Arc;
@@ -76,7 +76,10 @@ pub fn run(searcher: &dyn Searcher, p: &SystemSearchParams, scan: usize) -> Resu
         .query(&query)
         .map_err(|e| ApiError::failed(format!("{}: {e:#}", searcher.name())))?;
     let capped = hits.len() >= scan;
-    let mut hits: Vec<Hit> = hits.into_iter().filter(|h| plan.filter.matches(h)).collect();
+    let mut hits: Vec<Hit> = hits
+        .into_iter()
+        .filter(|h| plan.filter.matches(h))
+        .collect();
     let sort = p.sort.unwrap_or_default();
     if matches!(sort, SystemSort::DateModified | SystemSort::Size) {
         fill(&mut hits);
@@ -185,7 +188,10 @@ impl Filter {
         }
         let (mut norm_name, mut norm_full) = (None, None);
         self.terms.iter().all(|term| {
-            let on_path = matches!(term, Term::Plain { path: true, .. } | Term::Glob { path: true, .. });
+            let on_path = matches!(
+                term,
+                Term::Plain { path: true, .. } | Term::Glob { path: true, .. }
+            );
             let subject: &str = if on_path {
                 norm_full.get_or_insert_with(|| self.norm.apply(&full))
             } else {
@@ -280,8 +286,13 @@ fn backend_syntax(raw: &str) -> bool {
         })
     };
     // `C:\x` is a path, not a function.
-    let drive = raw.len() >= 2 && raw.as_bytes()[1] == b':' && raw.as_bytes()[0].is_ascii_alphabetic()
-        && raw.as_bytes().get(2).is_none_or(|b| *b == b'\\' || *b == b'/');
+    let drive = raw.len() >= 2
+        && raw.as_bytes()[1] == b':'
+        && raw.as_bytes()[0].is_ascii_alphabetic()
+        && raw
+            .as_bytes()
+            .get(2)
+            .is_none_or(|b| *b == b'\\' || *b == b'/');
     (unquoted_colon && !drive) || raw.starts_with('!') || raw.contains(['|', '<', '>'])
 }
 
@@ -392,7 +403,11 @@ pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> 
         // after its last separator (Everything: the word with `path:`).
         let name_part = |s: &str| s.rsplit(['\\', '/']).next().unwrap_or("").to_owned();
         if squeeze {
-            let part = if path { name_part(&plain) } else { plain.clone() };
+            let part = if path {
+                name_part(&plain)
+            } else {
+                plain.clone()
+            };
             if !wild && longest.as_ref().is_none_or(|(l, _)| part.len() > l.len()) {
                 longest = Some((part, path));
             }
@@ -586,7 +601,9 @@ mod tests {
     #[test]
     fn counts_are_bounded() {
         let many = Fake(
-            (0..50).map(|i| hit(&p(&format!("f{i:02}.txt")), 1, 1)).collect(),
+            (0..50)
+                .map(|i| hit(&p(&format!("f{i:02}.txt")), 1, 1))
+                .collect(),
             Mutex::new(None),
         );
         let f = run(&many, &q(""), 20).unwrap();

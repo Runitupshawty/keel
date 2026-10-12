@@ -42,6 +42,7 @@ crate's `fuzzing` feature.
 | `wire` | `keel_net::fuzz::wire` | keel-net messages (CBOR): requests, Spacedrop offers, sync pages (applied to a library), pairing tickets |
 | `pair_code` | `keel_net::fuzz::pair_code` | pairing codes and tickets as typed or scanned, device ids |
 | `multipart` | `keel_daemon::fuzz::multipart` | a Web Share Target upload: `Content-Type` line, then the `multipart/form-data` body |
+| `everything_query` | `keel_daemon::fuzz::everything_query` | an Everything HTTP query string for `--web`'s `/everything`: parsed, written back as a link and parsed again, its search compiled and checked against a few names, the HTML and JSON answers made; the same bytes as an `Authorization` header |
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images), then the same file through `extract_text`, the library's text reader |
 | `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
 
