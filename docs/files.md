@@ -12,7 +12,8 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+T | Tag picker (library) |
 | Ctrl+Shift+A | Tag assign mode: 1–9 toggle tags on the selection, 0 or Esc leaves (library) |
 | Ctrl+D | Toggle favorite (library) |
-| Ctrl+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)) |
+| Ctrl+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)); in a search tab, Match case (see [The search tab](#the-search-tab)) |
+| Ctrl+B, Ctrl+U, Ctrl+M, Ctrl+R | In a search tab: Match whole words, Match path, Match diacritics, Regular expression |
 | Ctrl+Shift+O | Open with… (pick an app for the selected files) |
 | Shift+F10 | The Windows menu for the selection (Windows; see [Windows shell menu](#windows-shell-menu)) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
@@ -27,7 +28,7 @@ Settings → **Keyboard** lists every command Keel has: the command palette's, p
 
 - **Record** adds a key: press it (Esc cancels the recording). A command can have several keys, or none.
 - Click a key (`Ctrl+E ×`) to remove it. **Reset** puts one command's default keys back, **Reset all** every command's. Commands you changed are shown in bold.
-- A key another command already has is not taken silently: Keel names that command and offers **Use it for "…"** (the key moves) or **Cancel**. Keys only clash where they work: F6 is Switch pane in the file panes and Leave the terminal in the terminal, and that is not a conflict; ``Ctrl+` `` (the terminal) works in both.
+- A key another command already has is not taken silently: Keel names that command and offers **Use it for "…"** (the key moves) or **Cancel**. Keys only clash where they work: F6 is Switch pane in the file panes and Leave the terminal in the terminal, and that is not a conflict; ``Ctrl+` `` (the terminal) works in both. A search tab's keys (the five search toggles and Load more, "Search: …") work only in a search tab, where they come first: Ctrl+I is Match case there and the Inspector elsewhere, and that is not a conflict either.
 - Some commands must stay reachable: the command palette, Esc (closes the filter, a rename, dialogs and menus) and Leave the terminal always keep at least one key, so removing or moving their last key is refused. Plain Esc belongs to Esc alone.
 - Some keys cannot be bound: Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Insert, Shift+Insert and Shift+Delete (the clipboard's; Copy, Cut and Paste always have them and can get more), Ctrl+= / Ctrl+- / Ctrl+0 (the UI scale), Tab and Shift+Tab (keyboard focus), and a letter, digit or punctuation key without Ctrl or Alt (it types into the filter).
 - **Export…** writes every command's keys to a TOML file; **Import…** reads one back (commands it leaves out get their defaults; unknown commands and keys are skipped and named). The file is the same `[keymap]` table that config.toml keeps.
@@ -98,9 +99,34 @@ A terminal pane sits under the file panes. It starts in the active pane's folder
 
 "Follow pane" sends a `cd` only when the shell looks idle at a plain prompt; heavily customised prompts (oh-my-posh and similar) can prevent it.
 
+## The search tab
+
+Ctrl+F opens a search tab. Its bar has the backend (System, or Library when the library is on), the query box, Everything's five search toggles and a **Search** menu:
+
+| Toggle | Key | What it does |
+| --- | --- | --- |
+| Match case (`Aa`) | Ctrl+I | `Report` does not find `report` |
+| Match whole words (`ab`) | Ctrl+B | `port` does not find `report.pdf`; `report` still finds `my report.pdf` |
+| Match path (`\`) | Ctrl+U | Every term matches the full path (folders and name), not only the name: `old pdf` finds `old\report.pdf` |
+| Match diacritics (`é`) | Ctrl+M | Off (the default), letters match their accented forms both ways: `cafe` finds `café` and `café` finds `cafe` |
+| Regular expression (`.*`) | Ctrl+R | The whole query is one regular expression over the name (or the path with Match path) |
+
+The keys work in a search tab, also while typing in its query box (elsewhere Ctrl+I is the Inspector); Settings → Keyboard changes them like any other key (see [Changing the keys](#changing-the-keys)). The toggles are per tab and also in the command palette ("Search: Match case", …); a new search tab starts with the ones set under Settings → General → **New searches** (per profile). With Everything as the backend Keel hands the toggles to Everything (Match case, path, whole words and regex as its own search switches, Match diacritics as its `diacritics:` modifier around the query); with Keel's own index and the plain walk Keel applies them itself. `locate` uses only Match case and Regex; Spotlight uses none of them. The library search has its own terms, so the toggles are greyed there.
+
+The query box's hint names what the backend understands: Everything's syntax with Everything, names, `*` and `?` wildcards, `"exact phrase"`, `folder:`, `in:<folder>` and `regex:` with Keel's index (it has no `ext:` or `dm:` yet; those match as plain text), the library's terms with the library.
+
+Results:
+
+- The first 1,000 results show at once ("first 1000 results"). **Load more** (in the bar and the Search menu) asks for four times as many, up to **Most results** in Settings (10,000 by default, at most 1,000,000). The list draws only the rows on screen, so long lists scroll smoothly; Keel's NTFS index looks up the size and date of the extra rows on a worker.
+- The parts of each name the query matched are highlighted, and with Match path the parts of the Folder column too. Wildcard terms highlight their fixed parts; `ext:`, `in:` and other `function:` terms are not highlighted.
+- The status bar shows the number of results, their total size, and the selection's count and size.
+- Ctrl+Enter (also from the query box) or **Open path** opens the result's folder with it selected. **Copy name** copies the file names; **Copy path** copies full paths, in double quotes when Settings → General → **Copy path: In double quotes** is on.
+
+Settings → General → **Search**: **Search as you type** (on; off, Enter runs the query) and its delay (150 ms), and **Match whole filename when using wildcards** (on: `*.pdf` must match the whole name; off: a wildcard term may match anywhere in it, so `*.pd` finds `report.pdf`). With Everything as the backend its own wildcard setting applies.
+
 ## Search without Everything
 
-On Windows, when Everything is not running, Keel uses its own index: it reads the NTFS file table and keeps it current from the USN journal, and stores it in the cache folder. Queries are substring, glob (`*.pdf`) or `regex:`, with `folder:` and `in:<path>` filters.
+On Windows, when Everything is not running, Keel uses its own index: it reads the NTFS file table and keeps it current from the USN journal, and stores it in the cache folder. Queries are substring, glob (`*.pdf`) or `regex:`, with `folder:` and `in:<path>` filters, and the [search toggles](#the-search-tab).
 
 Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
 

@@ -25,6 +25,9 @@ pub struct Palette {
     pub profiles: Vec<String>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
+    /// The active tab is a search tab: its toggles and Load more are offered (set before
+    /// `show`).
+    pub search: bool,
     focus: bool,
     fuzzy: Option<Fuzzy>,
     /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`); dropped when
@@ -47,12 +50,14 @@ fn wants_shell(text: &str) -> bool {
 }
 
 /// The palette's entries from the command table (`keymap::commands`): the selection's
-/// first when there is one, then the global ones, each with its keys as bound now.
-fn entries(selection: bool, keys: &Bindings) -> (Vec<Item>, Vec<Item>) {
-    let (mut context, mut global) = (Vec::new(), Vec::new());
+/// first when there is one, then a search tab's (its toggles and Load more, in a search
+/// tab only), then the global ones, each with its keys as bound now.
+fn entries(selection: bool, search: bool, keys: &Bindings) -> [Vec<Item>; 3] {
+    let (mut context, mut searching, mut global) = (Vec::new(), Vec::new(), Vec::new());
     for c in crate::keymap::commands() {
         let list = match c.palette {
             Pal::Context if selection => &mut context,
+            Pal::Search if search => &mut searching,
             Pal::Global => &mut global,
             _ => continue,
         };
@@ -62,18 +67,19 @@ fn entries(selection: bool, keys: &Bindings) -> (Vec<Item>, Vec<Item>) {
             action: c.action,
         });
     }
-    (context, global)
+    [context, searching, global]
 }
 
 impl Palette {
     /// Opens with the global actions, plus the context ones when something is selected.
     pub fn show(&mut self, selection: bool, keys: &Bindings) {
-        let (mut items, global) = entries(selection, keys);
+        let [mut items, searching, global] = entries(selection, self.search, keys);
         items.extend(self.undo.clone().map(|label| Item {
             label,
             shortcut: keys.label(&Action::Undo),
             action: Action::Undo,
         }));
+        items.extend(searching);
         items.extend(global);
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),

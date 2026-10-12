@@ -289,6 +289,13 @@ pub fn ui(
                                 });
                                 crate::folder_style::dot(ui, style);
                             }
+                            _ if search && tab.highlight.is_some() => {
+                                // Task 76: the parts the query matched.
+                                let marks = (tab.highlight.as_ref())
+                                    .map_or_else(Vec::new, |h| h.marks(shown));
+                                let job = crate::search_tab::highlighted(ui, shown, &marks, color);
+                                ui.add(egui::Label::new(job).truncate());
+                            }
                             _ => {
                                 ui.add(egui::Label::new(cell(shown, color)).truncate());
                             }
@@ -322,8 +329,21 @@ pub fn ui(
                         if let Some(s) = source.filter(|_| tab.library_search) {
                             folder = format!("{} · {folder}", s.label);
                         }
-                        ui.add(egui::Label::new(cell(&folder, Some(muted))).truncate())
-                            .on_hover_text(folder);
+                        // Task 76: with Match Path, the parts of the folder it matched.
+                        let label = match tab.highlight.as_ref().filter(|h| h.path) {
+                            Some(h) => {
+                                let marks = h.marks(&folder);
+                                let job = crate::search_tab::highlighted(
+                                    ui,
+                                    &folder,
+                                    &marks,
+                                    Some(muted),
+                                );
+                                egui::Label::new(job)
+                            }
+                            None => egui::Label::new(cell(&folder, Some(muted))),
+                        };
+                        ui.add(label.truncate()).on_hover_text(folder);
                     } else if trash {
                         let from = crate::trash_ui::original_location(e);
                         ui.add(egui::Label::new(cell(&from, Some(muted))).truncate())

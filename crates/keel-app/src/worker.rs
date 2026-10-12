@@ -257,11 +257,14 @@ pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Cont
     });
 }
 
-type SearchJob = (Arc<dyn Searcher>, String, u64);
+type SearchJob = (Arc<dyn Searcher>, Query, u64);
 
 /// One search thread for the whole app. Queries wait their turn (Everything serves one
 /// at a time); a query whose tab has moved on to a newer one is dropped unrun, so typing
-/// never piles stale queries up behind a slow one.
+/// never piles stale queries up behind a slow one. Hits the backend left without a size
+/// and date (Keel's NTFS index above its stat limit, after Load more) get them here.
+/// Most results is capped by settings (`search_tab::MAX_RESULTS`), so the stats stay
+/// bounded.
 pub struct SearchWorker {
     jobs: Sender<SearchJob>,
     /// Request numbers still wanted (each search tab's newest).
@@ -274,15 +277,16 @@ impl SearchWorker {
         let live: Arc<Mutex<HashSet<u64>>> = Arc::default();
         let wanted = live.clone();
         spawn("keel-search", move || {
-            while let Ok((searcher, text, id)) = rx.recv() {
+            while let Ok((searcher, query, id)) = rx.recv() {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
-                let result = searcher.query(&Query {
-                    text,
-                    max: crate::search_tab::MAX_HITS,
-                    ..Query::default()
-                });
+                let mut result = searcher.query(&query);
+                if let Ok(hits) = &mut result {
+                    if wanted.lock().contains(&id) {
+                        fill_missing_meta(hits);
+                    }
+                }
                 wanted.lock().remove(&id);
                 send(&tx, &ctx, Msg::Search { id, result });
             }
@@ -291,13 +295,30 @@ impl SearchWorker {
     }
 
     /// Queues query `id`, superseding `replaces` (the tab's previous request).
-    pub fn search(&self, searcher: Arc<dyn Searcher>, text: String, id: u64, replaces: u64) {
+    pub fn search(&self, searcher: Arc<dyn Searcher>, query: Query, id: u64, replaces: u64) {
         {
             let mut live = self.live.lock();
             live.remove(&replaces);
             live.insert(id);
         }
-        let _ = self.jobs.send((searcher, text, id));
+        let _ = self.jobs.send((searcher, query, id));
+    }
+}
+
+/// Fills in the size and date of local hits that came without them (a date is always
+/// known for a file that was statted), in parallel.
+fn fill_missing_meta(hits: &mut [keel_search::Hit]) {
+    let missing: Vec<usize> = (hits.iter().enumerate())
+        .filter(|(_, h)| h.modified.is_none() && h.path.to_local_path().is_some())
+        .map(|(i, _)| i)
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let mut part: Vec<keel_search::Hit> = missing.iter().map(|&i| hits[i].clone()).collect();
+    keel_search::fill_meta(&mut part);
+    for (i, hit) in missing.into_iter().zip(part) {
+        hits[i] = hit;
     }
 }
 
@@ -435,7 +456,11 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
-        worker.search(slow.clone(), "a".into(), 1, 0);
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Query::default()
+        };
+        worker.search(slow.clone(), q("a"), 1, 0);
         // Wait until "a" is really running (a slow machine may not have scheduled the
         // worker yet; a later query for the same tab would then supersede it).
         let until = std::time::Instant::now() + Duration::from_secs(5);
@@ -447,9 +472,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
-        worker.search(slow.clone(), "ab".into(), 2, 1);
-        worker.search(slow.clone(), "x".into(), 3, 0);
-        worker.search(slow.clone(), "abc".into(), 4, 2);
+        worker.search(slow.clone(), q("ab"), 2, 1);
+        worker.search(slow.clone(), q("x"), 3, 0);
+        worker.search(slow.clone(), q("abc"), 4, 2);
         let mut answered = Vec::new();
         while answered.len() < 3 {
             match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {

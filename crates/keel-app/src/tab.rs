@@ -56,6 +56,13 @@ pub enum TabKind {
         due: Option<Instant>,
         /// Request number of the query in flight or shown; older answers are dropped.
         req: u64,
+        /// Match Case, Match Whole Words, Match Path, Match Diacritics, Regex.
+        toggles: crate::search_tab::Toggles,
+        /// The most results asked for; 0 until the first query runs, and again after the
+        /// query or a toggle changed (the next query asks for the first page).
+        limit: u32,
+        /// Load more can ask for more than `limit` (it is below the Most results setting).
+        more: bool,
     },
     /// Task 29: the library dashboard (`library_ui::overview`); never listed.
     Overview,
@@ -125,6 +132,9 @@ pub struct Tab {
     pub library_search: bool,
     /// Task 62: a library search's snippets of the text inside documents, by hit path.
     pub snippets: std::collections::HashMap<VPath, keel_search::Snippet>,
+    /// A search tab's matched parts of names (and of folders with Match Path), from its
+    /// last query.
+    pub highlight: Option<keel_search::Highlighter>,
     // --- Task 46 ---
     /// Shown in the Sizes view: biggest first, folders mixed with files (set by the pane
     /// before drawing).
@@ -178,6 +188,7 @@ impl Tab {
             columns: Default::default(),
             library_search: false,
             snippets: Default::default(),
+            highlight: None,
             sizes_view: false,
             totals_key: None,
             totals: Default::default(),
@@ -196,6 +207,9 @@ impl Tab {
                 query: String::new(),
                 due: None,
                 req: 0,
+                toggles: Default::default(),
+                limit: 0,
+                more: false,
             },
             loading: false,
             listed_dir: Some(dir.clone()),
@@ -437,11 +451,22 @@ impl Tab {
     /// Leaving a search for a folder turns the tab into a folder tab.
     fn reset_view(&mut self) {
         let kind = std::mem::replace(&mut self.kind, TabKind::Dir);
-        if let TabKind::Search { query, req, .. } = kind {
+        if let TabKind::Search {
+            query,
+            req,
+            toggles,
+            limit,
+            more,
+            ..
+        } = kind
+        {
             self.left_search = Some(TabKind::Search {
                 query,
                 due: None,
                 req,
+                toggles,
+                limit,
+                more,
             });
         }
         self.selected.clear();

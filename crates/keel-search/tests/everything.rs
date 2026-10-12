@@ -98,3 +98,52 @@ fn two_searchers_on_two_threads_get_their_own_results() {
     a.join().unwrap();
     b.join().unwrap();
 }
+
+/// Match Path and Match Whole Words reach Everything as its search switches and Match
+/// Diacritics as its `diacritics:` modifier around the whole query.
+#[test]
+fn toggles_reach_everything_when_enabled() {
+    if !live() {
+        return;
+    }
+
+    let id = std::process::id();
+    let dir = std::env::temp_dir().join(format!("keel-everything-toggles-{id}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tag = format!("keelev{id}");
+    std::fs::write(dir.join(format!("caf\u{e9} {tag}.txt")), b"x").unwrap();
+    let searcher = EverythingSearcher::load().expect("Everything64.dll should load");
+    let find = |text: String, set: fn(&mut Query)| -> usize {
+        let mut query = Query {
+            text,
+            ..Query::default()
+        };
+        set(&mut query);
+        searcher.query(&query).unwrap().len()
+    };
+    // Everything sees a new file within moments.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while find(tag.clone(), |_| {}) == 0 {
+        assert!(
+            std::time::Instant::now() < end,
+            "Everything did not index {tag}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let accented = format!("caf\u{e9} {tag}");
+    assert_eq!(find(accented.clone(), |q| q.match_diacritics = true), 1);
+    assert_eq!(
+        find(format!("cafe {tag}"), |q| q.match_diacritics = true),
+        0
+    );
+    let folder = format!("keel-everything-toggles-{id} {tag}");
+    assert_eq!(
+        find(folder.clone(), |_| {}),
+        0,
+        "the folder is not in the name"
+    );
+    assert_eq!(find(folder, |q| q.match_path = true), 1);
+    assert_eq!(find(tag[..6].to_owned(), |q| q.whole_word = true), 0);
+    assert_eq!(find(tag.clone(), |q| q.whole_word = true), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

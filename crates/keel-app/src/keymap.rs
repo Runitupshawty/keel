@@ -228,32 +228,43 @@ impl std::fmt::Display for Chord {
     }
 }
 
-/// Where a command's keys work: in the file panes, in the terminal, or both.
+/// Where a command's keys work: in the file panes, in the terminal, both, or only in a
+/// search tab (also from its query box; there they come before the file panes' keys, so
+/// Ctrl+I is Match case in a search tab and the Inspector elsewhere).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Main,
     Terminal,
     Both,
+    Search,
 }
 
 impl Scope {
     fn overlaps(self, other: Scope) -> bool {
+        if self == Scope::Search || other == Scope::Search {
+            return self == other;
+        }
         self == other || self == Scope::Both || other == Scope::Both
     }
     fn main(self) -> bool {
-        self != Scope::Terminal
+        matches!(self, Scope::Main | Scope::Both)
     }
     fn terminal(self) -> bool {
-        self != Scope::Main
+        matches!(self, Scope::Terminal | Scope::Both)
+    }
+    fn search(self) -> bool {
+        self == Scope::Search
     }
 }
 
-/// In the command palette: with a selection only, always, or not at all.
+/// In the command palette: with a selection only, always, in a search tab only, or not
+/// at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pal {
     None,
     Context,
     Global,
+    Search,
 }
 
 pub struct Command {
@@ -304,6 +315,13 @@ impl Command {
         self.palette = Pal::Global;
         self
     }
+    /// A search tab's command: listed in the palette there, its keys work only there.
+    fn search(mut self) -> Self {
+        self.palette = Pal::Search;
+        self.scope = Scope::Search;
+        self.typing = true;
+        self
+    }
     fn typing(mut self) -> Self {
         self.typing = true;
         self
@@ -333,6 +351,7 @@ const HIDDEN: &[&str] = if cfg!(target_os = "macos") {
 /// the keys the palette does not list.
 pub fn commands() -> Vec<Command> {
     use crate::folder_ops::Kind;
+    use crate::search_tab::Toggle;
     use Action::*;
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut v = vec![
@@ -419,6 +438,49 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .ctx(),
+        // --- the palette, in a search tab (Everything's Search menu and its keys) ---
+        cmd(
+            "search.match_case",
+            "Search: Match case",
+            SearchToggle(Toggle::Case),
+            &["Ctrl+I"],
+        )
+        .search(),
+        cmd(
+            "search.whole_words",
+            "Search: Match whole words",
+            SearchToggle(Toggle::WholeWord),
+            &["Ctrl+B"],
+        )
+        .search(),
+        cmd(
+            "search.match_path",
+            "Search: Match path",
+            SearchToggle(Toggle::Path),
+            &["Ctrl+U"],
+        )
+        .search(),
+        cmd(
+            "search.diacritics",
+            "Search: Match diacritics",
+            SearchToggle(Toggle::Diacritics),
+            &["Ctrl+M"],
+        )
+        .search(),
+        cmd(
+            "search.regex",
+            "Search: Regular expression",
+            SearchToggle(Toggle::Regex),
+            &["Ctrl+R"],
+        )
+        .search(),
+        cmd(
+            "search.more",
+            "Search: Load more results",
+            SearchMore,
+            &[],
+        )
+        .search(),
         // --- the palette, always ---
         cmd("go.up", "Go to parent folder", Up, &["Alt+Up"]).global(),
         cmd("go.back", "Back", Back, &["Alt+Left"]).global(),
@@ -507,6 +569,7 @@ pub fn commands() -> Vec<Command> {
             .global()
             .fixed("Ctrl+V"),
         cmd("edit.copy_path", "Copy path", CopyPath, &[]).global(),
+        cmd("edit.copy_name", "Copy name", CopyName, &[]).global(),
         cmd(
             "file.new_folder",
             "New folder",
@@ -942,6 +1005,11 @@ impl Bindings {
     /// The keys read while the terminal has the keyboard.
     pub fn terminal(&self) -> impl Iterator<Item = &Binding> {
         self.keys.iter().filter(|b| b.scope.terminal())
+    }
+
+    /// A search tab's keys (`keys::search_toggles`), read before the file panes' keys.
+    pub fn search(&self) -> impl Iterator<Item = &Binding> {
+        self.keys.iter().filter(|b| b.scope.search())
     }
 
     /// "Ctrl+Shift+P" (every key of `action`, comma separated; "" = none).
@@ -1431,6 +1499,20 @@ mod tests {
                 (Modifiers::NONE, Key::F6, Action::LeaveTerminal),
             ]
         );
+        // A search tab's keys: Everything's toggles, only there (Ctrl+I stays the
+        // Inspector elsewhere, so it is no conflict).
+        let search: Vec<(Modifiers, Key, Action)> = b
+            .search()
+            .map(|k| (k.mods(), k.chord.key, k.action.clone()))
+            .collect();
+        assert_eq!(search.len(), crate::search_tab::Toggle::ALL.len());
+        for t in crate::search_tab::Toggle::ALL {
+            let chord = Chord::parse(t.shortcut()).unwrap();
+            assert!(search.contains(&(CMD, chord.key, Action::SearchToggle(t))));
+        }
+        assert!(Keymap::default()
+            .conflicts("search.match_case", Chord::new(CMD, Key::I))
+            .is_empty());
         // Ctrl+Shift+Z before Ctrl+Z (and every such pair): more modifiers come first.
         for (i, x) in b.keys.iter().enumerate() {
             for y in &b.keys[i + 1..] {

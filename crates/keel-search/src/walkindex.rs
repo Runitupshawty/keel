@@ -3,7 +3,8 @@
 //! queries and in SQLite (`<cache>/index/walk-<hash of roots>.db`) for restarts.
 //! A `notify` watcher keeps it current in 500 ms batches; a full rebuild runs when
 //! the db is older than a week or on demand. Same query syntax as the NTFS index
-//! (substring, `*`/`?` glob, `regex:`, `folder:`, `in:`) and the same skip rules as
+//! (substring, `*`/`?` glob, `regex:`, `folder:`, `in:`, and the search toggles of
+//! `terms.rs`) and the same skip rules as
 //! [`crate::walk`] (hidden and ignored entries are left out).
 
 use std::borrow::Cow;
@@ -19,6 +20,7 @@ use parking_lot::RwLock;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{params, Connection};
 
+use crate::terms::{self, split_terms, strip_ci};
 use crate::{Hit, Query, SearchState, Searcher};
 
 const NONE: u32 = u32::MAX;
@@ -395,6 +397,13 @@ impl Table {
         if !m.rest.iter().all(|re| re.is_match(name)) {
             return None;
         }
+        if !m.path.is_empty() {
+            let path = self.path_of(slot)?;
+            let path = path.to_string_lossy();
+            if !m.path.iter().all(|re| re.is_match(&path)) {
+                return None;
+            }
+        }
         if let Some(within) = &m.within {
             let path = self.path_of(slot)?.to_string_lossy().replace('\\', "/");
             if !path.to_lowercase().starts_with(within) {
@@ -505,6 +514,8 @@ struct Matcher {
     folders_only: bool,
     /// `in:` path prefix, lowercased with `/` separators.
     within: Option<String>,
+    /// Match Path: every term, matched against the candidate's full path instead.
+    path: Vec<Regex>,
 }
 
 enum Term {
@@ -512,55 +523,9 @@ enum Term {
     Pattern(String),
 }
 
-fn split_terms(text: &str) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in text.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    terms.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        terms.push(cur);
-    }
-    terms
-}
-
-/// Whole-name glob as a regex (a leading or trailing `*` drops that anchor).
-fn glob(term: &str) -> String {
-    let mut re = String::new();
-    if !term.starts_with('*') {
-        re.push('^');
-    }
-    for c in term.trim_matches('*').chars() {
-        match c {
-            '*' => re.push_str(".*"),
-            '?' => re.push('.'),
-            c => re.push_str(&regex::escape(c.encode_utf8(&mut [0; 4]))),
-        }
-    }
-    if !term.ends_with('*') {
-        re.push('$');
-    }
-    re
-}
-
-fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
-    term.get(..prefix.len())
-        .filter(|head| head.eq_ignore_ascii_case(prefix))
-        .map(|_| &term[prefix.len()..])
-}
-
-fn term_of(text: &str) -> Term {
+fn term_of(text: &str, query: &Query) -> Term {
     if text.contains(['*', '?']) {
-        Term::Pattern(glob(text))
+        Term::Pattern(terms::glob(text, query))
     } else {
         Term::Literal(text.to_owned())
     }
@@ -579,7 +544,7 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
             if let Some(rest) = strip_ci(&term, "folder:") {
                 folders_only = true;
                 if !rest.is_empty() {
-                    terms.push(term_of(rest));
+                    terms.push(term_of(rest, query));
                 }
             } else if let Some(rest) = strip_ci(&term, "in:") {
                 // The index stores resolved roots (macOS: /private/var for /var), so a typed
@@ -592,7 +557,7 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
             } else if let Some(rest) = strip_ci(&term, "regex:") {
                 terms.push(Term::Pattern(rest.to_owned()));
             } else {
-                terms.push(term_of(&term));
+                terms.push(term_of(&term, query));
             }
         }
     }
@@ -607,16 +572,40 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
         .max()
         .map(|(_, i)| i)
         .or((!terms.is_empty()).then_some(0));
-    let build = |t: &Term| -> anyhow::Result<Regex> {
-        let src = match t {
-            Term::Literal(s) => regex::escape(s),
-            Term::Pattern(p) => p.clone(),
-        };
-        Ok(RegexBuilder::new(&src)
+    let regex = |src: &str| -> anyhow::Result<Regex> {
+        Ok(RegexBuilder::new(src)
             .multi_line(true)
             .case_insensitive(!query.match_case)
             .build()?)
     };
+    let build = |t: &Term| match t {
+        Term::Literal(s) => regex(&terms::literal(s, query)),
+        Term::Pattern(p) => regex(p),
+    };
+    // Match Whole Words and Match Path (shared with the NTFS index, `terms.rs`).
+    let literals: Vec<&str> = (terms.iter())
+        .filter_map(|t| match t {
+            Term::Literal(s) => Some(s.as_str()),
+            Term::Pattern(_) => None,
+        })
+        .collect();
+    let words = terms::word_terms(&literals, query, &regex)?;
+    if query.match_path {
+        let mut path = terms
+            .iter()
+            .map(build)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        path.extend(words);
+        return Ok(Matcher {
+            scan: None,
+            rest: Vec::new(),
+            literal: None,
+            match_case: query.match_case,
+            folders_only,
+            within,
+            path,
+        });
+    }
     let (mut scan, mut literal, mut rest) = (None, None, Vec::new());
     for (i, t) in terms.iter().enumerate() {
         if Some(i) == lead {
@@ -628,6 +617,7 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
             rest.push(build(t)?);
         }
     }
+    rest.extend(words);
     Ok(Matcher {
         scan,
         rest,
@@ -635,6 +625,7 @@ fn compile(query: &Query) -> anyhow::Result<Matcher> {
         match_case: query.match_case,
         folders_only,
         within,
+        path: Vec::new(),
     })
 }
 
@@ -1315,6 +1306,42 @@ mod tests {
         let hit = &s.query(&case).unwrap()[0];
         assert_eq!((hit.size, hit.is_dir), (5, false));
         assert!(hit.modified.is_some());
+    }
+
+    /// The search toggles: Match Whole Words, Match Path, Match Diacritics and whole
+    /// filename wildcards.
+    #[test]
+    fn search_toggles() {
+        let d = Dirs::sample();
+        d.file("docs/café menu.txt", b"x");
+        let s = d.open();
+        let with = |text: &str, set: fn(&mut Query)| {
+            let mut query = q(text);
+            set(&mut query);
+            names(&s, &query)
+        };
+        assert_eq!(names(&s, &q("note")), ["report notes.txt"]);
+        assert!(with("note", |q| q.whole_word = true).is_empty());
+        assert_eq!(with("notes", |q| q.whole_word = true), ["report notes.txt"]);
+        assert_eq!(names(&s, &q("old")), ["old"]);
+        assert_eq!(with("old", |q| q.match_path = true), ["old", "report.pdf"]);
+        assert_eq!(
+            with("old pdf", |q| q.match_path = true),
+            ["report.pdf"],
+            "every term, anywhere in the path"
+        );
+        assert_eq!(names(&s, &q("cafe")), ["café menu.txt"]);
+        assert_eq!(names(&s, &q("CAFÉ")), ["café menu.txt"]);
+        assert!(with("cafe", |q| q.match_diacritics = true).is_empty());
+        assert_eq!(
+            with("café", |q| q.match_diacritics = true),
+            ["café menu.txt"]
+        );
+        assert!(names(&s, &q("*.pd")).is_empty());
+        assert_eq!(
+            with("*.pd", |q| q.whole_filename_wildcards = false),
+            ["report.pdf", "Report.PDF"]
+        );
     }
 
     #[test]

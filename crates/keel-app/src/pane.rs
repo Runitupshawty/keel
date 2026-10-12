@@ -668,6 +668,9 @@ pub fn context_menu(
         item(ui, "Mount this folder…", "", a);
     }
     item(ui, "Copy path", "", Action::CopyPath);
+    if on_item {
+        item(ui, "Copy name", "", Action::CopyName);
+    }
     if let Some(e) = entry.filter(|e| crate::clouds::can_link(ui.ctx(), e)) {
         item(ui, "Copy link", "", Action::CopyLink(e.path.clone()));
     }
