@@ -713,7 +713,10 @@ impl AppState {
             );
         }
         if let Some(text) = req.search {
+            // An explicit/forwarded request already chose this window.
+            let windows = std::mem::take(&mut self.settings.searches_in_windows);
             self.run(p, Action::Search);
+            self.settings.searches_in_windows = windows;
             if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
                 *query = text;
                 *due = Some(Instant::now());

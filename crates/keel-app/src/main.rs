@@ -90,7 +90,10 @@ mod commands; // Task 37
 mod dragout;
 mod hotkey;
 mod index_ui;
+mod omissions;
+mod quick_search;
 mod single_instance;
+mod tray;
 // --- end Task 24 ---
 
 // `crate::chips` for `chip_row` (keel-web has its own copy of the module at that path).

@@ -578,6 +578,25 @@ pub fn commands() -> Vec<Command> {
         cmd("search", "Search files", Search, &["Ctrl+F"])
             .global()
             .typing(),
+        // Task 80 (Phase 16): Quick Search window and result omissions.
+        cmd("search.quick", "Quick Search window", QuickSearch, &[]).global(),
+        cmd("omit.hide", "Omit results", OmitResults(false), &[]).global(),
+        cmd(
+            "omit.temporary",
+            "Omit results temporarily",
+            OmitResults(true),
+            &[],
+        )
+        .global(),
+        cmd("omit.manage", "Manage omissions", ManageOmissions, &[]).global(),
+        cmd(
+            "omit.show",
+            "Show omitted results (toggle)",
+            ShowOmitted,
+            &[],
+        )
+        .global(),
+        cmd("window.on_top", "Always on top (toggle)", ToggleOnTop, &[]).global(),
         cmd("go.jump", "Jump to folder or file", JumpFolder, &["Ctrl+P"])
             .global()
             .typing(),

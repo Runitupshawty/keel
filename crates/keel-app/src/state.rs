@@ -292,6 +292,8 @@ pub struct AppState {
     /// Theme, layout and preview options; saved by `settings::Persist`.
     pub settings: Settings,
     pub settings_open: bool,
+    pub quick_requested: bool,
+    pub search_window: Option<VPath>,
     /// SFTP hosts: providers, status, host-key prompts, host editor (`remotes.rs`).
     pub remotes: crate::remotes::Remotes,
     /// Cloud accounts: providers, status, the account wizard (`clouds.rs`).
@@ -443,6 +445,8 @@ impl AppState {
             undo: Default::default(),
             settings,
             settings_open: false,
+            quick_requested: false,
+            search_window: None,
             remotes,
             clouds,
             toasts: Toasts::default(),
@@ -1140,13 +1144,18 @@ impl AppState {
         tab.highlight = keel_search::Highlighter::new(&q);
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => self
-                .search
-                .search(searcher, q, applied, self.next_req, replaces),
+            Some(searcher) => self.search.search(
+                searcher,
+                q,
+                applied,
+                self.settings.omissions.filter(),
+                self.next_req,
+                replaces,
+            ),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
-                applied.text,
+                (applied.text, self.settings.omissions.filter()),
                 self.next_req,
                 self.remotes.search_gen.clone(),
                 tx,
@@ -1674,6 +1683,14 @@ impl AppState {
     }
 
     pub fn run(&mut self, p: usize, action: Action) {
+        let action = if action == Action::Delete
+            && self.tab(p).is_search()
+            && self.settings.omissions.mode
+        {
+            Action::OmitResults(true)
+        } else {
+            action
+        };
         let p = if self.dual { p } else { 0 };
         // Targets come from the visible rows; make sure they match this listing.
         let show_hidden = self.show_hidden;
@@ -2374,6 +2391,28 @@ impl AppState {
                         worker::send(&tx, &ctx, Msg::Toast(format!("Properties: {e:#}")));
                     }
                 });
+            }
+            Action::QuickSearch => self.quick_requested = true,
+            Action::ToggleOnTop => self.settings.always_on_top = !self.settings.always_on_top,
+            Action::ManageOmissions => self.settings.omissions.manage = true,
+            Action::ShowOmitted => {
+                self.settings.omissions.show_omitted = !self.settings.omissions.show_omitted;
+                self.refresh_omissions();
+            }
+            Action::OmitResults(temporary) => {
+                if self.tab(p).is_search() {
+                    let paths = self
+                        .tab(p)
+                        .targets()
+                        .iter()
+                        .map(|e| e.path.clone())
+                        .collect();
+                    self.settings.omissions.add(paths, temporary);
+                    self.refresh_omissions();
+                }
+            }
+            Action::Search if self.settings.searches_in_windows && !self.tab(p).is_search() => {
+                self.search_window = Some(self.tab(p).dir.clone());
             }
             Action::Search => {
                 if !self.tab(p).is_search() {

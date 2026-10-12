@@ -57,6 +57,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Search filters**: a combo at the right of the search box with Everything, Audio, Compressed, Document, Executable, Folder, Picture and Video (extension lists for the System backend, checked on every backend's results; Kind terms for the Library), and your own filters (name, search, Match case, Regular expression) in **Edit filters…**, kept in the profile.
 - **Search history** with a suggestions dropdown under the search box (most recent or most used first, Up/Down and Enter, Alt+Down when suggestions are off), kept per profile on this machine; Settings → **Search** has **Do not save search history**, the maximum number of searches, the order and **Clear history**.
 - API: `views.create`, `views.update` and `views.delete` (previewed; also MCP tools), and `views.list` reports each view's `backend`, `sort`, `columns`, `matching`, `filter`, `folder`, `position` and `shortcut`. See [api.md](docs/api.md).
+- A **Quick Search window**: a small window with only a search field and the results, opened from the command palette or an optional **Quick Search hotkey** (Settings → General). Esc hides it. See [Quick Search window](docs/files.md#quick-search-window-tray-and-window-options).
+- **Open searches in new windows**, **Always on top** and, on Windows, **Run in background when closed** with a notification-area icon (single click shows Keel; menu: Show Keel, New window, Exit) in Settings → General.
+- **Result omissions**: Omit results and Omit results temporarily in a search's right-click menu, a **Manage omissions** dialog, **Show omitted results**, and an omission mode where Delete omits instead of deleting. Saved per profile; applied in the search worker. See [Result omissions](docs/files.md#result-omissions).
 
 ### Changed
 

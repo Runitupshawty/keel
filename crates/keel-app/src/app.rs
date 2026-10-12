@@ -80,6 +80,13 @@ pub struct App {
     drag_out: crate::dragout::DragOut,
     /// None in tests and where the OS has no global hotkeys.
     hotkey: Option<crate::hotkey::Hotkey>,
+    quick: Option<crate::quick_search::QuickSearch>,
+    tray: Option<crate::tray::Tray>,
+    tray_attempted: bool,
+    /// Tray → Exit: the next close request really closes.
+    exiting: bool,
+    /// The window level last sent (Always on top), so it is sent once per change.
+    on_top_applied: Option<bool>,
     /// The opt-in update check and its banner (off in tests: no persist).
     updates: Option<crate::update::Updates>,
     #[cfg(test)]
@@ -172,6 +179,11 @@ impl App {
             seen_zoom: 0.0,
             drag_out: Default::default(),
             hotkey,
+            quick: None,
+            tray: None,
+            tray_attempted: false,
+            exiting: false,
+            on_top_applied: None,
             updates,
             #[cfg(test)]
             panic_next_frame: false,
@@ -226,6 +238,47 @@ impl App {
             s.panes[p].tabs = vec![Tab::new(s.home.clone())];
             s.panes[p].active = 0;
             s.list(p, 0);
+        }
+    }
+
+    fn window_events(&mut self, ctx: &egui::Context) {
+        let on_top = self.state.settings.always_on_top;
+        if self.on_top_applied != Some(on_top) {
+            self.on_top_applied = Some(on_top);
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                crate::quick_search::level(on_top),
+            ));
+        }
+        if !self.state.settings.run_in_background {
+            if self.tray.take().is_some() {
+                crate::single_instance::bring_to_front(ctx);
+            }
+            self.tray_attempted = false;
+        } else if cfg!(windows) && self.persist.is_some() && !self.tray_attempted {
+            self.tray_attempted = true;
+            match crate::tray::Tray::new(ctx) {
+                Ok(tray) => self.tray = Some(tray),
+                Err(e) => self.state.toasts.error(e),
+            }
+        }
+        let events = self.tray.as_ref().map_or_else(Vec::new, |t| t.events());
+        for event in events {
+            match event {
+                crate::tray::Event::Show => crate::single_instance::bring_to_front(ctx),
+                crate::tray::Event::NewWindow => {
+                    if let Err(e) = crate::quick_search::new_window(None, None) {
+                        self.state.toasts.error(e.to_string());
+                    }
+                }
+                crate::tray::Event::Exit => {
+                    self.exiting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        if !self.exiting && self.tray.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
@@ -544,10 +597,14 @@ impl App {
                 (Kind::Show, &set.hotkey),
                 (Kind::NewWindow, &set.hotkey_new_window),
                 (Kind::Toggle, &set.hotkey_toggle_window),
+                (Kind::Quick, &set.quick_hotkey),
             ] {
                 if let Some(e) = hotkey.sync(kind, text) {
                     s.toasts.error(e);
                 }
+            }
+            if hotkey.events.try_iter().next().is_some() {
+                s.quick_requested = true;
             }
         }
         // --- end Task 24 ---
@@ -607,6 +664,9 @@ impl App {
             s.run(p, action);
         }
         s.settings_ui(ctx);
+        if s.settings.omissions.ui(ctx) {
+            s.refresh_omissions();
+        }
         s.remotes.modals(ctx, &mut s.settings, &s.tx);
         s.cloud_modals(ctx);
         let error = ctx.style().visuals.error_fg_color;
@@ -623,10 +683,32 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window_events(ctx);
         // A panic inside a frame is logged by the panic hook; the app keeps running.
         let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ctx)));
         if frame.is_err() {
             self.recover();
+        }
+        if std::mem::take(&mut self.state.quick_requested) {
+            if self.quick.is_none() {
+                self.quick = Some(crate::quick_search::QuickSearch::new(&self.state));
+            }
+            if let Some(quick) = &mut self.quick {
+                quick.open = true;
+            }
+            ctx.send_viewport_cmd_to(
+                crate::quick_search::id(),
+                egui::ViewportCommand::Minimized(false),
+            );
+            ctx.send_viewport_cmd_to(crate::quick_search::id(), egui::ViewportCommand::Focus);
+        }
+        if let Some(quick) = &mut self.quick {
+            quick.show(ctx, &mut self.state);
+        }
+        if let Some(dir) = self.state.search_window.take() {
+            if let Err(e) = crate::quick_search::new_window(Some(&dir), Some("")) {
+                self.state.toasts.error(e.to_string());
+            }
         }
         crate::crash::modal(ctx, &mut self.report, &mut self.state.settings.crash_prompt);
         if self.report.is_none() {

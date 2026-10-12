@@ -23,10 +23,12 @@ pub enum Kind {
     NewWindow,
     /// Show Keel, or minimize it when it is already in front.
     Toggle,
+    /// Open the Quick Search window (the app reads `Hotkey::events`).
+    Quick,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::Show, Kind::NewWindow, Kind::Toggle];
+    pub const ALL: [Kind; 4] = [Kind::Show, Kind::NewWindow, Kind::Toggle, Kind::Quick];
 
     fn index(self) -> usize {
         self as usize
@@ -38,6 +40,7 @@ impl Kind {
             Kind::Show => "Global hotkey",
             Kind::NewWindow => "New window hotkey",
             Kind::Toggle => "Toggle window hotkey",
+            Kind::Quick => "Quick Search hotkey",
         }
     }
 
@@ -48,6 +51,7 @@ impl Kind {
             Kind::Toggle => {
                 "Shows Keel from any app, or minimizes it when it is in front, e.g. Ctrl+Shift+Alt+J."
             }
+            Kind::Quick => "Opens the Quick Search window from any app, e.g. Ctrl+Shift+Alt+Space.",
         }
     }
 
@@ -72,6 +76,8 @@ impl Kind {
                     crate::single_instance::bring_to_front(ctx);
                 }
             }
+            // Handled by the event handler: it tells the app through `Hotkey::events`.
+            Kind::Quick => {}
         }
     }
 }
@@ -86,9 +92,11 @@ struct Slot {
 
 pub struct Hotkey {
     manager: GlobalHotKeyManager,
-    slots: [Slot; 3],
+    slots: [Slot; 4],
     /// Registered hotkey ids and what each does (read by the event handler).
     ids: Arc<Mutex<Vec<(u32, Kind)>>>,
+    /// The Quick Search hotkey was pressed (once per press).
+    pub events: crossbeam_channel::Receiver<()>,
     /// Another Keel is the single instance and holds the hotkeys: failing to register one
     /// here is expected, not worth a toast.
     quiet: bool,
@@ -121,6 +129,7 @@ impl Hotkey {
         let ctx = ctx.clone();
         let ids: Arc<Mutex<Vec<(u32, Kind)>>> = Arc::default();
         let read = ids.clone();
+        let (quick_tx, events) = crossbeam_channel::unbounded();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             if e.state == HotKeyState::Pressed {
                 let kind = read
@@ -128,8 +137,13 @@ impl Hotkey {
                     .iter()
                     .find(|(id, _)| *id == e.id)
                     .map(|(_, k)| *k);
-                if let Some(kind) = kind {
-                    kind.run(&ctx);
+                match kind {
+                    Some(Kind::Quick) => {
+                        let _ = quick_tx.send(());
+                        ctx.request_repaint();
+                    }
+                    Some(kind) => kind.run(&ctx),
+                    None => {}
                 }
             }
         }));
@@ -137,6 +151,7 @@ impl Hotkey {
             manager,
             slots: Default::default(),
             ids,
+            events,
             quiet,
         })
     }
@@ -216,6 +231,7 @@ mod tests {
         // The new ones are off until set.
         assert_eq!(parse(&s.hotkey_new_window), Ok(None));
         assert_eq!(parse(&s.hotkey_toggle_window), Ok(None));
+        assert_eq!(parse(&s.quick_hotkey), Ok(None));
     }
 
     #[test]
@@ -234,7 +250,12 @@ mod tests {
         let labels: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
         assert_eq!(
             labels,
-            ["Global hotkey", "New window hotkey", "Toggle window hotkey"]
+            [
+                "Global hotkey",
+                "New window hotkey",
+                "Toggle window hotkey",
+                "Quick Search hotkey"
+            ]
         );
         for (i, k) in Kind::ALL.iter().enumerate() {
             assert_eq!(k.index(), i);

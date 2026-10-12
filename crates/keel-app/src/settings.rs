@@ -56,6 +56,11 @@ pub struct Settings {
     /// Global hotkey that brings Keel forward ("" = none), e.g. "Ctrl+Shift+Alt+K" (not
     /// Ctrl+Alt alone: AltGr on many layouts; see `hotkey`).
     pub hotkey: String,
+    pub quick_hotkey: String,
+    pub searches_in_windows: bool,
+    pub run_in_background: bool,
+    pub always_on_top: bool,
+    pub omissions: crate::omissions::Omissions,
     /// A second `keel` hands its folder / search to the running one and exits.
     pub single_instance: bool,
     // --- Task 23 ---
@@ -233,6 +238,11 @@ impl Default for Settings {
             clouds: Vec::new(),
             hotkey: "Ctrl+Shift+Alt+K".into(),
             single_instance: true,
+            quick_hotkey: String::new(),
+            searches_in_windows: false,
+            run_in_background: false,
+            always_on_top: false,
+            omissions: Default::default(),
             column_widths: Vec::new(),
             reduce_motion: false,
             ui_scale: 1.0,
@@ -863,10 +873,27 @@ pub fn window(
                             crate::hotkey::Kind::Show => &mut s.hotkey,
                             crate::hotkey::Kind::NewWindow => &mut s.hotkey_new_window,
                             crate::hotkey::Kind::Toggle => &mut s.hotkey_toggle_window,
+                            crate::hotkey::Kind::Quick => &mut s.quick_hotkey,
                         };
                         let _ = crate::hotkey::field(ui, kind, text).labelled_by(label.id);
                         ui.end_row();
                     }
+                    ui.label("Search windows");
+                    ui.checkbox(&mut s.searches_in_windows, "Open searches in new windows");
+                    ui.end_row();
+                    ui.label("Window level");
+                    ui.checkbox(&mut s.always_on_top, "Always on top");
+                    ui.end_row();
+                    if cfg!(windows) {
+                        ui.label("Tray");
+                        ui.checkbox(&mut s.run_in_background, "Run in background when closed");
+                        ui.end_row();
+                    }
+                    ui.label("Result omissions");
+                    if ui.button("Manage omissions").clicked() {
+                        s.omissions.manage = true;
+                    }
+                    ui.end_row();
                     ui.label("Instances");
                     ui.checkbox(&mut s.single_instance, "Reuse the running window")
                         .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
@@ -1040,6 +1067,31 @@ label = "nas"
             toml::from_str::<Settings>(&toml::to_string(&custom).unwrap()).unwrap(),
             custom
         );
+    }
+
+    #[test]
+    fn window_and_omission_settings_upgrade_and_round_trip() {
+        let defaults: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert_eq!(defaults.quick_hotkey, "");
+        assert!(!defaults.searches_in_windows);
+        assert!(!defaults.run_in_background);
+        assert!(!defaults.always_on_top);
+        assert_eq!(defaults.omissions, crate::omissions::Omissions::default());
+        let mut omissions = crate::omissions::Omissions {
+            show_omitted: true,
+            ..Default::default()
+        };
+        omissions.add(vec![keel_vfs::VPath::local("/x/omitted.txt")], false);
+        let custom = Settings {
+            quick_hotkey: "Ctrl+Shift+Alt+Space".into(),
+            searches_in_windows: true,
+            run_in_background: true,
+            always_on_top: true,
+            omissions,
+            ..defaults
+        };
+        let text = toml::to_string_pretty(&custom).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), custom, "{text}");
     }
 
     #[test]

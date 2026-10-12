@@ -164,6 +164,11 @@ pub enum Action {
     /// when single-pane).
     OpenLocation,
     Search,
+    QuickSearch,
+    OmitResults(bool),
+    ManageOmissions,
+    ShowOmitted,
+    ToggleOnTop,
     JumpFolder,
     /// A Ctrl+P result: a folder opens; a file opens its folder with it selected and the
     /// preview shown. In a new tab, or in the other pane (a new tab when single-pane).

@@ -261,8 +261,14 @@ pub fn spawn_probe(searcher: Arc<dyn Searcher>, tx: Sender<Msg>, ctx: egui::Cont
 }
 
 /// A query, the filter applied to it (`search_filters::apply`: its extensions are checked
-/// on every backend's hits) and the request id.
-type SearchJob = (Arc<dyn Searcher>, Query, crate::search_filters::Applied, u64);
+/// on every backend's hits), the omissions to leave out and the request id.
+type SearchJob = (
+    Arc<dyn Searcher>,
+    Query,
+    crate::search_filters::Applied,
+    crate::omissions::Filter,
+    u64,
+);
 
 /// One search thread for the whole app. Queries wait their turn (Everything serves one
 /// at a time); a query whose tab has moved on to a newer one is dropped unrun, so typing
@@ -282,13 +288,15 @@ impl SearchWorker {
         let live: Arc<Mutex<HashSet<u64>>> = Arc::default();
         let wanted = live.clone();
         spawn("keel-search", move || {
-            while let Ok((searcher, query, applied, id)) = rx.recv() {
+            while let Ok((searcher, query, applied, omissions, id)) = rx.recv() {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
-                let mut result = searcher.query(&query);
-                if let Ok(hits) = &mut result {
+                let mut result = searcher.query(&query).map(|mut hits| {
                     hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
+                    omissions.apply(hits)
+                });
+                if let Ok(hits) = &mut result {
                     if wanted.lock().contains(&id) {
                         fill_missing_meta(hits);
                     }
@@ -306,6 +314,7 @@ impl SearchWorker {
         searcher: Arc<dyn Searcher>,
         query: Query,
         applied: crate::search_filters::Applied,
+        omissions: crate::omissions::Filter,
         id: u64,
         replaces: u64,
     ) {
@@ -314,7 +323,7 @@ impl SearchWorker {
             live.remove(&replaces);
             live.insert(id);
         }
-        let _ = self.jobs.send((searcher, query, applied, id));
+        let _ = self.jobs.send((searcher, query, applied, omissions, id));
     }
 }
 
@@ -452,6 +461,54 @@ mod tests {
         }
     }
 
+    /// Task 76: omitted paths never reach the tab.
+    #[test]
+    fn search_worker_applies_omissions() {
+        struct Fixed;
+        impl Searcher for Fixed {
+            fn query(&self, _: &Query) -> anyhow::Result<Vec<keel_search::Hit>> {
+                Ok(["/x/keep.txt", "/x/omit.txt", "/x/later.txt"]
+                    .into_iter()
+                    .map(|p| keel_search::Hit {
+                        path: keel_vfs::VPath::local(p),
+                        is_dir: false,
+                        size: 0,
+                        modified: None,
+                        snippet: None,
+                    })
+                    .collect())
+            }
+            fn available(&self) -> bool {
+                true
+            }
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = SearchWorker::new(tx, egui::Context::default());
+        let mut omissions = crate::omissions::Omissions::default();
+        omissions.add(vec![keel_vfs::VPath::local("/x/omit.txt")], false);
+        omissions.add(vec![keel_vfs::VPath::local("/x/later.txt")], true);
+        for (id, show) in [(1, false), (2, true)] {
+            omissions.show_omitted = show;
+            worker.search(Arc::new(Fixed), "x".into(), id, 0, omissions.filter());
+            let names = match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
+                Msg::Search { id: got, result } => {
+                    assert_eq!(got, id);
+                    let hits = result.unwrap();
+                    hits.iter()
+                        .map(|h| h.path.name().to_owned())
+                        .collect::<Vec<_>>()
+                }
+                _ => panic!("unexpected message"),
+            };
+            let want: &[&str] = if show {
+                &["keep.txt", "omit.txt", "later.txt"]
+            } else {
+                &["keep.txt"]
+            };
+            assert_eq!(names, want);
+        }
+    }
+
     /// Polish backlog: one search thread; a tab's superseded query is never run.
     #[test]
     fn search_worker_skips_superseded_queries() {
@@ -469,11 +526,6 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
-        let q = |text: &str| Query {
-            text: text.into(),
-            ..Query::default()
-        };
-        worker.search(slow.clone(), q("a"), 1, 0);
         // Wait until "a" is really running (a slow machine may not have scheduled the
         // worker yet; a later query for the same tab would then supersede it).
         let until = std::time::Instant::now() + Duration::from_secs(5);
@@ -485,9 +537,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
-        worker.search(slow.clone(), q("ab"), 2, 1);
-        worker.search(slow.clone(), q("x"), 3, 0);
-        worker.search(slow.clone(), q("abc"), 4, 2);
         let mut answered = Vec::new();
         while answered.len() < 3 {
             match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
