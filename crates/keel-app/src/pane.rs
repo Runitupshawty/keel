@@ -24,6 +24,9 @@ pub enum ViewMode {
     // --- Task 46 ---
     /// Folders and files by size with share bars (`view_details` with `Tab::sizes_view`).
     Sizes,
+    // --- Task 66 ---
+    /// A big preview of the selected item over a strip of thumbnails (`view_gallery`).
+    Gallery,
 }
 
 pub struct Pane {
@@ -64,6 +67,8 @@ pub struct ViewCx<'a> {
     pub sizes: &'a crate::sizes::Sizes,
     /// This pane has the keys: its cursor row takes the keyboard focus (`a11y::item`).
     pub keys: bool,
+    /// Task 66: Icon view options and per-folder view memory (settings `[views]`).
+    pub views: &'a mut crate::view_prefs::ViewPrefs,
 }
 
 impl Pane {
@@ -247,6 +252,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         ViewMode::Grid => view_grid::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Columns => crate::view_columns::ui(ui, (idx, tab_idx), tab, cx, out),
         ViewMode::Media => crate::view_media::ui(ui, (idx, tab_idx), tab, cx, out),
+        ViewMode::Gallery => crate::view_gallery::ui(ui, (idx, tab_idx), tab, cx, out),
     }
 }
 
@@ -365,6 +371,11 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     ViewMode::Media,
                     "Media",
                     "Photo and video tiles (Space opens the viewer)",
+                ),
+                (
+                    ViewMode::Gallery,
+                    "Gallery",
+                    "Gallery view: a big preview over a strip of thumbnails",
                 ),
                 (ViewMode::Columns, "Columns", "Columns view"),
                 (ViewMode::Grid, "Grid", "Grid view with thumbnails"),

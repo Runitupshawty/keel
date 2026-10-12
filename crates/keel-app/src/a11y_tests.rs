@@ -138,6 +138,7 @@ fn every_control_has_a_name_and_a_role() {
         ViewMode::Grid,
         ViewMode::Columns,
         ViewMode::Media,
+        ViewMode::Gallery,
         ViewMode::Details,
     ] {
         set_view(&mut h, view);

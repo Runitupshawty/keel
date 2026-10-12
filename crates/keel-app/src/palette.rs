@@ -137,6 +137,14 @@ fn global_items() -> Vec<Item> {
         ("Calculate sizes", "", CalculateSizes { fresh: true }),
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
+        // --- Task 66 ---
+        ("Grid view", "", View(crate::pane::ViewMode::Grid)),
+        ("Gallery view", "", View(crate::pane::ViewMode::Gallery)),
+        (
+            "Always open this folder in the current view",
+            "",
+            ToggleAlwaysOpen,
+        ),
         ("Settings", "Ctrl+,", Settings),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),

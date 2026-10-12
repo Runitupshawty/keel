@@ -4831,6 +4831,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "vt100",
  "x11rb",
  "zeroize",

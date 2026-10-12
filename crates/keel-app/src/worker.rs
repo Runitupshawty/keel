@@ -325,7 +325,9 @@ impl ThumbPool {
                     if cancelled.lock().remove(&key) {
                         continue;
                     }
-                    let preview = render(&router, entry, 0, thumb_px(ctx.pixels_per_point()));
+                    // Task 66: a big icon size asks for a bigger thumbnail (`key.width`).
+                    let px = sized_thumb_px(key.width, ctx.pixels_per_point());
+                    let preview = render(&router, entry, 0, px);
                     send(&tx, &ctx, Msg::Thumb { key, preview });
                 }
             });
@@ -345,6 +347,14 @@ pub fn thumb_px(pixels_per_point: f32) -> u32 {
     ((THUMB_PX as f32 * pixels_per_point).round() as u32).max(THUMB_PX)
 }
 
+/// Task 66: a thumbnail box of `points` (0 = the usual `THUMB_PX`) in physical pixels.
+pub fn sized_thumb_px(points: u32, pixels_per_point: f32) -> u32 {
+    match points {
+        0 => thumb_px(pixels_per_point),
+        p => ((p as f32 * pixels_per_point).round() as u32).max(p),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +372,8 @@ mod tests {
         assert_eq!(thumb_px(1.5), 144);
         assert_eq!(thumb_px(2.0), 192);
         assert_eq!(thumb_px(0.5), 96, "never below the box");
+        assert_eq!(sized_thumb_px(0, 2.0), 192, "0: the usual box");
+        assert_eq!(sized_thumb_px(512, 1.5), 768);
     }
 
     /// Review Focus 4 / polish backlog: a stuck render times out, a fresh helper serves
