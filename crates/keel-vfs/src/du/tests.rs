@@ -75,7 +75,10 @@ fn totals_counts_extensions_and_paths() {
     let rn = t.node(r);
     assert_eq!((rn.size, rn.files, rn.folders, rn.items), (10_360, 5, 3, 8));
     let a = id_of(&t, &root.join("a"));
-    assert_eq!((t.node(a).size, t.node(a).files, t.node(a).folders), (23, 2, 1));
+    assert_eq!(
+        (t.node(a).size, t.node(a).files, t.node(a).folders),
+        (23, 2, 1)
+    );
     assert_eq!(t.path(a).unwrap(), root.join("a"));
     let two = id_of(&t, &root.join("a/b/two.TXT"));
     assert_eq!(t.ext(two), "txt");
@@ -163,7 +166,9 @@ fn hard_links_count_once_unless_turned_off() {
     };
     let t = scan_with(root, &off);
     assert_eq!(t.node(TOP).size, 2007);
-    assert!(!t.nodes().any(|(_, n)| n.has(flag::HARDLINK | flag::HARDLINK_DUP)));
+    assert!(!t
+        .nodes()
+        .any(|(_, n)| n.has(flag::HARDLINK | flag::HARDLINK_DUP)));
 }
 
 #[test]
@@ -388,7 +393,10 @@ fn pause_resume_and_cancel() {
     std::thread::spawn(move || {
         let _ = tx.send(scan(&[Root::Path(r)], &ScanOptions::default(), &h));
     });
-    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "paused");
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "paused"
+    );
     let p = handle.progress();
     assert!(p.paused && !p.done);
     assert_eq!(p.files, 0);
@@ -458,7 +466,10 @@ fn refresh_rescans_one_branch() {
     fs::remove_dir_all(root.join("a")).unwrap();
     t.refresh(a, &ScanHandle::new()).unwrap();
     assert_eq!(t.find(&root.join("a")), None);
-    assert_eq!((t.node(TOP).size, t.node(TOP).files, t.node(TOP).folders), (2, 1, 2));
+    assert_eq!(
+        (t.node(TOP).size, t.node(TOP).files, t.node(TOP).folders),
+        (2, 1, 2)
+    );
 
     assert!(t.live() < t.len());
     t.compact();
@@ -514,10 +525,7 @@ fn save_and_load_round_trip() {
         assert_eq!(got.options, want.options);
         assert_eq!(got.info.complete, want.info.complete);
         assert_eq!(got.info.started, want.info.started);
-        assert_eq!(
-            got.info.elapsed.as_millis(),
-            want.info.elapsed.as_millis()
-        );
+        assert_eq!(got.info.elapsed.as_millis(), want.info.elapsed.as_millis());
         assert_eq!(got.node(TOP).size, 1012);
         assert!(got.find(&root.join("y/same.bin")).is_some());
     }
@@ -542,7 +550,10 @@ fn loading_checks_the_structure() {
     assert_eq!(t.node(4).size, 444);
     assert_eq!(t.node(TOP).size, 200);
     let s = t.summary(10);
-    assert_eq!((s.roots[0].free, s.roots[0].unknown), (Some(300), Some(444)));
+    assert_eq!(
+        (s.roots[0].free, s.roots[0].unknown),
+        (Some(300), Some(444))
+    );
     assert_eq!(s.roots[0].children.len(), 1);
 
     let bad = [

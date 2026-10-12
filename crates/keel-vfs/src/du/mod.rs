@@ -27,9 +27,9 @@
 mod file;
 mod filter;
 mod sys;
-mod walk;
 #[cfg(test)]
 mod tests;
+mod walk;
 
 pub use file::{load, load_from, save, save_to, FORMAT, VERSION};
 pub use filter::Filters;
@@ -474,7 +474,11 @@ impl Tree {
 
     /// Scans the same roots again with the same options.
     pub fn rescan(&self, handle: &ScanHandle) -> anyhow::Result<Tree> {
-        let roots: Vec<Root> = self.roots.iter().map(|r| Root::Path(r.path.clone())).collect();
+        let roots: Vec<Root> = self
+            .roots
+            .iter()
+            .map(|r| Root::Path(r.path.clone()))
+            .collect();
         scan(&roots, &self.options, handle)
     }
 
@@ -595,8 +599,9 @@ impl Tree {
                 let n = &mut self.nodes[c as usize];
                 let bytes = match n.kind {
                     NodeKind::Free => space.free,
-                    NodeKind::Unknown => (space.total.saturating_sub(space.free))
-                        .saturating_sub(scanned),
+                    NodeKind::Unknown => {
+                        (space.total.saturating_sub(space.free)).saturating_sub(scanned)
+                    }
                     _ => continue,
                 };
                 n.size = bytes;

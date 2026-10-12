@@ -261,7 +261,15 @@ impl<'a> Walker<'a> {
             } else if deep {
                 n.flags |= flag::TOO_DEEP;
             } else {
-                b.subdirs.push((b.nodes.len(), Job { node: NONE, path, cluster, drive: false }));
+                b.subdirs.push((
+                    b.nodes.len(),
+                    Job {
+                        node: NONE,
+                        path,
+                        cluster,
+                        drive: false,
+                    },
+                ));
             }
             b.nodes.push(n);
             return;
@@ -347,7 +355,15 @@ impl<'a> Walker<'a> {
                 // The target may be on another volume.
                 let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
                 let cluster = sys::cluster_size(&real);
-                b.subdirs.push((b.nodes.len(), Job { node: NONE, path, cluster, drive: false }));
+                b.subdirs.push((
+                    b.nodes.len(),
+                    Job {
+                        node: NONE,
+                        path,
+                        cluster,
+                        drive: false,
+                    },
+                ));
             }
             b.nodes.push(n);
             return;
@@ -443,7 +459,10 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
             }
         }
     }
-    anyhow::ensure!(!paths.is_empty(), "nothing to scan: no local drives were found");
+    anyhow::ensure!(
+        !paths.is_empty(),
+        "nothing to scan: no local drives were found"
+    );
     anyhow::ensure!(paths.len() < 1 << 20, "too many roots");
     let pool = pool(opts.threads)?;
     handle.start();

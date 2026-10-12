@@ -61,7 +61,13 @@ impl Compiled {
             _ => None,
         };
         let now = super::walk::now_ns();
-        let ago = |secs: u64| now.saturating_sub(i64::try_from(secs).unwrap_or(i64::MAX / 2).saturating_mul(1_000_000_000));
+        let ago = |secs: u64| {
+            now.saturating_sub(
+                i64::try_from(secs)
+                    .unwrap_or(i64::MAX / 2)
+                    .saturating_mul(1_000_000_000),
+            )
+        };
         Ok(Compiled {
             paths: (f.exclude_paths.iter())
                 .map(|p| key(&std::path::absolute(p).unwrap_or_else(|_| p.clone())))
@@ -109,7 +115,8 @@ impl Compiled {
         if mtime == UNKNOWN_TIME {
             return false;
         }
-        self.older_cut.is_some_and(|cut| mtime < cut) || self.newer_cut.is_some_and(|cut| mtime > cut)
+        self.older_cut.is_some_and(|cut| mtime < cut)
+            || self.newer_cut.is_some_and(|cut| mtime > cut)
     }
 }
 

@@ -182,7 +182,11 @@ pub fn load(path: &Path) -> Result<Tree> {
     load_from(f).or_else(|e| {
         // A newer Keel's file says so rather than failing on its layout.
         if let Ok(h) = read_header(path) {
-            anyhow::ensure!(h.format == FORMAT, "{} is not a Keel scan file", path.display());
+            anyhow::ensure!(
+                h.format == FORMAT,
+                "{} is not a Keel scan file",
+                path.display()
+            );
             anyhow::ensure!(
                 h.version <= VERSION,
                 "{} is a version {} scan file, newer than this Keel reads ({VERSION})",
@@ -259,7 +263,10 @@ fn build(doc: DocIn) -> Result<Tree> {
             anyhow::ensure!(kind != NodeKind::Top, "item {i}: a second top");
             anyhow::ensure!((parent as usize) < i, "item {i}: parent {parent} after it");
             let p = &mut nodes[parent as usize];
-            anyhow::ensure!(p.is_container(), "item {i}: parent {parent} is not a folder");
+            anyhow::ensure!(
+                p.is_container(),
+                "item {i}: parent {parent} is not a folder"
+            );
             anyhow::ensure!(
                 (kind == NodeKind::Root) == (p.kind == NodeKind::Top),
                 "item {i}: roots and only roots are below the top"

@@ -199,7 +199,12 @@ mod imp {
         loop {
             // SAFETY: `buf` is writable for the byte length passed.
             let r = unsafe {
-                GetFileInformationByHandleEx(h.0, class, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32)
+                GetFileInformationByHandleEx(
+                    h.0,
+                    class,
+                    buf.as_mut_ptr().cast(),
+                    (buf.len() * 8) as u32,
+                )
             };
             if let Err(e) = r {
                 if e.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0) {
@@ -321,25 +326,30 @@ mod imp {
             // FAT and some redirectors: no 128-bit ids (and no hard links).
             entries.clear();
             let name_at_off = mem::offset_of!(FILE_FULL_DIR_INFO, FileName);
-            let ok = enumerate(&h, FileFullDirectoryRestartInfo, FileFullDirectoryInfo, &mut |p| {
-                // SAFETY: `p` starts a FILE_FULL_DIR_INFO record whose name has
-                // FileNameLength bytes after the fixed part.
-                let (info, name) = unsafe {
-                    let info = std::ptr::read_unaligned(p.cast::<FILE_FULL_DIR_INFO>());
-                    (info, name_at(p.add(name_at_off), info.FileNameLength))
-                };
-                // EaSize holds the reparse tag of a reparse point.
-                entries.extend(raw(
-                    dir,
-                    name,
-                    info.FileAttributes,
-                    info.EaSize,
-                    info.EndOfFile,
-                    info.AllocationSize,
-                    info.LastWriteTime,
-                    None,
-                ));
-            })?;
+            let ok = enumerate(
+                &h,
+                FileFullDirectoryRestartInfo,
+                FileFullDirectoryInfo,
+                &mut |p| {
+                    // SAFETY: `p` starts a FILE_FULL_DIR_INFO record whose name has
+                    // FileNameLength bytes after the fixed part.
+                    let (info, name) = unsafe {
+                        let info = std::ptr::read_unaligned(p.cast::<FILE_FULL_DIR_INFO>());
+                        (info, name_at(p.add(name_at_off), info.FileNameLength))
+                    };
+                    // EaSize holds the reparse tag of a reparse point.
+                    entries.extend(raw(
+                        dir,
+                        name,
+                        info.FileAttributes,
+                        info.EaSize,
+                        info.EndOfFile,
+                        info.AllocationSize,
+                        info.LastWriteTime,
+                        None,
+                    ));
+                },
+            )?;
             if !ok {
                 return Err(io::Error::other("the folder cannot be enumerated"));
             }
@@ -352,7 +362,9 @@ mod imp {
         let md = std::fs::metadata(&long)?;
         let attrs = md.file_attributes();
         let dir = md.is_dir();
-        let id = open(path, FILE_READ_ATTRIBUTES.0).ok().and_then(|h| file_id(&h));
+        let id = open(path, FILE_READ_ATTRIBUTES.0)
+            .ok()
+            .and_then(|h| file_id(&h));
         let alloc = (!dir && attrs & attr::CLOUD == 0)
             .then(|| compressed_size(path))
             .flatten();
@@ -402,7 +414,13 @@ mod imp {
         let (mut spc, mut bps) = (0u32, 0u32);
         // SAFETY: `root` is NUL-terminated; the outputs are u32s the call writes.
         let ok = unsafe {
-            GetDiskFreeSpaceW(PCWSTR(root.as_ptr()), Some(&mut spc), Some(&mut bps), None, None)
+            GetDiskFreeSpaceW(
+                PCWSTR(root.as_ptr()),
+                Some(&mut spc),
+                Some(&mut bps),
+                None,
+                None,
+            )
         };
         match ok {
             Ok(()) if spc > 0 && bps > 0 => u64::from(spc) * u64::from(bps),
@@ -578,4 +596,3 @@ mod imp {
         out
     }
 }
-
