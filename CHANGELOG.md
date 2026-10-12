@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Remove empty folders…** (Folder operations, the command palette, `plan.remove_empty`, `keel plan remove-empty <folder>`): every empty folder below a folder, the outermost of each empty branch whole, goes to the Recycle Bin or Trash after a preview that lists them. A folder that got a file after the preview refuses the plan and shows the fresh one; Ctrl+Z restores them from the bin. See [Folder operations](docs/files.md#folder-operations).
+- **Compress (NTFS)…** (Windows; context menu and command palette): compress files and folders with LZNT1 or the Windows Overlay Filter's XPRESS 4K, 8K, 16K and LZX, or uncompress them, recursively, as a job with a preview of the file count, progress and Cancel; a note says what was saved on disk, measured before and after. See [Compress (NTFS)](docs/files.md#compress-ntfs).
+- **Cleanups**: your own commands with placeholders (`%p` path, `%n` name, `%s` path without a trailing separator, `%d` folder, `%e` extension, `%%`), for files, folders or drives, optionally recursive, stored per profile and edited in Settings → Cleanups; run from the context menu (Cleanups) and the command palette ("Run cleanup: …"). Every path stays one argument whatever it holds, `cmd /c`, `sh -c` and PowerShell scripts get each value quoted for that shell, and the expanded commands are shown before the first run (and every run with "Ask before running"). See [Cleanups](docs/files.md#cleanups).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

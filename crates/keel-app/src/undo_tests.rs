@@ -986,3 +986,33 @@ fn attributes_and_links_undone() {
     assert!(!tmp.path().join("link").exists());
     assert_eq!(tree(tmp.path()), before, "what it pointed to stays");
 }
+
+/// Task 85: remove empty folders is undone from the Recycle Bin / Trash: every branch it
+/// sent there comes back where it was.
+#[test]
+fn removed_empty_folders_come_back_from_the_trash() {
+    let _g = BIN.lock().unwrap_or_else(|e| e.into_inner());
+    let (_tmp, a, _b) = fixture();
+    if !trash_works(&a) || !keel_vfs::trashbin::KNOWS_ORIGIN {
+        return;
+    }
+    let root = a.join(unique("empties"));
+    for d in ["x/y/z", "w"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::write(root.join("keep.txt"), "k").unwrap();
+    let (_data, lib) = library();
+    let op = keel_core::Op::arrange(
+        keel_core::FolderOp::RemoveEmpty {
+            folder: VPath::local(&root),
+        },
+        keel_core::OnConflict::Skip,
+    );
+    let e = run_plan(&lib, op);
+    assert!(!root.join("x").exists() && !root.join("w").exists());
+    assert_eq!(e.items.len(), 2);
+    undo(&Router::new(), &e).unwrap();
+    assert!(root.join("x/y/z").is_dir(), "the branch came back whole");
+    assert!(root.join("w").is_dir());
+    assert!(root.join("keep.txt").exists());
+}

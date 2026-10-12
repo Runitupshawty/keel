@@ -129,12 +129,48 @@ Right-click a folder (or a file, for the last two) and open **Folder operations*
 | **Organize by…** | The folder's files (not its subfolders) move into subfolders by **Type** (Images, Videos, Audio, Documents, Archives, Other, by extension), **Year** (`2024`) or **Year and month** (`2024-03`) of their modified date; missing subfolders are made |
 | **Attributes…** | Hidden and read-only (Windows; hidden also on macOS), and on Linux and macOS the mode bits in octal (`755`). The checkboxes start at the items' current values (filled in grey when the selected items differ); only what you change is set. Not recursive |
 | **Create link…** | A link to the selected file or folder, next to it: a **Junction** (Windows, folders) or a **Hard link** (files, on the same drive), or a **Symbolic link** |
+| **Remove empty folders…** | Every empty folder below the folder goes to the Recycle Bin (Trash): a folder holding no files and no links at any depth, so a branch of empty folders goes whole, as one item. A folder with a hidden file in it (`desktop.ini`, `.DS_Store`) is not empty. Each folder is checked again just before it goes; one that got a file since stays |
 
 With nothing selected, Flatten, Organize and Attributes work on the folder shown. Merge, Flatten and Organize ask what happens when a name is taken: **Skip** (the item stays where it was, and so does its folder), **Keep both** (the new one gets a free name such as `a (2).txt`) or **Overwrite**. Two items of one operation never land on one name (letter case aside, on every system): with Skip or Keep both the later ones get the next free name (`same (2).txt`), and with Overwrite, which would replace the operation's own files, the operation is refused, naming each item that would. Each operation then opens the library's preview, which lists every move with its target, every folder it makes or removes, and every name that is taken; Enter or **Confirm** runs it as a job in the jobs panel, with progress and cancel. A cancelled operation leaves every file in one place, moved or not. If the folder changed after the preview (a file added, removed or renamed), the operation does not run: the fresh preview is shown to confirm instead. Links (symbolic links, junctions) inside the folders are never moved and never followed; a folder that still holds one stays.
 
 Symbolic links on Windows need Developer Mode (Settings → System → For developers) or an elevated program, and Keel never elevates: the dialog says so and offers a junction (folders) or a hard link (files) instead, which need neither.
 
 **Ctrl+Z** undoes the last of these like any file operation: merge, flatten and organize move every item back (refusing, without moving anything, when its old place is taken) and make again the folders they removed, then remove the folders they made if they are empty. A folder that merged into one of the same name already there (Skip) stays where it went, since what is in that folder now is both, and the toast says so; attributes get their old values back; a symbolic link or junction is removed (never what it points to) and a hard link goes to the trash. They are library plans, so the library must be on (Settings → Library); the folders need not be in a library source. From a terminal: `keel plan merge|flatten|organize|attrs|link` ([api.md](api.md#cli)).
+
+## Compress (NTFS)
+
+On Windows, right-click files or folders (or the empty space, for the folder shown) and pick **Compress (NTFS)…**, or type it in the command palette. The dialog picks how:
+
+| Choice | What it is |
+| --- | --- |
+| **LZNT1 (NTFS)** | Classic NTFS compression (`compact /c`): any file, read and written as usual. Set on a folder, the files made in it later are compressed too |
+| **XPRESS 4K / 8K / 16K, LZX** | The Windows Overlay Filter (`compact /exe`), per file: more saving than LZNT1 (LZX the most, and the slowest). For files that are only read, such as programs and games: a file written to later is stored uncompressed again. Folders are left as they are |
+| **Uncompress** | Takes either kind off |
+
+**Everything in subfolders too** (on by default) goes through every folder below; off, a folder's own files only. The dialog counts the files and their size first; the run is a job in the jobs panel with progress and **Cancel** (what is done stays done), and when it ends a note says what it saved on disk ("1.2 GB on disk, was 3.4 GB (saved 2.2 GB)"), measured file by file before and after. Files where compression saves nothing, or a volume without the Overlay Filter, are left as they were and counted; a file that fails (in use, no permission) is named and the rest go on. A read-only file is compressed too and stays read-only. Links (symbolic links, junctions) are never followed. Only drives with NTFS compression offer it (not FAT, exFAT, ReFS or network shares).
+
+## Cleanups
+
+Your own commands for the selected files, folders or drives, kept in the profile (**Settings → Cleanups**, or **Edit cleanups…** in the command palette): right-click → **Cleanups** → the one to run, or **Run cleanup: <title>** in the command palette. With nothing selected a cleanup runs on the folder shown. Each has:
+
+| Setting | Meaning |
+| --- | --- |
+| **Title** | Its name in the menu and the palette |
+| **Command line** | The program and its arguments, with placeholders: `%p` the full path, `%n` the name, `%s` the path without a trailing `\` or `/` (`C:` for `C:\`), `%d` the folder (a file's folder, or the folder itself), `%e` the extension (no dot; empty for folders), `%%` a percent sign. Any other `%` letter is refused, so a typo never runs. The command runs in `%d` |
+| **Works for** | Files, Folders, Drives (selected items of the other kinds are left out) |
+| **Recurse into subfolders** | Also run for every folder below a selected folder or drive, deepest first, then the folder itself (at most 10,000 runs) |
+| **Ask before running** | Show every expanded command line and ask first. The first run of a cleanup always asks, and so does the first run after its command line changed |
+| **Wait for each to finish** | Run one after another as a job with progress and Cancel; a non-zero exit code is reported with the program's last error line. Off: start them all and do not wait |
+| **Refresh after** | With Wait, refresh the folders shown once they end |
+| **Show a console window** | Windows: run in a console window of its own (else hidden) |
+
+The command line is split into words first (Windows: the C runtime's rules, so `"C:\My Tools\x.exe"` is one word; elsewhere: a shell's quotes and backslashes), then each placeholder is replaced inside its word, so a path with spaces, quotes or any letters stays one argument. The program runs directly, not through a shell. To use a shell, name it, and leave the quotes around placeholders to Keel:
+
+- `cmd /c del /q %p` (Windows): each word holding a placeholder becomes its value in double quotes; the other words stay as typed, so `&` and `|` work. cmd.exe expands `%` even inside quotes, so a path with `%` in it is refused (run the program directly instead); for a `%` of your own, write `%%`.
+- `sh -c 'rm -- %p'` (also `bash`, `zsh`, `dash`, `ksh`): each value goes into the script single-quoted.
+- `pwsh -Command Remove-Item -LiteralPath %p` (or `powershell`): each value is a single-quoted PowerShell string, its quotes (the typographic ones too) doubled.
+
+The editor shows the command line expanded for an example file as you type, or why it cannot run.
 
 ## Command line
 
