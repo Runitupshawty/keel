@@ -4,12 +4,20 @@
 //! **System cleanups** (Windows): disable hibernation (`powercfg /h off`), analyze and
 //! clean up the component store (`Dism /Online /Cleanup-Image /AnalyzeComponentStore`,
 //! `/StartComponentCleanup`) and optimize a VHD/VHDX (`Optimize-VHD` when the Hyper-V
-//! module is installed, else a `diskpart` `compact vdisk` script). Each opens a preview
-//! with its size and the exact commands, then a second confirmation, and runs through a
-//! one-shot elevated helper: this executable started through the UAC prompt as
+//! module is installed in System32, else a `diskpart` `compact vdisk` script). Each opens
+//! a preview with its size and the exact commands, then a second confirmation, and runs
+//! through a one-shot elevated helper: this executable started through the UAC prompt as
 //! `keel --system-cleanup <task> --cleanup-report <file>` (as `keel --index-service`),
-//! which runs only those fixed commands and writes their output to the report. None of it
-//! is on a key; Keel's tests build the commands and never run them.
+//! which builds those fixed commands again itself, runs them and writes their output to
+//! the report (a new file directly in its temporary folder).
+//!
+//! What the elevated helper runs never comes from a place the unelevated user can change
+//! after the confirmation: programs are started by their full System32 path (from the OS,
+//! not the environment), the diskpart script is handed over on standard input (no script
+//! file), PowerShell gets `PSModulePath` set to the system modules only, module
+//! auto-loading off and the Hyper-V module imported by its full System32 path, and .NET
+//! profiler variables are removed. None of it is on a key; Keel's tests build the commands
+//! and never run them.
 //!
 //! **Launchers:** Disk Cleanup, Installed apps, Programs and Features and Storage settings
 //! on Windows; Storage settings on macOS; none on Linux (the menus are hidden).
@@ -51,7 +59,8 @@ pub enum SysCmd {
 pub enum SysMsg {
     Measured(Result<Measured, String>),
     DedupPlanned(DedupPlan),
-    Info(Result<TaskInfo, String>),
+    /// A preview, for the request with that id (see [`TaskDialog::request`]).
+    Info(u64, Result<TaskInfo, String>),
     VhdPicked(PathBuf),
     /// A system cleanup finished: what to tell (and for an analysis, its report).
     Done {
@@ -189,17 +198,17 @@ pub struct Step {
     pub args: Vec<String>,
     /// Environment set for it (the VHD path for PowerShell: never quoted into a script).
     pub env: Vec<(String, String)>,
-    /// A script written to a temporary file whose path is the last argument (diskpart /s).
-    pub script: Option<String>,
+    /// A script given on standard input (diskpart's commands; never a file).
+    pub stdin: Option<String>,
 }
 
 impl Step {
-    fn new(program: &str, args: &[&str]) -> Step {
+    fn new(program: String, args: &[&str]) -> Step {
         Step {
-            program: program.into(),
+            program,
             args: args.iter().map(|a| (*a).to_owned()).collect(),
             env: Vec::new(),
-            script: None,
+            stdin: None,
         }
     }
 
@@ -214,13 +223,13 @@ impl Step {
                 line += a;
             }
         }
-        if self.script.is_some() {
-            line += " <script>";
+        if self.stdin.is_some() {
+            line += " < script";
         }
         for (k, v) in &self.env {
             line += &format!("  ({k}={v})");
         }
-        if let Some(s) = &self.script {
+        if let Some(s) = &self.stdin {
             for l in s.lines() {
                 line += &format!("\n    {l}");
             }
@@ -230,18 +239,113 @@ impl Step {
 }
 
 /// The PowerShell for Optimize-VHD: attach read-only, optimize fully, always detach. The
-/// path comes from `KEEL_VHD`, so no quoting is involved.
-pub const OPTIMIZE_VHD_PS: &str = "$ErrorActionPreference = 'Stop'; \
-     Mount-VHD -Path $env:KEEL_VHD -ReadOnly -NoDriveLetter; \
-     try { Optimize-VHD -Path $env:KEEL_VHD -Mode Full } \
-     finally { Dismount-VHD -Path $env:KEEL_VHD }";
+/// path comes from `KEEL_VHD` and the Hyper-V module's manifest (under System32) from
+/// `KEEL_HYPERV`, so no quoting is involved; with auto-loading off and the commands named
+/// with their module, nothing is loaded from a module folder the user can write.
+pub const OPTIMIZE_VHD_PS: &str = "$PSModuleAutoLoadingPreference = 'None'; \
+     $ErrorActionPreference = 'Stop'; \
+     Import-Module -Name $env:KEEL_HYPERV; \
+     Hyper-V\\Mount-VHD -Path $env:KEEL_VHD -ReadOnly -NoDriveLetter; \
+     try { Hyper-V\\Optimize-VHD -Path $env:KEEL_VHD -Mode Full } \
+     finally { Hyper-V\\Dismount-VHD -Path $env:KEEL_VHD }";
 
-/// The commands `task` runs, in order (built here, run only by the elevated helper).
+/// Where the programs a cleanup runs are: from the OS, never from the environment (which
+/// the unelevated user controls).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SysDirs {
+    /// `C:\Windows\System32`.
+    pub system32: String,
+    /// The Hyper-V PowerShell module's manifest under System32, when it is installed.
+    pub hyperv: Option<String>,
+}
+
+impl SysDirs {
+    /// This system's (reads the disk for the Hyper-V module).
+    pub fn here() -> SysDirs {
+        let system32 = system32();
+        let hyperv = hyperv_manifest(Path::new(&system32));
+        SysDirs { system32, hyperv }
+    }
+
+    /// `name` in System32.
+    fn exe(&self, name: &str) -> String {
+        format!("{}\\{name}", self.system32)
+    }
+
+    /// Windows PowerShell's folder (`$PSHOME`).
+    fn ps_home(&self) -> String {
+        self.exe("WindowsPowerShell\\v1.0")
+    }
+}
+
+/// System32, from GetSystemDirectoryW.
+#[cfg(windows)]
+fn system32() -> String {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+    let mut buf = [0u16; 512];
+    // SAFETY: the buffer and its length in characters.
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return r"C:\Windows\System32".into();
+    }
+    String::from_utf16_lossy(&buf[..n])
+}
+
+#[cfg(not(windows))]
+fn system32() -> String {
+    r"C:\Windows\System32".into()
+}
+
+/// The Hyper-V module's manifest in System32's module folder: `Hyper-V\Hyper-V.psd1` or
+/// the newest `Hyper-V\<version>\Hyper-V.psd1`.
+pub fn hyperv_manifest(system32: &Path) -> Option<String> {
+    let dir = system32
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("Modules")
+        .join("Hyper-V");
+    let direct = dir.join("Hyper-V.psd1");
+    if direct.is_file() {
+        return Some(direct.to_string_lossy().into_owned());
+    }
+    let version = |name: &str| -> Option<Vec<u32>> {
+        name.split('.').map(|n| n.parse().ok()).collect()
+    };
+    let newest = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let v = version(&e.file_name().to_string_lossy())?;
+            let psd1 = e.path().join("Hyper-V.psd1");
+            psd1.is_file().then_some((v, psd1))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))?;
+    Some(newest.1.to_string_lossy().into_owned())
+}
+
+/// .NET and PowerShell settings a child must not take from the user's environment: a
+/// profiler DLL would be loaded into the elevated process.
+fn unsafe_env(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    n.starts_with("COR_") || n.starts_with("CORECLR_") || n.starts_with("COMPLUS_")
+        || n.starts_with("DOTNET_") || n == "PSMODULEPATH"
+}
+
+/// The commands `task` runs, in order (built here, and again by the elevated helper, which
+/// runs them).
 pub fn steps(task: &Task) -> Result<Vec<Step>, String> {
+    steps_in(task, &SysDirs::here())
+}
+
+/// [`steps`] with the system's folders given.
+pub fn steps_in(task: &Task, dirs: &SysDirs) -> Result<Vec<Step>, String> {
     Ok(match task {
-        Task::Hibernation => vec![Step::new("powercfg.exe", &["/h", "off"])],
+        Task::Hibernation => vec![Step::new(dirs.exe("powercfg.exe"), &["/h", "off"])],
         Task::DismAnalyze => vec![Step::new(
-            "Dism.exe",
+            dirs.exe("Dism.exe"),
             &[
                 "/Online",
                 "/Cleanup-Image",
@@ -250,7 +354,7 @@ pub fn steps(task: &Task) -> Result<Vec<Step>, String> {
             ],
         )],
         Task::DismCleanup => vec![Step::new(
-            "Dism.exe",
+            dirs.exe("Dism.exe"),
             &[
                 "/Online",
                 "/Cleanup-Image",
@@ -262,17 +366,25 @@ pub fn steps(task: &Task) -> Result<Vec<Step>, String> {
             check_vhd(path)?;
             let shown = path.display().to_string();
             if *powershell {
+                let hyperv = dirs.hyperv.clone().ok_or_else(|| {
+                    "Optimize-VHD is not installed (no Hyper-V module in System32)".to_owned()
+                })?;
                 let mut s = Step::new(
-                    "powershell.exe",
+                    format!("{}\\powershell.exe", dirs.ps_home()),
                     &["-NoProfile", "-NonInteractive", "-Command", OPTIMIZE_VHD_PS],
                 );
+                s.env.push((
+                    "PSModulePath".into(),
+                    format!("{}\\Modules", dirs.ps_home()),
+                ));
+                s.env.push(("KEEL_HYPERV".into(), hyperv));
                 s.env.push(("KEEL_VHD".into(), shown));
                 vec![s]
             } else {
-                let mut s = Step::new("diskpart.exe", &["/s"]);
-                s.script = Some(format!(
+                let mut s = Step::new(dirs.exe("diskpart.exe"), &[]);
+                s.stdin = Some(format!(
                     "select vdisk file=\"{shown}\"\r\nattach vdisk readonly\r\n\
-                     compact vdisk noerr\r\ndetach vdisk\r\n"
+                     compact vdisk noerr\r\ndetach vdisk\r\nexit\r\n"
                 ));
                 vec![s]
             }
@@ -289,10 +401,53 @@ pub fn helper_args(task: &Task, report: &Path) -> String {
     )
 }
 
-/// The report file the helper writes: in the temporary folder, named by Keel.
+/// The report file the helper writes: named by Keel, directly in this process's
+/// temporary folder, with no link or junction anywhere on the way (the elevated helper must
+/// not create files in a folder a command line names).
 pub fn report_ok(path: &Path) -> bool {
+    report_ok_in(path, &std::env::temp_dir())
+}
+
+/// [`report_ok`] with the temporary folder given.
+pub fn report_ok_in(path: &Path, temp: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.is_absolute() && name.starts_with("keel-syscleanup-") && name.ends_with(".json")
+    let shape = path.is_absolute()
+        && name.starts_with("keel-syscleanup-")
+        && name.ends_with(".json")
+        && !name.contains(['/', '\\', ':']);
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    shape
+        && same_dir(parent, temp)
+        && no_links_on_the_way(parent)
+        && std::fs::symlink_metadata(path).is_err()
+}
+
+/// Whether `a` and `b` name one folder (compared resolved; links are refused elsewhere).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Whether no folder from `dir` up to its root is a link, junction or other reparse point.
+fn no_links_on_the_way(dir: &Path) -> bool {
+    dir.ancestors().all(|d| {
+        d.parent().is_none()
+            || std::fs::symlink_metadata(d).is_ok_and(|m| {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    m.is_dir() && m.file_attributes() & 0x400 == 0
+                }
+                #[cfg(not(windows))]
+                {
+                    m.is_dir() && !m.file_type().is_symlink()
+                }
+            })
+    })
 }
 
 /// What the helper ran: the first failing command's exit code (0: all ran) and the
@@ -410,26 +565,10 @@ pub fn hiberfil_size() -> Option<u64> {
         .map(|m| m.len())
 }
 
-/// Whether PowerShell has `Optimize-VHD` (the Hyper-V module); reads, changes nothing.
-#[cfg(windows)]
+/// Whether `Optimize-VHD` is installed: the Hyper-V module in System32's module folder
+/// (where only administrators write; a module of that name elsewhere is never used).
 fn has_optimize_vhd() -> bool {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "if (Get-Command Optimize-VHD -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-#[cfg(not(windows))]
-fn has_optimize_vhd() -> bool {
-    false
+    cfg!(windows) && SysDirs::here().hyperv.is_some()
 }
 
 /// The preview of `task` (worker: reads sizes, may ask PowerShell about Optimize-VHD).
@@ -469,9 +608,10 @@ pub fn gather(task: Task, last: Option<StoreReport>) -> Result<TaskInfo, String>
                 path.display(),
                 format_size(meta.len(), DECIMAL),
                 if powershell {
-                    "Optimize-VHD is installed (Hyper-V module): it is used."
+                    "Optimize-VHD is installed (Hyper-V module in System32): it is used."
                 } else {
-                    "Optimize-VHD is not installed (no Hyper-V module): diskpart compacts it."
+                    "Optimize-VHD is not installed (no Hyper-V module in System32): diskpart \
+                     compacts it."
                 }
             );
             (
@@ -497,6 +637,9 @@ pub struct TaskDialog {
     pub info: Option<Result<TaskInfo, String>>,
     /// The second confirmation is showing.
     pub confirming: bool,
+    /// Which preview request this dialog waits for: a late answer to another (an earlier
+    /// dialog's) never lands here.
+    pub request: u64,
 }
 
 /// A button of the task dialog.
@@ -513,11 +656,34 @@ pub enum Press {
 
 impl TaskDialog {
     pub fn new(task: Task) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             task,
             info: None,
             confirming: false,
+            request: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// Takes the preview answered for `request`: only this dialog's own, only once, and only
+    /// one of the same kind of task (for the same disk) as asked; never while the second
+    /// confirmation is showing. Whether it was taken.
+    pub fn answer(&mut self, request: u64, info: Result<TaskInfo, String>) -> bool {
+        if request != self.request || self.info.is_some() || self.confirming {
+            return false;
+        }
+        if let Ok(i) = &info {
+            let same = match (&self.task, &i.task) {
+                (Task::OptimizeVhd { path: a, .. }, Task::OptimizeVhd { path: b, .. }) => a == b,
+                (a, b) => a == b,
+            };
+            if !same {
+                return false;
+            }
+            self.task = i.task.clone();
+        }
+        self.info = Some(info);
+        true
     }
 
     /// A button: the action to run (only Run after Continue, with a ready preview), and
@@ -665,41 +831,49 @@ pub fn dialog_ui(ui: &mut egui::Ui, d: &mut SysDialog, cancel: &mut bool) -> Opt
 // ---- running (the elevated helper) ------------------------------------------------------
 
 /// Runs `task`'s commands in this process (the elevated helper, or Keel already running
-/// as administrator). Stops at the first command that fails.
+/// as administrator), building them again here: programs by their full System32 path, the
+/// diskpart script on standard input, no .NET profiler or user module path inherited.
+/// Stops at the first command that fails.
 #[cfg(windows)]
 pub fn run_task(task: &Task) -> anyhow::Result<Outcome> {
+    use std::io::Write;
     use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut out = Outcome::default();
     for step in steps(task).map_err(anyhow::Error::msg)? {
         let mut cmd = std::process::Command::new(&step.program);
+        for (k, _) in std::env::vars_os() {
+            if unsafe_env(&k.to_string_lossy()) {
+                cmd.env_remove(k);
+            }
+        }
         cmd.args(&step.args)
             .envs(step.env.iter().map(|(k, v)| (k, v)))
+            .stdin(if step.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW);
-        let script = match &step.script {
-            Some(text) => {
-                let path = std::env::temp_dir().join(format!(
-                    "keel-syscleanup-{}-{}.txt",
-                    std::process::id(),
-                    nanos()
-                ));
-                // A new file only: never through something planted at that name.
-                use std::io::Write;
-                std::fs::File::options()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)?
-                    .write_all(text.as_bytes())?;
-                cmd.arg(&path);
-                Some(path)
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("{}: {e}", step.program))?;
+        if let (Some(text), Some(mut stdin)) = (&step.stdin, child.stdin.take()) {
+            // A few lines: fits the pipe, and closing it ends diskpart's input.
+            let fed = stdin.write_all(text.as_bytes());
+            drop(stdin);
+            if let Err(e) = fed {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("{}: {e}", step.program);
             }
-            None => None,
-        };
-        let ran = cmd.output();
-        if let Some(path) = script {
-            let _ = std::fs::remove_file(path);
         }
-        let ran = ran.map_err(|e| anyhow::anyhow!("{}: {e}", step.program))?;
+        let ran = child
+            .wait_with_output()
+            .map_err(|e| anyhow::anyhow!("{}: {e}", step.program))?;
         out.output += &String::from_utf8_lossy(&ran.stdout);
         out.output += &String::from_utf8_lossy(&ran.stderr);
         if !ran.status.success() {
@@ -1108,12 +1282,12 @@ impl AppState {
                     return self.toasts.error("Another dialog is open");
                 }
                 let last = ctx.data(|d| d.get_temp::<StoreReport>(store_id()));
-                self.dialog = Some(Dialog::System(Box::new(SysDialog::Task(TaskDialog::new(
-                    task.clone(),
-                )))));
+                let dialog = TaskDialog::new(task.clone());
+                let request = dialog.request;
+                self.dialog = Some(Dialog::System(Box::new(SysDialog::Task(dialog))));
                 worker::spawn("keel-cleanup-preview", move || {
                     let info = gather(task, last);
-                    worker::send(&tx, &ctx, Msg::System(SysMsg::Info(info)));
+                    worker::send(&tx, &ctx, Msg::System(SysMsg::Info(request, info)));
                 });
             }
             SysCmd::PickVhd => {
@@ -1157,13 +1331,10 @@ impl AppState {
             SysMsg::DedupPlanned(plan) => {
                 self.system_dialog(SysDialog::Dedup(hardlink_dedup::Preview { plan }))
             }
-            SysMsg::Info(info) => {
+            SysMsg::Info(request, info) => {
                 if let Some(Dialog::System(d)) = &mut self.dialog {
                     if let SysDialog::Task(t) = d.as_mut() {
-                        if let Ok(i) = &info {
-                            t.task = i.task.clone();
-                        }
-                        t.info = Some(info);
+                        t.answer(request, info);
                     }
                 }
             }
@@ -1216,14 +1387,29 @@ mod tests {
         })
     }
 
+    /// A system with the Hyper-V module (or without).
+    fn dirs(hyperv: bool) -> SysDirs {
+        SysDirs {
+            system32: r"C:\Windows\System32".into(),
+            hyperv: hyperv.then(|| {
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules\Hyper-V\2.0.0.0\Hyper-V.psd1"
+                    .into()
+            }),
+        }
+    }
+
     #[test]
     fn commands_for_each_cleanup() {
+        let d = dirs(false);
         assert_eq!(
-            steps(&Task::Hibernation).unwrap(),
-            [Step::new("powercfg.exe", &["/h", "off"])]
+            steps_in(&Task::Hibernation, &d).unwrap(),
+            [Step::new(
+                r"C:\Windows\System32\powercfg.exe".into(),
+                &["/h", "off"]
+            )]
         );
-        let analyze = &steps(&Task::DismAnalyze).unwrap()[0];
-        assert_eq!(analyze.program, "Dism.exe");
+        let analyze = &steps_in(&Task::DismAnalyze, &d).unwrap()[0];
+        assert_eq!(analyze.program, r"C:\Windows\System32\Dism.exe");
         assert_eq!(
             analyze.args,
             [
@@ -1233,7 +1419,7 @@ mod tests {
                 "/English"
             ]
         );
-        let cleanup = &steps(&Task::DismCleanup).unwrap()[0];
+        let cleanup = &steps_in(&Task::DismCleanup, &d).unwrap()[0];
         assert_eq!(
             cleanup.args,
             [
@@ -1244,40 +1430,89 @@ mod tests {
             ]
         );
         assert!(!cleanup.args.iter().any(|a| a.contains("ResetBase")));
+        // Every program by its full System32 path, never looked up on PATH.
+        for task in [Task::Hibernation, Task::DismAnalyze, Task::DismCleanup] {
+            for s in steps(&task).unwrap() {
+                assert!(Path::new(&s.program).is_absolute(), "{}", s.program);
+            }
+        }
     }
 
     #[test]
-    fn vhd_through_powershell_takes_the_path_from_the_environment() {
+    fn vhd_through_powershell_loads_nothing_from_user_module_folders() {
         let path = vhd();
-        let s = steps(&Task::OptimizeVhd {
-            path: path.clone(),
-            powershell: true,
-        })
+        let s = steps_in(
+            &Task::OptimizeVhd {
+                path: path.clone(),
+                powershell: true,
+            },
+            &dirs(true),
+        )
         .unwrap();
         assert_eq!(s.len(), 1);
-        assert_eq!(s[0].program, "powershell.exe");
-        assert_eq!(s[0].args.last().unwrap(), OPTIMIZE_VHD_PS);
+        assert_eq!(
+            s[0].program,
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        );
+        assert_eq!(
+            s[0].args,
+            ["-NoProfile", "-NonInteractive", "-Command", OPTIMIZE_VHD_PS]
+        );
         // The path (with a quote and spaces) is never in the script text.
         assert!(!OPTIMIZE_VHD_PS.contains("Disk 1"));
         assert_eq!(
             s[0].env,
-            [("KEEL_VHD".to_owned(), path.display().to_string())]
+            [
+                (
+                    "PSModulePath".to_owned(),
+                    r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules".to_owned()
+                ),
+                ("KEEL_HYPERV".to_owned(), dirs(true).hyperv.unwrap()),
+                ("KEEL_VHD".to_owned(), path.display().to_string()),
+            ]
         );
+        // No auto-loading; the module by its System32 manifest; module-qualified commands.
+        assert!(OPTIMIZE_VHD_PS.starts_with("$PSModuleAutoLoadingPreference = 'None';"));
+        assert!(OPTIMIZE_VHD_PS.contains("Import-Module -Name $env:KEEL_HYPERV;"));
+        for cmd in ["Mount-VHD", "Optimize-VHD", "Dismount-VHD"] {
+            assert_eq!(
+                OPTIMIZE_VHD_PS.matches(cmd).count(),
+                OPTIMIZE_VHD_PS.matches(&format!("Hyper-V\\{cmd}")).count(),
+                "{cmd}"
+            );
+        }
         assert!(OPTIMIZE_VHD_PS.contains("-ReadOnly") && OPTIMIZE_VHD_PS.contains("finally"));
         assert!(OPTIMIZE_VHD_PS.contains("Optimize-VHD -Path $env:KEEL_VHD -Mode Full"));
+        // No Hyper-V module in System32: the PowerShell route is refused (the elevated
+        // helper builds the steps again itself and never trusts the preview's choice).
+        let e = steps_in(
+            &Task::OptimizeVhd {
+                path,
+                powershell: true,
+            },
+            &dirs(false),
+        )
+        .unwrap_err();
+        assert!(e.contains("not installed"), "{e}");
     }
 
     #[test]
-    fn vhd_through_diskpart_is_a_script() {
+    fn vhd_through_diskpart_is_a_script_on_standard_input() {
         let path = vhd();
-        let s = steps(&Task::OptimizeVhd {
-            path: path.clone(),
-            powershell: false,
-        })
+        let s = steps_in(
+            &Task::OptimizeVhd {
+                path: path.clone(),
+                powershell: false,
+            },
+            &dirs(true),
+        )
         .unwrap();
-        assert_eq!(s[0].program, "diskpart.exe");
-        assert_eq!(s[0].args, ["/s"]);
-        let script = s[0].script.as_deref().unwrap();
+        assert_eq!(s[0].program, r"C:\Windows\System32\diskpart.exe");
+        // No `/s <file>`: nothing in a folder the user can write.
+        assert!(s[0].args.is_empty(), "{:?}", s[0].args);
+        let temp = std::env::temp_dir().display().to_string();
+        assert!(!s[0].shown().contains(&temp));
+        let script = s[0].stdin.as_deref().unwrap();
         let lines: Vec<&str> = script.lines().collect();
         assert_eq!(
             lines,
@@ -1286,9 +1521,136 @@ mod tests {
                 "attach vdisk readonly",
                 "compact vdisk noerr",
                 "detach vdisk",
+                "exit",
             ]
         );
-        assert!(s[0].shown().starts_with("diskpart.exe /s <script>"));
+        assert!(s[0]
+            .shown()
+            .starts_with(r"C:\Windows\System32\diskpart.exe < script"));
+    }
+
+    #[test]
+    fn the_hyperv_module_is_found_in_system32_only() {
+        let root = std::env::temp_dir().join(format!("keel-sys32-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let modules = root.join(r"WindowsPowerShell/v1.0/Modules/Hyper-V");
+        assert_eq!(hyperv_manifest(&root), None);
+        for v in ["1.1", "2.0.0.0"] {
+            std::fs::create_dir_all(modules.join(v)).unwrap();
+            std::fs::write(modules.join(v).join("Hyper-V.psd1"), b"@{}").unwrap();
+        }
+        std::fs::create_dir_all(modules.join("notes")).unwrap();
+        let found = hyperv_manifest(&root).unwrap();
+        assert!(found.contains("2.0.0.0"), "{found}");
+        std::fs::write(modules.join("Hyper-V.psd1"), b"@{}").unwrap();
+        assert!(hyperv_manifest(&root).unwrap().ends_with("Hyper-V.psd1"));
+        let _ = std::fs::remove_dir_all(&root);
+        // What the elevated children never inherit.
+        for bad in [
+            "COR_ENABLE_PROFILING",
+            "COR_PROFILER_PATH",
+            "COMPlus_ETWEnabled",
+            "DOTNET_STARTUP_HOOKS",
+            "PSModulePath",
+        ] {
+            assert!(unsafe_env(bad), "{bad}");
+        }
+        for fine in ["Path", "SystemRoot", "TEMP", "KEEL_VHD"] {
+            assert!(!unsafe_env(fine), "{fine}");
+        }
+    }
+
+    #[test]
+    fn the_report_goes_only_directly_into_the_temporary_folder() {
+        let temp = std::env::temp_dir();
+        let ok = temp.join(format!("keel-syscleanup-{}-1.json", std::process::id()));
+        let _ = std::fs::remove_file(&ok);
+        assert!(report_ok(&ok));
+        // Another folder, even one the elevated helper could write.
+        let sys = PathBuf::from(r"C:\Windows\System32\keel-syscleanup-1-2.json");
+        assert!(!report_ok(&sys));
+        let sub = temp.join(format!("keel-report-sub-{}", std::process::id()));
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(!report_ok(&sub.join("keel-syscleanup-1-2.json")));
+        // Through `..` into another folder.
+        let dotdot = sub.join("..").join("..").join("keel-syscleanup-1-2.json");
+        assert!(!report_ok_in(&dotdot, &temp));
+        // A file already there (planted) is never written through.
+        std::fs::write(&ok, b"planted").unwrap();
+        assert!(!report_ok(&ok));
+        std::fs::remove_file(&ok).unwrap();
+        let _ = std::fs::remove_dir_all(&sub);
+        // A temporary folder reached through a link.
+        #[cfg(unix)]
+        {
+            let real = temp.join(format!("keel-report-real-{}", std::process::id()));
+            let link = temp.join(format!("keel-report-link-{}", std::process::id()));
+            std::fs::create_dir_all(&real).unwrap();
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(!report_ok_in(&link.join("keel-syscleanup-1-2.json"), &real));
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_dir_all(&real);
+        }
+        #[cfg(windows)]
+        {
+            let real = temp.join(format!("keel-report-real-{}", std::process::id()));
+            let link = temp.join(format!("keel-report-link-{}", std::process::id()));
+            std::fs::create_dir_all(&real).unwrap();
+            let _ = std::fs::remove_dir(&link);
+            keel_vfs::fsattr::make_link(&real, &link, keel_vfs::LinkKind::Junction).unwrap();
+            assert!(!report_ok_in(&link.join("keel-syscleanup-1-2.json"), &real));
+            let _ = std::fs::remove_dir(&link);
+            let _ = std::fs::remove_dir_all(&real);
+        }
+    }
+
+    #[test]
+    fn a_late_preview_never_swaps_the_task_of_the_open_dialog() {
+        let info = |task: Task| -> Result<TaskInfo, String> {
+            Ok(TaskInfo {
+                steps: steps_in(&task, &dirs(true)).unwrap(),
+                task,
+                size: Some(1),
+                note: String::new(),
+            })
+        };
+        let vhd_task = Task::OptimizeVhd {
+            path: vhd(),
+            powershell: true,
+        };
+        let old = TaskDialog::new(Task::OptimizeVhd {
+            path: vhd(),
+            powershell: false,
+        });
+        let mut d = TaskDialog::new(Task::Hibernation);
+        assert_ne!(old.request, d.request);
+        // The earlier dialog's answer arrives: dropped.
+        assert!(!d.answer(old.request, info(vhd_task.clone())));
+        assert!(d.info.is_none());
+        // Its own request but another task: dropped.
+        assert!(!d.answer(d.request, info(vhd_task.clone())));
+        assert!(d.answer(d.request, info(Task::Hibernation)));
+        d.press(Press::Continue);
+        assert!(d.confirming);
+        // Nothing replaces the preview once it is there (or while confirming).
+        assert!(!d.answer(d.request, info(Task::Hibernation)));
+        assert_eq!(
+            d.press(Press::Run).0,
+            Some(Action::System(SysCmd::Run(Task::Hibernation)))
+        );
+        // A VHD dialog takes the method decided for its own disk.
+        let mut v = TaskDialog::new(Task::OptimizeVhd {
+            path: vhd(),
+            powershell: false,
+        });
+        let other = Task::OptimizeVhd {
+            path: vhd().with_file_name("Other.vhdx"),
+            powershell: true,
+        };
+        assert!(!v.answer(v.request, info(other)));
+        assert!(v.answer(v.request, info(vhd_task.clone())));
+        assert_eq!(v.task, vhd_task);
     }
 
     #[test]
@@ -1391,7 +1753,7 @@ mod tests {
             task: decided.clone(),
             size: Some(1),
             note: String::new(),
-            steps: steps(&decided).unwrap(),
+            steps: steps_in(&decided, &dirs(true)).unwrap(),
         }));
         d.press(Press::Continue);
         assert_eq!(
