@@ -2,6 +2,21 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Details view: **disclosure triangles** expand folders inline, their contents indented under them (Right / Left on the keyboard, Alt+click expands every folder below). Contents are listed in the background and a collapse drops a listing still running. See [Views](docs/files.md#views).
+- Details view: right-click the column header to choose the columns: **Kind** (in words, such as "PDF document"), **Date Created**, **Date Last Opened** (from the library), Extension, Size, Date Modified and Tags; saved in the profile.
+- **Use relative dates**: "Today at 14:05", "Yesterday at 09:12".
+- **Group by** Kind, Date Modified, Date Created, Size or Tags in the Details and Grid views, with group headers that stay at the top while their rows scroll; independent of the sort.
+- **View Options** panel (Ctrl+J, or View options in the command palette) for the columns, relative dates and Group by.
+
+### Changed
+
+- Long names are shortened in the middle ("Quarterly report fo…draft.pdf") instead of at the end in the Details view, and on the second line of a Grid tile; the full name shows on hover.
+- In the Details view Left and Right expand and collapse folders instead of moving the cursor up and down.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

@@ -13,6 +13,8 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+A | Tag assign mode: 1–9 toggle tags on the selection, 0 or Esc leaves (library) |
 | Ctrl+D | Toggle favorite (library) |
 | Ctrl+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)) |
+| Ctrl+J | View Options: columns, relative dates, Group by (see [Views](#views)) |
+| Right / Left | Details view: expand the folder at the cursor / collapse it, or go to the folder a row is in (see [Views](#views)) |
 | Ctrl+Shift+O | Open with… (pick an app for the selected files) |
 | Shift+F10 | The Windows menu for the selection (Windows; see [Windows shell menu](#windows-shell-menu)) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
@@ -20,6 +22,23 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
 
 The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
+
+## Views
+
+### Details (list) view
+
+- **Disclosure triangles.** Each folder row has a triangle before its icon: click it (or press **Right** on the folder) to show the folder's contents indented under it, without leaving the folder you are in. Click it again (or press **Left**) to collapse it. **Left** on a row inside an expanded folder moves to that folder. **Alt+click** expands the folder and every folder inside it as their listings arrive (up to 512 folders at once, links are not followed), and Alt+click on an expanded folder collapses everything below it. Contents are listed in the background, like any folder; a folder that is still being listed shows **…** after its name, one that could not be listed shows **⚠** with the reason on hover. Collapsing a folder that is still being listed drops the answer. Rows inside expanded folders sort like the rest, can be selected, renamed, copied, moved, dragged and opened like any other row, and F5 lists the expanded folders again. Moving to another folder starts with everything collapsed. The Sizes view, search results and the Recycle Bin have no triangles.
+- **Columns.** Right-click the column header to choose the columns: Name (always shown), Extension, Kind, Size, Date Modified, Date Created, Date Last Opened and Tags (the last two with the library on). Your choice is saved in the profile. **Date Last Opened** is when Keel last opened the file, from the library's Recents (the last 1,000 opens; it stays empty while the window is attached to keel-daemon). **Kind** says what a file is in words ("PDF document", "JPEG image", "Folder"). **Date Created** is read in the background for folders on this computer's own drives (network shares, removable drives, remote and cloud folders leave it empty). Name, Extension, Size and Date Modified sort by a click on their header.
+- **Relative dates.** With **Use relative dates** on, dates of the last two days read "Today at 14:05" and "Yesterday at 09:12".
+- **Long names** are shortened in the middle so the start and the extension stay readable ("Quarterly report fo…draft.pdf"); hover the name to see all of it. The Grid view shows names on up to two lines and shortens the second line the same way.
+
+### Group by
+
+**Group by** (in the header menu and View Options) sorts the rows of the Details and Grid views into groups, each under a header with its name and item count: **Kind**, **Date Modified** and **Date Created** (Today, Yesterday, Previous 7 Days, Previous 30 Days, the months of this year, then years), **Size** (Larger than 1 GB down to Zero bytes; folders count their calculated size, see [Folder sizes](#folder-sizes-and-the-sizes-view)), **Tags** (the item's first tag, with the library on) or **None**. Groups are independent of the sort: the sort orders the rows inside each group. While you scroll, the header of the group at the top stays in view. Rows inside an expanded folder stay under their folder, in its group. In the Grid view each group starts on a new row, and Up/Down keep the column as they move between groups.
+
+### View Options (Ctrl+J)
+
+**Ctrl+J** (or **View options** in the command palette) shows a small panel with the same settings as the header menu: the columns, **Use relative dates** and **Group by**. They apply to every folder and are saved in the profile (`[list]` in `config.toml`).
 
 ## Columns view and drop zone
 
