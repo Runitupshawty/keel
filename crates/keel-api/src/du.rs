@@ -223,8 +223,8 @@ pub(crate) fn export(ctx: &Ctx, p: DuExportParams) -> Result<DuExport> {
         }
     };
     written.map_err(|e| ApiError::failed(format!("{e:#}")))?;
-    let content = String::from_utf8(out.0)
-        .map_err(|e| ApiError::new(ApiError::INTERNAL, e.to_string()))?;
+    let content =
+        String::from_utf8(out.0).map_err(|e| ApiError::new(ApiError::INTERNAL, e.to_string()))?;
     let format = match (p.list, format) {
         (DuList::Report, _) => "html",
         (_, DuFormat::Csv) => "csv",

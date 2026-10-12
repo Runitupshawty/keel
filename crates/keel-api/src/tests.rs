@@ -2241,7 +2241,11 @@ fn disk_usage_scan_result_and_export() {
     let r = done(&id);
     assert_eq!(r["state"], "done", "{r}");
     let sum = &r["summary"];
-    assert_eq!((sum["bytes"].as_u64(), sum["files"].as_u64()), (Some(19), Some(2)), "{r}");
+    assert_eq!(
+        (sum["bytes"].as_u64(), sum["files"].as_u64()),
+        (Some(19), Some(2)),
+        "{r}"
+    );
     assert_eq!(sum["roots"][0]["children"][0]["name"], "docs", "{r}");
     assert!(r["progress"]["files"].as_u64().unwrap() >= 2, "{r}");
     // Every list and the report.

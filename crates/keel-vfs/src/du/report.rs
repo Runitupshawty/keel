@@ -80,11 +80,12 @@ pub fn write(tree: &Tree, options: Options, w: impl Write) -> Result<()> {
     let scanned = (tree.info.started > 0)
         .then(|| export::time(tree.info.started.saturating_mul(1_000_000_000)))
         .flatten()
-        .map(|t| format!("Scanned {t}, "))
+        .map(|t| format!(" {t}"))
         .unwrap_or_default();
     let _ = writeln!(
         s,
-        "<p class=\"meta\">{scanned}{:.1} s. {} ({} on disk) in {} files and {} folders.</p>",
+        "<p class=\"meta\">Scanned{scanned} in {:.1} s: {} ({} on disk) in {} files and {} \
+         folders.</p>",
         tree.info.elapsed.as_secs_f64(),
         human(t.size),
         human(t.allocated),
