@@ -14,14 +14,12 @@ pub fn request(url: &str) -> Result<Request, String> {
         Link::Search { query, path } => Ok(Request {
             folder: path,
             search: Some(query),
-            select: None,
-            filelist: None,
+                        ..Request::default()
         }),
         Link::Open { path } => Ok(Request {
             folder: Some(path),
             search: None,
-            select: None,
-            filelist: None,
+                        ..Request::default()
         }),
     }
 }
@@ -143,8 +141,7 @@ mod tests {
             Ok(Request {
                 folder: Some(dir.clone()),
                 search: Some("invoice ext:pdf".into()),
-                select: None,
-                filelist: None,
+                                ..Request::default()
             })
         );
         assert_eq!(

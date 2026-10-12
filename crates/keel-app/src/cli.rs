@@ -1971,8 +1971,7 @@ mod tests {
             Request {
                 folder: Some(dir.clone()),
                 search: Some("a b".into()),
-                select: None,
-                filelist: None,
+                                ..Request::default()
             }
         );
         let cli = parse(&["--url", &format!("keel:open?path={enc}")]).unwrap();
