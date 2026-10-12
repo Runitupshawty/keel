@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn filetime_and_iso_agree() {
-        assert_eq!(parse_date("133541404290000000"), Some(T));
+        assert_eq!(parse_date("133541212290000000"), Some(T));
         assert_eq!(parse_date("2024-03-05T14:07:09Z"), Some(T));
         assert_eq!(parse_date("2024-03-05T14:07:09"), Some(T), "no zone: UTC");
         assert_eq!(parse_date("2024-03-05 14:07:09"), Some(T));

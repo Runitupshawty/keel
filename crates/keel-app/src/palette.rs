@@ -161,6 +161,17 @@ fn global_items() -> Vec<Item> {
             "",
             Library(LibCmd::Query(crate::library::RECENTS_QUERY.into())),
         ),
+        // --- Task 77 ---
+        (
+            "Open file list…",
+            "",
+            FileList(crate::filelist_ui::FileListCmd::Open(None)),
+        ),
+        (
+            "Export results…",
+            "",
+            FileList(crate::filelist_ui::FileListCmd::Export),
+        ),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),

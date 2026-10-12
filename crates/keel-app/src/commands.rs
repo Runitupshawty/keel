@@ -124,6 +124,10 @@ impl From<Usage> for Fail {
 type Out = Box<dyn Write>;
 
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
+    // Task 77: file lists need no library and no settings.
+    if let Command::Filelist(cmd) = cmd {
+        return crate::filelist_ui::command(cmd, json);
+    }
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -699,7 +703,7 @@ fn command(
             }
             Some(done)
         }
-        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } => {
+        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } | Command::Filelist(_) => {
             unreachable!("handled by run")
         }
     };

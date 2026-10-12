@@ -30,6 +30,9 @@ pub struct Cli {
     /// Open a search tab with this query (in FOLDER when given).
     #[arg(long, value_name = "QUERY")]
     pub search: Option<String>,
+    /// Open this file list (EFU, TXT, CSV, TSV, M3U) as a search tab.
+    #[arg(long, value_name = "FILE")]
+    pub filelist: Option<PathBuf>,
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
@@ -124,6 +127,10 @@ pub enum Command {
         #[arg(long)]
         execute: bool,
     },
+    /// File lists (Everything's EFU, and TXT, CSV, TSV, M3U): make one from a folder, or
+    /// write one in another format. Runs without the library.
+    #[command(subcommand)]
+    Filelist(FilelistCmd),
     /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
     /// asks the user to confirm each plan through the client (MCP elicitation).
     Mcp {
@@ -132,6 +139,70 @@ pub enum Command {
         #[arg(long)]
         allow_execute: bool,
     },
+}
+
+/// `keel filelist …` (Task 77).
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum FilelistCmd {
+    /// List FOLDER and everything below it (sizes, dates, attributes) into a file list.
+    /// Links are listed, never followed. Wildcards: `*.mp3;*.flac` (a `/` or `\` in one
+    /// matches the path below FOLDER).
+    Create {
+        folder: PathBuf,
+        /// The file to write (`-`: standard output).
+        #[arg(short, long, value_name = "FILE")]
+        output: PathBuf,
+        /// Only files matching these wildcards.
+        #[arg(long, value_name = "WILDCARDS")]
+        include_files: Option<String>,
+        /// No files matching these wildcards.
+        #[arg(long, value_name = "WILDCARDS")]
+        exclude_files: Option<String>,
+        /// Only what is in folders matching these wildcards.
+        #[arg(long, value_name = "WILDCARDS")]
+        include_folders: Option<String>,
+        /// Leave out folders matching these wildcards, with everything in them.
+        #[arg(long, value_name = "WILDCARDS")]
+        exclude_folders: Option<String>,
+        /// Only FOLDER's own files and folders.
+        #[arg(long)]
+        no_subfolders: bool,
+        /// List no folders.
+        #[arg(long)]
+        no_folders: bool,
+        /// List no files.
+        #[arg(long)]
+        no_files: bool,
+        #[command(flatten)]
+        format: ExportArgs,
+    },
+    /// Write the file list LIST (.efu, .txt, .csv, .tsv, .m3u) in another format.
+    Export {
+        list: PathBuf,
+        /// The file to write (`-`: standard output).
+        #[arg(short, long, value_name = "FILE")]
+        output: PathBuf,
+        /// Only the entries matching this search (a search tab's syntax: words, `*.ext`,
+        /// `folder:`, `in:`, `regex:`).
+        #[arg(long, value_name = "QUERY")]
+        query: Option<String>,
+        #[command(flatten)]
+        format: ExportArgs,
+    },
+}
+
+/// How `keel filelist` writes its output.
+#[derive(clap::Args, Debug, Clone, PartialEq)]
+pub struct ExportArgs {
+    /// efu, csv, tsv, txt, m3u, m3u8 or json (default: OUTPUT's extension, else efu).
+    #[arg(long, value_name = "FORMAT")]
+    pub format: Option<String>,
+    /// CSV and TSV without the column names; M3U without `#EXTM3U`.
+    #[arg(long)]
+    pub no_header: bool,
+    /// Start with a UTF-8 byte order mark.
+    #[arg(long)]
+    pub bom: bool,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq)]
@@ -302,6 +373,10 @@ pub struct Request {
     /// Absolute (`checked`). A file opens its folder with it selected.
     pub folder: Option<PathBuf>,
     pub search: Option<String>,
+    /// Task 77: a file list to open as a tab (absolute). Left out of the wire format when
+    /// unset, so an older running Keel still reads the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filelist: Option<PathBuf>,
     /// Set by `checked`: the file in `folder` to select. Never sent.
     #[serde(skip)]
     pub select: Option<String>,
@@ -314,6 +389,9 @@ impl Request {
     /// the request comes from this user (`single_instance`), who may open them anyway, but
     /// checking one contacts that server. Touches the disk: not on the UI thread.
     pub fn checked(mut self) -> Result<Self, String> {
+        if let Some(list) = self.filelist.as_ref().filter(|l| !l.is_absolute()) {
+            return Err(format!("Not an absolute path: {}", list.display()));
+        }
         let Some(path) = &self.folder else {
             return Ok(self);
         };
@@ -378,6 +456,7 @@ impl Cli {
                 .as_ref()
                 .and_then(|p| std::path::absolute(p).ok()),
             search: self.search.clone(),
+            filelist: (self.filelist.as_ref()).and_then(|p| std::path::absolute(p).ok()),
             select: None,
         }
     }
@@ -390,7 +469,7 @@ const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
 /// The index of the only positional argument in `args` when it is the last argument and a
 /// subcommand's name.
 fn lone_subcommand(args: &[OsString]) -> Option<usize> {
-    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service"];
+    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--filelist", "--index-service"];
     let mut positional = None;
     let mut i = 1;
     while i < args.len() {
@@ -432,7 +511,7 @@ pub fn profile() -> String {
 impl AppState {
     /// Opens what `req` (`Request::checked`) asks for in the active pane: FOLDER in a new
     /// tab (with the file selected), then a search tab (from that folder, else the current
-    /// one) running QUERY.
+    /// one) running QUERY, and the file list FILELIST in a tab of its own.
     pub fn external(&mut self, req: Request) {
         let p = self.active;
         if let Some(dir) = req.folder {
@@ -441,6 +520,13 @@ impl AppState {
                 Some(name) => self.reveal_in(p, dir, name, true),
                 None => self.run(p, Action::NewTabAt(dir)),
             }
+        }
+        // Task 77: `--filelist FILE` (read on a worker, then a tab).
+        if let Some(list) = req.filelist {
+            self.run(
+                p,
+                Action::FileList(crate::filelist_ui::FileListCmd::Open(Some(list))),
+            );
         }
         if let Some(text) = req.search {
             self.run(p, Action::Search);
@@ -471,6 +557,7 @@ mod tests {
                 profile: None,
                 search: None,
                 index_service: None,
+                filelist: None,
                 check_update: false,
                 here: false,
                 json: false,
@@ -546,6 +633,7 @@ mod tests {
         state.external(Request {
             folder: Some(dir.clone()),
             search: Some("needle".into()),
+            filelist: None,
             select: None,
         });
         let tabs = &state.panes[0].tabs;
@@ -613,6 +701,75 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("select"), "{json}");
         assert_eq!(Request::default().checked().unwrap(), Request::default());
+    }
+
+    #[test]
+    fn parses_filelist() {
+        let cmd = |args: &[&str]| parse(args).unwrap().command.unwrap();
+        assert_eq!(
+            cmd(&[
+                "filelist",
+                "create",
+                "music",
+                "-o",
+                "out.efu",
+                "--include-files",
+                "*.mp3;*.flac",
+                "--exclude-folders",
+                "tmp",
+                "--no-folders",
+                "--bom",
+            ]),
+            Command::Filelist(FilelistCmd::Create {
+                folder: "music".into(),
+                output: "out.efu".into(),
+                include_files: Some("*.mp3;*.flac".into()),
+                exclude_files: None,
+                include_folders: None,
+                exclude_folders: Some("tmp".into()),
+                no_subfolders: false,
+                no_folders: true,
+                no_files: false,
+                format: ExportArgs {
+                    format: None,
+                    no_header: false,
+                    bom: true,
+                },
+            })
+        );
+        assert_eq!(
+            cmd(&[
+                "filelist", "export", "in.efu", "--output", "-", "--format", "json", "--query",
+                "*.pdf",
+            ]),
+            Command::Filelist(FilelistCmd::Export {
+                list: "in.efu".into(),
+                output: "-".into(),
+                query: Some("*.pdf".into()),
+                format: ExportArgs {
+                    format: Some("json".into()),
+                    no_header: false,
+                    bom: false,
+                },
+            })
+        );
+        assert!(parse(&["filelist", "create", "music"]).is_err(), "needs -o");
+        // `keel --filelist FILE`: absolute in the request, and on the wire only when set.
+        let cli = parse(&["--filelist", "list.efu"]).unwrap();
+        assert_eq!(cli.command, None);
+        let req = cli.request();
+        assert!(req.filelist.as_ref().unwrap().is_absolute());
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("filelist"), "{json}");
+        let json = serde_json::to_string(&Request::default()).unwrap();
+        assert!(!json.contains("filelist"), "{json}");
+        let old: Request = serde_json::from_str(r#"{"folder":null,"search":"q"}"#).unwrap();
+        assert_eq!(old.filelist, None);
+        let rel = Request {
+            filelist: Some("list.efu".into()),
+            ..Request::default()
+        };
+        assert!(rel.checked().is_err(), "relative lists are refused");
     }
 
     #[test]

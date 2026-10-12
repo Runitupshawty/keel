@@ -238,6 +238,8 @@ pub enum Action {
     Devices(crate::devices::DevCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
+    /// Task 77: open a file list as a tab, export results (`filelist_ui.rs`).
+    FileList(crate::filelist_ui::FileListCmd),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;

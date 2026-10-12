@@ -723,6 +723,14 @@ pub fn context_menu(
     ui.separator();
     item(ui, "Select all", "Ctrl+A", Action::SelectAll);
     item(ui, "Invert selection", "", Action::InvertSelection);
+    // Task 77: the shown rows as an EFU, CSV, TXT, M3U or JSON file.
+    let export = Action::FileList(crate::filelist_ui::FileListCmd::Export);
+    item(
+        ui,
+        if search { "Export results…" } else { "Export list…" },
+        "",
+        export,
+    );
     ui.separator();
     item(
         ui,

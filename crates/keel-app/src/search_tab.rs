@@ -18,6 +18,8 @@ pub const NOT_RUNNING: &str =
 const HINT: &str = "Everything syntax: ext:pdf dm:today \"exact phrase\" folder: regex:";
 #[cfg(not(windows))]
 const HINT: &str = "Search file names";
+/// A file list tab's query box (`keel_search::filelist::FileListSearcher`).
+const LIST_HINT: &str = "Names in the list: words, *.ext, folder:, in:, regex:";
 
 /// What the user is told when a query fails.
 pub fn banner(err: &str) -> String {
@@ -62,25 +64,33 @@ pub fn bar(
     let TabKind::Search { query, due, .. } = &mut tab.kind else {
         return;
     };
+    // Task 77: a file list tab searches its list: (shown, entries in the list).
+    let list = (tab.filelist.as_ref()).map(|s| (s.label().to_owned(), s.len()));
     ui.horizontal(|ui| {
+        if let Some((label, _)) = &list {
+            ui.label(format!("File list: {label}"));
+        }
         // Task 29: the backend (the platform's, or the library index).
         let platform = platform.unwrap_or("System");
         let before = tab.library_search;
-        let combo = egui::ComboBox::from_id_salt("search-backend")
-            .width(110.0)
-            .selected_text(if tab.library_search {
-                "Library"
-            } else {
-                platform
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut tab.library_search, false, platform);
-                ui.add_enabled_ui(library, |ui| {
-                    ui.selectable_value(&mut tab.library_search, true, "Library")
-                        .on_disabled_hover_text("The library is off or still opening");
+        let backends = list.is_none();
+        if backends {
+            let combo = egui::ComboBox::from_id_salt("search-backend")
+                .width(110.0)
+                .selected_text(if tab.library_search {
+                    "Library"
+                } else {
+                    platform
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut tab.library_search, false, platform);
+                    ui.add_enabled_ui(library, |ui| {
+                        ui.selectable_value(&mut tab.library_search, true, "Library")
+                            .on_disabled_hover_text("The library is off or still opening");
+                    });
                 });
-            });
-        let _ = crate::a11y::Named::named(combo.response, "Search with");
+            let _ = crate::a11y::Named::named(combo.response, "Search with");
+        }
         if tab.library_search != before {
             // Run the query again on the other backend now.
             *due = Some(Instant::now());
@@ -103,7 +113,7 @@ pub fn bar(
             egui::TextEdit::singleline(query)
                 .id(id)
                 .desired_width((ui.available_width() - 110.0).max(120.0))
-                .hint_text(HINT),
+                .hint_text(if list.is_some() { LIST_HINT } else { HINT }),
         );
         if focus {
             r.request_focus();
@@ -127,10 +137,11 @@ pub fn bar(
             crate::anim::spinner(ui);
         }
         let n = count;
-        ui.weak(match n {
-            1 => "1 result".to_owned(),
-            n if n as u32 >= MAX_HITS => format!("first {n} results"),
-            n => format!("{n} results"),
+        ui.weak(match (n, &list) {
+            (n, Some((_, total))) => format!("{n} of {total}"),
+            (1, None) => "1 result".to_owned(),
+            (n, None) if n as u32 >= MAX_HITS => format!("first {n} results"),
+            (n, None) => format!("{n} results"),
         });
     });
     if tab.library_search && library {

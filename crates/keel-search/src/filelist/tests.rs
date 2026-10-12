@@ -360,8 +360,8 @@ impl Drop for TempDir {
     }
 }
 
-fn tree() -> TempDir {
-    let d = TempDir::new("create");
+fn tree(tag: &str) -> TempDir {
+    let d = TempDir::new(tag);
     d.file("a.mp3", b"123");
     d.file("b.txt", b"1");
     d.file("music/c.mp3", b"12345");
@@ -388,7 +388,7 @@ fn created(d: &TempDir, opts: &CreateOptions) -> Vec<String> {
 
 #[test]
 fn create_walks_in_path_order_with_metadata() {
-    let d = tree();
+    let d = tree("walk");
     let all = created(&d, &CreateOptions::default());
     assert_eq!(
         all,
@@ -439,7 +439,7 @@ fn create_walks_in_path_order_with_metadata() {
 
 #[test]
 fn create_filters() {
-    let d = tree();
+    let d = tree("filters");
     let opts = |f: fn(&mut CreateOptions)| {
         let mut o = CreateOptions::default();
         f(&mut o);

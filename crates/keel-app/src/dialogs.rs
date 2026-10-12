@@ -53,6 +53,8 @@ pub enum Dialog {
     },
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(Box<crate::mount_ui::MountDialog>),
+    /// Task 77: Export results (`filelist_ui.rs`).
+    ExportList(Box<crate::filelist_ui::ExportDialog>),
     /// Task 56: Folder icon → Type an emoji…: one emoji (or `theme:<name>`) for `path`.
     FolderIcon {
         path: VPath,
@@ -285,6 +287,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 cancel |= close.clicked();
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
+            Dialog::ExportList(d) => out = crate::filelist_ui::dialog_ui(ui, d, &mut cancel),
             Dialog::FolderOp(d) => out = crate::folder_ops::ui(ui, d, &mut cancel),
             Dialog::BulkRename(m) => {
                 if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
