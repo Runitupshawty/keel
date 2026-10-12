@@ -795,7 +795,10 @@ mod tests {
         );
         assert!(parse(&["du"]).is_err(), "a folder or a scan");
         assert!(parse(&["du", "x", "--scan", "y"]).is_err(), "not both");
-        assert!(parse(&["du", "--load", "f", "--all-drives"]).is_err(), "not both");
+        assert!(
+            parse(&["du", "--load", "f", "--all-drives"]).is_err(),
+            "not both"
+        );
         assert_eq!(cmd(&["shares"]), Command::Shares);
         assert_eq!(cmd(&["sources"]), Command::Sources { action: None });
         assert_eq!(

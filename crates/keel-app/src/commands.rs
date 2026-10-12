@@ -466,9 +466,16 @@ fn du_scan(a: DuScan, json: bool, out: &mut Out) -> Result<(), Fail> {
 fn print_du_scan(s: &keel_vfs::du::Summary, out: &mut Out) {
     let size = |b: u64| humansize::format_size(b, humansize::DECIMAL);
     let files = |f: u64| format!("{f} file{}", if f == 1 { "" } else { "s" });
-    let _ = writeln!(out, "{:>10}  {:>10}  {:>14}  Path", "Size", "On disk", "Files");
+    let _ = writeln!(
+        out,
+        "{:>10}  {:>10}  {:>14}  Path",
+        "Size", "On disk", "Files"
+    );
     let mut line = |bytes: Option<u64>, disk: Option<u64>, count: String, what: &str| {
-        let (bytes, disk) = (bytes.map_or(String::new(), size), disk.map_or(String::new(), size));
+        let (bytes, disk) = (
+            bytes.map_or(String::new(), size),
+            disk.map_or(String::new(), size),
+        );
         let _ = writeln!(out, "{bytes:>10}  {disk:>10}  {count:>14}  {what}");
     };
     for r in &s.roots {
@@ -490,12 +497,22 @@ fn print_du_scan(s: &keel_vfs::du::Summary, out: &mut Out) {
             line(Some(free), None, String::new(), "<free space>");
         }
         if let Some(unknown) = r.unknown {
-            line(Some(unknown), None, String::new(), "<unknown: used, not found by the scan>");
+            line(
+                Some(unknown),
+                None,
+                String::new(),
+                "<unknown: used, not found by the scan>",
+            );
         }
         line(Some(r.bytes), Some(r.allocated), files(r.files), &r.path);
     }
     if s.roots.len() > 1 {
-        line(Some(s.bytes), Some(s.allocated), files(s.files), "(all roots)");
+        line(
+            Some(s.bytes),
+            Some(s.allocated),
+            files(s.files),
+            "(all roots)",
+        );
     }
     let mut end = format!(
         "{} files, {} folders in {:.1} s",

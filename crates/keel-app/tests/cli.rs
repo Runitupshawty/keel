@@ -643,11 +643,27 @@ fn du_scan_several_roots_save_and_load() {
     let loaded: Value =
         serde_json::from_str(&env.ok(&["du", "--load", &f, "--top", "1", "--json"])).unwrap();
     assert_eq!(loaded["roots"], v["roots"]);
-    let text = env.ok(&["du", "--scan", &b, &a, "--exclude", "*.BIN", "--exclude", "*.bin"]);
+    let text = env.ok(&[
+        "du",
+        "--scan",
+        &b,
+        &a,
+        "--exclude",
+        "*.BIN",
+        "--exclude",
+        "*.bin",
+    ]);
     assert!(!text.contains("big.bin"), "{text}");
-    assert!(text.contains("invoice-2026.pdf") || text.contains("docs"), "{text}");
+    assert!(
+        text.contains("invoice-2026.pdf") || text.contains("docs"),
+        "{text}"
+    );
     assert!(text.contains("(all roots)"), "{text}");
-    assert_eq!(env.run(&["du"]).status.code(), Some(2), "a folder or a scan");
+    assert_eq!(
+        env.run(&["du"]).status.code(),
+        Some(2),
+        "a folder or a scan"
+    );
 }
 
 /// Task 53: `keel library backup` and `keel library restore`, in-process: a restore never
