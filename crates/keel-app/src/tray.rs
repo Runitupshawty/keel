@@ -80,7 +80,7 @@ mod native {
                     uID: 1,
                     uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                     uCallbackMessage: CALLBACK,
-                    hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+                    hIcon: app_icon(),
                     ..Default::default()
                 };
                 for (dst, src) in icon.szTip.iter_mut().zip("Keel".encode_utf16()) {
@@ -113,6 +113,26 @@ mod native {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &self.state.icon);
                 let _ = DestroyWindow(self.hwnd);
             }
+        }
+    }
+
+    /// Keel's own icon (resource 1 in `keel.rc`) at the small-icon size; Windows' default
+    /// application icon when it cannot be loaded.
+    unsafe fn app_icon() -> HICON {
+        use windows::{core::PCWSTR, Win32::System::LibraryLoader::GetModuleHandleW};
+        let module = GetModuleHandleW(None).unwrap_or_default();
+        let (cx, cy) = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        // LR_SHARED: the system owns the icon, nothing to destroy.
+        match LoadImageW(
+            HINSTANCE(module.0),
+            PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            cx,
+            cy,
+            LR_DEFAULTCOLOR | LR_SHARED,
+        ) {
+            Ok(handle) => HICON(handle.0),
+            Err(_) => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         }
     }
 
