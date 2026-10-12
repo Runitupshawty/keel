@@ -26,7 +26,7 @@ The library is an index of the files in your **sources** (a local folder or driv
 
 **Inspector.** Ctrl+I shows, for the selected item, what the library knows in one place: its source, volume, content id, when the index first saw it and last hashed it, its other copies (each one click away), the operations that touched it, its tags and a folder's totals. See [Inspector](files.md#inspector). The operation log it reads records copies, moves, renames and deletes, and (from 0.21) every tag or favorite change made here, with the paths it changed.
 
-**Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview.
+**Duplicate finder.** Open it from the Overview or the command palette ("Find duplicates"). It lists groups of files with identical content across sources and the space you could reclaim; removing copies goes through the same preview. **Replace with hard links…** turns copies on one volume into hard links to one of them after a preview and a byte-by-byte check, with undo (see [Replace duplicates with hard links](files.md#delete-permanently-hard-links-and-system-cleanups)).
 
 ### Searching
 

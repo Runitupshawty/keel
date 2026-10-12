@@ -2,6 +2,15 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Delete permanently** for local files and folders: More delete options → Delete permanently… in the context menu, or the command palette; never on a key. Keel counts what the selection holds, names the count and the bytes, and deletes only after you type `delete <count>`; nothing is deleted when the items changed since. See [Delete permanently](docs/files.md#delete-permanently-hard-links-and-system-cleanups).
+- **Replace with hard links…** in the duplicate finder: copies on one volume become hard links to one copy kept, after a preview and a byte-by-byte comparison of each pair; Ctrl+Z gives each its own copy back.
+- **System cleanups** on Windows (a drive's Clean up menu in the sidebar, or the palette): disable hibernation (shows the size of `hiberfil.sys`), analyze and clean up the component store with DISM, and optimize a VHD/VHDX (`Optimize-VHD`, or a `diskpart` compact). Each shows a preview with its size and commands and a second confirmation, and runs through a one-shot elevated helper.
+- Launchers for Disk Cleanup, Storage settings, Installed apps and Programs and Features (Windows) and Storage settings (macOS).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
