@@ -12,6 +12,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
 
+- A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
+
 ## [0.23.0] - 2026-10-12
 
 ### Added

@@ -1,0 +1,98 @@
+/// Arbitrary JSON, including heterogeneous unions and exact 64-bit integers.
+public indirect enum JSONValue: Codable, Sendable, Equatable {
+    case null, bool(Bool), int(Int64), uint(UInt64), number(Double), string(String)
+    case array([JSONValue]), object([String: JSONValue])
+
+    public init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let v = try? value.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? value.decode(Int64.self) { self = .int(v) }
+        else if let v = try? value.decode(UInt64.self) { self = .uint(v) }
+        else if let v = try? value.decode(Double.self) { self = .number(v) }
+        else if let v = try? value.decode(String.self) { self = .string(v) }
+        else if let v = try? value.decode([JSONValue].self) { self = .array(v) }
+        else { self = .object(try value.decode([String: JSONValue].self)) }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .null: try value.encodeNil()
+        case .bool(let v): try value.encode(v)
+        case .int(let v): try value.encode(v)
+        case .uint(let v): try value.encode(v)
+        case .number(let v): try value.encode(v)
+        case .string(let v): try value.encode(v)
+        case .array(let v): try value.encode(v)
+        case .object(let v): try value.encode(v)
+        }
+    }
+}
+
+public struct RpcError: Error, Codable, Sendable {
+    public let code: Int64
+    public let message: String
+    public let data: JSONValue?
+}
+
+public enum RpcProtocolError: Error {
+    case mismatchedResponse, missingResult, invalidResponse
+}
+
+/// Exchange UTF-8 JSON request bytes for the matching response; authenticate first.
+public typealias KeelTransport = @Sendable (Data) async throws -> Data
+
+private struct RpcRequest<Params: Encodable>: Encodable {
+    let jsonrpc = "2.0"
+    let id: UInt64
+    let method: String
+    let params: Params
+}
+
+private struct RpcResponse: Decodable {
+    let jsonrpc: String
+    let id: UInt64
+    let result: JSONValue?
+    let error: RpcError?
+    let hasResult: Bool
+
+    private enum CodingKeys: String, CodingKey { case jsonrpc, id, result, error }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        jsonrpc = try values.decode(String.self, forKey: .jsonrpc)
+        id = try values.decode(UInt64.self, forKey: .id)
+        hasResult = values.contains(.result)
+        result = hasResult ? try values.decode(JSONValue.self, forKey: .result) : nil
+        error = try values.decodeIfPresent(RpcError.self, forKey: .error)
+    }
+}
+
+/// Actor isolation assigns unique ids even when calls overlap.
+public actor KeelClient {
+    private let transport: KeelTransport
+    private var nextId: UInt64 = 0
+
+    public init(transport: @escaping KeelTransport) { self.transport = transport }
+
+    private func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(
+        _ method: String, params: Params, result: Result.Type
+    ) async throws -> Result {
+        nextId += 1
+        let id = nextId
+        let request = try JSONEncoder().encode(RpcRequest(id: id, method: method, params: params))
+        let response = try JSONDecoder().decode(RpcResponse.self, from: await transport(request))
+        guard response.jsonrpc == "2.0", response.id == id else {
+            throw RpcProtocolError.mismatchedResponse
+        }
+        guard !(response.hasResult && response.error != nil) else {
+            throw RpcProtocolError.invalidResponse
+        }
+        if let error = response.error { throw error }
+        guard response.hasResult, let value = response.result else {
+            throw RpcProtocolError.missingResult
+        }
+        return try JSONDecoder().decode(Result.self, from: JSONEncoder().encode(value))
+    }
+}

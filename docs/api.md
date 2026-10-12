@@ -881,4 +881,53 @@ npm test --prefix sdk/typescript
 The drift test runs in the normal Rust suite and fails when an operation, parameter
 or result changes without regenerating the SDK. The Node tests compile with strict
 TypeScript and check request framing, preview preservation, errors and response ids.
-Swift generation and publishing an npm package are still open.
+Publishing an npm package is still open.
+
+## Generated Swift client
+
+[`sdk/swift/Keel.swift`](../sdk/swift/Keel.swift) is a Foundation-only Swift client,
+generated from the same `keel_api::OPS` registry and inlined schemas as the TypeScript
+client. Copy the file into a Swift 6 project. Each operation has an async method, with
+dots replaced by underscores (`tags.list` becomes `tags_list`), generated parameter
+and result types, and public initializers. Mutating methods return their direct-call
+preview and never execute it automatically.
+
+`KeelClient` is an actor. Its caller-supplied `KeelTransport` exchanges UTF-8 JSON
+`Data` for a matching response. Authenticate the connection before creating the
+client; the adapter handles sockets, timeouts, connection errors and routing replies
+by id, as described for TypeScript above. The actor assigns unique request ids even
+when calls overlap. `RpcError` preserves the server's code, message and optional data;
+wrong response ids or JSON-RPC versions, missing results, and responses containing
+both a result and an error throw `RpcProtocolError`. Results decode through `Codable`.
+
+```swift
+let client = KeelClient(transport: authenticatedTransport)
+let version = try await client.version([:])
+let preview = try await client.tags_add(
+    TagsAddParams(paths: ["/path/to/file"], tag: "review")
+)
+// Show preview.summary and preview.changes, then ask before calling execute.
+```
+
+Fields keep their wire names, including underscores. Optional fields default to
+`nil` and are omitted on encoding, leaving the daemon to supply its Rust defaults.
+Missing and null optional fields both decode as `nil`. Integer schemas use `Int64`
+or `UInt64` (nonnegative schemas), preserving all 64 bits; floating-point numbers
+use `Double`. String enums use generated `value0`, `value1`, … cases with the exact
+wire strings as raw values. Arbitrary JSON and heterogeneous schema unions use the
+Codable `JSONValue` enum; tuples use `[JSONValue]`. These shapes retain wire data
+but do not enforce union variants, tuple lengths, constants or schema constraints.
+
+Regenerate and verify from the repository root:
+
+```sh
+cargo run --locked -p keel-api --example generate_swift
+cargo test --locked -p keel-api generated_swift_client_matches_registry
+sh sdk/swift/test.sh
+```
+
+The drift test runs in the normal Rust suite. The Swift script needs Swift 6 and
+runs in macOS CI and compiles the complete generated client with warnings as errors,
+then checks request framing, optional omission, preview preservation, exact 64-bit integers, RPC errors,
+invalid responses and transport failures. Its build files stay in a temporary folder.
+Publishing a Swift package is still open.

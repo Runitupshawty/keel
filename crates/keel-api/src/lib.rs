@@ -31,6 +31,7 @@ pub mod private;
 pub mod rpc;
 pub mod signature;
 pub mod socket;
+pub mod swift;
 pub mod system;
 pub mod types;
 pub mod typescript;
