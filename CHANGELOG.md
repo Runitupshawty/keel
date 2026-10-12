@@ -9,7 +9,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Search all files** in the web client (`keel-daemon --web`): an **All files** page (on a phone, Search → All files) searches every file on the daemon's computer with the window's search pane backend (Everything, Keel's index, Spotlight or locate), not only the library, with switches for case, whole words, path, diacritics and regex, a sort and pages. See [Daemon](docs/daemon.md).
 - `--web` answers **Everything's HTTP search parameters** at `/everything` (and `/` with them): `search`/`s`/`q`, `offset`, `count`, `json`, `case`, `diacritics`, `wholeword`, `path`, `regex`, `prefix`, `suffix`, `ignore_punctuation`, `ignore_whitespace`, `sort`, `ascending` and the column switches, in Everything's JSON or as an HTML page, so tools written for Everything's HTTP server work. Every request signs in with the daemon token or an HTTP login for Basic-only tools (`keel-daemon --set-http-login USER`, kept in the OS keychain); counts are bounded (1000 per page); files download only with `[web] allow_downloads = true` in the profile's `config.toml`. See [api.md](docs/api.md).
 - The API's `system.search` operation (and MCP tool): the same search with Everything's match options, sort and paging.
-- keel-daemon prints a warning at start when `--web` is bound to a network address, since it has no TLS.
+
+### Changed
+
+- `--web` has no TLS, so keel-daemon refuses a non-loopback address unless the profile's `config.toml` has `[web] allow_plaintext = true`, and then prints a warning at start. On such a bind the Everything endpoint takes no Basic auth (the HTTP login, or the token as a Basic password, would cross the network readable): only `Authorization: Bearer <token>`. Behind a TLS proxy on a loopback bind Basic auth works.
+- Wrong Everything credentials are no longer slowed by a sleep that held a connection place: an address that sends 5 in a row is locked out (429 with `Retry-After`) for a time that doubles up to 15 minutes, and a flood from many addresses refuses credentials for a minute. A request that has signed in gives its unauthenticated place back at once.
+- A download signed in with the HTTP login may only name a file a recent search listed, and never one in Keel's configuration or data folder (the daemon token is not held to this).
 
 ## [0.22.0] - 2026-10-11
 

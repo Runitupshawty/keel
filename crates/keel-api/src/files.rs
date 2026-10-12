@@ -89,6 +89,27 @@ pub(crate) fn readable(ctx: &Ctx, p: &VPath) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path` is in Keel's own folders: the configuration folder (daemon token, keys)
+/// or the data folder (library databases, device keys, parked shares). `readable` already
+/// refuses the first for every read; a caller that holds only a weak credential (the HTTP
+/// login) keeps out of both. A path that cannot be resolved counts as inside.
+pub fn in_keel_folders(ctx: &Ctx, path: &str) -> bool {
+    let Ok(p) = vpath(path).and_then(|p| real(ctx, &p)) else {
+        return true;
+    };
+    let mut outer = p;
+    while let Some((o, _)) = outer.split_archive() {
+        outer = o;
+    }
+    let Some(local) = outer.to_local_path() else {
+        return false;
+    };
+    [&ctx.config_dir, &ctx.data_dir]
+        .into_iter()
+        .flatten()
+        .any(|dir| inside(&local, dir))
+}
+
 /// `p` is `dir` or inside it, after resolving links, `..` and (Windows, macOS) case.
 pub(crate) fn inside(p: &std::path::Path, dir: &std::path::Path) -> bool {
     match (resolved(p), resolved(dir)) {

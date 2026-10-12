@@ -217,6 +217,20 @@ impl Daemon {
                 bail!("{flag} {addr} is not a loopback address; add --ws-allow-remote to bind it");
             }
         }
+        // No TLS: on a network address the token, the HTTP login's searches and the files
+        // cross it readable, so the user has to say they accept that (a private network, or
+        // a tunnel in front), in the profile's config.toml, not just on the command line.
+        if let Some(addr) = opts
+            .web
+            .filter(|a| !a.ip().is_loopback() && !opts.cfg.allow_plaintext)
+        {
+            bail!(
+                "--web {addr} would serve plain http (no TLS) on the network, where the token \
+                 and every search cross it readable; bind a loopback address behind a TLS proxy, \
+                 or accept plain http on a private network with `[web] allow_plaintext = true` \
+                 in the profile's config.toml"
+            );
+        }
         let cfg = opts.cfg;
         let name = cfg.socket_name();
         // The socket first: a second daemon never touches the library.

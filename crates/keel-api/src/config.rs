@@ -3,7 +3,7 @@
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `remote_poll_secs`,
 //! `[devices] enabled`,
 //! `[devices] inbox`, `auto_accept`, `relay`, `sync` and `sync_secs`, `[[remotes]]`,
-//! `[[clouds]]`); `[web] allow_downloads`; the daemon's
+//! `[[clouds]]`); `[web] allow_downloads` and `allow_plaintext`; the daemon's
 //! socket name and WebSocket token.
 
 use std::path::PathBuf;
@@ -92,6 +92,10 @@ pub struct HostConfig {
     /// `[web] allow_downloads`: keel-daemon --web's Everything-compatible search may send
     /// the files it finds (default off).
     pub allow_downloads: bool,
+    /// `[web] allow_plaintext`: the user accepts that `keel-daemon --web` on a non-loopback
+    /// address serves plain http (no TLS), where the token and the searches cross the
+    /// network readable. Without it such a bind is refused (default off).
+    pub allow_plaintext: bool,
 }
 
 /// The entries of the array `key` that parse as `T` (a broken one is skipped).
@@ -194,6 +198,9 @@ impl HostConfig {
             remotes: entries(&table, "remotes"),
             clouds: entries(&table, "clouds"),
             allow_downloads: get("web", "allow_downloads")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            allow_plaintext: get("web", "allow_plaintext")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
         }
@@ -384,5 +391,20 @@ sync_secs = 1
         assert!(!read().allow_downloads, "only true turns them on");
         std::fs::write(p.join("config.toml"), "[web]\nallow_downloads = true\n").unwrap();
         assert!(read().allow_downloads);
+    }
+
+    #[test]
+    fn a_plain_http_bind_needs_the_acknowledgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = || HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        assert!(!read().allow_plaintext);
+        let p = dir.path().join("profiles/work");
+        std::fs::create_dir_all(&p).unwrap();
+        let config = p.join("config.toml");
+        std::fs::write(&config, "[web]\nallow_plaintext = \"yes\"\n").unwrap();
+        assert!(!read().allow_plaintext, "only true acknowledges it");
+        std::fs::write(&config, "[web]\nallow_plaintext = true\n").unwrap();
+        assert!(read().allow_plaintext);
+        assert!(!read().allow_downloads, "a separate switch");
     }
 }

@@ -1215,9 +1215,20 @@ fn http_get_with(
     path: &str,
     headers: &[(&str, &str)],
 ) -> (String, String, Vec<u8>) {
+    http_get_as(addr, &addr.to_string(), path, headers)
+}
+
+/// [`http_get_with`] connecting to `addr` and naming `host` in the `Host` header (a
+/// wildcard bind is reached through loopback but answers to the bound address).
+fn http_get_as(
+    addr: std::net::SocketAddr,
+    host: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (String, String, Vec<u8>) {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect(addr).unwrap();
-    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n");
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n");
     for (name, value) in headers {
         req.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -1410,4 +1421,188 @@ fn web_answers_everything_searches() {
     let secret = crate::everything::encode(&secret.display().to_string());
     let file = format!("/everything/file?path={secret}");
     assert_eq!(auth(&file).0, "HTTP/1.1 404 Not Found");
+}
+
+fn basic_auth(user: &str, password: &str) -> String {
+    use base64::Engine;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
+    )
+}
+
+/// Review 1 (no TLS): a network bind serves plain http, so it needs `[web] allow_plaintext`
+/// in the profile, and then takes no Basic auth (the HTTP login or the token as a Basic
+/// password would cross the network readable): only `Authorization: Bearer`.
+#[test]
+fn plain_http_on_the_network_needs_the_acknowledgement_and_takes_no_basic_auth() {
+    let env = env();
+    let start = |cfg: HostConfig| {
+        Daemon::start(Options {
+            cfg,
+            ws: None,
+            web: Some("0.0.0.0:0".parse().unwrap()),
+            ws_allow_remote: true,
+            web_hosts: Vec::new(),
+            net: None,
+        })
+    };
+    // Allowed on the command line, not in the profile: refused before anything is bound.
+    let err = start(env.cfg.clone()).err().unwrap().to_string();
+    assert!(
+        err.contains("--web 0.0.0.0:0") && err.contains("allow_plaintext"),
+        "{err}"
+    );
+    let mut cfg = env.cfg.clone();
+    cfg.allow_plaintext = true;
+    let daemon = start(cfg).unwrap();
+    daemon.ctx().system.set(std::sync::Arc::new(FolderSearch(
+        env.files.path().to_owned(),
+    )));
+    let store = std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default());
+    daemon.set_secret_store(store.clone());
+    crate::everything::set_login(&*store, &env.cfg.profile, "tool", "a long password").unwrap();
+    let port = daemon.web_addr().unwrap().port();
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let host = format!("0.0.0.0:{port}");
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let token = token.trim();
+    let get = |path: &str, auth: &str| http_get_as(addr, &host, path, &[("Authorization", auth)]);
+    let json = "/everything?search=invoice&json=1";
+    // Basic, with the HTTP login or with the token as the password: refused, not checked,
+    // and not counted as wrong credentials either.
+    for _ in 0..8 {
+        for auth in [
+            basic_auth("tool", "a long password"),
+            basic_auth("any", token),
+            basic_auth("tool", "wrong password"),
+        ] {
+            let (status, _, body) = get(json, &auth);
+            assert_eq!(status, "HTTP/1.1 403 Forbidden");
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("Basic sign-in is refused"), "{body}");
+        }
+    }
+    // The token as a bearer token works.
+    let (status, _, body) = get(json, &format!("Bearer {token}"));
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["totalResults"], 1, "{v}");
+    let (_, _, page) = get("/everything?search=invoice", &format!("Bearer {token}"));
+    assert!(String::from_utf8_lossy(&page).contains("Not encrypted"));
+    assert_eq!(get(json, "Bearer nope").0, "HTTP/1.1 401 Unauthorized");
+    // `/` with Everything's parameters is the same endpoint.
+    assert_eq!(
+        get("/?search=invoice", &basic_auth("tool", "a long password")).0,
+        "HTTP/1.1 403 Forbidden"
+    );
+}
+
+/// Review 1: wrong credentials were only slowed by a sleep that held a connection place. An
+/// address that sends too many is now answered 429 without checking anything (a right
+/// guess during the lockout gains nothing), while a request with no credentials still gets
+/// the challenge.
+#[test]
+fn wrong_everything_credentials_lock_the_address_out() {
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    daemon.ctx().system.set(std::sync::Arc::new(FolderSearch(
+        env.files.path().to_owned(),
+    )));
+    let store = std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default());
+    daemon.set_secret_store(store.clone());
+    crate::everything::set_login(&*store, &env.cfg.profile, "tool", "a long password").unwrap();
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let bearer = format!("Bearer {}", token.trim());
+    let get = |auth: &str| {
+        http_get_with(
+            addr,
+            "/everything?search=invoice&json=1",
+            &[("Authorization", auth)],
+        )
+    };
+    for _ in 0..crate::web::FREE_FAILS {
+        assert_eq!(get("Bearer nope").0, "HTTP/1.1 401 Unauthorized");
+    }
+    let login = basic_auth("tool", "a long password");
+    for auth in ["Bearer nope", bearer.as_str(), login.as_str()] {
+        let (status, headers, body) = get(auth);
+        assert_eq!(status, "HTTP/1.1 429 Too Many Requests", "{auth}");
+        assert!(headers.contains("retry-after: "), "{headers}");
+        assert!(String::from_utf8_lossy(&body).contains("try again in"));
+    }
+    // No credentials: the challenge, so a tool can ask for them once the lockout is over.
+    let (status, headers, _) = http_get_with(addr, "/everything?search=invoice", &[]);
+    assert_eq!(status, "HTTP/1.1 401 Unauthorized");
+    assert!(headers.contains("www-authenticate"), "{headers}");
+    // The web client itself is not behind this.
+    assert_eq!(http_get_with(addr, "/", &[]).0, "HTTP/1.1 200 OK");
+}
+
+/// Review 1: with downloads on, the HTTP login (a password for third-party tools) could
+/// read any file the daemon's user can. It now downloads only a file a recent search listed
+/// and nothing in Keel's own folders; the daemon token, which is the whole API, is not
+/// held to that.
+#[test]
+fn the_http_login_downloads_only_listed_files_outside_keels_folders() {
+    let env = env();
+    let daemon = web_daemon(&env);
+    let addr = daemon.web_addr().unwrap();
+    let folder = |dir: &std::path::Path| {
+        daemon
+            .ctx()
+            .system
+            .set(std::sync::Arc::new(FolderSearch(dir.to_owned())));
+    };
+    folder(env.files.path());
+    let store = std::sync::Arc::new(keel_vfs::cloud::MemoryStore::default());
+    daemon.set_secret_store(store.clone());
+    crate::everything::set_login(&*store, &env.cfg.profile, "tool", "a long password").unwrap();
+    let profile = env.config.path().join("profiles").join(&env.cfg.profile);
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(
+        profile.join("config.toml"),
+        "[web]\nallow_downloads = true\n",
+    )
+    .unwrap();
+    let token = std::fs::read_to_string(env.config.path().join("daemon.token")).unwrap();
+    let bearer = format!("Bearer {}", token.trim());
+    let login = basic_auth("tool", "a long password");
+    let download = |auth: &str, file: &std::path::Path| {
+        let path = crate::everything::encode(&file.display().to_string());
+        http_get_with(
+            addr,
+            &format!("/everything/file?path={path}"),
+            &[("Authorization", auth)],
+        )
+    };
+    let search = |auth: &str, text: &str| {
+        let (status, ..) = http_get_with(
+            addr,
+            &format!("/everything?search={text}&json=1"),
+            &[("Authorization", auth)],
+        );
+        assert_eq!(status, "HTTP/1.1 200 OK");
+    };
+    let pdf = env.files.path().join("invoice-2026.pdf");
+    let notes = env.files.path().join("notes.txt");
+    // Nothing listed yet: the login gets nothing, the token everything.
+    assert_eq!(download(&login, &pdf).0, "HTTP/1.1 403 Forbidden");
+    assert_eq!(download(&bearer, &pdf).0, "HTTP/1.1 200 OK");
+    // A search lists the invoice: that file, not its neighbour.
+    search(&login, "invoice");
+    let (status, _, body) = download(&login, &pdf);
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(body, b"pdf");
+    assert_eq!(download(&login, &notes).0, "HTTP/1.1 403 Forbidden");
+    assert_eq!(download(&bearer, &notes).0, "HTTP/1.1 200 OK");
+    // Keel's data folder stays out even when a search lists a file in it.
+    let key = env.data.path().join("device-secret.key");
+    std::fs::write(&key, b"secret").unwrap();
+    folder(env.data.path());
+    search(&login, "device-secret");
+    let (status, _, body) = download(&login, &key);
+    assert_eq!(status, "HTTP/1.1 403 Forbidden");
+    assert_ne!(body, b"secret");
 }

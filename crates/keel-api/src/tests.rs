@@ -2273,3 +2273,20 @@ fn system_search_runs_the_platform_search() {
     let e = call(&f.ctx, "system.search", json!({"query": "x", "count": -1})).unwrap_err();
     assert_eq!(e.code, ApiError::INVALID_PARAMS, "{e:?}");
 }
+
+/// Review 1: a download signed in with the weaker HTTP login stays out of Keel's own folders
+/// (`files::in_keel_folders`: the configuration folder and the data folder).
+#[test]
+fn keel_folders_are_told_from_the_rest() {
+    let f = fixture(None);
+    let data = f.ctx.data_dir.clone().unwrap();
+    let inside = |p: &std::path::Path| crate::files::in_keel_folders(&f.ctx, &s(p));
+    assert!(inside(&f.cfg.path().join("daemon.token")));
+    assert!(inside(&data.join("test").join("library.db")));
+    assert!(inside(&data));
+    assert!(!inside(&f.files.path().join("docs/invoice-2026.pdf")));
+    assert!(
+        inside(std::path::Path::new("relative/path")),
+        "unresolvable: counts as inside"
+    );
+}

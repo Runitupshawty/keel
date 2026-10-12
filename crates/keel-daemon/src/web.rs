@@ -21,8 +21,13 @@
 //! request head must be in within `HANDSHAKE_WAIT` in all, at most `MAX_CONNECTIONS` are
 //! served at once and writes time out after `WRITE_WAIT`; of those, at most
 //! `MAX_UNAUTHENTICATED` have not signed in yet (a message before `auth` is at most
-//! `ws::AUTH_MAX` bytes) and at most `MAX_PER_IP` come from one remote address. No TLS:
-//! put a remote bind behind a TLS proxy or a private network (a tailnet).
+//! `ws::AUTH_MAX` bytes) and at most `MAX_PER_IP` come from one remote address.
+//!
+//! There is no TLS. A non-loopback bind is therefore refused unless the profile's
+//! config.toml says `[web] allow_plaintext = true` (`server::Daemon::start`), and even then
+//! the Everything endpoint takes no Basic auth there (only `Authorization: Bearer`): put
+//! a TLS proxy in front of a loopback bind to use the HTTP login, or keep a plain bind on
+//! a private network (a tailnet).
 
 use crate::everything;
 use crate::server::Shared;
@@ -71,6 +76,124 @@ impl Drop for IpSlot {
             }
         }
     }
+}
+
+/// Failed Everything sign-ins an address may make before it is locked out.
+pub(crate) const FREE_FAILS: u32 = 5;
+/// The first lockout; each further failure doubles it.
+const LOCK_BASE: Duration = Duration::from_secs(5);
+/// The longest lockout.
+const LOCK_MAX: Duration = Duration::from_secs(15 * 60);
+/// An address that has not failed for this long starts again.
+const FORGET_AFTER: Duration = Duration::from_secs(30 * 60);
+/// Failed sign-ins from all addresses together per `GLOBAL_WINDOW` before every request
+/// that carries credentials is refused for the rest of the window (many addresses
+/// guessing at once).
+const GLOBAL_FAILS: usize = 100;
+const GLOBAL_WINDOW: Duration = Duration::from_secs(60);
+/// Addresses remembered at once.
+const MAX_TRACKED: usize = 4096;
+
+/// What failed Everything sign-ins cost: an address that keeps sending wrong credentials is
+/// answered `429` without any check (so a right guess during the lockout gains nothing) for
+/// a time that doubles with each failure, and a flood of failures from many addresses
+/// refuses credentials for everyone for a while. Nothing here sleeps, so a guesser holds no
+/// connection slot. Behind a reverse proxy all users share the proxy's address.
+#[derive(Default)]
+pub(crate) struct AuthGuard(Mutex<GuardState>);
+
+#[derive(Default)]
+struct GuardState {
+    by_addr: HashMap<IpAddr, Fails>,
+    /// When the latest failures (all addresses) happened, oldest first.
+    recent: std::collections::VecDeque<Instant>,
+}
+
+struct Fails {
+    count: u32,
+    until: Instant,
+    last: Instant,
+}
+
+/// An IPv6 client owns a whole /64: lockouts follow the network, not the address.
+fn network(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            let mut o = v6.octets();
+            o[8..].fill(0);
+            IpAddr::V6(o.into())
+        }
+        v4 => v4,
+    }
+}
+
+impl AuthGuard {
+    /// `Err(wait)` when `ip` may not sign in now.
+    fn check(&self, ip: IpAddr, now: Instant) -> Result<(), Duration> {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        while g
+            .recent
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) >= GLOBAL_WINDOW)
+        {
+            g.recent.pop_front();
+        }
+        if g.recent.len() >= GLOBAL_FAILS {
+            let oldest = g.recent.front().copied().unwrap_or(now);
+            return Err(GLOBAL_WINDOW.saturating_sub(now.saturating_duration_since(oldest)));
+        }
+        match g.by_addr.get(&network(ip)) {
+            Some(f) if f.until > now => Err(f.until - now),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records wrong credentials from `ip`.
+    fn failed(&self, ip: IpAddr, now: Instant) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.recent.push_back(now);
+        while g.recent.len() > GLOBAL_FAILS * 2 {
+            g.recent.pop_front();
+        }
+        if g.by_addr.len() >= MAX_TRACKED {
+            g.by_addr
+                .retain(|_, f| now.saturating_duration_since(f.last) < FORGET_AFTER);
+            if g.by_addr.len() >= MAX_TRACKED {
+                let oldest = g.by_addr.iter().min_by_key(|(_, f)| f.last).map(|(k, _)| *k);
+                if let Some(k) = oldest {
+                    g.by_addr.remove(&k);
+                }
+            }
+        }
+        let f = g.by_addr.entry(network(ip)).or_insert(Fails {
+            count: 0,
+            until: now,
+            last: now,
+        });
+        if now.saturating_duration_since(f.last) >= FORGET_AFTER {
+            f.count = 0;
+        }
+        f.count = f.count.saturating_add(1);
+        f.last = now;
+        if f.count >= FREE_FAILS {
+            let doublings = (f.count - FREE_FAILS).min(16);
+            f.until = now + (LOCK_BASE * 2u32.pow(doublings)).min(LOCK_MAX);
+        }
+    }
+
+    /// `ip` signed in: its failures are forgotten.
+    fn succeeded(&self, ip: IpAddr) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.by_addr.remove(&network(ip));
+    }
+}
+
+/// What the Everything endpoint keeps between requests.
+#[derive(Default)]
+pub(crate) struct Gate {
+    guard: AuthGuard,
+    /// The files recent searches listed (downloads with the HTTP login are held to them).
+    recent: everything::Recent,
 }
 
 /// Which `Host` headers a listener answers.
@@ -139,6 +262,7 @@ pub(crate) fn serve(
     let count = Arc::new(AtomicUsize::new(0));
     let unauthenticated = Arc::new(AtomicUsize::new(0));
     let per_ip = Arc::new(Mutex::new(HashMap::new()));
+    let gate = Arc::new(Gate::default());
     std::thread::Builder::new()
         .name("keel-daemon-web".into())
         .spawn(move || {
@@ -168,12 +292,13 @@ pub(crate) fn serve(
                     }
                     _ => None,
                 };
-                let (s, tokens, hosts) = (s.clone(), tokens.clone(), hosts.clone());
+                let (s, tokens, hosts, gate) =
+                    (s.clone(), tokens.clone(), hosts.clone(), gate.clone());
                 let _ = std::thread::Builder::new()
                     .name("keel-daemon-web-client".into())
                     .spawn(move || {
                         let _slots = (slot, ip_slot);
-                        if let Err(e) = client(&s, stream, &tokens, &hosts, pending) {
+                        if let Err(e) = client(&s, stream, &tokens, &hosts, &gate, pending) {
                             tracing::debug!("web client: {e}");
                         }
                     });
@@ -365,6 +490,7 @@ fn client(
     mut stream: TcpStream,
     tokens: &ws::Token,
     hosts: &Hosts,
+    gate: &Gate,
     pending: ws::Slot,
 ) -> anyhow::Result<()> {
     let head = read_head(&mut stream, Instant::now() + ws::HANDSHAKE_WAIT)?;
@@ -400,13 +526,24 @@ fn client(
         return rpc(shared, stream, &head, &host, tokens, pending);
     }
     if head.path == "/everything/file" {
-        return everything_file(shared, &mut stream, &head, &host, tokens);
+        let ev = Everything {
+            shared,
+            hosts,
+            tokens,
+            gate,
+        };
+        return everything_file(&ev, &mut stream, &head, &host, pending);
     }
     if matches!(head.path.as_str(), "/everything" | "/everything/")
         || (head.path == "/" && head.query.as_deref().is_some_and(everything::is_search))
     {
-        let unencrypted = !hosts.bound.ip().is_loopback();
-        return everything_search(shared, &mut stream, &head, &host, tokens, unencrypted);
+        let ev = Everything {
+            shared,
+            hosts,
+            tokens,
+            gate,
+        };
+        return everything_search(&ev, &mut stream, &head, &host, pending);
     }
     if let Some(link) = head.path.strip_prefix("/file/") {
         return download(shared, &mut stream, &host, link);
@@ -435,42 +572,82 @@ fn client(
     Ok(())
 }
 
-/// How long an Everything request with wrong credentials waits for its answer (guessing
-/// a password stays slow).
-const AUTH_FAIL_WAIT: Duration = Duration::from_millis(if cfg!(test) { 50 } else { 1000 });
+/// What the Everything handlers share.
+struct Everything<'a> {
+    shared: &'a Arc<Shared>,
+    hosts: &'a Hosts,
+    tokens: &'a ws::Token,
+    gate: &'a Gate,
+}
 
-/// Signs in an Everything request: the daemon token (bearer, or the Basic password), or
-/// the HTTP login as Basic auth. False when it was answered (401, or 403 for a request
-/// another site's page made).
+impl Everything<'_> {
+    /// Plain http on a network address (not loopback; behind a TLS proxy the bind is
+    /// loopback).
+    fn plaintext(&self) -> bool {
+        !self.hosts.bound.ip().is_loopback()
+    }
+}
+
+/// Signs in an Everything request: the daemon token (bearer, or the Basic password), or the
+/// HTTP login as Basic auth. None when it was answered instead: 401, 403 for a request
+/// another site's page made or Basic auth over plain http on a network address (the
+/// password would cross the network readable), 429 for an address that sent too many wrong
+/// credentials.
 fn everything_auth(
-    shared: &Arc<Shared>,
+    ev: &Everything,
     stream: &mut TcpStream,
     head: &Head,
     host: &str,
-    tokens: &ws::Token,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<everything::Who>> {
     // A page on another site may link or embed these URLs; the browser says so.
     if matches!(
         head.header("sec-fetch-site"),
         Some("cross-site" | "same-site")
     ) {
         refuse(stream, "403 Forbidden", host, "cross-site request refused")?;
-        return Ok(false);
+        return Ok(None);
     }
-    let token = tokens.current()?;
     let header = head.header("authorization");
-    if everything::authorized(header, &token, None) {
-        return Ok(true);
+    let basic = everything::is_basic(header);
+    if basic && ev.plaintext() {
+        refuse(
+            stream,
+            "403 Forbidden",
+            host,
+            "Basic sign-in is refused over plain http on a network address: send \
+             `Authorization: Bearer <token>`, or reach keel-daemon through a TLS proxy \
+             (--web on a loopback address)",
+        )?;
+        return Ok(None);
     }
-    let basic = header.is_some_and(|h| {
-        let h = h.trim_start();
-        h.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("basic "))
-    });
-    if basic && everything::authorized(header, &token, shared.http_login().as_ref()) {
-        return Ok(true);
+    let ip = stream
+        .peer_addr()
+        .map_or(IpAddr::from([0, 0, 0, 0]), |a| a.ip());
+    // Credentials are not even looked at while the address is locked out.
+    if header.is_some() {
+        if let Err(wait) = ev.gate.guard.check(ip, Instant::now()) {
+            let secs = wait.as_secs().max(1);
+            send_csp(
+                stream,
+                "429 Too Many Requests",
+                PAGE_CSP,
+                &[
+                    ("Retry-After", secs.to_string()),
+                    ("Content-Type", "text/plain; charset=utf-8".into()),
+                ],
+                format!("Too many wrong sign-ins: try again in {secs} seconds.").as_bytes(),
+            )?;
+            return Ok(None);
+        }
+    }
+    let token = ev.tokens.current()?;
+    let login = if basic { ev.shared.http_login() } else { None };
+    if let Some(who) = everything::signed_in(header, &token, login.as_ref()) {
+        ev.gate.guard.succeeded(ip);
+        return Ok(Some(who));
     }
     if header.is_some() {
-        std::thread::sleep(AUTH_FAIL_WAIT);
+        ev.gate.guard.failed(ip, Instant::now());
     }
     send_csp(
         stream,
@@ -485,28 +662,35 @@ fn everything_auth(
         ],
         b"Sign in with the daemon token, or the HTTP login (keel-daemon --set-http-login).",
     )?;
-    Ok(false)
+    Ok(None)
 }
 
 /// `/everything` (or `/?search=...`): the system search with Everything's parameters, as
-/// JSON (`json=1`) or an HTML page.
+/// JSON (`json=1`) or an HTML page. `pending` (an unauthenticated place) is given back once
+/// the request has signed in.
 fn everything_search(
-    shared: &Arc<Shared>,
+    ev: &Everything,
     stream: &mut TcpStream,
     head: &Head,
     host: &str,
-    tokens: &ws::Token,
-    unencrypted: bool,
+    pending: ws::Slot,
 ) -> anyhow::Result<()> {
-    if !everything_auth(shared, stream, head, host, tokens)? {
+    if everything_auth(ev, stream, head, host)?.is_none() {
         return Ok(());
     }
+    drop(pending);
+    let shared = ev.shared;
     let r = match everything::parse(head.query.as_deref().unwrap_or_default()) {
         Ok(r) => r,
         Err(why) => return refuse(stream, "400 Bad Request", host, &why),
     };
     let searcher = shared.ctx().system.get();
     let found = keel_api::system::run(&*searcher, &r.params, keel_api::system::MAX_SCAN);
+    if let Ok(f) = &found {
+        for hit in f.hits.iter().filter(|h| !h.is_dir) {
+            ev.gate.recent.remember(&hit.path.display());
+        }
+    }
     let status = match &found {
         Ok(_) => "200 OK",
         Err(e) if e.code == keel_api::ApiError::INVALID_PARAMS => "400 Bad Request",
@@ -522,7 +706,7 @@ fn everything_search(
         let page = everything::Page {
             base: "/everything",
             downloads: shared.allow_downloads(),
-            unencrypted,
+            unencrypted: ev.plaintext(),
         };
         let found = found.as_ref().map_err(|e| e.message.as_str());
         let html = everything::to_html(&r, found, &page);
@@ -538,17 +722,20 @@ fn everything_search(
     Ok(())
 }
 
-/// `/everything/file?path=...`: a file, while `[web] allow_downloads` is on.
+/// `/everything/file?path=...`: a file, while `[web] allow_downloads` is on. Signed in
+/// with the HTTP login, only a file a recent search listed and outside Keel's own folders.
 fn everything_file(
-    shared: &Arc<Shared>,
+    ev: &Everything,
     stream: &mut TcpStream,
     head: &Head,
     host: &str,
-    tokens: &ws::Token,
+    pending: ws::Slot,
 ) -> anyhow::Result<()> {
-    if !everything_auth(shared, stream, head, host, tokens)? {
+    let Some(who) = everything_auth(ev, stream, head, host)? else {
         return Ok(());
-    }
+    };
+    drop(pending);
+    let shared = ev.shared;
     if !shared.allow_downloads() {
         return refuse(
             stream,
@@ -561,6 +748,16 @@ fn everything_file(
     let Some(path) = everything::param(query, "path") else {
         return refuse(stream, "400 Bad Request", host, "path=<the file> needed");
     };
+    if who == everything::Who::Login
+        && (!ev.gate.recent.contains(&path) || keel_api::files::in_keel_folders(shared.ctx(), &path))
+    {
+        return refuse(
+            stream,
+            "403 Forbidden",
+            host,
+            "the HTTP login downloads only files a recent search listed (and none in Keel's own folders)",
+        );
+    }
     // Through file.get: what the read operations may not reach stays out of reach.
     let link = keel_api::call(
         shared.ctx(),
@@ -734,6 +931,83 @@ mod tests {
         drop(held);
         assert!(IpSlot::take(&map, ip).is_some());
         assert!(map.lock().unwrap().get(&ip).is_none(), "given back");
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// Review 1: a wrong login only cost a one second sleep that held the connection's
+    /// slots, with no counting. Now an address is locked out after a few failures, for a
+    /// time that doubles, without sleeping.
+    #[test]
+    fn wrong_credentials_lock_an_address_out_for_a_growing_time() {
+        let g = AuthGuard::default();
+        let (a, b) = (ip("192.0.2.9"), ip("192.0.2.10"));
+        let t = Instant::now();
+        for _ in 0..FREE_FAILS - 1 {
+            assert!(g.check(a, t).is_ok());
+            g.failed(a, t);
+        }
+        assert!(g.check(a, t).is_ok(), "the last free try");
+        g.failed(a, t);
+        assert_eq!(g.check(a, t), Err(LOCK_BASE));
+        assert_eq!(g.check(a, t + LOCK_BASE / 2), Err(LOCK_BASE / 2));
+        assert!(g.check(b, t).is_ok(), "another address is untouched");
+        // Each further failure doubles the wait, up to the cap.
+        let t2 = t + LOCK_BASE;
+        assert!(g.check(a, t2).is_ok());
+        g.failed(a, t2);
+        assert_eq!(g.check(a, t2), Err(LOCK_BASE * 2));
+        let mut now = t2;
+        for _ in 0..40 {
+            now += LOCK_MAX;
+            g.failed(a, now);
+        }
+        assert_eq!(g.check(a, now), Err(LOCK_MAX));
+        // A right sign-in clears it.
+        g.succeeded(a);
+        assert!(g.check(a, now).is_ok());
+        // An address that stopped failing is forgiven.
+        for _ in 0..FREE_FAILS - 1 {
+            g.failed(b, t);
+        }
+        g.failed(b, t + FORGET_AFTER);
+        assert!(g.check(b, t + FORGET_AFTER).is_ok(), "started again at one");
+    }
+
+    #[test]
+    fn an_ipv6_network_is_locked_out_as_one() {
+        let g = AuthGuard::default();
+        let t = Instant::now();
+        for i in 0..FREE_FAILS {
+            g.failed(ip(&format!("2001:db8:1:2::{}", i + 1)), t);
+        }
+        assert!(g.check(ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), t).is_err());
+        assert!(g.check(ip("2001:db8:1:3::1"), t).is_ok());
+    }
+
+    #[test]
+    fn many_addresses_guessing_at_once_lock_everyone_out_for_a_while() {
+        let g = AuthGuard::default();
+        let t = Instant::now();
+        for i in 0..GLOBAL_FAILS as u32 {
+            assert!(g.check(IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8]), t).is_ok());
+            g.failed(IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8]), t);
+        }
+        let fresh = ip("203.0.113.7");
+        assert_eq!(g.check(fresh, t), Err(GLOBAL_WINDOW));
+        assert!(g.check(fresh, t + GLOBAL_WINDOW).is_ok(), "the window passed");
+    }
+
+    #[test]
+    fn the_lockout_table_stays_bounded() {
+        let g = AuthGuard::default();
+        let t = Instant::now();
+        for i in 0..(MAX_TRACKED as u32 + 50) {
+            g.failed(IpAddr::from(i.to_be_bytes()), t);
+        }
+        assert!(g.0.lock().unwrap().by_addr.len() <= MAX_TRACKED);
     }
 
     #[test]

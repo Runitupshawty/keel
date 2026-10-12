@@ -405,8 +405,10 @@ connect-src 'self' ws://<host> wss://<host>; ...; manifest-src 'self'; worker-sr
 served at once (more are closed at once), and the `auth` rule above follows the
 handshake. Of the 64, at most 16 may be connections that have not signed in (or are
 fetching a page), and at most 8 may come from one remote address (loopback is not
-limited this way), so held connections cannot lock the user out. Non-loopback addresses need `--ws-allow-remote`, exactly as `--ws`; there is
-no TLS (a tailnet, or a TLS proxy).
+limited this way), so held connections cannot lock the user out. Non-loopback addresses need `--ws-allow-remote`, exactly as `--ws`. There is
+no TLS, so `--web` on a non-loopback address is also refused at start unless the profile's
+`config.toml` says `[web]` `allow_plaintext = true` (a tailnet, or a private network you trust);
+behind a TLS proxy keep the bind on loopback.
 
 **Share target (`POST /share`).** The browser makes this request itself when the user
 shares to the installed app, so it cannot carry the token. The daemon therefore only parks
@@ -455,12 +457,22 @@ with a search form, the results, sort links on the column heads and Previous / N
 Every request needs `Authorization: Bearer <daemon.token>`, Basic auth with the token as
 the password (any user name), or Basic auth with the HTTP login from `keel-daemon
 --set-http-login USER` (kept in the OS keychain, per profile); otherwise 401 with
-`WWW-Authenticate: Basic realm="Keel"`. A wrong one waits 1 s before its 401. A request
-with `Sec-Fetch-Site: cross-site` or `same-site` is refused (403). `/everything/file` is
+`WWW-Authenticate: Basic realm="Keel"`. Basic auth is never accepted on a non-loopback
+bind (403 "Basic sign-in is refused": the password would cross the network readable; use
+`Authorization: Bearer`, or a TLS proxy in front of a loopback bind). An address that sends
+5 wrong credentials in a row is answered `429 Too Many Requests` with `Retry-After`,
+without looking at what it sent, for 5 s, doubling with each further failure up to 15
+minutes (an IPv6 client counts as its /64; behind a reverse proxy all users share the
+proxy's address); 100 wrong credentials within a minute from all addresses together
+refuse credentials for everyone until the minute is over. A request with
+`Sec-Fetch-Site: cross-site` or `same-site` is refused (403). `/everything/file` is
 403 unless `[web] allow_downloads = true` is in the profile's `config.toml` (read on each
 request) and then sends the file through `file.get`'s checks (404 for what it refuses,
-such as Keel's configuration folder). On a non-loopback bind there is no TLS: keel-daemon
-warns at start and the HTML page shows "Not encrypted".
+such as Keel's configuration folder). Signed in with the HTTP login (not the token), a
+download may only name a file one of the last 20000 search results listed, and never one in
+Keel's configuration or data folder (403 otherwise). On a non-loopback bind (which needs
+`[web] allow_plaintext = true`) there is no TLS: keel-daemon warns at start and the HTML
+page shows "Not encrypted".
 
 ## CLI
 
