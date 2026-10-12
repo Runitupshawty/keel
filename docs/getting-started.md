@@ -30,10 +30,11 @@ Keel is installed to `%LOCALAPPDATA%\Programs\Keel`, with a Start menu shortcut 
 ```powershell
 $i = [scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1))
 & $i -Desktop -AddToPath
+& $i -UrlProtocol      # also open keel: links with Keel ([keel: links](files.md#keel-links))
 & $i -Uninstall
 ```
 
-Without the script: download `keel-<version>-win64.zip` from Releases, extract it anywhere and run `keel.exe`. Keep the DLLs and `keel-daemon.exe` next to it. No Visual C++ redistributable is needed.
+Without the script: download `keel-<version>-win64.zip` from Releases, extract it anywhere and run `keel.exe`. Keep the DLLs and `keel-daemon.exe` next to it. No Visual C++ redistributable is needed. Add an empty `keel.portable` file next to `keel.exe` to keep settings, library and index in that folder too ([Portable mode](files.md#portable-mode)).
 
 The first start of an unsigned build may show a SmartScreen warning about an unknown publisher: choose **More info**, then **Run anyway**. The install script says so when the build it installed is unsigned; when a build is signed it checks the signature and refuses one that is broken.
 
@@ -287,7 +288,7 @@ Everything the library can do is also a typed operation that `keel-daemon` serve
 | Open tabs (`session.json`), search index, thumbnails | `%LOCALAPPDATA%\Keel` | `~/Library/Caches/Keel` | `~/.cache/keel` |
 | Library (`library/<name>/`), paired devices and shares, crash reports (`crashes/`) | `%LOCALAPPDATA%\Keel` | `~/Library/Application Support/Keel` | `~/.local/share/keel` |
 
-A profile's settings are in `profiles/<name>/config.toml` inside the settings folder. `KEEL_CONFIG_DIR` puts settings and open tabs in another folder, `KEEL_DATA_DIR` the library and crash reports. Passwords, key passphrases, cloud tokens and the device identity are kept in the system keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in these folders. The window's size and position are saved by the windowing library in its own `app.ron`.
+A profile's settings are in `profiles/<name>/config.toml` inside the settings folder. `KEEL_CONFIG_DIR` puts settings and open tabs in another folder, `KEEL_DATA_DIR` the library and crash reports. Passwords, key passphrases, cloud tokens and the device identity are kept in the system keychain (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in these folders. The window's size and position are saved by the windowing library in its own `app.ron` (in `<KEEL_CONFIG_DIR>/window` when that is set). A `keel.portable` file beside the executable keeps all of it beside Keel: [Portable mode](files.md#portable-mode).
 
 **Starting over.** Close Keel and stop the daemon (`keel daemon stop`) first. Deleting or renaming the settings folder resets all settings, remotes and cloud accounts (their secrets stay in the keychain until you remove them there); deleting the cache folder forgets open tabs, thumbnails and the search index, which are rebuilt. Deleting the library folder removes the index, tags and favorites, never your files. A `config.toml` or `session.json` that Keel cannot read is set aside as `config.toml.bad` or `session.json.bad` and Keel starts with defaults.
 

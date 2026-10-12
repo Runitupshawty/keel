@@ -2,6 +2,20 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **`keel es`**: search the whole disk from a terminal with the switches of Everything's `es.exe`, through the same backend as the window (Everything, Keel's NTFS index, Spotlight, `locate` or the folder index), or the library with `-library`. Match switches (`-case`, `-w`, `-p`, `-diacritics`, `-regex`, `-prefix`, `-suffix`), `-n`/`-o`, `-path`, `-parent-path`, `-parent`, `/ad` and `/a-d`, sorting (`-sort`, DIR-style `/o`), columns (`-name`, `-path-column`, `-full-path-and-name`, `-extension`, `-size`, `-date-modified`), `-size-format`, `-date-format`, CSV, TSV, EFU, JSON, M3U and text output to the terminal or a file (`-export-csv <file>`, …), `-no-header`, `-utf8-bom`, `-count`, `-get-result-count`, `-get-total-size`, `-get-folder-size`, `-timeout` and `-no-result-error`; `-ipc1`/`-ipc2`/`-ipc3` are accepted and ignored. `-p` needs Everything (Keel's own index matches names) and says so. See [api.md](docs/api.md#keel-es-everything-style-search).
+- **`keel:` links**: `keel:search?q=…[&path=…]` opens a search (in that folder), `keel:open?path=…` opens a folder; `keel --url LINK` opens one. A link can only search or show a folder: a file's path opens its folder with the file selected, and network, device and relative paths are refused. On Windows `keel --register-url-protocol` (or the installer's `-UrlProtocol`) makes Keel open them for your user; `--unregister-url-protocol` and uninstalling remove the handler when it is this Keel's. See [keel: links](docs/files.md#keel-links).
+- **Portable mode**: a `keel.portable` file beside the executable keeps settings, profiles, open tabs, window position, libraries, crash reports, caches and the search index in a `keel-data` folder beside it (or the folder the file names), and the portable Keel is its own instance. See [Portable mode](docs/files.md#portable-mode).
+- `in:<folder>` in a search now works with Everything (it becomes a path term), Spotlight and `locate` too, not only with Keel's own index.
+
+### Fixed
+
+- `keel FOLDER --search QUERY` searched the whole disk; it now searches only in FOLDER (the query starts with `in:"FOLDER"`, which shows in the search box).
+- With `KEEL_CONFIG_DIR` set, the window's size and position (eframe's `app.ron`) were still saved in eframe's own folder; they now go to `<KEEL_CONFIG_DIR>/window`.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
