@@ -1,0 +1,4 @@
+#EXTM3U
+#EXTINF:123,Artist - Title
+/music/a.mp3
+http://example.invalid/stream

@@ -13,3 +13,4 @@
 *.heic binary
 *.avif binary
 *.dng binary
+fuzz/corpus/efu/* -text

@@ -1,11 +1,16 @@
 //! File search backends (Everything or Keel's own NTFS index on Windows, Spotlight
 //! on macOS, locate or a home-directory walk on Linux) and folder-path fuzzy
-//! matching for Keel.
+//! matching for Keel, and file lists (EFU and plain lists: read, search, export, create).
 
 #[cfg(windows)]
 mod composite;
 #[cfg(windows)]
 mod everything;
+pub mod filelist;
+/// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz;
 mod fuzzy;
 #[cfg(target_os = "linux")]
 mod locate;
@@ -17,6 +22,7 @@ mod walkindex;
 
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
+pub use filelist::FileListSearcher;
 pub use fuzzy::Fuzzy;
 #[cfg(windows)]
 pub use ntfs::{

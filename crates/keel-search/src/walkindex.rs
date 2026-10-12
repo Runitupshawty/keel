@@ -483,7 +483,7 @@ impl Table {
     }
 }
 
-fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
+pub(crate) fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
     if match_case {
         a == b
     } else {
@@ -494,17 +494,17 @@ fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
 // ---------------------------------------------------------------------------------
 // Query text -> Matcher (mirrors ntfs/pattern.rs, which is Windows-only)
 
-struct Matcher {
+pub(crate) struct Matcher {
     /// Finds candidates over the whole name buffer (multi-line mode).
-    scan: Option<Regex>,
+    pub(crate) scan: Option<Regex>,
     /// Further terms every candidate name must match.
-    rest: Vec<Regex>,
+    pub(crate) rest: Vec<Regex>,
     /// The scan term when it is a plain substring: drives exact/prefix ranking.
-    literal: Option<String>,
-    match_case: bool,
-    folders_only: bool,
+    pub(crate) literal: Option<String>,
+    pub(crate) match_case: bool,
+    pub(crate) folders_only: bool,
     /// `in:` path prefix, lowercased with `/` separators.
-    within: Option<String>,
+    pub(crate) within: Option<String>,
 }
 
 enum Term {
@@ -534,7 +534,7 @@ fn split_terms(text: &str) -> Vec<String> {
 }
 
 /// Whole-name glob as a regex (a leading or trailing `*` drops that anchor).
-fn glob(term: &str) -> String {
+pub(crate) fn glob(term: &str) -> String {
     let mut re = String::new();
     if !term.starts_with('*') {
         re.push('^');
@@ -566,7 +566,7 @@ fn term_of(text: &str) -> Term {
     }
 }
 
-fn compile(query: &Query) -> anyhow::Result<Matcher> {
+pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     let mut folders_only = query.folders_only;
     let mut within = None;
     let mut terms = Vec::new();
