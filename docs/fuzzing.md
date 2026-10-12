@@ -48,6 +48,9 @@ crate's `fuzzing` feature.
 | `lnk` | `keel_props::fuzz::lnk` | Windows shell links (`.lnk`): header, IDList, LinkInfo (local path, network share, suffix), string data, extra data blocks |
 | `pe_version` | `keel_props::fuzz::pe_version` | PE images: headers, sections, the resource directory walk to `RT_VERSION` (bounded in sections and entries) and the `VS_VERSIONINFO` blocks |
 | `audio_tags` | `keel_props::fuzz::audio_tags` | audio files: ID3v2 (2.2 to 2.4, unsynchronisation, extended headers), ID3v1, MPEG frames with Xing/VBRI, FLAC metadata blocks and Vorbis comments, WAV chunks |
+| `content_match` | `keel_props::fuzz::content_match` | content search: the first byte picks the encoding (`content:`, `utf8content:`, `utf16content:`, `utf16becontent:`, `ansicontent:`, `binary:`, `hex:`) and options (case, whole words, regex, line mode), the bytes up to a NUL are the pattern, the rest is the file, searched streamed, as library text and under a byte cap |
+| `recycle_info` | `keel_props::fuzz::recycle_info` | Windows Recycle Bin `$I` records (versions 1 and 2) |
+| `trash_info` | `keel_props::fuzz::trash_info` | freedesktop.org `.trashinfo` files (group, percent-encoded path, deletion date with or without a zone) |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,
