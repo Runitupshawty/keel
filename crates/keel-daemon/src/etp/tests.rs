@@ -4,6 +4,7 @@
 use super::*;
 use keel_search::etp::{self as client, EtpSearcher, Request, SortKey};
 use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A test CA and a certificate it issued for `localhost` and 127.0.0.1 (P-256, valid
 /// until 2126; the pair keel-vfs's FTP tests use). Generated for tests only; the key
@@ -138,15 +139,19 @@ impl Raw {
 
     /// One reply, its lines joined with `\n`; empty at the end of the connection.
     fn read(&mut self) -> String {
-        let mut lines = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
         loop {
             let mut line = String::new();
             if self.r.read_line(&mut line).unwrap_or(0) == 0 {
                 return lines.join("\n");
             }
             let line = line.trim_end_matches(['\r', '\n']).to_owned();
-            let done = lines.is_empty() && line.as_bytes().get(3) == Some(&b' ')
-                || (!lines.is_empty() && line.get(..4) == lines[0].get(..3).map(|c: &str| format!("{c} ")).as_deref());
+            let done = match lines.first() {
+                None => line.as_bytes().get(3) == Some(&b' '),
+                Some(first) => first
+                    .get(..3)
+                    .is_some_and(|code| line.starts_with(&format!("{code} "))),
+            };
             lines.push(line);
             if done {
                 return lines.join("\n");
@@ -168,7 +173,13 @@ impl Raw {
     fn data(&mut self, line: &str) -> (String, Vec<u8>, String) {
         let r = self.cmd("EPSV");
         assert!(r.starts_with("229"), "{r}");
-        let port: u16 = r.split("|||").nth(1).unwrap().trim_end_matches(['|', ')']).parse().unwrap();
+        let port: u16 = r
+            .split("|||")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(['|', ')'])
+            .parse()
+            .unwrap();
         let first = self.cmd(line);
         if !first.starts_with("150") {
             return (first, Vec::new(), String::new());
@@ -193,9 +204,14 @@ fn keels_client_searches_only_the_roots() {
         .unwrap();
     let mut paths: Vec<String> = hits.iter().map(|h| h.path.path.clone()).collect();
     paths.sort();
-    assert_eq!(paths, ["/media/Docs/notes.txt", "/media/Music/notes one.mp3"]);
+    assert_eq!(
+        paths,
+        ["/media/Docs/notes.txt", "/media/Music/notes one.mp3"]
+    );
     let authority = f.addr.to_string();
-    assert!(hits.iter().all(|h| h.path.scheme == "ftp" && h.path.authority == authority));
+    assert!(hits
+        .iter()
+        .all(|h| h.path.scheme == "ftp" && h.path.authority == authority));
     let txt = hits.iter().find(|h| h.path.name() == "notes.txt").unwrap();
     assert_eq!(txt.size, 11);
     assert!(txt.modified.is_some());
@@ -253,9 +269,18 @@ fn everything_commands_on_the_wire() {
     let (mut c, hello) = Raw::connect(f.addr);
     assert_eq!(hello, "220-Line one\n220 Line two");
     c.login();
-    assert_eq!(c.cmd("SITE EVERYTHING SEARCH notes"), "200 Search set to (notes).");
-    assert_eq!(c.cmd("SITE EVERYTHING PATH_COLUMN 1"), "200 Path column set to (1).");
-    assert_eq!(c.cmd("site everything sort name_ascending"), "200 Sort set.");
+    assert_eq!(
+        c.cmd("SITE EVERYTHING SEARCH notes"),
+        "200 Search set to (notes)."
+    );
+    assert_eq!(
+        c.cmd("SITE EVERYTHING PATH_COLUMN 1"),
+        "200 Path column set to (1)."
+    );
+    assert_eq!(
+        c.cmd("site everything sort name_ascending"),
+        "200 Sort set."
+    );
     assert!(c.cmd("SITE EVERYTHING SORT SIDEWAYS").starts_with("500"));
     assert!(c.cmd("SITE EVERYTHING FROB 1").starts_with("500"));
     let r = c.cmd("SITE EVERYTHING QUERY");
@@ -266,7 +291,10 @@ fn everything_commands_on_the_wire() {
     // The filter search narrows the results; Everything's bare form works too.
     assert!(c.cmd("EVERYTHING FILTER_SEARCH .mp3").starts_with("200"));
     let r = c.cmd("EVERYTHING QUERY");
-    assert!(r.contains("RESULT_COUNT 1") && r.contains("FILE notes one.mp3"), "{r}");
+    assert!(
+        r.contains("RESULT_COUNT 1") && r.contains("FILE notes one.mp3"),
+        "{r}"
+    );
     // Count 0: only the total.
     c.cmd("SITE EVERYTHING FILTER_SEARCH ");
     c.cmd("SITE EVERYTHING COUNT 0");
@@ -275,7 +303,10 @@ fn everything_commands_on_the_wire() {
         "200-Query results\n RESULT_COUNT 2\n200 End."
     );
     let feat = c.cmd("FEAT");
-    assert!(feat.contains(" EVERYTHING") && !feat.contains("AUTH TLS"), "{feat}");
+    assert!(
+        feat.contains(" EVERYTHING") && !feat.contains("AUTH TLS"),
+        "{feat}"
+    );
     assert!(c.cmd("SYST").contains("UNIX"));
     assert!(c.cmd("HELP").contains("EVERYTHING"));
     assert!(c.cmd("SITE CHMOD 777 x").starts_with("500"));
@@ -294,7 +325,10 @@ fn sign_in_failures() {
     // A wrong user or password, three times: the connection ends.
     assert!(c.cmd(&format!("USER {USER}")).starts_with("331"));
     assert!(c.cmd("PASS wrong").starts_with("530"));
-    assert!(c.cmd("USER nobody").starts_with("331"), "an unknown user looks the same");
+    assert!(
+        c.cmd("USER nobody").starts_with("331"),
+        "an unknown user looks the same"
+    );
     assert!(c.cmd(&format!("PASS {PASSWORD}")).starts_with("530"));
     c.cmd(&format!("USER {USER}"));
     assert!(c.cmd("PASS wrong again").starts_with("421"));
@@ -322,9 +356,15 @@ fn downloads_off_and_on() {
     assert!(data.is_empty());
     // Browsing still works.
     let (first, data, last) = c.data("LIST -la /media/Docs");
-    assert!(first.starts_with("150") && last.starts_with("226"), "{first} {last}");
+    assert!(
+        first.starts_with("150") && last.starts_with("226"),
+        "{first} {last}"
+    );
     let text = String::from_utf8(data).unwrap();
-    assert!(text.contains(" notes.txt\r\n") && text.contains(" big.bin\r\n"), "{text}");
+    assert!(
+        text.contains(" notes.txt\r\n") && text.contains(" big.bin\r\n"),
+        "{text}"
+    );
     assert!(text.starts_with("-rw-r--r-- 1 owner group"), "{text}");
     drop(c);
 
@@ -333,9 +373,15 @@ fn downloads_off_and_on() {
     c.login();
     assert!(c.cmd("TYPE I").starts_with("200"));
     let (_, data, last) = c.data("RETR /media/Docs/notes.txt");
-    assert_eq!((data.as_slice(), last.as_str()), (&b"hello notes"[..], "226 Transfer complete."));
+    assert_eq!(
+        (data.as_slice(), last.as_str()),
+        (&b"hello notes"[..], "226 Transfer complete.")
+    );
     let (_, data, _) = c.data("RETR /media/Docs/big.bin");
-    assert_eq!(data, std::fs::read(f.dir.path().join("media/Docs/big.bin")).unwrap());
+    assert_eq!(
+        data,
+        std::fs::read(f.dir.path().join("media/Docs/big.bin")).unwrap()
+    );
     assert!(c.cmd("REST 99990").starts_with("350"));
     let (_, data, _) = c.data("RETR /media/Docs/big.bin");
     assert_eq!(data.len(), 10);
@@ -347,7 +393,10 @@ fn downloads_off_and_on() {
         "/media/Docs/../../secret/notes-secret.txt",
     ] {
         let (first, data, _) = c.data(&format!("RETR {path}"));
-        assert!(first.starts_with("550") && data.is_empty(), "{path}: {first}");
+        assert!(
+            first.starts_with("550") && data.is_empty(),
+            "{path}: {first}"
+        );
     }
     let outside = f.dir.path().join("secret/notes-secret.txt");
     let (first, _, _) = c.data(&format!("RETR {}", outside.display()));
@@ -368,23 +417,39 @@ fn browsing_and_read_only() {
     assert_eq!(c.cmd("PWD"), "257 \"/MEDIA/Music\" is current directory.");
     let (_, data, _) = c.data("MLSD");
     let text = String::from_utf8(data).unwrap();
-    assert!(text.starts_with("type=file;modify=") && text.ends_with(";size=5; notes one.mp3\r\n"), "{text}");
+    assert!(
+        text.starts_with("type=file;modify=") && text.ends_with(";size=5; notes one.mp3\r\n"),
+        "{text}"
+    );
     assert!(c.cmd("CDUP").starts_with("250"));
     assert!(c.cmd("CWD Docs").starts_with("250"));
     assert_eq!(c.cmd("SIZE notes.txt"), "213 11");
     assert!(c.cmd("MDTM notes.txt").starts_with("213 2"));
     assert!(c.cmd("SIZE /media/Docs").starts_with("550"));
     let r = c.cmd("MLST notes.txt");
-    assert!(r.starts_with("250-Listing /media/Docs/notes.txt") || r.starts_with("250-Listing /MEDIA/Docs/notes.txt"), "{r}");
+    assert!(
+        r.starts_with("250-Listing /media/Docs/notes.txt")
+            || r.starts_with("250-Listing /MEDIA/Docs/notes.txt"),
+        "{r}"
+    );
     assert!(c.cmd("CWD ../../..").starts_with("250"));
     assert_eq!(c.cmd("PWD"), "257 \"/\" is current directory.");
     assert!(c.cmd("CWD /secret").starts_with("550"));
     assert!(c.cmd("CWD /media/Docs/notes.txt").starts_with("550"));
-    for write in ["STOR x", "DELE /media/Docs/notes.txt", "MKD /media/new", "RNFR /media/Docs", "APPE x"] {
+    for write in [
+        "STOR x",
+        "DELE /media/Docs/notes.txt",
+        "MKD /media/new",
+        "RNFR /media/Docs",
+        "APPE x",
+    ] {
         assert!(c.cmd(write).starts_with("550"), "{write}");
     }
     assert!(c.cmd("PORT 127,0,0,1,4,1").starts_with("502"));
-    assert!(c.cmd("AUTH TLS").starts_with("502"), "no certificate configured");
+    assert!(
+        c.cmd("AUTH TLS").starts_with("502"),
+        "no certificate configured"
+    );
     assert!(c.cmd("NOOP").starts_with("200"));
     assert!(c.cmd("XYZZY").starts_with("500"));
     assert!(std::fs::read(f.dir.path().join("media/Docs/notes.txt")).is_ok());
@@ -463,7 +528,9 @@ fn ftps_required_when_configured() {
     let mut s = BufReader::new(rustls::StreamOwned::new(conn, w));
     type Tls = BufReader<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>;
     fn cmd(s: &mut Tls, l: &str) -> String {
-        s.get_mut().write_all(format!("{l}\r\n").as_bytes()).unwrap();
+        s.get_mut()
+            .write_all(format!("{l}\r\n").as_bytes())
+            .unwrap();
         s.get_mut().flush().unwrap();
         let mut line = String::new();
         s.read_line(&mut line).unwrap();
@@ -472,7 +539,10 @@ fn ftps_required_when_configured() {
     fn epsv(s: &mut Tls) -> u16 {
         let r = cmd(s, "EPSV");
         let port = r.split("|||").nth(1).unwrap();
-        port.trim_end().trim_end_matches(['|', ')']).parse().unwrap()
+        port.trim_end()
+            .trim_end_matches(['|', ')'])
+            .parse()
+            .unwrap()
     }
     assert!(cmd(&mut s, &format!("USER {USER}")).starts_with("331"));
     assert!(cmd(&mut s, &format!("PASS {PASSWORD}")).starts_with("230"));
@@ -485,7 +555,8 @@ fn ftps_required_when_configured() {
     let port = epsv(&mut s);
     assert!(cmd(&mut s, "RETR /media/Docs/notes.txt").starts_with("150"));
     let data = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    data.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    data.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     let conn = rustls::ClientConnection::new(config, name).unwrap();
     let mut d = rustls::StreamOwned::new(conn, data);
     let mut bytes = Vec::new();
@@ -498,7 +569,11 @@ fn ftps_required_when_configured() {
 
 #[test]
 fn settings_and_refusals() {
-    let base = Path::new(if cfg!(windows) { r"C:\profile" } else { "/profile" });
+    let base = Path::new(if cfg!(windows) {
+        r"C:\profile"
+    } else {
+        "/profile"
+    });
     let table: toml::Table = r#"
 [etp]
 enabled = true

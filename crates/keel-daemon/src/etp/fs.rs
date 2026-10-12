@@ -120,8 +120,8 @@ impl Roots {
                 "[[etp.roots]] {}: the path must be absolute",
                 path.display()
             );
-            let canonical = canonical(&path)
-                .with_context(|| format!("[[etp.roots]] {}", path.display()))?;
+            let canonical =
+                canonical(&path).with_context(|| format!("[[etp.roots]] {}", path.display()))?;
             anyhow::ensure!(
                 canonical.is_dir(),
                 "[[etp.roots]] {}: not a folder",
@@ -256,7 +256,8 @@ impl Roots {
         let real = canonical(&path).map_err(|_| anyhow::anyhow!("not found"))?;
         anyhow::ensure!(
             key(&real) == key(&root.canonical)
-                || key(&real).starts_with(&format!("{}/", key(&root.canonical).trim_end_matches('/'))),
+                || key(&real)
+                    .starts_with(&format!("{}/", key(&root.canonical).trim_end_matches('/'))),
             "not found"
         );
         Ok(Target::Real(real))
@@ -342,10 +343,7 @@ pub fn list_line(e: &Entry, now: SystemTime) -> String {
     } else {
         t.format("%b %d  %Y").to_string()
     };
-    format!(
-        "{perm} 1 owner group {:>13} {date} {}",
-        e.size, e.name
-    )
+    format!("{perm} 1 owner group {:>13} {date} {}", e.size, e.name)
 }
 
 /// An `MLSD` line (and `MLST`'s fact line without its leading space).
@@ -403,14 +401,20 @@ mod tests {
         assert_eq!(roots.list()[0].name, "media");
         let v = |s: &str| Virtual::resolve(&Virtual::default(), s);
         assert!(matches!(roots.real(&v("/")).unwrap(), Target::Top));
-        assert!(matches!(roots.real(&v("/MEDIA/Music/a.mp3")).unwrap(), Target::Real(_)));
+        assert!(matches!(
+            roots.real(&v("/MEDIA/Music/a.mp3")).unwrap(),
+            Target::Real(_)
+        ));
         // `..` never climbs above `/`.
         assert_eq!(v("/media/../../../secret"), v("/secret"));
         assert!(roots.real(&v("/media/../../secret/key.txt")).is_err());
         assert!(roots.real(&v("/secret/key.txt")).is_err());
         assert!(roots.real(&v("/media/nope")).is_err());
         let cwd = v("/media/Music");
-        assert_eq!(Virtual::resolve(&cwd, "a.mp3").display(), "/media/Music/a.mp3");
+        assert_eq!(
+            Virtual::resolve(&cwd, "a.mp3").display(),
+            "/media/Music/a.mp3"
+        );
         assert_eq!(Virtual::resolve(&cwd, "..").display(), "/media");
         assert_eq!(Virtual::resolve(&cwd, "/").display(), "/");
         // A link inside the root to a folder outside it is refused.
@@ -465,7 +469,10 @@ mod tests {
         );
         let later = t + std::time::Duration::from_secs(400 * 86_400);
         assert!(list_line(&f, later).contains("Nov 14  2023"));
-        assert_eq!(mlsd_line(&f), "type=file;modify=20231114221320;size=12; a b.txt");
+        assert_eq!(
+            mlsd_line(&f),
+            "type=file;modify=20231114221320;size=12; a b.txt"
+        );
         let d = Entry {
             name: "d".into(),
             is_dir: true,

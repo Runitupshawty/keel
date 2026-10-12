@@ -398,8 +398,12 @@ fn read_reply(r: &mut impl BufRead) -> Result<Reply> {
         (b.len() >= 4 && b[..3].iter().all(u8::is_ascii_digit) && matches!(b[3], b' ' | b'-'))
             .then(|| (l[..3].parse::<u16>().unwrap_or(0), b[3] == b'-'))
     };
-    let (status, mut more) = code(&first)
-        .with_context(|| format!("not an FTP reply: {:?}", first.chars().take(80).collect::<String>()))?;
+    let (status, mut more) = code(&first).with_context(|| {
+        format!(
+            "not an FTP reply: {:?}",
+            first.chars().take(80).collect::<String>()
+        )
+    })?;
     let mut lines = vec![first];
     let end = format!("{status} ");
     while more {
@@ -558,12 +562,7 @@ impl Client {
         }
         self.sent = lines;
         let reply = self.command("SITE EVERYTHING QUERY")?;
-        anyhow::ensure!(
-            reply.code == 200,
-            "{}: {}",
-            self.endpoint,
-            reply.text()
-        );
+        anyhow::ensure!(reply.code == 200, "{}: {}", self.endpoint, reply.text());
         parse_results(&reply.lines)
     }
 
@@ -710,7 +709,12 @@ mod tests {
     fn targets_parse_like_everythings_connect() {
         let t = Target::parse("me:se:cret@files.example:2121").unwrap();
         assert_eq!(
-            (t.user.as_str(), t.password.as_str(), t.host.as_str(), t.port),
+            (
+                t.user.as_str(),
+                t.password.as_str(),
+                t.host.as_str(),
+                t.port
+            ),
             ("me", "se:cret", "files.example", 2121)
         );
         assert_eq!(t.endpoint(), "files.example:2121");
@@ -721,7 +725,16 @@ mod tests {
         assert_eq!(t.endpoint(), "[::1]:21");
         assert_eq!(Target::parse("fe80::1").unwrap().host, "fe80::1");
         assert_eq!(Target::parse("[::1]").unwrap().port, DEFAULT_PORT);
-        for bad in ["", "host:0", "host:99999", "host:x", "[::1", "a b", "u@", "[::1]x"] {
+        for bad in [
+            "",
+            "host:0",
+            "host:99999",
+            "host:x",
+            "[::1",
+            "a b",
+            "u@",
+            "[::1]x",
+        ] {
             assert!(Target::parse(bad).is_err(), "{bad}");
         }
         assert!(!format!("{:?}", Target::parse("u:hunter2@h").unwrap()).contains("hunter2"));
@@ -777,7 +790,10 @@ mod tests {
         let a = &r.items[0];
         assert_eq!(a.name, " leading space.txt");
         assert_eq!(a.path.as_deref(), Some("C:\\Users\\me"));
-        assert_eq!((a.size, a.attributes, a.is_dir), (Some(1234), Some(32), false));
+        assert_eq!(
+            (a.size, a.attributes, a.is_dir),
+            (Some(1234), Some(32), false)
+        );
         assert_eq!(
             from_filetime(a.modified.unwrap()),
             UNIX_EPOCH + Duration::from_secs(1_700_000_000)

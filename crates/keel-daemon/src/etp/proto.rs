@@ -92,8 +92,16 @@ impl Flag {
         ("DIACRITICS", Flag::Diacritics, "Diacritics"),
         ("PREFIX", Flag::Prefix, "Prefix"),
         ("SUFFIX", Flag::Suffix, "Suffix"),
-        ("IGNORE_PUNCTUATION", Flag::IgnorePunctuation, "Ignore punctuation"),
-        ("IGNORE_WHITESPACE", Flag::IgnoreWhitespace, "Ignore whitespace"),
+        (
+            "IGNORE_PUNCTUATION",
+            Flag::IgnorePunctuation,
+            "Ignore punctuation",
+        ),
+        (
+            "IGNORE_WHITESPACE",
+            Flag::IgnoreWhitespace,
+            "Ignore whitespace",
+        ),
         ("REGEX", Flag::Regex, "Regex"),
         (
             "HIDE_EMPTY_SEARCH_RESULTS",
@@ -125,7 +133,11 @@ pub enum Column {
 impl Column {
     const ALL: [(&'static str, Column, &'static str); 7] = [
         ("SIZE_COLUMN", Column::Size, "Size column"),
-        ("DATE_CREATED_COLUMN", Column::DateCreated, "Date created column"),
+        (
+            "DATE_CREATED_COLUMN",
+            Column::DateCreated,
+            "Date created column",
+        ),
         (
             "DATE_MODIFIED_COLUMN",
             Column::DateModified,
@@ -339,8 +351,8 @@ pub fn parse(line: &str) -> Result<Command, Bad> {
                 Command::Site(sub)
             }
         }
-        "STOR" | "STOU" | "APPE" | "DELE" | "RMD" | "XRMD" | "MKD" | "XMKD" | "RNFR"
-        | "RNTO" | "MFMT" | "MFCT" | "MFF" | "ALLO" | "SMNT" => Command::Write(verb),
+        "STOR" | "STOU" | "APPE" | "DELE" | "RMD" | "XRMD" | "MKD" | "XMKD" | "RNFR" | "RNTO"
+        | "MFMT" | "MFCT" | "MFF" | "ALLO" | "SMNT" => Command::Write(verb),
         _ => Command::Unknown(verb),
     })
 }
@@ -577,8 +589,14 @@ mod tests {
     #[test]
     fn commands_parse() {
         assert_eq!(parse("user me"), Ok(Command::User("me".into())));
-        assert_eq!(parse("PASS  two spaces"), Ok(Command::Pass(" two spaces".into())));
-        assert_eq!(parse("CWD /Media/a b"), Ok(Command::Cwd("/Media/a b".into())));
+        assert_eq!(
+            parse("PASS  two spaces"),
+            Ok(Command::Pass(" two spaces".into()))
+        );
+        assert_eq!(
+            parse("CWD /Media/a b"),
+            Ok(Command::Cwd("/Media/a b".into()))
+        );
         assert_eq!(parse("RETR  x"), Ok(Command::Retr(" x".into())));
         assert_eq!(parse("PWD"), Ok(Command::Pwd));
         assert_eq!(parse("eprt |1|1.2.3.4|5|"), Ok(Command::Active));
@@ -599,8 +617,14 @@ mod tests {
             ev("SITE EVERYTHING SEARCH  abc def"),
             Everything::Search(" abc def".into())
         );
-        assert_eq!(ev("site everything case 1"), Everything::Flag(Flag::Case, true));
-        assert_eq!(ev("EVERYTHING REGEX 0"), Everything::Flag(Flag::Regex, false));
+        assert_eq!(
+            ev("site everything case 1"),
+            Everything::Flag(Flag::Case, true)
+        );
+        assert_eq!(
+            ev("EVERYTHING REGEX 0"),
+            Everything::Flag(Flag::Regex, false)
+        );
         assert_eq!(
             ev("SITE EVERYTHING WHOLE_WORD 7"),
             Everything::Flag(Flag::WholeWord, true)
@@ -728,6 +752,9 @@ mod tests {
         assert_eq!(list_target(" /x"), "/x");
         assert_eq!(welcome("one\ntwo\x07"), "220-one\r\n220 two\r\n");
         assert!(welcome("").starts_with("220 "));
-        assert_eq!((int(" 12x"), int("-3"), int("+"), dword("-1")), (12, -3, 0, 0));
+        assert_eq!(
+            (int(" 12x"), int("-3"), int("+"), dword("-1")),
+            (12, -3, 0, 0)
+        );
     }
 }

@@ -328,9 +328,8 @@ impl Daemon {
         let search: crate::etp::SearchFn = Arc::new(move || s.ctx().system.get());
         // Read per download, so switching it off applies at once.
         let s = self.shared.clone();
-        let downloads: crate::etp::DownloadsFn = Arc::new(move || {
-            crate::etp::Config::read(&s.cfg).is_ok_and(|c| c.allow_downloads)
-        });
+        let downloads: crate::etp::DownloadsFn =
+            Arc::new(move || crate::etp::Config::read(&s.cfg).is_ok_and(|c| c.allow_downloads));
         let s = self.shared.clone();
         let stop: crate::etp::StopFn = Arc::new(move || s.stop.load(Ordering::Acquire));
         let addr = crate::etp::serve(cfg, login, search, downloads, stop)?;

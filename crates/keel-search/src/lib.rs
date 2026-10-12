@@ -5,9 +5,9 @@
 
 #[cfg(windows)]
 mod composite;
+pub mod etp;
 #[cfg(windows)]
 mod everything;
-pub mod etp;
 mod fuzzy;
 #[cfg(target_os = "linux")]
 mod locate;

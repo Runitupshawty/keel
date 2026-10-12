@@ -84,17 +84,14 @@ pub fn etp_command(data: &[u8]) {
                 let _ = opts.apply(e);
                 continue;
             }
-            proto::Command::Cwd(a) | proto::Command::Retr(a) | proto::Command::Mlst(a) => {
-                a.clone()
-            }
-            proto::Command::List(a) | proto::Command::Nlst(a) => {
-                proto::list_target(a).to_owned()
-            }
+            proto::Command::Cwd(a) | proto::Command::Retr(a) | proto::Command::Mlst(a) => a.clone(),
+            proto::Command::List(a) | proto::Command::Nlst(a) => proto::list_target(a).to_owned(),
             _ => continue,
         };
         let v = Virtual::resolve(&cwd, &arg);
         assert!(
-            v.0.iter().all(|p| !p.is_empty() && p != "." && p != ".." && !p.contains('/')),
+            v.0.iter()
+                .all(|p| !p.is_empty() && p != "." && p != ".." && !p.contains('/')),
             "{v:?}"
         );
         cwd = v;

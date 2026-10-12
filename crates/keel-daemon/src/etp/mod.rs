@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -118,7 +118,10 @@ impl Config {
         let etp = etp.as_table().context("[etp] must be a table")?;
         let flag = |k: &str| -> Result<Option<bool>> {
             etp.get(k)
-                .map(|v| v.as_bool().with_context(|| format!("[etp] {k}: true or false")))
+                .map(|v| {
+                    v.as_bool()
+                        .with_context(|| format!("[etp] {k}: true or false"))
+                })
                 .transpose()
         };
         let text = |k: &str| -> Result<Option<String>> {
@@ -183,9 +186,7 @@ impl Config {
     pub fn read(cfg: &keel_api::config::HostConfig) -> Result<Config> {
         let file = config_file(cfg);
         let table: toml::Table = match std::fs::read_to_string(&file) {
-            Ok(s) => s
-                .parse()
-                .with_context(|| format!("{}", file.display()))?,
+            Ok(s) => s.parse().with_context(|| format!("{}", file.display()))?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => toml::Table::new(),
             Err(e) => return Err(e).with_context(|| format!("{}", file.display())),
         };
@@ -508,7 +509,12 @@ fn session(srv: &Server, tcp: TcpStream, peer: SocketAddr) -> Result<()> {
         let line = match s.read_line() {
             Ok(Some(l)) => l,
             Ok(None) => break,
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 let _ = s.reply("421 Timeout.");
                 break;
             }
@@ -551,7 +557,9 @@ impl Session<'_> {
     fn read_line(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut buf = Vec::new();
         let limit = proto::MAX_LINE as u64 + 2;
-        let n = (&mut self.ctrl).take(limit + 1).read_until(b'\n', &mut buf)?;
+        let n = (&mut self.ctrl)
+            .take(limit + 1)
+            .read_until(b'\n', &mut buf)?;
         if n == 0 {
             return Ok(None);
         }
@@ -637,7 +645,10 @@ impl Session<'_> {
                 return Ok(Flow::Close);
             }
             Command::Pwd => {
-                let line = format!("257 {} is current directory.", proto::quoted(&self.cwd.display()));
+                let line = format!(
+                    "257 {} is current directory.",
+                    proto::quoted(&self.cwd.display())
+                );
                 self.reply(&line)?;
             }
             Command::Cwd(arg) => self.cwd(&arg)?,
@@ -674,9 +685,7 @@ impl Session<'_> {
             }
             Command::Pasv => self.pasv(false, "")?,
             Command::Epsv(arg) => self.pasv(true, &arg)?,
-            Command::Active => {
-                self.reply("502 Active mode is not supported: use PASV or EPSV.")?
-            }
+            Command::Active => self.reply("502 Active mode is not supported: use PASV or EPSV.")?,
             Command::List(arg) => return self.list(proto::list_target(&arg), Listing::List),
             Command::Nlst(arg) => return self.list(proto::list_target(&arg), Listing::Names),
             Command::Mlsd(arg) => return self.list(&arg, Listing::Mlsd),
@@ -863,9 +872,7 @@ impl Session<'_> {
         let port = listener.local_addr()?.port();
         self.passive = Some(listener);
         if extended {
-            self.reply(&format!(
-                "229 Entering Extended Passive Mode (|||{port}|)"
-            ))
+            self.reply(&format!("229 Entering Extended Passive Mode (|||{port}|)"))
         } else {
             let IpAddr::V4(v4) = ip else {
                 unreachable!("checked above")
@@ -1018,7 +1025,11 @@ impl Session<'_> {
             self.reply("451 Transfer aborted: cannot restart there.")?;
             return Ok(Flow::Go);
         }
-        tracing::info!("ETP {}: sending {}", self.peer, arg.chars().take(300).collect::<String>());
+        tracing::info!(
+            "ETP {}: sending {}",
+            self.peer,
+            arg.chars().take(300).collect::<String>()
+        );
         self.transfer(|s| io::copy(&mut file, s).map(|_| ()))
     }
 
@@ -1073,10 +1084,9 @@ impl Session<'_> {
                 .as_ref()
                 .and_then(|m| m.created().ok())
                 .and_then(|t| fs::filetime(Some(t))),
-            attributes: meta.as_ref().map_or(
-                if h.is_dir { 16 } else { 32 },
-                fs::attributes,
-            ),
+            attributes: meta
+                .as_ref()
+                .map_or(if h.is_dir { 16 } else { 32 }, fs::attributes),
         })
     }
 }
