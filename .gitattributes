@@ -13,3 +13,5 @@
 *.heic binary
 *.avif binary
 *.dng binary
+# Fuzz seeds are byte-exact inputs.
+fuzz/corpus/** -text

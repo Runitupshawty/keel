@@ -76,6 +76,7 @@ The guide covers everyday use; these pages hold the details.
 | Keyboard shortcuts, columns view and drop zone, folder sizes, folder colors and icons, archives, Recycle Bin and Trash, terminal, search without Everything, command line, profiles, color and icon themes | [docs/files.md](docs/files.md) |
 | WSL distributions in the sidebar, `keel` inside WSL | [docs/wsl.md](docs/wsl.md) |
 | Library (sources, search chips and syntax, hashing, resuming, the daemon), media view, protection | [docs/library.md](docs/library.md) |
+| File properties for search (signatures, shortcuts, versions, text stats, hashes, audio tags, the Windows Property System) | [docs/properties.md](docs/properties.md) |
 | Remotes over SSH, `~/.ssh/config` and jump hosts | [docs/remotes.md](docs/remotes.md) |
 | Devices and Spacedrop, library sync, web client, phones | [docs/devices.md](docs/devices.md) |
 | Daemon, CLI and MCP, mounts | [docs/daemon.md](docs/daemon.md) |
