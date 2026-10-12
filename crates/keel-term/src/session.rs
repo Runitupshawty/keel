@@ -417,7 +417,18 @@ mod tests {
         let wait = |session: &Session, needle: &str| {
             let start = Instant::now();
             while !session.grid().screen().contents().contains(needle) {
-                assert!(start.elapsed() < Duration::from_secs(10), "no {needle:?}");
+                if start.elapsed() >= Duration::from_secs(10) {
+                    let grid = session.grid();
+                    let idle = session.idle.0.lock();
+                    panic!(
+                        "no {needle:?}; screen={:?}; cursor={:?}; ready={}; pending={:?}; alive={}",
+                        grid.screen().contents(),
+                        grid.screen().cursor_position(),
+                        idle.ready,
+                        idle.pending,
+                        session.is_alive(),
+                    );
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
