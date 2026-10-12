@@ -200,6 +200,92 @@ pub struct Snippet {
     pub marks: Vec<[usize; 2]>,
 }
 
+/// `system.search`'s orders (Everything's HTTP `sort=` values).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemSort {
+    #[default]
+    Name,
+    Path,
+    DateModified,
+    Size,
+}
+
+/// `system.search`: the platform's file search (the window's search pane backend), with
+/// Everything's match options. Every switch is off by default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SystemSearchParams {
+    /// Words (all must match), "quoted phrases", wildcards (`*.pdf` matches the whole
+    /// name); with `regex`, one regular expression. Other syntax (`ext:`, `!`, `|`) goes
+    /// to the backend as it is. At most 4096 bytes.
+    pub query: String,
+    /// Results skipped (default 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Results returned (default 32, at most 1000; 0 returns only the total).
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub match_case: bool,
+    /// A word matches only whole words of the name (both `prefix` and `suffix`).
+    #[serde(default)]
+    pub whole_word: bool,
+    /// Words match the full path, not only the name (a word with a `\` or `/` always does).
+    #[serde(default)]
+    pub match_path: bool,
+    /// `é` does not match `e` (off: accents of Latin letters are ignored).
+    #[serde(default)]
+    pub match_diacritics: bool,
+    #[serde(default)]
+    pub regex: bool,
+    /// A word matches only at the start of a word of the name.
+    #[serde(default)]
+    pub prefix: bool,
+    /// A word matches only at the end of a word of the name.
+    #[serde(default)]
+    pub suffix: bool,
+    /// Punctuation in names and words is skipped (`foobar` finds `foo-bar.txt`).
+    #[serde(default)]
+    pub ignore_punctuation: bool,
+    /// White space in names and words is skipped.
+    #[serde(default)]
+    pub ignore_whitespace: bool,
+    /// Default `name`.
+    #[serde(default)]
+    pub sort: Option<SystemSort>,
+    /// Default true.
+    #[serde(default)]
+    pub ascending: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SystemHit {
+    /// The full path.
+    pub path: String,
+    pub name: String,
+    /// The folder it is in.
+    pub parent: String,
+    pub is_dir: bool,
+    /// Bytes (0 for a folder).
+    pub size: u64,
+    /// Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SystemSearchResult {
+    /// The backend that answered ("Everything", "Keel index", ...).
+    pub backend: String,
+    /// Results matching (counted over the first 10000 the backend finds).
+    pub total: usize,
+    /// The backend found 10000 or more: `total` and the order cover those only.
+    pub capped: bool,
+    pub offset: usize,
+    pub hits: Vec<SystemHit>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TagsListParams {

@@ -30,6 +30,7 @@ pub mod private;
 pub mod rpc;
 pub mod signature;
 pub mod socket;
+pub mod system;
 pub mod types;
 
 pub use daemon_provider::DaemonProvider;
@@ -67,6 +68,8 @@ pub struct Ctx {
     /// Keel's data folder (the library database, device keys, share uploads, the mount
     /// spool): never sent with `spacedrop.send`, except the inbox and opened shares.
     pub data_dir: Option<std::path::PathBuf>,
+    /// The platform file search `system.search` uses (made on first use).
+    pub system: system::SystemIndex,
 }
 
 /// `<data dir>/shares/<id>/` holds a Web Share Target upload; this file in it marks one the
@@ -90,6 +93,7 @@ impl Ctx {
             config_dir: config::config_dir(),
             drops: None,
             data_dir: None,
+            system: Default::default(),
         }
     }
 

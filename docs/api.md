@@ -96,6 +96,7 @@ user is working) also act directly: they change no file.
 | `media.thumb` | read | A photo or video thumbnail (`size` `thumb256` / `thumb1024`, WebP) from the sidecar store, keyed by content id when indexed (`content_id` in the answer); made on first request, served from earlier sidecars when the source is offline. `make: false` answers only from a sidecar that exists (NOT_FOUND otherwise); `content_id` (64 hex digits) answers from a sidecar made earlier for that content, before `path` (which may then be left out) is looked at. An attached window asks with `make: true`, at most four at a time, visible tiles first |
 | `file.get` | read | A one-time download link: `{url: "/file/<token>", name, size, expires_at}` on the `--web` address, valid once for 60 s |
 | `search` | read | Library search: words, `"phrases"`, `kind:`, `ext:`, `size:`, `dm:`, `source:`, `tag:`, and the text inside documents: bare words match it too, `content:` only it, `-content:` not it, `name:` names only, `contents:off` (or `contents: false`) names only. A hit found by its text has `snippet` (`text`, at most 160 characters on one line, and `marks`, the byte ranges of the matched words), for the first 100 hits; name hits rank first. `max` defaults to 100 (at most 10000) |
+| `system.search` | read | Every file on the computer, not only the library: the platform's search (the window's search pane backend: Everything when it runs, else Keel's index on Windows; Spotlight or locate elsewhere). `query`: words (all must match), `"phrases"`, wildcards over the whole name (`*.pdf`), or with `regex` one regular expression; other syntax (`ext:`, `!`, `\|`) goes to the backend as it is. Switches (all off by default): `match_case`, `whole_word`, `match_path` (a word with `\` or `/` always matches paths), `match_diacritics` (off: accents of Latin letters are ignored), `regex`, `prefix`, `suffix` (a word matches at the start or end of a word of the name), `ignore_punctuation`, `ignore_whitespace` (plain words only). `sort`: `name` (default), `path`, `date_modified`, `size`; `ascending` (default true); `offset`; `count` (default 32, at most 1000, 0 for the total alone). Answers `{backend, total, capped, offset, hits: [{path, name, parent, is_dir, size, modified}]}`; `total` and the order cover the first 10000 hits the backend returns (`capped` when it returned that many). A bad regular expression or a query over 4096 bytes is -32602 |
 | `files.names` | read | The full paths of indexed files (no folders) in the online sources, each source's newest first: `{paths, truncated}`, for a fuzzy file finder (the desktop app's Ctrl+P when attached). At most `max` (default and largest 100000); `truncated` says there were more |
 | `tags.list` | read | All tags, or the tags on one path |
 | `tags.tagged` | read | Every tagged path with its tag ids (Favorites is id 1) |
@@ -291,6 +292,8 @@ The full schemas: `keel mcp` → `tools/list`, or `keel_api::OPS[i].params()` /
 keel-daemon [--profile NAME] [--ws 127.0.0.1:PORT] [--web [127.0.0.1:PORT]] [--ws-allow-remote]
             [--web-host NAME]...  # NAME: letters, digits, . _ -
 keel-daemon --status            # exit 0 when one runs for the profile, 1 when not
+keel-daemon --set-http-login USER < password   # --web's Basic login for Everything tools
+keel-daemon --clear-http-login
 keel daemon start|stop|status   # the same from keel (start runs it in the background)
 keel daemon rotate-token        # a new token: clients sign in again
 ```
@@ -376,6 +379,8 @@ listener:
 | `/file/<token>` | the download a `file.get` link names, once, within 60 s (`Content-Disposition: attachment`) |
 | `/manifest.webmanifest`, `/sw.js`, `/icon-192.png`, `/icon-512.png` | the installable app (PWA): manifest with the share target, and a service worker that caches the app shell only (never `/rpc`, `/file/`, `/share` or other answers), fetches it from the daemon first and uses the cache only offline; its cache is named after a hash of every shell file of the build; served even by a daemon built without the client |
 | `POST /share` | the Web Share Target ("Share → Keel" on a phone), `multipart/form-data` |
+| `/everything`, `/` with Everything's parameters | Search all files for tools written for Everything's HTTP server (below) |
+| `/everything/file?path=<file>` | a file found there, while `[web] allow_downloads = true` (`Content-Disposition: attachment`) |
 
 Browsers cannot send an `Authorization` header on a WebSocket, so on `/rpc` the **first
 message must be `auth`** with the daemon token:
@@ -420,6 +425,42 @@ returns `{id, dir, files: [{name, path, size}]}`, and the client sends those pat
 `spacedrop.send` (previewed) to the device the user picks. An upload not claimed in time
 is deleted; a claimed one after 24 hours (its drop reads the files), also when it was
 claimed before a restart; unclaimed uploads left by an earlier run are deleted at start.
+
+**Everything-compatible search (`/everything`).** `GET /everything?<parameters>`, or
+`GET /?<parameters>` when they include `search`, `s`, `q`, `json`, `j`, `offset`, `o`,
+`count`, `c` or `sort` (`/` without them is the web client, so `/?share=...` still is), runs
+`system.search` with Everything's HTTP parameters:
+
+| Parameter | `system.search` |
+| --- | --- |
+| `search`, `s`, `q` | `query` |
+| `offset`, `o` / `count`, `c` | `offset` / `count` (digits only; `count` at most 1000) |
+| `json`, `j` | answer in JSON (else HTML) |
+| `case`, `i` / `diacritics`, `m` / `wholeword`, `w` / `path`, `p` / `regex`, `r` | `match_case` / `match_diacritics` / `whole_word` / `match_path` / `regex` |
+| `prefix`, `suffix`, `ignore_punctuation`, `ignore_whitespace` | the same |
+| `sort` (`name`, `path`, `date_modified`, `size`; others: `name`), `ascending` | `sort`, `ascending` |
+| `path_column`, `size_column`, `date_modified_column` | the JSON fields `path`, `size`, `date_modified` |
+
+Switches take `1` or `0` (`true`/`false`, `on`/`off`, `yes`/`no`; a bare key is `1`); a
+bad number or switch is 400. Unknown parameters are ignored; a repeated one counts once,
+the last. JSON, as Everything's: `{"totalResults": N, "results": [{"type": "file" |
+"folder", "name": "...", "path": "<folder>", "size": "<bytes>", "date_modified":
+"<FILETIME>"}]}`, with `path`, `size` and `date_modified` only when their `_column` is 1;
+size and date are strings, the date in 100 ns steps since 1601 (a folder's size and an
+unknown date are `""`). An error is `{"error": "..."}` with 400 (bad parameters, a bad
+regular expression) or 503 (the backend failed). Without `json` the answer is an HTML page
+(no script; its CSP is `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'`)
+with a search form, the results, sort links on the column heads and Previous / Next.
+
+Every request needs `Authorization: Bearer <daemon.token>`, Basic auth with the token as
+the password (any user name), or Basic auth with the HTTP login from `keel-daemon
+--set-http-login USER` (kept in the OS keychain, per profile); otherwise 401 with
+`WWW-Authenticate: Basic realm="Keel"`. A wrong one waits 1 s before its 401. A request
+with `Sec-Fetch-Site: cross-site` or `same-site` is refused (403). `/everything/file` is
+403 unless `[web] allow_downloads = true` is in the profile's `config.toml` (read on each
+request) and then sends the file through `file.get`'s checks (404 for what it refuses,
+such as Keel's configuration folder). On a non-loopback bind there is no TLS: keel-daemon
+warns at start and the HTML page shows "Not encrypted".
 
 ## CLI
 

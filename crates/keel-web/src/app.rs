@@ -64,6 +64,8 @@ enum Want {
     Job,
     Link,
     Claim,
+    /// `system.search` (Search all files).
+    System,
 }
 
 #[derive(Default)]
@@ -100,6 +102,8 @@ struct PlanDialog {
 enum Tab {
     Browse,
     Search,
+    /// Search all files: the daemon computer's own search, not the library.
+    System,
 }
 
 /// What a row's tap or long-press menu, the search field, the preview's buttons or the
@@ -137,6 +141,9 @@ enum Act {
         to: String,
     },
 }
+
+/// Results per page of Search all files.
+const SYSTEM_PAGE: usize = 200;
 
 /// Files read for the Type chips' extensions (fewer than the desktop's: a phone's link).
 const CHIP_FILES: usize = 2_000;
@@ -212,6 +219,12 @@ pub struct WebApp {
     error: Option<String>,
     // Spacedrop from the share sheet (or a file's "Send to device…")
     share: share::Flow,
+    // Search all files (`system.search`): the query and switches, the answer, and
+    // whether one is on its way; on the phone, whether its Search tab shows it.
+    sys: SystemSearchParams,
+    sys_found: Option<Result<SystemSearchResult, String>>,
+    sys_busy: bool,
+    phone_all_files: bool,
     #[cfg(feature = "e2e")]
     hook: Option<crate::e2e::Hook>,
     /// The phone pane's entries as last drawn (names and rectangles), for the `e2e` hook.
@@ -299,6 +312,15 @@ fn hit_entry(h: &Hit) -> EntryInfo {
     }
 }
 
+fn sort_label(s: SystemSort) -> &'static str {
+    match s {
+        SystemSort::Name => "Name",
+        SystemSort::Path => "Path",
+        SystemSort::Size => "Size",
+        SystemSort::DateModified => "Date modified",
+    }
+}
+
 /// Bigger targets and text for fingers.
 fn phone_style(base: &egui::Style) -> egui::Style {
     let mut s = base.clone();
@@ -365,6 +387,10 @@ impl WebApp {
             plan: None,
             error: None,
             share: share::Flow::from_query(""),
+            sys: SystemSearchParams::default(),
+            sys_found: None,
+            sys_busy: false,
+            phone_all_files: false,
             // Before `take_query` clears the address.
             #[cfg(feature = "e2e")]
             hook: crate::e2e::Hook::install(&cc.egui_ctx),
@@ -700,6 +726,10 @@ impl WebApp {
                 Ok(link) => web::download(&link.url),
                 Err(e) => self.error = Some(e),
             },
+            Want::System => {
+                self.sys_busy = false;
+                self.sys_found = Some(parse(r.result));
+            }
             Want::Claim => {
                 self.share.on_claimed(r.result);
                 self.call("devices.list", json!({}), Want::Devices);
@@ -877,6 +907,8 @@ impl WebApp {
             ui.separator();
             ui.selectable_value(&mut self.tab, Tab::Browse, "Browse");
             ui.selectable_value(&mut self.tab, Tab::Search, "Search");
+            ui.selectable_value(&mut self.tab, Tab::System, "All files")
+                .on_hover_text("Search all files on the daemon's computer, not only the library");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Sign out").clicked() {
                     self.sign_out();
@@ -1314,7 +1346,11 @@ impl WebApp {
             "layout": if self.screen.phone() { "phone" } else { "desktop" },
             "phone_tab": self.screen.tab.label(),
             "sheet": self.screen.sheet,
-            "tab": if self.tab == Tab::Browse { "browse" } else { "search" },
+            "tab": match self.tab {
+                Tab::Browse => "browse",
+                Tab::Search => "search",
+                Tab::System => "system",
+            },
             "dark": self.ctx.style().visuals.dark_mode,
             "menu": self.e2e_menu,
             // The empty-list notes and banners of the last frame.
@@ -1757,6 +1793,163 @@ impl WebApp {
         if let Some(a) = act {
             let pane = self.active;
             self.act(pane, a);
+        }
+    }
+
+    /// Search all files: the daemon computer's own search (`system.search`: Everything,
+    /// Keel's index, Spotlight or locate), with Everything's switches, a sort and pages.
+    fn system_search(&mut self, ui: &mut egui::Ui) {
+        let mut act = None;
+        let mut go = false;
+        ui.horizontal(|ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.sys.query)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Search all files: words, \"phrases\", *.pdf, or a regex"),
+            );
+            if field.lost_focus() && ui.input(|k| k.key_pressed(egui::Key::Enter)) {
+                go = true;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let s = &mut self.sys;
+            let switches = [
+                (&mut s.match_case, "Aa", "Match case"),
+                (&mut s.whole_word, "Word", "Match whole words"),
+                (&mut s.match_path, "Path", "Match the full path"),
+                (&mut s.match_diacritics, "\u{e9}", "Match diacritics"),
+                (&mut s.regex, ".*", "Regular expression"),
+            ];
+            for (on, label, tip) in switches {
+                go |= ui.toggle_value(on, label).on_hover_text(tip).changed();
+            }
+            let sort = s.sort.unwrap_or_default();
+            egui::ComboBox::from_id_salt("system-sort")
+                .selected_text(sort_label(sort))
+                .show_ui(ui, |ui| {
+                    for o in [
+                        SystemSort::Name,
+                        SystemSort::Path,
+                        SystemSort::Size,
+                        SystemSort::DateModified,
+                    ] {
+                        if ui.selectable_label(sort == o, sort_label(o)).clicked() {
+                            s.sort = Some(o);
+                            go = true;
+                        }
+                    }
+                });
+            let up = s.ascending.unwrap_or(true);
+            let arrow = if up { "\u{2191}" } else { "\u{2193}" };
+            if ui
+                .button(arrow)
+                .on_hover_text("Ascending or descending")
+                .clicked()
+            {
+                s.ascending = Some(!up);
+                go = true;
+            }
+        });
+        let mut page = None;
+        match &self.sys_found {
+            _ if self.sys_busy => {
+                ui.spinner();
+            }
+            None => {
+                ui.weak(
+                    "Searches every file on the daemon's computer with its own search \
+                     (Everything, Keel's index, Spotlight or locate), not only the library.",
+                );
+            }
+            Some(Err(e)) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            Some(Ok(r)) => {
+                ui.horizontal_wrapped(|ui| {
+                    let s = if r.total == 1 { "" } else { "s" };
+                    ui.label(format!("{} result{s} ({})", r.total, r.backend));
+                    if r.capped {
+                        ui.weak("in the first 10000 found");
+                    }
+                    if r.offset > 0 && ui.button("\u{2190} Previous").clicked() {
+                        page = Some(r.offset.saturating_sub(SYSTEM_PAGE));
+                    }
+                    if r.offset + r.hits.len() < r.total && ui.button("Next \u{2192}").clicked() {
+                        page = Some(r.offset + SYSTEM_PAGE);
+                    }
+                });
+                let phone = self.screen.phone();
+                egui::ScrollArea::vertical()
+                    .id_salt("system-hits")
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        for h in &r.hits {
+                            let e = EntryInfo {
+                                name: h.name.clone(),
+                                path: h.path.clone(),
+                                is_dir: h.is_dir,
+                                size: h.size,
+                                modified: h.modified,
+                                hidden: false,
+                            };
+                            ui.horizontal(|ui| {
+                                let label = if h.is_dir {
+                                    format!("{}/", h.name)
+                                } else {
+                                    h.name.clone()
+                                };
+                                let resp = ui
+                                    .selectable_label(self.is_selected(&h.path), label)
+                                    .on_hover_text(&h.path);
+                                if resp.clicked() {
+                                    act = Some(Act::Select(e.clone()));
+                                }
+                                if resp.double_clicked() {
+                                    let path = if h.is_dir {
+                                        h.path.clone()
+                                    } else {
+                                        h.parent.clone()
+                                    };
+                                    if !path.is_empty() {
+                                        act = Some(Act::Open(EntryInfo { path, ..e.clone() }));
+                                    }
+                                }
+                                Self::entry_menu(&resp, &e, &mut act);
+                                if !h.is_dir {
+                                    ui.weak(human(h.size));
+                                }
+                                if !phone {
+                                    ui.weak(&h.parent);
+                                }
+                            });
+                        }
+                        if r.hits.is_empty() {
+                            empty_note(ui, "Nothing matches.");
+                        }
+                    });
+            }
+        }
+        if let Some(offset) = page {
+            self.sys.offset = Some(offset);
+            self.run_system();
+        } else if go {
+            self.sys.offset = None;
+            self.run_system();
+        }
+        if let Some(a) = act {
+            let pane = self.active;
+            self.act(pane, a);
+        }
+    }
+
+    fn run_system(&mut self) {
+        self.sys.count = Some(SYSTEM_PAGE);
+        match serde_json::to_value(&self.sys) {
+            Ok(params) => {
+                self.sys_busy = true;
+                self.call("system.search", params, Want::System);
+            }
+            Err(e) => self.error = Some(e.to_string()),
         }
     }
 
@@ -2211,6 +2404,7 @@ impl WebApp {
                 self.two_panes = false;
             }
             Tab::Search => self.search(ui),
+            Tab::System => self.system_search(ui),
         });
     }
 
@@ -2276,7 +2470,17 @@ impl WebApp {
             }
             match self.screen.tab {
                 PhoneTab::Browse => self.phone_pane(ui),
-                PhoneTab::Search => self.search(ui),
+                PhoneTab::Search => {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.phone_all_files, false, "Library");
+                        ui.selectable_value(&mut self.phone_all_files, true, "All files");
+                    });
+                    if self.phone_all_files {
+                        self.system_search(ui);
+                    } else {
+                        self.search(ui);
+                    }
+                }
                 PhoneTab::Library => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if !self.library.is_empty() {

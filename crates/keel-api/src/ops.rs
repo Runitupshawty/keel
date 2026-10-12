@@ -80,6 +80,8 @@ pub static OPS: &[Operation] = &[
         SearchParams => Vec<Hit>, search, json!({"query": "invoice ext:pdf", "max": 20})),
     now!("files.names", "The full paths of indexed files in the online sources, each source's newest first, for a fuzzy file finder (at most `max`, default and largest 100000; `truncated` when there were more); read-only.",
         FileNamesParams => FileNames, files_names, json!({"max": 1000})),
+    now!("system.search", "Searches every file on this computer with the platform's search (the window's search pane: Everything or Keel's own index on Windows, Spotlight or locate elsewhere), not only the library: words, \"phrases\", wildcards or a regex, with Everything's match options (case, whole word, path, diacritics, prefix, suffix, ignore punctuation or white space), sort (name, path, date_modified, size) and paging (count at most 1000; total over the first 10000 found); read-only.",
+        SystemSearchParams => SystemSearchResult, system_search, json!({"query": "invoice *.pdf", "count": 20, "sort": "date_modified", "ascending": false})),
     now!("tags.list", "All tags, or the tags on one indexed path.",
         TagsListParams => Vec<TagInfo>, tags_list, json!({})),
     now!("tags.tagged", "Every tagged path (Favorites included) with its tag ids.",
@@ -673,6 +675,29 @@ fn search(ctx: &Ctx, p: SearchParams) -> Result<Vec<Hit>> {
     // Snippets for the first page only, whatever `max` is.
     q.snippets = q.max.min(keel_core::SNIPPET_PAGE);
     Ok(hits(ctx.lib.search(&q)?))
+}
+
+fn system_search(ctx: &Ctx, p: SystemSearchParams) -> Result<SystemSearchResult> {
+    let searcher = ctx.system.get();
+    let found = crate::system::run(&*searcher, &p, crate::system::MAX_SCAN)?;
+    Ok(SystemSearchResult {
+        backend: found.backend,
+        total: found.total,
+        capped: found.capped,
+        offset: found.offset,
+        hits: found
+            .hits
+            .iter()
+            .map(|h| SystemHit {
+                path: h.path.display(),
+                name: h.path.name().to_owned(),
+                parent: h.path.parent().map(|p| p.display()).unwrap_or_default(),
+                is_dir: h.is_dir,
+                size: if h.is_dir { 0 } else { h.size },
+                modified: unix(h.modified),
+            })
+            .collect(),
+    })
 }
 
 // --- tags ---
