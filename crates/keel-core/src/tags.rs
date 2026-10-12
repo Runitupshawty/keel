@@ -849,16 +849,12 @@ impl Library {
         let c = self.shared.db.get()?;
         check_shortcut(&c, &view.shortcut, None)?;
         let mut out = view.clone();
-        if out.position == 0 {
-            out.position = c.query_row(
-                "SELECT coalesce(max(position), 0) + 1 FROM view WHERE folder = ?1",
-                [&out.folder],
-                |r| r.get(0),
-            )?;
-        }
-        c.execute(
+        // One statement: two saves at once never take the same last place.
+        (out.id, out.position) = c.query_row(
             "INSERT INTO view(name, query, layout, backend, sort, columns, matching, filter, \
-             folder, position, shortcut) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             folder, position, shortcut) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+             CASE WHEN ?10 = 0 THEN (SELECT coalesce(max(position), 0) + 1 FROM view \
+             WHERE folder = ?9) ELSE ?10 END, ?11) RETURNING id, position",
             params![
                 out.name,
                 out.query,
@@ -872,8 +868,8 @@ impl Library {
                 out.position,
                 out.shortcut,
             ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        out.id = c.last_insert_rowid();
         Ok(out)
     }
 

@@ -295,7 +295,12 @@ fn library_bookmarks_are_saved_views() {
         (ed.store, ed.view.backend),
         (Store::Library, ViewBackend::Library)
     );
-    for (name, query) in [("PDFs", "ext:pdf"), ("Docs", "ext:docx")] {
+    for (n, (name, query)) in [("PDFs", "ext:pdf"), ("Docs", "ext:docx")]
+        .into_iter()
+        .enumerate()
+    {
+        // One after the other: each save runs on its own worker.
+        pump_until(&mut s, "the save before", |_| lib.views().unwrap().len() == n);
         let mut v = ed.view.clone();
         v.name = name.into();
         v.query = query.into();
