@@ -129,6 +129,7 @@ impl QuickSearch {
                     if let Some(error) = &pane.tab().error {
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
+                    let mut no_tags = false;
                     let mut cx = crate::pane::ViewCx {
                         theme: &s.theme,
                         show_hidden: parent.show_hidden,
@@ -140,7 +141,8 @@ impl QuickSearch {
                         library: &s.library,
                         drives: &s.sidebar.drives,
                         searcher: s.searcher.as_ref().map(|x| x.name()),
-                        tags_column: false,
+                        tags_column: &mut no_tags,
+                        list: &mut s.settings.list,
                         media: &mut s.media,
                         sizes: &s.sizes,
                         keys: true,
