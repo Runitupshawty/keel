@@ -16,6 +16,7 @@ mod crash;
 mod devices;
 mod dialogs;
 mod dropzone;
+mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu
 mod folder_ops; // Task 60: folder operation dialogs
 mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)

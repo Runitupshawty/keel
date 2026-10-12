@@ -30,6 +30,10 @@ pub struct Cli {
     /// Open a search tab with this query (in FOLDER when given).
     #[arg(long, value_name = "QUERY")]
     pub search: Option<String>,
+    /// Open this folder in the Sizes view (disk usage), as Explorer's "Analyze disk usage
+    /// with Keel" does.
+    #[arg(long, value_name = "FOLDER", conflicts_with = "folder")]
+    pub disk_usage: Option<PathBuf>,
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
@@ -305,6 +309,9 @@ pub struct Request {
     /// Absolute (`checked`). A file opens its folder with it selected.
     pub folder: Option<PathBuf>,
     pub search: Option<String>,
+    /// Show `folder` in the Sizes view (`--disk-usage`).
+    #[serde(default)]
+    pub disk_usage: bool,
     /// Set by `checked`: the file in `folder` to select. Never sent.
     #[serde(skip)]
     pub select: Option<String>,
@@ -376,14 +383,25 @@ impl Cli {
     /// running instance has its own).
     pub fn request(&self) -> Request {
         Request {
-            folder: self
-                .folder
-                .as_ref()
-                .and_then(|p| std::path::absolute(p).ok()),
+            folder: (self.folder.as_ref())
+                .or(self.disk_usage.as_ref())
+                .and_then(|p| std::path::absolute(shell_arg(p)).ok()),
             search: self.search.clone(),
+            disk_usage: self.disk_usage.is_some(),
             select: None,
         }
     }
+}
+
+/// A folder from Explorer's menu: `"%V"` for a drive root is `"C:\"`, whose `\"` the
+/// command line reads as a quote, so `C:"` arrives. No Windows path has a `"` in it: it
+/// was that backslash.
+fn shell_arg(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(s) = p.to_str().and_then(|s| s.strip_suffix('"')) {
+        return PathBuf::from(format!("{s}\\"));
+    }
+    p.to_owned()
 }
 
 /// Subcommands a lone name always means (never a folder of that name): what agents and
@@ -393,7 +411,7 @@ const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
 /// The index of the only positional argument in `args` when it is the last argument and a
 /// subcommand's name.
 fn lone_subcommand(args: &[OsString]) -> Option<usize> {
-    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service"];
+    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service", "--disk-usage"];
     let mut positional = None;
     let mut i = 1;
     while i < args.len() {
@@ -444,6 +462,10 @@ impl AppState {
                 Some(name) => self.reveal_in(p, dir, name, true),
                 None => self.run(p, Action::NewTabAt(dir)),
             }
+            // ponytail: the Sizes view until the Disk Usage window (Task 82) lands.
+            if req.disk_usage {
+                self.run(p, Action::View(crate::pane::ViewMode::Sizes));
+            }
         }
         if let Some(text) = req.search {
             self.run(p, Action::Search);
@@ -473,6 +495,7 @@ mod tests {
                 new_window: false,
                 profile: None,
                 search: None,
+                disk_usage: None,
                 index_service: None,
                 check_update: false,
                 here: false,
@@ -549,7 +572,7 @@ mod tests {
         state.external(Request {
             folder: Some(dir.clone()),
             search: Some("needle".into()),
-            select: None,
+            ..Request::default()
         });
         let tabs = &state.panes[0].tabs;
         assert_eq!(tabs.len(), 3);
@@ -573,6 +596,35 @@ mod tests {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(tab.dir, VPath::local(file.parent().unwrap()));
         assert!(tab.selected.contains(&name) && tab.cursor.as_ref() == Some(&name));
+    }
+
+    /// Task 85: `--disk-usage FOLDER` (Explorer's "Analyze disk usage with Keel") opens
+    /// the folder in the Sizes view; Explorer's `"C:\"` arrives as `C:"` and means `C:\`.
+    #[test]
+    fn disk_usage_opens_the_sizes_view() {
+        let dir = std::env::temp_dir().join("keel-du");
+        let cli = parse(&["--disk-usage", dir.to_str().unwrap()]).unwrap();
+        let req = cli.request();
+        assert_eq!(req.folder.as_deref(), Some(dir.as_path()));
+        assert!(req.disk_usage);
+        assert!(parse(&["x", "--disk-usage", "y"]).is_err(), "one folder");
+        assert!(!parse(&["x"]).unwrap().request().disk_usage);
+        let ctx = egui::Context::default();
+        let start = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(ctx, std::sync::Arc::new(keel_vfs::Router::new()), start);
+        state.external(req);
+        assert_eq!(state.panes[0].view, crate::pane::ViewMode::Sizes);
+        assert_eq!(state.panes[0].tabs[1].dir, VPath::local(&dir));
+        #[cfg(windows)]
+        {
+            let drive = parse(&["--disk-usage", "C:\""]).unwrap().request();
+            assert_eq!(drive.folder, Some(PathBuf::from("C:\\")));
+            let search = parse(&["--search", "", "--", "D:\""]).unwrap().request();
+            assert_eq!(search.folder, Some(PathBuf::from("D:\\")));
+            assert_eq!(search.search.as_deref(), Some(""));
+            let spaced = parse(&["--search", "", "--", r"D:\My Files"]).unwrap();
+            assert_eq!(spaced.request().folder, Some(PathBuf::from(r"D:\My Files")));
+        }
     }
 
     #[test]

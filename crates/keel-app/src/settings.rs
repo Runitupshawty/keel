@@ -729,6 +729,10 @@ pub fn window(
                         );
                     ui.end_row();
                     if cfg!(windows) {
+                        // --- Task 85 ---
+                        ui.label("Explorer menu");
+                        crate::explorer_menu::setting(ui);
+                        ui.end_row();
                         ui.label("Search index");
                         crate::index_ui::full_index_button(ui, searcher, tx);
                         ui.end_row();
