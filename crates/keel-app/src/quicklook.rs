@@ -236,13 +236,13 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     window.show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, "✕", "Close (Space or Esc)") {
+                if button(ui, "Close", "Close (Space or Esc)") {
                     close = true;
                 }
                 let (icon, tip) = if full {
-                    ("🗗", "Exit full screen")
+                    ("Exit Full Screen", "Back to a floating window")
                 } else {
-                    ("⛶", "Full screen")
+                    ("Full Screen", "Fill the screen")
                 };
                 if button(ui, icon, tip) {
                     full_toggle = true;
@@ -258,7 +258,7 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
                     }
                 }
                 if !sel.is_empty() {
-                    if ql.item.is_some() && button(ui, "⊞ Index Sheet", "All selected items") {
+                    if ql.item.is_some() && button(ui, "Index Sheet", "All selected items") {
                         ql.item = None;
                     }
                     if button(ui, "⏵", "Next selected item (Right)") {
