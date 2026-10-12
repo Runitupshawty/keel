@@ -693,11 +693,7 @@ fn name_label(ui: &mut egui::Ui, shown: &str, color: Option<egui::Color32>, font
 fn triangle(ui: &mut egui::Ui, open: bool, color: egui::Color32) -> egui::Response {
     // Pointer-only: the keyboard expands with Right and Left on the cursor row, so the
     // triangle is no Tab stop and never takes the list's keyboard focus.
-    let sense = Sense {
-        focusable: false,
-        ..Sense::click()
-    };
-    let (rect, r) = ui.allocate_exact_size(egui::vec2(TRIANGLE_W, ROW_H), sense);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(TRIANGLE_W, ROW_H), Sense::CLICK);
     let color = if r.hovered() {
         ui.visuals().strong_text_color()
     } else {
