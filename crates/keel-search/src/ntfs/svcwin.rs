@@ -297,6 +297,10 @@ impl PipeServer {
             Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
             Err(e) => return Err(win32(e)),
         }
+        // Make the next instance now, so the name never disappears between clients
+        // (a client then waits for a free instance instead of finding no pipe). When
+        // every instance is in use this fails and the next `accept` tries again.
+        self.pending = self.instance(false).ok();
         Ok(File::from(pipe))
     }
 }
@@ -1008,7 +1012,7 @@ mod tests {
         for good in [
             "S-1-5-21-1004336348-1177238915-682003330-1001",
             "S-1-5-21-1-2-3-500",
-            "S-1-12-1-1111111111-2222222222-3333333333-4444444444",
+            "S-1-12-1-1111111111-2222222222-3333333333-4044444444",
         ] {
             assert!(valid_user_sid(good), "{good}");
         }

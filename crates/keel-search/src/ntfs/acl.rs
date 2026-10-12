@@ -2,7 +2,7 @@
 //! A volume index read from the MFT (elevated, or by the index service) holds every
 //! name on the volume, including those in other users' profiles and in system
 //! folders. Before results are shown, each hit's folders, from the drive root down,
-//! are opened with `FILE_LIST_DIRECTORY` as the user Keel runs as; a hit under a
+//! are listed (`FindFirstFileExW`) as the user Keel runs as; a hit under a
 //! folder the user may not list is left out. Verdicts are cached per folder for
 //! [`TTL`]. On by default; Settings → General turns it off
 //! ([`set_hide_unlistable`]).
@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use windows::core::HSTRING;
-use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, HANDLE};
+use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
+    FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FIND_FIRST_EX_FLAGS,
+    WIN32_FIND_DATAW,
 };
 
 use super::index::Found;
@@ -109,31 +109,35 @@ pub(crate) fn ancestors(path: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Whether this process may list `folder`: it opens with `FILE_LIST_DIRECTORY`. Only
-/// "access denied" hides; a folder that is gone (a stale entry) or any other error
-/// does not.
+/// Whether this process may list `folder`: the first listing batch succeeds. Only
+/// "access denied" hides; a folder that is gone (a stale entry), a drive root with no
+/// entries, or any other error does not. Listing (not opening with backup semantics)
+/// is what Explorer does, and it never uses a backup privilege an elevated token may
+/// hold, so an administrator is held to the folder's ACL too.
 pub(crate) fn can_list(folder: &str) -> bool {
-    let long = if folder.starts_with(r"\\") {
-        folder.to_owned()
+    let base = folder.trim_end_matches('\\');
+    let pattern = if folder.starts_with(r"\\") {
+        format!(r"{base}\*")
     } else {
-        format!(r"\\?\{folder}")
+        format!(r"\\?\{base}\*")
     };
-    // SAFETY: the name outlives the call; the handle is closed below.
+    let mut found = WIN32_FIND_DATAW::default();
+    // SAFETY: the name outlives the call; `found` is the WIN32_FIND_DATAW that
+    // `FindExInfoBasic` fills.
     let opened = unsafe {
-        CreateFileW(
-            &HSTRING::from(long),
-            FILE_LIST_DIRECTORY.0 | SYNCHRONIZE.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FindFirstFileExW(
+            &HSTRING::from(pattern),
+            FindExInfoBasic,
+            std::ptr::from_mut(&mut found).cast(),
+            FindExSearchNameMatch,
             None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            HANDLE::default(),
+            FIND_FIRST_EX_FLAGS(0),
         )
     };
     match opened {
         Ok(handle) => {
             // SAFETY: opened above.
-            let _ = unsafe { CloseHandle(handle) };
+            let _ = unsafe { FindClose(handle) };
             true
         }
         Err(e) => e.code() != ERROR_ACCESS_DENIED.to_hresult(),
