@@ -607,6 +607,7 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .global(),
+        cmd("index.journal", "Index journal", OpenJournal, &[]).global(),
         cmd("select.all", "Select all", SelectAll, &["Ctrl+A"]).global(),
         cmd("select.invert", "Invert selection", InvertSelection, &[]).global(),
         cmd("edit.paste", "Paste", Paste, &[])

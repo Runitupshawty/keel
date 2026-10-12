@@ -32,6 +32,7 @@ mod icon_theme;
 mod icons;
 mod inspector;
 mod jobs;
+mod journal_ui; // Phase 15: the index journal tab
 mod jump;
 mod keymap; // Phase 16 Task 76: configurable keys
 mod keys;
@@ -93,6 +94,7 @@ mod hotkey;
 mod index_ui;
 mod omissions;
 mod quick_search;
+mod journal_cli; // Phase 15: `keel journal`
 mod single_instance;
 mod tray;
 // --- end Task 24 ---

@@ -1650,7 +1650,7 @@ fn settings_every_page_renders() {
         ("Icons", "Install from VS Code Marketplace…"),
         ("Library", "Library (index sources, tags, duplicates)"),
         ("Devices", "Devices (pairing, shares, Spacedrop)"),
-        ("Search", "Add folder"),
+        ("Search index", "Add folder"),
     ] {
         click_last(&mut h, page);
         assert!(has(&h, shows), "{page} shows {shows:?}");
@@ -1658,13 +1658,13 @@ fn settings_every_page_renders() {
     }
 }
 
-/// Settings → Search: a folder and exclude rules take effect on Apply, not while typed.
+/// Settings → Search index: a folder and exclude rules take effect on Apply, not while typed.
 #[test]
 fn settings_search_applies_folders_and_excludes() {
     let root = demo();
     let mut h = app(&root.join("Documents"), &root.join("Pictures"));
     key(&mut h, CMD, Key::Comma);
-    click_last(&mut h, "Search");
+    click_last(&mut h, "Search index");
     click_last(&mut h, "New folder");
     type_text(&mut h, "/data/share");
     click_last(&mut h, "Add folder");

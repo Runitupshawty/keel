@@ -209,6 +209,11 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         crate::library_ui::overview(ui, cx, out);
         return;
     }
+    if pane.tabs[pane.active].kind == crate::tab::TabKind::Journal {
+        let active = pane.active;
+        crate::journal_ui::ui(ui, &mut pane.tabs[active].journal, out);
+        return;
+    }
     let search = pane.tab().is_search();
     if search {
         crate::search_tab::bar(ui, pane, cx.searcher, cx.library, out);

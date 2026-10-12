@@ -66,6 +66,17 @@ pub enum TabKind {
     },
     /// Task 29: the library dashboard (`library_ui::overview`); never listed.
     Overview,
+    /// Phase 15: the index journal (`journal_ui`); never listed.
+    Journal,
+}
+
+/// The Journal tab's address (`keel://journal/`), kept in sessions like a folder.
+pub fn journal_path() -> VPath {
+    VPath {
+        scheme: "keel".into(),
+        authority: "journal".into(),
+        path: "/".into(),
+    }
 }
 
 /// Cursor movement inside the listing.
@@ -154,6 +165,8 @@ pub struct Tab {
     cache: Vec<usize>,
     /// Bumped whenever `cache` changes (Task 32: the media view's layout cache).
     cache_gen: u64,
+    /// The Journal tab's filters and entries (unused elsewhere).
+    pub journal: Box<crate::journal_ui::JournalView>,
 }
 
 impl Tab {
@@ -176,6 +189,7 @@ impl Tab {
 impl Tab {
     pub fn new(dir: VPath) -> Self {
         let overview = dir == crate::library::overview_path();
+        let journal = dir == journal_path();
         Self {
             dir,
             entries: Vec::new(),
@@ -191,12 +205,14 @@ impl Tab {
             filter_open: false,
             history: Vec::new(),
             future: Vec::new(),
-            loading: !overview,
+            loading: !overview && !journal,
             error: None,
             listed_dir: None,
             listed_req: 0,
             kind: if overview {
                 TabKind::Overview
+            } else if journal {
+                TabKind::Journal
             } else {
                 TabKind::Dir
             },
@@ -221,6 +237,7 @@ impl Tab {
             cache_key: None,
             cache: Vec::new(),
             cache_gen: 0,
+            journal: Default::default(),
         }
     }
 
@@ -278,6 +295,7 @@ impl Tab {
             TabKind::Search { query, .. } if query.is_empty() => "Search".into(),
             TabKind::Search { query, .. } => format!("Search: {query}"),
             TabKind::Overview => "Overview".into(),
+            TabKind::Journal => "Journal".into(),
             TabKind::Dir => match self.dir.name() {
                 _ if self.dir.scheme == "node" => crate::devices::node_title(&self.dir)
                     .unwrap_or_else(|| match self.dir.name() {

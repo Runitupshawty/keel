@@ -149,6 +149,35 @@ pub enum Command {
     /// write one in another format. Runs without the library.
     #[command(subcommand)]
     Filelist(FilelistCmd),
+    /// The index journal: what Keel's own index created, deleted, renamed, modified or
+    /// changed the attributes of, oldest first. `--watch` keeps printing new entries.
+    Journal {
+        /// Keep printing new entries as the index applies them (until Ctrl+C).
+        #[arg(long)]
+        watch: bool,
+        /// Only these actions: create, delete, rename, modify, attributes (repeat it or
+        /// separate them with commas).
+        #[arg(long, value_name = "ACTION", value_delimiter = ',')]
+        action: Vec<String>,
+        /// From this time: today, yesterday, 2h, 30m, 7d, 2026-10-12, "2026-10-12 14:00".
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
+        /// Before this time (a date: until the end of that day).
+        #[arg(long, value_name = "WHEN")]
+        until: Option<String>,
+        /// Only entries whose path (or old path) matches this regular expression.
+        #[arg(long, value_name = "REGEX")]
+        path: Option<String>,
+        /// Only entries whose path (or old path) contains this text, in any case.
+        #[arg(long, value_name = "TEXT")]
+        search: Option<String>,
+        /// The newest N entries (default 100; 0: all).
+        #[arg(long, value_name = "N")]
+        max: Option<usize>,
+        /// CSV with a header line.
+        #[arg(long)]
+        csv: bool,
+    },
     /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
     /// asks the user to confirm each plan through the client (MCP elicitation).
     Mcp {
@@ -1318,6 +1347,33 @@ mod tests {
             }
         );
         assert_eq!(cmd(&["mounts"]), Command::Mounts);
+        assert_eq!(
+            cmd(&[
+                "journal",
+                "--watch",
+                "--action",
+                "create,rename",
+                "--action",
+                "delete",
+                "--since",
+                "2h",
+                "--path",
+                r"\.pdf$",
+                "--max",
+                "0",
+                "--csv"
+            ]),
+            Command::Journal {
+                watch: true,
+                action: vec!["create".into(), "rename".into(), "delete".into()],
+                since: Some("2h".into()),
+                until: None,
+                path: Some(r"\.pdf$".into()),
+                search: None,
+                max: Some(0),
+                csv: true,
+            }
+        );
         assert_eq!(
             cmd(&["op", "tags.set", "--params", "{}", "--execute"]),
             Command::Op {

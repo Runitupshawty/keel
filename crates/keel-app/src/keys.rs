@@ -180,6 +180,8 @@ pub enum Action {
     },
     /// Read Ctrl+P's folder and file lists again (F5 in the popup).
     ReindexFolders,
+    /// Open the index journal in a tab (Phase 15).
+    OpenJournal,
     Palette,
     TogglePreview,
     /// Task 59: the preview panel's Inspector tab (Ctrl+I).
