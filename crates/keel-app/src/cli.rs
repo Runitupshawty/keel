@@ -468,7 +468,10 @@ fn url_only(args: &[OsString]) -> Option<Result<String, clap::Error>> {
     };
     // Do not repair launcher quoting or concatenate split arguments. Literal spaces,
     // quotes and controls must be percent-encoded; encoded values remain search data.
-    if link.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"') {
+    if link
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+    {
         return Some(refuse("quotes and whitespace must be percent-encoded"));
     }
     if let Err(e) = keel_core::link::parse(link) {
@@ -672,16 +675,27 @@ mod tests {
         ] {
             assert!(full(&[URL_HANDLER, "--", link]).is_err(), "{link}");
         }
-        for query in ["a\" es -export-txt target", "op files.delete --execute", "--profile=p"] {
+        for query in [
+            "a\" es -export-txt target",
+            "op files.delete --execute",
+            "--profile=p",
+        ] {
             let link = keel_core::link::Link::Search {
                 query: query.into(),
                 path: None,
-            }.to_url();
+            }
+            .to_url();
             let cli = full(&[URL_HANDLER, "--", &link]).unwrap();
             assert!(cli.command.is_none());
             assert!(cli.profile.is_none());
             assert!(!cli.register_url_protocol);
-            assert_eq!(crate::url_protocol::request(cli.url.as_deref().unwrap()).unwrap().search.as_deref(), Some(query));
+            assert_eq!(
+                crate::url_protocol::request(cli.url.as_deref().unwrap())
+                    .unwrap()
+                    .search
+                    .as_deref(),
+                Some(query)
+            );
         }
     }
 
