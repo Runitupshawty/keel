@@ -216,17 +216,20 @@ impl<R: BufRead, W: Write> Server<'_, R, W> {
 
     /// Answers one message; None for notifications and responses.
     fn handle(&mut self, msg: &Value) -> io::Result<Option<Value>> {
-        let Some(method) = msg.get("method").and_then(Value::as_str) else {
-            // A response to something we never sent (or no longer wait for), or garbage.
-            return Ok(msg
-                .get("id")
-                .filter(|_| msg.get("result").is_none() && msg.get("error").is_none())
-                .map(|id| err(id.clone(), -32600, "invalid request")));
+        if msg.get("method").is_none()
+            && (msg.get("result").is_some() || msg.get("error").is_some())
+        {
+            return Ok(None); // responses to requests no longer pending
+        }
+        let req = match rpc::request(msg.clone()) {
+            Ok(req) => req,
+            Err((id, error)) => return Ok(id.map(|id| rpc::response(id, Err(error)))),
         };
-        let Some(id) = msg.get("id").cloned() else {
+        let Some(id) = req.id else {
             return Ok(None); // notifications (initialized, cancelled) need no answer
         };
-        let params = msg.get("params").cloned().unwrap_or(json!({}));
+        let method = req.method.as_str();
+        let params = req.params;
         if !self.initialized && method != "initialize" && method != "ping" {
             return Ok(Some(err(
                 id,
@@ -486,6 +489,26 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .to_owned()
+    }
+
+    #[test]
+    fn bughunt_invalid_rpc_envelopes_do_not_dispatch_tools() {
+        let mut bad_version = tool_call(2, "version", json!({}));
+        bad_version["jsonrpc"] = json!("1.0");
+        let input = lines(&[
+            init(false),
+            bad_version,
+            json!({"jsonrpc":"2.0","id":true,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":4,"method":"ping","params":7}),
+            json!(7),
+        ]);
+        let out = run(&mut Fake::default(), &input, Options::default());
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[1]["error"]["code"], -32600);
+        assert_eq!(out[2]["error"]["code"], -32600);
+        assert_eq!(out[2]["id"], Value::Null);
+        assert_eq!(out[3]["error"]["code"], -32602);
+        assert_eq!(out[4]["error"]["code"], -32600);
     }
 
     #[test]
