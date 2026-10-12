@@ -120,7 +120,7 @@ Sizes are apparent sizes (a file's length, not the space it takes on disk). A fi
 
 ## Folder operations
 
-Right-click a folder (or a file, for the last two) and open **Folder operations**, or type the name in the command palette (Ctrl+Shift+P):
+Right-click a folder (or a file, for Attributes and Create link) and open **Folder operations**, or type the name in the command palette (Ctrl+Shift+P):
 
 | Operation | What it does |
 | --- | --- |
@@ -129,17 +129,18 @@ Right-click a folder (or a file, for the last two) and open **Folder operations*
 | **Organize by…** | The folder's files (not its subfolders) move into subfolders by **Type** (Images, Videos, Audio, Documents, Archives, Other, by extension), **Year** (`2024`) or **Year and month** (`2024-03`) of their modified date; missing subfolders are made |
 | **Attributes…** | Hidden and read-only (Windows; hidden also on macOS), and on Linux and macOS the mode bits in octal (`755`). The checkboxes start at the items' current values (filled in grey when the selected items differ); only what you change is set. Not recursive |
 | **Create link…** | A link to the selected file or folder, next to it: a **Junction** (Windows, folders) or a **Hard link** (files, on the same drive), or a **Symbolic link** |
+| **Set folder dates to the newest change below…** | The folder and every folder in it, at any depth, get the modified date of the newest file below them (WinDirStat's cleanup of that name), so a folder's date says when something in it last changed. A folder with no file below it keeps its date; links are not followed and do not count. Folders on this computer only. The preview opens at once and lists each folder with its new and old date |
 
-With nothing selected, Flatten, Organize and Attributes work on the folder shown. Merge, Flatten and Organize ask what happens when a name is taken: **Skip** (the item stays where it was, and so does its folder), **Keep both** (the new one gets a free name such as `a (2).txt`) or **Overwrite**. Two items of one operation never land on one name (letter case aside, on every system): with Skip or Keep both the later ones get the next free name (`same (2).txt`), and with Overwrite, which would replace the operation's own files, the operation is refused, naming each item that would. Each operation then opens the library's preview, which lists every move with its target, every folder it makes or removes, and every name that is taken; Enter or **Confirm** runs it as a job in the jobs panel, with progress and cancel. A cancelled operation leaves every file in one place, moved or not. If the folder changed after the preview (a file added, removed or renamed), the operation does not run: the fresh preview is shown to confirm instead. Links (symbolic links, junctions) inside the folders are never moved and never followed; a folder that still holds one stays.
+With nothing selected, Flatten, Organize, Attributes and Set folder dates work on the folder shown. Merge, Flatten and Organize ask what happens when a name is taken: **Skip** (the item stays where it was, and so does its folder), **Keep both** (the new one gets a free name such as `a (2).txt`) or **Overwrite**. Two items of one operation never land on one name (letter case aside, on every system): with Skip or Keep both the later ones get the next free name (`same (2).txt`), and with Overwrite, which would replace the operation's own files, the operation is refused, naming each item that would. Each operation then opens the library's preview, which lists every move with its target, every folder it makes or removes, and every name that is taken; Enter or **Confirm** runs it as a job in the jobs panel, with progress and cancel. A cancelled operation leaves every file in one place, moved or not. If the folder changed after the preview (a file added, removed or renamed), the operation does not run: the fresh preview is shown to confirm instead. Links (symbolic links, junctions) inside the folders are never moved and never followed; a folder that still holds one stays.
 
 Symbolic links on Windows need Developer Mode (Settings → System → For developers) or an elevated program, and Keel never elevates: the dialog says so and offers a junction (folders) or a hard link (files) instead, which need neither.
 
-**Ctrl+Z** undoes the last of these like any file operation: merge, flatten and organize move every item back (refusing, without moving anything, when its old place is taken) and make again the folders they removed, then remove the folders they made if they are empty. A folder that merged into one of the same name already there (Skip) stays where it went, since what is in that folder now is both, and the toast says so; attributes get their old values back; a symbolic link or junction is removed (never what it points to) and a hard link goes to the trash. They are library plans, so the library must be on (Settings → Library); the folders need not be in a library source. From a terminal: `keel plan merge|flatten|organize|attrs|link` ([api.md](api.md#cli)).
+**Ctrl+Z** undoes the last of these like any file operation: merge, flatten and organize move every item back (refusing, without moving anything, when its old place is taken) and make again the folders they removed, then remove the folders they made if they are empty. A folder that merged into one of the same name already there (Skip) stays where it went, since what is in that folder now is both, and the toast says so; attributes get their old values back; folder dates get their old dates back (refused when a folder changed since, a file added to it for example); a symbolic link or junction is removed (never what it points to) and a hard link goes to the trash. They are library plans, so the library must be on (Settings → Library); the folders need not be in a library source. From a terminal: `keel plan merge|flatten|organize|attrs|link|folder-dates` ([api.md](api.md#cli)).
 
 ## Command line
 
 ```
-keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] [--here]
+keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--disk-usage FOLDER] [--check-update] [--here]
 ```
 
 | Flag | Meaning |
@@ -148,6 +149,7 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] 
 | `--new-window` | Start a separate window even if Keel is already running |
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
+| `--disk-usage FOLDER` | Open FOLDER in the Sizes view, its children by size (instead of FOLDER, not with it) |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |
@@ -155,6 +157,10 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] 
 Inside a WSL distribution, the Linux build hands FOLDER to the Windows `keel.exe` (`/mnt/c/...` becomes `C:\...`, other paths `\\wsl.localhost\<distribution>\...`), and `keel.exe .` started there opens the distribution's folder: [WSL](wsl.md#keel-inside-wsl).
 
 By default there is one Keel per user and profile: a second `keel` hands its folder or search to the running window over a private pipe or socket that only your user can reach, brings it forward and exits. Turn this off with "Reuse the running window" in Settings → General. Settings → General also has the **global hotkey** (default Ctrl+Shift+Alt+K, empty to disable) that brings Keel forward from any app; it needs Ctrl, Alt or the Windows/Command key besides Shift, and Ctrl+Alt alone is avoided because it is AltGr on many layouts.
+
+## Explorer menu
+
+On Windows, Settings → General → **Explorer menu** adds two commands to Explorer's right-click menu for folders, the empty area of an open folder, and drives: **Search in Keel** opens a search tab in that folder, and **Analyze disk usage with Keel** opens it in the Sizes view (`keel --disk-usage`). On Windows 11 they are under **Show more options**. Untick the switch to remove them. They are registered for your user only (under `HKEY_CURRENT_USER\Software\Classes`), so no administrator prompt; Keel never writes to the machine-wide part of the registry and removes only its own two commands. They point to the `keel.exe` that added them: after moving Keel, the switch says they belong to another copy, and unticking and ticking it again points them to this one.
 
 ## Profiles
 

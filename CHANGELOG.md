@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Set folder dates to the newest change below…** in Folder operations and the command palette: the folder and every folder in it get the modified date of the newest file below them (links are not followed; a folder with no file below keeps its date). The preview lists each folder with its new and old date, Ctrl+Z sets the old dates back, and the API (`plan.folder_dates`) and `keel plan folder-dates <folder>` do the same. See [Folder operations](docs/files.md#folder-operations).
+- **Explorer menu** in Settings → General (Windows): adds **Search in Keel** and **Analyze disk usage with Keel** to Explorer's right-click menu for folders, folder backgrounds and drives, for your user only (no administrator prompt; on Windows 11 under Show more options); untick to remove them. See [Explorer menu](docs/files.md#explorer-menu).
+- `keel --disk-usage FOLDER` opens a folder in the Sizes view.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

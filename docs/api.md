@@ -70,9 +70,10 @@ example, `plan.organize` with `{"path": "D:\\Inbox", "by": "type"}` previews
 and `plan.set_attributes` with `{"paths": ["D:\\Inbox\\a.pdf"], "readonly": true}`
 previews `"summary": "Set the attributes of 1 item: read-only on"` with one `set_attributes` change;
 `plan.link` with `{"target": "D:\\Photos", "link": "D:\\Desk\\Photos - link", "kind":
-"junction"}` previews one `link` change from the target to the link. Attributes and links
-work on this computer's files only, and none of these takes a path inside an archive or
-Keel's configuration folder.
+"junction"}` previews one `link` change from the target to the link. `plan.folder_dates` with `{"path": "D:\\Photos"}` previews one `set_folder_date` change per
+folder whose date changes, its `detail` the new and the old time in UTC (`"2024-03-01T14:22:05Z, was 2026-10-12T09:00:00Z"`).
+Attributes, links and folder dates work on this computer's files only, and none of these
+takes a path inside an archive or Keel's configuration folder.
 
 File-plan summaries name the first three paths (`Delete 5 item(s) (D:\a, D:\b, D:\c, 2
 more), …`). `shares.revoke` (taking access away) acts directly; it returns what it
@@ -132,6 +133,7 @@ user is working) also act directly: they change no file.
 | `plan.organize` | preview | The files directly in `path` move into subfolders by `by`: `type` (Images, Videos, Audio, Documents, Archives, Other), `year` (`2024`) or `month` (`2024-03`) of the modified date, local time; missing subfolders are made |
 | `plan.set_attributes` | preview | On each of `paths` (local, not recursive): `hidden` (Windows, macOS), `readonly`, `mode` (Unix, octal string such as `"755"`); omitted ones stay |
 | `plan.link` | preview | A new `link` (a full path that must not exist) to `target`, of `kind` `symlink`, `junction` (Windows, a folder) or `hardlink` (a file, same drive). A symbolic link on Windows without Developer Mode or elevation is refused at the preview with that reason |
+| `plan.folder_dates` | preview | Each folder at and under `path` (local) gets the modified time of the newest file below it, at any depth; links are not followed and do not count, and a folder with no file below keeps its time. One `set_folder_date` change per folder that changes, `detail` its new and old time; refused when nothing would change |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
 | `library.sync` | direct | Pull tag, favorite, folder style and content-id changes now from `peer` (a paired device id), or from every device library sync is on with; answers `[{peer, label, applied, error?}]` (`applied`: changes newer than this library's, applied; `error`: the device is offline, or its switch for this device is off). Refused for a `peer` sync is off with here. Reads from the other device and writes only the library's tags and favorites |
 | `devices.list` | read | This device and paired devices (LAN / relay / offline); each device's `sync` (library sync is on with it here) and `last_sync` (unix seconds of the last completed pull from it, absent before the first) |
@@ -434,6 +436,7 @@ keel plan flatten <folder> [--on-conflict …] [--json]
 keel plan organize <folder> --by type|year|month [--on-conflict …] [--json]
 keel plan attrs <paths…> [--hidden true|false] [--readonly true|false] [--mode 755] [--json]
 keel plan link <target> <link> --kind symlink|junction|hardlink [--json]
+keel plan folder-dates <folder> [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute
 keel sources [add <path> [--label L] [--no-index] | remove <id> [--delete-store] | index <id>]
 keel library backup <file or folder>
