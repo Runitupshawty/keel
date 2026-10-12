@@ -1568,7 +1568,10 @@ fn settings_search_applies_folders_and_excludes() {
     type_text(&mut h, "/data/share");
     click_last(&mut h, "Add folder");
     assert!(has(&h, "/data/share"), "listed");
-    assert!(s(&h).settings.search_index.folders.is_empty(), "not before Apply");
+    assert!(
+        s(&h).settings.search_index.folders.is_empty(),
+        "not before Apply"
+    );
     click_last(&mut h, "Exclude");
     click_last(&mut h, "Exclude hidden files and folders");
     click_last(&mut h, "Exclude files");
