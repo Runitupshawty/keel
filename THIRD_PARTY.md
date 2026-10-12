@@ -46,6 +46,7 @@ Keel uses the following separately distributed components. Their licenses remain
 | [`starship-battery`](https://crates.io/crates/starship-battery) 0.12 | Pause hashing on battery power (`keel-core` feature `power`, on by default) | ISC | Rust crate, compiled in |
 | [`regex`](https://crates.io/crates/regex) 1.13 | Regex search queries | MIT OR Apache-2.0 | Rust crate, compiled in |
 | [`encoding_rs`](https://crates.io/crates/encoding_rs) 0.8 | Windows-1252 text decoding | (Apache-2.0 OR MIT) AND BSD-3-Clause | Rust crate, compiled in |
+| `md-5` 0.11, `crc` 3 and `crc32fast` 1 (already used by other dependencies; `sha1` and `sha2` were already direct) | `md5:`, `crc32:` and `crc64:` file properties (`keel-props`) | MIT OR Apache-2.0 | Rust crates, compiled in |
 | [`calamine`](https://crates.io/crates/calamine) 0.36 | Spreadsheet previews (xlsx, xls, xlsb, ods) | MIT | Rust crate, compiled in |
 | [`reflink-copy`](https://crates.io/crates/reflink-copy) 0.1 | Copy-on-write file copies on macOS and Linux | MIT/Apache-2.0 | Rust crate, compiled in |
 | [`roxmltree`](https://crates.io/crates/roxmltree) 0.19 | XML parsing for the icon theme SVG check | MIT OR Apache-2.0 | Rust crate, compiled in |

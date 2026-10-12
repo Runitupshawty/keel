@@ -44,6 +44,10 @@ crate's `fuzzing` feature.
 | `multipart` | `keel_daemon::fuzz::multipart` | a Web Share Target upload: `Content-Type` line, then the `multipart/form-data` body |
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images), then the same file through `extract_text`, the library's text reader |
 | `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
+| `file_signature` | `keel_props::fuzz::file_signature` | file signatures (magic numbers, zip and PE heads), the text check, text statistics (encoding, lines, words) and `.url` files |
+| `lnk` | `keel_props::fuzz::lnk` | Windows shell links (`.lnk`): header, IDList, LinkInfo (local path, network share, suffix), string data, extra data blocks |
+| `pe_version` | `keel_props::fuzz::pe_version` | PE images: headers, sections, the resource directory walk to `RT_VERSION` (bounded in sections and entries) and the `VS_VERSIONINFO` blocks |
+| `audio_tags` | `keel_props::fuzz::audio_tags` | audio files: ID3v2 (2.2 to 2.4, unsynchronisation, extended headers), ID3v1, MPEG frames with Xing/VBRI, FLAC metadata blocks and Vorbis comments, WAV chunks |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,

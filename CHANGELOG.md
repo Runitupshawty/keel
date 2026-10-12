@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A property reader for Everything's property search functions (crate `keel-props`, no UI yet; the query language and property indexing build on it). Keel's own readers work on every platform: file signatures (`file-signature:`, `content-type:`, `perceived-type:` from the first 4 KiB), shortcut targets (symlinks, and `.lnk` files on any platform), `url:` of `.url` files, PE version resources (`version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`), text statistics (`character-encoding:`, `line-count:`, `word-count:`, up to 64 MiB), streamed and cancelable hashes (`md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`) and audio tags (ID3v2, ID3v1, MPEG, FLAC, WAV: title, artist, album, album artist, genre, track, year, comment, length, bit rate, sample rate, channels and more). On Windows the Windows Property System answers the image, video and document functions and any canonical property name (`System.Photo.FNumber`). Cloud placeholders are never downloaded to read a property. See [File properties](docs/properties.md).
+- Fuzz targets `file_signature`, `lnk`, `pe_version` and `audio_tags` ([fuzzing](docs/fuzzing.md)).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
