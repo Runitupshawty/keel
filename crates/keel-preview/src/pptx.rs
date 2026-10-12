@@ -42,9 +42,13 @@ pub(crate) fn build(path: &std::path::Path) -> Result<Vec<DocBlock>, String> {
         }
         let xml = pkg.read(name)?.unwrap_or_default();
         blocks.push(DocBlock::Heading(2, format!("Slide {}", n + 1)));
-        for (title, text) in
-            slide_text(&xml).map_err(|e| format!("malformed XML in {name}: {e}"))?
+        for (title, text) in slide_text(&xml, MAX_BLOCKS - blocks.len() + 1)
+            .map_err(|e| format!("malformed XML in {name}: {e}"))?
         {
+            if blocks.len() == MAX_BLOCKS {
+                blocks.push(DocBlock::Para(TRUNCATED.into()));
+                return Ok(blocks);
+            }
             blocks.push(if title {
                 DocBlock::Heading(3, text)
             } else {
@@ -57,7 +61,7 @@ pub(crate) fn build(path: &std::path::Path) -> Result<Vec<DocBlock>, String> {
 
 /// (is_title, text) per paragraph, in shape order. Footer, date and slide-number
 /// placeholders are left out.
-fn slide_text(xml: &[u8]) -> Result<Vec<(bool, String)>, quick_xml::Error> {
+fn slide_text(xml: &[u8], limit: usize) -> Result<Vec<(bool, String)>, quick_xml::Error> {
     let mut reader = Reader::from_reader(xml);
     let mut out = Vec::new();
     let (mut title, mut skip, mut in_t) = (false, false, false);
@@ -99,6 +103,9 @@ fn slide_text(xml: &[u8]) -> Result<Vec<(bool, String)>, quick_xml::Error> {
                         let p = p.trim();
                         if !skip && !p.is_empty() {
                             out.push((title, p.to_owned()));
+                            if out.len() == limit {
+                                return Ok(out);
+                            }
                         }
                     }
                 }
@@ -115,5 +122,31 @@ fn placeholder(e: &quick_xml::events::BytesStart, title: &mut bool, skip: &mut b
         Some("title" | "ctrTitle") => *title = true,
         Some("dt" | "ftr" | "sldNum") => *skip = true,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn bughunt_one_slide_cannot_exceed_block_budget() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut zip = zip::ZipWriter::new(file.reopen().unwrap());
+        zip.start_file(
+            "ppt/slides/slide1.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let xml = format!(
+            "<sld><sp>{}</sp></sld>",
+            "<p><t>hello</t></p>".repeat(MAX_BLOCKS + 10)
+        );
+        zip.write_all(xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        let blocks = build(file.path()).unwrap();
+        assert!(blocks.len() <= MAX_BLOCKS + 1, "{} blocks", blocks.len());
+        assert!(matches!(blocks.last(), Some(DocBlock::Para(t)) if t == TRUNCATED));
     }
 }
