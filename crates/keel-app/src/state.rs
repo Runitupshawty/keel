@@ -331,6 +331,9 @@ pub struct AppState {
     /// The (tab, folder, view) each visible pane showed last frame; a change relists a
     /// tab that was in the background (it had no watcher).
     shown: [Option<(usize, VPath, crate::pane::ViewMode)>; 2],
+    /// Task 66: per pane, the view it had before a folder with "Always open in" switched it
+    /// (`view_prefs::view_on_enter`).
+    view_before: [Option<crate::pane::ViewMode>; 2],
     /// The drop zone strip and its stash (Task 23).
     pub dropzone: crate::dropzone::DropZone,
     /// Task 29: the library (opened by the app, see `library.rs`).
@@ -478,6 +481,7 @@ impl AppState {
             list_timeout: LIST_TIMEOUT,
             next_req: 0,
             shown: [None, None],
+            view_before: [None, None],
             dropzone: Default::default(),
             library,
             devices,
@@ -1580,6 +1584,19 @@ impl AppState {
         for p in 0..2 {
             // The tab's own folder (Task 23: not its keyboard column).
             let t = self.panes[p].active;
+            // Task 66: a folder shown anew opens in its "Always open in" view.
+            let tab = &self.panes[p].tabs[t];
+            let entered = (p == 0 || self.dual)
+                && tab.kind == crate::tab::TabKind::Dir
+                && self.shown[p]
+                    .as_ref()
+                    .is_none_or(|(st, sd, _)| *st != t || *sd != tab.dir);
+            if entered {
+                let remembered = self.settings.views.always_open(&tab.dir);
+                let current = self.panes[p].view;
+                self.panes[p].view =
+                    crate::view_prefs::view_on_enter(remembered, current, &mut self.view_before[p]);
+            }
             let view = self.panes[p].view;
             let now = (p == 0 || self.dual).then(|| (t, self.panes[p].tabs[t].dir.clone(), view));
             if now == self.shown[p] {
@@ -2108,6 +2125,20 @@ impl AppState {
             Action::LeaveTerminal => self.terminal.leave(&self.ctx),
             Action::CalculateSizes { fresh } => self.calculate_sizes(p, fresh),
             Action::View(mode) => self.panes[p].view = mode,
+            // Task 66: "Always open in" the pane's view for its folder, or no longer.
+            Action::ToggleAlwaysOpen => {
+                let view = self.panes[p].view;
+                let dir = self.panes[p].tabs[self.panes[p].active].dir.clone();
+                let views = &mut self.settings.views;
+                let on = views.always_open(&dir) != Some(view);
+                views.set_always_open(&dir, on.then_some(view));
+                let name = crate::view_prefs::view_name(view);
+                self.toasts.info(if on {
+                    format!("This folder always opens in the {name} view")
+                } else {
+                    format!("This folder no longer always opens in the {name} view")
+                });
+            }
             Action::ToggleTheme => {
                 let name = if self.theme.dark { "light" } else { "dark" };
                 self.settings.theme = name.to_owned();
@@ -4145,6 +4176,39 @@ mod tests {
                 .any(|e| e.name == "outside.txt")
         });
         assert_eq!(s.panes[0].tabs[0].columns.focus, 2, "focus untouched");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Task 66: "Always open in": a folder switches the pane to its view; leaving it for a
+    /// folder without one brings the view back; the palette toggles it for the folder.
+    #[test]
+    fn a_folder_opens_in_its_always_open_view() {
+        use crate::pane::ViewMode;
+        let tmp = tempfile_dir("keel-always-open");
+        for d in ["photos", "docs"] {
+            std::fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        let x = VPath::local(&tmp);
+        let mut s = AppState::new(egui::Context::default(), Arc::new(Router::new()), x.clone());
+        s.settings.views = Default::default();
+        let photos = x.join("photos");
+        let docs = x.join("docs");
+        s.settings
+            .views
+            .set_always_open(&photos, Some(ViewMode::Gallery));
+        s.tick();
+        assert_eq!(s.panes[0].view, ViewMode::Details);
+        s.run(0, Action::Navigate(photos.clone()));
+        s.tick();
+        assert_eq!(s.panes[0].view, ViewMode::Gallery);
+        s.run(0, Action::Navigate(docs.clone()));
+        s.tick();
+        assert_eq!(s.panes[0].view, ViewMode::Details, "the view from before");
+        s.panes[0].view = ViewMode::Grid;
+        s.run(0, Action::ToggleAlwaysOpen);
+        assert_eq!(s.settings.views.always_open(&docs), Some(ViewMode::Grid));
+        s.run(0, Action::ToggleAlwaysOpen);
+        assert_eq!(s.settings.views.always_open(&docs), None);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

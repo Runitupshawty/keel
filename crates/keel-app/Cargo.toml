@@ -77,6 +77,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 semver = "1"
 interprocess = "2.4.4"
 global-hotkey = "0.8.0"
+# Task 66: middle truncation of names by grapheme (already in the tree).
+unicode-segmentation = "1"
 
 # The system accent color (`design`): a registry read (features already in the workspace);
 # the tray icon and the window level (`tray`); Explorer's folder menu (Task 85): per-user

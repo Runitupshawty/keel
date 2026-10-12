@@ -240,6 +240,7 @@ fn media_view_draws_tiles_and_requests_visible_sidecars() {
                     media: &mut media,
                     sizes: &Default::default(),
                     keys: true,
+                    views: &mut Default::default(),
                 };
                 super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
             });
@@ -405,6 +406,7 @@ fn media_grid_perf() {
                         media: &mut s.media,
                         sizes: &Default::default(),
                         keys: true,
+                        views: &mut Default::default(),
                     };
                     super::ui(ui, (0, 0), &mut s.tab, &mut cx, &mut Vec::new());
                 },

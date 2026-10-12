@@ -683,11 +683,25 @@ pub fn commands() -> Vec<Command> {
             .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
         cmd("view.options", "View options", ViewOptions, &["Ctrl+J"]).global(),
+        cmd(
+            "view.always_open",
+            "Always open this folder in the current view",
+            ToggleAlwaysOpen,
+            &[],
+        )
+        .global(),
         // --- Task 65 ---
         cmd(
             "view.grid",
             "Grid view",
             View(crate::pane::ViewMode::Grid),
+            &[],
+        )
+        .global(),
+        cmd(
+            "view.gallery",
+            "Gallery view",
+            View(crate::pane::ViewMode::Gallery),
             &[],
         )
         .global(),

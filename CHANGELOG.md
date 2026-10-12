@@ -100,6 +100,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Use relative dates**: "Today at 14:05", "Yesterday at 09:12".
 - **Group by** Kind, Date Modified, Date Created, Size or Tags in the Details and Grid views, with group headers that stay at the top while their rows scroll; independent of the sort.
 - **View Options** panel (Ctrl+J, or View options in the command palette) for the columns, relative dates and Group by.
+- **Gallery view**: a big preview of the selected item over a strip of thumbnails, with its details and **Quick Actions** (Open, Open with…, Extract here, Compress…, Show in system file manager, Properties) on the right; folders show a big folder icon and the arrow keys move through the items. See [Views](docs/files.md#views).
+- Grid (icon) view: an icon size slider (16 to 512 points, with sharper thumbnails for big icons), grid spacing, labels under or right of the icons, names in up to two lines shortened in the middle (`from th…mmer.jpg`), and **Arrange**: Sort by, Snap to grid or free arrangement by dragging icons, with **Clean Up** and **Clean Up By** Name, Kind, Size or Date Modified. Options and icon positions are kept per folder; **Use as defaults** applies a folder's options to all others.
+- **Always open in** a view, per folder: Grid view's View options, Gallery view's details column, or the palette's "Always open this folder in the current view". Folder view settings are saved in the profile (`[views]` in `config.toml`).
+- Palette entries for the Grid and Gallery views.
 
 ### Changed
 

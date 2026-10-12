@@ -413,13 +413,16 @@ impl App {
             self.seen_widths.0 = None;
         }
         // --- Task 23 ---: the columns view previews inline while the panel is closed.
-        let inline = !s.preview.open && crate::view_columns::wants_preview(&s.panes[s.active]);
+        // Task 66: so does the gallery view (its big preview), and with the Inspector shown.
+        let gallery = crate::view_gallery::wants_preview(&s.panes[s.active]);
+        let inline =
+            !s.preview.open && (gallery || crate::view_columns::wants_preview(&s.panes[s.active]));
         let inspecting = s.preview.open && s.preview.tab == crate::inspector::PanelTab::Inspector;
         // Phase 14 Task 67: Quick Look shows the preview too.
         let quick_look = s.finder.quicklook.open;
         if inspecting {
             // Task 59: the inspector follows the selection instead of the preview.
-            if !quick_look {
+            if !quick_look && !gallery {
                 s.preview.stop_sound();
             }
             let target = s.preview_target();
@@ -430,12 +433,12 @@ impl App {
                 }
             }
         }
-        if quick_look || (!inspecting && (s.preview.open || inline)) {
+        if quick_look || (inspecting && gallery) || (!inspecting && (s.preview.open || inline)) {
             let target = crate::quicklook::target(s);
             if s.preview.follow(ctx, target.as_ref()) {
                 s.toasts.error(crate::preview_panel::LOCKED);
             }
-        } else {
+        } else if !inspecting {
             s.preview.stop_sound();
         }
         // Slides open and shut (Task 23); the width is the user's once fully open.
@@ -585,7 +588,7 @@ impl App {
                         thumbs: &mut s.thumbs,
                         active: s.dual && s.active == p,
                         banner,
-                        preview: (inline && p == s.active).then_some(&mut s.preview),
+                        preview: ((inline || gallery) && p == s.active).then_some(&mut s.preview),
                         column_widths: &mut s.settings.column_widths,
                         library: &s.library,
                         drives: &s.sidebar.drives,
@@ -595,6 +598,7 @@ impl App {
                         media: &mut s.media,
                         sizes: &s.sizes,
                         keys: s.active == p,
+                        views: &mut s.settings.views,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {

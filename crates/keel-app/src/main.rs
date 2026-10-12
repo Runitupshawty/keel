@@ -89,8 +89,10 @@ mod update;
 mod video_player;
 mod view_columns;
 mod view_details;
+mod view_gallery; // Task 66: Gallery view
 mod view_grid;
 mod view_media;
+mod view_prefs; // Task 66: per-folder view memory
 #[cfg(test)]
 mod walkthrough_tests; // the QA walkthrough (scripts/walkthrough.sh)
 mod worker;

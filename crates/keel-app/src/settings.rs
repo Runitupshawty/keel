@@ -129,6 +129,8 @@ pub struct Settings {
     pub cleanups: Vec<crate::cleanups::UserCleanup>,
     /// `[disk_usage]`: the Disk Usage window's layout, columns and options.
     pub disk_usage: crate::disk_usage::DuSettings,
+    /// Task 66: `[views]`: Icon view options and per-folder view memory.
+    pub views: crate::view_prefs::ViewPrefs,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -287,6 +289,7 @@ impl Default for Settings {
             index_hide_unlistable: true,
             cleanups: Vec::new(),
             disk_usage: Default::default(),
+            views: Default::default(),
         }
     }
 }

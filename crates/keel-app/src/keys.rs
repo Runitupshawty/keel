@@ -162,6 +162,8 @@ pub enum Action {
     },
     /// Switch the pane's view (palette).
     View(crate::pane::ViewMode),
+    /// Task 66: the pane's folder always opens in the pane's view (palette), or no longer.
+    ToggleAlwaysOpen,
     Navigate(VPath),
     /// Path box: a folder navigates; a file opens its folder with the file selected.
     OpenPath(VPath),
