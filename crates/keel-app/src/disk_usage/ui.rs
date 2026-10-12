@@ -406,6 +406,8 @@ fn treemap_area(ui: &mut Ui, du: &mut DiskUsage, settings: &mut DuSettings) {
 enum TypeEvent {
     Select(BTreeSet<String>),
     Filter(BTreeSet<String>),
+    /// List the files of this extension in the window's Search tab.
+    SearchTab(String),
 }
 
 fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action>) {
@@ -494,6 +496,12 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                         out.push(Action::SearchFor(format!("*.{ext}")));
                         ui.close_menu();
                     }
+                    if single && ui.button("List these files in the Search tab").clicked() {
+                        event = Some(TypeEvent::SearchTab(
+                            exts.iter().next().cloned().unwrap_or_default(),
+                        ));
+                        ui.close_menu();
+                    }
                 });
             });
         });
@@ -506,6 +514,11 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
         Some(TypeEvent::Filter(exts)) => {
             model.highlight_extensions = exts.clone();
             model.filter_extensions(Some(exts));
+        }
+        Some(TypeEvent::SearchTab(ext)) => {
+            du.keys = true;
+            du.tabs.search = crate::du_tabs::search::State::for_extension(&ext);
+            du.tab = Tab::Search;
         }
         None => {}
     }

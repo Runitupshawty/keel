@@ -33,6 +33,7 @@ impl Default for State {
 }
 
 impl State {
+    #[cfg(test)]
     pub fn result(&self) -> Option<&Analytics> {
         self.result.as_ref()
     }

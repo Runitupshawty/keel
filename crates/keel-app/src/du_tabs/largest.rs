@@ -28,6 +28,7 @@ impl Default for State {
 }
 
 impl State {
+    #[cfg(test)]
     pub fn rows(&self) -> &[FileRow] {
         &self.rows
     }
