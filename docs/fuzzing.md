@@ -15,7 +15,9 @@ The targets run two ways:
   so a failure reproduces. A case that panics or runs over 10 s (30 s under CI) fails the test and is saved
   to `target/fuzz-failures/<target>-<hash>`; the test binaries' allocator refuses any single
   allocation over 512 MiB, so a size taken from a hostile header aborts the run. The
-  harness is `keel_vfs::fuzz_harness`.
+  harness is `keel_vfs::fuzz_harness`; keel-query, which does not depend on keel-vfs, runs
+  `query_parse` with a small copy of its loop (corpus, seeded mutations, time limit; no allocation
+  cap and no saved failure file: the failing input is in the panic message).
 - **With libFuzzer** (`fuzz/`, Linux or macOS, nightly Rust; libFuzzer does not build for
   MSVC Windows). Coverage-guided, with AddressSanitizer and overflow checks. CI runs every
   target for 60 s on each push to `main` (the `fuzz` job, not part of `check`).
@@ -44,6 +46,7 @@ crate's `fuzzing` feature.
 | `multipart` | `keel_daemon::fuzz::multipart` | a Web Share Target upload: `Content-Type` line, then the `multipart/form-data` body |
 | `preview` | `keel_preview::fuzz::preview` | the preview panel: the first byte picks the type (`keel_preview::fuzz::EXTENSIONS`), the rest is the file (text in any encoding, CSV, xlsx/xls/ods, docx, pptx, OpenDocument, SVG, images), then the same file through `extract_text`, the library's text reader |
 | `font` | `keel_preview::fuzz::font` | font files (TrueType, OpenType, collections): the name table and the sample drawn in the font, with glyph boxes checked before they are rasterized |
+| `query_parse` | `keel_query::fuzz::query_parse` | the search language (`keel_query::parse`): any text with three option sets (OR or AND precedence, literal operators, slashes, regex, whole words), then every query that compiles evaluated against a few items with edge dates and sizes; groups and macros are depth-limited and regexes size-limited |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,

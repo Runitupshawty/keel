@@ -2,6 +2,12 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- The `keel-query` crate: Keel's own reader of voidtools Everything's search language, with every operator (`|`, `!`, `< >`, quotes, wildcards, `regex:`, path terms, ranges, `;` lists, comparison operators, `unknown`, `function*:`, OR-first or AND-first precedence), the modifiers with their `no-` forms and aliases, the search functions that need only names, paths, sizes, dates, attributes, child counts and run counts (including every date component form such as `dmyear:` and `dcdow:`), date and size constants, the filter macros (`audio:`, `zip:`, `doc:`, `exe:`, `pic:`, `video:`) and user macros. Errors point at the part of the query they are about; functions it does not evaluate yet are refused with "not yet supported" and the reason. The search box, the library, `keel search`, the API and MCP move to it in a following change. See [the search language](docs/search.md).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
