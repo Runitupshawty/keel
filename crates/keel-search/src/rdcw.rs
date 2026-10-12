@@ -1,0 +1,277 @@
+//! A ReadDirectoryChangesW watcher with a chosen buffer size (the `notify` crate's is
+//! fixed at 16 KiB) that reports an overflowed buffer, so the index can rescan instead
+//! of silently missing changes. One thread per watched folder, blocking reads.
+
+use std::ffi::c_void;
+use std::fs::File;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+const FILE_LIST_DIRECTORY: u32 = 0x1;
+const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
+const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+/// File and folder names, attributes, size, last write and creation.
+const FILTER: u32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x40;
+const ERROR_INVALID_PARAMETER: i32 = 87;
+/// The largest buffer a network share accepts.
+const NETWORK_MAX: usize = 64 * 1024;
+pub const MIN_BUFFER: usize = 4 * 1024;
+pub const MAX_BUFFER: usize = 4 * 1024 * 1024;
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn ReadDirectoryChangesW(
+        directory: *mut c_void,
+        buffer: *mut c_void,
+        length: u32,
+        subtree: i32,
+        filter: u32,
+        returned: *mut u32,
+        overlapped: *mut c_void,
+        routine: *mut c_void,
+    ) -> i32;
+    fn CancelIoEx(file: *mut c_void, overlapped: *mut c_void) -> i32;
+}
+
+/// What a watch reports.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Event {
+    /// Paths that changed (created, deleted, renamed from or to, modified).
+    Paths(Vec<PathBuf>),
+    /// More changes than the buffer holds: some were lost.
+    Overflow,
+    /// The watch ended (the folder or its volume went away).
+    Lost,
+}
+
+/// A running watch; dropping it stops the thread.
+pub struct Watch {
+    dir: Arc<File>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Watches `root` and everything below it with a buffer of `buffer` bytes (clamped
+/// to [`MIN_BUFFER`]..=[`MAX_BUFFER`]; a share that refuses it gets 64 KiB).
+pub fn watch(
+    root: &Path,
+    buffer: usize,
+    send: impl Fn(Event) + Send + 'static,
+) -> std::io::Result<Watch> {
+    let dir = Arc::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_ALL)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(root)?,
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let (thread_dir, thread_stop, root) = (dir.clone(), stop.clone(), root.to_path_buf());
+    let thread = std::thread::Builder::new()
+        .name("keel-watch".into())
+        .spawn(move || {
+            let mut len = buffer.clamp(MIN_BUFFER, MAX_BUFFER);
+            // u64 words: the buffer must be DWORD-aligned.
+            let mut buf = vec![0u64; len / 8];
+            while !thread_stop.load(Relaxed) {
+                let mut returned = 0u32;
+                // SAFETY: the handle stays open while `thread_dir` lives; `buf` holds
+                // `len` bytes and outlives the synchronous call.
+                let ok = unsafe {
+                    ReadDirectoryChangesW(
+                        thread_dir.as_raw_handle(),
+                        buf.as_mut_ptr().cast(),
+                        len as u32,
+                        1,
+                        FILTER,
+                        &mut returned,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
+                if thread_stop.load(Relaxed) {
+                    break;
+                }
+                if ok == 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) && len > NETWORK_MAX {
+                        len = NETWORK_MAX;
+                        buf.truncate(len / 8);
+                        continue;
+                    }
+                    send(Event::Lost);
+                    break;
+                }
+                if returned == 0 {
+                    send(Event::Overflow);
+                    continue;
+                }
+                let bytes: Vec<u8> = buf
+                    .iter()
+                    .flat_map(|w| w.to_ne_bytes())
+                    .take((returned as usize).min(len))
+                    .collect();
+                let paths: Vec<PathBuf> = parse(&bytes)
+                    .into_iter()
+                    .map(|name| root.join(std::ffi::OsString::from_wide(&name)))
+                    .collect();
+                if !paths.is_empty() {
+                    send(Event::Paths(paths));
+                }
+            }
+        })?;
+    Ok(Watch {
+        dir,
+        stop,
+        thread: Some(thread),
+    })
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Relaxed);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // The thread may be about to enter the blocking read: cancel until it is out.
+        let end = Instant::now() + Duration::from_secs(2);
+        while !thread.is_finished() && Instant::now() < end {
+            // SAFETY: the handle is open (this struct holds the file).
+            unsafe { CancelIoEx(self.dir.as_raw_handle(), std::ptr::null_mut()) };
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The relative names in a buffer of FILE_NOTIFY_INFORMATION records (UTF-16, as
+/// stored). Every offset and length is checked: a short or garbled buffer ends the
+/// list, never reads past it.
+pub fn parse(buf: &[u8]) -> Vec<Vec<u16>> {
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_ne_bytes(
+            buf.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let mut names = Vec::new();
+    let mut at = 0usize;
+    while let (Some(next), Some(len)) = (u32_at(at), u32_at(at + 8)) {
+        let start = at + 12;
+        let Some(name) = start
+            .checked_add(len as usize)
+            .and_then(|end| buf.get(start..end))
+        else {
+            break;
+        };
+        if !name.is_empty() && name.len() % 2 == 0 {
+            names.push(
+                name.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_ne_bytes(*c))
+                    .collect(),
+            );
+        }
+        if next == 0 || next % 4 != 0 {
+            break;
+        }
+        at = match at.checked_add(next as usize) {
+            Some(n) => n,
+            None => break,
+        };
+    }
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(next: u32, action: u32, name: &str) -> Vec<u8> {
+        let wide: Vec<u16> = name.encode_utf16().collect();
+        let mut b = Vec::new();
+        b.extend(next.to_ne_bytes());
+        b.extend(action.to_ne_bytes());
+        b.extend(((wide.len() * 2) as u32).to_ne_bytes());
+        for w in wide {
+            b.extend(w.to_ne_bytes());
+        }
+        while b.len() % 4 != 0 {
+            b.push(0);
+        }
+        b
+    }
+
+    #[test]
+    fn parses_records_and_survives_garbage() {
+        let first = record(0, 1, "a\\b.txt");
+        // `record` pads to 4 bytes, so the next one starts right after it.
+        let next = record(0, 4, "old").len() as u32;
+        let mut buf = record(next, 4, "old");
+        buf.extend(record(0, 5, "new name"));
+        let names: Vec<String> = parse(&buf)
+            .iter()
+            .map(|n| String::from_utf16_lossy(n))
+            .collect();
+        assert_eq!(names, ["old", "new name"]);
+        assert_eq!(parse(&first).len(), 1);
+        // Truncated, lying lengths, huge offsets, odd offsets: no panic.
+        for cut in 0..buf.len() {
+            let _ = parse(&buf[..cut]);
+        }
+        let mut lie = record(0, 1, "x");
+        lie[8..12].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert!(parse(&lie).is_empty());
+        let mut far = record(u32::MAX - 3, 1, "x");
+        far.extend(record(0, 1, "y"));
+        assert_eq!(parse(&far).len(), 1);
+        let mut seed = 0x9e37_79b9_u32;
+        for _ in 0..2000 {
+            let len = (seed % 200) as usize;
+            let junk: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect();
+            let _ = parse(&junk);
+        }
+    }
+
+    #[test]
+    fn reports_changes_and_stops_on_drop() {
+        let root = std::env::temp_dir().join(format!("keel-rdcw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = watch(&root, 8 * 1024, move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+        let mut seen = Vec::new();
+        let end = Instant::now() + Duration::from_secs(10);
+        while !seen.contains(&root.join("sub").join("new.txt")) {
+            assert!(Instant::now() < end, "no event, got {seen:?}");
+            // Changes before the thread's first read are not reported: write until seen.
+            std::fs::write(root.join("sub").join("new.txt"), b"x").unwrap();
+            if let Ok(Event::Paths(p)) = rx.recv_timeout(Duration::from_millis(100)) {
+                seen.extend(p);
+            }
+        }
+        let started = Instant::now();
+        drop(w);
+        assert!(started.elapsed() < Duration::from_secs(2), "drop is prompt");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

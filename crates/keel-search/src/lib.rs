@@ -2,7 +2,6 @@
 //! on macOS, locate or a home-directory walk on Linux) and folder-path fuzzy
 //! matching for Keel, and file lists (EFU and plain lists: read, search, export, create).
 
-#[cfg(windows)]
 mod composite;
 #[cfg(windows)]
 mod everything;
@@ -11,29 +10,46 @@ pub mod filelist;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzz;
+mod exclude;
+mod folders;
 mod fuzzy;
+mod index_settings;
 #[cfg(target_os = "linux")]
 mod locate;
 #[cfg(windows)]
 mod ntfs;
+#[cfg(windows)]
+mod rdcw;
+mod schedule;
 #[cfg(target_os = "macos")]
 mod spotlight;
 mod terms;
+mod volumes;
 mod walkindex;
 
+pub use composite::Merge;
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
 pub use filelist::FileListSearcher;
+pub use exclude::{attr, ExcludeRules};
+pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
+pub use index_settings::{
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, ScanOptions, Schedule, VolumeRoot,
+};
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
 };
 pub use terms::Highlighter;
-pub use walkindex::{home_root, index_dir as walk_index_dir, WalkIndexSearcher};
+pub use schedule::{parse_time_of_day, Clock, SystemClock};
+pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
+pub use walkindex::{
+    home_root, index_dir as walk_index_dir, EntryInfo, WalkIndexSearcher, WalkOptions,
+};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Parameters accepted by a search backend.
@@ -141,6 +157,20 @@ pub trait Searcher: Send + Sync {
     fn take_ready(&self) -> bool {
         false
     }
+    /// Indexed folders and volumes that are offline: their hits come from the last
+    /// scan (Settings → Search keeps offline volumes searchable unless
+    /// **Automatically remove offline volumes** is on). Never blocks.
+    fn offline_roots(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    /// Settings → Search changed: index these folders and volumes from now on. May
+    /// list volumes and open indexes: worker threads only.
+    fn set_index_settings(&self, _settings: &IndexSettings) {}
+    /// The settings as the backend changed them on its own (a new volume included,
+    /// an offline one removed), once per change, for the app to save. Never blocks.
+    fn index_settings_changed(&self) -> Option<IndexSettings> {
+        None
+    }
 }
 
 /// A soft-failure backend the app falls back to when no search backend works;
@@ -179,21 +209,60 @@ impl Searcher for Unavailable {
 ///
 /// macOS and Linux: Spotlight / `plocate` / `locate` when they answer, else the
 /// persistent walk index of the home folder ([`WalkIndexSearcher`]), else a plain walk.
+///
+/// Keel's own index searches the folders and volumes of `IndexSettings::default()`
+/// with it ([`default_searcher_with`] takes the user's).
 pub fn default_searcher() -> Box<dyn Searcher> {
+    default_searcher_with(&IndexSettings::default())
+}
+
+/// [`default_searcher`] with the folders and volumes of Settings → Search
+/// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list).
+pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
-        (Ok(everything), dir) => Box::new(composite::Composite::new(
-            Box::new(everything),
-            dir.map(|dir| -> Box<dyn Fn() -> Box<dyn Searcher> + Send + Sync> {
-                Box::new(move || Box::new(NtfsSearcher::open(dir.clone())))
-            }),
-            composite::REPROBE,
-        )),
-        (Err(_), Some(dir)) => Box::new(NtfsSearcher::open(dir)),
+        (Ok(everything), dir) => {
+            let settings = settings.clone();
+            Box::new(composite::Composite::new(
+                Box::new(everything),
+                dir.map(|dir| -> Box<dyn Fn() -> Box<dyn Searcher> + Send + Sync> {
+                    Box::new(move || {
+                        let ntfs = Box::new(NtfsSearcher::open(dir.clone()));
+                        with_folders(ntfs, &dir, &settings)
+                    })
+                }),
+                composite::REPROBE,
+            ))
+        }
+        (Err(_), Some(dir)) => {
+            with_folders(Box::new(NtfsSearcher::open(dir.clone())), &dir, settings)
+        }
         (Err(error), None) => walk_index_or(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
     };
+    #[cfg(not(windows))]
+    {
+        let base = unix_searcher();
+        match walkindex::index_dir() {
+            Some(dir) => with_folders(base, &dir, settings),
+            None => base,
+        }
+    }
+}
+
+/// `main` searched together with the folder and volume indexes (dbs in `dir`).
+fn with_folders(
+    main: Box<dyn Searcher>,
+    dir: &Path,
+    settings: &IndexSettings,
+) -> Box<dyn Searcher> {
+    let folders = FolderIndexes::open(dir.join("folders"), settings.clone());
+    Box::new(Merge::new(main, Box::new(folders)))
+}
+
+#[cfg(not(windows))]
+fn unix_searcher() -> Box<dyn Searcher> {
     #[cfg(target_os = "macos")]
     if let Some(searcher) = spotlight::Spotlight::new() {
         return Box::new(searcher);
@@ -206,7 +275,7 @@ pub fn default_searcher() -> Box<dyn Searcher> {
     return walk_index_or(Unavailable::new(
         "no locate database and no home directory to search",
     ));
-    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     walk_index_or(Unavailable::new("no search backend on this platform"))
 }
 

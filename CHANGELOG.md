@@ -60,6 +60,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A **Quick Search window**: a small window with only a search field and the results, opened from the command palette or an optional **Quick Search hotkey** (Settings → General). Esc hides it. See [Quick Search window](docs/files.md#quick-search-window-tray-and-window-options).
 - **Open searches in new windows**, **Always on top** and, on Windows, **Run in background when closed** with a notification-area icon (single click shows Keel; menu: Show Keel, New window, Exit) in Settings → General.
 - **Result omissions**: Omit results and Omit results temporarily in a search's right-click menu, a **Manage omissions** dialog, **Show omitted results**, and an omission mode where Delete omits instead of deleting. Saved per profile; applied in the search worker. See [Result omissions](docs/files.md#result-omissions).
+- Settings → **Search**: Keel's own index now also covers FAT, FAT32, exFAT and ReFS volumes, removable and network drives and any folder you add, by walking them, searched together with the NTFS index. **Folders** and **Volumes** tabs (per volume: **Include in database**, **Include only**; **Automatically include new fixed volumes**, **Automatically include new removable volumes**, **Automatically remove offline volumes**) and an **Exclude** tab (exclude hidden, exclude system, exclude folders, include only folders, include only files, exclude files), applied while indexing. Each folder and volume has **Monitor changes** with a **Change buffer** size (Windows), **Rescan when the change buffer overflows**, a **Rescan** schedule (every N hours, or daily at a time) and **Fast rescan** (only the folders whose modified time changed). An offline volume stays searchable from its last scan and is marked offline, unless it is removed automatically. Saved under `[search_index]`. See [Folders and volumes](docs/files.md#folders-and-volumes-settings--search).
+- The walked index stores each entry's created time and attributes besides its size and modified time.
 
 ### Changed
 
@@ -74,6 +76,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The status bar's count reads "12 items, 431.2 GB available" with the free space of the folder's drive.
 - `library.db` is now at version 9 (saved views gain backend, sort, columns, match toggles, filter, folder, position and shortcut); a library this Keel opened is refused by an older Keel ("newer than this Keel"). Existing views keep their order at the top level.
 - Library saved views are listed under **Bookmarks** in the sidebar instead of the library's Views section, and Ctrl+D in a search tab adds a bookmark instead of toggling Favorites (it still toggles Favorites in folder tabs).
+- The home-folder name index (macOS and Linux, and Windows without an NTFS index) has a new layout with created times and attributes: it is walked once again after the update.
 
 ### Fixed
 

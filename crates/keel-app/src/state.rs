@@ -348,6 +348,8 @@ pub struct AppState {
     pub finder: crate::finder::Finder,
     /// Task 76: bookmarks, filters and search history.
     pub find: crate::bookmarks::Find,
+    /// Settings → Search index: the page's edits and the offline roots it marks.
+    pub search_page: crate::search_settings::SearchPage,
 }
 
 impl AppState {
@@ -456,6 +458,7 @@ impl AppState {
             icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
             color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             info: Default::default(),
+            search_page: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -527,6 +530,9 @@ impl AppState {
             return;
         }
         let mut find = Vec::new(); // Task 76
+        let index_before = s.search_index.clone();
+        self.search_page.offline =
+            (self.searcher.as_ref()).map_or_else(Vec::new, |x| x.offline_roots());
         let theme_changed = crate::settings::window(
             ctx,
             &mut self.settings_open,
@@ -543,7 +549,11 @@ impl AppState {
             &mut self.color_themes,
             &mut self.keyboard,
             &mut find,
+            &mut self.search_page,
         );
+        if s.search_index != index_before {
+            crate::search_settings::push(self.searcher.clone(), &s.search_index);
+        }
         self.show_hidden = s.show_hidden;
         self.preview.open = s.preview_open;
         self.jobs.one_per_drive = s.one_transfer_per_drive;
@@ -573,7 +583,12 @@ impl AppState {
     /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
     /// load may block).
     pub fn load_searcher(&self, searcher: Option<Arc<dyn Searcher>>) {
-        worker::spawn_searcher(searcher, self.tx.clone(), self.ctx.clone());
+        worker::spawn_searcher(
+            searcher,
+            self.settings.search_index.clone(),
+            self.tx.clone(),
+            self.ctx.clone(),
+        );
     }
 
     pub fn tab(&self, pane: usize) -> &Tab {
@@ -960,6 +975,7 @@ impl AppState {
             Msg::Inspected { req, result } => self.preview.inspector.answered(req, *result),
             Msg::Search { id, result } => self.searched(id, result),
             Msg::Searcher { searcher, reason } => {
+                crate::search_settings::push(Some(searcher.clone()), &self.settings.search_index);
                 self.searcher = Some(searcher);
                 self.search_reason = reason;
                 if std::mem::take(&mut self.jump.waiting) {

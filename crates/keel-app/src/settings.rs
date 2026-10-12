@@ -114,6 +114,9 @@ pub struct Settings {
     pub filters: Vec<crate::search_filters::CustomFilter>,
     /// `[search_history]`: saving, size and order of the search history.
     pub search_history: crate::search_history::HistorySettings,
+    /// `[search_index]`: Settings → Search index, the folders and volumes Keel's own index
+    /// walks and its Exclude rules.
+    pub search_index: keel_search::IndexSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -265,6 +268,7 @@ impl Default for Settings {
             bookmarks: Vec::new(),
             filters: Vec::new(),
             search_history: Default::default(),
+            search_index: Default::default(),
         }
     }
 }
@@ -658,6 +662,8 @@ pub enum Page {
     Keyboard,
     /// Task 76: search history, filters and bookmarks.
     Search,
+    /// Phase 15: the folders and volumes Keel's own index walks, and its Exclude rules.
+    SearchIndex,
 }
 
 /// Settings → Appearance (Task 64): the style and the accent color. The look follows
@@ -741,6 +747,7 @@ pub fn window(
     color_themes: &mut crate::color_theme::ColorThemes,
     keyboard: &mut crate::keymap::KeymapUi, // Phase 16 Task 76
     find: &mut Vec<crate::bookmarks::FindCmd>, // Task 76
+    search: &mut crate::search_settings::SearchPage,
 ) -> bool {
     let mut theme_changed = false;
     // Recording a key: the press is the new key, and Esc only stops the recording.
@@ -767,6 +774,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
                 ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
                 ui.selectable_value(&mut remotes.page, Page::Keyboard, "Keyboard");
+                ui.selectable_value(&mut remotes.page, Page::SearchIndex, "Search index");
                 ui.selectable_value(&mut remotes.page, Page::Search, "Search");
             });
             ui.separator();
@@ -780,6 +788,7 @@ pub fn window(
                     Page::Keyboard => keyboard.page(ui, &mut s.keymap),
                     Page::Appearance => appearance_page(ui, s),
                     Page::Search => crate::bookmarks::settings_page(ui, s, find),
+                    Page::SearchIndex => crate::search_settings::settings_page(ui, s, search),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

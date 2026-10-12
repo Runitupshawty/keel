@@ -53,6 +53,10 @@ pub fn status_bar(ui: &mut egui::Ui, s: &mut AppState) -> bool {
     if ready {
         s.jump.indexed_at = None;
     }
+    // The backend included a new volume or removed an offline one: save it.
+    if let Some(changed) = s.searcher.as_ref().and_then(|x| x.index_settings_changed()) {
+        s.settings.search_index = changed;
+    }
     let (text, tip) = indicator(name, state, s.search_reason.as_deref());
     let clicked = ui
         .add(egui::Button::new(text).frame(false))

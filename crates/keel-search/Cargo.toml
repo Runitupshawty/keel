@@ -11,6 +11,8 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+# Daily rescans at a local time (already in the tree).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories.workspace = true
 ignore.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
@@ -20,6 +22,11 @@ parking_lot.workspace = true
 # Regex name patterns for the home-folder walk and the persistent name index.
 regex = "1"
 rusqlite.workspace = true
+# Settings → Search is saved in the profile's config.toml.
+serde.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true

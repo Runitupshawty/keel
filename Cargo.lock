@@ -5008,6 +5008,7 @@ name = "keel-search"
 version = "0.22.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "directories",
  "ignore",
  "keel-vfs",
@@ -5017,6 +5018,8 @@ dependencies = [
  "parking_lot",
  "regex",
  "rusqlite",
+ "serde",
+ "toml 0.8.23",
  "windows 0.58.0",
 ]
 

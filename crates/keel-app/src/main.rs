@@ -52,6 +52,7 @@ mod remotes;
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
 mod search_filters; // Task 76
 mod search_history; // Task 76
+mod search_settings;
 mod search_tab;
 mod session;
 mod settings;
