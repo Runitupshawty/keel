@@ -100,25 +100,32 @@ impl Theme {
         rgb(self.accent)
     }
 
+    /// Applies the theme in the context's look (`design`): its palette, and the style's
+    /// spacing, type and corner radii.
     pub fn apply(&self, ctx: &egui::Context) {
+        let look = crate::design::look(ctx);
+        let tokens = look.style.tokens();
+        let p = crate::design::Palette::of(self, &look);
         let (theme, mut v) = if self.dark {
             (egui::Theme::Dark, egui::Visuals::dark())
         } else {
             (egui::Theme::Light, egui::Visuals::light())
         };
-        let (bg, panel, text) = (rgb(self.bg), rgb(self.panel), rgb(self.text));
+        let (bg, panel, text) = (p.content, p.window, p.label);
         v.panel_fill = panel;
         v.window_fill = panel;
         v.extreme_bg_color = bg;
-        v.faint_bg_color = panel.lerp_to_gamma(text, 0.04);
+        v.faint_bg_color = p.alternating_row;
         v.override_text_color = Some(text);
-        v.selection.bg_fill = rgb(self.selection);
-        v.hyperlink_color = self.accent();
+        v.selection.bg_fill = p.selection;
+        v.selection.stroke.color = p.focus_ring;
+        v.hyperlink_color = p.accent;
         v.widgets.noninteractive.bg_fill = panel;
+        v.widgets.noninteractive.bg_stroke.color = p.separator;
         // Contrast (WCAG 4.5:1 on panel, background and stripes; the theme tests check it).
         // Weak text (`ui.weak`, disabled widgets) is the muted colour: egui mixes the text
         // colour half and half with this fill.
-        let (muted, mix) = (self.muted(), |t: u8, m: u8| {
+        let (muted, mix) = (p.secondary_label, |t: u8, m: u8| {
             (2 * m as i32 - t as i32).clamp(0, 255) as u8
         });
         v.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(
@@ -129,6 +136,8 @@ impl Theme {
         let (warn, error) = Theme::warn_error(self.dark);
         v.warn_fg_color = rgb(self.warn.unwrap_or(warn));
         v.error_fg_color = rgb(self.error.unwrap_or(error));
+        tokens.apply_radii(&mut v);
+        ctx.all_styles_mut(|s| tokens.apply_spacing(s));
         ctx.set_theme(if self.dark {
             egui::ThemePreference::Dark
         } else {
@@ -136,6 +145,7 @@ impl Theme {
         });
         // Set for the active theme so an OS light/dark switch cannot undo it.
         ctx.set_visuals_of(theme, v);
+        crate::design::set_palette(ctx, p);
         crate::icons::set_light(!self.dark);
     }
 }
@@ -315,59 +325,92 @@ mod tests {
         assert!((ratio(Color32::from_gray(0x76), Color32::WHITE) - 4.54).abs() < 0.01);
     }
 
-    /// Every built-in theme: text, secondary (muted, weak) text, text on the selection,
-    /// links / accents, warnings and errors reach 4.5:1 on the backgrounds they are drawn
-    /// on; the focus ring 3:1 (a UI component).
+    /// Every built-in theme in both styles (Finder also with a system accent): text,
+    /// secondary (muted, weak) text, text on the selection, links / accents, warnings and
+    /// errors reach 4.5:1 on the backgrounds they are drawn on; the focus ring 3:1 (a UI
+    /// component).
     #[test]
     fn builtin_themes_meet_wcag_contrast() {
+        use crate::design::{Accent, Look, Style};
         let mut failures = Vec::new();
-        for name in super::BUILTIN.iter().map(|(n, _)| *n) {
+        let looks = [
+            Look::CLASSIC,
+            Look {
+                style: Style::Finder,
+                ..Look::CLASSIC
+            },
+            Look {
+                style: Style::Finder,
+                accent: Accent::System,
+                os: Some([0xff, 0xcc, 0x00]),
+            },
+        ];
+        for look in looks {
+            for name in super::BUILTIN.iter().map(|(n, _)| *n) {
+                let theme = Theme::load(name);
+                let ctx = egui::Context::default();
+                crate::design::set_look(&ctx, look);
+                theme.apply(&ctx);
+                let p = crate::design::palette(&ctx).unwrap();
+                let v = ctx.style().visuals.clone();
+                let text = v.text_color();
+                let backs = [
+                    ("panel", v.panel_fill),
+                    ("bg", v.extreme_bg_color),
+                    ("stripe", v.faint_bg_color),
+                ];
+                let name = format!("{name} ({look:?})");
+                let mut check = |what: &str, fg, on: &str, bg, min: f64| {
+                    let r = ratio(fg, bg);
+                    if r < min {
+                        failures.push(format!(
+                            "{name}: {what} on {on} {r:.2} < {min} ({fg:?} on {bg:?})"
+                        ));
+                    }
+                };
+                for (on, bg) in backs {
+                    check("text", text, on, bg, 4.5);
+                    check("muted", p.secondary_label, on, bg, 4.5);
+                    check("weak text", v.weak_text_color(), on, bg, 4.5);
+                    check("accent", p.accent, on, bg, 4.5);
+                    check("link", v.hyperlink_color, on, bg, 4.5);
+                    check("warning", v.warn_fg_color, on, bg, 4.5);
+                    check("error", v.error_fg_color, on, bg, 4.5);
+                    check("focus ring", crate::a11y::ring_color(&v), on, bg, 3.0);
+                }
+                let sel = v.selection.bg_fill;
+                check("text", text, "selection", sel, 4.5);
+                // Selected rows draw their secondary text in the text colour (views).
+                check(
+                    "focus ring",
+                    crate::a11y::ring_color(&v),
+                    "selection",
+                    sel,
+                    3.0,
+                );
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Classic draws a built-in theme exactly as before the design tokens: the theme's
+    /// colors and egui's own spacing and type.
+    #[test]
+    fn classic_style_is_the_theme_unchanged() {
+        for (name, _) in super::BUILTIN {
             let theme = Theme::load(name);
             let ctx = egui::Context::default();
             theme.apply(&ctx);
             let v = ctx.style().visuals.clone();
-            let text = v.text_color();
-            let backs = [
-                ("panel", v.panel_fill),
-                ("bg", v.extreme_bg_color),
-                ("stripe", v.faint_bg_color),
-            ];
-            let mut check = |what: &str, fg, on: &str, bg, min: f64| {
-                let r = ratio(fg, bg);
-                if r < min {
-                    failures.push(format!(
-                        "{name}: {what} on {on} {r:.2} < {min} ({fg:?} on {bg:?})"
-                    ));
-                }
-            };
-            for (on, bg) in backs {
-                check("text", text, on, bg, 4.5);
-                check("muted", theme.muted(), on, bg, 4.5);
-                check("weak text", v.weak_text_color(), on, bg, 4.5);
-                check("accent", theme.accent(), on, bg, 4.5);
-                check("warning", v.warn_fg_color, on, bg, 4.5);
-                check("error", v.error_fg_color, on, bg, 4.5);
-                check("focus ring", crate::a11y::ring_color(&v), on, bg, 3.0);
-            }
-            let sel = v.selection.bg_fill;
-            check("text", text, "selection", sel, 4.5);
-            // Selected rows draw their secondary text in the text colour (views).
-            check(
-                "focus ring",
-                crate::a11y::ring_color(&v),
-                "selection",
-                sel,
-                3.0,
-            );
+            assert_eq!(v.extreme_bg_color, super::rgb(theme.bg), "{name}");
+            assert_eq!(v.panel_fill, super::rgb(theme.panel), "{name}");
+            assert_eq!(v.selection.bg_fill, super::rgb(theme.selection), "{name}");
+            assert_eq!(v.hyperlink_color, theme.accent(), "{name}");
+            let fresh = egui::Style::default();
+            assert_eq!(ctx.style().spacing.item_spacing, fresh.spacing.item_spacing);
+            assert_eq!(ctx.style().text_styles, fresh.text_styles);
+            assert_eq!(crate::design::shown(&ctx, &theme), theme, "{name}");
         }
-        assert!(
-            failures.is_empty(),
-            "{}",
-            failures.join(
-                "
-"
-            )
-        );
     }
 
     #[test]

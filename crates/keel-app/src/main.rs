@@ -13,6 +13,7 @@ mod clipboard;
 mod clouds;
 mod color_theme; // Task 47: VS Code color themes
 mod crash;
+mod design; // Task 64: design tokens, appearance styles
 mod devices;
 mod dialogs;
 mod dropzone;

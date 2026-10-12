@@ -100,8 +100,14 @@ fn build(boot: Boot, size: egui::Vec2, wgpu: bool) -> H {
     h
 }
 
+/// The window in the Classic style: the position checks here (tab strip, path bar, rows)
+/// are measured in it. `appearance_style_finder_and_classic` boots the Finder default.
 fn app(left: &Path, right: &Path) -> H {
-    app_with(boot(left, right, Default::default()), SIZE)
+    let classic = crate::settings::Settings {
+        style: crate::design::Style::Classic,
+        ..Default::default()
+    };
+    app_with(boot(left, right, classic), SIZE)
 }
 
 /// Renders the window to `target/walkthrough/<name>.png` (with `KEEL_WALKTHROUGH_SHOTS`).
@@ -3391,4 +3397,42 @@ fn organize_by_type_then_undo() {
     let back = wait(&mut h, 30, &|_| tree_of(&a) == before);
     assert!(back, "everything is back: {:?}", tree_of(&a));
     close_library(&mut h);
+}
+
+/// Task 64: a new profile opens in Finder-style (Finder's spacing and type, the Finder
+/// palette on the stock dark theme); Settings → Appearance → Classic switches back to the
+/// look before at once. One screenshot per style.
+#[test]
+fn appearance_style_finder_and_classic() {
+    use crate::design::{Style, CLASSIC, FINDER};
+    let root = demo();
+    let new_profile = boot(
+        &root.join("Documents"),
+        &root.join("Pictures"),
+        Default::default(),
+    );
+    let mut h = app_with(new_profile, SIZE);
+    h.run_steps(2);
+    let ctx = s(&h).ctx.clone();
+    assert_eq!(s(&h).settings.style, Style::Finder, "the default");
+    assert_eq!(crate::design::look(&ctx).style, Style::Finder);
+    assert_eq!(ctx.style().spacing.interact_size.y, FINDER.interact_height);
+    assert_eq!(
+        ctx.style().visuals.extreme_bg_color,
+        egui::Color32::from_rgb(0x1e, 0x1e, 0x1e)
+    );
+    shot(&mut h, "style-finder");
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Appearance");
+    click(&mut h, "Classic");
+    h.run_steps(2);
+    assert_eq!(s(&h).settings.style, Style::Classic);
+    assert_eq!(crate::design::look(&ctx).style, Style::Classic);
+    assert_eq!(ctx.style().spacing.interact_size.y, CLASSIC.interact_height);
+    let bg = crate::theme::rgb(s(&h).theme.bg);
+    assert_eq!(ctx.style().visuals.extreme_bg_color, bg, "the theme's own");
+    shot(&mut h, "style-classic");
+    click(&mut h, "Finder-style");
+    h.run_steps(2);
+    assert_eq!(ctx.style().spacing.interact_size.y, FINDER.interact_height);
 }

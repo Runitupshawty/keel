@@ -74,6 +74,10 @@ semver = "1"
 interprocess = "2.4.4"
 global-hotkey = "0.8.0"
 
+# The system accent color (`design`): a registry read (features already in the workspace).
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
 # Windows file clipboard lives in keel-vfs (CF_HDROP); elsewhere arboard's file list.
 [target.'cfg(not(windows))'.dependencies]
 arboard = { version = "3.6", default-features = false }

@@ -178,6 +178,7 @@ pub fn ui(
         tab.cursor.as_deref(),
     );
     let hover = ui.visuals().widgets.hovered.weak_bg_fill;
+    let radius = crate::design::tokens(ui.ctx()).radius.selection;
     let mut renaming = tab.renaming.take();
     let mut rename_done = false;
     let mut clicks: Vec<(egui::Response, Entry)> = Vec::new();
@@ -202,9 +203,9 @@ pub fn ui(
                                     1.0
                                 };
                                 ui.painter()
-                                    .rect_filled(tile, 4.0, selection.gamma_multiply(t));
+                                    .rect_filled(tile, radius, selection.gamma_multiply(t));
                             } else if resp.hovered() {
-                                ui.painter().rect_filled(tile, 4.0, hover);
+                                ui.painter().rect_filled(tile, radius, hover);
                             }
                             let img_box = Rect::from_min_size(
                                 pos2(rect.center().x - THUMB_PX as f32 / 2.0, rect.top() + 4.0),

@@ -45,8 +45,8 @@ pub fn color_of(s: Option<&str>) -> Color32 {
 
 fn dot_color(ui: &egui::Ui, dot: Dot) -> Color32 {
     match dot {
-        Dot::Online => Color32::from_rgb(70, 180, 90),
-        Dot::Indexing => Color32::from_rgb(230, 180, 40),
+        Dot::Online => crate::design::STATUS_OK,
+        Dot::Indexing => crate::design::STATUS_BUSY,
         Dot::Offline => ui.visuals().weak_text_color(),
         Dot::Error => ui.visuals().error_fg_color,
     }
@@ -69,7 +69,7 @@ fn chip_text(ui: &mut egui::Ui, tag: &Tag, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).small().color(text_color))
             .fill(fill)
-            .corner_radius(8.0)
+            .corner_radius(crate::design::tokens(ui.ctx()).radius.chip)
             .min_size(egui::vec2(0.0, 14.0)),
     )
 }

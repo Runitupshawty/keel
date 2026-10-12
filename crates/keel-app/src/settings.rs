@@ -24,6 +24,12 @@ const SCALE_HINT: &str = "Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0\u{d7})";
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    /// Task 64: Settings → Appearance → Style. New profiles start in Finder-style; a
+    /// config.toml from before the setting keeps Classic.
+    #[serde(default = "crate::design::Style::existing")]
+    pub style: crate::design::Style,
+    /// Task 64: where the accent color comes from.
+    pub accent: crate::design::Accent,
     pub icon_theme: String,
     pub show_hidden: bool,
     pub dual: bool,
@@ -192,6 +198,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "dark".into(),
+            style: crate::design::Style::Finder,
+            accent: crate::design::Accent::Auto,
             icon_theme: "default".into(),
             show_hidden: false,
             dual: true,
@@ -602,6 +610,7 @@ impl Persist {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     General,
+    Appearance,
     Remotes,
     Cloud,
     Profiles,
@@ -611,8 +620,69 @@ pub enum Page {
     Keyboard,
 }
 
-/// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles, Icons, Library,
-/// Devices and Keyboard pages.
+/// Settings → Appearance (Task 64): the style and the accent color. The look follows
+/// the settings on the next frame (`design::sync`).
+fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
+    use crate::design::{Accent, Style};
+    egui::Grid::new("settings-appearance")
+        .num_columns(2)
+        .spacing([crate::design::space::XL, crate::design::space::M])
+        .show(ui, |ui| {
+            ui.label("Style");
+            ui.horizontal(|ui| {
+                for style in Style::ALL {
+                    ui.radio_value(&mut s.style, style, style.label());
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.weak(match s.style {
+                Style::Finder => "Finder's spacing, corners and type; the Finder colors on the dark and light themes",
+                Style::Classic => "Keel's original look: egui's spacing and type, the theme's colors",
+            });
+            ui.end_row();
+            let label = ui.label("Accent color");
+            ui.horizontal(|ui| {
+                let combo = egui::ComboBox::from_id_salt("settings-accent")
+                    .selected_text(s.accent.label())
+                    .show_ui(ui, |ui| {
+                        let custom = match s.accent {
+                            Accent::Custom(c) => c,
+                            _ => crate::design::BLUE,
+                        };
+                        for accent in [
+                            Accent::Auto,
+                            Accent::System,
+                            Accent::Theme,
+                            Accent::Custom(custom),
+                        ] {
+                            let on = std::mem::discriminant(&s.accent)
+                                == std::mem::discriminant(&accent);
+                            if ui.selectable_label(on, accent.label()).clicked() && !on {
+                                s.accent = accent;
+                            }
+                        }
+                    });
+                let _ = combo.response.labelled_by(label.id);
+                if let Accent::Custom(c) = &mut s.accent {
+                    let _ = egui::color_picker::color_edit_button_srgb(ui, c)
+                        .named("Custom accent color");
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.weak(match s.accent {
+                Accent::Auto => "The system accent in Finder-style on the dark and light themes, else the theme's",
+                Accent::System => "The accent color of the system (blue where it has none)",
+                Accent::Theme => "The color theme's accent",
+                Accent::Custom(_) => "Made darker or lighter where it would be hard to read",
+            });
+            ui.end_row();
+        });
+}
+
+/// The Settings window (Ctrl+,): General, Appearance, Remotes, Cloud, Profiles, Icons,
+/// Library, Devices and Keyboard pages.
 /// Returns true when the theme was changed.
 #[allow(clippy::too_many_arguments)]
 pub fn window(
@@ -648,6 +718,7 @@ pub fn window(
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut remotes.page, Page::General, "General");
+                ui.selectable_value(&mut remotes.page, Page::Appearance, "Appearance");
                 ui.selectable_value(&mut remotes.page, Page::Remotes, "Remotes");
                 ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
                 ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
@@ -665,6 +736,7 @@ pub fn window(
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
                     Page::Devices => crate::devices::settings_page(ui, s, devices),
                     Page::Keyboard => keyboard.page(ui, &mut s.keymap),
+                    Page::Appearance => appearance_page(ui, s),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
@@ -813,6 +885,46 @@ mod tests {
         // Old files without the table still load.
         let old: Settings = toml::from_str("theme = 'light'").unwrap();
         assert!(old.open_with.recent.is_empty());
+    }
+
+    /// Task 64: new profiles start in Finder-style, a config.toml from before the setting
+    /// keeps Classic, and the style and accent round-trip through the profile's file.
+    #[test]
+    fn style_and_accent_round_trip_through_the_profile() {
+        use crate::design::{Accent, Style};
+        let _env = super::TEST_ENV.lock();
+        let _restore = super::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KEEL_CONFIG_DIR", dir.path());
+        let (fresh, _) = Settings::load();
+        assert_eq!((fresh.style, fresh.accent), (Style::Finder, Accent::Auto));
+        let old: Settings = toml::from_str("theme = 'light'").unwrap();
+        assert_eq!(
+            old.style,
+            Style::Classic,
+            "an existing profile keeps its look"
+        );
+        std::fs::create_dir_all(Settings::path().parent().unwrap()).unwrap();
+        std::fs::write(Settings::path(), "theme = \"light\"\n").unwrap();
+        assert_eq!(Settings::load().0.style, Style::Classic);
+        for (style, accent) in [
+            (Style::Classic, Accent::Custom([1, 2, 3])),
+            (Style::Finder, Accent::System),
+            (Style::Finder, Accent::Theme),
+        ] {
+            let s = Settings {
+                style,
+                accent,
+                ..Settings::default()
+            };
+            s.save_to(&Settings::path()).unwrap();
+            let (back, notice) = Settings::load();
+            assert_eq!(notice, None);
+            assert_eq!((back.style, back.accent), (style, accent));
+        }
+        let text = std::fs::read_to_string(Settings::path()).unwrap();
+        assert!(text.contains("style = \"finder\""), "{text}");
+        assert!(text.contains("accent = \"theme\""), "{text}");
     }
 
     #[test]

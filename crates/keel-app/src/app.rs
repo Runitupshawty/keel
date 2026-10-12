@@ -232,6 +232,8 @@ impl App {
         }
         let s = &mut self.state;
         crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
+        crate::design::sync(ctx, &s.settings, &s.theme); // Task 64: style and accent
+        let shown = crate::design::shown(ctx, &s.theme); // the theme as it is drawn
         sync_zoom(ctx, &mut s.settings.ui_scale, &mut self.seen_zoom);
         s.drain();
         s.tick();
@@ -296,7 +298,7 @@ impl App {
                 let current = s.panes[s.active].tab().dir.clone();
                 let archives = s.open_archives();
                 s.sidebar
-                    .ui(ui, &s.theme, &current, &archives, &s.library, &mut acts);
+                    .ui(ui, &shown, &current, &archives, &s.library, &mut acts);
                 out.extend(acts.into_iter().map(|a| (s.active, a)));
             });
         crate::a11y::group_end(ctx, "sidebar");
@@ -345,13 +347,13 @@ impl App {
                 });
                 ui.separator();
                 match s.preview.tab {
-                    PanelTab::Preview => s.preview.ui(ui, s.theme.muted()),
+                    PanelTab::Preview => s.preview.ui(ui, shown.muted()),
                     PanelTab::Inspector => {
                         let mut acts = Vec::new();
                         crate::inspector::ui(
                             ui,
                             &mut s.preview.inspector,
-                            s.theme.muted(),
+                            shown.muted(),
                             &mut acts,
                         );
                         out.extend(acts.into_iter().map(|a| (s.active, a)));
@@ -464,7 +466,7 @@ impl App {
                     let mut acts = Vec::new();
                     let banner = s.remotes.banner(s.panes[p].tab());
                     let mut cx = ViewCx {
-                        theme: &s.theme,
+                        theme: &shown,
                         show_hidden: s.show_hidden,
                         thumbs: &mut s.thumbs,
                         active: s.dual && s.active == p,
