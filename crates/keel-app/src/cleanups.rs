@@ -1163,6 +1163,7 @@ mod tests {
             ]
         );
         let files_only = UserCleanup {
+            files: true,
             folders: false,
             ..folders_only.clone()
         };
