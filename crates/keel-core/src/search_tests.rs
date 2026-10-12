@@ -1116,3 +1116,20 @@ fn bughunt_invalid_calendar_days_are_rejected() {
     assert!(LibraryQuery::parse_at("dm:2000-02-29", NOW, 0).is_ok());
     assert!(LibraryQuery::parse_at("dm:1900-02-29", NOW, 0).is_err());
 }
+
+#[test]
+fn bughunt_photo_kind_excludes_video_extensions() {
+    let f = media_fixture();
+    f.a.store
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE media SET duration_ms = NULL WHERE record = ?1",
+            [id_of(&f.a, "delta.mp4").unwrap()],
+        )
+        .unwrap();
+    assert_eq!(
+        sorted(&f.lib, "kind:photo"),
+        ["alpha.jpg", "bravo.jpg", "charlie.jpg", "echo.jpg"]
+    );
+}

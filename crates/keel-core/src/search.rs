@@ -546,7 +546,11 @@ impl LibraryQuery {
     /// when none can match.
     fn extensions(&self) -> Option<Vec<&str>> {
         let mut ext: Vec<&str> = self.ext.iter().map(String::as_str).collect();
-        if let Some(k) = self.kind.filter(|k| !k.extensions().is_empty()) {
+        let kinds = self
+            .kind
+            .into_iter()
+            .chain(self.photo.then_some(KindFilter::Image));
+        for k in kinds.filter(|k| !k.extensions().is_empty()) {
             if ext.is_empty() {
                 ext = k.extensions().to_vec();
             } else {
