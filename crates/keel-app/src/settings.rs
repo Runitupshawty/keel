@@ -80,6 +80,9 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[search_index]`: Settings → Search, the folders and volumes Keel's own index
+    /// walks and its Exclude rules.
+    pub search_index: keel_search::IndexSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +217,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            search_index: Default::default(),
         }
     }
 }
@@ -590,6 +594,7 @@ pub enum Page {
     Icons,
     Library,
     Devices,
+    Search,
 }
 
 /// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
@@ -609,6 +614,7 @@ pub fn window(
     devices: &crate::devices::Devices, // Task 36
     themes: &[(String, String)], // Task 47: (name, label)
     color_themes: &mut crate::color_theme::ColorThemes,
+    search: &mut crate::search_settings::SearchPage,
 ) -> bool {
     let mut theme_changed = false;
     crate::a11y::esc_closes(ctx, "Settings", open);
@@ -625,6 +631,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
                 ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
+                ui.selectable_value(&mut remotes.page, Page::Search, "Search");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -634,6 +641,7 @@ pub fn window(
                     Page::Icons => icons.settings_page(ui, s),
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
                     Page::Devices => crate::devices::settings_page(ui, s, devices),
+                    Page::Search => crate::search_settings::settings_page(ui, s, search),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

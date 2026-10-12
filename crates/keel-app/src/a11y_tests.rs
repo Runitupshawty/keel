@@ -148,7 +148,7 @@ fn every_control_has_a_name_and_a_role() {
     press(&mut h, Modifiers::NONE, Key::F3);
     press(&mut h, Modifiers::COMMAND, Key::Comma);
     for page in [
-        "General", "Remotes", "Cloud", "Profiles", "Icons", "Library", "Devices",
+        "General", "Remotes", "Cloud", "Profiles", "Icons", "Library", "Devices", "Search",
     ] {
         h.query_all_by_label(page).last().unwrap().click();
         h.run_steps(3);

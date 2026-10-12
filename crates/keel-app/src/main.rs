@@ -40,6 +40,7 @@ mod profiles;
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
+mod search_settings;
 mod search_tab;
 mod session;
 mod settings;
