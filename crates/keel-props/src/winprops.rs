@@ -129,10 +129,9 @@ fn convert(v: &windows::core::PROPVARIANT) -> Prop {
         VT_FILETIME => {
             // SAFETY: for VT_FILETIME the union holds a FILETIME (two u32, low first).
             let ticks = unsafe { std::ptr::read_unaligned(raw.add(8).cast::<u64>()) };
-            if ticks == 0 {
-                Prop::Unknown
-            } else {
-                Prop::Date(filetime_to_system_time(ticks))
+            match filetime_to_system_time(ticks) {
+                Some(t) if ticks != 0 => Prop::Date(t),
+                _ => Prop::Unknown,
             }
         }
         t if t & VT_VECTOR != 0 => match string() {

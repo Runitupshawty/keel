@@ -174,7 +174,10 @@ impl<'a> FileProps<'a> {
     /// See [`get`].
     pub fn get(&mut self, name: &str) -> Result<Prop, Error> {
         if let Some(f) = functions::lookup(name) {
-            self.meta()?;
+            // A broken symlink still has a target: only the shortcut reader may skip this.
+            if f.reader != Reader::ShortcutTarget {
+                self.meta()?;
+            }
             let own = self.own(f)?;
             if !own.is_unknown() {
                 return Ok(own);

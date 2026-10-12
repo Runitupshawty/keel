@@ -126,7 +126,9 @@ fn rva_to_offset(sections: &[Section], rva: u32) -> Option<u64> {
     sections.iter().find_map(|s| {
         let span = s.vsize.max(s.raw_size);
         let delta = rva.checked_sub(s.va)?;
-        (delta < span && delta < s.raw_size).then(|| u64::from(s.raw_ptr) + u64::from(delta))
+        // The loader rounds PointerToRawData down to the 512-byte file alignment.
+        (delta < span && delta < s.raw_size)
+            .then(|| u64::from(s.raw_ptr & !0x1ff) + u64::from(delta))
     })
 }
 

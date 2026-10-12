@@ -89,7 +89,7 @@ impl AudioInfo {
             Field::AlbumArtist => &mut self.album_artist,
             Field::Genre => {
                 if self.genre.is_none() {
-                    self.genre = Some(genre_name(&value));
+                    self.genre = Some(genre_names(&value));
                 }
                 return;
             }
@@ -177,7 +177,7 @@ pub fn read<R: Read + Seek>(r: &mut R, len: u64) -> io::Result<AudioInfo> {
     let mut audio_start = 0u64;
     if head.starts_with(b"ID3") && head.len() >= 10 {
         let size = synchsafe(&head[6..10]).unwrap_or(0);
-        let footer = if head[5] & 0x10 != 0 { 10 } else { 0 };
+        let footer = if head[3] == 4 && head[5] & 0x10 != 0 { 10 } else { 0 };
         audio_start = 10 + u64::from(size) + footer;
         let tag = read_at(r, len, 0, (audio_start as usize).min(MAX_TAG_BYTES))?;
         parse_id3v2(&tag, &mut info);
@@ -379,8 +379,24 @@ pub fn parse_id3v2(tag: &[u8], info: &mut AudioInfo) {
         let size = match major {
             2 => be_u24(&h[3..6]),
             3 => be_u32(&h[4..8]).unwrap_or(0) as usize,
-            // ID3v2.4 sizes are synchsafe; some writers store plain integers.
-            _ => synchsafe(&h[4..8]).unwrap_or_else(|| be_u32(&h[4..8]).unwrap_or(0)) as usize,
+            // ID3v2.4 sizes are synchsafe; some writers store plain integers. Take the plain
+            // reading when only it lands on the next frame (or padding, or the end).
+            _ => {
+                let plain = be_u32(&h[4..8]).unwrap_or(0) as usize;
+                match synchsafe(&h[4..8]) {
+                    Some(safe) => {
+                        let safe = safe as usize;
+                        if !frame_boundary(body, pos + header + safe)
+                            && frame_boundary(body, pos + header + plain)
+                        {
+                            plain
+                        } else {
+                            safe
+                        }
+                    }
+                    None => plain,
+                }
+            }
         };
         let start = pos + header;
         let Some(end) = start.checked_add(size).filter(|&e| e <= body.len()) else {
@@ -433,6 +449,21 @@ pub fn parse_id3v2(tag: &[u8], info: &mut AudioInfo) {
     }
 }
 
+/// True when `at` is where an ID3v2.3/2.4 frame may start: the end of the tag, padding, or
+/// a four-character frame id.
+fn frame_boundary(body: &[u8], at: usize) -> bool {
+    match body.get(at..) {
+        None => false,
+        Some([]) | Some([0, ..]) => true,
+        Some(rest) => {
+            rest.len() >= 4
+                && rest[..4]
+                    .iter()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        }
+    }
+}
+
 /// Parses an ID3v1 tag (the last 128 bytes of the file); fills only what is still unset.
 pub fn id3v1(tail: &[u8], info: &mut AudioInfo) {
     if tail.len() != 128 || !tail.starts_with(b"TAG") {
@@ -458,7 +489,19 @@ pub fn id3v1(tail: &[u8], info: &mut AudioInfo) {
     }
 }
 
-/// `(13)`, `13`, `(13)Pop`, `(RX)` or a name, as a genre name.
+/// One or several genres (`17; Rock`, `(17)(18)`) as names.
+fn genre_names(raw: &str) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for v in raw.split("; ").map(str::trim).filter(|v| !v.is_empty()) {
+        let name = genre_name(v);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join("; ")
+}
+
+/// `(13)`, `13`, `(13)(18)`, `(13)Pop`, `(RX)` or a name, as a genre name.
 fn genre_name(raw: &str) -> String {
     let lookup = |n: &str| -> Option<String> {
         match n {
@@ -469,16 +512,30 @@ fn genre_name(raw: &str) -> String {
                 .map(|s| (*s).to_owned()),
         }
     };
-    if let Some(rest) = raw.strip_prefix('(') {
-        if let Some((n, after)) = rest.split_once(')') {
-            let after = after.trim();
-            if !after.is_empty() {
-                return after.to_owned();
-            }
-            if let Some(name) = lookup(n) {
-                return name;
-            }
+    // ID3v2.3: `(n)` references, possibly several, then optional refinement text (which
+    // wins); `((` starts literal text.
+    let mut rest = raw;
+    let mut refs: Vec<String> = Vec::new();
+    while let Some(r) = rest.strip_prefix('(') {
+        if r.starts_with('(') {
+            break;
         }
+        let Some((n, after)) = r.split_once(')') else {
+            break;
+        };
+        let Some(name) = lookup(n) else {
+            break;
+        };
+        refs.push(name);
+        rest = after;
+    }
+    let text = rest.trim();
+    if !refs.is_empty() {
+        return if text.is_empty() {
+            refs.join("; ")
+        } else {
+            text.strip_prefix('(').unwrap_or(text).to_owned()
+        };
     }
     lookup(raw).unwrap_or_else(|| raw.to_owned())
 }
@@ -624,6 +681,8 @@ struct Frame {
     channels: u16,
     len: usize,
     samples: u32,
+    /// A 16-bit CRC follows the header (protection bit clear).
+    crc: bool,
 }
 
 fn frame_header(h: &[u8]) -> Option<Frame> {
@@ -691,6 +750,7 @@ fn frame_header(h: &[u8]) -> Option<Frame> {
         channels,
         len: len as usize,
         samples,
+        crc: h[1] & 1 == 0,
     })
 }
 
@@ -742,7 +802,7 @@ fn mpeg(scan: &[u8], scan_start: u64, audio_end: u64, info: &mut AudioInfo) {
         (1, _) => 32,
         (_, 1) => 9,
         _ => 17,
-    };
+    } + if f.crc { 2 } else { 0 };
     let frame = &scan[i..scan.len().min(i + f.len)];
     let mut frames = None;
     let mut bytes = None;
@@ -811,10 +871,6 @@ fn flac<R: Read + Seek>(r: &mut R, len: u64, mut pos: u64, info: &mut AudioInfo)
                         if total > 0 {
                             let secs = total as f64 / f64::from(rate);
                             info.length = Some(Duration::from_secs_f64(secs));
-                            info.bitrate = Some(
-                                (len.saturating_sub(pos) as f64 * 8.0 / secs / 1000.0).round()
-                                    as u32,
-                            );
                         }
                     }
                 }
@@ -825,10 +881,15 @@ fn flac<R: Read + Seek>(r: &mut R, len: u64, mut pos: u64, info: &mut AudioInfo)
             }
             _ => {}
         }
+        pos = body_at + size;
         if last {
             break;
         }
-        pos = body_at + size;
+    }
+    // The frames start after the last metadata block (cover art and padding excluded).
+    if let Some(secs) = info.length.map(|d| d.as_secs_f64()).filter(|&s| s > 0.0) {
+        let audio = len.saturating_sub(pos) as f64;
+        info.bitrate = Some((audio * 8.0 / secs / 1000.0).round() as u32);
     }
     Ok(())
 }
@@ -907,9 +968,13 @@ fn wav<R: Read + Seek>(r: &mut R, len: u64, start: u64, info: &mut AudioInfo) ->
         let body_at = pos + 8;
         match &h[..4] {
             b"fmt " => {
-                let f = read_at(r, len, body_at, 16)?;
-                if f.len() == 16 {
-                    let tag = le_u16(&f, 0).unwrap_or(0);
+                let f = read_at(r, len, body_at, size.min(40) as usize)?;
+                if f.len() >= 16 {
+                    let mut tag = le_u16(&f, 0).unwrap_or(0);
+                    if tag == 0xfffe {
+                        // WAVE_FORMAT_EXTENSIBLE: the SubFormat GUID starts with the real tag.
+                        tag = le_u16(&f, 24).unwrap_or(0);
+                    }
                     info.format = Some(match tag {
                         1 => "PCM",
                         3 => "IEEE float",
@@ -1080,7 +1145,57 @@ mod tests {
     }
 
     #[test]
+    fn itunes_plain_frame_sizes_in_v24() {
+        // A 256-byte title whose size is written as a plain integer (00 00 01 00), which
+        // reads as 128 when taken as synchsafe.
+        let mut title = vec![0u8];
+        title.extend(std::iter::repeat_n(b'a', 255));
+        let mut body = b"TIT2".to_vec();
+        body.extend_from_slice(&256u32.to_be_bytes());
+        body.extend_from_slice(&[0, 0]);
+        body.extend_from_slice(&title);
+        body.extend_from_slice(b"TPE1");
+        body.extend_from_slice(&7u32.to_be_bytes());
+        body.extend_from_slice(&[0, 0]);
+        body.extend_from_slice(b"\0Artist");
+        let mut tag = b"ID3\x04\0\0".to_vec();
+        let n = body.len();
+        tag.extend_from_slice(&[0, 0, (n >> 7) as u8 & 0x7f, n as u8 & 0x7f]);
+        tag.extend_from_slice(&body);
+        let mut info = AudioInfo::default();
+        parse_id3v2(&tag, &mut info);
+        assert_eq!(info.title.as_deref().map(str::len), Some(255));
+        assert_eq!(info.artist.as_deref(), Some("Artist"));
+    }
+
+    #[test]
+    fn wav_extensible_reports_the_subformat() {
+        let mut fmt = Vec::new();
+        for v in [0xfffeu16, 2] {
+            fmt.extend_from_slice(&v.to_le_bytes());
+        }
+        fmt.extend_from_slice(&48_000u32.to_le_bytes());
+        fmt.extend_from_slice(&288_000u32.to_le_bytes());
+        for v in [6u16, 24, 22, 24] {
+            fmt.extend_from_slice(&v.to_le_bytes());
+        }
+        fmt.extend_from_slice(&3u32.to_le_bytes());
+        fmt.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+        let mut b = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        b.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        b.extend_from_slice(&fmt);
+        b.extend_from_slice(b"data\0\0\0\0");
+        let a = run(&b);
+        assert_eq!(a.format, Some("PCM"));
+        assert_eq!(a.bits_per_sample, Some(24));
+        assert_eq!(a.channels, Some(2));
+    }
+
+    #[test]
     fn genres() {
+        assert_eq!(genre_names("17; Rock"), "Rock");
+        assert_eq!(genre_names("(17)(18)"), "Rock; Techno");
+        assert_eq!(genre_names("Pop; Rock"), "Pop; Rock");
         assert_eq!(genre_name("(17)"), "Rock");
         assert_eq!(genre_name("17"), "Rock");
         assert_eq!(genre_name("(17)Indie"), "Indie");

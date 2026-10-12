@@ -107,6 +107,18 @@ fn shortcut_targets() {
         }
     }
     assert_eq!(get(&target, "shortcut-target").unwrap(), Prop::Unknown);
+    // A broken symlink still names its target.
+    let dangling = dir.path().join("dangling");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(dir.path().join("gone.txt"), &dangling).is_ok();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(dir.path().join("gone.txt"), &dangling).is_ok();
+    if made {
+        match get(&dangling, "shortcut-target").unwrap() {
+            Prop::Str(t) => assert!(t.ends_with("gone.txt"), "{t}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]

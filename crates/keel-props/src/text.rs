@@ -130,7 +130,11 @@ pub fn stats<R: Read>(mut r: R, cap: u64, cancel: &Cancel) -> Result<TextStats, 
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let n = r.read(&mut buf)?;
+            let n = match r.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
             if n == 0 {
                 break;
             }
@@ -142,7 +146,9 @@ pub fn stats<R: Read>(mut r: R, cap: u64, cancel: &Cancel) -> Result<TextStats, 
             counter.feed(&buf[..n]);
         }
     }
-    if matches!(enc, Encoding::Ascii | Encoding::Utf8) && counter.invalid_utf8 {
+    // A character cut by the end of the file is invalid UTF-8 too.
+    let cut_at_end = !truncated && !counter.carry.is_empty();
+    if matches!(enc, Encoding::Ascii | Encoding::Utf8) && (counter.invalid_utf8 || cut_at_end) {
         enc = Encoding::Ansi;
     } else if enc == Encoding::Ascii && counter.non_ascii {
         enc = Encoding::Utf8;
@@ -352,6 +358,8 @@ mod tests {
             (Encoding::Utf8Bom, Some(2), Some(1))
         );
         assert_eq!(run(b"caf\xe9 au lait\n").encoding, Encoding::Ansi);
+        // A multi-byte character cut by the end of the file.
+        assert_eq!(run(b"caf\xc3").encoding, Encoding::Ansi);
         assert_eq!(run(b"a\0b\0c\x01\x02\0\0").encoding, Encoding::Binary);
         assert_eq!(run(b"a\0b\0c\x01\x02\0\0").lines, None);
 

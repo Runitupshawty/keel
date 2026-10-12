@@ -141,15 +141,22 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-/// A Windows FILETIME (100 ns ticks since 1601-01-01 UTC) as a `SystemTime`.
-pub fn filetime_to_system_time(ticks: u64) -> SystemTime {
+/// A Windows FILETIME (100 ns ticks since 1601-01-01 UTC) as a `SystemTime`, or `None` when
+/// this platform's `SystemTime` cannot hold it.
+pub fn filetime_to_system_time(ticks: u64) -> Option<SystemTime> {
     const EPOCH_DIFF_SECS: u64 = 11_644_473_600;
+    // Windows keeps SystemTime as signed 100 ns ticks: larger values do not fit.
+    if ticks > i64::MAX as u64 {
+        return None;
+    }
     let secs = ticks / 10_000_000;
     let nanos = (ticks % 10_000_000) as u32 * 100;
     if secs >= EPOCH_DIFF_SECS {
-        UNIX_EPOCH + Duration::new(secs - EPOCH_DIFF_SECS, nanos)
+        UNIX_EPOCH.checked_add(Duration::new(secs - EPOCH_DIFF_SECS, nanos))
     } else {
-        UNIX_EPOCH - Duration::new(EPOCH_DIFF_SECS - secs, 0) + Duration::new(0, nanos)
+        UNIX_EPOCH
+            .checked_sub(Duration::new(EPOCH_DIFF_SECS - secs, 0))?
+            .checked_add(Duration::new(0, nanos))
     }
 }
 
@@ -176,9 +183,10 @@ mod tests {
     #[test]
     fn filetime() {
         // 2001-01-01T00:00:00Z
-        let t = filetime_to_system_time(126_227_808_000_000_000);
+        let t = filetime_to_system_time(126_227_808_000_000_000).unwrap();
         assert_eq!(Prop::Date(t).to_string(), "2001-01-01T00:00:00Z");
-        let t = filetime_to_system_time(0);
+        let t = filetime_to_system_time(0).unwrap();
+        assert!(filetime_to_system_time(u64::MAX).is_none());
         assert_eq!(Prop::Date(t).to_string(), "1601-01-01T00:00:00Z");
     }
 
