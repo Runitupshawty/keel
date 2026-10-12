@@ -2,6 +2,23 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Get Info** (the Properties dialog before it) is a Finder-style info window with sections that open and close: General (kind, size, where, created, modified, tags, **Locked**), More Info (the photo and video metadata the library keeps), Name & Extension (rename, with **Hide extension** to edit the name alone), Comments (kept in the library), Open with, Preview and Sharing & Permissions (the Windows access list in Explorer's words, or the Unix owner, group and mode). Several windows can be open at once; Ctrl+Alt+I (Option+Cmd+I) opens one that follows the selection. It works for files, folders, drives (capacity and free space, never walked) and several items (a summary). See [Get Info](docs/files.md#get-info).
+- Tags take one of Finder's eight colors (red, orange, yellow, green, blue, purple, gray, none) in the tag picker, and tagged items show colored dots after their names in the Details, Icons and Columns views. A row of color dots at the end of a file's context menu toggles the tag of that color on the selection. See [Tags and Finder colors](docs/files.md#tags-and-finder-colors).
+- On macOS, the Finder tags (the `com.apple.metadata:_kMDItemUserTags` attribute) of files on this Mac are read and shown with the library's, and tag changes made in Keel are written to them, so tags go both ways between Keel and Finder.
+- Comments on library items in the API: `library.comment` and `library.set_comment` (previewed). See [api.md](docs/api.md).
+- Ctrl+Shift+I also shows the Inspector.
+- A `finder_tags` fuzz target for the reader of the macOS tag attribute ([fuzzing.md](docs/fuzzing.md)).
+
+### Changed
+
+- The context menu's **Properties** is now **Get Info**; Explorer's Properties sheet is behind Get Info's **Windows Security…** button.
+- Source stores are now at version 13 (comments): a store this Keel opened is refused by an older Keel ("newer than this Keel").
+- A new tag's color is one of Finder's eight instead of any color; folder colors keep their palette.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

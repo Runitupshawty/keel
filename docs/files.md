@@ -12,7 +12,8 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Ctrl+Shift+T | Tag picker (library) |
 | Ctrl+Shift+A | Tag assign mode: 1–9 toggle tags on the selection, 0 or Esc leaves (library) |
 | Ctrl+D | Toggle favorite (library) |
-| Ctrl+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)) |
+| Ctrl+I, Ctrl+Shift+I | Inspector: what the library knows about the selected item (see [Inspector](#inspector)) |
+| Ctrl+Alt+I | An info window that follows the selection (see [Get Info](#get-info)) |
 | Ctrl+Shift+O | Open with… (pick an app for the selected files) |
 | Shift+F10 | The Windows menu for the selection (Windows; see [Windows shell menu](#windows-shell-menu)) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
@@ -48,13 +49,36 @@ The preview panel has two tabs, **Preview** and **Inspector**. Ctrl+I (or **Show
 
 The library is asked 150 ms after the selection stops moving, on a background thread, so moving through a list stays quick. With the window attached to keel-daemon the same answer comes through the daemon (`library.inspect`, [api.md](api.md)). Outside the library's sources (or with the library off) the Overview still works and the other sections say **Not in the library**. *First seen* and *last hashed* are recorded from Keel 0.21 on: items indexed before show *not recorded* until they are seen or hashed again, and the history starts with what the operation log holds (tagging is logged from 0.21 on).
 
+## Get Info
+
+**Get Info** in a file's, folder's or drive's context menu (or in the command palette, also found as *Properties*) opens an info window for the selection, or for the folder shown when nothing is selected. Several can be open at once, one per item or selection; asking again for the same items brings their window to the front. Ctrl+Alt+I (Option+Cmd+I on macOS) opens one more window that follows the active pane's selection, like Finder's inspector; press it again to close it. Esc closes the window in front. The windows open at the top right of Keel's window and can be moved and resized; each section opens and closes on its header.
+
+- **General**: kind, size (with the exact byte count; a folder's size and *Contains* count its files and subfolders, walked on a background thread), where it is, when it was created and modified, hidden or link, its tags, and **Locked** (the read-only attribute on Windows, no write permission on Unix) for an item on this computer. For a drive: its capacity, available and used space (a drive is never walked). For several items: their count, total size and contents.
+- **Tags** (in General): the item's tags as colored dots and names, a row of the seven Finder colors that toggles each color's tag on the items (see [Tags and Finder colors](#tags-and-finder-colors)), and **Tags…** for the tag picker.
+- **More Info**: the photo and video metadata the library keeps (dimensions, date taken, camera, lens, location, duration, codec, rating, keywords) and the extension.
+- **Name & Extension**: rename the item here (Enter or **Rename**; Ctrl+Z undoes it like any rename). **Hide extension** edits the name without its extension, which is kept; it is a setting of this field, not of the file.
+- **Comments**: a comment kept in the library with the item, so it follows the renames and moves the index records. Items outside the library's sources, and all items while the library is off, have the box disabled with a note saying why. Comments stay on this device (library sync does not carry them) and are in [library backups](library.md).
+- **Open with**: the applications that open the file (Linux and macOS), **Open**, **Use for all .ext files** (remembered as for Open with…), **Other…** to pick a program, and on Windows **Choose app…** (Windows' own chooser).
+- **Preview**: a thumbnail of a picture, else its icon.
+- **Sharing & Permissions**: the owner and who may do what. On Windows each account of the access list with its access in Explorer's words (*Full control*, *Modify*, *Read & write*, *Read & execute*, *Read only*, *Special*), deny entries and inherited ones marked; **Windows Security…** opens Explorer's own Properties sheet. On Linux and macOS the owner, the group and everyone else with *Read & Write*, *Read only*, *Write only (Drop Box)* or *No Access*, and the mode (`drwxr-xr-x (755)`). Get Info only shows permissions; change them with **Attributes…** ([Folder operations](#folder-operations)) or the system's tools.
+
+Get Info works for files and folders on this computer, network shares, SFTP hosts, cloud accounts and inside archives; Open with and Sharing & Permissions show for items on this computer only.
+
+## Tags and Finder colors
+
+Library tags take one of Finder's eight colors: red, orange, yellow, green, blue, purple, gray, or none. The tag picker (Ctrl+Shift+T) offers these eight for a new tag; tags made before keep the color they have, and each is drawn in its own color. Tagged items show up to three colored dots after their names in the Details, Icons and Columns views (a tag without a color has no dot; hover the dots for the tags' names).
+
+The context menu of a file or folder ends with a row of the seven colored dots: click one to put the tag of that color on the selected items, or to take it off when they all have it (a ring marks a color every selected item carries). The dot uses the library tag whose color is closest to it, preferring one named after the color, and makes a tag named after the color (*Red*, *Blue*) when there is none. **Tags…** under the row opens the tag picker. Tags need the item to be in a library source; elsewhere a note says to add the drive to the library.
+
+**macOS.** Tags are also Finder's own: Keel reads the Finder tags of files and folders on this Mac (the `com.apple.metadata:_kMDItemUserTags` attribute) when it lists a folder and shows them as dots next to the library's, and when it sets or clears a tag on a local item it writes the change to the item's Finder tags too, so tags set in Keel show in Finder and tags set in Finder show in Keel. The color dots in the context menu work on files outside the library as well (as Finder tags only). A tag set in Finder is not added to the library by itself: tag the item in Keel to have it in the library's search and sync. Other systems have no file tags of this kind; there tags live in the library.
+
 ## Windows shell menu
 
 On Windows, right-click files on this computer and pick **More options** at the end of Keel's menu, Shift+right-click them, or press Shift+F10, to get the menu Explorer shows: the handlers your installed apps add (archivers, editors, version control), **Send to**, **Open with**, **Share** and the rest. Shift+right-click and Shift+F10 include the extended commands Explorer shows with Shift held, such as **Copy as path**. Shift+F10 opens the menu at the cursor row.
 
 The same commands are in the command palette (Ctrl+Shift+P) while files on this computer are selected, as **Shell: …** entries named by their place in the menu, for example `Shell: Send to > Documents` or `Shell: Open with > Notepad`. Type `Shell:` to list them: the entries are added the first time you type `shell` in the palette (loading the handlers can take a moment), never when it opens or in the background, and they are dropped when it closes. Commands whose menu item has no text (some apps draw their own) are only in the popup.
 
-Keel takes out the commands it has its own version of, so its rules always apply: Delete (Keel's moves to the Recycle Bin and asks first), Rename, Cut, Copy, Paste, Create shortcut and Properties (Keel's Properties dialog, whose **Windows Properties…** button opens Explorer's sheet). The Windows menu works on files and folders in one folder on this computer, network shares included. A name ending in a dot or space is refused: the shell would read it as another file's name (`report.` as `report`), and Keel also checks that the item the shell resolves is the one selected. For files on an SFTP host, a cloud account or a paired device, inside an archive, in the library view, or search results from several folders, **More options** is greyed and says why: a handler would only act on a temporary copy.
+Keel takes out the commands it has its own version of, so its rules always apply: Delete (Keel's moves to the Recycle Bin and asks first), Rename, Cut, Copy, Paste, Create shortcut and Properties (Keel's [Get Info](#get-info) window, whose **Windows Security…** button opens Explorer's sheet). The Windows menu works on files and folders in one folder on this computer, network shares included. A name ending in a dot or space is refused: the shell would read it as another file's name (`report.` as `report`), and Keel also checks that the item the shell resolves is the one selected. For files on an SFTP host, a cloud account or a paired device, inside an archive, in the library view, or search results from several folders, **More options** is greyed and says why: a handler would only act on a temporary copy.
 
 The commands come from shell extensions, small programs other apps install into Explorer, and they run inside Keel as they run inside Explorer. A badly written one that crashes closes Keel's window, and one that hangs freezes it until it returns. That is why Keel builds the menu only when you ask for it. If a command misbehaves, the app that added it is the one to update or remove. macOS and Linux have no such menu, so the entry is not shown there.
 
