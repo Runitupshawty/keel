@@ -651,14 +651,14 @@ fn remove_empty_without_a_trash_warns_and_removes_folder_by_folder() {
     let op = Op::arrange(FolderOp::RemoveEmpty { folder: at("") }, OnConflict::Skip);
     let plan = validate_preview_execute(&lib, op.clone()).unwrap();
     assert!(
-        plan.warnings.contains(&Warning::Permanent { path: at("/a") }),
+        plan.warnings
+            .contains(&Warning::Permanent { path: at("/a") }),
         "{:?}",
         plan.warnings
     );
     let headline = plan.headline().unwrap();
     assert!(
-        headline.contains("deleted for good")
-            && !headline.contains(keel_vfs::trashbin::label()),
+        headline.contains("deleted for good") && !headline.contains(keel_vfs::trashbin::label()),
         "{headline}"
     );
     let info = run(&lib, op);

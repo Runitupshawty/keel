@@ -224,8 +224,20 @@ pub fn shell_of(program: &str) -> Shell {
 
 /// Shells whose `-c` script Keel quotes values for (POSIX single quotes).
 const POSIX_SHELLS: &[&str] = &[
-    "sh", "bash", "rbash", "zsh", "dash", "ksh", "ksh93", "mksh", "pdksh", "lksh", "ash",
-    "yash", "posh", "busybox-sh",
+    "sh",
+    "bash",
+    "rbash",
+    "zsh",
+    "dash",
+    "ksh",
+    "ksh93",
+    "mksh",
+    "pdksh",
+    "lksh",
+    "ash",
+    "yash",
+    "posh",
+    "busybox-sh",
 ];
 
 /// Shells with other quoting rules: values are refused in their `-c` script.
@@ -331,7 +343,9 @@ fn puts(words: &[String]) -> Vec<Put> {
         }
         if name == "flock" {
             // `flock … -c "…"` runs the string through sh -c.
-            if let Some(j) = (i + 1..words.len()).find(|&j| words[j] == "-c" || words[j] == "--command") {
+            if let Some(j) =
+                (i + 1..words.len()).find(|&j| words[j] == "-c" || words[j] == "--command")
+            {
                 if j + 1 < put.len() {
                     put[j + 1] = Put::Posix;
                 }
@@ -341,12 +355,18 @@ fn puts(words: &[String]) -> Vec<Put> {
         if JOINERS.contains(&name) {
             if name == "wsl" {
                 // `wsl -e` / `--exec` runs the rest directly: keep looking after it.
-                if let Some(j) = (i + 1..words.len()).find(|&j| words[j] == "-e" || words[j] == "--exec") {
+                if let Some(j) =
+                    (i + 1..words.len()).find(|&j| words[j] == "-e" || words[j] == "--exec")
+                {
                     i = j + 1;
                     continue;
                 }
             }
-            refuse_after(&mut put, i, &format!("{name} joins its arguments into a command line for a shell"));
+            refuse_after(
+                &mut put,
+                i,
+                &format!("{name} joins its arguments into a command line for a shell"),
+            );
             return put;
         }
         i += 1;
@@ -379,7 +399,11 @@ fn posix_script(words: &[String], i: usize) -> Option<usize> {
         }
         if w.starts_with("--") {
             // Long options; two take a value.
-            j += if matches!(w, "--rcfile" | "--init-file") { 2 } else { 1 };
+            j += if matches!(w, "--rcfile" | "--init-file") {
+                2
+            } else {
+                1
+            };
             continue;
         }
         let letters = &w[1..];
@@ -663,7 +687,9 @@ fn cmd_script(template: &str, target: &Target) -> Result<String, String> {
     let mut parts = Vec::new();
     for (word, span) in &words[at + 1..] {
         parts.push(if has_placeholder(word) {
-            let value = substitute(word, target, &|v| check_cmd(v, delayed).map(|()| v.to_owned()))?;
+            let value = substitute(word, target, &|v| {
+                check_cmd(v, delayed).map(|()| v.to_owned())
+            })?;
             quote_cmd(&value)
         } else if word.contains('%') {
             let value = substitute(word, target, &|v| Ok(v.to_owned()))?;
@@ -1544,7 +1570,9 @@ mod tests {
         let e = expand(r#"cmd /C "C:\Program Files\Tool\tool.exe" %p"#, &t).unwrap();
         assert_eq!(
             e.raw.as_deref(),
-            Some(r#"/d /v:off /s /C ""C:\Program Files\Tool\tool.exe" "C:\d\x & calc & (1) ^ y.txt"""#)
+            Some(
+                r#"/d /v:off /s /C ""C:\Program Files\Tool\tool.exe" "C:\d\x & calc & (1) ^ y.txt"""#
+            )
         );
         // `!` is plain text with delayed expansion off; refused once /v:on is typed.
         let bang = file(r"C:\d\Report!x!final.txt", "n", r"C:\d", "txt");
@@ -1763,7 +1791,10 @@ mod tests {
             let t = file(v, "n", "/d", "");
             let e = expand(template, &t).unwrap_or_else(|e| panic!("{template}: {e}"));
             let script = split_unix(&e.argv[at]).unwrap();
-            assert!(script.iter().any(|w| w == v), "{template} {v:?}: {script:?}");
+            assert!(
+                script.iter().any(|w| w == v),
+                "{template} {v:?}: {script:?}"
+            );
         }
     }
 

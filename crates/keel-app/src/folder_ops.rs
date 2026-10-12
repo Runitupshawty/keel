@@ -259,7 +259,10 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
             conflict_choice(ui, &mut d.conflict);
         }
         Kind::RemoveEmpty => {
-            let local = d.targets.first().is_some_and(|t| t.to_local_path().is_some());
+            let local = d
+                .targets
+                .first()
+                .is_some_and(|t| t.to_local_path().is_some());
             ui.label(if local {
                 format!(
                     "Move every empty folder below {one} to the {}: folders holding no files                      and no links, at any depth. The preview lists them.",
