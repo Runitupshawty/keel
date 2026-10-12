@@ -287,8 +287,10 @@ fn label_for(text: &str, mac: bool) -> String {
 /// Task 76: whether Keel itself uses exactly this key by default (a bookmark may not take
 /// it): the default keymap's keys, the moving keys included.
 pub fn is_builtin(mods: egui::Modifiers, key: Key) -> bool {
-    let keys = crate::keymap::Keymap::default().bindings();
-    keys.main().any(|b| b.chord.key == key && b.mods() == mods)
+    crate::keymap::Keymap::default()
+        .bindings()
+        .main()
+        .any(|b| b.chord.key == key && b.mods() == mods)
 }
 
 /// A search tab's keys (`keymap::Scope::Search`; by default Everything's toggles Ctrl+I,

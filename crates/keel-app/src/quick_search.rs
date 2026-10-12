@@ -61,6 +61,7 @@ impl QuickSearch {
         s.searcher = parent.searcher.clone();
         s.search_reason = parent.search_reason.clone();
         s.theme = parent.theme.clone();
+        let keys = parent.keys.clone();
         s.settings.always_on_top = parent.settings.always_on_top;
         ctx.show_viewport_immediate(
             id(),
@@ -90,7 +91,7 @@ impl QuickSearch {
                 s.tick();
                 let mut actions = Vec::new();
                 let keys_on = !ctx.is_context_menu_open() && !s.settings.omissions.manage;
-                actions.extend(crate::keys::actions_with_terminal(ctx, keys_on, false));
+                actions.extend(crate::keys::actions_with_terminal(ctx, keys_on, false, &keys));
                 egui::CentralPanel::default().show(ctx, |ui| {
                     // No backend picker, chips, sidebar, tab strip or file-manager toolbar.
                     let pane = &mut s.panes[0];

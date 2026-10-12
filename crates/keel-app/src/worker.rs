@@ -400,6 +400,13 @@ mod tests {
     use keel_vfs::Kind;
     use std::sync::atomic::AtomicBool;
 
+    fn q(text: &str) -> Query {
+        Query {
+            text: text.into(),
+            ..Query::default()
+        }
+    }
+
     fn entry(name: &str) -> Entry {
         let dir = VPath::local(std::env::temp_dir());
         crate::tab::test_entry(&dir, name, Kind::File, 1)
@@ -495,7 +502,8 @@ mod tests {
         omissions.add(vec![keel_vfs::VPath::local("/x/later.txt")], true);
         for (id, show) in [(1, false), (2, true)] {
             omissions.show_omitted = show;
-            worker.search(Arc::new(Fixed), "x".into(), id, 0, omissions.filter());
+            let applied = crate::search_filters::Applied::default();
+            worker.search(Arc::new(Fixed), q("x"), applied, omissions.filter(), id, 0);
             let names = match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
                 Msg::Search { id: got, result } => {
                     assert_eq!(got, id);
@@ -532,6 +540,11 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
+        let search = |text: &str, id: u64, replaces: u64| {
+            let (applied, omissions) = (Default::default(), Default::default());
+            worker.search(slow.clone(), q(text), applied, omissions, id, replaces)
+        };
+        search("a", 1, 0);
         // Wait until "a" is really running (a slow machine may not have scheduled the
         // worker yet; a later query for the same tab would then supersede it).
         let until = std::time::Instant::now() + Duration::from_secs(5);
@@ -543,6 +556,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
+        search("ab", 2, 1);
+        search("x", 3, 0);
+        search("abc", 4, 2);
         let mut answered = Vec::new();
         while answered.len() < 3 {
             match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {

@@ -1567,7 +1567,7 @@ mod tests {
             assert!(moves.contains(&(Modifiers::NONE, *key, Action::Move(*nav, false))));
         }
         // The same window-level keys work from a text box.
-        let mut typing: Vec<Action> = b
+        let typing: Vec<Action> = b
             .main()
             .filter(|k| k.typing)
             .map(|k| k.action.clone())
