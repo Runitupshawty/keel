@@ -295,10 +295,11 @@ pub fn ui(
                     Col::Copies => ("Copies", None),
                     Col::Tags => ("Tags", None),
                 };
-                let mut menu_on: Option<egui::Response> = None;
-                let (_, cell) = header.col(|ui| {
+                header.col(|ui| {
                     let Some(key) = key.filter(|_| !sizes) else {
-                        let r = ui.strong(label);
+                        let r = ui.add(
+                            egui::Label::new(egui::RichText::new(label).strong()).sense(Sense::CLICK),
+                        );
                         let r = match c {
                             Col::OfUsed => r.on_hover_text(
                                 "Share of the space used on this drive (the drive's own numbers)",
@@ -309,7 +310,9 @@ pub fn ui(
                             ),
                             _ => r,
                         };
-                        menu_on = Some(r);
+                        if !sizes {
+                            header_chooser(ui, &r, list, lib_open.then_some(&mut *tags_setting));
+                        }
                         return;
                     };
                     let arrow = match sort {
@@ -328,17 +331,10 @@ pub fn ui(
                     if r.clicked() {
                         sort_click = Some(key);
                     }
-                    menu_on = Some(r);
-                });
-                // Task 66: right-click on the header chooses the columns (not in Sizes).
-                if !sizes {
-                    for r in [Some(cell), menu_on].into_iter().flatten() {
-                        r.context_menu(|ui| {
-                            let tags = lib_open.then_some(&mut *tags_setting);
-                            list_view::header_menu(ui, list, tags)
-                        });
+                    if !sizes {
+                        header_chooser(ui, &r, list, lib_open.then_some(&mut *tags_setting));
                     }
-                }
+                });
             }
         })
         .body(|body| {
@@ -720,6 +716,31 @@ fn triangle(ui: &mut egui::Ui, open: bool, color: egui::Color32) -> egui::Respon
         egui::Stroke::NONE,
     ));
     r
+}
+
+/// Right-click on a column header opens the column chooser below it. A popup, not
+/// `Response::context_menu`: that one adds a second focusable interaction to the header
+/// button, which breaks Shift+Tab through the headers.
+fn header_chooser(
+    ui: &egui::Ui,
+    r: &egui::Response,
+    list: &mut crate::list_view::ListOptions,
+    tags: Option<&mut bool>,
+) {
+    let id = r.id.with("keel-header-chooser");
+    if r.secondary_clicked() {
+        ui.memory_mut(|m| m.open_popup(id));
+    }
+    egui::popup_below_widget(
+        ui,
+        id,
+        r,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(190.0);
+            crate::list_view::header_menu(ui, list, tags)
+        },
+    );
 }
 
 /// A group header's text: the group and how many items it has.

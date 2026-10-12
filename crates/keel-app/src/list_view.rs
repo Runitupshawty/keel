@@ -708,7 +708,7 @@ pub fn header_menu(ui: &mut egui::Ui, list: &mut ListOptions, tags: Option<&mut 
     let text = format!("View Options… ({})", crate::keys::shortcut_label("Ctrl+J"));
     if ui.button(text).clicked() {
         toggle_options(ui.ctx());
-        ui.close_menu();
+        ui.memory_mut(|m| m.close_popup());
     }
 }
 
