@@ -828,7 +828,7 @@ pub(crate) mod tests {
         };
         let mut c = client(&mock);
         // This process sees drive C: as another volume (serial 8): not taken.
-        let err = c.read_mft(start(8)).unwrap_err();
+        let err = c.read_mft(start(8)).err().unwrap();
         assert!(err.to_string().contains("nothing was read"), "{err}");
         assert!(!c.broken(), "a well-formed stream is not a protocol error");
     }
@@ -837,7 +837,7 @@ pub(crate) mod tests {
     fn a_service_that_cannot_read_the_volume_is_not_a_protocol_error() {
         // It refuses before any frame: an error answer with the Windows code.
         let mut c = client(&Mock::default());
-        let err = c.read_mft(start(7)).unwrap_err();
+        let err = c.read_mft(start(7)).err().unwrap();
         assert_eq!(err.raw_os_error(), Some(5));
         assert!(!c.broken());
         // It starts the volume and reports that the read failed.
@@ -853,7 +853,7 @@ pub(crate) mod tests {
             ..Mock::default()
         };
         let mut c = client(&failed);
-        let err = c.read_mft(start(7)).unwrap_err();
+        let err = c.read_mft(start(7)).err().unwrap();
         assert!(err.to_string().contains("cannot open the volume"), "{err}");
         assert!(!c.broken());
         assert!(c.query_journal('C').is_ok());
@@ -895,10 +895,11 @@ pub(crate) mod tests {
             assert!(c.broken(), "{what}");
         }
         // A response of another kind in the middle of the stream.
-        let mut c = client(&Mock {
+        let answer = Mock {
             frames: vec![write_response(&Response::Volumes(vec![]))],
             ..Mock::default()
-        });
+        };
+        let mut c = client(&answer);
         assert!(c.read_mft(start(7)).is_err());
         assert!(c.broken());
     }
