@@ -103,7 +103,11 @@ pub fn ui(
         strip.top(),
         ui.visuals().widgets.noninteractive.bg_stroke,
     );
-    let mut strip_ui = ui.new_child(UiBuilder::new().max_rect(strip).id_salt(("gallery-strip", id)));
+    let mut strip_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(strip)
+            .id_salt(("gallery-strip", id)),
+    );
     strip_ui.set_clip_rect(strip);
     thumbnails(&mut strip_ui, id, tab, cx, out);
     ui.painter().vline(
@@ -133,7 +137,11 @@ fn big_preview(
 ) {
     let stage = ui.max_rect();
     let open = |ui: &mut egui::Ui, out: &mut Vec<Action>| {
-        let r = ui.interact(stage, egui::Id::new(("keel-gallery-stage", id)), Sense::click());
+        let r = ui.interact(
+            stage,
+            egui::Id::new(("keel-gallery-stage", id)),
+            Sense::click(),
+        );
         crate::a11y::not_a_stop(&r);
         if r.double_clicked() {
             out.push(Action::Enter);
@@ -163,12 +171,17 @@ fn big_preview(
                 // Rendered for the stage (a PDF page sharp at this width).
                 panel.width_px = (stage.width() * ui.ctx().pixels_per_point()).round() as u32;
             }
-            let picture = matches!(panel.current, Some(Preview::Image(_) | Preview::Video { .. }));
+            let picture = matches!(
+                panel.current,
+                Some(Preview::Image(_) | Preview::Video { .. })
+            );
             match (&panel.tex, picture) {
                 (Some(tex), true) => {
                     open(ui, out);
                     let size = tex.size_vec2() / ui.ctx().pixels_per_point();
-                    let scale = (stage.width() / size.x).min(stage.height() / size.y).min(1.0);
+                    let scale = (stage.width() / size.x)
+                        .min(stage.height() / size.y)
+                        .min(1.0);
                     egui::Image::new((tex.id(), size))
                         .paint_at(ui, Rect::from_center_size(stage.center(), size * scale));
                     if let Some(Preview::Video { duration_s, .. }) = &panel.current {
@@ -186,7 +199,10 @@ fn big_preview(
             }
         }
         // Not this pane's preview (the other pane has the keys): the thumbnail, or the icon.
-        _ => match cx.thumbs.get_sized(e, crate::view_grid::thumb_bucket(side * 2.0)) {
+        _ => match cx
+            .thumbs
+            .get_sized(e, crate::view_grid::thumb_bucket(side * 2.0))
+        {
             Some((tex, size)) => {
                 open(ui, out);
                 let size = size / ui.ctx().pixels_per_point();
@@ -312,7 +328,9 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                         Some(Preview::Pdf { pages, .. }) => {
                             row(ui, "Pages", &pages.to_string());
                         }
-                        Some(Preview::Text { language, lines, .. }) => {
+                        Some(Preview::Text {
+                            language, lines, ..
+                        }) => {
                             row(ui, "Text", &format!("{language}, {} lines", lines.len()));
                         }
                         _ => {}
@@ -343,7 +361,12 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                 );
             }
             if crate::jobs::is_archive_file(e) {
-                action(ui, "Extract here", "Extract next to the archive", Action::ExtractHere);
+                action(
+                    ui,
+                    "Extract here",
+                    "Extract next to the archive",
+                    Action::ExtractHere,
+                );
             }
             // Zips are made in local folders only (not inside an archive or on a remote).
             if tab.dir.to_local_path().is_some() {
@@ -471,7 +494,10 @@ mod tests {
     fn folders_show_big_and_files_get_their_quick_actions() {
         let mut tab = tab_of(&[("sub", Kind::Dir), ("pack.zip", Kind::File)]);
         let texts = draw(&mut tab, &mut Default::default());
-        assert!(texts.iter().any(|t| t == "sub"), "the folder's name under its icon");
+        assert!(
+            texts.iter().any(|t| t == "sub"),
+            "the folder's name under its icon"
+        );
         assert!(texts.iter().any(|t| t == "Folder"));
         assert!(!texts.iter().any(|t| t == "Open with…"), "not for folders");
         tab.move_cursor(Nav::Next, false);

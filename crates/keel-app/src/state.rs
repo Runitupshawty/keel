@@ -1391,15 +1391,14 @@ impl AppState {
             let tab = &self.panes[p].tabs[t];
             let entered = (p == 0 || self.dual)
                 && tab.kind == crate::tab::TabKind::Dir
-                && self.shown[p].as_ref().is_none_or(|(st, sd, _)| *st != t || *sd != tab.dir);
+                && self.shown[p]
+                    .as_ref()
+                    .is_none_or(|(st, sd, _)| *st != t || *sd != tab.dir);
             if entered {
                 let remembered = self.settings.views.always_open(&tab.dir);
                 let current = self.panes[p].view;
-                self.panes[p].view = crate::view_prefs::view_on_enter(
-                    remembered,
-                    current,
-                    &mut self.view_before[p],
-                );
+                self.panes[p].view =
+                    crate::view_prefs::view_on_enter(remembered, current, &mut self.view_before[p]);
             }
             let view = self.panes[p].view;
             let now = (p == 0 || self.dual).then(|| (t, self.panes[p].tabs[t].dir.clone(), view));

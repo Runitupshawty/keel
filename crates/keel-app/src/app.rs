@@ -305,8 +305,8 @@ impl App {
         // --- Task 23 ---: the columns view previews inline while the panel is closed.
         // Task 66: so does the gallery view (its big preview), and with the Inspector shown.
         let gallery = crate::view_gallery::wants_preview(&s.panes[s.active]);
-        let inline = !s.preview.open
-            && (gallery || crate::view_columns::wants_preview(&s.panes[s.active]));
+        let inline =
+            !s.preview.open && (gallery || crate::view_columns::wants_preview(&s.panes[s.active]));
         let inspecting = s.preview.open && s.preview.tab == crate::inspector::PanelTab::Inspector;
         if inspecting {
             // Task 59: the inspector follows the selection instead of the preview.

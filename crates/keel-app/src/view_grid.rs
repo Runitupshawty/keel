@@ -162,8 +162,7 @@ impl Thumbs {
         }
         self.bytes += weight;
         // Past 2,000 entries or the byte budget; the newest always stays.
-        while self.cache.len() > 1 && (self.cache.len() > THUMB_CACHE || self.bytes > self.budget)
-        {
+        while self.cache.len() > 1 && (self.cache.len() > THUMB_CACHE || self.bytes > self.budget) {
             // ponytail: O(n) eviction scan over 2,000 entries; a linked LRU if it ever shows.
             let Some(oldest) = self
                 .cache
@@ -218,7 +217,11 @@ fn cell_of(p: [f32; 2]) -> (i64, i64) {
 
 /// Where each of `names` sits when arranged by hand, in cells: its saved position, else
 /// the next grid cell (in reading order) no saved icon covers.
-pub fn free_layout(names: &[&str], saved: &BTreeMap<String, [f32; 2]>, cols: usize) -> Vec<[f32; 2]> {
+pub fn free_layout(
+    names: &[&str],
+    saved: &BTreeMap<String, [f32; 2]>,
+    cols: usize,
+) -> Vec<[f32; 2]> {
     let mut taken: HashSet<(i64, i64)> = (names.iter())
         .filter_map(|n| saved.get(*n))
         .map(|p| cell_of(*p))
@@ -249,7 +252,8 @@ fn nearest_free(want: (i64, i64), cols: usize, taken: &HashSet<(i64, i64)>) -> (
         for row in (want.1 - r).max(0)..=want.1 + r {
             for col in (want.0 - r).max(0)..=(want.0 + r).min(cols - 1) {
                 // Only the ring at distance r: the inside was searched before.
-                if (col - want.0).abs().max((row - want.1).abs()) != r || taken.contains(&(col, row))
+                if (col - want.0).abs().max((row - want.1).abs()) != r
+                    || taken.contains(&(col, row))
                 {
                     continue;
                 }
@@ -273,9 +277,7 @@ pub fn clean_up(at: &[[f32; 2]], cols: usize) -> Vec<[f32; 2]> {
     order.sort_by(|&a, &b| {
         let key = |i: usize| (at[i][1].round() as i64, at[i][0]);
         let (ka, kb) = (key(a), key(b));
-        ka.0.cmp(&kb.0)
-            .then(ka.1.total_cmp(&kb.1))
-            .then(a.cmp(&b))
+        ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1)).then(a.cmp(&b))
     });
     let mut taken = HashSet::new();
     let mut out = vec![[0.0; 2]; at.len()];
@@ -382,7 +384,11 @@ pub fn middle_truncate(name: &str, max_w: f32, width: impl Fn(&str) -> f32) -> S
     let g: Vec<&str> = name.graphemes(true).collect();
     let compose = |k: usize| {
         let tail = k / 2;
-        format!("{}…{}", g[..k - tail].concat(), g[g.len() - tail..].concat())
+        format!(
+            "{}…{}",
+            g[..k - tail].concat(),
+            g[g.len() - tail..].concat()
+        )
     };
     // The most graphemes kept that still fit (widths grow with k).
     let (mut lo, mut hi) = (0, g.len() - 1);
@@ -575,7 +581,6 @@ pub fn ui(
     };
     let at = |i: usize| if by_hand { layout[i] } else { slot(i, cols) };
 
-
     // Content size in points.
     let extent = if by_hand {
         layout.iter().fold([0.0f32; 2], |m, p| {
@@ -636,16 +641,19 @@ pub fn ui(
             tab.selected.clear();
         }
         bg.context_menu(|ui| {
-            ui.menu_button("Arrange", |ui| arrange_menu(ui, &mut menu_opts, &mut menu_act));
+            ui.menu_button("Arrange", |ui| {
+                arrange_menu(ui, &mut menu_opts, &mut menu_act)
+            });
             ui.separator();
             context_menu(ui, tab, None, out);
         });
 
-        let rect_of = |p: [f32; 2]| {
-            Rect::from_min_size(origin + vec2(p[0] * cell.x, p[1] * cell.y), cell)
-        };
+        let rect_of =
+            |p: [f32; 2]| Rect::from_min_size(origin + vec2(p[0] * cell.x, p[1] * cell.y), cell);
         let shown_items: Vec<usize> = if by_hand {
-            (0..n).filter(|&i| rect_of(layout[i]).intersects(shown)).collect()
+            (0..n)
+                .filter(|&i| rect_of(layout[i]).intersects(shown))
+                .collect()
         } else {
             let first = (viewport.top() / cell.y).floor().max(0.0) as usize;
             let last = (viewport.bottom() / cell.y).ceil() as usize;
@@ -654,7 +662,17 @@ pub fn ui(
         for i in shown_items {
             let e = tab.entries()[tab.visible_cached()[i]].clone();
             let rect = rect_of(at(i));
-            let r = tile(ui, (id, rect), &e, tab, cx, &look, &mut renaming, &mut rename_done, out);
+            let r = tile(
+                ui,
+                (id, rect),
+                &e,
+                tab,
+                cx,
+                &look,
+                &mut renaming,
+                &mut rename_done,
+                out,
+            );
             let target = e.kind == Kind::Dir || crate::jobs::is_addable_archive(&e);
             if target && r.contains_pointer() && !tab.selected.contains(&e.name) {
                 over_target = true;
@@ -673,7 +691,10 @@ pub fn ui(
     // hand (onto a folder they move into it, as everywhere).
     let released = ui.input(|i| i.pointer.any_released());
     if by_hand && released && !over_target {
-        let pos = ui.ctx().pointer_interact_pos().filter(|p| shown.contains(*p));
+        let pos = ui
+            .ctx()
+            .pointer_interact_pos()
+            .filter(|p| shown.contains(*p));
         let payload = egui::DragAndDrop::payload::<DragPayload>(ui.ctx())
             .filter(|p| p.pane == id.0 && p.dir == dir);
         if let (Some(pos), Some(p)) = (pos, payload) {
@@ -766,7 +787,10 @@ fn tile(
     let s = o.icon_size;
     let (img_box, label_rect) = match o.label {
         LabelPos::Bottom => {
-            let img = Rect::from_min_size(pos2(inner.center().x - s / 2.0, inner.top() + 4.0), vec2(s, s));
+            let img = Rect::from_min_size(
+                pos2(inner.center().x - s / 2.0, inner.top() + 4.0),
+                vec2(s, s),
+            );
             let label = Rect::from_min_max(
                 pos2(inner.left() + 2.0, img.bottom() + 4.0),
                 pos2(inner.right() - 2.0, inner.bottom()),
@@ -774,7 +798,10 @@ fn tile(
             (img, label)
         }
         LabelPos::Right => {
-            let img = Rect::from_min_size(pos2(inner.left() + 4.0, inner.center().y - s / 2.0), vec2(s, s));
+            let img = Rect::from_min_size(
+                pos2(inner.left() + 4.0, inner.center().y - s / 2.0),
+                vec2(s, s),
+            );
             let h = 2.0 * look.line_h;
             let label = Rect::from_min_max(
                 pos2(img.right() + 6.0, inner.center().y - h / 2.0),
@@ -826,7 +853,9 @@ fn tile(
             let r = child.add(egui::TextEdit::singleline(text).desired_width(label_rect.width()));
             if r.lost_focus() {
                 *rename_done = true;
-                if ui.input(|i| i.key_pressed(Key::Enter)) && !text.trim().is_empty() && text != name
+                if ui.input(|i| i.key_pressed(Key::Enter))
+                    && !text.trim().is_empty()
+                    && text != name
                 {
                     out.push(Action::RenameTo {
                         from: e.path.clone(),
@@ -1069,7 +1098,10 @@ mod tests {
             text_pos(&moved, "b.txt").unwrap(),
         );
         assert_eq!(a1, a0, "a keeps the first free cell");
-        assert!((b1.x - a1.x).abs() < 0.5 && b1.y > a1.y + 1.0, "b two rows down");
+        assert!(
+            (b1.x - a1.x).abs() < 0.5 && b1.y > a1.y + 1.0,
+            "b two rows down"
+        );
     }
 
     /// Task 66: long labels wrap to two lines, the second shortened in the middle.
@@ -1088,7 +1120,10 @@ mod tests {
             })
             .collect();
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[1].contains('…') && lines[1].ends_with(".pdf"), "{lines:?}");
+        assert!(
+            lines[1].contains('…') && lines[1].ends_with(".pdf"),
+            "{lines:?}"
+        );
     }
 
     fn width(t: &str) -> f32 {
@@ -1104,7 +1139,10 @@ mod tests {
         // Combining marks and emoji sequences are never split.
         let accented = "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}.txt";
         let t = middle_truncate(accented, 8.0, width);
-        assert!(!t.contains("…\u{301}") && !t.starts_with('\u{301}'), "{t:?}");
+        assert!(
+            !t.contains("…\u{301}") && !t.starts_with('\u{301}'),
+            "{t:?}"
+        );
         let family = "👨‍👩‍👧👨‍👩‍👧👨‍👩‍👧👨‍👩‍👧.png";
         let t = middle_truncate(family, 12.0, width);
         for piece in t.split('…') {
@@ -1192,9 +1230,18 @@ mod tests {
             v.sort_by(|a, b| (a.1[1], a.1[0]).partial_cmp(&(b.1[1], b.1[0])).unwrap());
             v.into_iter().map(|(n, _)| n).collect::<Vec<_>>()
         };
-        assert_eq!(names_in_order(CleanBy::Name), ["z", "a.png", "b.txt", "c.png"]);
-        assert_eq!(names_in_order(CleanBy::Kind), ["z", "a.png", "c.png", "b.txt"]);
-        assert_eq!(names_in_order(CleanBy::Size), ["z", "a.png", "c.png", "b.txt"]);
+        assert_eq!(
+            names_in_order(CleanBy::Name),
+            ["z", "a.png", "b.txt", "c.png"]
+        );
+        assert_eq!(
+            names_in_order(CleanBy::Kind),
+            ["z", "a.png", "c.png", "b.txt"]
+        );
+        assert_eq!(
+            names_in_order(CleanBy::Size),
+            ["z", "a.png", "c.png", "b.txt"]
+        );
         let p = clean_up_by(&refs, CleanBy::Name, 2);
         assert_eq!(p["b.txt"], [0.0, 1.0], "third item: second row");
     }
@@ -1218,7 +1265,11 @@ mod tests {
         // Snap: a dropped on d's cell takes the nearest free one instead.
         let snap = drop_icons(&layout, &["a"], "a", [0.1, 0.9], Arrange::SnapToGrid, 3);
         assert_eq!(snap["d"], [0.0, 1.0]);
-        assert_eq!(snap["a"], [0.0, 0.0], "its own old cell is the nearest free one");
+        assert_eq!(
+            snap["a"],
+            [0.0, 0.0],
+            "its own old cell is the nearest free one"
+        );
         let snap = drop_icons(&layout, &["a"], "a", [1.2, 1.4], Arrange::SnapToGrid, 3);
         assert_eq!(snap["a"], [1.0, 1.0]);
     }
