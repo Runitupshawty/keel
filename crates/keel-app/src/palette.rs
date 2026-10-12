@@ -145,7 +145,7 @@ fn global_items() -> Vec<Item> {
             DiskUsage(crate::disk_usage::DuCmd::Open),
         ),
         (
-            "Analyze this folder's disk usage",
+            "Analyze disk usage of this folder",
             "",
             DiskUsage(crate::disk_usage::DuCmd::ScanCurrent),
         ),

@@ -585,7 +585,7 @@ fn main_area(
     if let Some(note) = &du.note {
         ui.horizontal(|ui| {
             ui.label(note);
-            dismiss = ui.small_button("✕").named("Dismiss").clicked();
+            dismiss = ui.small_button("×").named("Dismiss").clicked();
         });
     }
     if dismiss {

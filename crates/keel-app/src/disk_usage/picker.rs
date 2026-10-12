@@ -155,7 +155,7 @@ impl Picker {
                 for (i, f) in self.folders.iter().enumerate() {
                     ui.horizontal(|ui| {
                         if ui
-                            .small_button("✕")
+                            .small_button("×")
                             .on_hover_text("Remove from the list")
                             .clicked()
                         {

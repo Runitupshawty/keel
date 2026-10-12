@@ -138,7 +138,7 @@ A folder that cannot be read counts as empty and the last line says how many the
 
 ### The Disk Usage window
 
-**Ctrl+Shift+U**, **Disk usage** in the command palette, or **Analyze disk usage** on a drive's right-click menu in the sidebar opens the Disk Usage window, WinDirStat's view of what fills a drive. **Analyze this folder's disk usage** in the palette scans the active pane's folder. It uses the scanner above with its defaults: links are not followed, hard links count once, cloud placeholders are never downloaded.
+**Ctrl+Shift+U**, **Disk usage** in the command palette, or **Analyze disk usage** on a drive's right-click menu in the sidebar opens the Disk Usage window, WinDirStat's view of what fills a drive. **Analyze disk usage of this folder** in the palette scans the active pane's folder. It uses the scanner above with its defaults: links are not followed, hard links count once, cloud placeholders are never downloaded.
 
 - **Select drives** (the window's first button, and what Ctrl+Shift+U shows when nothing has been scanned yet): **All local drives**, **Individual drives** (tick them; each shows its used space as a bar and its free space; double-click a drive to scan just that one), or **Folders** (**Add folders…** picks one or more). A scan runs in the background with its files, bytes, files per second, time and the folder being read; **Pause**, **Resume** and **Stop** (which shows what was found so far, marked incomplete). **Rescan** walks the same drives and folders again. You can close the window while it scans.
 - **Layout**: the tree top-left, the file types top-right and the treemap below (WinDirStat's), the treemap on the left with the lists stacked on the right, or the lists only. The splitters are remembered.
