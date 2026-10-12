@@ -2,6 +2,20 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Bookmarks** (Task 76): Ctrl+D in a search tab (or the search bar's **☆** menu) saves the search with its backend, filter, match toggles, sort and view, in an optional folder and with an optional shortcut key. Bookmarks are in the **☆** menu and the sidebar's **Bookmarks** section; **Organize bookmarks** orders, edits and deletes them. Library-search bookmarks are the library's saved views; System-search bookmarks are kept in the profile (or in the library on request). See [Bookmarks, filters and search history](docs/files.md#bookmarks-filters-and-search-history).
+- **Search filters**: a combo at the right of the search box with Everything, Audio, Compressed, Document, Executable, Folder, Picture and Video (extension lists for the System backend, checked on every backend's results; Kind terms for the Library), and your own filters (name, search, Match case, Regular expression) in **Edit filters…**, kept in the profile.
+- **Search history** with a suggestions dropdown under the search box (most recent or most used first, Up/Down and Enter, Alt+Down when suggestions are off), kept per profile on this machine; Settings → **Search** has **Do not save search history**, the maximum number of searches, the order and **Clear history**.
+- API: `views.create`, `views.update` and `views.delete` (previewed; also MCP tools), and `views.list` reports each view's `backend`, `sort`, `columns`, `matching`, `filter`, `folder`, `position` and `shortcut`. See [api.md](docs/api.md).
+
+### Changed
+
+- `library.db` is now at version 9 (saved views gain backend, sort, columns, match toggles, filter, folder, position and shortcut); a library this Keel opened is refused by an older Keel ("newer than this Keel"). Existing views keep their order at the top level.
+- Library saved views are listed under **Bookmarks** in the sidebar instead of the library's Views section, and Ctrl+D in a search tab adds a bookmark instead of toggling Favorites (it still toggles Favorites in folder tabs).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

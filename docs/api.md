@@ -99,7 +99,10 @@ user is working) also act directly: they change no file.
 | `files.names` | read | The full paths of indexed files (no folders) in the online sources, each source's newest first: `{paths, truncated}`, for a fuzzy file finder (the desktop app's Ctrl+P when attached). At most `max` (default and largest 100000); `truncated` says there were more |
 | `tags.list` | read | All tags, or the tags on one path |
 | `tags.tagged` | read | Every tagged path with its tag ids (Favorites is id 1) |
-| `views.list` | read | Saved views: `id`, `name`, `query` (a `search` query), `layout` |
+| `views.list` | read | Saved views (the window's library bookmarks), by folder then position: `id`, `name`, `query` (a `search` query, or the platform search's text when `backend` is `system`), `layout`, `backend` (`library` or `system`), `sort` (`<column>` or `<column>:desc`, up to three comma-separated keys; `""` default), `columns` (names; empty: default), `matching` (the match toggles that are on: `case`, `whole_words`, `path`, `diacritics`, `regex`, `prefix`, `suffix`, `ignore_punctuation`, `ignore_whitespace`), `filter` (a filter name; `""` Everything), `folder` (`/`-separated; `""` top level), `position`, `shortcut` (`""` none) |
+| `views.create` | preview | Save a view: `name` and `query` required, every other `views.list` field optional (`layout` defaults to `details`, `backend` to `library`, `position` to last in its folder). A `library` view's query must parse as a `search` query; a bad sort, column name, folder or backend, or a `shortcut` another view has, is refused at the preview. Answers the saved view |
+| `views.update` | preview | Change view `id`: omitted fields stay as they are (`""` clears `shortcut`, `folder`, `filter` or `sort`). Checked as `views.create`; answers the view |
+| `views.delete` | preview | Delete view `id` (the files it finds are never touched); answers the deleted view |
 | `tags.add` / `tags.remove` | preview | Tag / untag indexed paths (`tags.add` creates a missing tag, with `color` when given; with no paths it only creates the tag) |
 | `tags.set` | preview | Exactly these tags on the paths (Favorites kept) |
 | `favorites.list` | read | Favorites |
