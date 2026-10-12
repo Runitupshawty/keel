@@ -70,6 +70,8 @@ pub struct Settings {
     pub media_tile: crate::media::TileSize,
     /// Media view: date headers.
     pub media_dates: bool,
+    /// Task 66: `[list]`: the list view's columns, relative dates and Group by.
+    pub list: crate::list_view::ListOptions,
     /// `[archive]`: Compress dialog defaults.
     pub archive: ArchiveSettings,
     /// `[open_with.recent]`: apps used with "Open with…", per extension.
@@ -207,6 +209,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             media_tile: Default::default(),
             media_dates: false,
+            list: Default::default(),
             library: Default::default(),
             devices: Default::default(),
             archive: Default::default(),

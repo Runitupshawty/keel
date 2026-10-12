@@ -137,6 +137,7 @@ fn global_items() -> Vec<Item> {
         ("Calculate sizes", "", CalculateSizes { fresh: true }),
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
+        ("View options", "Ctrl+J", ViewOptions), // Task 66
         ("Settings", "Ctrl+,", Settings),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),

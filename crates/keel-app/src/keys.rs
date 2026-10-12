@@ -10,6 +10,8 @@ use std::path::PathBuf;
 pub enum Action {
     /// Parent folder (Alt+Up, toolbar).
     Up,
+    /// Task 66: show or hide the View Options panel (Ctrl+J).
+    ViewOptions,
     /// Turn the daily update check on (the first-start question).
     EnableUpdateCheck,
     /// Parent folder, or in a search tab: delete the last query character.
@@ -301,6 +303,7 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::F, Action::Search),
     (CMD, Key::E, Action::FocusFilter),
     (CMD, Key::I, Action::ToggleInspector),
+    (CMD, Key::J, Action::ViewOptions),
     (CMD, Key::L, Action::FocusPath),
     (CMD, Key::T, Action::NewTab),
     (CMD, Key::W, Action::CloseTab),
