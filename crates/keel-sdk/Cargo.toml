@@ -1,0 +1,27 @@
+[package]
+publish = false
+name = "keel-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A C ABI for searching every file with Keel (Everything SDK's call shape) over keel-daemon's JSON-RPC"
+
+[lib]
+# keel_sdk.dll / libkeel_sdk.so / libkeel_sdk.dylib for C, Python ctypes and others; the
+# rlib for Rust tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The daemon's per-user socket client, profile config and `system.search` types.
+keel-api = { path = "../keel-api" }
+serde_json.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+getrandom.workspace = true
+# The integration test runs a daemon in-process on a temp profile.
+keel-daemon = { path = "../keel-daemon", default-features = false }
+keel-search = { path = "../keel-search" }
+anyhow.workspace = true

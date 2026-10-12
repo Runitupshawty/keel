@@ -4978,6 +4978,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-sdk"
+version = "0.22.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.3.4",
+ "keel-api",
+ "keel-daemon",
+ "keel-search",
+ "parking_lot",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "keel-search"
 version = "0.22.0"
 dependencies = [
