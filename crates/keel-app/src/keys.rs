@@ -132,6 +132,7 @@ pub enum Action {
     /// Task 67: Get Info's Locked box: read-only on or off for a local item.
     SetLocked(PathBuf, bool),
     /// Explorer's own Properties sheet (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
     ShellProperties(PathBuf),
     /// "More options": the Windows shell menu for the targets (`shell_menu`). `extended`:
     /// the Shift verbs too; `keyboard`: at the cursor row instead of the pointer.

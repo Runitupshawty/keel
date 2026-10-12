@@ -1,6 +1,7 @@
 //! Windows notification icon using the already-approved windows crate (MIT/Apache-2.0).
 //! No extra tray dependencies; other platforms retain normal close behavior.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum Event {
     Show,
     NewWindow,

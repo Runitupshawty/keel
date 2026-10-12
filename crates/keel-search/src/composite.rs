@@ -13,10 +13,13 @@ use crate::index_settings::IndexSettings;
 use crate::{Hit, Query, SearchState, Searcher};
 
 /// Least time between two probes of a stopped Everything.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const REPROBE: Duration = Duration::from_secs(30);
 
+#[cfg_attr(not(windows), allow(dead_code))]
 type Open = Box<dyn Fn() -> Box<dyn Searcher> + Send + Sync>;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct Composite {
     primary: Box<dyn Searcher>,
     /// Opened on first need (or at once when the primary is down at start).
@@ -32,6 +35,7 @@ pub struct Composite {
     pending: Mutex<Option<IndexSettings>>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl Composite {
     /// `primary` (Everything) first, else what `open` returns (the Keel index),
     /// opened now when the primary is down, else when first needed.
