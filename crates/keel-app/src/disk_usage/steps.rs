@@ -146,7 +146,9 @@ impl Steps {
         self.stop();
         match left {
             0 => Ok(None),
-            n => Err(format!("The step did not finish: the {n} step(s) after it were not run")),
+            n => Err(format!(
+                "The step did not finish: the {n} step(s) after it were not run"
+            )),
         }
     }
 

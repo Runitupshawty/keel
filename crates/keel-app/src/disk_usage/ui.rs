@@ -25,7 +25,11 @@ pub fn type_color(palette: &[[u8; 3]], rank: usize) -> Color32 {
     if rank == usize::MAX {
         return Color32::GRAY;
     }
-    let palette = if palette.is_empty() { &PALETTE[..] } else { palette };
+    let palette = if palette.is_empty() {
+        &PALETTE[..]
+    } else {
+        palette
+    };
     let [r, g, b] = palette[rank % palette.len()];
     Color32::from_rgb(r, g, b)
 }
@@ -446,7 +450,8 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                 row.set_selected(selected(t));
                 row.col(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, type_color(palette, rank));
+                    ui.painter()
+                        .rect_filled(rect, 2.0, type_color(palette, rank));
                 });
                 row.col(|ui| {
                     ui.add(egui::Label::new(&t.label).truncate());
@@ -785,7 +790,11 @@ fn tree_area(
                                             egui::vec2(6.0, 14.0),
                                             Sense::hover(),
                                         );
-                                        ui.painter().rect_filled(rect, 1.0, type_color(palette, rank));
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            1.0,
+                                            type_color(palette, rank),
+                                        );
                                         ui.add(
                                             egui::Image::new(crate::icons::file_icon(&n.name))
                                                 .fit_to_exact_size(egui::vec2(16.0, 16.0)),

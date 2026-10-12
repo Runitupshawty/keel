@@ -1054,7 +1054,10 @@ impl AppState {
                     .toasts
                     .error("Another preview is open: the next steps were not run");
             }
-            self.run(self.active, Action::Library(crate::library::LibCmd::Plan(op)));
+            self.run(
+                self.active,
+                Action::Library(crate::library::LibCmd::Plan(op)),
+            );
         }
     }
 
@@ -1917,7 +1920,9 @@ impl AppState {
                         .error("Disk usage scans local folders and drives only"),
                 }
             }
-            Action::DiskUsage(crate::disk_usage::DuCmd::Plans(ops)) => self.disk_usage_plans(p, ops),
+            Action::DiskUsage(crate::disk_usage::DuCmd::Plans(ops)) => {
+                self.disk_usage_plans(p, ops)
+            }
             Action::DiskUsage(cmd) => self.disk_usage.command(cmd, &self.sidebar.drives),
             Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {

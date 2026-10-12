@@ -458,7 +458,9 @@ fn the_chart_tree_is_the_scan_with_the_file_types_colors() {
     assert_eq!(tree.node(n).total, 200);
     assert_eq!(tree.node(n).label, "large.bin");
     assert_eq!(tree.key_of(n), "bin");
-    let nested = tree.find(u64::from(id(&model, dir.path(), "nested"))).unwrap();
+    let nested = tree
+        .find(u64::from(id(&model, dir.path(), "nested")))
+        .unwrap();
     assert_eq!(tree.node(nested).total, 31);
     assert!(tree.key_of(nested).starts_with('/'));
     // The biggest type is rank 0 whatever part is shown; folders have no rank.
@@ -496,7 +498,10 @@ fn the_chart_tree_keeps_a_folders_big_children_and_pools_the_rest() {
     assert_eq!(other, 400, "what was left out is one tile");
     // The pooled tile stands for its folder: picking it picks the folder.
     let at = tree.nodes.iter().position(|n| n.synthetic).unwrap();
-    assert_eq!(tree.nodes[at].id, tree.nodes[tree.nodes[at].parent.unwrap() as usize].id);
+    assert_eq!(
+        tree.nodes[at].id,
+        tree.nodes[tree.nodes[at].parent.unwrap() as usize].id
+    );
 }
 
 /// The chart is built on a worker, follows the tree list's cursor (zooming out to show
