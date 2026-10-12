@@ -321,6 +321,15 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
                     "no empty folders below {}",
                     folder.display()
                 );
+                // No trash there (SFTP, S3, FTP, WebDAV): each branch goes for good.
+                let permanent = router
+                    .provider_for(folder)
+                    .is_some_and(|p| p.remove_kind() == keel_vfs::RemoveKind::Permanent);
+                if permanent {
+                    for d in &prune {
+                        warnings.push(Warning::Permanent { path: d.clone() });
+                    }
+                }
             } else {
                 anyhow::ensure!(
                     !planned.is_empty(),
@@ -1446,7 +1455,9 @@ fn delete_entries(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
 
 /// A merge or flatten removes the folders it emptied, deepest first; one left with
 /// something in it (an item skipped, a link) stays. Remove empty folders sends each empty
-/// branch to the trash, after checking again that nothing came into it.
+/// branch to the trash, after checking again that nothing came into it; where there is no
+/// trash it removes the branch's folders one at a time, deepest first, each only while it
+/// is empty.
 fn prune(ctx: &JobCtx, op: &Op) -> Result<()> {
     let Op::Arrange { prune, what, .. } = op else {
         return Ok(());
@@ -1471,8 +1482,14 @@ fn prune(ctx: &JobCtx, op: &Op) -> Result<()> {
                 ctx.log(&format!("kept {}: no longer empty", d.display()))?;
                 continue;
             }
-            p.remove(d)
-                .map_err(|e| failed.push(format!("{}: {e:#}", d.display())))
+            // No trash there: one folder at a time, deepest first, each removed only while
+            // empty, so a file that came in after the check stays (with its folders).
+            let removed = if p.remove_kind() == keel_vfs::RemoveKind::Permanent {
+                crate::arrange::remove_empty_tree(&*p, d)
+            } else {
+                p.remove(d)
+            };
+            removed.map_err(|e| failed.push(format!("{}: {e:#}", d.display())))
         } else {
             p.remove_empty_dir(d).map_err(|_| ())
         };

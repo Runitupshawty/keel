@@ -278,6 +278,30 @@ pub(crate) fn still_empty(provider: &dyn Provider, dir: &VPath) -> bool {
     empty_branches(provider, dir.clone(), 0, &mut Vec::new())
 }
 
+/// Removes `dir` and the folders below it one at a time, deepest first, each with
+/// `remove_empty_dir` (which fails on a folder that is not empty): for providers whose
+/// `remove` deletes for good, so nothing that came in after the last check goes with them.
+/// Stops at the first folder that is not empty (or a link or file found below).
+pub(crate) fn remove_empty_tree(provider: &dyn Provider, dir: &VPath) -> Result<()> {
+    let mut order = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        for e in provider.list(&d)? {
+            anyhow::ensure!(
+                e.kind == Kind::Dir && !e.is_link,
+                "{} is no longer empty",
+                d.display()
+            );
+            stack.push(e.path);
+        }
+        order.push(d);
+    }
+    for d in order.iter().rev() {
+        provider.remove_empty_dir(d)?;
+    }
+    Ok(())
+}
+
 /// Bytes and files under a folder, through its provider (links not followed).
 pub(crate) fn tree_size(provider: &dyn Provider, dir: &VPath, depth: usize) -> (u64, u64) {
     let mut total = (0, 0);
@@ -353,12 +377,20 @@ impl crate::Plan {
                         counted(groups.len(), "folder"),
                     )
                 }
-                FolderOp::RemoveEmpty { folder } => format!(
-                    "Remove {} below {}: to the {}",
-                    counted(n(Action::RemoveFolder), "empty folder"),
-                    folder.display(),
-                    keel_vfs::trashbin::label()
-                ),
+                FolderOp::RemoveEmpty { folder } => {
+                    let permanent = (self.warnings.iter())
+                        .any(|w| matches!(w, crate::Warning::Permanent { .. }));
+                    format!(
+                        "Remove {} below {}: {}",
+                        counted(n(Action::RemoveFolder), "empty folder"),
+                        folder.display(),
+                        if permanent {
+                            "deleted for good (there is no trash there)".to_owned()
+                        } else {
+                            format!("to the {}", keel_vfs::trashbin::label())
+                        }
+                    )
+                }
             },
             Op::SetAttributes { paths, attrs } => format!(
                 "Set the attributes of {}: {}",

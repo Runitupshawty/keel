@@ -259,10 +259,17 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
             conflict_choice(ui, &mut d.conflict);
         }
         Kind::RemoveEmpty => {
-            ui.label(format!(
-                "Move every empty folder below {one} to the {}: folders holding no files                  and no links, at any depth. The preview lists them.",
-                keel_vfs::trashbin::label()
-            ));
+            let local = d.targets.first().is_some_and(|t| t.to_local_path().is_some());
+            ui.label(if local {
+                format!(
+                    "Move every empty folder below {one} to the {}: folders holding no files                      and no links, at any depth. The preview lists them.",
+                    keel_vfs::trashbin::label()
+                )
+            } else {
+                format!(
+                    "Remove every empty folder below {one}: folders holding no files and no                      links, at any depth. Where there is no trash (SFTP, FTP, S3, WebDAV) they                      are deleted for good. The preview lists them and says so."
+                )
+            });
         }
         Kind::Organize => {
             ui.label(format!("Move the files in {one} into subfolders by:"));

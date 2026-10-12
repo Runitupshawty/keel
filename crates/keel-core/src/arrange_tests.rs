@@ -631,3 +631,48 @@ fn remove_empty_trashes_each_empty_branch_whole() {
     let err = validate_preview_execute(&lib, op).unwrap_err();
     assert!(format!("{err:#}").contains("no empty folders"), "{err:#}");
 }
+
+/// Remove empty folders where there is no trash (an SFTP host here): each branch is warned
+/// as permanent, the headline says so, and the folders go one at a time, each only while
+/// empty.
+#[test]
+fn remove_empty_without_a_trash_warns_and_removes_folder_by_folder() {
+    use keel_vfs::Provider;
+    let files = tempfile::tempdir().unwrap();
+    let (_data, lib, _src) = library_with(folder("f", files.path()));
+    let mem = std::sync::Arc::new(keel_vfs::memory::MemoryProvider::new());
+    lib.router()
+        .register_remote_provider("box".into(), mem.clone());
+    let at = |p: &str| VPath::parse(&format!("sftp://box/srv{p}")).unwrap();
+    for d in ["", "/a", "/a/b", "/a/b/c", "/keep"] {
+        mem.mkdir(&at(d)).unwrap();
+    }
+    mem.put("/srv/keep/x.txt", "x");
+    let op = Op::arrange(FolderOp::RemoveEmpty { folder: at("") }, OnConflict::Skip);
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    assert!(
+        plan.warnings.contains(&Warning::Permanent { path: at("/a") }),
+        "{:?}",
+        plan.warnings
+    );
+    let headline = plan.headline().unwrap();
+    assert!(
+        headline.contains("deleted for good")
+            && !headline.contains(keel_vfs::trashbin::label()),
+        "{headline}"
+    );
+    let info = run(&lib, op);
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let dirs = mem.dirs();
+    assert!(!dirs.iter().any(|d| d.starts_with("/srv/a")), "{dirs:?}");
+    assert!(dirs.iter().any(|d| d == "/srv/keep"), "{dirs:?}");
+    assert_eq!(mem.get("/srv/keep/x.txt").as_deref(), Some(&b"x"[..]));
+
+    // Folder by folder: a file found below stops it, and nothing holding it goes.
+    let p: &dyn Provider = &*mem;
+    mem.mkdir(&at("/late")).unwrap();
+    mem.mkdir(&at("/late/sub")).unwrap();
+    mem.put("/srv/late/sub/new.txt", "n");
+    assert!(crate::arrange::remove_empty_tree(p, &at("/late")).is_err());
+    assert_eq!(mem.get("/srv/late/sub/new.txt").as_deref(), Some(&b"n"[..]));
+}
