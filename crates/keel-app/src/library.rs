@@ -2513,7 +2513,8 @@ impl AppState {
                     return;
                 }
                 let targets = self.library.picker.as_ref().map(|x| x.targets.clone());
-                let finder = keel_core::FinderColor::nearest(Some(color.as_str()).filter(|c| !c.is_empty()));
+                let finder =
+                    keel_core::FinderColor::nearest(Some(color.as_str()).filter(|c| !c.is_empty()));
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 let paths = targets.clone().unwrap_or_default();
                 crate::tag_dots::write_through(&tx, &ctx, paths, name.clone(), finder, true);
@@ -2869,7 +2870,9 @@ impl AppState {
         let l = &self.library;
         let usable = l.is_open() && !l.lost;
         let real: Option<Vec<VPath>> = (paths.iter())
-            .map(|x| real_of(&l.sources, x).filter(|r| usable && source_of(&l.sources, r).is_some()))
+            .map(|x| {
+                real_of(&l.sources, x).filter(|r| usable && source_of(&l.sources, r).is_some())
+            })
             .collect();
         let native = cfg!(target_os = "macos") && paths.iter().all(|x| x.to_local_path().is_some());
         let Some(real) = real else {
@@ -2879,7 +2882,8 @@ impl AppState {
             // Native tags only: the item is in no library source.
             let carries = |x: &VPath| {
                 (l.native.get(x)).is_some_and(|n| {
-                    n.iter().any(|t| keel_core::finder_tags::same_name(&t.name, color.name()))
+                    n.iter()
+                        .any(|t| keel_core::finder_tags::same_name(&t.name, color.name()))
                 })
             };
             let on = !paths.iter().all(carries);

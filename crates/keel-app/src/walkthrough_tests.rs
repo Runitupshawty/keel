@@ -1174,7 +1174,8 @@ fn open_with_and_properties() {
     // Get Info from the context menu of a folder (Task 67: a window, several at once).
     right_click_row(&mut h, "Projects");
     click(&mut h, "Get Info");
-    let read = |s: &AppState| (s.info.windows.first()).is_some_and(|w| matches!(w.info, Some(Ok(_))));
+    let read =
+        |s: &AppState| (s.info.windows.first()).is_some_and(|w| matches!(w.info, Some(Ok(_))));
     assert!(wait(&mut h, 20, &read));
     h.run_steps(2);
     assert!(has(&h, "Projects Info"), "{}", dump(&h, "Info"));
@@ -1199,7 +1200,11 @@ fn open_with_and_properties() {
     // Alt+Ctrl+I: one more window that follows the selection; again closes it.
     click_row(&mut h, "notes.md", 0, NONE);
     key(&mut h, CMD_ALT, Key::I);
-    assert!(wait(&mut h, 20, &|s| s.info.windows.iter().any(|w| w.follow)));
+    assert!(wait(&mut h, 20, &|s| s
+        .info
+        .windows
+        .iter()
+        .any(|w| w.follow)));
     click_row(&mut h, "todo.txt", 0, NONE);
     let follows = |s: &AppState| {
         (s.info.windows.iter()).any(|w| {

@@ -643,7 +643,13 @@ fn column(
                             let right = text.left() + galley.size().x;
                             ui.painter().galley(at, galley, color);
                             let ring = ui.visuals().extreme_bg_color;
-                            crate::tag_dots::paint(ui.painter(), right, text.center().y, &dots, ring);
+                            crate::tag_dots::paint(
+                                ui.painter(),
+                                right,
+                                text.center().y,
+                                &dots,
+                                ring,
+                            );
                         }
                     }
                     if e.kind == Kind::Dir {

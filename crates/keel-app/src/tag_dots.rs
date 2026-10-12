@@ -209,7 +209,15 @@ impl LibraryUi {
     /// Task 67: whether the item at `p` carries the tag of the `color` dot.
     pub fn carries_color(&self, p: &VPath, color: FinderColor) -> bool {
         let open = self.is_open();
-        carries(open, &self.sources, &self.tags, &self.tagged, &self.native, p, color)
+        carries(
+            open,
+            &self.sources,
+            &self.tags,
+            &self.tagged,
+            &self.native,
+            p,
+            color,
+        )
     }
 }
 
@@ -223,7 +231,11 @@ pub fn color_row(ui: &mut egui::Ui, on: impl Fn(FinderColor) -> bool) -> Option<
             let set = on(color);
             let (rect, r) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
             let fill = color.hex().and_then(color32).unwrap_or(Color32::GRAY);
-            let radius = if r.hovered() || r.has_focus() { 7.0 } else { 6.0 };
+            let radius = if r.hovered() || r.has_focus() {
+                7.0
+            } else {
+                6.0
+            };
             ui.painter().circle_filled(rect.center(), radius, fill);
             if set {
                 let ring = Stroke::new(1.5_f32, ui.visuals().text_color());
@@ -248,7 +260,9 @@ pub fn menu_row(ui: &mut egui::Ui, targets: &[&Entry], out: &mut Vec<Action>) {
     let on = |color| {
         !targets.is_empty()
             && targets.iter().all(|e| {
-                carries(s.open, &s.sources, &s.tags, &s.tagged, &s.native, &e.path, color)
+                carries(
+                    s.open, &s.sources, &s.tags, &s.tagged, &s.native, &e.path, color,
+                )
             })
     };
     if let Some(color) = color_row(ui, on) {
@@ -411,7 +425,10 @@ mod tests {
         let router = Arc::new(keel_vfs::Router::new());
         let mut l = LibraryUi::new(&router, tx, egui::Context::default());
         let a = VPath::local(std::env::temp_dir().join("a.txt"));
-        l.native_read(vec![(a.clone(), vec![FinderTag::new("Red", FinderColor::Red)])]);
+        l.native_read(vec![(
+            a.clone(),
+            vec![FinderTag::new("Red", FinderColor::Red)],
+        )]);
         assert_eq!(l.dots(&a).len(), 1);
         l.native_read(vec![(a.clone(), Vec::new())]);
         assert!(l.native.is_empty());

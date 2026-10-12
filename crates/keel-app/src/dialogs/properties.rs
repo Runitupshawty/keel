@@ -101,7 +101,10 @@ pub fn sections(p: &Props, n: usize) -> Vec<Section> {
         return vec![Section::General];
     }
     let file = p.entry.as_ref().is_some_and(|e| e.kind != Kind::Dir);
-    let local = p.entry.as_ref().is_some_and(|e| e.path.to_local_path().is_some());
+    let local = p
+        .entry
+        .as_ref()
+        .is_some_and(|e| e.path.to_local_path().is_some());
     let mut out = vec![Section::General, Section::MoreInfo];
     if p.drive.is_none() {
         out.push(Section::NameExt);
@@ -133,7 +136,10 @@ pub fn general_rows(p: &Props, n: usize) -> Vec<(&'static str, String)> {
         )),
     }
     if p.drive.is_none() && (p.folders > 0 || p.kind == "Folder" || n > 1) {
-        rows.push(("Contains", format!("{more}{}", contains(p.files, p.folders))));
+        rows.push((
+            "Contains",
+            format!("{more}{}", contains(p.files, p.folders)),
+        ));
     }
     rows.push(("Where", p.location.clone()));
     if n == 1 {
@@ -301,9 +307,7 @@ pub fn gather_extras(
     p.comment = Some(match &lib.backend {
         None => Err(COMMENTS_OFF.to_owned()),
         Some(_) if !in_source => Err(COMMENTS_OUTSIDE.to_owned()),
-        Some(b) => b
-            .comment(&lib.sources, path)
-            .map_err(|e| format!("{e:#}")),
+        Some(b) => b.comment(&lib.sources, path).map_err(|e| format!("{e:#}")),
     });
     let Some(entry) = p.entry.clone() else {
         return;
@@ -440,7 +444,12 @@ impl AppState {
             return;
         }
         if !follow {
-            if let Some(w) = self.info.windows.iter().find(|w| !w.follow && w.paths == paths) {
+            if let Some(w) = self
+                .info
+                .windows
+                .iter()
+                .find(|w| !w.follow && w.paths == paths)
+            {
                 let layer = egui::LayerId::new(egui::Order::Middle, window_id(w.id));
                 self.ctx.move_to_top(layer);
                 return;
@@ -540,7 +549,10 @@ impl AppState {
             return self.toasts.error(format!("Locked: {e:#}"));
         }
         for w in &mut self.info.windows {
-            if w.paths.iter().any(|p| p.to_local_path().as_ref() == Some(&path)) {
+            if w.paths
+                .iter()
+                .any(|p| p.to_local_path().as_ref() == Some(&path))
+            {
                 w.due = Some(Instant::now());
             }
         }
@@ -628,7 +640,8 @@ fn header(ui: &mut egui::Ui, s: &mut AppState, p: &Props, n: usize) {
                 crate::folder_style::paint_entry(ui, rect, e, style, true);
             }
             None => {
-                let folder = egui::Image::new(crate::icons::folder()).fit_to_exact_size(rect.size());
+                let folder =
+                    egui::Image::new(crate::icons::folder()).fit_to_exact_size(rect.size());
                 folder.paint_at(ui, rect);
             }
         }
@@ -670,7 +683,9 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
     if let [one] = w.paths.as_slice() {
         let mut dots = l.dots(one);
         for t in &p.native {
-            let known = dots.iter().any(|d| keel_core::finder_tags::same_name(&d.name, &t.name));
+            let known = dots
+                .iter()
+                .any(|d| keel_core::finder_tags::same_name(&d.name, &t.name));
             if let (false, Some(color)) = (known, t.color.hex().and_then(crate::tag_dots::color32))
             {
                 dots.push(crate::tag_dots::Dot {
@@ -686,7 +701,10 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
             .map(|t| t.name.clone())
             .collect();
         for t in &p.native {
-            if !names.iter().any(|n| keel_core::finder_tags::same_name(n, &t.name)) {
+            if !names
+                .iter()
+                .any(|n| keel_core::finder_tags::same_name(n, &t.name))
+            {
                 names.push(t.name.clone());
             }
         }
@@ -735,7 +753,11 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
 }
 
 fn more_info(ui: &mut egui::Ui, p: &Props) {
-    let mut rows: Vec<(&str, String)> = p.media.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    let mut rows: Vec<(&str, String)> = p
+        .media
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
     if let Some(e) = &p.entry {
         if !e.ext.is_empty() && e.kind != Kind::Dir {
             rows.push(("Extension", format!(".{}", e.ext)));
@@ -867,7 +889,10 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
             let ext = p.entry.as_ref().map(|e| e.ext.as_str()).unwrap_or_default();
             if !ext.is_empty() {
                 let all = ui.button(format!("Use for all .{ext} files"));
-                if all.tip("Keel opens these files with this application").clicked() {
+                if all
+                    .tip("Keel opens these files with this application")
+                    .clicked()
+                {
                     out.push(Action::OpenWithApp {
                         paths: vec![local.clone()],
                         app,
@@ -928,7 +953,10 @@ fn sharing(ui: &mut egui::Ui, p: &Props, out: &mut Vec<Action>) {
         let dir = p.entry.as_ref().is_some_and(|e| e.kind == Kind::Dir);
         ui.horizontal(|ui| {
             ui.weak("Mode");
-            ui.monospace(format!("{} ({mode:o})", keel_vfs::sharing::mode_text(mode, dir)));
+            ui.monospace(format!(
+                "{} ({mode:o})",
+                keel_vfs::sharing::mode_text(mode, dir)
+            ));
         });
     }
     egui::Grid::new(("sharing", p.name.as_str()))
@@ -1001,24 +1029,37 @@ mod tests {
         // A folder.
         let folder = gather(&router, &[VPath::local(&dir)]).unwrap();
         assert_eq!(
-            (folder.kind.as_str(), folder.files, folder.folders, folder.bytes),
+            (
+                folder.kind.as_str(),
+                folder.files,
+                folder.folders,
+                folder.bytes
+            ),
             ("Folder", 3, 2, 9)
         );
         assert!(!folder.partial);
-        assert_eq!(folder.entry.as_ref().map(|e| e.kind.clone()), Some(Kind::Dir));
+        assert_eq!(
+            folder.entry.as_ref().map(|e| e.kind.clone()),
+            Some(Kind::Dir)
+        );
         let s = sections(&folder, 1);
         assert!(s.contains(&Section::NameExt) && s.contains(&Section::Comments));
         assert!(!s.contains(&Section::OpenWith), "folders have no Open with");
         let rows = general_rows(&folder, 1);
-        let row = |rows: &[(&str, String)], k: &str| {
-            rows.iter().find(|r| r.0 == k).map(|r| r.1.clone())
-        };
-        assert_eq!(row(&rows, "Contains").as_deref(), Some("3 files, 2 folders"));
+        let row =
+            |rows: &[(&str, String)], k: &str| rows.iter().find(|r| r.0 == k).map(|r| r.1.clone());
+        assert_eq!(
+            row(&rows, "Contains").as_deref(),
+            Some("3 files, 2 folders")
+        );
         assert!(row(&rows, "Created").is_some() && row(&rows, "Modified").is_some());
         // A file, with its extras (no library: comments say how to get them).
         let one = VPath::local(dir.join("one.txt"));
         let mut file = gather(&router, std::slice::from_ref(&one)).unwrap();
-        assert_eq!((file.kind.as_str(), file.bytes, file.files), ("TXT file", 5, 1));
+        assert_eq!(
+            (file.kind.as_str(), file.bytes, file.files),
+            ("TXT file", 5, 1)
+        );
         let lib = Library {
             backend: None,
             sources: Vec::new(),
@@ -1045,7 +1086,12 @@ mod tests {
         let two = [one.clone(), VPath::local(dir.join("a"))];
         let several = gather(&router, &two).unwrap();
         assert_eq!(
-            (several.name.as_str(), several.files, several.folders, several.bytes),
+            (
+                several.name.as_str(),
+                several.files,
+                several.folders,
+                several.bytes
+            ),
             ("2 items", 3, 2, 9)
         );
         assert!(several.entry.is_none() && several.modified.is_none());

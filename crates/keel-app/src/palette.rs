@@ -104,7 +104,11 @@ fn global_items() -> Vec<Item> {
         ("Toggle preview panel", "F3", TogglePreview),
         ("Show inspector", "Ctrl+I", ToggleInspector),
         // Task 67.
-        ("Info window following the selection", "Ctrl+Alt+I", InfoFollow),
+        (
+            "Info window following the selection",
+            "Ctrl+Alt+I",
+            InfoFollow,
+        ),
         ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
         (
             "Stash selection in the drop zone",

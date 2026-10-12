@@ -283,7 +283,10 @@ fn dialogs_focus_their_primary_action_and_esc_cancels() {
     );
     press(&mut h, Modifiers::NONE, Key::Escape);
     h.run_steps(3);
-    assert!(h.state().state.info.windows.is_empty(), "Esc closes Get Info");
+    assert!(
+        h.state().state.info.windows.is_empty(),
+        "Esc closes Get Info"
+    );
     assert_eq!(focus(&h).map(|f| f.0), Some(Role::ListItem));
 }
 
