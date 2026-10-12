@@ -134,6 +134,59 @@ pub fn ftp_mlsd(data: &[u8]) {
     }
 }
 
+/// Deleted-file recovery over an NTFS volume image: the boot sector, the `$MFT` walk
+/// (fixups, attributes, data runs), `$Bitmap`, folder paths, then each candidate's data.
+pub fn recover_ntfs(data: &[u8]) {
+    recover(data, |r| crate::recover::scan_ntfs(r));
+}
+
+/// Deleted-file recovery over an exFAT volume image: entry sets, chains, the bitmap.
+pub fn recover_exfat(data: &[u8]) {
+    recover(data, |r| crate::recover::scan_exfat(r));
+}
+
+/// Deleted-file recovery over a FAT12/16/32 volume image: folders, long names, the FAT.
+pub fn recover_fat(data: &[u8]) {
+    recover(data, |r| crate::recover::scan_fat(r));
+}
+
+/// A Recycle Bin `$I` file.
+pub fn recycle_bin(data: &[u8]) {
+    if let Ok(info) = crate::recover::recycle::parse_info(data) {
+        let _ = info.name();
+    }
+}
+
+type Volume = crate::recover::BlockReader<io::Cursor<Vec<u8>>>;
+
+/// Scans, then reads the first 64 candidates' data into a sink that refuses more than
+/// 1 MiB (a sparse run may declare any length).
+fn recover(data: &[u8], scan: impl Fn(&mut Volume) -> crate::recover::Result<crate::recover::Scan>) {
+    let mut r = crate::recover::BlockReader::new(io::Cursor::new(data.to_vec()));
+    let Ok(found) = scan(&mut r) else {
+        return;
+    };
+    for c in found.candidates.iter().take(64) {
+        let _ = c.path();
+        let _ = crate::recover::read_data(&mut r, c, &mut Capped(1 << 20));
+    }
+}
+
+struct Capped(usize);
+
+impl io::Write for Capped {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        if b.len() > self.0 {
+            return Err(io::Error::other("over the fuzz cap"));
+        }
+        self.0 -= b.len();
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fuzz_harness::{run, Capped};
@@ -156,5 +209,35 @@ mod tests {
     #[test]
     fn fuzz_ftp_mlsd() {
         run("ftp_mlsd", super::ftp_mlsd);
+    }
+    #[test]
+    fn fuzz_recover_ntfs() {
+        run("recover_ntfs", super::recover_ntfs);
+    }
+    #[test]
+    fn fuzz_recover_exfat() {
+        run("recover_exfat", super::recover_exfat);
+    }
+    #[test]
+    fn fuzz_recover_fat() {
+        run("recover_fat", super::recover_fat);
+    }
+    #[test]
+    fn fuzz_recycle_bin() {
+        run("recycle_bin", super::recycle_bin);
+    }
+
+    /// The recovery targets' seeds (`fuzz/corpus/recover_*`), built by the test image
+    /// builders: `cargo test -p keel-vfs write_recover_seeds -- --ignored` rewrites them.
+    #[test]
+    #[ignore]
+    fn write_recover_seeds() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
+        for (target, name, bytes) in crate::recover::testimg::seeds() {
+            let at = dir.join(target);
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join(&name), &bytes).unwrap();
+            eprintln!("{target}/{name}: {} bytes", bytes.len());
+        }
     }
 }
