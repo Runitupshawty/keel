@@ -3346,3 +3346,26 @@ fn organize_by_type_then_undo() {
     assert!(back, "everything is back: {:?}", tree_of(&a));
     close_library(&mut h);
 }
+
+/// Task 66: a right-click on a column header opens the column chooser (a popup below the
+/// header); ticking Date Created adds that column, and Details stays usable.
+#[test]
+fn header_right_click_chooses_columns() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+    let cfg = std::env::temp_dir().join(format!("keel-walk-{}-header", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cfg);
+    std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    assert!(!has(&h, "Created"), "not a default column");
+    let at = pos(&h, "Modified", 0);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    assert!(has(&h, "Show columns"), "{}", dump(&h, "olumn"));
+    assert!(has(&h, "Date Created"));
+    click_last(&mut h, "Date Created");
+    h.run_steps(3);
+    assert!(has(&h, "Created"), "the column shows: {}", dump(&h, "Created"));
+    assert!(has(&h, "Modified"), "the others stay");
+    let _ = std::fs::remove_dir_all(&cfg);
+}
