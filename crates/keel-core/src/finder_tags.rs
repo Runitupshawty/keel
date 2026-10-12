@@ -400,7 +400,6 @@ pub mod bplist {
     struct Doc<'a> {
         data: &'a [u8],
         offset_size: usize,
-        ref_size: usize,
         objects: u64,
         table: usize,
     }
@@ -452,9 +451,8 @@ pub mod bplist {
                 0x5 => Ok(String::from_utf8_lossy(self.body(body, n)?).into_owned()),
                 0x6 => {
                     let bytes = self.body(body, n.checked_mul(2).context("length overflow")?)?;
-                    let units: Vec<u16> = bytes
-                        .chunks_exact(2)
-                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    let units: Vec<u16> = (bytes.as_chunks::<2>().0.iter())
+                        .map(|c| u16::from_be_bytes(*c))
                         .collect();
                     Ok(String::from_utf16_lossy(&units))
                 }
@@ -494,7 +492,6 @@ pub mod bplist {
         let doc = Doc {
             data,
             offset_size,
-            ref_size,
             objects,
             table: table as usize,
         };

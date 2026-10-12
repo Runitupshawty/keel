@@ -159,7 +159,7 @@ pub fn merge_aces(aces: &[Ace]) -> Vec<Access> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{merge_aces, Ace, Access, Sharing};
+    use super::{merge_aces, Access, Ace, Sharing};
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::{io, path::Path};
@@ -169,9 +169,9 @@ mod imp {
         ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        GetAce, LookupAccountSidW, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
-        DACL_SECURITY_INFORMATION, INHERITED_ACE, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+        GetAce, LookupAccountSidW, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
+        INHERITED_ACE, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SID_NAME_USE,
     };
 
     /// READ_CONTROL: enough to read the owner and the DACL.
@@ -309,9 +309,8 @@ mod imp {
         // SAFETY: zeroed is a valid passwd; getpwuid_r writes into it and `buf`.
         let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
         let mut found: *mut libc::passwd = std::ptr::null_mut();
-        let rc = unsafe {
-            libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut found)
-        };
+        let rc =
+            unsafe { libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut found) };
         if rc != 0 || found.is_null() || pwd.pw_name.is_null() {
             return None;
         }
@@ -325,9 +324,8 @@ mod imp {
         // SAFETY: as in `user_name`.
         let mut grp: libc::group = unsafe { std::mem::zeroed() };
         let mut found: *mut libc::group = std::ptr::null_mut();
-        let rc = unsafe {
-            libc::getgrgid_r(gid, &mut grp, buf.as_mut_ptr(), buf.len(), &mut found)
-        };
+        let rc =
+            unsafe { libc::getgrgid_r(gid, &mut grp, buf.as_mut_ptr(), buf.len(), &mut found) };
         if rc != 0 || found.is_null() || grp.gr_name.is_null() {
             return None;
         }
