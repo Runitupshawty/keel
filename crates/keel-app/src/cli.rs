@@ -124,6 +124,10 @@ pub enum Command {
         #[arg(long)]
         execute: bool,
     },
+    /// Recover deleted files: list what a drive, device or volume image still holds, and
+    /// restore it to another drive (reading a drive needs administrator rights).
+    #[command(subcommand)]
+    Recover(RecoverCmd),
     /// MCP server over stdio (for Claude Code, Codex and other MCP clients). `execute`
     /// asks the user to confirm each plan through the client (MCP elicitation).
     Mcp {
@@ -131,6 +135,27 @@ pub enum Command {
         /// must then repeat the preview's summary, which the client's approval shows.
         #[arg(long)]
         allow_execute: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum RecoverCmd {
+    /// List the deleted files on a drive (`E:`; needs administrator), a device (needs
+    /// root) or a volume image (NTFS, exFAT, FAT12/16/32), with ids for `restore`; a
+    /// Recycle Bin folder lists its items instead.
+    Scan {
+        /// A drive letter, a device or an image file.
+        source: String,
+    },
+    /// Restore files from the last scan into a folder on another drive (never onto the
+    /// drive scanned).
+    Restore {
+        /// Ids from `keel recover scan`.
+        #[arg(required = true)]
+        ids: Vec<usize>,
+        /// An existing folder on another drive.
+        #[arg(long, value_name = "DIR")]
+        to: String,
     },
 }
 
@@ -638,6 +663,19 @@ mod tests {
                 name: Some("copy".into())
             })
         );
+        assert_eq!(
+            cmd(&["recover", "scan", "E:"]),
+            Command::Recover(RecoverCmd::Scan { source: "E:".into() })
+        );
+        assert_eq!(
+            cmd(&["recover", "restore", "3", "12", "--to", "D:/out"]),
+            Command::Recover(RecoverCmd::Restore {
+                ids: vec![3, 12],
+                to: "D:/out".into()
+            })
+        );
+        assert!(parse(&["recover", "restore", "x", "--to", "d"]).is_err());
+        assert!(parse(&["recover", "restore", "--to", "d"]).is_err());
         let cli = parse(&["search", "x", "--json", "--profile", "work"]).unwrap();
         assert!(cli.json);
         assert_eq!(cli.profile.as_deref(), Some("work"));

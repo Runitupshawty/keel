@@ -124,6 +124,11 @@ impl From<Usage> for Fail {
 type Out = Box<dyn Write>;
 
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
+    // Recovery reads volumes, not the library.
+    let cmd = match cmd {
+        Command::Recover(r) => return crate::recover_cli::run(r, json),
+        cmd => cmd,
+    };
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -699,7 +704,7 @@ fn command(
             }
             Some(done)
         }
-        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } => {
+        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } | Command::Recover(_) => {
             unreachable!("handled by run")
         }
     };

@@ -920,7 +920,7 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     let root = ex.root();
     ex.add_file(root, "live.txt", b"live", Layout::Contiguous);
     let a = ex.add_file(root, "contiguous.txt", &[1; 100], Layout::Contiguous);
-    let b = ex.add_file(root, "chained.bin", &[2; 4100], Layout::Chained);
+    let b = ex.add_file(root, "chained.bin", &[2; 4000], Layout::Chained);
     let c = ex.add_file(root, "fragmented.dat", &[3; 8200], Layout::Fragmented);
     let (dir, dir_set) = ex.add_dir(root, "Folder");
     let d = ex.add_file(dir, "a name of more than fifteen characters.txt", &[4; 50], Layout::Contiguous);

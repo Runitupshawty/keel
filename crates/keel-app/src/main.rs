@@ -37,6 +37,7 @@ mod pane;
 mod platform;
 mod preview_panel;
 mod profiles;
+mod recover_cli; // Phase 17 Task 85: `keel recover`
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)

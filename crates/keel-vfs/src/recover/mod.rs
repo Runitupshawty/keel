@@ -23,8 +23,10 @@ mod fat;
 mod ntfs;
 pub mod recycle;
 mod source;
-#[cfg(test)]
-pub(crate) mod testimg;
+/// Volume image builders for tests (this crate's and other crates' with `test-util`).
+#[cfg(any(test, feature = "test-util"))]
+#[doc(hidden)]
+pub mod testimg;
 #[cfg(test)]
 mod tests;
 
