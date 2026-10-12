@@ -2226,7 +2226,11 @@ pub fn extract_under(
                 below(&dst, name)?;
                 ready.insert(parent.to_path_buf());
             }
-            let mut partial = tempfile::NamedTempFile::new_in(parent)?;
+            // The usual umask-filtered mode, not the temp file's private 0600.
+            let mut staging = tempfile::Builder::new();
+            #[cfg(unix)]
+            staging.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+            let mut partial = staging.tempfile_in(parent)?;
             let copied = copy_archive_bytes(input, &mut partial, &mut state, progress, cancel)?;
             // Readers already hold bodies to their declared size; never persist a short file.
             anyhow::ensure!(copied == *size, "archive entry is truncated: {name}");
