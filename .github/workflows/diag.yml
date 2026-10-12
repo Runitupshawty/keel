@@ -27,7 +27,10 @@ jobs:
           key: diag
       - run: bash scripts/fetch-deps.sh
       - name: Tests
-        run: cargo test --workspace --no-fail-fast 2>&1 | tee test.log
+        run: cargo test --workspace 2>&1 | tee test.log
+        continue-on-error: true
+      - name: Tests again (no fail fast)
+        run: cargo test --workspace --no-fail-fast 2>&1 | tee test2.log
         continue-on-error: true
       - name: Failing tests as annotations
         if: always()
@@ -35,7 +38,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import re
-          t = open("test.log", errors="replace").read()
+          t = open("test.log", errors="replace").read() + open("test2.log", errors="replace").read()
           out = []
           for m in re.finditer(r"---- (\S+) stdout ----\n(.*?)(?=\n---- |\nfailures:\n)", t, re.S):
               body = " | ".join(l for l in m.group(2).split("\n") if l.strip())[:700]
