@@ -1,7 +1,4 @@
-//! S        let texts = |v: Vec<&Entry>| v.into_iter().map(|e| e.text.clone()).collect::<Vec<_>>();
-        let suggest = |h: &History, typed: &str, order, n| {
-            crate::bookmarks::suggestions(&texts(h.ordered(order)), typed, n)
-        };arch history (Task 76): the searches run in this profile, for the suggestions
+//! Search history (Task 76): the searches run in this profile, for the suggestions
 //! dropdown under the search field. Kept in `<config>/profiles/<name>/search_history.json`
 //! (never sent anywhere); **Do not save search history** records nothing and empties it,
 //! **Clear history** empties it. Each entry keeps how often and when it was last used, so
