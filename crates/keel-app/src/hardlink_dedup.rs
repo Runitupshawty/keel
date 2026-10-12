@@ -140,7 +140,10 @@ fn plan_by(groups: &[DupGroup], vol: impl Fn(&Path) -> Option<String>) -> DedupP
         let mut best: Option<(&String, usize)> = None;
         for (_, _, v) in &usable {
             let Some(v) = v else { continue };
-            let n = usable.iter().filter(|(_, _, u)| u.as_ref() == Some(v)).count();
+            let n = usable
+                .iter()
+                .filter(|(_, _, u)| u.as_ref() == Some(v))
+                .count();
             if best.is_none_or(|(_, m)| n > m) {
                 best = Some((v, n));
             }
@@ -275,9 +278,8 @@ pub fn link(pair: &Pair, cancel: &AtomicBool) -> anyhow::Result<Linked> {
         .map_err(|e| anyhow::anyhow!("linking {} to {}: {e}", dup.display(), keep.display()))?;
     // Changed while it was compared: leave it.
     let now = fs::symlink_metadata(dup).ok();
-    let unchanged = now.is_some_and(|m| {
-        m.len() == before.len() && m.modified().ok() == before.modified().ok()
-    });
+    let unchanged =
+        now.is_some_and(|m| m.len() == before.len() && m.modified().ok() == before.modified().ok());
     if !unchanged {
         let _ = fs::remove_file(&tmp);
         anyhow::bail!("{} changed while it was compared", dup.display());
@@ -474,7 +476,12 @@ mod tests {
         let why: Vec<Skip> = plan.skipped.iter().map(|(_, s)| *s).collect();
         assert_eq!(
             why,
-            [Skip::NotLocal, Skip::Changed, Skip::Offline, Skip::AlreadyLinked]
+            [
+                Skip::NotLocal,
+                Skip::Changed,
+                Skip::Offline,
+                Skip::AlreadyLinked
+            ]
         );
         assert_eq!(plan.bytes(), 10);
         let s = plan.summary();
@@ -529,10 +536,16 @@ mod tests {
         assert!(same_file(&keep, &dup), "one file now");
         assert_eq!(fs::read(&dup).unwrap(), b"identical content");
         // No temporary names left behind.
-        let names: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names: Vec<_> = fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names.len(), 2, "{names:?}");
         // A second time: already linked.
-        assert!(link(&pair, &cancel).unwrap_err().to_string().contains("already"));
+        assert!(link(&pair, &cancel)
+            .unwrap_err()
+            .to_string()
+            .contains("already"));
 
         unlink(&dup, linked.mtime).unwrap();
         assert!(!same_file(&keep, &dup), "its own copy again");

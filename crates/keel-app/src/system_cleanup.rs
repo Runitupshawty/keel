@@ -67,7 +67,10 @@ pub enum SysDialog {
     Dedup(hardlink_dedup::Preview),
     Task(TaskDialog),
     /// A finished cleanup's output (the component store analysis).
-    Report { title: String, text: String },
+    Report {
+        title: String,
+        text: String,
+    },
 }
 
 // ---- system cleanups ------------------------------------------------------------------
@@ -128,7 +131,11 @@ impl Task {
             Task::DismCleanup => "dism-cleanup".into(),
             Task::OptimizeVhd { path, powershell } => format!(
                 "{}:{}",
-                if *powershell { "vhd-ps" } else { "vhd-diskpart" },
+                if *powershell {
+                    "vhd-ps"
+                } else {
+                    "vhd-diskpart"
+                },
                 path.display()
             ),
         }
@@ -156,7 +163,9 @@ impl Task {
 
 /// Why `path` is not a virtual disk Keel optimizes (shape only; the disk is not read).
 pub fn check_vhd(path: &Path) -> Result<(), String> {
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
     if !matches!(ext.as_deref(), Some("vhd" | "vhdx")) {
         return Err(format!("{} is not a .vhd or .vhdx file", path.display()));
     }
@@ -165,7 +174,10 @@ pub fn check_vhd(path: &Path) -> Result<(), String> {
     }
     let text = path.to_string_lossy();
     if text.contains(['"', '\n', '\r']) {
-        return Err(format!("{} has characters a script cannot quote", path.display()));
+        return Err(format!(
+            "{} has characters a script cannot quote",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -637,7 +649,9 @@ pub fn dialog_ui(ui: &mut egui::Ui, d: &mut SysDialog, cancel: &mut bool) -> Opt
             egui::ScrollArea::vertical()
                 .max_height(260.0)
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(text.as_str()).monospace()));
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(text.as_str()).monospace(),
+                    ));
                 });
             ui.add_space(8.0);
             let ok = ui.button("OK");
@@ -900,7 +914,9 @@ pub fn launch_for(os: Os, l: Launcher, drive: Option<&str>) -> Option<Launch> {
 fn launch(l: Launcher, drive: Option<&str>) -> std::io::Result<()> {
     match launch_for(OS, l, drive) {
         Some(Launch::Url(url)) => open::that_detached(url),
-        Some(Launch::Program(exe, args)) => std::process::Command::new(exe).args(args).spawn().map(drop),
+        Some(Launch::Program(exe, args)) => {
+            std::process::Command::new(exe).args(args).spawn().map(drop)
+        }
         None => Err(std::io::Error::other("not on this system")),
     }
 }
@@ -930,12 +946,20 @@ pub fn drive_menu(ui: &mut egui::Ui, name: &str, out: &mut Vec<Action>) {
     };
     ui.menu_button("Clean up", |ui| {
         for &l in launchers(OS) {
-            item(ui, l.label(), Action::System(SysCmd::Launch(l, Some(name.into()))));
+            item(
+                ui,
+                l.label(),
+                Action::System(SysCmd::Launch(l, Some(name.into()))),
+            );
         }
         if OS == Os::Windows {
             ui.separator();
             if is_system_drive(name) {
-                item(ui, "Disable hibernation…", Action::System(SysCmd::Preview(Task::Hibernation)));
+                item(
+                    ui,
+                    "Disable hibernation…",
+                    Action::System(SysCmd::Preview(Task::Hibernation)),
+                );
                 item(
                     ui,
                     "Analyze the component store…",
@@ -966,7 +990,10 @@ pub fn palette_items(selection: bool) -> Vec<crate::palette::Item> {
     }
     if OS == Os::Windows {
         for task in [Task::Hibernation, Task::DismAnalyze, Task::DismCleanup] {
-            items.push((format!("{}…", task.title()), Action::System(SysCmd::Preview(task))));
+            items.push((
+                format!("{}…", task.title()),
+                Action::System(SysCmd::Preview(task)),
+            ));
         }
         items.push(("Optimize VHD/VHDX…".into(), Action::System(SysCmd::PickVhd)));
     }
@@ -1069,7 +1096,8 @@ impl AppState {
             }
             SysCmd::Launch(l, drive) => {
                 if let Err(e) = launch(l, drive.as_deref()) {
-                    self.toasts.error(format!("Could not open {}: {e}", l.label()));
+                    self.toasts
+                        .error(format!("Could not open {}: {e}", l.label()));
                 }
             }
             SysCmd::Preview(task) => {
@@ -1123,9 +1151,9 @@ impl AppState {
     pub fn system_msg(&mut self, m: SysMsg) {
         match m {
             SysMsg::Measured(Err(e)) => self.toasts.error(e),
-            SysMsg::Measured(Ok(m)) => {
-                self.system_dialog(SysDialog::DeletePermanently(permanent_delete::Confirm::new(m)))
-            }
+            SysMsg::Measured(Ok(m)) => self.system_dialog(SysDialog::DeletePermanently(
+                permanent_delete::Confirm::new(m),
+            )),
             SysMsg::DedupPlanned(plan) => {
                 self.system_dialog(SysDialog::Dedup(hardlink_dedup::Preview { plan }))
             }
@@ -1198,12 +1226,22 @@ mod tests {
         assert_eq!(analyze.program, "Dism.exe");
         assert_eq!(
             analyze.args,
-            ["/Online", "/Cleanup-Image", "/AnalyzeComponentStore", "/English"]
+            [
+                "/Online",
+                "/Cleanup-Image",
+                "/AnalyzeComponentStore",
+                "/English"
+            ]
         );
         let cleanup = &steps(&Task::DismCleanup).unwrap()[0];
         assert_eq!(
             cleanup.args,
-            ["/Online", "/Cleanup-Image", "/StartComponentCleanup", "/English"]
+            [
+                "/Online",
+                "/Cleanup-Image",
+                "/StartComponentCleanup",
+                "/English"
+            ]
         );
         assert!(!cleanup.args.iter().any(|a| a.contains("ResetBase")));
     }
@@ -1221,7 +1259,10 @@ mod tests {
         assert_eq!(s[0].args.last().unwrap(), OPTIMIZE_VHD_PS);
         // The path (with a quote and spaces) is never in the script text.
         assert!(!OPTIMIZE_VHD_PS.contains("Disk 1"));
-        assert_eq!(s[0].env, [("KEEL_VHD".to_owned(), path.display().to_string())]);
+        assert_eq!(
+            s[0].env,
+            [("KEEL_VHD".to_owned(), path.display().to_string())]
+        );
         assert!(OPTIMIZE_VHD_PS.contains("-ReadOnly") && OPTIMIZE_VHD_PS.contains("finally"));
         assert!(OPTIMIZE_VHD_PS.contains("Optimize-VHD -Path $env:KEEL_VHD -Mode Full"));
     }
@@ -1396,7 +1437,10 @@ The operation completed successfully.
         assert_eq!(r.recommended, Some(true));
         assert_eq!(r.reclaimable(), Some(r.backups.unwrap() + r.cache.unwrap()));
         let s = r.summary();
-        assert!(s.contains("3 reclaimable packages") && s.ends_with("cleanup recommended"), "{s}");
+        assert!(
+            s.contains("3 reclaimable packages") && s.ends_with("cleanup recommended"),
+            "{s}"
+        );
         assert_eq!(parse_analysis("garbage\n : \n"), StoreReport::default());
         assert_eq!(StoreReport::default().reclaimable(), None);
         assert_eq!(parse_size("12 bytes"), Some(12));
@@ -1422,12 +1466,18 @@ The operation completed successfully.
             launch_for(Os::Windows, Launcher::DiskCleanup, Some("/media/usb")),
             Some(Program("cleanmgr.exe", Vec::new()))
         );
-        assert_eq!(w(Launcher::InstalledApps), Some(Url("ms-settings:appsfeatures")));
+        assert_eq!(
+            w(Launcher::InstalledApps),
+            Some(Url("ms-settings:appsfeatures"))
+        );
         assert_eq!(
             w(Launcher::ProgramsAndFeatures),
             Some(Program("control.exe", vec!["appwiz.cpl".into()]))
         );
-        assert_eq!(w(Launcher::StorageSettings), Some(Url("ms-settings:storagesense")));
+        assert_eq!(
+            w(Launcher::StorageSettings),
+            Some(Url("ms-settings:storagesense"))
+        );
         assert_eq!(
             launch_for(Os::Mac, Launcher::StorageSettings, None),
             Some(Url("x-apple.systempreferences:com.apple.settings.Storage"))
@@ -1435,7 +1485,11 @@ The operation completed successfully.
         assert_eq!(launch_for(Os::Mac, Launcher::DiskCleanup, None), None);
         assert!(launchers(Os::Linux).is_empty());
         for l in launchers(Os::Windows).iter().chain(launchers(Os::Mac)) {
-            let os = if launchers(Os::Mac).contains(l) { Os::Mac } else { Os::Windows };
+            let os = if launchers(Os::Mac).contains(l) {
+                Os::Mac
+            } else {
+                Os::Windows
+            };
             assert!(launch_for(os, *l, None).is_some(), "{l:?}");
         }
     }
@@ -1488,7 +1542,10 @@ The operation completed successfully.
         };
         assert_eq!(c.phrase(), "delete 1");
         assert!(c.text().contains("1 item (1 file, 5 B)"), "{}", c.text());
-        assert!(dir.join("a.txt").exists(), "nothing deleted before the answer");
+        assert!(
+            dir.join("a.txt").exists(),
+            "nothing deleted before the answer"
+        );
         c.typed = "delete 2".into();
         assert_eq!(c.answer(), None);
         c.typed = "delete 1".into();

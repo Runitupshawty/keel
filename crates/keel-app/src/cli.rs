@@ -536,7 +536,10 @@ mod tests {
             report.to_str().unwrap(),
         ])
         .unwrap();
-        assert_eq!(cli.system_cleanup.as_deref(), Some(r"vhd-ps:D:\VMs\a b.vhdx"));
+        assert_eq!(
+            cli.system_cleanup.as_deref(),
+            Some(r"vhd-ps:D:\VMs\a b.vhdx")
+        );
         assert_eq!(cli.cleanup_report, Some(report));
         assert_eq!(cli.folder, None);
         assert_eq!(cli.command, None);

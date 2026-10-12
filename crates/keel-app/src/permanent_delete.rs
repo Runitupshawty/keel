@@ -78,8 +78,8 @@ pub fn measure(paths: &[VPath], cancel: &AtomicBool) -> anyhow::Result<Measured>
 
 fn walk(path: &Path, m: &mut Measured, cancel: &AtomicBool) -> anyhow::Result<()> {
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
     let ft = meta.file_type();
     if ft.is_dir() && !ft.is_symlink() && !is_junction(&meta) {
         m.folders += 1;
@@ -290,9 +290,19 @@ mod tests {
         let mut c = Confirm::new(measured(12, 3, 4_200_000));
         assert_eq!(c.phrase(), "delete 15");
         let text = c.text();
-        assert!(text.contains("2 items (12 files, 3 folders, 4.20 MB)"), "{text}");
+        assert!(
+            text.contains("2 items (12 files, 3 folders, 4.20 MB)"),
+            "{text}"
+        );
         assert!(text.contains("cannot be restored or undone"), "{text}");
-        for wrong in ["", "delete", "delete 14", "delete 15 now", "remove 15", "delete15"] {
+        for wrong in [
+            "",
+            "delete",
+            "delete 14",
+            "delete 15 now",
+            "remove 15",
+            "delete15",
+        ] {
             c.typed = wrong.into();
             assert!(!c.matches(), "{wrong:?}");
             assert_eq!(c.answer(), None, "{wrong:?}");
@@ -315,7 +325,11 @@ mod tests {
             bytes: 10,
         });
         assert_eq!(one.phrase(), "delete 1");
-        assert!(one.text().contains("1 item (1 file, 10 B)"), "{}", one.text());
+        assert!(
+            one.text().contains("1 item (1 file, 10 B)"),
+            "{}",
+            one.text()
+        );
     }
 
     #[test]
@@ -370,7 +384,10 @@ mod tests {
         let m = measure(&paths, &AtomicBool::new(false)).unwrap();
         assert_eq!((m.files, m.folders, m.bytes), (1, 1, 0));
         run(&m, &|_| {}, &AtomicBool::new(false)).unwrap();
-        assert!(d.join("outside/big.bin").exists(), "the link's target stays");
+        assert!(
+            d.join("outside/big.bin").exists(),
+            "the link's target stays"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
