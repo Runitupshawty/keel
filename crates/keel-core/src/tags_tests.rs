@@ -358,3 +358,91 @@ fn recents_never_point_at_a_reused_record_id() {
         .unwrap();
     assert_eq!(left, 0, "forgotten");
 }
+
+/// Task 76: a bookmark keeps its backend, sort, columns, match toggles, filter, folder,
+/// position and shortcut; a System-backend query need not parse as a library query; bad
+/// fields and a shortcut another view has are refused.
+#[test]
+fn views_keep_bookmark_fields() {
+    let f = fixture();
+    let lib = &f.lib;
+    let first = lib.create_view("PDFs", "ext:pdf", "details").unwrap();
+    assert_eq!((first.position, first.backend), (1, ViewBackend::Library));
+    let mut system = View {
+        name: "Logs".into(),
+        // Everything syntax, not the library's: fine for the system backend.
+        query: "ext:log dm:today <a|b>".into(),
+        layout: "details".into(),
+        backend: ViewBackend::System,
+        sort: "modified:desc,name".into(),
+        columns: vec!["name".into(), "path".into(), "size".into()],
+        matching: MatchToggles {
+            case: true,
+            regex: true,
+            ..MatchToggles::default()
+        },
+        filter: "Document".into(),
+        folder: "Work/Logs".into(),
+        shortcut: "Ctrl+Shift+1".into(),
+        ..View::default()
+    };
+    let saved = lib.add_view(&system).unwrap();
+    system.id = saved.id;
+    system.position = 1;
+    assert_eq!(saved, system);
+    assert_eq!(lib.view(saved.id).unwrap().as_ref(), Some(&system));
+    // Top-level views first, then folders by name; inside a folder by position.
+    let second = lib
+        .add_view(&View {
+            name: "Old logs".into(),
+            query: "ext:log".into(),
+            backend: ViewBackend::System,
+            folder: "Work/Logs".into(),
+            ..View::default()
+        })
+        .unwrap();
+    assert_eq!(second.position, 2);
+    let names = |lib: &Library| -> Vec<String> {
+        lib.views().unwrap().into_iter().map(|v| v.name).collect()
+    };
+    assert_eq!(names(lib), ["PDFs", "Logs", "Old logs"]);
+    let mut moved = second.clone();
+    moved.position = 0;
+    lib.update_view(&moved).unwrap();
+    assert_eq!(names(lib), ["PDFs", "Old logs", "Logs"]);
+
+    // The shortcut is unique (any case); the view itself may keep it.
+    let mut taken = first.clone();
+    taken.shortcut = "ctrl+shift+1".into();
+    let e = lib.update_view(&taken).unwrap_err().to_string();
+    assert!(e.contains("taken by the view \"Logs\""), "{e}");
+    lib.update_view(&system).unwrap();
+
+    // Bad fields.
+    let bad = |edit: &dyn Fn(&mut View)| {
+        let mut v = system.clone();
+        edit(&mut v);
+        lib.update_view(&v).is_err() && check_view(&v).is_err()
+    };
+    assert!(bad(&|v| v.sort = "name:up".into()));
+    assert!(bad(&|v| v.sort = "a,b,c,d".into()));
+    assert!(bad(&|v| v.columns = vec!["bad column".into()]));
+    assert!(bad(&|v| v.folder = "Work//Logs".into()));
+    assert!(bad(&|v| v.folder = "/Work".into()));
+    assert!(bad(&|v| v.query = "line\nbreak".into()));
+    assert!(bad(&|v| v.layout = "../x".into()));
+    assert!(bad(&|v| v.name = " padded".into()));
+    // A library view's query must parse.
+    assert!(bad(&|v| {
+        v.backend = ViewBackend::Library;
+        v.query = "size:lots".into();
+    }));
+
+    // Stored JSON holds only the toggles that are on.
+    assert_eq!(
+        serde_json::to_string(&system.matching).unwrap(),
+        r#"{"case":true,"regex":true}"#
+    );
+    lib.delete_view(system.id).unwrap();
+    assert_eq!(lib.view(system.id).unwrap(), None);
+}
