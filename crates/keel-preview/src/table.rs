@@ -36,21 +36,49 @@ fn lossy(record: &csv::ByteRecord) -> Vec<String> {
         .collect()
 }
 
+/// Count separators in the first logical record, leaving quoted fields out. The
+/// bounded head may end inside a field; commas win ties (including a single column).
+fn delimiter(head: &[u8]) -> u8 {
+    let candidates = b",;\t";
+    let mut counts = [0; 3];
+    let (mut quoted, mut field_start) = (false, true);
+    let mut bytes = head.iter().copied().peekable();
+    while let Some(byte) = bytes.next() {
+        if quoted {
+            if byte == b'"' {
+                if bytes.peek() == Some(&b'"') {
+                    bytes.next();
+                } else {
+                    quoted = false;
+                }
+            }
+        } else if byte == b'"' && field_start {
+            quoted = true;
+            field_start = false;
+        } else if byte == b'\n' || byte == b'\r' {
+            break;
+        } else {
+            field_start = false;
+            if let Some(i) = candidates.iter().position(|&c| c == byte) {
+                counts[i] += 1;
+                field_start = true;
+            }
+        }
+    }
+    let mut best = 0;
+    for i in 1..counts.len() {
+        if counts[i] > counts[best] {
+            best = i;
+        }
+    }
+    candidates[best]
+}
+
 fn csv(req: &Request) -> Result<TableData, String> {
     let file = std::fs::File::open(&req.bytes_path).map_err(|error| error.to_string())?;
     let mut input = std::io::BufReader::with_capacity(64 * 1024, file);
     let head = input.fill_buf().map_err(|error| error.to_string())?;
-    let first_line = head.split(|byte| *byte == b'\n').next().unwrap_or(head);
-    let delimiter = b",;\t"
-        .iter()
-        .copied()
-        .max_by_key(|candidate| {
-            first_line
-                .iter()
-                .filter(|byte| **byte == *candidate)
-                .count()
-        })
-        .unwrap_or(b',');
+    let delimiter = delimiter(head);
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
         .delimiter(delimiter)
@@ -224,4 +252,44 @@ pub(crate) fn workbook_text(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bughunt_csv_delimiters_inside_quotes_are_not_separators() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let req = Request {
+            entry: keel_vfs::Entry {
+                path: keel_vfs::VPath::local(file.path()),
+                name: "sample.csv".into(),
+                kind: keel_vfs::Kind::File,
+                size: 0,
+                modified: None,
+                hidden: false,
+                is_link: false,
+                encrypted: false,
+                ext: "csv".into(),
+            },
+            bytes_path: file.path().into(),
+            page: 0,
+            max_px: 480,
+            fit_width: false,
+        };
+        for (input, first) in [
+            ("\"a;b;c\",value\nhello,42\n", "a;b;c"),
+            ("\"a;\"\"b;c\",value\nhello,42\n", "a;\"b;c"),
+            ("\"a;\nb;c\",value\nhello,42\n", "a;\nb;c"),
+            ("\"a,b,c\";value\nhello;42\n", "a,b,c"),
+            ("\"a\tb\tc\",value\nhello,42\n", "a\tb\tc"),
+        ] {
+            std::fs::write(file.path(), input).unwrap();
+            let (headers, rows, truncated) = csv(&req).unwrap();
+            assert_eq!(headers, [first, "value"]);
+            assert_eq!(rows, [vec!["hello".to_owned(), "42".to_owned()]]);
+            assert!(!truncated);
+        }
+    }
 }
