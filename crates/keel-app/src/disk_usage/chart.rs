@@ -310,3 +310,23 @@ pub fn show(
     host.synced = Some(picked);
     Some(picked)
 }
+
+#[cfg(test)]
+impl Host {
+    /// The scan item selected in the chart (None: nothing).
+    pub fn selected_item(&self) -> Option<NodeId> {
+        self.view
+            .selected_id()
+            .and_then(|id| NodeId::try_from(id).ok())
+    }
+
+    /// The chart's tree, once built.
+    pub fn tree(&self) -> Option<&Tree> {
+        self.built.map(|_| self.view.tree())
+    }
+
+    /// The extensions whose files are outlined.
+    pub fn highlighted(&self) -> &[String] {
+        &self.view.highlight
+    }
+}

@@ -436,3 +436,104 @@ fn steps_without_the_library_stop_at_the_first_failure() {
     };
     assert!(!runs_without_library(&[other]));
 }
+
+fn ranks_of(model: &Model) -> std::collections::HashMap<String, usize> {
+    let types = model.file_types(false, &|_: &str| None);
+    (types.iter().enumerate())
+        .flat_map(|(rank, t)| t.extensions.iter().map(move |e| (e.clone(), rank)))
+        .collect()
+}
+
+/// The chart's tree is the scan: same total, same names, a file's extension as its color
+/// key and the rank the file types list gives it, folders neutral.
+#[test]
+fn the_chart_tree_is_the_scan_with_the_file_types_colors() {
+    let (dir, model) = fixture();
+    let ranks = ranks_of(&model);
+    let tree = super::chart::build(&model.tree, false, true, true, &ranks);
+    let top = model.tree.node(keel_vfs::du::TOP);
+    assert_eq!(tree.node(0).total, top.size);
+    let large = id(&model, dir.path(), "large.bin");
+    let n = tree.find(u64::from(large)).expect("large.bin is a tile");
+    assert_eq!(tree.node(n).total, 200);
+    assert_eq!(tree.node(n).label, "large.bin");
+    assert_eq!(tree.key_of(n), "bin");
+    let nested = tree.find(u64::from(id(&model, dir.path(), "nested"))).unwrap();
+    assert_eq!(tree.node(nested).total, 31);
+    assert!(tree.key_of(nested).starts_with('/'));
+    // The biggest type is rank 0 whatever part is shown; folders have no rank.
+    let colors = tree.key_ranks(nested);
+    assert_eq!(colors[tree.node(n).key as usize], ranks["bin"] as u32);
+    assert_eq!(ranks["bin"], 0);
+    assert_eq!(colors[tree.node(nested).key as usize], u32::MAX);
+    // Sizes on disk are the weights when asked.
+    let physical = super::chart::build(&model.tree, true, true, true, &ranks);
+    assert_eq!(physical.node(0).total, top.allocated);
+}
+
+/// A folder keeps its big children and shows the rest as one "Other" tile; the tile counts
+/// toward the folder's total.
+#[test]
+fn the_chart_tree_keeps_a_folders_big_children_and_pools_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("big.bin"), vec![0; 4_000_000]).unwrap();
+    for i in 0..40 {
+        std::fs::write(dir.path().join(format!("tiny{i}.dat")), [0u8; 10]).unwrap();
+    }
+    let roots = [Root::Path(dir.path().into())];
+    let scan = du::scan(&roots, &ScanOptions::default(), &ScanHandle::new()).unwrap();
+    let tree = super::chart::build(&scan, false, true, true, &Default::default());
+    let top = scan.node(keel_vfs::du::TOP).size;
+    assert_eq!(top, 4_000_400);
+    assert_eq!(tree.node(0).total, top);
+    let labels: Vec<&str> = tree.nodes.iter().map(|n| n.label.as_str()).collect();
+    assert!(labels.contains(&"big.bin"));
+    assert!(!labels.iter().any(|l| l.starts_with("tiny")), "{labels:?}");
+    let other: u64 = (tree.nodes.iter())
+        .filter(|n| n.synthetic)
+        .map(|n| n.total)
+        .sum();
+    assert_eq!(other, 400, "what was left out is one tile");
+    // The pooled tile stands for its folder: picking it picks the folder.
+    let at = tree.nodes.iter().position(|n| n.synthetic).unwrap();
+    assert_eq!(tree.nodes[at].id, tree.nodes[tree.nodes[at].parent.unwrap() as usize].id);
+}
+
+/// The chart is built on a worker, follows the tree list's cursor (zooming out to show
+/// it) and a pick in it is what `Model::reveal` shows in the list.
+#[test]
+fn the_chart_follows_the_tree_lists_selection() {
+    use egui_kittest::Harness;
+    let (dir, _) = fixture();
+    let theme: crate::theme::Theme = toml::from_str(crate::theme::BUILTIN[0].1).unwrap();
+    let mut du = DiskUsage::default();
+    du.start(vec![Root::Path(dir.path().into())]);
+    type State = (DiskUsage, DuSettings, Vec<Action>);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_state(
+            move |ctx, (du, settings, out): &mut State| {
+                super::ui::window(ctx, du, settings, &[], &theme, out)
+            },
+            (du, DuSettings::default(), Vec::new()),
+        );
+    for _ in 0..500 {
+        h.step();
+        if h.state().0.chart.tree().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.run_steps(3);
+    let root = h.state().0.model.as_ref().unwrap().tree.roots()[0].node;
+    assert_eq!(h.state().0.chart.selected_item(), Some(root));
+    h.press_key(egui::Key::ArrowDown);
+    h.run_steps(3);
+    let large = h.state().0.model.as_ref().unwrap().cursor.unwrap();
+    assert_eq!(h.state().0.chart.selected_item(), Some(large));
+    // The file's type is outlined in the chart too.
+    assert_eq!(
+        h.state().0.chart.highlighted(),
+        ["bin".to_owned()].as_slice()
+    );
+}
