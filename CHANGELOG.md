@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Settings → **Appearance** → **Style**: **Finder-style** (Finder's spacing scale, rounder corners, 13 px body text, and the Finder colors on the built-in dark and light themes) or **Classic** (the look so far). New profiles start in Finder-style; existing profiles keep Classic until switched. Color themes apply on top of either style. See [Appearance](docs/files.md#appearance).
+- Settings → Appearance → **Accent color**: Automatic, System (the Windows, macOS or GNOME accent color, read at start; blue where there is none), Theme or Custom. An accent that would be hard to read is made darker or lighter until it reaches 4.5:1.
+- Design tokens for the interface (spacing, corner radii, row heights, type scale, the eight Finder tag colors and semantic colors for light and dark), with contrast tests for the Finder and Classic token sets.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
