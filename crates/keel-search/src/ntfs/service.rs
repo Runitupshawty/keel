@@ -89,7 +89,6 @@ fn os_error(e: &io::Error) -> Response {
     }
 }
 
-
 fn answer(
     conn: &mut (impl Read + Write),
     backend: &dyn Elevated,

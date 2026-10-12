@@ -292,15 +292,19 @@ impl PipeServer {
             None => self.instance(false)?,
         };
         // SAFETY: a live pipe handle; no overlapped I/O.
-        match unsafe { ConnectNamedPipe(HANDLE(pipe.as_raw_handle()), None) } {
-            Ok(()) => {}
-            Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
-            Err(e) => return Err(win32(e)),
-        }
-        // Make the next instance now, so the name never disappears between clients
-        // (a client then waits for a free instance instead of finding no pipe). When
-        // every instance is in use this fails and the next `accept` tries again.
+        let connected = match unsafe { ConnectNamedPipe(HANDLE(pipe.as_raw_handle()), None) } {
+            Ok(()) => Ok(()),
+            Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => Ok(()),
+            // A client that connected and left before this call ("the pipe is being
+            // closed") is not a failure of the pipe.
+            Err(e) => Err(win32(e)),
+        };
+        // Make the next instance now, whatever happened to this one, so the name never
+        // disappears between clients (a client then waits for a free instance instead
+        // of finding no pipe). When every instance is in use this fails and the next
+        // `accept` tries again.
         self.pending = self.instance(false).ok();
+        connected?;
         Ok(File::from(pipe))
     }
 }

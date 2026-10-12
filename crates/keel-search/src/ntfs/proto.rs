@@ -436,7 +436,7 @@ impl Response {
                     });
                 }
                 Response::Stats(stats)
-            },
+            }
             _ => return Err(Malformed("unknown response")),
         };
         c.end()?;
@@ -532,7 +532,6 @@ const _: () = assert!(STAT_SIZE == 46);
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
 
     pub(crate) fn all_requests() -> Vec<Request> {
         vec![
@@ -663,7 +662,7 @@ pub(crate) mod tests {
             "",
             ".",
             "..",
-            r"ab",
+            r"a\b",
             "a/b",
             "nul\0",
             "tab\t",

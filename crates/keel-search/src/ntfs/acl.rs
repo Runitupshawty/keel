@@ -149,6 +149,50 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// For this thread only, a copy of the process token with every privilege
+    /// disabled. An administrator's enabled backup privilege (a build or SSH session
+    /// has it on) would otherwise let it list any folder, which is not what a user's
+    /// Keel runs with.
+    struct NoPrivileges(windows::Win32::Foundation::HANDLE);
+
+    impl NoPrivileges {
+        fn enter() -> Self {
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::Security::{
+                AdjustTokenPrivileges, ImpersonateSelf, SecurityImpersonation,
+                TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+            };
+            use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+            let mut token = HANDLE::default();
+            // SAFETY: plain Win32 calls on this thread's own token; the handle is
+            // closed in `drop`.
+            unsafe {
+                ImpersonateSelf(SecurityImpersonation).unwrap();
+                OpenThreadToken(
+                    GetCurrentThread(),
+                    TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                    true,
+                    &mut token,
+                )
+                .unwrap();
+                AdjustTokenPrivileges(token, true, None, 0, None, None).unwrap();
+            }
+            Self(token)
+        }
+    }
+
+    impl Drop for NoPrivileges {
+        fn drop(&mut self) {
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::Security::RevertToSelf;
+            // SAFETY: undoes `enter` on the same thread.
+            unsafe {
+                let _ = RevertToSelf();
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
     #[test]
     fn ancestors_from_the_root_down() {
         let all: Vec<&str> = ancestors(r"C:\a\b\c.txt").collect();
@@ -263,6 +307,7 @@ mod tests {
             // SAFETY: the name and attributes outlive the call.
             unsafe { CreateDirectoryW(&name, Some(&sa)) }.unwrap();
         });
+        let unprivileged = NoPrivileges::enter();
         let s = |p: &std::path::Path| p.to_str().unwrap().to_owned();
         let denied = !can_list(&s(&locked));
         let open = can_list(&s(&base.join("open")));
@@ -270,6 +315,7 @@ mod tests {
         let access = FolderAccess::new(can_list);
         let hidden = !access.visible(&format!(r"{}\file.txt", s(&locked)));
         let shown = access.visible(&format!(r"{}\file.txt", s(&base.join("open"))));
+        drop(unprivileged);
         // Give the folder back to this user (the owner may always rewrite the DACL)
         // so it can be removed.
         let me = keel_vfs::pipe::user_sid().unwrap();
