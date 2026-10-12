@@ -1,7 +1,8 @@
 //! What the evaluator asks of an item: [`Props`]. Indexed properties (name, path, size,
 //! dates, attributes) are plain reads; the optional ones (`type_name`, child counts, run
-//! count, file ids, dates other than the indexed four) default to unknown, and the
-//! evaluator asks for them only after the cheap terms passed.
+//! count, file ids, dates other than the indexed four, hard links, streams, archive
+//! contents) default to unknown, and the evaluator asks for them only after the cheap terms
+//! passed.
 
 use std::borrow::Cow;
 
@@ -146,6 +147,33 @@ pub trait Props {
     /// The type description from the platform (the registry on Windows); `None` uses
     /// Keel's built-in table by extension.
     fn type_name(&self) -> Option<Cow<'_, str>> {
+        None
+    }
+    /// How many names (hard links) the file has; 1 for most files. `None`: the source does
+    /// not say, and [`hard_link_names`](Props::hard_link_names) is counted instead.
+    fn hard_link_count(&self) -> Option<u64> {
+        None
+    }
+    /// The full paths of every name of the file, this one included (read lazily).
+    fn hard_link_names(&self) -> Option<Vec<String>> {
+        None
+    }
+    /// How many alternate data streams (named streams) the file has; `None` counts
+    /// [`stream_names`](Props::stream_names).
+    fn stream_count(&self) -> Option<u64> {
+        None
+    }
+    /// The names of the file's alternate data streams (`Zone.Identifier`), read lazily.
+    fn stream_names(&self) -> Option<Vec<String>> {
+        None
+    }
+    /// How many files an archive holds; `None` counts
+    /// [`container_file_names`](Props::container_file_names).
+    fn container_file_count(&self) -> Option<u64> {
+        None
+    }
+    /// The paths inside an archive (`docs\a.txt`), read lazily and bounded by the source.
+    fn container_file_names(&self) -> Option<Vec<String>> {
         None
     }
 }
