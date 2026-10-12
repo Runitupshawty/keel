@@ -29,6 +29,7 @@ pub fn request(url: &str) -> Result<Request, String> {
 const KEY: &str = r"HKCU\Software\Classes\keel";
 
 /// The handler's command line: this executable with `--url` and the link.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn command_line(exe: &std::path::Path) -> String {
     format!("\"{}\" --url \"%1\"", exe.display())
 }
