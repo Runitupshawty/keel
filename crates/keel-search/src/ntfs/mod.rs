@@ -1172,6 +1172,7 @@ mod tests {
         });
         let searcher = NtfsSearcher {
             shared: shared.clone(),
+            access: acl::FolderAccess::new(acl::can_list),
         };
         assert_eq!(searcher.state(), SearchState::Indexing { done: 1234 });
         let err = searcher.query(&Query::default()).unwrap_err().to_string();

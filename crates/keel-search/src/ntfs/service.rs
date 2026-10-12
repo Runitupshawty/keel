@@ -777,10 +777,12 @@ pub(crate) mod tests {
             ..Mock::default()
         };
         let mut c = client(&mock);
-        let mut got = Vec::new();
-        let full = c.read_mft('C', |r| got.push(r), || got.clear()).unwrap();
+        let got = RefCell::new(Vec::new());
+        let full = c
+            .read_mft('C', |r| got.borrow_mut().push(r), || got.borrow_mut().clear())
+            .unwrap();
         assert!(full);
-        assert_eq!(got, vec![dir.clone(), file.clone()]);
+        assert_eq!(got.into_inner(), vec![dir.clone(), file.clone()]);
         assert!(!c.broken());
 
         // A torn MFT read: the client drops what came before the reset.
@@ -790,9 +792,11 @@ pub(crate) mod tests {
             ..Mock::default()
         };
         let mut c = client(&torn);
-        let mut got = Vec::new();
-        assert!(!c.read_mft('C', |r| got.push(r), || got.clear()).unwrap());
-        assert_eq!(got, vec![dir]);
+        let got = RefCell::new(Vec::new());
+        assert!(!c
+            .read_mft('C', |r| got.borrow_mut().push(r), || got.borrow_mut().clear())
+            .unwrap());
+        assert_eq!(got.into_inner(), vec![dir]);
     }
 
     #[test]
