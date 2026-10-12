@@ -195,7 +195,7 @@ fn entry(path: &Path, name: &str, md: &std::fs::Metadata, is_dir: bool) -> Entry
     Entry {
         path: path.to_string_lossy().into_owned(),
         is_dir,
-        size: (!is_dir).then(|| md.len()),
+        size: (!is_dir).then_some(md.len()),
         modified: md.modified().ok().and_then(filetime_from_system),
         created: md.created().ok().and_then(filetime_from_system),
         attributes: Some(if is_dir {
