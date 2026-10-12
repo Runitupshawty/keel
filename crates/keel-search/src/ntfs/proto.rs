@@ -663,7 +663,7 @@ pub(crate) mod tests {
             "",
             ".",
             "..",
-            "a\b",
+            r"ab",
             "a/b",
             "nul\0",
             "tab\t",
