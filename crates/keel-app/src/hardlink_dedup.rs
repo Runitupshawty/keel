@@ -564,7 +564,11 @@ pub fn unlink(path: &Path, mtime: Option<SystemTime>) -> anyhow::Result<()> {
                 set_readonly(&tmp, true)?;
             }
         }
-        fs::rename(&tmp, path)?;
+        if fs::symlink_metadata(path)?.permissions().readonly() {
+            replace_read_only(&tmp, path)?;
+        } else {
+            fs::rename(&tmp, path)?;
+        }
         Ok(())
     })();
     if let Err(e) = copied {
@@ -573,6 +577,24 @@ pub fn unlink(path: &Path, mtime: Option<SystemTime>) -> anyhow::Result<()> {
         }
         let _ = fs::remove_file(&tmp);
         anyhow::bail!("copying {} back: {e:#}", path.display());
+    }
+    Ok(())
+}
+
+/// Renames `tmp` over `path` when `path` is read-only (Windows refuses to replace such a
+/// file): `path` is moved aside, `tmp` takes its name, and the old name goes. The
+/// attribute belongs to the file record the kept copy shares, so it is not cleared unless
+/// the system will not delete the name otherwise.
+fn replace_read_only(tmp: &Path, path: &Path) -> anyhow::Result<()> {
+    let old = temp_beside(path, "old")?;
+    fs::rename(path, &old)?;
+    if let Err(e) = fs::rename(tmp, path) {
+        let _ = fs::rename(&old, path);
+        return Err(e.into());
+    }
+    if fs::remove_file(&old).is_err() {
+        set_readonly(&old, false)?;
+        fs::remove_file(&old)?;
     }
     Ok(())
 }
@@ -1070,6 +1092,8 @@ mod tests {
         assert!(!same_file(&pair.keep, &pair.dup));
         assert_eq!(fs::metadata(&pair.dup).unwrap().modified().unwrap(), old);
         assert!(fs::metadata(&pair.dup).unwrap().permissions().readonly());
+        // The kept copy was not touched: still read-only.
+        assert!(fs::metadata(&pair.keep).unwrap().permissions().readonly());
         no_temporaries(&d);
         for p in [&pair.keep, &pair.dup] {
             set_readonly(p, false).unwrap();
