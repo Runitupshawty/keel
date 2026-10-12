@@ -836,7 +836,8 @@ pub(crate) mod tests {
     #[test]
     fn a_service_that_cannot_read_the_volume_is_not_a_protocol_error() {
         // It refuses before any frame: an error answer with the Windows code.
-        let mut c = client(&Mock::default());
+        let refusing = Mock::default();
+        let mut c = client(&refusing);
         let err = c.read_mft(start(7)).err().unwrap();
         assert_eq!(err.raw_os_error(), Some(5));
         assert!(!c.broken());
