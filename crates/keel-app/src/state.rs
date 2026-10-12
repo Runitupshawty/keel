@@ -208,10 +208,11 @@ pub enum Msg {
         path: VPath,
         file: bool,
     },
-    /// Properties gathered for `paths`.
+    /// Task 67: what Get Info window `id` asked for with request `req`.
     Properties {
-        paths: Vec<VPath>,
-        info: Result<crate::dialogs::properties::Props, String>,
+        id: u64,
+        req: u64,
+        info: Box<Result<crate::dialogs::properties::Props, String>>,
     },
     /// Open with…: the applications the system knows for `paths` (local copies).
     OpenWithApps {
@@ -330,6 +331,8 @@ pub struct AppState {
     pub sizes: crate::sizes::Sizes,
     /// Task 47: the VS Code color theme installer (Settings → General).
     pub color_themes: crate::color_theme::ColorThemes,
+    /// Task 67: the open Get Info windows (`dialogs::properties`).
+    pub info: crate::dialogs::properties::InfoWindows,
 }
 
 impl AppState {
@@ -432,6 +435,7 @@ impl AppState {
             profiles: crate::profiles::Profiles::new(ctx.clone()),
             icon_themes: crate::icon_theme::IconThemes::new(ctx.clone()),
             color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
+            info: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -946,17 +950,7 @@ impl AppState {
                     None => self.run(pane, Action::Navigate(path)),
                 }
             }
-            Msg::Properties { paths, info } => {
-                if let Some(Dialog::Properties {
-                    paths: shown,
-                    info: slot,
-                }) = &mut self.dialog
-                {
-                    if *shown == paths {
-                        *slot = Some(info);
-                    }
-                }
-            }
+            Msg::Properties { id, req, info } => self.info_answer(id, req, *info),
             Msg::OpenWithApps { paths, apps } => {
                 if self.dialog.is_none() {
                     let ext = ext_of(&paths[0]);
@@ -1168,7 +1162,7 @@ impl AppState {
         self.stash_job_started(id, stashed);
     }
 
-    fn target_paths(&self, p: usize) -> Vec<VPath> {
+    pub(crate) fn target_paths(&self, p: usize) -> Vec<VPath> {
         self.tab(p)
             .targets()
             .iter()
@@ -1279,6 +1273,9 @@ impl AppState {
                 // Task 46: a local folder outside the library gets its folder sizes on its
                 // own with the setting on.
                 self.sizes.listed(&dir);
+                // Task 67: the entries' Finder tags (macOS).
+                let tab = &self.panes[last.0].tabs[last.1];
+                crate::tag_dots::listed(&self.tx, &self.ctx, tab.entries());
                 if crate::sizes::auto_start(&dir, &self.library, self.settings.folder_sizes_local) {
                     if let Some(&(p, _)) = hits.iter().find(|&&(p, t)| self.panes[p].active == t) {
                         self.calculate_sizes(p, false);
@@ -2221,25 +2218,9 @@ impl AppState {
                     }
                 });
             }
-            Action::Properties => {
-                let mut paths = self.target_paths(p);
-                if paths.is_empty() && !self.tab(p).is_search() {
-                    paths.push(self.tab(p).dir.clone());
-                }
-                if paths.is_empty() || self.dialog.is_some() {
-                    return;
-                }
-                self.dialog = Some(Dialog::Properties {
-                    paths: paths.clone(),
-                    info: None,
-                });
-                let (router, tx, ctx) = (self.router.clone(), self.tx.clone(), self.ctx.clone());
-                worker::spawn("keel-props", move || {
-                    let info = crate::dialogs::properties::gather(&router, &paths)
-                        .map_err(|e| format!("{e:#}"));
-                    worker::send(&tx, &ctx, Msg::Properties { paths, info });
-                });
-            }
+            Action::Properties => self.open_info(p, false),
+            Action::InfoFollow => self.open_info(p, true),
+            Action::SetLocked(path, on) => self.set_locked(path, on),
             Action::ShellProperties(path) => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-shell-props", move || {

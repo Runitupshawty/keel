@@ -273,21 +273,28 @@ pub fn ui(
                                     } else {
                                         ui.visuals().text_color()
                                     };
+                                    // Task 67: tag color dots after the name.
+                                    let dots = cx.library.dots(&e.path);
+                                    let room = crate::tag_dots::width(dots.len());
                                     let mut job = egui::text::LayoutJob::simple(
                                         e.name.clone(),
                                         egui::FontId::proportional(12.0),
                                         color,
-                                        label_rect.width(),
+                                        (label_rect.width() - room).max(8.0),
                                     );
                                     job.wrap.max_rows = 2;
                                     job.wrap.break_anywhere = true;
                                     job.halign = egui::Align::Center;
                                     let galley = ui.fonts(|f| f.layout_job(job));
+                                    let right = label_rect.center().x + galley.size().x / 2.0;
                                     ui.painter().galley(
                                         pos2(label_rect.center().x, label_rect.top()),
                                         galley,
                                         color,
                                     );
+                                    let ring = ui.visuals().extreme_bg_color;
+                                    let y = label_rect.top() + 7.0;
+                                    crate::tag_dots::paint(ui.painter(), right, y, &dots, ring);
                                 }
                             }
                             if e.encrypted {

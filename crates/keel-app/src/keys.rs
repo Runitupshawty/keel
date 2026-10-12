@@ -117,7 +117,12 @@ pub enum Action {
     OpenWithSystem(PathBuf),
     /// A recent app from the context menu, on the current targets.
     OpenWithRecent(String),
+    /// Get Info (Task 67): an info window for the selection (several can be open).
     Properties,
+    /// Task 67: the info window that follows the selection (Alt+Ctrl+I), on or off.
+    InfoFollow,
+    /// Task 67: Get Info's Locked box: read-only on or off for a local item.
+    SetLocked(PathBuf, bool),
     /// Explorer's own Properties sheet (Windows).
     ShellProperties(PathBuf),
     /// "More options": the Windows shell menu for the targets (`shell_menu`). `extended`:
@@ -245,6 +250,11 @@ const CMD_SHIFT: Modifiers = Modifiers {
     shift: true,
     ..Modifiers::COMMAND
 };
+/// Alt+Ctrl (Option+Cmd on macOS).
+const CMD_ALT: Modifiers = Modifiers {
+    alt: true,
+    ..Modifiers::COMMAND
+};
 
 /// Show / hide hidden files: Finder's Cmd+Shift+. on macOS (Cmd+H hides the app there).
 #[cfg(target_os = "macos")]
@@ -300,6 +310,10 @@ const SHORTCUTS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::Enter, Action::OpenLocation),
     (CMD, Key::F, Action::Search),
     (CMD, Key::E, Action::FocusFilter),
+    // Task 67: the following info window; Ctrl+Shift+I is the inspector too (it moves
+    // there when Ctrl+I becomes Get Info in the Finder style).
+    (CMD_ALT, Key::I, Action::InfoFollow),
+    (CMD_SHIFT, Key::I, Action::ToggleInspector),
     (CMD, Key::I, Action::ToggleInspector),
     (CMD, Key::L, Action::FocusPath),
     (CMD, Key::T, Action::NewTab),

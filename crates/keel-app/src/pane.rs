@@ -739,7 +739,7 @@ pub fn context_menu(
             Action::CalculateSizes { fresh: true },
         );
     }
-    item(ui, "Properties", "", Action::Properties);
+    item(ui, "Get Info", "", Action::Properties);
     #[cfg(windows)]
     if on_item {
         ui.separator();
@@ -758,6 +758,11 @@ pub fn context_menu(
         }
     }
     out.extend(styled);
+    // Task 67: the color dots toggle Finder-colored tags on the selection; then Tags….
+    if on_item {
+        ui.separator();
+        crate::tag_dots::menu_row(ui, &tab.targets(), out);
+    }
 }
 
 /// Keeps the inline rename box focused. The frame it takes the focus the name's stem is

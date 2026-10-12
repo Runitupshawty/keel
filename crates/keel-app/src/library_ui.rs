@@ -20,7 +20,8 @@ fn lib(cmd: LibCmd) -> Action {
     Action::Library(cmd)
 }
 
-/// The tag palette: a new tag's color swatches, and Folder color (Task 56).
+/// Folder color's palette (Task 56). A new tag takes one of Finder's eight colors instead
+/// (`keel_core::FinderColor`, Task 67).
 pub const TAG_COLORS: [(&str, &str); 9] = [
     ("Red", "#e5484d"),
     ("Orange", "#f76b15"),
@@ -963,19 +964,29 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 });
             }
             ui.separator();
+            // Task 67: Finder's eight tag colors (None: no color).
             ui.horizontal(|ui| {
-                for (name, hex) in TAG_COLORS {
-                    let c = color_of(Some(hex));
-                    let swatch = egui::Button::new("")
-                        .fill(c)
-                        .min_size(egui::vec2(14.0, 14.0));
-                    if ui.add(swatch).tip(name).clicked() {
-                        picker.new_color = [c.r(), c.g(), c.b()];
+                for c in keel_core::FinderColor::MENU {
+                    let (rect, r) =
+                        ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                    let center = rect.center();
+                    match c.hex().and_then(crate::tag_dots::color32) {
+                        Some(fill) => ui.painter().circle_filled(center, 6.5, fill),
+                        None => {
+                            let weak = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+                            ui.painter().circle_stroke(center, 6.0, weak);
+                        }
+                    }
+                    if picker.new_color == c {
+                        let ring = egui::Stroke::new(1.5, ui.visuals().text_color());
+                        ui.painter().circle_stroke(center, 9.0, ring);
+                    }
+                    if r.tip(&format!("New tag color: {}", c.name())).clicked() {
+                        picker.new_color = c;
                     }
                 }
             });
             ui.horizontal(|ui| {
-                ui.color_edit_button_srgb(&mut picker.new_color);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut picker.new_name)
                         .hint_text("New tag")
@@ -983,10 +994,9 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 );
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Create").clicked() || enter) && !picker.new_name.trim().is_empty() {
-                    let [r, g, b] = picker.new_color;
                     out.push(lib(LibCmd::CreateTag {
                         name: std::mem::take(&mut picker.new_name),
-                        color: format!("#{r:02x}{g:02x}{b:02x}"),
+                        color: picker.new_color.hex().unwrap_or_default().to_owned(),
                     }));
                 }
             });

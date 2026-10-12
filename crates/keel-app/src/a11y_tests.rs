@@ -265,31 +265,25 @@ fn dialogs_focus_their_primary_action_and_esc_cancels() {
     assert_eq!(focus(&h).as_ref(), Some(&trash), "Tab stays in the dialog");
     press(&mut h, Modifiers::NONE, Key::Escape);
     assert!(h.state().state.dialog.is_none(), "Esc cancels");
+    // Task 67: Get Info is a window, not a modal: the list keeps the keyboard and Esc
+    // closes the window in front.
     h.state_mut().state.run(0, crate::keys::Action::Properties);
-    // The dialog takes a few frames to appear and focus its button (more on a slow machine).
-    for _ in 0..100 {
-        h.run_steps(1);
-        if focus(&h) == Some((Role::Button, "Close".into())) {
-            break;
-        }
-    }
-    assert_eq!(focus(&h), Some((Role::Button, "Close".into())));
-    press(&mut h, Modifiers::NONE, Key::Enter);
-    // Closing takes a few frames; a loaded CI machine needs more of them.
+    let read = |h: &H| (h.state().state.info.windows.first()).is_some_and(|w| w.info.is_some());
     let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while h.state().state.dialog.is_some() && std::time::Instant::now() < until {
+    while !read(&h) && std::time::Instant::now() < until {
         h.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    if h.state().state.dialog.is_some() && cfg!(windows) && std::env::var_os("CI").is_some() {
-        // On the Windows CI machine the Enter press does not reach the focused Close
-        // button (it does on every desktop and on the other CI machines); Esc must still
-        // close the dialog there.
-        eprintln!("Enter did not close Properties on this CI machine: checking Esc instead");
-        press(&mut h, Modifiers::NONE, Key::Escape);
-        h.run_steps(5);
-    }
-    assert!(h.state().state.dialog.is_none(), "Enter presses Close");
+    assert!(read(&h), "Get Info read the item");
+    h.run_steps(2);
+    assert_eq!(
+        focus(&h).map(|f| f.0),
+        Some(Role::ListItem),
+        "the list keeps the keyboard"
+    );
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().state.info.windows.is_empty(), "Esc closes Get Info");
     assert_eq!(focus(&h).map(|f| f.0), Some(Role::ListItem));
 }
 

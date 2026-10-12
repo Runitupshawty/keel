@@ -58,7 +58,7 @@ fn context_items() -> Vec<Item> {
         ("Rename", "F2", Rename),
         ("Bulk rename…", "Ctrl+F2", BulkRename),
         ("Move to trash", "Del", Delete),
-        ("Properties", "", Properties),
+        ("Get Info (Properties)", "", Properties),
         ("Extract here", "", ExtractHere),
         ("Extract to folder", "", ExtractToFolder),
         ("Extract to…", "", ExtractTo),
@@ -103,6 +103,8 @@ fn global_items() -> Vec<Item> {
         ("Switch pane", "F6", SwitchPane),
         ("Toggle preview panel", "F3", TogglePreview),
         ("Show inspector", "Ctrl+I", ToggleInspector),
+        // Task 67.
+        ("Info window following the selection", "Ctrl+Alt+I", InfoFollow),
         ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),
         (
             "Stash selection in the drop zone",

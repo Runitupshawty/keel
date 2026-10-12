@@ -143,6 +143,10 @@ const CMD_SHIFT: Modifiers = Modifiers {
     shift: true,
     ..Modifiers::COMMAND
 };
+const CMD_ALT: Modifiers = Modifiers {
+    alt: true,
+    ..Modifiers::COMMAND
+};
 
 fn center_of(node: &egui_kittest::kittest::Node<'_>) -> Pos2 {
     let b = node.raw_bounds().expect("bounds");
@@ -1167,25 +1171,50 @@ fn open_with_and_properties() {
     click(&mut h, "Cancel");
     assert!(s(&h).dialog.is_none());
 
-    // Properties from the context menu of a folder.
+    // Get Info from the context menu of a folder (Task 67: a window, several at once).
     right_click_row(&mut h, "Projects");
-    click(&mut h, "Properties");
-    assert!(wait(&mut h, 20, &|s| matches!(
-        &s.dialog,
-        Some(crate::dialogs::Dialog::Properties {
-            info: Some(Ok(_)),
-            ..
-        })
-    )));
+    click(&mut h, "Get Info");
+    let read = |s: &AppState| (s.info.windows.first()).is_some_and(|w| matches!(w.info, Some(Ok(_))));
+    assert!(wait(&mut h, 20, &read));
     h.run_steps(2);
+    assert!(has(&h, "Projects Info"), "{}", dump(&h, "Info"));
     assert!(has(&h, "Folder"));
     assert!(
         has(&h, "2 files, 1 folder"),
         "Contains, with the right plural"
     );
+    assert!(has(&h, "Sharing & Permissions") && has(&h, "Comments"));
     shot(&mut h, "properties");
-    click(&mut h, "Close");
-    assert!(s(&h).dialog.is_none());
+    // A second window for a file; the first stays open.
+    right_click_row(&mut h, "todo.txt");
+    click(&mut h, "Get Info");
+    assert!(wait(&mut h, 20, &|s| s.info.windows.len() == 2
+        && s.info.windows.iter().all(|w| w.info.is_some())));
+    assert!(has(&h, "todo.txt Info"));
+    // The same item again brings its window to the front instead of a third.
+    right_click_row(&mut h, "todo.txt");
+    click(&mut h, "Get Info");
+    h.run_steps(3);
+    assert_eq!(s(&h).info.windows.len(), 2);
+    // Alt+Ctrl+I: one more window that follows the selection; again closes it.
+    click_row(&mut h, "notes.md", 0, NONE);
+    key(&mut h, CMD_ALT, Key::I);
+    assert!(wait(&mut h, 20, &|s| s.info.windows.iter().any(|w| w.follow)));
+    click_row(&mut h, "todo.txt", 0, NONE);
+    let follows = |s: &AppState| {
+        (s.info.windows.iter()).any(|w| {
+            w.follow
+                && w.paths.len() == 1
+                && w.paths[0].name() == "todo.txt"
+                && matches!(&w.info, Some(Ok(p)) if p.name == "todo.txt")
+        })
+    };
+    assert!(wait(&mut h, 20, &follows), "follows the selection");
+    key(&mut h, CMD_ALT, Key::I);
+    h.run_steps(2);
+    assert!(!s(&h).info.windows.iter().any(|w| w.follow));
+    sm(&mut h).info.windows.clear();
+    h.run_steps(2);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2549,7 +2578,7 @@ fn library_tag_assign_mode() {
         .jobs
         .values()
         .any(|j| j.active())));
-    sm(&mut h).library.tagged.clear();
+    sm(&mut h).library.tagged = Default::default();
     sm(&mut h).library.refresh_meta();
     assert!(
         wait(&mut h, 10, &|s| carry(s, true)),
@@ -2562,7 +2591,7 @@ fn library_tag_assign_mode() {
     shot(&mut h, "library-tag-assign");
     key(&mut h, NONE, Key::Num1);
     assert!(has(&h, "1 receipts (0)"));
-    sm(&mut h).library.tagged.clear();
+    sm(&mut h).library.tagged = Default::default();
     sm(&mut h).library.refresh_meta();
     h.run_steps(3);
     assert!(

@@ -627,17 +627,23 @@ fn column(
                             } else {
                                 ui.visuals().text_color()
                             };
+                            // Task 67: tag color dots after the name.
+                            let dots = cx.library.dots(&e.path);
+                            let room = crate::tag_dots::width(dots.len());
                             let galley = egui::WidgetText::from(e.name.as_str())
                                 .color(color)
                                 .into_galley(
                                     ui,
                                     Some(egui::TextWrapMode::Truncate),
-                                    text.width(),
+                                    (text.width() - room).max(8.0),
                                     egui::TextStyle::Body,
                                 );
                             let at =
                                 egui::pos2(text.left(), text.center().y - galley.size().y / 2.0);
+                            let right = text.left() + galley.size().x;
                             ui.painter().galley(at, galley, color);
+                            let ring = ui.visuals().extreme_bg_color;
+                            crate::tag_dots::paint(ui.painter(), right, text.center().y, &dots, ring);
                         }
                     }
                     if e.kind == Kind::Dir {
