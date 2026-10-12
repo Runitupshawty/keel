@@ -335,10 +335,23 @@ impl Sidebar {
             }
             let r = r.on_hover_text(tip);
             clicked(&r, &path, out);
-            // Task 85: Clean up (system cleanups and launchers; none on Linux).
-            if crate::system_cleanup::DRIVE_MENU {
-                r.context_menu(|ui| crate::system_cleanup::drive_menu(ui, name, out));
-            }
+            r.context_menu(|ui| {
+                // Phase 17 Task 82.
+                if ui.button("Analyze disk usage").clicked() {
+                    let root = keel_vfs::du::Root::Path(path.to_local_path().unwrap_or_default());
+                    out.push(Action::DiskUsage(crate::disk_usage::DuCmd::Scan(vec![root])));
+                    ui.close_menu();
+                }
+                if ui.button("Open in a new tab").clicked() {
+                    out.push(Action::NewTabAt(path.clone()));
+                    ui.close_menu();
+                }
+                // Task 85: Clean up (system cleanups and launchers; none on Linux).
+                if crate::system_cleanup::DRIVE_MENU {
+                    ui.separator();
+                    crate::system_cleanup::drive_menu(ui, name, out);
+                }
+            });
         }
         if keel_vfs::trashbin::SUPPORTED {
             let root = keel_vfs::trashbin::root();

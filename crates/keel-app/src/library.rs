@@ -1778,6 +1778,8 @@ impl AppState {
                 }
             }
             LibMsg::OpStarted { id, undo } => {
+                // Phase 17 Task 82: a Disk Usage step's job.
+                self.disk_usage.steps.started(id);
                 if let Some(u) = undo {
                     l.undo_jobs.insert(id, u);
                 }
@@ -1792,7 +1794,12 @@ impl AppState {
                     armed: false,
                 })
             }
-            LibMsg::Planned(Err(e)) => self.toasts.error(e),
+            LibMsg::Planned(Err(e)) => {
+                self.toasts.error(e);
+                if let Some(why) = self.disk_usage.steps.failed() {
+                    self.toasts.error(why);
+                }
+            }
             LibMsg::Changed(plan) => {
                 l.plan = Some(PlanDialog {
                     plan,
@@ -1921,6 +1928,15 @@ impl AppState {
                         self.toasts.error(format!("{} failed", row.title()));
                     }
                 }
+            }
+        }
+        // Phase 17 Task 82: a Disk Usage step that ended previews the next one.
+        for id in &finished {
+            let status = l.jobs.get(id).map_or(JobStatus::Failed, |r| r.status);
+            match self.disk_usage.steps.finished(*id, status) {
+                Ok(Some(op)) => self.disk_usage.next_plan = Some(op),
+                Ok(None) => {}
+                Err(why) => self.toasts.error(why),
             }
         }
         // Operations that ended (done, failed or cancelled): what they did, for undo.
@@ -2574,6 +2590,7 @@ impl AppState {
                     return;
                 }
                 dialog.running = true;
+                self.disk_usage.steps.executing();
                 let plan = dialog.plan.clone();
                 let (existed, permanent) = plan.undo_facts();
                 let (moves, made, prune) = plan.arranged();

@@ -681,6 +681,22 @@ pub fn commands() -> Vec<Command> {
             .global()
             .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
+        // --- Phase 17 Task 82 ---
+        cmd(
+            "du.open",
+            "Disk usage",
+            DiskUsage(crate::disk_usage::DuCmd::Open),
+            &["Ctrl+Shift+U"],
+        )
+        .global()
+        .typing(),
+        cmd(
+            "du.scan_current",
+            "Analyze disk usage of this folder",
+            DiskUsage(crate::disk_usage::DuCmd::ScanCurrent),
+            &[],
+        )
+        .global(),
         cmd("cleanups.edit", "Edit cleanups…", CleanupSettings, &[]).global(),
         cmd(
             "library.overview",

@@ -100,6 +100,8 @@ pub struct TreemapView {
     /// The zoom: the node shown at the top.
     pub root: u32,
     pub selected: Option<u32>,
+    /// Color keys (extensions) whose files are outlined besides the selected file's type.
+    pub highlight: Vec<String>,
     job: Option<Job>,
     shown: Option<Shown>,
     texture: Option<TextureHandle>,
@@ -131,6 +133,7 @@ impl TreemapView {
             tree_gen: 0,
             root: 0,
             selected: None,
+            highlight: Vec::new(),
             job: None,
             shown: None,
             texture: None,
@@ -452,14 +455,22 @@ impl TreemapView {
             }
             t
         };
-        if let (true, Some(sel)) = (o.highlight_ext, self.selected) {
-            let key = self.tree.node(sel).key;
-            let k = self.tree.key_of(sel);
-            if self.tree.is_leaf(sel) && !k.is_empty() && !k.starts_with(SPECIAL) {
+        if o.highlight_ext {
+            // The selected file's type, and the types the host marks (the file types list).
+            let mut keys: Vec<u32> = Vec::new();
+            if let Some(sel) = self.selected.filter(|&s| self.tree.is_leaf(s)) {
+                keys.push(self.tree.node(sel).key);
+            }
+            keys.extend(self.highlight.iter().filter_map(|h| self.tree.key_id(h)));
+            keys.retain(|&k| {
+                let k = &self.tree.keys[k as usize];
+                !k.is_empty() && !k.starts_with(SPECIAL)
+            });
+            if !keys.is_empty() {
                 let stroke = Stroke::new(1.0_f32, Color32::from_white_alpha(200));
                 for t in lay
                     .leaves()
-                    .filter(|t| self.tree.node(t.node).key == key)
+                    .filter(|t| keys.contains(&self.tree.node(t.node).key))
                     .take(EXT_OUTLINES)
                 {
                     painter.rect_stroke(to_screen(&t.rect), 0.0, stroke, StrokeKind::Inside);

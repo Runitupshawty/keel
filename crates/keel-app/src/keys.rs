@@ -173,6 +173,9 @@ pub enum Action {
     ManageOmissions,
     ShowOmitted,
     ToggleOnTop,
+    /// A new search tab in the pane running this query (the Disk Usage window's
+    /// "Search for .ext").
+    SearchFor(String),
     JumpFolder,
     /// A Ctrl+P result: a folder opens; a file opens its folder with it selected and the
     /// preview shown. In a new tab, or in the other pane (a new tab when single-pane).
@@ -262,6 +265,8 @@ pub enum Action {
     // --- Task 29 ---
     /// Library sidebar, overview, dialogs, tags (`library.rs`).
     Library(crate::library::LibCmd),
+    /// Phase 17 Task 82: the Disk Usage window (Ctrl+Shift+U, a drive's context menu).
+    DiskUsage(crate::disk_usage::DuCmd),
     /// Recycle Bin / Trash tab: put the targets back where they were deleted from.
     RestoreTrash,
     /// Confirmed: delete these trash items for good.
@@ -348,6 +353,19 @@ pub fn actions_with_terminal(
             }
         }
         Vec::new()
+    })
+}
+
+/// Actions while another window has the keys (the Disk Usage window): only the
+/// window-level shortcuts that also work from a text box (palette, Settings, Ctrl+P…).
+pub fn window_actions(ctx: &egui::Context, keys: &Bindings) -> Vec<Action> {
+    let _ = paste_pressed(ctx);
+    ctx.input_mut(|i| {
+        keys.main()
+            .filter(|b| b.typing)
+            .filter(|b| i.consume_key(b.mods(), b.chord.key))
+            .map(|b| b.action.clone())
+            .collect()
     })
 }
 

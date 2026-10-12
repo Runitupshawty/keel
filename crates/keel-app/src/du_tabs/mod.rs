@@ -7,9 +7,6 @@
 //! plan flow, `LibCmd::Plan`). Slow work (hashing, reading permissions, saving reports)
 //! runs on a worker thread with progress and Cancel.
 
-// The Disk Usage window (Task 82) hosts the tabs; until it lands only the tests use them.
-#![allow(dead_code)]
-
 pub mod duplicates;
 pub mod largest;
 pub mod permissions;
@@ -37,18 +34,6 @@ pub enum Outcome {
     /// flow (`LibCmd::Plan`: the preview names every path and byte before anything runs);
     /// the next one only after the previous ran.
     Plans(Vec<keel_core::Op>),
-}
-
-impl Outcome {
-    /// The app actions for the first step (the window queues the rest).
-    pub fn first_action(&self) -> Option<crate::keys::Action> {
-        match self {
-            Outcome::Plans(ops) => Some(crate::keys::Action::Library(
-                crate::library::LibCmd::Plan(ops.first()?.clone()),
-            )),
-            Outcome::Select(_) => None,
-        }
-    }
 }
 
 /// A job on a worker thread whose progress and Cancel go through a [`ScanHandle`]; dropping

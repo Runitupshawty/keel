@@ -1369,7 +1369,7 @@ fn fingerprint(s: &AppState) -> String {
         })
         .collect();
     format!(
-        "{panes:?} {:?}",
+        "{panes:?} {:?} {:?}",
         (
             s.active,
             s.dual,
@@ -1391,6 +1391,11 @@ fn fingerprint(s: &AppState) -> String {
                 s.finder.goto.open,
                 s.settings.finder.path_bar,
             ),
+        ),
+        (
+            s.disk_usage.open,
+            s.disk_usage.picker.is_some(),
+            s.disk_usage.scanning().is_some(),
         )
     )
 }
@@ -1444,6 +1449,8 @@ fn command_palette_every_command() {
             st.finder.goto.open = false;
             let ctx = st.ctx.clone();
             st.finder.quicklook.close(&ctx);
+            st.disk_usage.open = false;
+            st.disk_usage.picker = None;
             st.panes[0].path_edit = None;
             st.tab_mut(0).renaming = None;
         }

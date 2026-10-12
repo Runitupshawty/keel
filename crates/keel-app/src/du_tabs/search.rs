@@ -40,6 +40,7 @@ impl State {
         }
     }
 
+    #[cfg(test)]
     pub fn results(&self) -> &Results {
         &self.results
     }

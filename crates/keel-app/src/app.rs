@@ -316,19 +316,27 @@ impl App {
             && s.keyboard.recording.is_none() // Settings → Keyboard is recording a key
             && !ctx.is_context_menu_open();
         let terminal = s.terminal.focused(ctx);
-        s.assign_keys(ctx, keys_on && !terminal); // Task 58
-        s.bookmark_keys(ctx, keys_on && !terminal); // Task 76: Ctrl+D, bookmark shortcuts
+        // Phase 17 Task 82: the Disk Usage window has the keys after a click in it; only
+        // window-level shortcuts reach the panes then.
+        let du_keys = s.disk_usage.open && s.disk_usage.keys && !terminal;
+        s.assign_keys(ctx, keys_on && !terminal && !du_keys); // Task 58
+        s.bookmark_keys(ctx, keys_on && !terminal && !du_keys); // Task 76: Ctrl+D, bookmark shortcuts
         s.sync_keys(ctx);
         let bindings = s.keys.clone();
         ctx.data_mut(|d| {
             d.insert_temp(crate::search_tab::settings_id(), s.settings.search.clone())
         });
-        if keys_on && !terminal && s.panes[s.active].tab().is_search() {
+        if keys_on && !terminal && !du_keys && s.panes[s.active].tab().is_search() {
             for action in keys::search_toggles(ctx, &bindings) {
                 s.run(s.active, action);
             }
         }
-        for action in keys::actions_with_terminal(ctx, keys_on, terminal, &bindings) {
+        let actions = if keys_on && du_keys {
+            keys::window_actions(ctx, &bindings)
+        } else {
+            keys::actions_with_terminal(ctx, keys_on, terminal, &bindings)
+        };
+        for action in actions {
             s.run(s.active, action);
         }
         s.terminal.input(ctx, keys_on, &s.settings, &s.tx);
@@ -647,6 +655,15 @@ impl App {
         crate::devices::windows(ctx, s, &mut acts); // Task 36
         crate::dialogs::properties::windows(ctx, s, &mut acts); // Task 67
         crate::bookmarks::windows(ctx, s, &mut acts); // Task 76
+        s.disk_usage_tick();
+        crate::disk_usage::ui::window(
+            ctx,
+            &mut s.disk_usage,
+            &mut s.settings.disk_usage,
+            &s.sidebar.drives,
+            &s.theme,
+            &mut acts,
+        );
         out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {

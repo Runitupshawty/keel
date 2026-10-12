@@ -168,13 +168,8 @@ fn duplicates_tab_finds_and_plans_keep_one_and_hard_links() {
             kind: keel_vfs::LinkKind::Hardlink,
         }
     );
-    let first = Outcome::Plans(ops).first_action();
-    assert!(matches!(
-        first,
-        Some(crate::keys::Action::Library(crate::library::LibCmd::Plan(
-            Op::Delete { .. }
-        )))
-    ));
+    // The delete step comes first: the links follow it, one step at a time.
+    assert!(matches!(ops[0], Op::Delete { .. }));
     // Nothing on disk changed.
     assert!(keep.exists() && other.exists());
 }

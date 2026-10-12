@@ -121,6 +121,8 @@ pub struct Settings {
     pub index_hide_unlistable: bool,
     /// `[[cleanups]]`: user-defined cleanups (Task 85), in the context menu and palette.
     pub cleanups: Vec<crate::cleanups::UserCleanup>,
+    /// `[disk_usage]`: the Disk Usage window's layout, columns and options.
+    pub disk_usage: crate::disk_usage::DuSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -275,6 +277,7 @@ impl Default for Settings {
             search_index: Default::default(),
             index_hide_unlistable: true,
             cleanups: Vec::new(),
+            disk_usage: Default::default(),
         }
     }
 }

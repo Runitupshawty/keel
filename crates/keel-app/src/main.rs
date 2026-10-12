@@ -19,6 +19,7 @@ mod crash;
 mod design; // Task 64: design tokens, appearance styles
 mod devices;
 mod dialogs;
+mod disk_usage;
 mod dropzone;
 mod du_tabs; // Task 84: the Disk Usage window's analysis tabs
 mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu

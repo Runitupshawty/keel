@@ -136,6 +136,7 @@ Keel opens on your home folder in both panes.
 | Ctrl+F | Search |
 | Ctrl+P | Jump to a folder or file by name |
 | Ctrl+Shift+P | Command palette |
+| Ctrl+Shift+U | Disk Usage window: what fills a drive |
 | F3 | Preview panel |
 | Space | Quick Look: a floating preview (Space or Esc closes it) |
 | Ctrl+Space | Select or deselect the cursor row |
