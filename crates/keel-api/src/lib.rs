@@ -15,6 +15,7 @@ pub mod client;
 pub mod config;
 pub mod crash;
 pub mod daemon_provider;
+pub mod du;
 pub mod error;
 pub mod files;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
@@ -70,6 +71,8 @@ pub struct Ctx {
     pub data_dir: Option<std::path::PathBuf>,
     /// The platform file search `system.search` uses (made on first use).
     pub system: system::SystemIndex,
+    /// Disk usage scans started with `du.scan`.
+    pub du: Arc<du::Scans>,
 }
 
 /// `<data dir>/shares/<id>/` holds a Web Share Target upload; this file in it marks one the
@@ -94,6 +97,7 @@ impl Ctx {
             drops: None,
             data_dir: None,
             system: Default::default(),
+            du: Default::default(),
         }
     }
 

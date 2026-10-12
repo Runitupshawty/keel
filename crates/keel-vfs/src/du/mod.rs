@@ -24,8 +24,12 @@
 //! Node ids are stable until [`Tree::compact`] (saving and loading compact). Refreshing a
 //! branch marks its old items [`NodeKind::Dead`] and appends the new ones.
 
+pub mod export;
+#[cfg(test)]
+mod export_tests;
 mod file;
 mod filter;
+pub mod report;
 mod sys;
 #[cfg(test)]
 mod tests;
@@ -612,6 +616,11 @@ impl Tree {
 
     /// The roots with their biggest `top` children, for `keel du --scan` and its JSON.
     pub fn summary(&self, top: usize) -> Summary {
+        self.summary_by(top, false)
+    }
+
+    /// [`summary`](Self::summary), the children ranked by size on disk when `size_on_disk`.
+    pub fn summary_by(&self, top: usize, size_on_disk: bool) -> Summary {
         let item = |id: NodeId| {
             let n = self.node(id);
             ItemSummary {
@@ -632,11 +641,15 @@ impl Tree {
             .iter()
             .map(|r| {
                 let n = self.node(r.node);
-                let kids: Vec<NodeId> = self
+                let mut kids: Vec<NodeId> = self
                     .sorted_children(r.node)
                     .into_iter()
                     .filter(|&c| !self.node(c).is_pseudo())
                     .collect();
+                if size_on_disk {
+                    // Stable: equal sizes on disk keep the order by size, then name.
+                    kids.sort_by_key(|&a| std::cmp::Reverse(self.node(a).allocated));
+                }
                 let pseudo = |k: NodeKind| {
                     self.children(r.node)
                         .find(|&c| self.node(c).kind == k)

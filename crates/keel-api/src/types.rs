@@ -1501,3 +1501,220 @@ pub struct FolderTotals {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub biggest: Option<ChildSize>,
 }
+
+// --- disk usage (Phase 17 Task 86) ---
+
+/// `du.scan`: what to scan and how. Filters leave items out of the scan entirely.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DuScanParams {
+    /// Absolute paths of folders or drives on the host.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Also every local fixed drive.
+    #[serde(default)]
+    pub all_drives: bool,
+    /// Leave out files and folders whose name matches one of these globs (`*`, `?`).
+    #[serde(default)]
+    pub exclude_names: Vec<String>,
+    /// Leave out these absolute paths and what is below them.
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    /// Leave out items whose full path matches this regular expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_regex: Option<String>,
+    /// Leave out files smaller than this many bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<u64>,
+    /// Leave out files last written more than this many seconds ago.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_than_secs: Option<u64>,
+    /// Leave out files last written less than this many seconds ago.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newer_than_secs: Option<u64>,
+    /// Leave out hidden items.
+    #[serde(default)]
+    pub exclude_hidden: bool,
+    /// Leave out items with the system attribute (Windows).
+    #[serde(default)]
+    pub exclude_system: bool,
+    #[serde(default)]
+    pub follow_symlinks: bool,
+    /// Windows.
+    #[serde(default)]
+    pub follow_junctions: bool,
+    #[serde(default)]
+    pub follow_mount_points: bool,
+    /// Count every name of a hard-linked file (by default a file counts once).
+    #[serde(default)]
+    pub count_hard_links_each: bool,
+}
+
+/// A disk usage scan started in the background (`du.scan`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuScanStarted {
+    /// For `du.result` and `du.export`.
+    pub id: String,
+}
+
+/// `du.result`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DuResultParams {
+    pub id: String,
+    /// At most this many items of each root, biggest first (default 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<usize>,
+    /// Rank by bytes on disk instead of bytes.
+    #[serde(default)]
+    pub size_on_disk: bool,
+    /// Wait up to this many milliseconds (at most 10000) for a running scan to finish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DuState {
+    Running,
+    Done,
+    Failed,
+}
+
+/// How far a scan got.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuProgress {
+    pub files: u64,
+    pub folders: u64,
+    /// Bytes of the files found so far.
+    pub bytes: u64,
+    pub elapsed_ms: u64,
+    /// The folder being listed (recently).
+    pub current: String,
+}
+
+/// A scan's state, and when done its roots with their biggest items (`du.result`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuResult {
+    pub id: String,
+    pub state: DuState,
+    pub progress: DuProgress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<DuSummary>,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A finished scan, as `keel du --scan --json` prints it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuSummary {
+    /// False when the scan was cut short.
+    pub complete: bool,
+    pub elapsed_ms: u64,
+    pub bytes: u64,
+    /// Bytes on disk.
+    pub allocated: u64,
+    pub files: u64,
+    pub folders: u64,
+    pub items: u64,
+    /// Folders that could not be read.
+    pub unreadable: u64,
+    /// Items the filters left out.
+    pub excluded: u64,
+    pub roots: Vec<DuRoot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuRoot {
+    pub path: String,
+    pub bytes: u64,
+    pub allocated: u64,
+    pub files: u64,
+    pub folders: u64,
+    pub items: u64,
+    /// The newest last write below it (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<i64>,
+    /// A drive's free space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<u64>,
+    /// A drive's used space the scan did not find.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// Its biggest items.
+    pub children: Vec<DuItem>,
+    /// More, smaller items were left out.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuItem {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// dir, file or link.
+    pub kind: String,
+    pub bytes: u64,
+    pub allocated: u64,
+    pub files: u64,
+    pub folders: u64,
+    pub items: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<i64>,
+    /// Hard link, unreadable, cloud placeholder, ...
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// What `du.export` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DuList {
+    /// Every item (JSON: a scan file `keel du --load-from` reads).
+    Tree,
+    /// One row per extension.
+    Types,
+    /// The biggest files.
+    Largest,
+    /// The HTML report (format is ignored).
+    Report,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DuFormat {
+    Csv,
+    Json,
+}
+
+/// `du.export`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DuExportParams {
+    pub id: String,
+    pub list: DuList,
+    /// CSV or JSON (default JSON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<DuFormat>,
+    /// Start CSV with a UTF-8 byte order mark.
+    #[serde(default)]
+    pub bom: bool,
+    /// At most this many largest files (default 100), or top folders and file types in a
+    /// report (default 20); 0: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top: Option<usize>,
+    /// Rank by bytes on disk instead of bytes.
+    #[serde(default)]
+    pub size_on_disk: bool,
+}
+
+/// An export's text (`du.export`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DuExport {
+    /// csv, json or html.
+    pub format: String,
+    pub content: String,
+}

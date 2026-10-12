@@ -36,6 +36,12 @@ impl Filters {
     pub fn is_empty(&self) -> bool {
         *self == Filters::default()
     }
+
+    /// Fails when a filter does not compile (the path regular expression), as a scan with
+    /// these filters would before walking.
+    pub fn check(&self) -> Result<()> {
+        Compiled::new(self).map(|_| ())
+    }
 }
 
 pub(super) struct Compiled {

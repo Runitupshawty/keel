@@ -5,7 +5,8 @@
 //! command line is the confirmation), except `keel plan`, whose plan `keel execute` runs.
 
 use crate::cli::{
-    Command, Conflict, DaemonCmd, LibraryCmd, LinkKind, OrganizeBy, PlanCmd, SourcesCmd, TagCmd,
+    Command, Conflict, DaemonCmd, DuArgs, LibraryCmd, LinkKind, OrganizeBy, PlanCmd, SourcesCmd,
+    TagCmd,
 };
 use keel_api::client::Client;
 use keel_api::config::HostConfig;
@@ -22,6 +23,9 @@ use std::time::{Duration, Instant};
 pub const OK: i32 = 0;
 pub const FAILED: i32 = 1;
 pub const USAGE: i32 = 2;
+/// `keel du --strict`: everything was written, but the scan is partial (folders that could
+/// not be read, or cut short).
+pub const PARTIAL: i32 = 3;
 
 /// The library in this process (no daemon runs): closed on drop. keel-net comes online
 /// only for the calls that need it (devices and shares, and executing their plans).
@@ -138,25 +142,10 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
         // The disk usage scanner needs no library.
         Command::Du {
             path: None,
-            scan,
-            all_drives,
-            top,
-            save,
-            load,
-            exclude,
-            follow_links,
+            scan: args,
         } => {
-            let args = DuScan {
-                scan,
-                all_drives,
-                top,
-                save,
-                load,
-                exclude,
-                follow_links,
-            };
             return match du_scan(args, json, &mut out) {
-                Ok(()) => OK,
+                Ok(code) => code,
                 Err(e) => report(e, json, &mut out),
             };
         }
@@ -409,58 +398,182 @@ fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
     })
 }
 
-/// `keel du --scan` / `--all-drives` / `--load` (Task 81).
-struct DuScan {
-    scan: Vec<String>,
-    all_drives: bool,
-    top: Option<usize>,
-    save: Option<std::path::PathBuf>,
-    load: Option<std::path::PathBuf>,
-    exclude: Vec<String>,
-    follow_links: bool,
+/// The scan options `keel du`'s flags ask for.
+fn du_scan_options(a: &DuArgs) -> keel_vfs::du::ScanOptions {
+    use keel_vfs::du;
+    du::ScanOptions {
+        count_hard_links_once: !a.count_hardlinks_each,
+        follow_symlinks: a.follow_links || a.follow_symlinks,
+        follow_junctions: a.follow_links || a.follow_junctions,
+        follow_mount_points: a.follow_links || a.follow_mount_points,
+        filters: du::Filters {
+            exclude_paths: a.exclude_path.clone(),
+            exclude_names: a.exclude.clone(),
+            exclude_path_regex: a.exclude_regex.clone(),
+            min_size: a.min_size,
+            exclude_older_than: a.older_than,
+            exclude_newer_than: a.newer_than,
+            exclude_hidden: a.no_hidden,
+            exclude_system: a.no_system,
+        },
+        ..du::ScanOptions::default()
+    }
 }
 
-/// Scans (or loads a saved scan), saves it when asked, and prints each root's biggest
-/// items, its free and unknown space (drives) and its total.
-fn du_scan(a: DuScan, json: bool, out: &mut Out) -> Result<(), Fail> {
-    use keel_vfs::du;
+/// `keel du --scan` / `--all-drives` / `--load` (Tasks 81 and 86). Checks the outputs and
+/// filters before scanning (usage errors), scans or loads, writes every output asked for
+/// (one that fails does not stop the others: exit 1), then prints each root's biggest
+/// items, its free and unknown space (drives) and its total unless `--quiet`. With
+/// `--strict` a partial scan exits 3.
+fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
+    use keel_vfs::du::{self, export, report};
+    use std::path::PathBuf;
     let fail = |e: anyhow::Error| Fail::Api(ApiError::failed(format!("{e:#}")));
+    let usage = |msg: String| Fail::Usage(Usage(msg));
+    let exports: Vec<(export::List, &PathBuf, &str)> = [
+        (export::List::Tree, a.save_to.as_ref(), "items"),
+        (export::List::Types, a.save_types_to.as_ref(), "file types"),
+        (
+            export::List::Largest,
+            a.save_largest_to.as_ref(),
+            "largest files",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(list, path, what)| path.map(|p| (list, p, what)))
+    .collect();
+    for (_, path, _) in &exports {
+        export::Format::from_path(path).map_err(|e| usage(format!("{e:#}")))?;
+    }
+    if let Some(r) = &a.report {
+        let html = (r.extension().and_then(|e| e.to_str()))
+            .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+        if !html {
+            return Err(usage(format!(
+                "{}: a report file ends in .html",
+                r.display()
+            )));
+        }
+    }
+    let mut targets: Vec<String> = (exports.iter().map(|e| e.1))
+        .chain(&a.report)
+        .chain(&a.save)
+        .map(|p| {
+            let p = std::path::absolute(p).unwrap_or_else(|_| p.clone());
+            let p = p.to_string_lossy().into_owned();
+            if cfg!(windows) {
+                p.to_lowercase()
+            } else {
+                p
+            }
+        })
+        .collect();
+    let outputs = targets.len();
+    targets.sort();
+    targets.dedup();
+    if targets.len() != outputs {
+        return Err(usage("two outputs name the same file".into()));
+    }
+    if a.load.is_some() && a.walks_differently() {
+        return Err(usage(
+            "filters and link and hard link options apply to a scan, not to a loaded one".into(),
+        ));
+    }
+    let opts = du_scan_options(&a);
+    opts.filters.check().map_err(|e| usage(format!("{e:#}")))?;
+
     let tree = match &a.load {
         Some(file) => du::load(file).map_err(fail)?,
         None => {
             let mut roots: Vec<du::Root> = (a.scan.iter())
-                .map(|p| du::Root::Path(std::path::PathBuf::from(p)))
+                .map(|p| du::Root::Path(PathBuf::from(p)))
                 .collect();
             if a.all_drives {
                 roots.push(du::Root::AllLocalDrives);
             }
-            let opts = du::ScanOptions {
-                follow_symlinks: a.follow_links,
-                follow_junctions: a.follow_links,
-                follow_mount_points: a.follow_links,
-                filters: du::Filters {
-                    exclude_names: a.exclude.clone(),
-                    ..du::Filters::default()
-                },
-                ..du::ScanOptions::default()
-            };
             let handle = du::ScanHandle::new();
-            let ticker = Ticker::start(&handle);
+            let ticker = (!a.quiet).then(|| Ticker::start(&handle)).flatten();
             let scanned = du::scan(&roots, &opts, &handle);
             drop(ticker);
             scanned.map_err(fail)?
         }
     };
+
+    let mut results: Vec<(&str, &PathBuf, anyhow::Result<()>)> = Vec::new();
     if let Some(file) = &a.save {
-        du::save(&tree, file, true).map_err(fail)?;
+        results.push(("scan", file, du::save(&tree, file, true)));
     }
-    let summary = tree.summary(a.top.unwrap_or(20));
-    if json {
-        print_json(&serde_json::to_value(&summary).unwrap_or_default(), out);
-    } else {
+    let options = export::Options {
+        bom: a.bom,
+        top: a.top.unwrap_or(100),
+        size_on_disk: a.size_on_disk,
+    };
+    for &(list, path, what) in &exports {
+        results.push((what, path, export::save(&tree, list, options, path)));
+    }
+    let mut mail = None;
+    if let Some(file) = &a.report {
+        let options = export::Options {
+            top: a.top.unwrap_or(20),
+            ..options
+        };
+        let saved = report::save(&tree, options, file);
+        if saved.is_ok() && a.mail {
+            mail = Some(report::mailto(&tree, file));
+        }
+        results.push(("report", file, saved));
+    }
+    let mut written: Vec<(&str, &PathBuf)> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (what, path, r) in results {
+        match r {
+            Ok(()) => written.push((what, path)),
+            Err(e) => errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
+    if let Some(uri) = mail {
+        // A new mail with no recipient, nothing attached: nothing is sent from here.
+        let opened = uri.and_then(|uri| open::that_detached(&uri).map_err(anyhow::Error::from));
+        if let Err(e) = opened {
+            errors.push(format!("cannot open a new mail: {e:#}"));
+        }
+    }
+
+    let summary = tree.summary_by(a.top.unwrap_or(20), a.size_on_disk);
+    if !a.quiet && json {
+        let mut v = serde_json::to_value(&summary).unwrap_or_default();
+        v["written"] = (written.iter())
+            .map(|(what, path)| json!({"what": what, "path": path.display().to_string()}))
+            .collect();
+        if !errors.is_empty() {
+            v["errors"] = json!(errors);
+        }
+        print_json(&v, out);
+    } else if !a.quiet {
         print_du_scan(&summary, out);
+        for (what, path) in &written {
+            let _ = writeln!(out, "Wrote the {what} to {}", path.display());
+        }
     }
-    Ok(())
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("keel: {e}");
+        }
+        return Ok(FAILED);
+    }
+    if a.strict && (!tree.info.complete || tree.info.unreadable > 0) {
+        eprintln!(
+            "keel: the scan is partial ({} folders could not be read{})",
+            tree.info.unreadable,
+            if tree.info.complete {
+                ""
+            } else {
+                ", cut short"
+            }
+        );
+        return Ok(PARTIAL);
+    }
+    Ok(OK)
 }
 
 fn print_du_scan(s: &keel_vfs::du::Summary, out: &mut Out) {
@@ -616,7 +729,8 @@ fn command(
             }
             None
         }
-        Command::Du { path, top, .. } => {
+        Command::Du { path, scan } => {
+            let top = scan.top;
             let path = path.unwrap_or_default();
             let mut sizes = folder_sizes(b, &abs(&path))?;
             if let Some(n) = top.filter(|&n| n < sizes.children.len()) {

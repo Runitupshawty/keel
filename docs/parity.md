@@ -209,7 +209,7 @@ Added 2026-10-12 at the owner's request: every feature of voidtools Everything (
 | WinDirStat: tree, file types, treemap, sunburst, flame graph | **Part**: one-level Sizes view with share bars; no tree, file types list or treemap | Phase 17 Tasks 82 and 83 |
 | WinDirStat: largest files, duplicates, search, storage analytics, permissions | **Part**: library duplicate finder, search tabs | Phase 17 Task 84 |
 | WinDirStat: cleanups, compression, recovery | **Part**: open, delete to Recycle Bin, terminal, properties | Phase 17 Task 85 |
-| WinDirStat: export and command line | **Part**: `keel du --json` | Phase 17 Task 86 |
+| WinDirStat: export and command line | **Part**: `keel du` exports the tree, file types and largest files as CSV (BOM option) or JSON, writes an HTML report (with a mail draft), loads JSON scans back, takes every scan filter and link option as a flag, exits with codes for unattended runs; API `du.scan`, `du.result`, `du.export` (MCP tools); no exports of duplicates or permissions yet (Task 84 has no lists to export), no export or report from a window, no clipboard copy, no Settings page | Phase 17 Task 86 |
 
 The owner also asked for a macOS Finder-style interface: [Phase 14](superpowers/plans/2026-10-12-keel-phase14.md), planned first so the surfaces of Phases 15 to 17 are built in it.
 
