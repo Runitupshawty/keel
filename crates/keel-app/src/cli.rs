@@ -58,8 +58,38 @@ pub enum Command {
         max: Option<usize>,
     },
     /// Folder sizes: each child of PATH by size, biggest first (from the library index;
-    /// a folder outside the library is walked).
-    Du { path: String },
+    /// a folder outside the library is walked). With --scan, --all-drives or --load: the
+    /// disk usage scanner (several roots walked in parallel, size on disk, hard links
+    /// counted once, no library needed).
+    Du {
+        /// The folder whose children are listed.
+        #[arg(
+            required_unless_present_any = ["scan", "all_drives", "load"],
+            conflicts_with_all = ["scan", "all_drives", "load", "save"]
+        )]
+        path: Option<String>,
+        /// Scan these folders or drives with the disk usage scanner.
+        #[arg(long, num_args = 1.., value_name = "PATH")]
+        scan: Vec<String>,
+        /// Scan every local fixed drive (with the disk usage scanner).
+        #[arg(long)]
+        all_drives: bool,
+        /// At most N items of each folder or scanned root, biggest first (scans: 20).
+        #[arg(long, value_name = "N")]
+        top: Option<usize>,
+        /// Save the whole scan to FILE (gzip-compressed JSON) to show again with --load.
+        #[arg(long, value_name = "FILE")]
+        save: Option<PathBuf>,
+        /// Show a scan saved with --save instead of scanning.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["scan", "all_drives"])]
+        load: Option<PathBuf>,
+        /// Leave out files and folders whose name matches GLOB (`*`, `?`; repeatable).
+        #[arg(long, value_name = "GLOB")]
+        exclude: Vec<String>,
+        /// Follow symbolic links, junctions and mount points (not followed by default).
+        #[arg(long)]
+        follow_links: bool,
+    },
     /// Tag or untag indexed files.
     #[command(subcommand)]
     Tag(TagCmd),
@@ -740,9 +770,32 @@ mod tests {
         assert_eq!(
             cmd(&["du", "photos"]),
             Command::Du {
-                path: "photos".into()
+                path: Some("photos".into()),
+                scan: vec![],
+                all_drives: false,
+                top: None,
+                save: None,
+                load: None,
+                exclude: vec![],
+                follow_links: false,
             }
         );
+        assert_eq!(
+            cmd(&["du", "--scan", "a", "b", "--top", "5", "--exclude", "*.tmp"]),
+            Command::Du {
+                path: None,
+                scan: vec!["a".into(), "b".into()],
+                all_drives: false,
+                top: Some(5),
+                save: None,
+                load: None,
+                exclude: vec!["*.tmp".into()],
+                follow_links: false,
+            }
+        );
+        assert!(parse(&["du"]).is_err(), "a folder or a scan");
+        assert!(parse(&["du", "x", "--scan", "y"]).is_err(), "not both");
+        assert!(parse(&["du", "--load", "f", "--all-drives"]).is_err(), "not both");
         assert_eq!(cmd(&["shares"]), Command::Shares);
         assert_eq!(cmd(&["sources"]), Command::Sources { action: None });
         assert_eq!(

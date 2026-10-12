@@ -135,6 +135,31 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     match cmd {
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
         Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),
+        // The disk usage scanner needs no library.
+        Command::Du {
+            path: None,
+            scan,
+            all_drives,
+            top,
+            save,
+            load,
+            exclude,
+            follow_links,
+        } => {
+            let args = DuScan {
+                scan,
+                all_drives,
+                top,
+                save,
+                load,
+                exclude,
+                follow_links,
+            };
+            return match du_scan(args, json, &mut out) {
+                Ok(()) => OK,
+                Err(e) => report(e, json, &mut out),
+            };
+        }
         Command::Op {
             name,
             params,
@@ -384,6 +409,171 @@ fn walk_sizes(path: &str) -> anyhow::Result<FolderSizes> {
     })
 }
 
+/// `keel du --scan` / `--all-drives` / `--load` (Task 81).
+struct DuScan {
+    scan: Vec<String>,
+    all_drives: bool,
+    top: Option<usize>,
+    save: Option<std::path::PathBuf>,
+    load: Option<std::path::PathBuf>,
+    exclude: Vec<String>,
+    follow_links: bool,
+}
+
+/// Scans (or loads a saved scan), saves it when asked, and prints each root's biggest
+/// items, its free and unknown space (drives) and its total.
+fn du_scan(a: DuScan, json: bool, out: &mut Out) -> Result<(), Fail> {
+    use keel_vfs::du;
+    let fail = |e: anyhow::Error| Fail::Api(ApiError::failed(format!("{e:#}")));
+    let tree = match &a.load {
+        Some(file) => du::load(file).map_err(fail)?,
+        None => {
+            let mut roots: Vec<du::Root> = (a.scan.iter())
+                .map(|p| du::Root::Path(std::path::PathBuf::from(p)))
+                .collect();
+            if a.all_drives {
+                roots.push(du::Root::AllLocalDrives);
+            }
+            let opts = du::ScanOptions {
+                follow_symlinks: a.follow_links,
+                follow_junctions: a.follow_links,
+                follow_mount_points: a.follow_links,
+                filters: du::Filters {
+                    exclude_names: a.exclude.clone(),
+                    ..du::Filters::default()
+                },
+                ..du::ScanOptions::default()
+            };
+            let handle = du::ScanHandle::new();
+            let ticker = Ticker::start(&handle);
+            let scanned = du::scan(&roots, &opts, &handle);
+            drop(ticker);
+            scanned.map_err(fail)?
+        }
+    };
+    if let Some(file) = &a.save {
+        du::save(&tree, file, true).map_err(fail)?;
+    }
+    let summary = tree.summary(a.top.unwrap_or(20));
+    if json {
+        print_json(&serde_json::to_value(&summary).unwrap_or_default(), out);
+    } else {
+        print_du_scan(&summary, out);
+    }
+    Ok(())
+}
+
+fn print_du_scan(s: &keel_vfs::du::Summary, out: &mut Out) {
+    let size = |b: u64| humansize::format_size(b, humansize::DECIMAL);
+    let files = |f: u64| format!("{f} file{}", if f == 1 { "" } else { "s" });
+    let _ = writeln!(out, "{:>10}  {:>10}  {:>14}  Path", "Size", "On disk", "Files");
+    let mut line = |bytes: Option<u64>, disk: Option<u64>, count: String, what: &str| {
+        let (bytes, disk) = (bytes.map_or(String::new(), size), disk.map_or(String::new(), size));
+        let _ = writeln!(out, "{bytes:>10}  {disk:>10}  {count:>14}  {what}");
+    };
+    for r in &s.roots {
+        for c in &r.children {
+            let count = match c.kind {
+                "file" | "link" => String::new(),
+                _ => files(c.files),
+            };
+            let mut what = c.path.clone().unwrap_or_else(|| c.name.clone());
+            if !c.notes.is_empty() {
+                what = format!("{what}  [{}]", c.notes.join(", "));
+            }
+            line(Some(c.bytes), Some(c.allocated), count, &what);
+        }
+        if r.truncated {
+            line(None, None, String::new(), "(more, smaller items not shown)");
+        }
+        if let Some(free) = r.free {
+            line(Some(free), None, String::new(), "<free space>");
+        }
+        if let Some(unknown) = r.unknown {
+            line(Some(unknown), None, String::new(), "<unknown: used, not found by the scan>");
+        }
+        line(Some(r.bytes), Some(r.allocated), files(r.files), &r.path);
+    }
+    if s.roots.len() > 1 {
+        line(Some(s.bytes), Some(s.allocated), files(s.files), "(all roots)");
+    }
+    let mut end = format!(
+        "{} files, {} folders in {:.1} s",
+        s.files,
+        s.folders.saturating_sub(s.roots.len() as u64),
+        s.elapsed_ms as f64 / 1000.0
+    );
+    if !s.complete {
+        end.push_str("; cancelled, not everything was scanned");
+    }
+    if s.unreadable > 0 {
+        end.push_str(&format!("; {} folders could not be read", s.unreadable));
+    }
+    if s.excluded > 0 {
+        end.push_str(&format!("; {} items left out", s.excluded));
+    }
+    let _ = writeln!(out, "{end}");
+}
+
+/// A scan's progress on stderr (when it is a terminal), every 200 ms.
+struct Ticker {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Ticker {
+    const WIDTH: usize = 79;
+
+    fn start(handle: &keel_vfs::du::ScanHandle) -> Option<Ticker> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        if !std::io::stderr().is_terminal() {
+            return None;
+        }
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (h, s) = (handle.clone(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("du-progress".into())
+            .spawn(move || {
+                while !s.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let p = h.progress();
+                    let head = format!(
+                        "{} files, {} ({:.0} files/s)  ",
+                        p.files,
+                        humansize::format_size(p.bytes, humansize::DECIMAL),
+                        p.files_per_sec
+                    );
+                    let room = Self::WIDTH.saturating_sub(head.chars().count()).max(2);
+                    let at = p.current.display().to_string();
+                    let n = at.chars().count();
+                    let at: String = if n > room {
+                        std::iter::once('…')
+                            .chain(at.chars().skip(n + 1 - room))
+                            .collect()
+                    } else {
+                        at
+                    };
+                    eprint!("\r{:<w$}", format!("{head}{at}"), w = Self::WIDTH);
+                }
+                eprint!("\r{:w$}\r", "", w = Self::WIDTH);
+            })
+            .ok()?;
+        Some(Ticker {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Runs `cmd`. Text goes to `out` as it comes; with `json` nothing is printed here and the
 /// one document to print is returned.
 fn command(
@@ -409,8 +599,13 @@ fn command(
             }
             None
         }
-        Command::Du { path } => {
-            let sizes = folder_sizes(b, &abs(&path))?;
+        Command::Du { path, top, .. } => {
+            let path = path.unwrap_or_default();
+            let mut sizes = folder_sizes(b, &abs(&path))?;
+            if let Some(n) = top.filter(|&n| n < sizes.children.len()) {
+                sizes.children.truncate(n);
+                sizes.truncated = true;
+            }
             if json {
                 return Ok(Some(serde_json::to_value(&sizes).unwrap_or_default()));
             }
