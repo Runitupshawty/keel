@@ -350,6 +350,7 @@ const HIDDEN: &[&str] = if cfg!(target_os = "macos") {
 /// Every command, in the palette's order (context ones first, then the global ones), then
 /// the keys the palette does not list.
 pub fn commands() -> Vec<Command> {
+    use crate::finder::FinderCmd;
     use crate::folder_ops::Kind;
     use crate::search_tab::Toggle;
     use Action::*;
@@ -509,6 +510,22 @@ pub fn commands() -> Vec<Command> {
         )
         .global()
         .typing(),
+        // Phase 14 Task 67.
+        cmd("finder.quicklook", "Quick Look", Finder(FinderCmd::QuickLook), &[]).global(),
+        cmd(
+            "finder.goto",
+            "Go to folder…",
+            Finder(FinderCmd::GoToFolder),
+            &["Ctrl+Shift+G"],
+        )
+        .global(),
+        cmd(
+            "finder.path_bar",
+            "Show / hide path bar",
+            Finder(FinderCmd::TogglePathBar),
+            &[],
+        )
+        .global(),
         cmd(
             "view.inspector",
             "Show inspector",
@@ -723,6 +740,13 @@ pub fn commands() -> Vec<Command> {
             "select.toggle",
             "Select or deselect the cursor item",
             ToggleSelect,
+            &["Ctrl+Space"],
+        ),
+        // Space: Quick Look (or the selection toggle, Settings → General).
+        cmd(
+            "finder.space",
+            "Quick Look, or select the cursor item (Settings)",
+            Finder(FinderCmd::Space),
             &["Space"],
         ),
         cmd(
@@ -1460,7 +1484,17 @@ mod tests {
             ),
             (Modifiers::NONE, Key::Delete, Action::Delete),
             (Modifiers::NONE, Key::Enter, Action::Enter),
-            (Modifiers::NONE, Key::Space, Action::ToggleSelect),
+            (CMD, Key::Space, Action::ToggleSelect),
+            (
+                Modifiers::NONE,
+                Key::Space,
+                Action::Finder(crate::finder::FinderCmd::Space),
+            ),
+            (
+                CMD_SHIFT,
+                Key::G,
+                Action::Finder(crate::finder::FinderCmd::GoToFolder),
+            ),
             (Modifiers::NONE, Key::Escape, Action::ClearFilter),
         ]
     }

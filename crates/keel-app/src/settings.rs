@@ -99,6 +99,8 @@ pub struct Settings {
     pub quote_copied_paths: bool,
     /// `[sidebar]`: Favorites in their order and hidden sections (Phase 14).
     pub sidebar: crate::sidebar_prefs::SidebarSettings,
+    /// `[finder]`: Quick Look on Space, the path bar, spring-loaded folders (Phase 14).
+    pub finder: crate::finder::FinderSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -241,6 +243,7 @@ impl Default for Settings {
             search: Default::default(),
             quote_copied_paths: false,
             sidebar: Default::default(),
+            finder: Default::default(),
         }
     }
 }
@@ -784,6 +787,18 @@ pub fn window(
                     ui.end_row();
                     ui.label("");
                     ui.checkbox(&mut s.preview_open, "Preview panel");
+                    ui.end_row();
+                    // Phase 14 Task 67.
+                    ui.label("");
+                    ui.checkbox(&mut s.finder.path_bar, "Path bar");
+                    ui.end_row();
+                    ui.label("Space");
+                    ui.checkbox(&mut s.finder.space_quick_look, "Opens Quick Look")
+                        .on_hover_text("Off: Space selects the cursor row (Ctrl+Space always does)");
+                    ui.end_row();
+                    ui.label("Dragging");
+                    ui.checkbox(&mut s.finder.spring_loaded, "Spring-loaded folders")
+                        .on_hover_text("A drag resting on a folder for 0.6 s opens it");
                     ui.end_row();
                     // --- Task 23 ---
                     ui.label("Motion");

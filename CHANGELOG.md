@@ -48,6 +48,11 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Comments on library items in the API: `library.comment` and `library.set_comment` (previewed). See [api.md](docs/api.md).
 - Ctrl+Shift+I also shows the Inspector.
 - A `finder_tags` fuzz target for the reader of the macOS tag attribute ([fuzzing.md](docs/fuzzing.md)).
+- **Quick Look**: Space opens a floating preview over the file list with the preview panel's renderers, photos decoded sharp at the window's size and videos that play with sound. The arrow keys move the cursor and the preview follows; Space or Esc closes. With several items selected it opens on an index sheet (a grid of them); click one to show it, then the arrow keys step through the selected items. A full-screen button and **Open With…** are in its header. See [Quick Look](docs/files.md#quick-look).
+- **Path bar** at the bottom of the window: the active folder's crumbs with icons and the selected item. Double-click opens a crumb, dropping files on a folder crumb moves them there (Alt or Option copies), and right-click offers **Copy as Pathname**. Shown by default; **Show / hide path bar** in the command palette or Settings → General. See [Path bar and status bar](docs/files.md#path-bar-and-status-bar).
+- **Spring-loaded folders**: a drag resting on a folder (row, tile, column entry or path bar crumb) for 0.6 s opens it; Space opens it at once. On by default (Settings → General → Dragging).
+- **Go to Folder** (Ctrl+Shift+G): type a path (absolute, `~`, relative or `scheme://`) with completion of the folder's names; Tab completes, Up and Down pick, Enter goes. See [Go to Folder](docs/files.md#go-to-folder).
+- Settings → General: **Path bar**, **Space: Opens Quick Look** and **Dragging: Spring-loaded folders** (`[finder]` in config.toml).
 
 ### Changed
 
@@ -58,6 +63,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - The context menu's **Properties** is now **Get Info**; Explorer's Properties sheet is behind Get Info's **Windows Security…** button.
 - Source stores are now at version 13 (comments): a store this Keel opened is refused by an older Keel ("newer than this Keel").
 - A new tag's color is one of Finder's eight instead of any color; folder colors keep their palette.
+- Space opens Quick Look instead of selecting the cursor row; Ctrl+Space selects. Turning off **Space: Opens Quick Look** in Settings → General gives Space its old job. In the Media view Space still opens the media viewer.
+- The status bar's count reads "12 items, 431.2 GB available" with the free space of the folder's drive.
 
 ### Fixed
 

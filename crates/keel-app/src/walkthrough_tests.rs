@@ -1356,7 +1356,14 @@ fn fingerprint(s: &AppState) -> String {
             s.jobs.list.len(),
             toast_texts(s),
             // Task 67: Get Info windows.
-            (s.theme.dark, s.info.windows.len()),
+            // Phase 14 Task 67: Quick Look, Go to Folder, the path bar.
+            (
+                s.theme.dark,
+                s.info.windows.len(),
+                s.finder.quicklook.open,
+                s.finder.goto.open,
+                s.settings.finder.path_bar,
+            ),
         )
     )
 }
@@ -1407,6 +1414,9 @@ fn command_palette_every_command() {
             st.settings_open = false;
             st.jump.open = false;
             st.info.windows.clear();
+            st.finder.goto.open = false;
+            let ctx = st.ctx.clone();
+            st.finder.quicklook.close(&ctx);
             st.panes[0].path_edit = None;
             st.tab_mut(0).renaming = None;
         }

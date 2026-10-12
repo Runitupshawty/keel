@@ -519,7 +519,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
 }
 
 /// The text of path bar part `i` (0: the root) for `dir`.
-fn crumb_label(dir: &VPath, i: usize) -> String {
+pub(crate) fn crumb_label(dir: &VPath, i: usize) -> String {
     // A device's name and a shared source's label, not their ids.
     if let Some(node) = crate::devices::node_crumb(dir) {
         return node;
@@ -917,6 +917,10 @@ pub fn drag_and_drop(
             r.ctx
                 .layer_painter(egui::LayerId::new(egui::Order::Foreground, r.id))
                 .rect_stroke(r.rect, 3.0, stroke, egui::StrokeKind::Inside);
+            // Phase 14 Task 67: resting here opens the folder.
+            if !archive {
+                crate::spring::hovered(&r.ctx, pane, &entry.path);
+            }
         }
     }
     if let Some(p) = r.dnd_release_payload::<DragPayload>() {

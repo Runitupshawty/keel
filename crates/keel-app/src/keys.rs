@@ -257,6 +257,8 @@ pub enum Action {
     Mount(crate::mount_ui::MountCmd),
     /// Task 77: open a file list as a tab, export results (`filelist_ui.rs`).
     FileList(crate::filelist_ui::FileListCmd),
+    /// Phase 14 Task 67: Quick Look, the path bar, Go to Folder (`finder.rs`).
+    Finder(crate::finder::FinderCmd),
 }
 
 /// A shortcut as the user's OS writes it: "Ctrl+" is "Cmd+" on macOS.
@@ -368,7 +370,7 @@ pub fn actions(ctx: &egui::Context, enabled: bool, keys: &Bindings) -> Vec<Actio
                 // egui-winit turns Shift+Delete into Cut on Windows; Phase 1 trashes.
                 Event::Cut if i.modifiers.shift && !i.modifiers.command => out.push(Action::Delete),
                 Event::Cut => out.push(Action::Cut),
-                // Space toggles selection; it never starts a filter.
+                // Space never starts a filter.
                 Event::Text(t) if typing_allowed && !t.trim().is_empty() => {
                     out.push(Action::Type(t.clone()))
                 }
