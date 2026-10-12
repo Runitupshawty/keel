@@ -228,20 +228,17 @@ pub fn sidebar_tags(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
             out.push(query(tag));
         }
     }
-    ui.scope(|ui| {
-        ui.visuals_mut().button_frame = false;
-        ui.menu_button("All Tags…", |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
-                .show(ui, |ui| {
-                    for tag in &l.tags {
-                        if chip(ui, tag).clicked() {
-                            out.push(query(tag));
-                            ui.close_menu();
-                        }
+    crate::sidebar::menu_row(ui, "All Tags…", |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for tag in &l.tags {
+                    if chip(ui, tag).clicked() {
+                        out.push(query(tag));
+                        ui.close_menu();
                     }
-                });
-        });
+                }
+            });
     });
 }
 

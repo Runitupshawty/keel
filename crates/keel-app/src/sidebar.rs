@@ -381,10 +381,7 @@ impl Sidebar {
             crate::devices::sidebar(ui, Some(devices.as_slice()), note, current, accent, out);
         }
         if self.remotes.is_empty() && self.clouds.is_empty() {
-            ui.scope(|ui| {
-                ui.visuals_mut().button_frame = false;
-                ui.menu_button("Add server or cloud…", |ui| add_menu(ui, out));
-            });
+            menu_row(ui, "Add server or cloud…", |ui| add_menu(ui, out));
         }
     }
 }
@@ -545,6 +542,18 @@ fn add_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         });
         ui.close_menu();
     }
+}
+
+/// A frameless menu button lined up with the rows' text ("Add server or cloud…", "All
+/// Tags…").
+pub(crate) fn menu_row(ui: &mut egui::Ui, text: &str, menu: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        let s = ui.spacing();
+        let indent = PAD_X + GLYPH + GAP - s.button_padding.x - s.item_spacing.x;
+        ui.add_space(indent.max(0.0));
+        ui.visuals_mut().button_frame = false;
+        ui.menu_button(text, menu);
+    });
 }
 
 /// One sidebar row: `glyph` in the accent, `text` cut to the width, a rounded pill when
