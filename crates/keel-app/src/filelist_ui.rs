@@ -213,7 +213,9 @@ impl AppState {
 
     /// A search tab over `searcher`'s entries, listing all of them at once.
     pub fn open_list_tab(&mut self, p: usize, path: &Path, searcher: Arc<FileListSearcher>) {
-        let dir = path.parent().map_or_else(|| self.tab(p).dir.clone(), VPath::local);
+        let dir = path
+            .parent()
+            .map_or_else(|| self.tab(p).dir.clone(), VPath::local);
         let mut tab = Tab::search(dir);
         tab.filelist = Some(searcher);
         if let TabKind::Search { due, .. } = &mut tab.kind {
@@ -236,7 +238,11 @@ fn load(pane: usize, path: PathBuf, tx: &crossbeam_channel::Sender<Msg>, ctx: &e
     let result = read_file(&path, &Limits::default())
         .map(|list| Arc::new(FileListSearcher::new(label, list).with_cap(LIST_HITS)))
         .map_err(|e| format!("{e:#}"));
-    worker::send(tx, ctx, Msg::FileList(FileListMsg::Loaded { pane, path, result }));
+    worker::send(
+        tx,
+        ctx,
+        Msg::FileList(FileListMsg::Loaded { pane, path, result }),
+    );
 }
 
 /// Writes `list` to `path` (through a temporary file next to it, so a failed write leaves
@@ -366,8 +372,7 @@ fn filter(list: FileList, text: &str) -> Result<FileList, String> {
         ..Query::default()
     };
     let hits = searcher.query(&q).map_err(|e| format!("query: {e:#}"))?;
-    let wanted: std::collections::HashSet<String> =
-        hits.iter().map(|h| h.path.display()).collect();
+    let wanted: std::collections::HashSet<String> = hits.iter().map(|h| h.path.display()).collect();
     let entries = (searcher.list().entries.iter())
         .filter(|e| wanted.contains(&VPath::local(&e.path).display()))
         .cloned()
@@ -393,7 +398,8 @@ mod tests {
 
     impl Dir {
         fn new(tag: &str) -> Self {
-            let d = std::env::temp_dir().join(format!("keel-app-filelist-{tag}-{}", std::process::id()));
+            let d = std::env::temp_dir()
+                .join(format!("keel-app-filelist-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             Self(d)

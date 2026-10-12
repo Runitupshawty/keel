@@ -727,7 +727,11 @@ pub fn context_menu(
     let export = Action::FileList(crate::filelist_ui::FileListCmd::Export);
     item(
         ui,
-        if search { "Export results…" } else { "Export list…" },
+        if search {
+            "Export results…"
+        } else {
+            "Export list…"
+        },
         "",
         export,
     );
