@@ -94,11 +94,11 @@ impl FatImg {
         put(&mut img, 0, &[0xEB, 0x3C, 0x90]);
         put(&mut img, 3, b"MSWIN4.1");
         put16(&mut img, 11, bps as u16);
-        img[13] = 1;
+        put(&mut img, 13, &[1]);
         put16(&mut img, 14, reserved as u16);
-        img[16] = nfats as u8;
+        put(&mut img, 16, &[nfats as u8]);
         put16(&mut img, 17, root_ent as u16);
-        img[21] = 0xF8;
+        put(&mut img, 21, &[0xF8]);
         if kind == 32 {
             put32(&mut img, 32, total);
             put32(&mut img, 36, fatsz as u32);
@@ -355,10 +355,10 @@ impl ExImg {
         put32(&mut img, 96, 4);
         put32(&mut img, 100, 0x1234_5678);
         put16(&mut img, 104, 0x0100);
-        img[108] = 9;
-        img[109] = 3;
-        img[110] = 1;
-        img[111] = 0x80;
+        put(&mut img, 108, &[9]);
+        put(&mut img, 109, &[3]);
+        put(&mut img, 110, &[1]);
+        put(&mut img, 111, &[0x80]);
         put(&mut img, 510, &[0x55, 0xAA]);
         img.resize(EX_HEAP_OFF, 0);
         let mut ex = Self {
@@ -803,13 +803,13 @@ impl NtfsImg {
         put(&mut img, 0, &[0xEB, 0x52, 0x90]);
         put(&mut img, 3, b"NTFS    ");
         put16(&mut img, 11, 512);
-        img[13] = 2;
-        img[21] = 0xF8;
+        put(&mut img, 13, &[2]);
+        put(&mut img, 21, &[0xF8]);
         put64(&mut img, 40, NT_CLUSTERS * 2);
         put64(&mut img, 48, NT_MFT_LCN);
         put64(&mut img, 56, NT_MFT_LCN + NT_RECORDS);
-        img[64] = 1;
-        img[68] = 1;
+        put(&mut img, 64, &[1]);
+        put(&mut img, 68, &[1]);
         put64(&mut img, 72, 0x1122_3344_5566_7788);
         put(&mut img, 510, &[0x55, 0xAA]);
         put(&mut img, 2 * NT_CLUSTER, &self.bitmap);
