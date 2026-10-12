@@ -5011,6 +5011,7 @@ version = "0.22.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "blake3",
  "bzip2",
  "chrono",
  "crossbeam-channel",
@@ -5063,6 +5064,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "trash",
+ "twox-hash",
  "unrar_sys",
  "url",
  "walkdir",
