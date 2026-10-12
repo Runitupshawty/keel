@@ -183,6 +183,165 @@ pub fn xlsx(dir: &Path, name: &str, rows: &str) -> PathBuf {
     path
 }
 
+/// A BIFF record of a legacy Excel workbook: type, size, data.
+pub fn biff(typ: u16, data: &[u8]) -> Vec<u8> {
+    [
+        &typ.to_le_bytes()[..],
+        &(data.len() as u16).to_le_bytes(),
+        data,
+    ]
+    .concat()
+}
+
+/// A BIFF8 Number record: `value` at (`row`, `col`).
+pub fn biff_number(row: u16, col: u16, value: f64) -> Vec<u8> {
+    let data = [
+        &row.to_le_bytes()[..],
+        &col.to_le_bytes(),
+        &[0, 0],
+        &value.to_le_bytes(),
+    ]
+    .concat();
+    biff(0x0203, &data)
+}
+
+/// A BIFF8 DIMENSIONS record: rows `first..last` (exclusive, u32 as BIFF8 has them) and
+/// columns `first..last`.
+pub fn biff_dimensions(rows: (u32, u32), cols: (u16, u16)) -> Vec<u8> {
+    let data = [
+        &rows.0.to_le_bytes()[..],
+        &rows.1.to_le_bytes(),
+        &cols.0.to_le_bytes(),
+        &cols.1.to_le_bytes(),
+        &[0, 0],
+    ]
+    .concat();
+    biff(0x0200, &data)
+}
+
+/// A legacy Excel workbook (`.xls`, BIFF8 in a compound file) with one sheet, "Sheet1",
+/// whose records are `sheet` (after its BOF, before its EOF). `big` pads the workbook
+/// stream past 4 KiB, into the file's own sectors; else it lies in the mini stream.
+pub fn xls(dir: &Path, name: &str, sheet: &[u8], big: bool) -> PathBuf {
+    let bof = |dt: u8| biff(0x0809, &[&[0x00, 0x06, dt, 0x00][..], &[0; 12]].concat());
+    let bound = |pos: u32| {
+        let data = [&pos.to_le_bytes()[..], &[0, 0, 6, 0], b"Sheet1"].concat();
+        biff(0x0085, &data)
+    };
+    let eof = biff(0x000A, &[]);
+    let globals_len = (bof(5).len() + bound(0).len() + eof.len()) as u32;
+    let mut stream = [bof(5), bound(globals_len), eof.clone(), bof(0x10)].concat();
+    stream.extend_from_slice(sheet);
+    stream.extend_from_slice(&eof);
+    if big {
+        stream.resize(stream.len().max(5000), 0);
+    }
+    let path = dir.join(name);
+    std::fs::write(&path, compound_file("Workbook", &stream)).unwrap();
+    path
+}
+
+/// A compound file (version 3, 512-byte sectors) holding one stream, `name`. Small enough
+/// for one FAT sector: up to 60 KiB.
+fn compound_file(name: &str, stream: &[u8]) -> Vec<u8> {
+    const FREE: u32 = 0xFFFF_FFFF;
+    const END: u32 = 0xFFFF_FFFE;
+    const FATSECT: u32 = 0xFFFF_FFFD;
+    let sectors = |len: usize, size: usize| len.div_ceil(size).max(1);
+    let mini = stream.len() < 4096;
+    // Sector 0 the FAT, 1 the directory, then (mini) the mini FAT and the mini stream, or
+    // the stream itself.
+    let mut fat = vec![FATSECT, END];
+    let chain = |fat: &mut Vec<u32>, n: usize| {
+        let first = fat.len() as u32;
+        for i in 1..n {
+            fat.push(first + i as u32);
+        }
+        fat.push(END);
+        first
+    };
+    let mut body = Vec::new();
+    let (root_start, root_len, start, mini_fat_start) = if mini {
+        let minis = sectors(stream.len(), 64);
+        let mini_fat_start = chain(&mut fat, 1);
+        let mut mini_fat: Vec<u32> = (1..minis as u32).collect();
+        mini_fat.push(END);
+        mini_fat.resize(128, FREE);
+        body.extend(mini_fat.iter().flat_map(|v| v.to_le_bytes()));
+        let mini_stream_len = minis * 64;
+        let root_start = chain(&mut fat, sectors(mini_stream_len, 512));
+        let mut data = stream.to_vec();
+        data.resize(sectors(mini_stream_len, 512) * 512, 0);
+        body.extend(data);
+        (root_start, mini_stream_len as u32, 0, mini_fat_start)
+    } else {
+        let start = chain(&mut fat, sectors(stream.len(), 512));
+        let mut data = stream.to_vec();
+        data.resize(sectors(stream.len(), 512) * 512, 0);
+        body.extend(data);
+        (END, 0, start, END)
+    };
+    assert!(fat.len() <= 128, "one FAT sector");
+    fat.resize(128, FREE);
+    let entry = |name: &str, typ: u8, child: u32, start: u32, len: u32| {
+        let mut e = vec![0u8; 128];
+        let units: Vec<u8> = name
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        e[..units.len()].copy_from_slice(&units);
+        e[64..66].copy_from_slice(&(units.len() as u16).to_le_bytes());
+        e[66] = typ;
+        e[67] = 1;
+        e[68..72].copy_from_slice(&FREE.to_le_bytes());
+        e[72..76].copy_from_slice(&FREE.to_le_bytes());
+        e[76..80].copy_from_slice(&child.to_le_bytes());
+        e[116..120].copy_from_slice(&start.to_le_bytes());
+        e[120..124].copy_from_slice(&len.to_le_bytes());
+        e
+    };
+    let dir = [
+        entry("Root Entry", 5, 1, root_start, root_len),
+        entry(name, 2, FREE, start, stream.len() as u32),
+        entry("", 0, FREE, 0, 0),
+        entry("", 0, FREE, 0, 0),
+    ]
+    .concat();
+    let mut header = vec![0u8; 512];
+    header[..8].copy_from_slice(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
+    for (at, v) in [(24, 0x003Eu16), (26, 3), (28, 0xFFFE), (30, 9), (32, 6)] {
+        header[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    let mini_fats = if mini { 1 } else { 0 };
+    for (at, v) in [
+        (44, 1u32),
+        (48, 1),
+        (56, 4096),
+        (60, mini_fat_start),
+        (64, mini_fats),
+        (68, END),
+        (72, 0),
+    ] {
+        header[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    let mut difat = vec![0u32];
+    difat.resize(109, FREE);
+    header[76..].copy_from_slice(
+        &difat
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    [
+        header,
+        fat.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        dir,
+        body,
+    ]
+    .concat()
+}
+
 /// The probes of the review of 0.22.0, in `dir`: 20,000 nested Word tables, an xlsb with
 /// a cell at XFD1048576, a docx whose zip says its 65 MiB part holds 1 KiB, and an xlsx
 /// whose error cell holds `marker` (with 3,000 more characters). None may crash a reader,

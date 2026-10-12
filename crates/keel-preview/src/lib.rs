@@ -19,6 +19,7 @@ pub mod probes;
 mod table;
 mod text;
 mod video;
+mod xls; // the bound calamine needs before it opens an .xls
 
 pub use extract::{extract_text, extracts, text_extractor, Extracted, TextError, TEXT_EXTENSIONS};
 use std::path::{Path, PathBuf};

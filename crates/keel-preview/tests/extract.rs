@@ -2,7 +2,10 @@
 //! Document" wording), the caps, damaged files.
 
 use keel_core::{TextCaps, TextOutcome, TEXT_CAPS};
-use keel_preview::probes::{lie_about_sizes, nested_tables, replace_entry, sparse_xlsb, word};
+use keel_preview::probes::{
+    biff_dimensions, biff_number, lie_about_sizes, nested_tables, replace_entry, sparse_xlsb, word,
+    xls,
+};
 use keel_preview::{
     extract_text, extracts, init_pdfium, preview, text_extractor, Preview, Request, TextError,
 };
@@ -475,6 +478,66 @@ fn a_sparse_workbook_streams_and_xls_is_not_read() {
     std::fs::write(&xls, b"Keel").unwrap();
     assert_eq!(extract_text(&xls, "xls", &TEXT_CAPS), Err(TextError::Kind));
     assert!(!extracts("xls"));
+}
+
+/// calamine reads a whole .xls when it opens it, sized by what the file claims: a
+/// DIMENSIONS record claiming more than the largest sheet (its BIFF8 rows are 32-bit) made
+/// it reserve terabytes, and two cells at far corners made it lay out every cell between
+/// them, both an abort. The preview bounds them first, and files over 32 MiB.
+#[test]
+fn xls_previews_are_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let table = |path: &Path| match preview_of(path, "xls") {
+        Preview::Table {
+            headers,
+            rows,
+            truncated,
+        } => (headers, rows, truncated),
+        other => panic!("{}: {other:?}", path.display()),
+    };
+    let error = |path: &Path| match preview_of(path, "xls") {
+        Preview::Error(e) => e,
+        other => panic!("{}: {other:?}", path.display()),
+    };
+    // A small workbook, in the mini stream and in the file's own sectors.
+    let sheet = [
+        biff_dimensions((0, 2), (0, 2)),
+        biff_number(0, 0, 1.0),
+        biff_number(1, 1, 2.0),
+    ]
+    .concat();
+    for big in [false, true] {
+        let path = xls(d, &format!("small-{big}.xls"), &sheet, big);
+        assert_eq!(
+            table(&path),
+            (
+                vec!["1".to_owned(), String::new()],
+                vec![vec![String::new(), "2".to_owned()]],
+                false
+            )
+        );
+    }
+    // The whole sheet and beyond, a reversed range, and cells 65,536 columns apart.
+    let claims = [
+        (biff_dimensions((0, u32::MAX), (0, 256)), "rows"),
+        (biff_dimensions((0, 65_537), (0, 256)), "one row more"),
+        (biff_dimensions((9, 2), (0, 2)), "reversed"),
+        (
+            [biff_number(0, 0, 1.0), biff_number(65_535, 65_535, 2.0)].concat(),
+            "far corners",
+        ),
+    ];
+    for (records, what) in claims {
+        for big in [false, true] {
+            let path = xls(d, &format!("claim-{big}.xls"), &records, big);
+            assert!(std::fs::metadata(&path).unwrap().len() < 8_000);
+            assert_eq!(error(&path), "damaged or too large to preview", "{what}");
+        }
+    }
+    let huge = d.join("huge.xls");
+    File::create(&huge).unwrap().set_len(33 << 20).unwrap();
+    assert!(error(&huge).starts_with("too big to preview"));
 }
 
 /// Review of 0.22.0, M4: a reader's own message can quote the file (calamine puts an
