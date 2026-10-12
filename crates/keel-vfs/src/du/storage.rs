@@ -46,15 +46,24 @@ impl Tier {
         let mut below = 0;
         for t in tiers {
             if !(t.cost_per_gb.is_finite() && t.cost_per_gb >= 0.0) {
-                return Err(format!("{}: the price must be a number of 0 or more", t.name));
+                return Err(format!(
+                    "{}: the price must be a number of 0 or more",
+                    t.name
+                ));
             }
             if let Some(days) = t.younger_than_days {
                 if days <= below {
-                    return Err(format!("{}: the ages must increase from tier to tier", t.name));
+                    return Err(format!(
+                        "{}: the ages must increase from tier to tier",
+                        t.name
+                    ));
                 }
                 below = days;
             } else if !std::ptr::eq(t, last) {
-                return Err(format!("{}: only the last tier can take all older files", t.name));
+                return Err(format!(
+                    "{}: only the last tier can take all older files",
+                    t.name
+                ));
             }
         }
         Ok(())

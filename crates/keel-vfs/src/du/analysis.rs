@@ -108,8 +108,7 @@ impl FileRow {
 /// and duplicates never offer it as space to win back.
 pub fn counted_file(tree: &Tree, id: NodeId) -> bool {
     let n = tree.node(id);
-    n.kind == NodeKind::File
-        && !(tree.options.count_hard_links_once && n.has(flag::HARDLINK_DUP))
+    n.kind == NodeKind::File && !(tree.options.count_hard_links_once && n.has(flag::HARDLINK_DUP))
 }
 
 /// One CSV cell (RFC 4180 quoting). File names come from anyone, so a cell a spreadsheet

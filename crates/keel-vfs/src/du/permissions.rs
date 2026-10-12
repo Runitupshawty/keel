@@ -322,8 +322,8 @@ fn read(path: &Path, names: &Names) -> anyhow::Result<Permissions> {
     };
     use windows::Win32::Security::{
         GetAce, GetSecurityDescriptorControl, LookupAccountSidW, ACCESS_ALLOWED_ACE, ACE_HEADER,
-        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SE_DACL_PROTECTED, SID_NAME_USE,
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SE_DACL_PROTECTED, SID_NAME_USE,
     };
 
     // READ_CONTROL only; FILE_FLAG_BACKUP_SEMANTICS (folders), FILE_FLAG_OPEN_REPARSE_POINT,
@@ -394,7 +394,10 @@ fn read(path: &Path, names: &Names) -> anyhow::Result<Permissions> {
             None,
             Some(&mut sd),
         );
-        anyhow::ensure!(err == ERROR_SUCCESS, std::io::Error::from_raw_os_error(err.0 as i32));
+        anyhow::ensure!(
+            err == ERROR_SUCCESS,
+            std::io::Error::from_raw_os_error(err.0 as i32)
+        );
         let _sd = Local(sd.0);
         let (mut control, mut revision) = (0u16, 0u32);
         GetSecurityDescriptorControl(sd, &mut control, &mut revision)?;

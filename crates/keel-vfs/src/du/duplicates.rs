@@ -324,7 +324,10 @@ fn open(row: &FileRow) -> anyhow::Result<File> {
             "a cloud placeholder or reparse point: not read"
         );
     }
-    anyhow::ensure!(opened.is_file() && unchanged(&opened), "changed while opening");
+    anyhow::ensure!(
+        opened.is_file() && unchanged(&opened),
+        "changed while opening"
+    );
     Ok(file)
 }
 
@@ -383,13 +386,23 @@ fn ranges(stage: Stage, size: u64) -> Vec<(u64, u64)> {
         Stage::Sparse => {
             let last = u128::from(size - CHUNK);
             (0..SAMPLES)
-                .map(|i| ((last * u128::from(i) / u128::from(SAMPLES - 1)) as u64, CHUNK))
+                .map(|i| {
+                    (
+                        (last * u128::from(i) / u128::from(SAMPLES - 1)) as u64,
+                        CHUNK,
+                    )
+                })
                 .collect()
         }
     }
 }
 
-fn hash(row: &FileRow, algorithm: Algorithm, stage: Stage, handle: &ScanHandle) -> anyhow::Result<Key> {
+fn hash(
+    row: &FileRow,
+    algorithm: Algorithm,
+    stage: Stage,
+    handle: &ScanHandle,
+) -> anyhow::Result<Key> {
     if !handle.checkpoint() {
         return Err(Cancelled.into());
     }
@@ -435,7 +448,10 @@ pub fn verify(
     handle: &ScanHandle,
 ) -> anyhow::Result<Vec<PathBuf>> {
     anyhow::ensure!(group.files.len() > 1, "the group has one file left");
-    let kept = group.files.get(keep).ok_or_else(|| anyhow::anyhow!("choose a file to keep"))?;
+    let kept = group
+        .files
+        .get(keep)
+        .ok_or_else(|| anyhow::anyhow!("choose a file to keep"))?;
     let kept_id = identity(&kept.path)
         .ok_or_else(|| anyhow::anyhow!("{}: cannot be identified", kept.path.display()))?;
     let digest = hash(kept, Algorithm::Blake3, Stage::Full, handle)?;
@@ -471,7 +487,10 @@ pub fn verify(
 
 /// The report as CSV: one line per file.
 pub fn write_csv(report: &Report, mut w: impl Write) -> std::io::Result<()> {
-    write!(w, "group,status,algorithm,digest,path,extension,bytes,allocated\r\n")?;
+    write!(
+        w,
+        "group,status,algorithm,digest,path,extension,bytes,allocated\r\n"
+    )?;
     for (i, g) in report.groups.iter().enumerate() {
         let status = if g.probable {
             "Probable duplicates"

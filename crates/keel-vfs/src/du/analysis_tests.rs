@@ -18,7 +18,8 @@ fn put(path: &Path, bytes: &[u8]) {
 }
 
 fn id_of(t: &Tree, path: &Path) -> NodeId {
-    t.find(path).unwrap_or_else(|| panic!("{} not in the scan", path.display()))
+    t.find(path)
+        .unwrap_or_else(|| panic!("{} not in the scan", path.display()))
 }
 
 fn file_names(t: &Tree, ids: &[NodeId]) -> Vec<String> {
@@ -92,9 +93,19 @@ fn largest_files_top_n_in_range_biggest_first() {
     assert!(all[2].modified_ns.is_some());
 
     let top2 = largest::largest(&t, 2, SizeRange::default());
-    assert_eq!(top2.iter().map(|f| f.bytes).collect::<Vec<_>>(), [3000, 3000]);
+    assert_eq!(
+        top2.iter().map(|f| f.bytes).collect::<Vec<_>>(),
+        [3000, 3000]
+    );
 
-    let mid = largest::largest(&t, 10, SizeRange { min: 100, max: 2500 });
+    let mid = largest::largest(
+        &t,
+        10,
+        SizeRange {
+            min: 100,
+            max: 2500,
+        },
+    );
     assert_eq!(mid.iter().map(|f| f.bytes).collect::<Vec<_>>(), [2000, 500]);
 
     assert!(largest::largest(&t, 0, SizeRange::default()).is_empty());
@@ -106,7 +117,7 @@ fn largest_files_count_a_hard_linked_file_once() {
     let r = tmp.path();
     put(&r.join("big.bin"), &vec![7; 4000]);
     fs::hard_link(r.join("big.bin"), r.join("again.bin")).unwrap();
-    put(&r.join("small.bin"), &vec![7; 10]);
+    put(&r.join("small.bin"), &[7; 10]);
     let t = scan_at(r, &ScanOptions::default());
     let rows = largest::largest(&t, 10, SizeRange::default());
     assert_eq!(rows.iter().map(|f| f.bytes).collect::<Vec<_>>(), [4000, 10]);
@@ -125,9 +136,9 @@ fn search_fixture() -> (tempfile::TempDir, Tree) {
     let r = tmp.path();
     put(&r.join("Photos/Holiday.JPG"), &vec![0; 2000]);
     put(&r.join("Photos/beach.jpg"), &vec![0; 500]);
-    put(&r.join("Photos/notes.txt"), &vec![0; 50]);
+    put(&r.join("Photos/notes.txt"), &[0; 50]);
     put(&r.join("Docs/report-2026.pdf"), &vec![0; 900]);
-    put(&r.join("Docs/holiday plan.txt"), &vec![0; 10]);
+    put(&r.join("Docs/holiday plan.txt"), &[0; 10]);
     fs::hard_link(r.join("Photos/beach.jpg"), r.join("Docs/beach copy.jpg")).unwrap();
     let t = scan_at(r, &ScanOptions::default());
     (tmp, t)
@@ -188,7 +199,10 @@ fn search_by_regex_type_size_and_extension() {
     assert_eq!(hits.bytes, 2000 + 500);
 
     let big = Query {
-        size: SizeRange { min: 600, max: u64::MAX },
+        size: SizeRange {
+            min: 600,
+            max: u64::MAX,
+        },
         kind: ItemType::File,
         ..Query::default()
     };
@@ -259,7 +273,7 @@ fn storage_analytics_by_age_extension_and_top_folder() {
     put(&r.join("Media/old.mp4"), &vec![0; 4_000]);
     put(&r.join("Media/deep/mid.mp4"), &vec![0; 2_000]);
     put(&r.join("Docs/mid.txt"), &vec![0; 500]);
-    put(&r.join("Docs/undated.txt"), &vec![0; 7]);
+    put(&r.join("Docs/undated.txt"), &[0; 7]);
     fs::hard_link(r.join("Media/old.mp4"), r.join("Media/old-link.mp4")).unwrap();
     let mut t = scan_at(r, &ScanOptions::default());
     let now = 1_000 * DAY;
@@ -295,21 +309,34 @@ fn storage_analytics_by_age_extension_and_top_folder() {
     let bytes: Vec<u64> = a.tiers.iter().map(|x| x.bytes).collect();
     // The hard-linked old.mp4 counts once.
     assert_eq!(bytes, [1_000, 2_500, 4_000]);
-    assert_eq!(a.tiers.iter().map(|x| x.files).collect::<Vec<_>>(), [1, 2, 1]);
-    assert_eq!((a.undated.files, a.undated.bytes, a.undated.monthly_cost), (1, 7, 0.0));
+    assert_eq!(
+        a.tiers.iter().map(|x| x.files).collect::<Vec<_>>(),
+        [1, 2, 1]
+    );
+    assert_eq!(
+        (a.undated.files, a.undated.bytes, a.undated.monthly_cost),
+        (1, 7, 0.0)
+    );
     assert_eq!(a.total.bytes, 7_507);
     let expect = 1_000.0 / 1e9 * 0.10 + 2_500.0 / 1e9 * 0.01 + 4_000.0 / 1e9 * 0.001;
     assert!((a.total.monthly_cost - expect).abs() < 1e-15);
     assert!((a.tiers[0].monthly_cost - 1e-7).abs() < 1e-15);
 
     // By extension, biggest first, with bytes per tier.
-    let ext: Vec<(&str, u64)> = a.extensions.iter().map(|(e, t)| (e.as_str(), t.bytes)).collect();
+    let ext: Vec<(&str, u64)> = a
+        .extensions
+        .iter()
+        .map(|(e, t)| (e.as_str(), t.bytes))
+        .collect();
     assert_eq!(ext, [("mp4", 6_000), ("txt", 1_507)]);
     assert_eq!(a.extensions[0].1.tier_bytes, [0, 2_000, 4_000]);
 
     // By top folder; root files under the root's path.
-    let folders: Vec<(String, u64)> =
-        a.folders.iter().map(|(f, t)| (f.clone(), t.bytes)).collect();
+    let folders: Vec<(String, u64)> = a
+        .folders
+        .iter()
+        .map(|(f, t)| (f.clone(), t.bytes))
+        .collect();
     assert_eq!(
         folders,
         [
@@ -368,7 +395,10 @@ fn duplicates_by_size_prefix_and_full_hash() {
         assert_eq!(group_names(&rep.groups[1]), ["small1.txt", "small2.txt"]);
         assert_eq!(rep.groups[0].reclaimable(), 300_000);
         assert_eq!(rep.reclaimable(), 300_000 + 16);
-        assert!(rep.groups.iter().all(|g| !g.probable && g.algorithm == algorithm));
+        assert!(rep
+            .groups
+            .iter()
+            .all(|g| !g.probable && g.algorithm == algorithm));
         let hex_len = if algorithm == Algorithm::Xxh3 { 32 } else { 64 };
         assert_eq!(rep.groups[0].digest.len(), hex_len);
     }
@@ -397,7 +427,10 @@ fn duplicates_sparse_hashing_marks_probable_and_verify_reads_whole() {
     assert!(rep.groups[0].probable);
     // Reading whole tells them apart.
     let err = duplicates::verify(&rep.groups[0], 0, false, &ScanHandle::new()).unwrap_err();
-    assert!(err.to_string().contains("no longer has the same bytes"), "{err:#}");
+    assert!(
+        err.to_string().contains("no longer has the same bytes"),
+        "{err:#}"
+    );
     let whole = duplicates::Options {
         sparse: false,
         ..sparse
@@ -450,7 +483,11 @@ fn duplicates_skip_changed_and_cloud_files_and_reuse_library_hashes() {
     assert_eq!(rep.reused_hashes, 1);
     assert_eq!(rep.skipped.len(), 1);
     assert_eq!(rep.skipped[0].path, r.join("x3"));
-    assert!(rep.skipped[0].reason.contains("rescan"), "{:?}", rep.skipped);
+    assert!(
+        rep.skipped[0].reason.contains("rescan"),
+        "{:?}",
+        rep.skipped
+    );
 
     // Keep x2: x1 goes; both on one volume, so hard links are possible.
     let others = duplicates::verify(&rep.groups[0], 1, true, &ScanHandle::new()).unwrap();
@@ -465,8 +502,12 @@ fn duplicates_never_pair_one_file_reached_through_a_followed_link() {
     put(&r.join("real/data.bin"), &pattern(5_000, 1));
     #[cfg(windows)]
     let follow = {
-        crate::fsattr::make_link(&r.join("real"), &r.join("via"), crate::fsattr::LinkKind::Junction)
-            .unwrap();
+        crate::fsattr::make_link(
+            &r.join("real"),
+            &r.join("via"),
+            crate::fsattr::LinkKind::Junction,
+        )
+        .unwrap();
         ScanOptions {
             follow_junctions: true,
             ..ScanOptions::default()
@@ -507,7 +548,10 @@ fn duplicates_cancel_and_reports() {
     duplicates::write_csv(&rep, &mut csv).unwrap();
     let csv = String::from_utf8(csv).unwrap();
     let lines: Vec<&str> = csv.lines().collect();
-    assert_eq!(lines[0], "group,status,algorithm,digest,path,extension,bytes,allocated");
+    assert_eq!(
+        lines[0],
+        "group,status,algorithm,digest,path,extension,bytes,allocated"
+    );
     assert_eq!(lines.len(), 3);
     assert!(lines[1].starts_with("1,Duplicates,BLAKE3,"));
     assert!(lines[1].contains(",\"txt\",4,"));
@@ -542,7 +586,10 @@ fn windows_masks_and_inheritance_read_like_explorer() {
     assert_eq!(permissions::access_text(0x12_0089), "Read");
     assert_eq!(permissions::access_text(0x10_0116), "Write");
     assert_eq!(permissions::access_text(0x4), "Special (0x4)");
-    assert_eq!(permissions::applies_text(0x3), "This folder + Subfolders + Files");
+    assert_eq!(
+        permissions::applies_text(0x3),
+        "This folder + Subfolders + Files"
+    );
     assert_eq!(permissions::applies_text(0x8 | 0x1), "Files");
     assert_eq!(permissions::applies_text(0), "This folder");
     // Everyone with write: flagged; with read only, or only on what it is inherited by,
@@ -550,9 +597,19 @@ fn windows_masks_and_inheritance_read_like_explorer() {
     assert!(permissions::broad_write(true, "S-1-1-0", 0x13_01BF, 0x3));
     assert!(permissions::broad_write(true, "S-1-5-11", 0x2, 0));
     assert!(!permissions::broad_write(true, "S-1-1-0", 0x12_00A9, 0x3));
-    assert!(!permissions::broad_write(true, "S-1-1-0", 0x1F_01FF, 0x8 | 0x3));
+    assert!(!permissions::broad_write(
+        true,
+        "S-1-1-0",
+        0x1F_01FF,
+        0x8 | 0x3
+    ));
     assert!(!permissions::broad_write(false, "S-1-1-0", 0x1F_01FF, 0));
-    assert!(!permissions::broad_write(true, "S-1-5-21-1-2-3-1001", 0x1F_01FF, 0));
+    assert!(!permissions::broad_write(
+        true,
+        "S-1-5-21-1-2-3-1001",
+        0x1F_01FF,
+        0
+    ));
 }
 
 #[test]
@@ -570,7 +627,10 @@ fn permissions_scan_of_a_temp_tree_and_csv() {
     assert!(!folders.cancelled);
     assert_eq!(folders.rows.len(), 2, "the root and sub");
     for row in &folders.rows {
-        let p = row.permissions.as_ref().unwrap_or_else(|| panic!("{:?}", row.error));
+        let p = row
+            .permissions
+            .as_ref()
+            .unwrap_or_else(|| panic!("{:?}", row.error));
         assert!(!p.owner.is_empty() && !p.owner_id.is_empty());
         #[cfg(windows)]
         {
