@@ -9,6 +9,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Updating Keel restarted only the default profile's keel-daemon, without the arguments it ran with (`--web`, `--web-host`, a profile): a daemon serving the phone web client came back without it, and other profiles' daemons did not come back. `install.ps1` and `install.sh` now start every daemon they stopped again with its own arguments.
 - On Windows, a script that piped `install.ps1`'s output (`| Out-String`, `| tail`) waited until the keel-daemon the installer restarted exited, because the daemon inherited the pipe. The daemon now starts detached, holding none of the installer's output.
 - With `KEEL_CONFIG_DIR` set (tests, harnesses, portable runs), Keel still saved the window's size and position in the user's own `app.ron` (`%APPDATA%\Keel\data`, `~/Library/Application Support/Keel`, `~/.local/share/keel`). It is now saved as `app.ron` in `KEEL_CONFIG_DIR`.
+- `keel --version | head -1` (and `keel --check-update` into a reader that stops early) ended with "failed printing to stdout: The pipe is being closed"; output into a closed pipe now stops quietly and the command exits 0, like every other `keel` command's.
 
 ## [0.22.0] - 2026-10-11
 
@@ -43,7 +44,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Known limitations
 
-- `keel --version | head -1` and other commands whose reader closes the pipe early end with "failed printing to stdout" instead of exiting quietly.
 - No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped, and so are legacy Excel workbooks (`.xls`): their reader loads the whole workbook into memory when it opens it, with no way to bound it first. Previewing a crafted `.xls` can still exhaust memory.
 - The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
 - Each document is bounded: files over 8 MiB (PDFs over 64 MiB) are skipped unread, at most 200,000 characters of a document are kept, and a document is read for at most 10 s (the text read until then is kept). A damaged or password-protected file is counted as failed and not read again until it changes.

@@ -123,6 +123,47 @@ impl From<Usage> for Fail {
 
 type Out = Box<dyn Write>;
 
+/// Standard output for what a command prints. A reader that closed the pipe early (`keel
+/// --version | head -1`) stops the printing: the rest is dropped and the command ends as it
+/// would have (exit 0), never with "failed printing to stdout".
+pub struct Stdout {
+    closed: bool,
+}
+
+pub fn stdout() -> Stdout {
+    Stdout { closed: false }
+}
+
+impl Stdout {
+    fn quiet(&mut self, result: std::io::Result<()>) -> std::io::Result<()> {
+        match result {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                self.closed = true;
+                Ok(())
+            }
+            r => r,
+        }
+    }
+}
+
+impl Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.closed {
+            let r = std::io::stdout().write_all(buf);
+            self.quiet(r)?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let r = std::io::stdout().flush();
+        self.quiet(r)
+    }
+}
+
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
@@ -131,7 +172,7 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
             return FAILED;
         }
     };
-    let mut out: Out = Box::new(std::io::stdout());
+    let mut out: Out = Box::new(stdout());
     match cmd {
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
         Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),

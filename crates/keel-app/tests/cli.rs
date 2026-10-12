@@ -514,6 +514,47 @@ fn version_says_whether_signed() {
     );
 }
 
+/// `keel --version | head -1`: a reader that closes the pipe early ends the output quietly,
+/// exit 0 and no panic, and so does a subcommand's output.
+#[test]
+fn a_closed_pipe_ends_the_output_quietly() {
+    let env = env();
+    let quiet = |args: &[&str], child: std::process::Child| {
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "keel {args:?}: {err}");
+        assert!(!err.contains("panicked"), "keel {args:?}: {err}");
+    };
+    // The reader is gone before keel writes anything: every write meets a closed pipe.
+    for args in [
+        &["--version"][..],
+        &["op", "list"],
+        &["op", "list", "--json"],
+    ] {
+        let mut child = env
+            .keel(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        quiet(args, child);
+    }
+    // As `head -1` reads: one line, then the pipe closes.
+    let mut child = env
+        .keel(&["--version"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.starts_with("keel "), "{line}");
+    quiet(&["--version"], child);
+}
+
 /// Process start to exit of `keel --version` (median of 20): `cargo test -p keel-app
 /// --release --test cli -- --ignored --nocapture perf_version`.
 #[test]
