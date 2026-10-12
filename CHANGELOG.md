@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Recover deleted files** from the command line (Phase 17): `keel recover scan <drive or image>` lists the deleted files an NTFS, exFAT or FAT12/16/32 drive, device or volume image still describes, each with its name, folder, size, dates and a confidence (whether its clusters are still free or were reused); `keel recover restore <id>... --to <folder>` writes them to a folder on another drive. **Needs administrator rights** (root elsewhere) to read a drive, opens it read-only, and **never recovers onto the same drive** (a destination there is refused). A scan of a Recycle Bin folder lists its items with their original path, size and date. See [Recovering deleted files](docs/files.md#recovering-deleted-files).
+- Fuzz targets `recover_ntfs`, `recover_exfat`, `recover_fat` and `recycle_bin` for the recovery parsers.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

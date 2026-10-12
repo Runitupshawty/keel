@@ -72,6 +72,29 @@ Open **Recycle Bin** (Windows) or **Trash** (macOS; Linux, any freedesktop-compl
 
 **macOS.** The Trash entry lists your Trash folder (`~/.Trash`) and the Trash folder of each mounted volume (`/Volumes/<name>/.Trashes/<your user id>`) as plain folders, so Size and Deleted on (the time the item was moved there) are shown but Original location stays empty: macOS keeps Finder's "Put Back" location where other apps cannot read it reliably. Keel moves files to the Trash itself (through NSFileManager, not by asking Finder), so it needs no Automation permission and makes no sound, but Finder's **Put Back** does not offer itself for the items Keel trashed: use **Restore to…** or drag them out. **Restore to…** asks for a folder and moves the selected items into it; it stops before moving anything when a name is already there or two items share a name, and an item on another volume than the folder you pick is refused (pick a folder on that volume, or copy it out). **Delete permanently** and **Empty Trash** remove the items for good after the same confirmations. macOS lets an app read the Trash only with Full Disk Access: without it the Trash tab says so (System Settings → Privacy & Security → Full Disk Access).
 
+## Recovering deleted files
+
+> **Needs administrator rights, and never recovers onto the same drive.** Reading a drive directly needs an elevated terminal on Windows (Run as administrator) or root elsewhere. Restored files must go to a folder on another drive: writing to the drive you recover from could overwrite the very data you want back, so Keel refuses it.
+
+`keel recover scan <drive or image>` lists the deleted files a drive (`E:`), a device (`/dev/sdb1`) or a volume image (a raw image of one NTFS, exFAT or FAT12/16/32 volume, not of a whole disk) still describes, with an id each:
+
+```
+keel recover scan E:
+keel recover restore 3 12 --to D:\Recovered
+```
+
+`keel recover restore <id>... --to <folder>` writes those files from the last scan into an existing folder on another drive, under their names (`name (2).ext` when the name is taken) and with their modified time. A scan of a folder lists the Recycle Bin items in it instead (`E:\$Recycle.Bin`, or one user's folder in it): original path, size and when it was deleted; a drive's scan lists its Recycle Bin after the deleted files. Restore Recycle Bin items from the [Recycle Bin](#recycle-bin-and-trash). `--json` prints the list as JSON.
+
+What each file system keeps:
+
+- **NTFS**: every MFT record marked free that still has its name and its data (small files live in the record itself, larger ones in clusters its data runs name). The folder path comes from the parent folders' records (`?/` when the parent record was reused). Compressed and encrypted files, and very fragmented ones whose runs continue in other records, are counted under the list but not offered.
+- **exFAT**: directory entries with their in-use bit cleared whose name and checksum are still intact, contiguous or following the FAT.
+- **FAT12/16/32**: entries marked deleted (`0xE5`) with their long names. A file without a long name lost its first character, shown as `_`. FAT erases the cluster chain on delete, so the data is taken as the clusters right after the first one: a file that was fragmented comes back with other data after its first fragment. Windows also clears the high half of a FAT32 file's first cluster, so a file that started past cluster 65,535 comes back as other data.
+
+The **confidence** column says how much of each file's space is still free: **good** (all of it: very likely intact), **partial** (some clusters were reused since), **overwritten** (all of them were; what comes back is other files' data) or **unknown** (the allocation map does not cover it). The sooner you recover after deleting, the better: everything written to the drive since may reuse the space.
+
+The drive is opened read-only and the parsers never write to it; they are fuzzed against damaged and hostile images ([Fuzzing](fuzzing.md)). The window has no recovery view yet; it comes with the Disk Usage window.
+
 ## Terminal
 
 A terminal pane sits under the file panes. It starts in the active pane's folder and, with "Follow pane" on, changes directory when you navigate. Shells: PowerShell, Windows PowerShell, cmd and each installed WSL distribution on Windows (the same list as the sidebar's WSL section, see [WSL](wsl.md)); `$SHELL`, zsh or bash on macOS; `$SHELL`, bash or sh on Linux.
