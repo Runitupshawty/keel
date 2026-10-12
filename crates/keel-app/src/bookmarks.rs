@@ -108,8 +108,11 @@ pub fn all(profile: &[View], library: Option<&[View]>) -> Vec<(Store, View)> {
         .chain(profile.iter().map(|v| (Store::Profile, v.clone())))
         .collect();
     out.sort_by(|(_, a), (_, b)| {
-        (a.folder.as_str(), a.position, a.name.to_lowercase())
-            .cmp(&(b.folder.as_str(), b.position, b.name.to_lowercase()))
+        (a.folder.as_str(), a.position, a.name.to_lowercase()).cmp(&(
+            b.folder.as_str(),
+            b.position,
+            b.name.to_lowercase(),
+        ))
     });
     out
 }
@@ -203,7 +206,9 @@ pub fn shortcut_text(mods: Modifiers, key: Key) -> String {
 }
 
 fn function_key(key: Key) -> bool {
-    key.name().strip_prefix('F').is_some_and(|n| n.parse::<u8>().is_ok())
+    key.name()
+        .strip_prefix('F')
+        .is_some_and(|n| n.parse::<u8>().is_ok())
 }
 
 /// Why `text` cannot be bookmark `me`'s shortcut, given every bookmark: a key that types
@@ -226,9 +231,9 @@ pub fn shortcut_problem(
     if crate::keys::is_builtin(mods, key) || (mods == Modifiers::COMMAND && key == Key::D) {
         return Some(format!("{text} is one of Keel's own shortcuts"));
     }
-    let clash = all.iter().find(|(s, v)| {
-        Some((*s, v.id)) != me && parse_shortcut(&v.shortcut) == Some((mods, key))
-    });
+    let clash = all
+        .iter()
+        .find(|(s, v)| Some((*s, v.id)) != me && parse_shortcut(&v.shortcut) == Some((mods, key)));
     clash.map(|(_, v)| format!("{text} opens the bookmark \"{}\" already", v.name))
 }
 
@@ -259,7 +264,9 @@ impl Find {
 
 impl AppState {
     fn library_views(&self) -> Option<&[View]> {
-        self.library.is_open().then_some(self.library.views.as_slice())
+        self.library
+            .is_open()
+            .then_some(self.library.views.as_slice())
     }
 
     fn bookmarks(&self) -> Vec<(Store, View)> {
@@ -421,7 +428,9 @@ impl AppState {
                 });
             }
             FindCmd::Remember(text) => {
-                self.find.history.record(&text, &self.settings.search_history);
+                self.find
+                    .history
+                    .record(&text, &self.settings.search_history);
             }
             FindCmd::ClearHistory => {
                 self.find.history.clear();
@@ -524,9 +533,10 @@ impl AppState {
     pub fn open_bookmark(&mut self, p: usize, view: &View) {
         let library = view.backend == ViewBackend::Library;
         if library && !self.library.is_open() {
-            return self
-                .toasts
-                .error(format!("\"{}\" searches the library, which is not open", view.name));
+            return self.toasts.error(format!(
+                "\"{}\" searches the library, which is not open",
+                view.name
+            ));
         }
         let p = if self.dual { p } else { 0 };
         if !self.tab(p).is_search() {
@@ -582,7 +592,10 @@ pub fn menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         let mut i = 0;
         while i < list.len() {
             let folder = list[i].1.folder.clone();
-            let n = list[i..].iter().take_while(|(_, v)| v.folder == folder).count();
+            let n = list[i..]
+                .iter()
+                .take_while(|(_, v)| v.folder == folder)
+                .count();
             let group = &list[i..i + n];
             let rows = |ui: &mut egui::Ui, out: &mut Vec<Action>| {
                 for (s, v) in group {
@@ -737,9 +750,16 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 ui.label("Search with");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut ed.view.backend, ViewBackend::System, "System");
-                    ui.add_enabled_ui(library_open || ed.view.backend == ViewBackend::Library, |ui| {
-                        ui.selectable_value(&mut ed.view.backend, ViewBackend::Library, "Library");
-                    });
+                    ui.add_enabled_ui(
+                        library_open || ed.view.backend == ViewBackend::Library,
+                        |ui| {
+                            ui.selectable_value(
+                                &mut ed.view.backend,
+                                ViewBackend::Library,
+                                "Library",
+                            );
+                        },
+                    );
                 });
                 ui.end_row();
                 ui.label("Filter");
@@ -831,7 +851,9 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                             ui.selectable_value(&mut ed.store, Store::Library, "Library");
                         })
                         .response
-                        .on_hover_text("Library bookmarks are in the library's saved views (and its API)");
+                        .on_hover_text(
+                            "Library bookmarks are in the library's saved views (and its API)",
+                        );
                     });
                     ui.end_row();
                 }
@@ -901,47 +923,52 @@ fn organize(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         if list.is_empty() {
             ui.weak("No bookmarks yet. In a search tab, press Ctrl+D to add one.");
         }
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-            let mut last_folder: Option<&str> = None;
-            for (i, (st, v)) in list.iter().enumerate() {
-                if last_folder != Some(v.folder.as_str()) {
-                    last_folder = Some(v.folder.as_str());
-                    if !v.folder.is_empty() {
-                        ui.add_space(4.0);
-                        ui.strong(format!("🗀 {}", v.folder));
+        egui::ScrollArea::vertical()
+            .max_height(420.0)
+            .show(ui, |ui| {
+                let mut last_folder: Option<&str> = None;
+                for (i, (st, v)) in list.iter().enumerate() {
+                    if last_folder != Some(v.folder.as_str()) {
+                        last_folder = Some(v.folder.as_str());
+                        if !v.folder.is_empty() {
+                            ui.add_space(4.0);
+                            ui.strong(format!("🗀 {}", v.folder));
+                        }
                     }
-                }
-                let same = |j: usize| list.get(j).is_some_and(|(_, o)| o.folder == v.folder);
-                ui.horizontal(|ui| {
-                    if !v.folder.is_empty() {
-                        ui.add_space(16.0);
-                    }
-                    let up = i > 0 && same(i - 1);
-                    if ui.add_enabled(up, egui::Button::new("↑").small()).clicked() {
-                        out.push(Action::Find(FindCmd::Move(*st, v.id, -1)));
-                    }
-                    let down = same(i + 1);
-                    if ui.add_enabled(down, egui::Button::new("↓").small()).clicked() {
-                        out.push(Action::Find(FindCmd::Move(*st, v.id, 1)));
-                    }
-                    ui.label(v.name.as_str()).on_hover_text(v.query.as_str());
-                    ui.weak(match (st, v.backend) {
-                        (Store::Library, ViewBackend::Library) => "Library",
-                        (Store::Library, ViewBackend::System) => "System (in the library)",
-                        (Store::Profile, _) => "System",
+                    let same = |j: usize| list.get(j).is_some_and(|(_, o)| o.folder == v.folder);
+                    ui.horizontal(|ui| {
+                        if !v.folder.is_empty() {
+                            ui.add_space(16.0);
+                        }
+                        let up = i > 0 && same(i - 1);
+                        if ui.add_enabled(up, egui::Button::new("↑").small()).clicked() {
+                            out.push(Action::Find(FindCmd::Move(*st, v.id, -1)));
+                        }
+                        let down = same(i + 1);
+                        if ui
+                            .add_enabled(down, egui::Button::new("↓").small())
+                            .clicked()
+                        {
+                            out.push(Action::Find(FindCmd::Move(*st, v.id, 1)));
+                        }
+                        ui.label(v.name.as_str()).on_hover_text(v.query.as_str());
+                        ui.weak(match (st, v.backend) {
+                            (Store::Library, ViewBackend::Library) => "Library",
+                            (Store::Library, ViewBackend::System) => "System (in the library)",
+                            (Store::Profile, _) => "System",
+                        });
+                        if !v.shortcut.is_empty() {
+                            ui.weak(crate::keys::shortcut_label(&v.shortcut));
+                        }
+                        if ui.small_button("Edit…").clicked() {
+                            out.push(Action::Find(FindCmd::Edit(*st, v.id)));
+                        }
+                        if ui.small_button("Delete…").clicked() {
+                            out.push(Action::Find(FindCmd::AskDelete(*st, v.id)));
+                        }
                     });
-                    if !v.shortcut.is_empty() {
-                        ui.weak(crate::keys::shortcut_label(&v.shortcut));
-                    }
-                    if ui.small_button("Edit…").clicked() {
-                        out.push(Action::Find(FindCmd::Edit(*st, v.id)));
-                    }
-                    if ui.small_button("Delete…").clicked() {
-                        out.push(Action::Find(FindCmd::AskDelete(*st, v.id)));
-                    }
-                });
-            }
-        });
+                }
+            });
         ui.add_space(6.0);
         ui.weak("Set a bookmark's folder in Edit… to group it; ↑ and ↓ order a folder.");
         if ui.button("Close").clicked() {
@@ -1052,7 +1079,8 @@ fn filters(ctx: &egui::Context, s: &mut AppState) {
                     for pane in &mut s.panes {
                         for tab in &mut pane.tabs {
                             let gone = !tab.search_filter.is_empty()
-                                && !crate::search_filters::BUILTIN.contains(&tab.search_filter.as_str())
+                                && !crate::search_filters::BUILTIN
+                                    .contains(&tab.search_filter.as_str())
                                 && !list.iter().any(|f| f.name == tab.search_filter);
                             if gone {
                                 tab.search_filter.clear();

@@ -138,9 +138,8 @@ impl History {
         };
         match serde_json::from_slice::<History>(&text) {
             Ok(mut h) => {
-                h.entries.retain(|e| {
-                    !e.text.trim().is_empty() && e.text.chars().count() <= MAX_TEXT
-                });
+                h.entries
+                    .retain(|e| !e.text.trim().is_empty() && e.text.chars().count() <= MAX_TEXT);
                 h.trim(MAX_LIMIT);
                 h
             }
@@ -296,7 +295,10 @@ mod tests {
             ["report", "notes", "invoice ext:pdf"]
         );
         assert_eq!(suggest(&h, "INV", Order::MostUsed, 8), ["invoice ext:pdf"]);
-        assert_eq!(suggest(&h, "notes", Order::MostUsed, 8), Vec::<String>::new());
+        assert_eq!(
+            suggest(&h, "notes", Order::MostUsed, 8),
+            Vec::<String>::new()
+        );
         assert_eq!(suggest(&h, "", Order::MostUsed, 2).len(), 2);
         // Running an old search again makes it the most recent.
         h.record("notes", 40, &s);
@@ -340,7 +342,10 @@ mod tests {
         store.record("secret plans", &s);
         assert_eq!(store.history.entries.len(), 1, "nothing new is recorded");
         store.tick(&s);
-        assert!(store.history.entries.is_empty(), "turning saving off clears");
+        assert!(
+            store.history.entries.is_empty(),
+            "turning saving off clears"
+        );
         assert!(!file.exists(), "and removes the file");
         store.record("secret plans", &s);
         store.tick(&s);

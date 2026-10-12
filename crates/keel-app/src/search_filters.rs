@@ -292,10 +292,13 @@ mod tests {
 
         // Everything (or an unknown name) changes nothing.
         let e = apply(" x ", "Everything", &[], Target::Everything, none());
-        assert_eq!(e, Applied {
-            text: "x".into(),
-            ..Applied::default()
-        });
+        assert_eq!(
+            e,
+            Applied {
+                text: "x".into(),
+                ..Applied::default()
+            }
+        );
         assert_eq!(apply("x", "", &[], Target::Plain, none()).keep, None);
     }
 
@@ -317,7 +320,10 @@ mod tests {
         assert_eq!(a.text, "ext:psd;ai logo");
         assert!(a.matching.case && a.matching.regex);
         assert_eq!(a.keep, None);
-        assert_eq!(apply("", "Designs", &[mine.clone()], Target::Library, none()).text, "ext:psd;ai");
+        assert_eq!(
+            apply("", "Designs", &[mine.clone()], Target::Library, none()).text,
+            "ext:psd;ai"
+        );
         assert_eq!(names(&[mine.clone()]).last().unwrap(), "Designs");
 
         // The editor's checks.

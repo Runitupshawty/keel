@@ -48,7 +48,10 @@ fn pump_until(s: &mut AppState, what: &str, done: impl Fn(&AppState) -> bool) {
 #[test]
 fn shortcuts_parse_print_and_conflict() {
     let (m, k) = parse_shortcut("Ctrl+Shift+1").unwrap();
-    assert_eq!((m.command, m.shift, m.alt, k), (true, true, false, Key::Num1));
+    assert_eq!(
+        (m.command, m.shift, m.alt, k),
+        (true, true, false, Key::Num1)
+    );
     assert_eq!(shortcut_text(m, k), "Ctrl+Shift+1");
     assert_eq!(parse_shortcut("Alt+F9"), Some((Modifiers::ALT, Key::F9)));
     assert_eq!(parse_shortcut("Hyper+X"), None);
@@ -135,7 +138,10 @@ fn profile_bookmarks_round_trip() {
         (v.name.as_str(), v.query.as_str(), v.backend),
         ("invoice", "invoice", ViewBackend::System)
     );
-    assert_eq!((v.filter.as_str(), v.sort.as_str()), ("Document", "modified:desc"));
+    assert_eq!(
+        (v.filter.as_str(), v.sort.as_str()),
+        ("Document", "modified:desc")
+    );
     assert!(v.matching.case && !v.matching.regex);
     let mut view = v.clone();
     view.folder = "Work".into();
@@ -157,9 +163,8 @@ fn profile_bookmarks_round_trip() {
             }),
         );
     }
-    let names = |s: &AppState| -> Vec<String> {
-        s.bookmarks().into_iter().map(|(_, v)| v.name).collect()
-    };
+    let names =
+        |s: &AppState| -> Vec<String> { s.bookmarks().into_iter().map(|(_, v)| v.name).collect() };
     assert_eq!(names(&s), ["Invoices", "Receipts"]);
     let saved = s.settings.bookmarks[0].clone();
     assert_eq!((saved.id, saved.position), (1, 1));
@@ -181,7 +186,11 @@ fn profile_bookmarks_round_trip() {
     s.run(0, Action::Find(FindCmd::Open(Store::Profile, 2)));
     assert_eq!(s.panes[0].tabs.len(), tabs);
     assert_eq!(query_of(&s), "receipt");
-    let ordered = s.find.history.history.ordered(crate::search_history::Order::MostRecent);
+    let ordered = s
+        .find
+        .history
+        .history
+        .ordered(crate::search_history::Order::MostRecent);
     assert_eq!(ordered.len(), 2);
 
     // Order inside the folder.
@@ -241,14 +250,20 @@ fn profile_bookmarks_round_trip() {
     };
     s.settings.bookmarks[0].shortcut = "Ctrl+Alt+2".into();
     s.run(0, Action::NewTab);
-    let _ = ctx.run(press(Modifiers::COMMAND | Modifiers::ALT, Key::Num2), |ctx| {
-        s.bookmark_keys(ctx, true);
-    });
+    let _ = ctx.run(
+        press(Modifiers::COMMAND | Modifiers::ALT, Key::Num2),
+        |ctx| {
+            s.bookmark_keys(ctx, true);
+        },
+    );
     assert_eq!(query_of(&s), "receipt");
     // Ctrl+Shift+Alt+2 is another key.
     s.run(0, Action::NewTab);
     let _ = ctx.run(
-        press(Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::Num2),
+        press(
+            Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT,
+            Key::Num2,
+        ),
         |ctx| s.bookmark_keys(ctx, true),
     );
     assert!(!s.tab(0).is_search());
@@ -256,7 +271,10 @@ fn profile_bookmarks_round_trip() {
     let _ = ctx.run(press(Modifiers::COMMAND, Key::D), |ctx| {
         s.bookmark_keys(ctx, true);
     });
-    assert!(s.find.editor.is_some(), "Ctrl+D in a search tab adds a bookmark");
+    assert!(
+        s.find.editor.is_some(),
+        "Ctrl+D in a search tab adds a bookmark"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -273,7 +291,10 @@ fn library_bookmarks_are_saved_views() {
     set_query(&mut s, "ext:pdf");
     s.run(0, Action::Find(FindCmd::AddBookmark));
     let ed = s.find.editor.take().expect("the dialog");
-    assert_eq!((ed.store, ed.view.backend), (Store::Library, ViewBackend::Library));
+    assert_eq!(
+        (ed.store, ed.view.backend),
+        (Store::Library, ViewBackend::Library)
+    );
     for (name, query) in [("PDFs", "ext:pdf"), ("Docs", "ext:docx")] {
         let mut v = ed.view.clone();
         v.name = name.into();
@@ -289,9 +310,8 @@ fn library_bookmarks_are_saved_views() {
     }
     pump_until(&mut s, "both views", |s| s.library.views.len() == 2);
     assert_eq!(lib.views().unwrap().len(), 2);
-    let names = |s: &AppState| -> Vec<String> {
-        s.bookmarks().into_iter().map(|(_, v)| v.name).collect()
-    };
+    let names =
+        |s: &AppState| -> Vec<String> { s.bookmarks().into_iter().map(|(_, v)| v.name).collect() };
     assert_eq!(names(&s), ["PDFs", "Docs"]);
     let docs = s.library.views[1].id;
     s.run(0, Action::Find(FindCmd::Move(Store::Library, docs, -1)));
@@ -390,7 +410,11 @@ fn filters_narrow_the_search_through_the_worker() {
         s.run(0, Action::Search);
         assert_eq!(search_with(&mut s, &fake, "Audio", "song"), ["song.MP3"]);
         let asked = fake.asked.lock().last().unwrap().clone();
-        assert!(asked.text.starts_with(expect_prefix), "{name}: {}", asked.text);
+        assert!(
+            asked.text.starts_with(expect_prefix),
+            "{name}: {}",
+            asked.text
+        );
         assert!(asked.text.ends_with("song"), "{name}: {}", asked.text);
 
         assert_eq!(search_with(&mut s, &fake, "Folder", "mu"), ["music"]);
@@ -432,7 +456,10 @@ fn history_follows_the_privacy_switch() {
     s.run(0, Action::Find(FindCmd::Remember("plans".into())));
     let h = &s.find.history.history;
     assert_eq!(h.entries.len(), 2);
-    assert_eq!(h.ordered(crate::search_history::Order::MostUsed)[0].text, "budget");
+    assert_eq!(
+        h.ordered(crate::search_history::Order::MostUsed)[0].text,
+        "budget"
+    );
     s.settings.search_history.order = crate::search_history::Order::MostUsed;
     s.find.publish(&s.ctx.clone(), &s.settings, None);
     assert_eq!(published(&s.ctx).history, ["budget", "plans"]);
