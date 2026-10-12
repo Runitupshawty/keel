@@ -105,7 +105,11 @@ fn global_items() -> Vec<Item> {
         ("Toggle preview panel", "F3", TogglePreview),
         // Phase 14 Task 67.
         ("Quick Look", "Space", Finder(FinderCmd::QuickLook)),
-        ("Go to folder…", "Ctrl+Shift+G", Finder(FinderCmd::GoToFolder)),
+        (
+            "Go to folder…",
+            "Ctrl+Shift+G",
+            Finder(FinderCmd::GoToFolder),
+        ),
         ("Show / hide path bar", "", Finder(FinderCmd::TogglePathBar)),
         ("Show inspector", "Ctrl+I", ToggleInspector),
         ("Toggle drop zone", "Ctrl+Shift+Z", ToggleDropZone),

@@ -132,7 +132,10 @@ fn crumb(ui: &mut egui::Ui, p: usize, c: &Crumb, out: &mut Vec<(usize, Action)>)
         crate::icons::file_icon(&c.label)
     };
     crate::folder_style::paint(ui, icon_rect, base, style.as_ref(), false);
-    let text_at = egui::pos2(icon_rect.right() + 4.0, rect.center().y - galley.size().y / 2.0);
+    let text_at = egui::pos2(
+        icon_rect.right() + 4.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
     ui.painter().galley(text_at, galley, color);
     let r = r.on_hover_text(c.path.display());
     if r.double_clicked() {

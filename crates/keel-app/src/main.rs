@@ -16,8 +16,8 @@ mod crash;
 mod devices;
 mod dialogs;
 mod dropzone;
-mod folder_ops; // Task 60: folder operation dialogs
 mod finder; // Phase 14 Task 67: Quick Look, path bar, spring-loading, Go to Folder
+mod folder_ops; // Task 60: folder operation dialogs
 mod folder_style; // Task 56: folder colors and icons
 mod fonts; // also the web client's (keel-web includes it by path)
 #[cfg(test)]

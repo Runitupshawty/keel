@@ -533,8 +533,7 @@ impl App {
         // Task 56: the library's folder styles for context menus and Ctrl+P.
         crate::folder_style::publish(ctx, &s.library);
         s.viewer_ui(ctx); // Task 32
-        // Phase 14 Task 67.
-        crate::quicklook::ui(ctx, s, &mut out);
+        crate::quicklook::ui(ctx, s, &mut out); // Phase 14 Task 67
         let router = s.router.clone();
         if let Some(action) = s.finder.goto.ui(ctx, &router) {
             out.push((s.active, action));
@@ -900,7 +899,10 @@ mod tests {
         // "1 item", or "1 item, 12.3 GB available" once the drives are read.
         let node = egui_kittest::kittest::Queryable::get_by_label_contains(&harness, "1 item");
         let label = node.label().unwrap_or_default();
-        assert!(label == "1 item" || label.starts_with("1 item, "), "{label}");
+        assert!(
+            label == "1 item" || label.starts_with("1 item, "),
+            "{label}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

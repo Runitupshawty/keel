@@ -108,7 +108,8 @@ impl QuickLook {
             let (tx, rx) = crossbeam_channel::bounded(1);
             let ctx2 = ctx.clone();
             crate::worker::spawn("keel-quicklook", move || {
-                let img = crate::media_viewer::decode_full(&local, side).map_err(|e| format!("{e:#}"));
+                let img =
+                    crate::media_viewer::decode_full(&local, side).map_err(|e| format!("{e:#}"));
                 let _ = tx.send(img);
                 ctx2.request_repaint();
             });
@@ -313,7 +314,10 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
                         );
                     }
                 }
-                if ui.interact(picture, ui.id().with("ql-video"), Sense::click()).clicked() {
+                if ui
+                    .interact(picture, ui.id().with("ql-video"), Sense::click())
+                    .clicked()
+                {
                     play = true;
                 }
                 let line = match &player.error {

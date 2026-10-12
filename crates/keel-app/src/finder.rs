@@ -254,7 +254,11 @@ mod tests {
         frame(&mut s);
         s.run(0, Action::Move(Nav::Next, false));
         assert_eq!(s.tab(0).cursor.as_deref(), Some("b.txt"));
-        assert_eq!(shown(&mut s).as_deref(), Some("b.txt"), "follows the cursor");
+        assert_eq!(
+            shown(&mut s).as_deref(),
+            Some("b.txt"),
+            "follows the cursor"
+        );
         frame(&mut s);
         s.run(0, Action::Finder(Space));
         assert!(!s.finder.quicklook.open);

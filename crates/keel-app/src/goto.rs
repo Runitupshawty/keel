@@ -110,8 +110,7 @@ pub fn tab_complete(text: &str, found: &[(String, bool)]) -> Option<String> {
         [(name, folder)] => Some(complete(text, name, *folder)),
         _ => {
             let start = common_start(found);
-            (start.chars().count() > partial.chars().count())
-                .then(|| complete(text, &start, false))
+            (start.chars().count() > partial.chars().count()).then(|| complete(text, &start, false))
         }
     }
 }
@@ -321,7 +320,11 @@ mod tests {
         let found = matches("do", &all);
         assert_eq!(
             found,
-            names(&[("Documents", true), ("Downloads", true), ("docs.txt", false)])
+            names(&[
+                ("Documents", true),
+                ("Downloads", true),
+                ("docs.txt", false)
+            ])
         );
         assert_eq!(matches(".", &all), names(&[(".dotfile", false)]));
         assert_eq!(matches("", &all).len(), 4, "dot names only when typed");
