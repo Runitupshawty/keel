@@ -370,6 +370,7 @@ impl Response {
                 }
                 o.0
             }
+        }
     }
 
     /// Strict decode: see the module docs.
@@ -435,7 +436,6 @@ impl Response {
                     });
                 }
                 Response::Stats(stats)
-            }
             },
             _ => return Err(Malformed("unknown response")),
         };
@@ -499,7 +499,6 @@ impl<'a> In<'a> {
     fn i64(&mut self) -> Result<i64, Malformed> {
         Ok(self.u64()? as i64)
     }
-    }
     fn letter(&mut self) -> Result<char, Malformed> {
         let c = char::from(self.u8()?);
         if valid_letter(c) {
@@ -518,6 +517,7 @@ impl<'a> In<'a> {
             .map(str::to_owned)
             .map_err(|_| Malformed("string not UTF-8"))
     }
+    fn end(&self) -> Result<(), Malformed> {
         if self.at == self.buf.len() {
             Ok(())
         } else {
@@ -578,6 +578,7 @@ pub(crate) mod tests {
                     links: 2,
                 }),
             ]),
+        ]
     }
 
     #[test]
@@ -654,6 +655,27 @@ pub(crate) mod tests {
         huge.extend_from_slice(&((MAX_JOURNAL + 1) as u32).to_le_bytes());
         assert!(Response::decode(&huge).is_err());
         assert!(Response::decode(&[VERSION, RES_STATS, 1, 0, 7]).is_err());
+    }
+
+    #[test]
+    fn names_are_one_path_component() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a\b",
+            "a/b",
+            "nul\0",
+            "tab\t",
+            &"x".repeat(256),
+        ] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        assert!(valid_name(&"x".repeat(255)));
+        assert!(valid_name("naïve é.txt"));
+        // Counted in UTF-16 units: 255 characters of 3 UTF-8 bytes fit.
+        assert!(valid_name(&"€".repeat(255)));
+        assert!(!valid_name(&"😀".repeat(128)), "256 UTF-16 units");
     }
 
     #[test]
