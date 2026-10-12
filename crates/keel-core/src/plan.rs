@@ -367,7 +367,7 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
             let dates = crate::folder_dates::generate(&root, &local)?;
             anyhow::ensure!(
                 !dates.is_empty(),
-                "nothing to change: every folder under {} already has the date of the newest                  file below it",
+                "nothing to change: every folder under {} already has the date of the newest file below it",
                 root.display()
             );
             Op::FolderDates { root, dates }
