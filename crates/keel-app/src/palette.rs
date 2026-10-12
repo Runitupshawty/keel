@@ -28,6 +28,9 @@ pub struct Palette {
     /// The active tab is a search tab: its toggles and Load more are offered (set before
     /// `show`).
     pub search: bool,
+    /// Task 85: the user-defined cleanups' titles ("Run cleanup: <title>"), set before
+    /// `show`.
+    pub cleanups: Vec<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
     /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`); dropped when
@@ -83,6 +86,11 @@ impl Palette {
         items.extend(global);
         // Task 85: Delete permanently (with a selection), system cleanups, launchers.
         items.extend(crate::system_cleanup::palette_items(selection));
+        items.extend(self.cleanups.iter().enumerate().map(|(i, title)| Item {
+            label: format!("Run cleanup: {title}"),
+            shortcut: String::new(),
+            action: Action::RunCleanup(i),
+        }));
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
             shortcut: String::new(),

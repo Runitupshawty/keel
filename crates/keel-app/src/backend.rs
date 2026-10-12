@@ -343,7 +343,15 @@ impl Planned {
                 .iter()
                 .map(|c| {
                     use keel_core::Action as A;
+                    let empty = matches!(
+                        &plan.op,
+                        Op::Arrange {
+                            what: keel_core::FolderOp::RemoveEmpty { .. },
+                            ..
+                        }
+                    );
                     let verb = match c.action {
+                        A::RemoveFolder if empty => "Remove empty folder",
                         A::Copy => "Copy",
                         A::Move => "Move",
                         A::Delete => "Delete",
@@ -1492,6 +1500,9 @@ fn plan_params(op: &Op) -> (&'static str, Value) {
                     "plan.organize",
                     json!({"path": folder.display(), "by": by, "on_conflict": c}),
                 ),
+                keel_core::FolderOp::RemoveEmpty { folder } => {
+                    ("plan.remove_empty", json!({"path": folder.display()}))
+                }
             };
             return (method, params);
         }

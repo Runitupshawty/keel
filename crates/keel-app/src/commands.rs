@@ -874,6 +874,9 @@ fn command(
                         "path": abs(&folder), "on_conflict": conflict(on_conflict),
                     }),
                 ),
+                PlanCmd::RemoveEmpty { folder } => {
+                    ("plan.remove_empty", json!({"path": abs(&folder)}))
+                }
                 PlanCmd::Organize {
                     folder,
                     by,

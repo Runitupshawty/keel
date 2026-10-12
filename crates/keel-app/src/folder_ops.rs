@@ -16,6 +16,8 @@ pub enum Kind {
     Organize,
     Attributes,
     Link,
+    /// Remove empty folders (Task 85).
+    RemoveEmpty,
 }
 
 impl Kind {
@@ -26,6 +28,7 @@ impl Kind {
             Kind::Organize => "Organize by…",
             Kind::Attributes => "Attributes…",
             Kind::Link => "Create link…",
+            Kind::RemoveEmpty => "Remove empty folders…",
         }
     }
 }
@@ -64,7 +67,9 @@ impl FolderDialog {
             Kind::Merge if targets.len() < 2 || !folders => {
                 return Err("Select two or more folders to merge".into())
             }
-            Kind::Flatten | Kind::Organize if targets.len() != 1 || !folders => {
+            Kind::Flatten | Kind::Organize | Kind::RemoveEmpty
+                if targets.len() != 1 || !folders =>
+            {
                 return Err(format!("{} works on one folder", kind.title()))
             }
             Kind::Link if targets.len() != 1 => {
@@ -119,6 +124,9 @@ impl FolderDialog {
                 self.conflict,
             ),
             Kind::Flatten => Op::arrange(FolderOp::Flatten { folder: one() }, self.conflict),
+            Kind::RemoveEmpty => {
+                Op::arrange(FolderOp::RemoveEmpty { folder: one() }, OnConflict::Skip)
+            }
             Kind::Organize => Op::arrange(
                 FolderOp::Organize {
                     folder: one(),
@@ -249,6 +257,22 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
                  subfolders left empty. The preview counts them."
             ));
             conflict_choice(ui, &mut d.conflict);
+        }
+        Kind::RemoveEmpty => {
+            let local = d
+                .targets
+                .first()
+                .is_some_and(|t| t.to_local_path().is_some());
+            ui.label(if local {
+                format!(
+                    "Move every empty folder below {one} to the {}: folders holding no files                      and no links, at any depth. The preview lists them.",
+                    keel_vfs::trashbin::label()
+                )
+            } else {
+                format!(
+                    "Remove every empty folder below {one}: folders holding no files and no                      links, at any depth. Where there is no trash (SFTP, FTP, S3, WebDAV) they                      are deleted for good. The preview lists them and says so."
+                )
+            });
         }
         Kind::Organize => {
             ui.label(format!("Move the files in {one} into subfolders by:"));

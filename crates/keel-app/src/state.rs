@@ -106,6 +106,8 @@ pub enum Msg {
         preview: keel_preview::Preview,
     },
     Toast(String),
+    /// An info toast (Task 85: what a compression saved).
+    Note(String),
     /// A bulk rename finished; `items`: what it renamed, for undo (empty when it cannot be
     /// undone).
     BulkDone {
@@ -793,6 +795,7 @@ impl AppState {
             }
             Msg::Thumb { key, preview } => self.thumbs.insert(&self.ctx, key, preview),
             Msg::Toast(text) => self.toasts.error(text),
+            Msg::Note(text) => self.toasts.info(text),
             Msg::BulkDone {
                 outcome,
                 total,
@@ -1284,6 +1287,19 @@ impl AppState {
             self.cut_job = Some((id, src));
         }
         self.stash_job_started(id, stashed);
+    }
+
+    /// Task 85: the targets as local paths with whether each is a folder (the folder shown
+    /// when nothing is selected); None when one is not on this computer.
+    fn local_picked(&self, p: usize) -> Option<Vec<crate::cleanups::Picked>> {
+        let tab = self.tab(p);
+        match tab.targets() {
+            t if t.is_empty() => Some(vec![(tab.dir.to_local_path()?, true)]),
+            t => t
+                .iter()
+                .map(|e| Some((e.path.to_local_path()?, e.kind == keel_vfs::Kind::Dir)))
+                .collect(),
+        }
     }
 
     pub(crate) fn target_paths(&self, p: usize) -> Vec<VPath> {
@@ -2043,6 +2059,60 @@ impl AppState {
                         .error(format!("Could not start a new window: {e}"));
                 }
             }
+            // --- Task 85 ---
+            Action::CleanupSettings => {
+                self.settings_open = true;
+                self.remotes.page = crate::settings::Page::Cleanups;
+            }
+            Action::RunCleanup(i) => {
+                let Some(c) = self.settings.cleanups.get(i).cloned() else {
+                    return;
+                };
+                let Some(picked) = self.local_picked(p) else {
+                    return self
+                        .toasts
+                        .error("Cleanups run on files and folders on this computer only");
+                };
+                match crate::cleanups::prepare(i, &c, &picked) {
+                    Err(why) => self.toasts.error(why),
+                    // The expanded commands are shown before the first run, and every
+                    // time with "Ask before running".
+                    Ok(prep) if c.ask || !c.confirmed => {
+                        self.dialog = Some(Dialog::Cleanup(Box::new(prep)));
+                    }
+                    Ok(prep) => self.run(p, Action::CleanupConfirmed(Box::new(prep))),
+                }
+            }
+            Action::CleanupConfirmed(prep) => {
+                if let Some(c) = (self.settings.cleanups.get_mut(prep.index))
+                    .filter(|c| c.command == prep.cleanup.command)
+                {
+                    c.confirmed = true;
+                }
+                self.jobs.cleanup(*prep, self.tx.clone());
+            }
+            Action::Compress => {
+                let Some(picked) = self.local_picked(p) else {
+                    return self
+                        .toasts
+                        .error("Only files and folders on this computer can be compressed");
+                };
+                if let Some((first, _)) = picked
+                    .first()
+                    .filter(|(f, _)| !keel_vfs::compress::supported(f))
+                {
+                    return self.toasts.error(format!(
+                        "{} is not on a drive with NTFS compression",
+                        first.display()
+                    ));
+                }
+                let (paths, dirs): (Vec<_>, Vec<_>) = picked.into_iter().unzip();
+                let d = crate::compress_ui::CompressDialog::new(paths, &dirs, &self.ctx);
+                self.dialog = Some(Dialog::Compress(Box::new(d)));
+            }
+            Action::CompressStart(start) => {
+                self.jobs.compress(*start, self.tx.clone());
+            }
             Action::SwitchProfile(name) => self.profiles.switch(&name),
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
@@ -2489,6 +2559,9 @@ impl AppState {
                 let selection = !self.tab(p).targets().is_empty();
                 self.palette.undo = self.undo.label();
                 self.palette.search = self.tab(p).is_search();
+                self.palette.cleanups = (self.settings.cleanups.iter())
+                    .map(|c| c.title.clone())
+                    .collect();
                 // The "Shell: …" entries follow on the first "shell" typed (palette_shell).
                 self.palette.show(selection, &self.keys);
             }

@@ -439,6 +439,13 @@ pub fn commands() -> Vec<Command> {
             &[],
         )
         .ctx(),
+        cmd(
+            "folder.remove_empty",
+            "Remove empty folders…",
+            Library(LibCmd::FolderOp(Kind::RemoveEmpty)),
+            &[],
+        )
+        .ctx(),
         // --- the palette, in a search tab (Everything's Search menu and its keys) ---
         cmd(
             "search.match_case",
@@ -666,6 +673,7 @@ pub fn commands() -> Vec<Command> {
             .global()
             .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
+        cmd("cleanups.edit", "Edit cleanups…", CleanupSettings, &[]).global(),
         cmd(
             "library.overview",
             "Library overview",
@@ -838,6 +846,9 @@ pub fn commands() -> Vec<Command> {
         },
         &["Shift+F10"],
     ));
+    // Task 85: NTFS compression is Windows'.
+    #[cfg(windows)]
+    v.push(cmd("file.compress_ntfs", "Compress (NTFS)…", Compress, &[]).ctx());
     v
 }
 

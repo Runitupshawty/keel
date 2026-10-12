@@ -48,7 +48,7 @@ written again, the file it was writing is continued on local and SFTP targets, a
 placed file changed since makes the job fail (`… changed since the preview …`) rather
 than be overwritten. `jobs.info` keeps its shape.
 
-The folder operations (`plan.merge`, `plan.flatten`, `plan.organize`) read the folders
+The folder operations (`plan.merge`, `plan.flatten`, `plan.organize`, `plan.remove_empty`) read the folders
 when they preview and list every move (`move`, with `to`), every folder they make
 (`make_folder`) and every folder they remove when it is left empty (`remove_folder`), and
 an `exists` warning for each target name that is taken. Two items of one plan never land
@@ -139,6 +139,7 @@ user is working) also act directly: they change no file.
 | `plan.merge` | preview | Merge folders: everything in the folders `paths` (but `into`, which may be one of them) moves into `into` with `on_conflict` (default `skip`), then the folders left empty are removed. Links stay where they are |
 | `plan.flatten` | preview | Every file in the subfolders of `path`, at any depth, moves up into it with `on_conflict`, then the subfolders left empty are removed |
 | `plan.organize` | preview | The files directly in `path` move into subfolders by `by`: `type` (Images, Videos, Audio, Documents, Archives, Other), `year` (`2024`) or `month` (`2024-03`) of the modified date, local time; missing subfolders are made |
+| `plan.remove_empty` | preview | Every empty folder below `path` (holding no files and no links, at any depth) goes to the Recycle Bin or Trash, the outermost folder of each empty branch whole; each is checked again just before it goes |
 | `plan.set_attributes` | preview | On each of `paths` (local, not recursive): `hidden` (Windows, macOS), `readonly`, `mode` (Unix, octal string such as `"755"`); omitted ones stay |
 | `plan.link` | preview | A new `link` (a full path that must not exist) to `target`, of `kind` `symlink`, `junction` (Windows, a folder) or `hardlink` (a file, same drive). A symbolic link on Windows without Developer Mode or elevation is refused at the preview with that reason |
 | `execute` | direct | Apply a preview (`plan_id`, `input_hash`); `job` names the job when the operation runs as one (file plans, `sources.index`, `spacedrop.send`) |
@@ -499,6 +500,7 @@ keel plan delete <paths…> [--json]
 keel plan merge <folders…> --into <dir> [--on-conflict skip|overwrite|rename] [--json]
 keel plan flatten <folder> [--on-conflict …] [--json]
 keel plan organize <folder> --by type|year|month [--on-conflict …] [--json]
+keel plan remove-empty <folder> [--json]
 keel plan attrs <paths…> [--hidden true|false] [--readonly true|false] [--mode 755] [--json]
 keel plan link <target> <link> --kind symlink|junction|hardlink [--json]
 keel execute [<plan id> --hash <hash>] [--no-wait]   # or: keel plan … | keel execute

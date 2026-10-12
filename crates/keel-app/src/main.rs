@@ -10,9 +10,11 @@ mod backend; // the library in-process or in keel-daemon
 mod bookmarks; // Task 76: bookmarks, filters and search history in the window
 mod bulk_rename;
 mod chip_row; // Task 57: library search filter chips (keel-web includes it by path)
+mod cleanups; // Task 85: user-defined cleanups
 mod clipboard;
 mod clouds;
 mod color_theme; // Task 47: VS Code color themes
+mod compress_ui; // Task 85: Compress (NTFS)…
 mod crash;
 mod design; // Task 64: design tokens, appearance styles
 mod devices;

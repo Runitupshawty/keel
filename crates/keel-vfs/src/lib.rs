@@ -5,6 +5,8 @@ pub mod archive;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
 pub mod cloud;
+/// NTFS and WOF compression (Task 85; works on Windows).
+pub mod compress;
 // --- Task 24 ---
 #[cfg(windows)]
 pub mod desktop;

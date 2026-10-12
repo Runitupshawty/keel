@@ -119,6 +119,8 @@ pub struct Settings {
     pub search_index: keel_search::IndexSettings,
     /// Keel's own index: leave out files in folders this user cannot open (Windows).
     pub index_hide_unlistable: bool,
+    /// `[[cleanups]]`: user-defined cleanups (Task 85), in the context menu and palette.
+    pub cleanups: Vec<crate::cleanups::UserCleanup>,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -272,6 +274,7 @@ impl Default for Settings {
             search_history: Default::default(),
             search_index: Default::default(),
             index_hide_unlistable: true,
+            cleanups: Vec::new(),
         }
     }
 }
@@ -431,9 +434,9 @@ fn library_name(text: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Parses config.toml with each `[[clouds]]`, `[[remotes]]`, `[[bookmarks]]` and `[[filters]]`
-/// entry on its own: an invalid one is left out and named in the returned list instead of
-/// failing the whole file.
+/// Parses config.toml with each `[[clouds]]`, `[[remotes]]`, `[[bookmarks]]`, `[[filters]]` and
+/// `[[cleanups]]` entry on its own: an invalid one is left out and named in the returned list
+/// instead of failing the whole file.
 pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     let mut table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut dropped = Vec::new();
@@ -441,6 +444,7 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     let remotes = entries(&mut table, "remotes", &mut dropped);
     let bookmarks = entries(&mut table, "bookmarks", &mut dropped);
     let filters = entries(&mut table, "filters", &mut dropped);
+    let cleanups = entries(&mut table, "cleanups", &mut dropped);
     let mut s: Settings = toml::Value::Table(table)
         .try_into()
         .map_err(|e: toml::de::Error| e.to_string())?;
@@ -448,6 +452,7 @@ pub fn parse_lenient(text: &str) -> Result<(Settings, Vec<String>), String> {
     s.remotes = remotes;
     s.bookmarks = bookmarks;
     s.filters = filters;
+    s.cleanups = cleanups;
     s.devices.migrate();
     // A hand-edited keymap: unknown commands and bad keys are left out, and an essential
     // command (the palette, Esc) never ends up without a key.
@@ -675,6 +680,7 @@ pub enum Page {
     Search,
     /// Phase 15: the folders and volumes Keel's own index walks, and its Exclude rules.
     SearchIndex,
+    Cleanups,
 }
 
 /// Settings → Appearance (Task 64): the style and the accent color. The look follows
@@ -787,6 +793,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Keyboard, "Keyboard");
                 ui.selectable_value(&mut remotes.page, Page::SearchIndex, "Search index");
                 ui.selectable_value(&mut remotes.page, Page::Search, "Search");
+                ui.selectable_value(&mut remotes.page, Page::Cleanups, "Cleanups");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -800,6 +807,7 @@ pub fn window(
                     Page::Appearance => appearance_page(ui, s),
                     Page::Search => crate::bookmarks::settings_page(ui, s, find),
                     Page::SearchIndex => crate::search_settings::settings_page(ui, s, search),
+                    Page::Cleanups => crate::cleanups::settings_page(ui, &mut s.cleanups),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

@@ -574,3 +574,105 @@ fn folder_operations_refuse_archives_and_remote_attributes() {
     let err = validate_preview_execute(&lib, op).unwrap_err();
     assert!(format!("{err:#}").contains("this computer"), "{err:#}");
 }
+
+/// Task 85: remove empty folders lists the outermost folder of each empty branch, refuses a
+/// changed disk, and sends what it lists to the trash.
+#[test]
+fn remove_empty_trashes_each_empty_branch_whole() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("tree with spaces");
+    for d in ["a/b/c", "d/e", "g", "kept/inner"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    write(&root.join("d/f.txt"), "f");
+    write(&root.join("kept/inner/x.txt"), "x");
+    let (_data, lib, _src) = library_with(folder("f", &root));
+    let at = |p: &str| v(&root.join(p));
+    let op = Op::arrange(FolderOp::RemoveEmpty { folder: v(&root) }, OnConflict::Skip);
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    let listed: Vec<(Action, VPath)> = plan
+        .changes
+        .iter()
+        .map(|c| (c.action, c.from.clone()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (Action::RemoveFolder, at("a")),
+            (Action::RemoveFolder, at("d/e")),
+            (Action::RemoveFolder, at("g")),
+        ]
+    );
+    let headline = plan.headline().unwrap();
+    assert!(
+        headline.starts_with("Remove 3 empty folders below"),
+        "{headline}"
+    );
+
+    // A file that came into a listed folder since the preview: refused, with the fresh
+    // preview (which no longer lists that branch).
+    write(&root.join("a/b/new.txt"), "n");
+    let err = plan.execute(&lib, true).unwrap_err();
+    let fresh = err.downcast::<PlanChanged>().unwrap().0;
+    assert!(fresh.changes.iter().all(|c| c.from != at("a")));
+    assert!(fresh.changes.iter().any(|c| c.from == at("a/b/c")));
+    std::fs::remove_file(root.join("a/b/new.txt")).unwrap();
+
+    let info = run(&lib, op.clone());
+    if info.status != JobStatus::Done {
+        // No Recycle Bin or Trash here (a CI runner without one): nothing else to check.
+        eprintln!("skipped: {}", info.log);
+        assert!(root.join("a/b/c").is_dir(), "nothing removed for good");
+        return;
+    }
+    assert_eq!(dirs(&root), ["d", "kept", "kept/inner"]);
+    assert!(root.join("d/f.txt").exists() && root.join("kept/inner/x.txt").exists());
+    // Nothing left to remove.
+    let err = validate_preview_execute(&lib, op).unwrap_err();
+    assert!(format!("{err:#}").contains("no empty folders"), "{err:#}");
+}
+
+/// Remove empty folders where there is no trash (an SFTP host here): each branch is warned
+/// as permanent, the headline says so, and the folders go one at a time, each only while
+/// empty.
+#[test]
+fn remove_empty_without_a_trash_warns_and_removes_folder_by_folder() {
+    use keel_vfs::Provider;
+    let files = tempfile::tempdir().unwrap();
+    let (_data, lib, _src) = library_with(folder("f", files.path()));
+    let mem = std::sync::Arc::new(keel_vfs::memory::MemoryProvider::new());
+    lib.router()
+        .register_remote_provider("box".into(), mem.clone());
+    let at = |p: &str| VPath::parse(&format!("sftp://box/srv{p}")).unwrap();
+    for d in ["", "/a", "/a/b", "/a/b/c", "/keep"] {
+        mem.mkdir(&at(d)).unwrap();
+    }
+    mem.put("/srv/keep/x.txt", "x");
+    let op = Op::arrange(FolderOp::RemoveEmpty { folder: at("") }, OnConflict::Skip);
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    assert!(
+        plan.warnings
+            .contains(&Warning::Permanent { path: at("/a") }),
+        "{:?}",
+        plan.warnings
+    );
+    let headline = plan.headline().unwrap();
+    assert!(
+        headline.contains("deleted for good") && !headline.contains(keel_vfs::trashbin::label()),
+        "{headline}"
+    );
+    let info = run(&lib, op);
+    assert_eq!(info.status, JobStatus::Done, "{}", info.log);
+    let dirs = mem.dirs();
+    assert!(!dirs.iter().any(|d| d.starts_with("/srv/a")), "{dirs:?}");
+    assert!(dirs.iter().any(|d| d == "/srv/keep"), "{dirs:?}");
+    assert_eq!(mem.get("/srv/keep/x.txt").as_deref(), Some(&b"x"[..]));
+
+    // Folder by folder: a file found below stops it, and nothing holding it goes.
+    let p: &dyn Provider = &*mem;
+    mem.mkdir(&at("/late")).unwrap();
+    mem.mkdir(&at("/late/sub")).unwrap();
+    mem.put("/srv/late/sub/new.txt", "n");
+    assert!(crate::arrange::remove_empty_tree(p, &at("/late")).is_err());
+    assert_eq!(mem.get("/srv/late/sub/new.txt").as_deref(), Some(&b"n"[..]));
+}
