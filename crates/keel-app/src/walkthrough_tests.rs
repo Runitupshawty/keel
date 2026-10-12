@@ -1549,11 +1549,37 @@ fn settings_every_page_renders() {
         ("Icons", "Install from VS Code Marketplace…"),
         ("Library", "Library (index sources, tags, duplicates)"),
         ("Devices", "Devices (pairing, shares, Spacedrop)"),
+        ("Search", "Add folder"),
     ] {
         click_last(&mut h, page);
         assert!(has(&h, shows), "{page} shows {shows:?}");
         shot(&mut h, &format!("settings-{}", page.to_lowercase()));
     }
+}
+
+/// Settings → Search: a folder and exclude rules take effect on Apply, not while typed.
+#[test]
+fn settings_search_applies_folders_and_excludes() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD, Key::Comma);
+    click_last(&mut h, "Search");
+    click_last(&mut h, "New folder");
+    type_text(&mut h, "/data/share");
+    click_last(&mut h, "Add folder");
+    assert!(has(&h, "/data/share"), "listed");
+    assert!(s(&h).settings.search_index.folders.is_empty(), "not before Apply");
+    click_last(&mut h, "Exclude");
+    click_last(&mut h, "Exclude hidden files and folders");
+    click_last(&mut h, "Exclude files");
+    type_text(&mut h, "*.tmp; *.bak");
+    click_last(&mut h, "Apply");
+    h.run_steps(2);
+    let index = &s(&h).settings.search_index;
+    assert_eq!(index.folders[0].path, "/data/share");
+    assert!(index.exclude.hidden);
+    assert_eq!(index.exclude.files, ["*.tmp", "*.bak"]);
+    shot(&mut h, "settings-search-exclude");
 }
 
 /// Each control of Settings → General (and the remote thumbnails switch) changes its
