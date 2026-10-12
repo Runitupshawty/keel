@@ -33,8 +33,8 @@ pub mod export;
 mod export_tests;
 mod file;
 mod filter;
-pub mod report;
 pub mod mtp;
+pub mod report;
 mod sys;
 #[cfg(test)]
 mod tests;

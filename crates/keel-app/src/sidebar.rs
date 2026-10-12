@@ -339,7 +339,9 @@ impl Sidebar {
                 // Phase 17 Task 82.
                 if ui.button("Analyze disk usage").clicked() {
                     let root = keel_vfs::du::Root::Path(path.to_local_path().unwrap_or_default());
-                    out.push(Action::DiskUsage(crate::disk_usage::DuCmd::Scan(vec![root])));
+                    out.push(Action::DiskUsage(crate::disk_usage::DuCmd::Scan(vec![
+                        root,
+                    ])));
                     ui.close_menu();
                 }
                 if ui.button("Open in a new tab").clicked() {
