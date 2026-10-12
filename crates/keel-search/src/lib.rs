@@ -29,8 +29,8 @@ pub use exclude::{attr, ExcludeRules};
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions,
-    Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
+    VolumeRoot, DEFAULT_JOURNAL_MB,
 };
 #[cfg(windows)]
 pub use ntfs::{

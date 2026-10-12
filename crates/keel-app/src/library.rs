@@ -2732,7 +2732,7 @@ impl AppState {
         if !self.library.is_open()
             || self.active != p
             || tab.dir != a.dir
-            || tab.kind == TabKind::Overview
+            || matches!(tab.kind, TabKind::Overview | TabKind::Journal)
         {
             self.library.assign = None;
             return;

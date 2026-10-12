@@ -8,7 +8,10 @@ use crate::keys::Action;
 use crate::library::{count, state_text, when, LibCmd};
 use egui::{Color32, RichText};
 use keel_api::types::{HistoryEntry, InspectedRecord, Inspection};
+use keel_search::journal::Event;
 use keel_vfs::{Entry, Kind, VPath};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The selection must stay this long before the library is asked.
@@ -36,7 +39,16 @@ pub struct Inspector {
     max: usize,
     /// The answer for `entry` (an error is shown in place of the library's sections).
     pub answer: Option<Result<Inspection, String>>,
+    /// Phase 15: the index journal's entries of `entry`, newest first.
+    pub journal: Option<Result<Vec<Event>, String>>,
+    journal_answer: JournalAnswer,
 }
+
+/// A journal lookup's answer: (request, entries or error).
+type JournalAnswer = Arc<Mutex<Option<(u64, Result<Vec<Event>, String>)>>>;
+
+/// Journal entries shown for one file.
+pub const JOURNAL_MAX: usize = 20;
 
 impl Inspector {
     /// Follows the active pane's cursor: returns (path, request, max) for the library once
@@ -49,6 +61,7 @@ impl Inspector {
         if self.entry.as_ref().map(|e| &e.path) != entry.map(|e| &e.path) {
             self.entry = entry.cloned();
             self.answer = None;
+            self.journal = None;
             self.max = MAX;
             self.req += 1;
             self.changed = entry.map(|_| Instant::now());
@@ -59,7 +72,30 @@ impl Inspector {
             return None;
         }
         self.changed = None;
-        Some((self.entry.as_ref()?.path.clone(), self.req, self.max))
+        let path = self.entry.as_ref()?.path.clone();
+        self.ask_journal(ctx, &path);
+        Some((path, self.req, self.max))
+    }
+
+    /// Looks `path` up in the index journal on a worker (local paths only).
+    fn ask_journal(&mut self, ctx: &egui::Context, path: &VPath) {
+        let (req, slot, ctx) = (self.req, self.journal_answer.clone(), ctx.clone());
+        let asked = crate::journal_ui::lookup(path, JOURNAL_MAX, move |result| {
+            *slot.lock() = Some((req, result));
+            ctx.request_repaint();
+        });
+        if !asked {
+            self.journal = Some(Ok(Vec::new()));
+        }
+    }
+
+    /// Takes the journal lookup's answer when it is for the latest request.
+    pub fn poll_journal(&mut self) {
+        if let Some((req, result)) = self.journal_answer.lock().take() {
+            if req == self.req {
+                self.journal = Some(result);
+            }
+        }
     }
 
     /// A worker's answer, kept when it is for the latest request.
@@ -156,6 +192,7 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
         return;
     };
     let mut show_all = false;
+    ins.poll_journal();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -172,6 +209,7 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
                 }
                 row(ui, "Path", &entry.path.display(), Some("Copy path"));
             });
+            journal(ui, ins.journal.as_ref(), muted, out);
             let lib = match &ins.answer {
                 None => {
                     ui.add_space(6.0);
@@ -232,6 +270,37 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
     if show_all {
         ins.max = MAX_ALL;
         ins.refresh();
+    }
+}
+
+/// Phase 15: what the index journal recorded for the entry (Keel's own history of
+/// operations is below, with the library).
+fn journal(
+    ui: &mut egui::Ui,
+    entries: Option<&Result<Vec<Event>, String>>,
+    muted: Color32,
+    out: &mut Vec<Action>,
+) {
+    heading(ui, "Index journal", muted);
+    match entries {
+        None => {
+            crate::anim::spinner(ui);
+        }
+        Some(Err(e)) => {
+            ui.weak(e);
+        }
+        Some(Ok(list)) if list.is_empty() => {
+            ui.weak("No changes recorded");
+        }
+        Some(Ok(list)) => {
+            for e in list {
+                ui.add(egui::Label::new(crate::journal_ui::entry_text(e)).truncate())
+                    .on_hover_text(&e.path);
+            }
+            if list.len() >= JOURNAL_MAX && ui.small_button("Open the journal").clicked() {
+                out.push(Action::OpenJournal);
+            }
+        }
     }
 }
 

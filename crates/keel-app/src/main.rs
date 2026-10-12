@@ -25,6 +25,7 @@ mod icon_theme;
 mod icons;
 mod inspector;
 mod jobs;
+mod journal_ui; // Phase 15: the index journal tab
 mod jump;
 mod keys;
 mod library;
@@ -70,6 +71,7 @@ mod x11_clipboard;
 // --- Task 24 ---
 mod cli;
 mod commands; // Task 37
+mod journal_cli; // Phase 15: `keel journal`
 mod dragout;
 mod hotkey;
 mod index_ui;

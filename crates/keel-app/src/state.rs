@@ -540,6 +540,8 @@ impl AppState {
     /// Loads `searcher`, else the platform searcher, off the UI thread (the Everything DLL
     /// load may block).
     pub fn load_searcher(&self, searcher: Option<Arc<dyn Searcher>>) {
+        // Before any index opens: they journal what they change.
+        keel_search::journal::configure(&self.settings.search_index.journal);
         worker::spawn_searcher(
             searcher,
             self.settings.search_index.clone(),
@@ -561,7 +563,11 @@ impl AppState {
     /// A search tab reruns its query instead.
     pub fn list(&mut self, p: usize, t: usize) {
         let tab = &mut self.panes[p].tabs[t];
-        if tab.kind == TabKind::Overview {
+        if matches!(tab.kind, TabKind::Overview | TabKind::Journal) {
+            if tab.kind == TabKind::Journal {
+                // F5: read the journal again.
+                tab.journal.changed();
+            }
             return;
         }
         if let TabKind::Search { due, .. } = &mut tab.kind {
@@ -2284,6 +2290,17 @@ impl AppState {
                 self.panes[p].focus_filter = true;
             }
             Action::OpenLocation => self.open_location(p),
+            Action::OpenJournal => {
+                let pane = &mut self.panes[p];
+                match pane.tabs.iter().position(|t| t.kind == TabKind::Journal) {
+                    Some(t) => pane.active = t,
+                    None => {
+                        pane.tabs.push(Tab::new(crate::tab::journal_path()));
+                        pane.active = pane.tabs.len() - 1;
+                    }
+                }
+                self.active = p;
+            }
             Action::JumpFolder => {
                 self.jump.filter = self.settings.jump_filter;
                 self.jump.show();
@@ -2891,7 +2908,7 @@ mod tests {
         state.run(0, Action::Search);
         let query = |s: &AppState| match &s.tab(0).kind {
             TabKind::Search { query, .. } => Some(query.clone()),
-            TabKind::Dir | TabKind::Overview => None,
+            TabKind::Dir | TabKind::Overview | TabKind::Journal => None,
         };
         if let TabKind::Search { query, .. } = &mut state.tab_mut(0).kind {
             query.push_str("ab");

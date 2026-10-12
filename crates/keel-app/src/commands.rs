@@ -124,6 +124,33 @@ impl From<Usage> for Fail {
 type Out = Box<dyn Write>;
 
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
+    if let Command::Journal {
+        watch,
+        action,
+        since,
+        until,
+        path,
+        search,
+        max,
+        csv,
+    } = cmd
+    {
+        // The journal file is read directly: no library, no daemon.
+        let args = crate::journal_cli::Args {
+            watch,
+            action,
+            since,
+            until,
+            path,
+            search,
+            max,
+            csv,
+            json,
+        };
+        let mut out: Out = Box::new(std::io::stdout());
+        let file = keel_search::journal::default_path();
+        return crate::journal_cli::run(file, &args, &mut out, &|| true);
+    }
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -699,7 +726,7 @@ fn command(
             }
             Some(done)
         }
-        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } => {
+        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } | Command::Journal { .. } => {
             unreachable!("handled by run")
         }
     };

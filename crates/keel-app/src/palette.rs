@@ -123,6 +123,7 @@ fn global_items() -> Vec<Item> {
         ("Search files", "Ctrl+F", Search),
         ("Jump to folder or file", "Ctrl+P", JumpFolder),
         ("Rebuild folder and file lists", "", ReindexFolders),
+        ("Index journal", "", OpenJournal),
         ("Select all", "Ctrl+A", SelectAll),
         ("Invert selection", "", InvertSelection),
         ("Paste", "Ctrl+V", Paste),

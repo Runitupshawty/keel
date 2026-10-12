@@ -59,7 +59,13 @@ fn dir(created: Option<i64>) -> Stat {
 fn summary(events: &[Event]) -> Vec<(Action, String, Option<String>)> {
     events
         .iter()
-        .map(|e| (e.action, e.path.replace('\\', "/"), e.old_path.clone().map(|o| o.replace('\\', "/"))))
+        .map(|e| {
+            (
+                e.action,
+                e.path.replace('\\', "/"),
+                e.old_path.clone().map(|o| o.replace('\\', "/")),
+            )
+        })
         .collect()
 }
 
@@ -79,10 +85,31 @@ fn changes_become_create_delete_modify_and_attribute_entries() {
             Change::Changed(p("/r/grew.txt"), a, grown),
             Change::Changed(p("/r/hid.txt"), a, hidden),
             // A folder's time moving because of its entries is not a change of it.
-            Change::Changed(p("/r/sub"), dir(Some(3)), Stat { mtime: Some(9), ..dir(Some(3)) }),
-            Change::Changed(p("/r/sub2"), dir(Some(3)), Stat { attrs: 0x12, ..dir(Some(3)) }),
+            Change::Changed(
+                p("/r/sub"),
+                dir(Some(3)),
+                Stat {
+                    mtime: Some(9),
+                    ..dir(Some(3))
+                },
+            ),
+            Change::Changed(
+                p("/r/sub2"),
+                dir(Some(3)),
+                Stat {
+                    attrs: 0x12,
+                    ..dir(Some(3))
+                },
+            ),
             // created-only changes are not reported
-            Change::Changed(p("/r/same.txt"), a, Stat { created: Some(7), ..a }),
+            Change::Changed(
+                p("/r/same.txt"),
+                a,
+                Stat {
+                    created: Some(7),
+                    ..a
+                },
+            ),
         ],
         &[],
         1234,
@@ -153,7 +180,10 @@ fn renames_are_paired_by_the_watcher_or_by_identity() {
     );
     assert_eq!(
         summary(&events),
-        [act(Action::Delete, "/r/x", None), act(Action::Create, "/r/y", None)]
+        [
+            act(Action::Delete, "/r/x", None),
+            act(Action::Create, "/r/y", None)
+        ]
     );
 }
 
@@ -165,7 +195,13 @@ fn a_renamed_folder_is_one_entry_not_one_per_file() {
         Change::Deleted(p("/r/old"), d),
         Change::Deleted(p("/r/old/f.txt"), f),
         Change::Deleted(p("/r/old/in/g.txt"), file(4, 10, 12)),
-        Change::Created(p("/r/new"), Stat { mtime: Some(99), ..d }),
+        Change::Created(
+            p("/r/new"),
+            Stat {
+                mtime: Some(99),
+                ..d
+            },
+        ),
         Change::Created(p("/r/new/f.txt"), f),
         Change::Created(p("/r/new/in/g.txt"), file(4, 10, 12)),
     ];
@@ -211,7 +247,12 @@ fn queries_filter_by_action_time_path_pattern_and_text() {
         j.query(&f)
             .unwrap()
             .into_iter()
-            .map(|e| (e.action, e.path.rsplit(['/', '\\']).next().unwrap().to_owned()))
+            .map(|e| {
+                (
+                    e.action,
+                    e.path.rsplit(['/', '\\']).next().unwrap().to_owned(),
+                )
+            })
             .collect()
     };
     let all = j.query(&Filter::default()).unwrap();
@@ -308,7 +349,10 @@ fn the_journal_survives_a_restart_and_numbers_keep_rising() {
     j.clear().unwrap();
     j.record(ev(Action::Delete, "/x/one", 2)).unwrap();
     let again = j.query(&Filter::default()).unwrap();
-    assert!(again[0].id > first[0].id, "a watcher never sees an old number again");
+    assert!(
+        again[0].id > first[0].id,
+        "a watcher never sees an old number again"
+    );
 }
 
 #[test]
@@ -319,7 +363,13 @@ fn the_oldest_entries_go_when_the_file_reaches_its_cap() {
     let long = "x".repeat(200);
     for batch in 0..40 {
         let events: Vec<Event> = (0..50)
-            .map(|i| ev(Action::Modify, &format!("/r/{long}/{batch}-{i}"), batch * 100 + i))
+            .map(|i| {
+                ev(
+                    Action::Modify,
+                    &format!("/r/{long}/{batch}-{i}"),
+                    batch * 100 + i,
+                )
+            })
             .collect();
         j.record_all(&events).unwrap();
         assert!(
@@ -330,7 +380,12 @@ fn the_oldest_entries_go_when_the_file_reaches_its_cap() {
     }
     let kept = j.len().unwrap();
     assert!(kept > 50 && kept < 2000, "kept {kept}");
-    let newest = j.query(&Filter { limit: 1, ..Filter::default() }).unwrap();
+    let newest = j
+        .query(&Filter {
+            limit: 1,
+            ..Filter::default()
+        })
+        .unwrap();
     assert!(newest[0].path.ends_with("39-49"));
     let oldest = j
         .query(&Filter {
@@ -400,7 +455,10 @@ fn actions_times_and_csv_as_typed() {
     let (at, whole) = parse_when("2026-10-12 14:30", now).unwrap();
     assert!(!whole);
     assert_eq!(at - day, (14 * 60 + 30) * 60_000);
-    assert_eq!(parse_when("2026-10-12T14:30:05", now).unwrap().0 - at, 5_000);
+    assert_eq!(
+        parse_when("2026-10-12T14:30:05", now).unwrap().0 - at,
+        5_000
+    );
     assert_eq!(local_text(at), "2026-10-12 14:30:00");
     let today = start_of_today();
     assert_eq!(parse_since("today"), Some(today));

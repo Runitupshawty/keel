@@ -160,9 +160,8 @@ impl Drop for Watch {
     }
 }
 
-/// The relative names in a buffer of FILE_NOTIFY_INFORMATION records (UTF-16, as
-/// stored). Every offset and length is checked: a short or garbled buffer ends the
-/// list, never reads past it.
+/// The relative names of [`parse_actions`].
+#[cfg(test)]
 pub fn parse(buf: &[u8]) -> Vec<Vec<u16>> {
     parse_actions(buf).into_iter().map(|(_, n)| n).collect()
 }
@@ -174,12 +173,16 @@ const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
 pub fn rename_pairs(records: &[(u32, PathBuf)]) -> Vec<(PathBuf, PathBuf)> {
     records
         .windows(2)
-        .filter(|w| w[0].0 == FILE_ACTION_RENAMED_OLD_NAME && w[1].0 == FILE_ACTION_RENAMED_NEW_NAME)
+        .filter(|w| {
+            w[0].0 == FILE_ACTION_RENAMED_OLD_NAME && w[1].0 == FILE_ACTION_RENAMED_NEW_NAME
+        })
         .map(|w| (w[0].1.clone(), w[1].1.clone()))
         .collect()
 }
 
-/// [`parse`] with each record's action (FILE_ACTION_*).
+/// Each record of a buffer of FILE_NOTIFY_INFORMATION records: its action (FILE_ACTION_*)
+/// and relative name (UTF-16, as stored). Every offset and length is checked: a short or
+/// garbled buffer ends the list, never reads past it.
 pub fn parse_actions(buf: &[u8]) -> Vec<(u32, Vec<u16>)> {
     let u32_at = |at: usize| -> Option<u32> {
         Some(u32::from_ne_bytes(

@@ -202,7 +202,10 @@ impl Filter {
             && self.since.is_none_or(|t| e.time >= t)
             && self.until.is_none_or(|t| e.time < t)
             && self.after_id.is_none_or(|id| e.id > id)
-            && self.path.as_deref().is_none_or(|p| paths().any(|q| same_path(p, q)))
+            && self
+                .path
+                .as_deref()
+                .is_none_or(|p| paths().any(|q| same_path(p, q)))
             && (self.text.is_empty() || {
                 let needle = self.text.to_lowercase();
                 paths().any(|p| p.to_lowercase().contains(&needle))
@@ -494,7 +497,9 @@ fn trim(conn: &Connection, max: u64) -> anyhow::Result<()> {
             break;
         }
         let keep = (max as f64 * TRIM_TO) / used as f64;
-        let drop = ((rows as f64) * (1.0 - keep)).ceil().clamp(1.0, rows as f64) as i64;
+        let drop = ((rows as f64) * (1.0 - keep))
+            .ceil()
+            .clamp(1.0, rows as f64) as i64;
         conn.execute(
             "DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?1)",
             [drop],
@@ -519,7 +524,9 @@ impl Recent {
 
     /// When `path` last changed, if it did since the time asked for.
     pub fn get(&self, path: &Path) -> Option<SystemTime> {
-        self.0.get(&Self::key(&path_text(path))).map(|&t| time_of(t))
+        self.0
+            .get(&Self::key(&path_text(path)))
+            .map(|&t| time_of(t))
     }
 
     pub fn len(&self) -> usize {
@@ -755,17 +762,15 @@ pub(crate) fn events_from(
     let mut out = Vec::new();
     for c in &changes {
         let event = match c {
-            Change::Created(p, s) => {
-                if let Some(old) = pairs.get(p) {
-                    Event::renamed(old, p)
-                } else if renamed_dirs.iter().any(|(n, _)| inside(p, n)) {
-                    continue;
-                } else {
-                    Event::new(Action::Create, p)
-                }
-                .dir(s.is_dir)
-                .size(if s.is_dir { 0 } else { s.size })
+            Change::Created(p, s) => if let Some(old) = pairs.get(p) {
+                Event::renamed(old, p)
+            } else if renamed_dirs.iter().any(|(n, _)| inside(p, n)) {
+                continue;
+            } else {
+                Event::new(Action::Create, p)
             }
+            .dir(s.is_dir)
+            .size(if s.is_dir { 0 } else { s.size }),
             Change::Deleted(p, s) => {
                 if taken_old.contains(p) || renamed_dirs.iter().any(|(_, o)| inside(p, o)) {
                     continue;
@@ -867,7 +872,7 @@ fn parse_when(text: &str, now: i64) -> Option<(i64, bool)> {
     };
     let mut hms = clock.split(':').map(|p| p.parse::<u32>().ok());
     let (h, mi) = (hms.next()??, hms.next()??);
-    let s = hms.next().map_or(Some(0), |s| s)?;
+    let s = hms.next().unwrap_or(Some(0))?;
     use chrono::TimeZone;
     let t = chrono::Local
         .from_local_datetime(&day.and_hms_opt(h, mi, s)?)

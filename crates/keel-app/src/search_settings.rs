@@ -17,6 +17,7 @@ pub enum Tab {
     Folders,
     Volumes,
     Exclude,
+    Journal,
 }
 
 /// The page's state between frames.
@@ -178,6 +179,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
         ui.selectable_value(&mut page.tab, Tab::Folders, "Folders");
         ui.selectable_value(&mut page.tab, Tab::Volumes, "Volumes");
         ui.selectable_value(&mut page.tab, Tab::Exclude, "Exclude");
+        ui.selectable_value(&mut page.tab, Tab::Journal, "Journal");
     });
     ui.separator();
     egui::ScrollArea::vertical()
@@ -186,6 +188,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
             Tab::Folders => folders(ui, &mut draft, page),
             Tab::Volumes => volumes(ui, &mut draft, page),
             Tab::Exclude => exclude(ui, &mut draft, page),
+            Tab::Journal => journal(ui, &mut draft),
         });
     ui.separator();
     ui.horizontal(|ui| {
@@ -375,9 +378,32 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     ui.weak("Lists are separated by ';'. Rules apply while indexing: an index walks again when they change.");
 }
 
+/// The Journal tab: the index journal on or off, and its size.
+fn journal(ui: &mut egui::Ui, d: &mut IndexSettings) {
+    let j = &mut d.journal;
+    ui.checkbox(&mut j.enabled, "Keep an index journal")
+        .on_hover_text("Every create, delete, rename, modify and attribute change the index applies");
+    ui.add_enabled_ui(j.enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Size");
+            ui.add(
+                egui::DragValue::new(&mut j.max_mb)
+                    .range(1..=4096)
+                    .suffix(" MB"),
+            )
+            .named("Journal size in MB");
+        });
+    });
+    ui.weak(
+        "When the journal reaches its size the oldest entries go first. Open it with \
+         Index journal in the command palette, or `keel journal` on the command line.",
+    );
+}
+
 /// Hands Settings → Search to the search backend on a worker (it may list volumes and
-/// open or close indexes).
+/// open or close indexes), and the journal settings to the index journal.
 pub fn push(searcher: Option<std::sync::Arc<dyn keel_search::Searcher>>, settings: &IndexSettings) {
+    keel_search::journal::configure(&settings.journal);
     let Some(searcher) = searcher else {
         return;
     };
