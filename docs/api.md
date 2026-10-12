@@ -8,6 +8,7 @@ operations (`keel_api::OPS`, crate `keel-api`). The same list serves three front
 | JSON-RPC 2.0 | `keel-daemon` (per user, per profile) | local socket / named pipe; optional WebSocket |
 | CLI | `keel search …`, `keel plan …`, …, and `keel op <name>` for any operation | the daemon when it runs, else the library in-process |
 | MCP | `keel mcp` | stdio (Model Context Protocol 2025-06-18) |
+| C SDK | `keel_sdk.dll` / `libkeel_sdk.so` / `libkeel_sdk.dylib` ([below](#sdk-c-abi-keel-sdk)): `system.search` only, in the shape of Everything's SDK | the daemon's local socket |
 
 Every operation has a stable name, JSON schemas for its parameters and result (generated
 from the Rust types with `schemars`), and an example. Paths are strings: an absolute local
@@ -662,6 +663,81 @@ Warnings:
 plan: 13c5dd406fb8e46347589df153de3cc3
 hash: 33a24e08724cf73a2cf5f81bb3e2663808e6330cf26227e8a5315e5815f5d2b4
 Apply with: keel execute 13c5dd406fb8e46347589df153de3cc3 --hash 33a24e08724cf73a2cf5f81bb3e2663808e6330cf26227e8a5315e5815f5d2b4
+```
+
+## SDK (C ABI, `keel-sdk`)
+
+`crates/keel-sdk` builds a C library (`cargo build -p keel-sdk --release`:
+`keel_sdk.dll` and its import library `keel_sdk.dll.lib` on Windows, `libkeel_sdk.so`,
+`libkeel_sdk.dylib`) for programs that search with Everything's SDK today. The calls have
+the same shape under Keel's own names (Everything's `Everything64.dll` is not imitated by
+name): set the search and its switches, query, read the results by index. The header is
+[`crates/keel-sdk/include/keel_sdk.h`](../crates/keel-sdk/include/keel_sdk.h); examples
+in C ([`examples/c/search.c`](../crates/keel-sdk/examples/c/search.c)) and Python `ctypes`
+([`examples/python/keel_search.py`](../crates/keel-sdk/examples/python/keel_search.py)).
+
+It talks JSON-RPC to the user's **keel-daemon** for the profile (`keel daemon start`, or
+the window's "Run the library in a background daemon") over the per-user local socket,
+and runs `system.search` (above) only: it **searches and returns results, and never opens,
+runs, changes or deletes a file**. Without a daemon a query fails with `KEEL_ERROR_IPC`.
+The profile is `default` unless `keel_set_profile` names another; `KEEL_CONFIG_DIR` and
+`KEEL_DATA_DIR` are honoured as by every Keel program.
+
+| Everything SDK | keel-sdk |
+| --- | --- |
+| `Everything_SetSearchA` / `W` | `keel_set_search` (UTF-8) / `keel_set_search_w` (UTF-16); at most 4096 bytes |
+| `Everything_SetMatchCase`, `SetMatchWholeWord`, `SetMatchPath`, `SetRegex` | `keel_set_match_case`, `keel_set_match_whole_word`, `keel_set_match_path`, `keel_set_regex`; also `keel_set_match_diacritics` |
+| `Everything_SetMax`, `SetOffset` | `keel_set_max` (default all; 0 counts only), `keel_set_offset` |
+| `Everything_SetSort` | `keel_set_sort`: `KEEL_SORT_NAME_*` (1, 2), `PATH_*` (3, 4), `SIZE_*` (5, 6), `DATE_MODIFIED_*` (13, 14), Everything's numbers; another sort returns 0 |
+| `Everything_SetRequestFlags` | `keel_set_request_flags`: `KEEL_REQUEST_FILE_NAME`, `PATH`, `FULL_PATH_AND_FILE_NAME`, `SIZE`, `DATE_MODIFIED`, `ATTRIBUTES` (Everything's bits; default name and path) |
+| `Everything_Query(bWait)` | `keel_query(wait, callback, user_data)`: blocking, or on a new thread with `callback(user_data, error)` when it ends (instead of a reply window) |
+| `Everything_GetNumResults`, `GetTotResults` | `keel_get_num_results`, `keel_get_total_results` |
+| `Everything_IsFolderResult` | `keel_is_folder_result` |
+| `Everything_GetResultFullPathName`, `GetResultFileName`, `GetResultPath` | `keel_get_result_full_path`, `_file_name`, `_path`, each also `_w` (UTF-16) |
+| `Everything_GetResultSize` | `keel_get_result_size` (`uint64_t*`; 0 for folders) |
+| `Everything_GetResultDateModified` | `keel_get_result_date_modified` (a FILETIME as `uint64_t`; `0xFFFFFFFFFFFFFFFF` unknown) |
+| `Everything_GetResultAttributes` | `keel_get_result_attributes` (read from the file system on Windows; folder or normal, plus hidden for dot names, elsewhere) |
+| `Everything_GetResultRunCount`, `GetRunCountFromFileName`, `IncRunCountFromFileName` | `keel_get_result_run_count`, `keel_get_run_count`, `keel_inc_run_count`: **unsupported** (Keel keeps no run counts); they return 0 with `KEEL_ERROR_UNSUPPORTED` |
+| `Everything_GetLastError` | `keel_get_last_error`, and `keel_get_last_error_message` for the text |
+| `Everything_Reset`, `CleanUp` | `keel_reset` (the profile stays), `keel_cleanup` |
+
+**Strings** are copied into the caller's buffer: each getter returns the length the whole
+string needs without the NUL (call with a NULL buffer first), writes at most `len - 1`
+units cut at a character boundary plus the NUL, and returns 0 on an error. Getters fail
+with `KEEL_ERROR_INVALIDREQUEST` for a property not requested before the query,
+`KEEL_ERROR_INVALIDINDEX` past the last result and `KEEL_ERROR_INVALIDCALL` before any
+query.
+
+**Threads.** One process-wide state, as Everything's: every function may be called from
+any thread. A query takes the settings as they are when it starts; its results replace the
+last ones only when it succeeds and no newer query, `keel_reset` or `keel_cleanup` came
+meanwhile (else it ends with `KEEL_ERROR_CANCELLED`). A failed query keeps the previous
+results. A callback may query again. Wait for a background query's callback before
+unloading the library.
+
+**Limits** are `system.search`'s: `max` above 1000 is fetched in pages of 1000, and the
+total and order cover the first 10000 matches the backend finds.
+
+Error codes: `KEEL_OK` 0, `KEEL_ERROR_MEMORY` 1, `IPC` 2 (no daemon, or the connection
+failed), `CREATETHREAD` 5, `INVALIDINDEX` 6, `INVALIDCALL` 7, `INVALIDREQUEST` 8,
+`INVALIDPARAMETER` 9 (bad text, regular expression, sort or profile), `UNSUPPORTED` 10,
+`SEARCH` 11 (the search failed in the daemon), `TIMEOUT` 12, `CANCELLED` 13.
+
+```c
+#include "keel_sdk.h"
+
+keel_set_search("invoice *.pdf");
+keel_set_sort(KEEL_SORT_DATE_MODIFIED_DESCENDING);
+keel_set_request_flags(KEEL_REQUEST_FULL_PATH_AND_FILE_NAME | KEEL_REQUEST_SIZE);
+if (keel_query(1, NULL, NULL)) {
+    for (uint32_t i = 0; i < keel_get_num_results(); i++) {
+        char path[1024];
+        uint64_t size;
+        keel_get_result_full_path(i, path, sizeof path);
+        keel_get_result_size(i, &size);
+    }
+}
+keel_cleanup();
 ```
 
 ## MCP (`keel mcp`)
