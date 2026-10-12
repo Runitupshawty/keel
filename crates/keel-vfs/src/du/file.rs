@@ -6,15 +6,22 @@
 //! ```json
 //! {"format": "keel-du-scan", "version": 1, "started": 1760000000, "elapsed_ms": 1234,
 //!  "complete": true, "unreadable": 0, "excluded": 0, "options": {...},
-//!  "roots": [{"node": 1, "path": "C:\\", "total": 512110190592, "free": 1234}],
+//!  "roots": [{"node": 1, "path": "C:\\", "total": 512110190592, "free": 1234},
+//!            {"node": 2, "path": "mtp://Phone/Internal storage",
+//!             "device": {"device_id": "...", "storage_id": "..."}}],
 //!  "exts": ["", "txt"], "links": ["5a1f0000000000000000000000000c41"],
 //!  "nodes": [[name, parent, kind, flags, attributes, ext, link, size, allocated, modified], ...]}
 //! ```
 //!
 //! `kind`: 0 top, 1 root, 2 folder, 3 file, 4 link, 5 free, 6 unknown. `modified` is unix
 //! nanoseconds (`i64::MIN` unknown). A folder's `size` and `allocated` are not used (0).
+//! A root with `device` is a portable device's storage (its `path` is for display);
+//! `timed_out` is written only when a device walk ran out of time. Both are optional, so
+//! version 1 files without them read as before.
 
-use super::{flag, Node, NodeId, NodeKind, RootInfo, ScanInfo, ScanOptions, Space, Tree, NONE};
+use super::{
+    flag, DeviceRoot, Node, NodeId, NodeKind, RootInfo, ScanInfo, ScanOptions, Space, Tree, NONE,
+};
 use anyhow::{Context, Result};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize, Serializer};
@@ -38,6 +45,8 @@ struct DocOut<'a> {
     complete: bool,
     unreadable: u64,
     excluded: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    timed_out: bool,
     options: &'a ScanOptions,
     roots: Vec<DocRoot>,
     exts: &'a [Box<str>],
@@ -89,6 +98,8 @@ struct DocRoot {
     total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     free: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<DeviceRoot>,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +126,8 @@ struct DocIn {
     #[serde(default)]
     excluded: u64,
     #[serde(default)]
+    timed_out: bool,
+    #[serde(default)]
     options: ScanOptions,
     roots: Vec<DocRoot>,
     exts: Vec<String>,
@@ -134,6 +147,7 @@ pub fn save_to(tree: &Tree, w: impl Write, compress: bool) -> Result<()> {
         complete: tree.info.complete,
         unreadable: tree.info.unreadable,
         excluded: tree.info.excluded,
+        timed_out: tree.info.timed_out,
         options: &tree.options,
         roots: (tree.roots.iter())
             .map(|r| DocRoot {
@@ -141,6 +155,7 @@ pub fn save_to(tree: &Tree, w: impl Write, compress: bool) -> Result<()> {
                 path: r.path.to_string_lossy().into_owned(),
                 total: r.space.map(|s| s.total),
                 free: r.space.map(|s| s.free),
+                device: r.device.clone(),
             })
             .collect(),
         exts: &tree.exts,
@@ -309,6 +324,7 @@ fn build(doc: DocIn) -> Result<Tree> {
                 (Some(total), Some(free)) => Some(Space { total, free }),
                 _ => None,
             },
+            device: r.device,
         });
     }
     let root_items = nodes.iter().filter(|n| n.kind == NodeKind::Root).count();
@@ -325,6 +341,7 @@ fn build(doc: DocIn) -> Result<Tree> {
             complete: doc.complete,
             unreadable: doc.unreadable,
             excluded: doc.excluded,
+            timed_out: doc.timed_out,
         },
     };
     tree.recompute();

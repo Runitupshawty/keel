@@ -104,6 +104,9 @@ sysinfo = { version = "0.32", default-features = false, features = ["disk"] }
 # input / console / window helpers in `desktop`; `pipe` (single instance) the security ones.
 windows = { workspace = true, features = [
     "implement",
+    # Task 81: portable devices (phones, cameras) as disk usage scan roots.
+    "Win32_Devices_PortableDevices",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",
