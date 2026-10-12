@@ -111,18 +111,19 @@ try {
     }
   }
   # A stand-in daemon (a .cmd) that writes the arguments it got.
-  $log = Join-Path $dir 'started.txt'
+  # One file per start: two stand-ins appending to one file at once lose a line (seen on CI).
+  $logDir = Join-Path $dir 'started'
   $fake = Join-Path $dir 'keel-daemon.cmd'
-  Set-Content $fake "@echo [%*]>> `"$log`""
+  Set-Content $fake "@echo [%*]>> `"$logDir\%RANDOM%%RANDOM%.txt`""
   function Wait-Log([int]$Lines) {
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while (@(Get-Content $log -ErrorAction SilentlyContinue).Count -lt $Lines -and [DateTime]::UtcNow -lt $deadline) {
+    while (@(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue).Count -lt $Lines -and [DateTime]::UtcNow -lt $deadline) {
       Start-Sleep -Milliseconds 100
     }
-    @(Get-Content $log -ErrorAction SilentlyContinue)
+    @(Get-ChildItem $logDir -File -ErrorAction SilentlyContinue | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() })
   }
   Check 'update: a daemon with arguments starts again with them, one without with none' {
-    Remove-Item $log -ErrorAction SilentlyContinue
+    Remove-Item $logDir -Recurse -ErrorAction SilentlyContinue; New-Item -ItemType Directory $logDir | Out-Null
     # The stand-in ends at once, so the installer says it exited: that names it too.
     $said = Restart-KeelDaemons $fake @('--profile=work --web 127.0.0.1:7421', '') *>&1 | Out-String
     $got = Wait-Log 2 | Sort-Object
@@ -130,10 +131,10 @@ try {
     if ($said -notlike '*keel-daemon --profile=work --web 127.0.0.1:7421*') { throw "said '$said'" }
   }
   Check 'update: no daemon ran, none starts' {
-    Remove-Item $log -ErrorAction SilentlyContinue
+    Remove-Item $logDir -Recurse -ErrorAction SilentlyContinue; New-Item -ItemType Directory $logDir | Out-Null
     $said = Restart-KeelDaemons $fake @() *>&1 | Out-String
     Start-Sleep -Milliseconds 500
-    if (Test-Path $log) { throw "started '$(Get-Content $log)'" }
+    $any = @(Get-ChildItem $logDir -File); if ($any.Count) { throw "started '$(Get-Content $any[0].FullName)'" }
     if ($said.Trim()) { throw "said '$said'" }
   }
   Check "update: the install's running daemon is found with its arguments and restarted with them" {
