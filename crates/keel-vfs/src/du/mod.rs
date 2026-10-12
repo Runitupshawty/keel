@@ -554,6 +554,7 @@ impl Tree {
             if n.kind == NodeKind::Dead || n.is_pseudo() || n.parent == NONE {
                 continue;
             }
+            let parent = n.parent as usize;
             let dup = n.has(flag::HARDLINK_DUP);
             let (size, allocated, files, folders, items, newest) = match n.kind {
                 NodeKind::File if dup => (0, 0, 1, 0, 1, n.newest),
@@ -569,7 +570,7 @@ impl Tree {
                 ),
             };
             // Saturating: a loaded scan file may claim anything.
-            let p = &mut self.nodes[n.parent as usize];
+            let p = &mut self.nodes[parent];
             p.size = p.size.saturating_add(size);
             p.allocated = p.allocated.saturating_add(allocated);
             p.files = p.files.saturating_add(files);

@@ -499,7 +499,8 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
     };
     link_up(&mut tree, ids);
     tree.recompute();
-    tree.info.complete = !tree.nodes().any(|(_, n)| n.has(flag::INCOMPLETE));
+    let complete = !tree.nodes().any(|(_, n)| n.has(flag::INCOMPLETE));
+    tree.info.complete = complete;
     tree.info.elapsed = handle.finish();
     Ok(tree)
 }
@@ -560,7 +561,8 @@ fn kill(tree: &mut Tree, id: NodeId, this: bool) {
 
 fn finish(tree: &mut Tree, handle: &ScanHandle) {
     tree.recompute();
-    tree.info.complete = !tree.nodes().any(|(_, n)| n.has(flag::INCOMPLETE));
+    let complete = !tree.nodes().any(|(_, n)| n.has(flag::INCOMPLETE));
+    tree.info.complete = complete;
     tree.info.unreadable = (tree.nodes())
         .filter(|(_, n)| n.is_container() && n.has(flag::UNREADABLE))
         .count() as u64;
