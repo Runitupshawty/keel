@@ -80,6 +80,8 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[[cleanups]]`: user-defined cleanups (Task 85), in the context menu and palette.
+    pub cleanups: Vec<crate::cleanups::UserCleanup>,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +216,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            cleanups: Vec::new(),
         }
     }
 }
@@ -590,6 +593,7 @@ pub enum Page {
     Icons,
     Library,
     Devices,
+    Cleanups,
 }
 
 /// The Settings window (Ctrl+,): General, Remotes, Cloud, Profiles and Icons pages.
@@ -625,6 +629,7 @@ pub fn window(
                 ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
                 ui.selectable_value(&mut remotes.page, Page::Library, "Library");
                 ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
+                ui.selectable_value(&mut remotes.page, Page::Cleanups, "Cleanups");
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -634,6 +639,7 @@ pub fn window(
                     Page::Icons => icons.settings_page(ui, s),
                     Page::Library => crate::library_ui::settings_page(ui, s, library),
                     Page::Devices => crate::devices::settings_page(ui, s, devices),
+                    Page::Cleanups => crate::cleanups::settings_page(ui, &mut s.cleanups),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);

@@ -62,6 +62,10 @@ pub enum Dialog {
     },
     /// Task 60: a folder operation (`folder_ops`).
     FolderOp(Box<crate::folder_ops::FolderDialog>),
+    /// Task 85: Compress (NTFS)…
+    Compress(Box<crate::compress_ui::CompressDialog>),
+    /// Task 85: a user-defined cleanup's expanded commands, before they run.
+    Cleanup(Box<crate::cleanups::Prepared>),
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -286,6 +290,8 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::FolderOp(d) => out = crate::folder_ops::ui(ui, d, &mut cancel),
+            Dialog::Compress(d) => out = crate::compress_ui::ui(ui, d, &mut cancel),
+            Dialog::Cleanup(p) => out = crate::cleanups::confirm_ui(ui, p, &mut cancel),
             Dialog::BulkRename(m) => {
                 if let Some(renames) = crate::bulk_rename::ui(ui, m, &mut cancel) {
                     out = Some(Action::BulkRenameApply { renames });

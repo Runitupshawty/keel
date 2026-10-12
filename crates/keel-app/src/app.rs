@@ -509,6 +509,9 @@ impl App {
         // Recent "Open with" apps for the context menu (read by `pane::context_menu`).
         let recent = s.settings.open_with.clone();
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("keel-open-with"), recent));
+        // Task 85: the user-defined cleanups, for the context menu's Cleanups.
+        let cleanups = s.settings.cleanups.clone();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::cleanups::MENU_ID), cleanups));
         // Task 56: the library's folder styles for context menus and Ctrl+P.
         crate::folder_style::publish(ctx, &s.library);
         s.viewer_ui(ctx); // Task 32

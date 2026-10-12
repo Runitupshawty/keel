@@ -168,6 +168,17 @@ pub enum Action {
     ToggleInspector,
     /// Settings window (Ctrl+,).
     Settings,
+    // --- Task 85 ---
+    /// Settings → Cleanups.
+    CleanupSettings,
+    /// Run user-defined cleanup `n` (of the profile's list) on the targets.
+    RunCleanup(usize),
+    /// A cleanup whose expanded commands were shown and confirmed.
+    CleanupConfirmed(Box<crate::cleanups::Prepared>),
+    /// Compress (NTFS)… on the targets (Windows).
+    Compress,
+    /// The Compress dialog's answer: start the job.
+    CompressStart(Box<crate::compress_ui::CompressStart>),
     /// Palette "Switch profile: <name>".
     SwitchProfile(String),
     /// Archive targets: extract next to the archive.

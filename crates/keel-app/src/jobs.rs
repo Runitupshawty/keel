@@ -258,6 +258,84 @@ impl Jobs {
         })
     }
 
+    /// Task 85: Compress (NTFS)… on local `paths`; the saving arrives as a toast, and the
+    /// folders shown are refreshed.
+    pub fn compress(&mut self, start: crate::compress_ui::CompressStart, tx: Sender<Msg>) -> u64 {
+        let title = match start.what {
+            keel_vfs::compress::Action::Compress(alg) => {
+                format!("Compressing {} ({})", items(start.paths.len()), alg.label())
+            }
+            keel_vfs::compress::Action::Uncompress => {
+                format!("Uncompressing {}", items(start.paths.len()))
+            }
+        };
+        let (ntx, ctx) = (tx.clone(), self.ctx.clone());
+        self.spawn(title, tx, move |report, cancel| {
+            let progress = |p: &keel_vfs::compress::Progress| {
+                report(Progress {
+                    current: p.current.display().to_string(),
+                    done_items: p.done as usize,
+                    total_items: p.total as usize,
+                    ..Progress::default()
+                })
+            };
+            let done = keel_vfs::compress::run(
+                &start.paths,
+                start.what,
+                start.recurse,
+                start.files,
+                &progress,
+                cancel,
+            );
+            let refresh = |paths: &[PathBuf]| {
+                for p in paths {
+                    for dir in [Some(p.as_path()), p.parent()].into_iter().flatten() {
+                        let dir = VPath::local(dir);
+                        send(&ntx, &ctx, Msg::Changed { dir });
+                    }
+                }
+            };
+            let r = match done {
+                Ok(r) => r,
+                Err(e) if e.is::<keel_vfs::compress::Cancelled>() => {
+                    refresh(&start.paths);
+                    anyhow::bail!("operation cancelled")
+                }
+                Err(e) => return Err(e),
+            };
+            refresh(&start.paths);
+            send(
+                &ntx,
+                &ctx,
+                Msg::Note(crate::compress_ui::summary(start.what, &r)),
+            );
+            match r.failed.first() {
+                None => Ok(()),
+                Some((path, why)) => anyhow::bail!(
+                    "{} failed; the first: {}: {why}",
+                    items(r.failed_count as usize),
+                    path.display()
+                ),
+            }
+        })
+    }
+
+    /// Task 85: a confirmed user-defined cleanup (`cleanups::run`); the folders shown are
+    /// refreshed after when it says so.
+    pub fn cleanup(&mut self, p: crate::cleanups::Prepared, tx: Sender<Msg>) -> u64 {
+        let title = format!("Cleanup: {}", p.cleanup.title);
+        let (ntx, ctx) = (tx.clone(), self.ctx.clone());
+        self.spawn(title, tx, move |report, cancel| {
+            let result = crate::cleanups::run(&p, report, cancel);
+            if p.cleanup.refresh && p.cleanup.wait {
+                for dir in &p.refresh {
+                    send(&ntx, &ctx, Msg::Changed { dir: dir.clone() });
+                }
+            }
+            result
+        })
+    }
+
     /// Restores, permanently deletes or empties the Recycle Bin / Trash (a `trash://` tab).
     pub fn trash_op(&mut self, op: TrashOp, tx: Sender<Msg>) -> u64 {
         let title = match &op {

@@ -708,6 +708,10 @@ pub fn context_menu(
             let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
             item(ui, &add, "", Action::AddToZip);
             item(ui, "Compress to zip…", "", Action::CompressToZip);
+            // Task 85: NTFS and WOF compression.
+            if cfg!(windows) {
+                item(ui, "Compress (NTFS)…", "", Action::Compress);
+            }
         }
         if let Some((archive, _)) = crate::jobs::add_target(&tab.targets()) {
             item(
@@ -732,6 +736,27 @@ pub fn context_menu(
         Action::RevealInSystem,
     );
     item(ui, "Open terminal here", "", Action::OpenTerminal);
+    // Task 85: user-defined cleanups (Settings → Cleanups), for the item or the folder.
+    if tab.dir.to_local_path().is_some() {
+        let cleanups: Vec<crate::cleanups::UserCleanup> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new(crate::cleanups::MENU_ID)))
+            .unwrap_or_default();
+        let fits = |c: &crate::cleanups::UserCleanup| match entry {
+            Some(e) if e.kind == keel_vfs::Kind::Dir => c.folders || c.drives,
+            Some(_) => c.files,
+            None => c.folders || c.drives,
+        };
+        ui.menu_button("Cleanups", |ui| {
+            for (i, c) in cleanups.iter().enumerate().filter(|(_, c)| fits(c)) {
+                item(ui, &c.title, "", Action::RunCleanup(i));
+            }
+            if !cleanups.is_empty() {
+                ui.separator();
+            }
+            item(ui, "Edit cleanups…", "", Action::CleanupSettings);
+        });
+    }
     if !search {
         item(
             ui,

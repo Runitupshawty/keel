@@ -9,9 +9,11 @@ mod app;
 mod backend; // the library in-process or in keel-daemon
 mod bulk_rename;
 mod chip_row; // Task 57: library search filter chips (keel-web includes it by path)
+mod cleanups; // Task 85: user-defined cleanups
 mod clipboard;
 mod clouds;
 mod color_theme; // Task 47: VS Code color themes
+mod compress_ui; // Task 85: Compress (NTFS)…
 mod crash;
 mod devices;
 mod dialogs;

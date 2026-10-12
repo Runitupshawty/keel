@@ -24,6 +24,9 @@ pub struct Palette {
     pub profiles: Vec<String>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
+    /// Task 85: the user-defined cleanups' titles ("Run cleanup: <title>"), set before
+    /// `show`.
+    pub cleanups: Vec<String>,
     focus: bool,
     fuzzy: Option<Fuzzy>,
     /// The Windows shell menu its "Shell: …" entries came from (`shell_menu`); dropped when
@@ -92,7 +95,14 @@ fn context_items() -> Vec<Item> {
         shortcut,
         action,
     })
-    .into()
+    .into_iter()
+    // Task 85: NTFS compression is Windows'.
+    .chain(cfg!(windows).then(|| Item {
+        label: "Compress (NTFS)…".to_owned(),
+        shortcut: "",
+        action: Action::Compress,
+    }))
+    .collect()
 }
 
 fn global_items() -> Vec<Item> {
@@ -143,6 +153,7 @@ fn global_items() -> Vec<Item> {
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
         ("Settings", "Ctrl+,", Settings),
+        ("Edit cleanups…", "", CleanupSettings),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),
         ("Add library source…", "", Library(LibCmd::AddSource)),
@@ -189,6 +200,11 @@ impl Palette {
             action: Action::Undo,
         }));
         items.extend(global_items());
+        items.extend(self.cleanups.iter().enumerate().map(|(i, title)| Item {
+            label: format!("Run cleanup: {title}"),
+            shortcut: "",
+            action: Action::RunCleanup(i),
+        }));
         items.extend(self.profiles.iter().map(|name| Item {
             label: format!("Switch profile: {name}"),
             shortcut: "",
