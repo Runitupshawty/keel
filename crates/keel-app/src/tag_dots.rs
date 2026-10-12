@@ -94,7 +94,7 @@ pub fn paint(painter: &egui::Painter, left: f32, y: f32, dots: &[Dot], ring: Col
     let shown = &dots[dots.len().saturating_sub(MAX_DOTS)..];
     for (i, d) in shown.iter().enumerate() {
         let c = egui::pos2(left + 2.0 + RADIUS + STEP * i as f32, y);
-        painter.circle(c, RADIUS, d.color, Stroke::new(1.0, ring));
+        painter.circle(c, RADIUS, d.color, Stroke::new(1.0_f32, ring));
     }
 }
 
@@ -226,7 +226,7 @@ pub fn color_row(ui: &mut egui::Ui, on: impl Fn(FinderColor) -> bool) -> Option<
             let radius = if r.hovered() || r.has_focus() { 7.0 } else { 6.0 };
             ui.painter().circle_filled(rect.center(), radius, fill);
             if set {
-                let ring = Stroke::new(1.5, ui.visuals().text_color());
+                let ring = Stroke::new(1.5_f32, ui.visuals().text_color());
                 ui.painter().circle_stroke(rect.center(), 8.0, ring);
             }
             let verb = if set { "Remove the tag" } else { "Tag" };

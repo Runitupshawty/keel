@@ -971,14 +971,16 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                         ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
                     let center = rect.center();
                     match c.hex().and_then(crate::tag_dots::color32) {
-                        Some(fill) => ui.painter().circle_filled(center, 6.5, fill),
+                        Some(fill) => {
+                            ui.painter().circle_filled(center, 6.5, fill);
+                        }
                         None => {
-                            let weak = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+                            let weak = egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color());
                             ui.painter().circle_stroke(center, 6.0, weak);
                         }
                     }
                     if picker.new_color == c {
-                        let ring = egui::Stroke::new(1.5, ui.visuals().text_color());
+                        let ring = egui::Stroke::new(1.5_f32, ui.visuals().text_color());
                         ui.painter().circle_stroke(center, 9.0, ring);
                     }
                     if r.tip(&format!("New tag color: {}", c.name())).clicked() {
