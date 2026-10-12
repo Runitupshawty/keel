@@ -29,11 +29,11 @@ use parking_lot::RwLock;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{params, Connection};
 
-use crate::terms::{self, split_terms, strip_ci};
 use crate::exclude::{attr, ExcludeRules};
 use crate::index_settings::ScanOptions;
 use crate::journal::{self, Change, Journal, Stat};
 use crate::schedule::{Clock, SystemClock};
+use crate::terms::{self, split_terms, strip_ci};
 use crate::{Hit, Query, SearchState, Searcher};
 
 const NONE: u32 = u32::MAX;

@@ -64,9 +64,9 @@ impl Wildcards {
                     ..Default::default()
                 },
             ))
-                .case_insensitive(true)
-                .build()
-                .with_context(|| format!("wildcard {p:?}"))?;
+            .case_insensitive(true)
+            .build()
+            .with_context(|| format!("wildcard {p:?}"))?;
             match norm.contains('/') {
                 true => w.paths.push(re),
                 false => w.names.push(re),

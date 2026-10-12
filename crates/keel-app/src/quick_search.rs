@@ -91,7 +91,9 @@ impl QuickSearch {
                 s.tick();
                 let mut actions = Vec::new();
                 let keys_on = !ctx.is_context_menu_open() && !s.settings.omissions.manage;
-                actions.extend(crate::keys::actions_with_terminal(ctx, keys_on, false, &keys));
+                actions.extend(crate::keys::actions_with_terminal(
+                    ctx, keys_on, false, &keys,
+                ));
                 egui::CentralPanel::default().show(ctx, |ui| {
                     // No backend picker, chips, sidebar, tab strip or file-manager toolbar.
                     let pane = &mut s.panes[0];

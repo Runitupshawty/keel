@@ -5,13 +5,13 @@
 mod composite;
 #[cfg(windows)]
 mod everything;
+mod exclude;
 pub mod filelist;
+mod folders;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzz;
-mod exclude;
-mod folders;
 mod fuzzy;
 mod index_settings;
 pub mod journal;
@@ -31,8 +31,8 @@ mod walkindex;
 pub use composite::Merge;
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
-pub use filelist::FileListSearcher;
 pub use exclude::{attr, ExcludeRules};
+pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
@@ -44,8 +44,8 @@ pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
 };
-pub use terms::Highlighter;
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
+pub use terms::Highlighter;
 pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
 pub use walkindex::{
     home_root, index_dir as walk_index_dir, EntryInfo, WalkIndexSearcher, WalkOptions,

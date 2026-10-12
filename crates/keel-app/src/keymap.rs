@@ -371,13 +371,7 @@ pub fn commands() -> Vec<Command> {
         cmd("file.rename", "Rename", Rename, &["F2"]).ctx(),
         cmd("file.bulk_rename", "Bulk rename…", BulkRename, &["Ctrl+F2"]).ctx(),
         cmd("file.trash", "Move to trash", Delete, &["Delete"]).ctx(),
-        cmd(
-            "file.properties",
-            "Get Info (Properties)",
-            Properties,
-            &[],
-        )
-        .ctx(),
+        cmd("file.properties", "Get Info (Properties)", Properties, &[]).ctx(),
         cmd("archive.extract_here", "Extract here", ExtractHere, &[]).ctx(),
         cmd(
             "archive.extract_folder",
@@ -511,7 +505,13 @@ pub fn commands() -> Vec<Command> {
         .global()
         .typing(),
         // Phase 14 Task 67.
-        cmd("finder.quicklook", "Quick Look", Finder(FinderCmd::QuickLook), &[]).global(),
+        cmd(
+            "finder.quicklook",
+            "Quick Look",
+            Finder(FinderCmd::QuickLook),
+            &[],
+        )
+        .global(),
         cmd(
             "finder.goto",
             "Go to folder…",

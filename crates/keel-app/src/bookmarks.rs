@@ -631,12 +631,23 @@ pub fn sidebar(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     let row = |ui: &mut egui::Ui, s: Store, v: &View, out: &mut Vec<Action>| {
         let mut tip = v.query.clone();
         if !v.shortcut.is_empty() {
-            tip.push_str(&format!("
-{}", crate::keys::shortcut_label(&v.shortcut)));
+            tip.push_str(&format!(
+                "
+{}",
+                crate::keys::shortcut_label(&v.shortcut)
+            ));
         }
         let id = egui::Id::new(("sidebar-bookmark", v.id, &v.folder, &v.name));
-        let r = row(ui, id, Glyph::View, &v.name, false, egui::Sense::click(), |_| ())
-            .on_hover_text(tip);
+        let r = row(
+            ui,
+            id,
+            Glyph::View,
+            &v.name,
+            false,
+            egui::Sense::click(),
+            |_| (),
+        )
+        .on_hover_text(tip);
         if r.clicked() {
             out.push(Action::Find(FindCmd::Open(s, v.id)));
         }
