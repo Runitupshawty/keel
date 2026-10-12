@@ -1456,7 +1456,10 @@ fn keyboard_page_rebinds_a_command() {
     key(&mut h, CMD, Key::Comma);
     click(&mut h, "Record");
     key(&mut h, CMD, Key::E);
-    assert!(s(&h).settings.keymap.is_default("filter"), "nothing moved yet");
+    assert!(
+        s(&h).settings.keymap.is_default("filter"),
+        "nothing moved yet"
+    );
     click(&mut h, "Use it for \"Toggle dark / light theme\"");
     assert_eq!(s(&h).settings.keymap.0["view.theme"], ["Ctrl+K", "Ctrl+E"]);
     assert!(s(&h).settings.keymap.0["filter"].is_empty());
