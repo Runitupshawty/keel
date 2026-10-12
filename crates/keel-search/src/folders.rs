@@ -172,6 +172,7 @@ impl Inner {
                 scan: p.scan.clone(),
                 max_age_secs: None,
                 clock: self.clock.clone(),
+                journal: None,
             };
             // Close an older index of this root (other options) before reopening.
             open.retain(|o| !same_root(&o.planned.root, &p.root));

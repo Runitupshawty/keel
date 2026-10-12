@@ -30,6 +30,7 @@ use rusqlite::{params, Connection};
 
 use crate::exclude::{attr, ExcludeRules};
 use crate::index_settings::ScanOptions;
+use crate::journal::{self, Change, Journal, Stat};
 use crate::schedule::{Clock, SystemClock};
 use crate::{Hit, Query, SearchState, Searcher};
 
@@ -161,6 +162,20 @@ struct Table {
     /// Slots changed since the last db write.
     dirty: HashSet<u32>,
     live: usize,
+    /// What changed, for the journal: on (Some) once the table serves queries, so a
+    /// walk building it records nothing.
+    log: Option<Vec<Change>>,
+}
+
+fn stat(m: Meta) -> Stat {
+    let known = |t: i64| (t != NO_TIME).then_some(t);
+    Stat {
+        is_dir: m.is_dir,
+        size: m.size,
+        mtime: known(m.mtime),
+        created: known(m.created),
+        attrs: m.attrs,
+    }
 }
 
 impl Table {
@@ -175,6 +190,7 @@ impl Table {
             children: HashMap::new(),
             dirty: HashSet::new(),
             live: 0,
+            log: None,
         }
     }
 
@@ -214,6 +230,12 @@ impl Table {
             }
             self.entries[slot as usize].meta = meta;
             self.dirty.insert(slot);
+            if self.log.is_some() && e.parent != NONE {
+                if let Some(path) = self.path_of(slot) {
+                    let change = Change::Changed(path, stat(e.meta), stat(meta));
+                    self.log.get_or_insert_with(Vec::new).push(change);
+                }
+            }
         }
     }
 
@@ -243,7 +265,30 @@ impl Table {
             .insert(name.into_owned(), slot);
         self.dirty.insert(slot);
         self.live += 1;
+        if self.log.is_some() && parent != NONE {
+            if let Some(path) = self.path_of(slot) {
+                let change = Change::Created(path, stat(meta));
+                self.log.get_or_insert_with(Vec::new).push(change);
+            }
+        }
         slot
+    }
+
+    /// `slot` (at `path`) and everything below it, parents first.
+    fn subtree_of(&self, slot: u32, path: PathBuf) -> Vec<(PathBuf, Meta)> {
+        let mut out = vec![(path, self.entries[slot as usize].meta)];
+        let mut stack = vec![(slot, 0usize)];
+        while let Some((s, at)) = stack.pop() {
+            let Some(kids) = self.children.get(&s) else {
+                continue;
+            };
+            for (name, &k) in kids {
+                let p = out[at].0.join(name);
+                stack.push((k, out.len()));
+                out.push((p, self.entries[k as usize].meta));
+            }
+        }
+        out
     }
 
     /// [`add`](Self::add) from a change notice or a parent's listing: a known folder
@@ -275,6 +320,16 @@ impl Table {
         let e = self.entries[slot as usize];
         if !e.live || e.parent == NONE {
             return;
+        }
+        if self.log.is_some() {
+            if let Some(path) = self.path_of(slot) {
+                let gone: Vec<Change> = self
+                    .subtree_of(slot, path)
+                    .into_iter()
+                    .map(|(p, m)| Change::Deleted(p, stat(m)))
+                    .collect();
+                self.log.get_or_insert_with(Vec::new).extend(gone);
+            }
         }
         let name = self.name_of(&e).to_owned();
         if let Some(c) = self.children.get_mut(&e.parent) {
@@ -346,6 +401,53 @@ impl Table {
             cur = self.child(cur, &c.as_os_str().to_string_lossy())?;
         }
         Some(cur)
+    }
+
+    /// The changes logged since the last call.
+    fn take_log(&mut self) -> Vec<Change> {
+        self.log.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// What a full walk (`new`) found changed against the table it replaces (same
+    /// roots): entries gone, entries new, and entries whose columns moved.
+    fn diff(old: &Table, new: &Table) -> Vec<Change> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(u32, u32, PathBuf)> = old
+            .roots
+            .iter()
+            .zip(&new.roots)
+            .filter(|(a, b)| a.0 == b.0)
+            .map(|((path, o), (_, n))| (*o, *n, path.clone()))
+            .collect();
+        let none = HashMap::new();
+        while let Some((o, n, path)) = stack.pop() {
+            let (oe, ne) = (old.entries[o as usize], new.entries[n as usize]);
+            if oe.parent != NONE && oe.meta != ne.meta {
+                out.push(Change::Changed(path.clone(), stat(oe.meta), stat(ne.meta)));
+            }
+            let ok = old.children.get(&o).unwrap_or(&none);
+            let nk = new.children.get(&n).unwrap_or(&none);
+            for (name, &s) in ok {
+                match nk.get(name) {
+                    Some(&t) => stack.push((s, t, path.join(name))),
+                    None => out.extend(
+                        old.subtree_of(s, path.join(name))
+                            .into_iter()
+                            .map(|(p, m)| Change::Deleted(p, stat(m))),
+                    ),
+                }
+            }
+            for (name, &t) in nk {
+                if !ok.contains_key(name) {
+                    out.extend(
+                        new.subtree_of(t, path.join(name))
+                            .into_iter()
+                            .map(|(p, m)| Change::Created(p, stat(m))),
+                    );
+                }
+            }
+        }
+        out
     }
 
     fn take_dirty(&mut self) -> Vec<(u32, Option<Row>)> {
@@ -1064,6 +1166,8 @@ fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, Stamp)> {
 
 enum Cmd {
     Paths(Vec<PathBuf>),
+    /// Renames the watcher reported as (old, new) pairs; both paths changed.
+    Renamed(Vec<(PathBuf, PathBuf)>),
     /// A full walk (Force rebuild).
     Rebuild,
     /// A rescan as scheduled: fast when Fast rescan is on.
@@ -1105,6 +1209,9 @@ pub struct WalkOptions {
     /// A full walk when the last one is older than this many seconds.
     pub max_age_secs: Option<i64>,
     pub clock: Arc<dyn Clock>,
+    /// Where the changes the index applies are journaled; None: the process's journal
+    /// ([`journal::record_all`], off when Settings → Search turns it off).
+    pub journal: Option<Arc<Journal>>,
 }
 
 impl Default for WalkOptions {
@@ -1115,6 +1222,7 @@ impl Default for WalkOptions {
             scan: ScanOptions::default(),
             max_age_secs: Some(MAX_AGE_SECS),
             clock: Arc::new(SystemClock),
+            journal: None,
         }
     }
 }
@@ -1182,6 +1290,7 @@ impl WalkIndexSearcher {
             opts,
             built: 0,
             scanned: 0,
+            rules_ok: false,
             events: tx.clone(),
             watch: None,
         };
@@ -1377,6 +1486,9 @@ struct Worker {
     /// Unix seconds (by the clock) of the last full walk and of the last scan.
     built: i64,
     scanned: i64,
+    /// The table serving queries was walked with the current rules: a full walk's
+    /// difference from it is journaled (not after the rules changed).
+    rules_ok: bool,
     events: mpsc::Sender<Cmd>,
     watch: Option<Watch>,
 }
@@ -1385,12 +1497,14 @@ impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Cmd>) {
         let sh = self.shared.clone();
         let mut rules_ok = false;
-        if let Some((table, stamp)) = load(&self.db, &self.roots) {
+        if let Some((mut table, stamp)) = load(&self.db, &self.roots) {
             sh.progress.store(table.live, Relaxed);
+            table.log = Some(Vec::new());
             *sh.table.write() = table;
             self.built = stamp.built;
             self.scanned = stamp.scanned;
             rules_ok = stamp.rules == rules_key(&self.rules);
+            self.rules_ok = rules_ok;
             sh.ready.store(true, Relaxed);
             sh.swapped.store(true, Relaxed);
         }
@@ -1454,20 +1568,30 @@ impl Worker {
                     self.shared.offline.store(true, Relaxed);
                 }
             }
-            Cmd::Paths(paths) => {
-                let mut pending: HashSet<PathBuf> = paths.into_iter().collect();
+            first @ (Cmd::Paths(_) | Cmd::Renamed(_)) => {
+                let mut pending: HashSet<PathBuf> = HashSet::new();
+                let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+                let mut take = |cmd: Cmd| match cmd {
+                    Cmd::Paths(p) => pending.extend(p),
+                    Cmd::Renamed(r) => {
+                        pending.extend(r.iter().flat_map(|(a, b)| [a.clone(), b.clone()]));
+                        renames.extend(r);
+                    }
+                    _ => {}
+                };
+                take(first);
                 let mut later = Vec::new();
                 let deadline = Instant::now() + BATCH;
                 loop {
                     let left = deadline.saturating_duration_since(Instant::now());
                     match rx.recv_timeout(left) {
-                        Ok(Cmd::Paths(p)) => pending.extend(p),
+                        Ok(cmd @ (Cmd::Paths(_) | Cmd::Renamed(_))) => take(cmd),
                         Ok(Cmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
                         Ok(other) => later.push(other),
                         Err(mpsc::RecvTimeoutError::Timeout) => break,
                     }
                 }
-                self.apply(pending);
+                self.apply(pending, &renames);
                 for cmd in later {
                     if !self.handle(cmd, rx) {
                         return false;
@@ -1550,6 +1674,7 @@ impl Worker {
                     crate::rdcw::watch(root, buffer, move |e| {
                         let _ = tx.send(match e {
                             crate::rdcw::Event::Paths(p) => Cmd::Paths(p),
+                            crate::rdcw::Event::Renamed(r) => Cmd::Renamed(r),
                             crate::rdcw::Event::Overflow => Cmd::Overflow,
                             crate::rdcw::Event::Lost => Cmd::Lost,
                         });
@@ -1563,12 +1688,22 @@ impl Worker {
                 return;
             }
         }
+        use notify::event::{ModifyKind, RenameMode};
         use notify::{EventKind, RecursiveMode, Watcher};
         let tx = self.events.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(ev) if ev.need_rescan() => {
                     let _ = tx.send(Cmd::Overflow);
+                }
+                Ok(ev)
+                    if matches!(
+                        ev.kind,
+                        EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+                    ) && ev.paths.len() == 2 =>
+                {
+                    let pair = (ev.paths[0].clone(), ev.paths[1].clone());
+                    let _ = tx.send(Cmd::Renamed(vec![pair]));
                 }
                 Ok(ev) if !matches!(ev.kind, EventKind::Access(_)) => {
                     let _ = tx.send(Cmd::Paths(ev.paths));
@@ -1611,7 +1746,7 @@ impl Worker {
         }
         sh.building.store(true, Relaxed);
         sh.progress.store(0, Relaxed);
-        let table = scan(&self.roots, &self.rules, &sh.progress, &sh.stop);
+        let mut table = scan(&self.roots, &self.rules, &sh.progress, &sh.stop);
         if sh.stop.load(Relaxed) {
             return;
         }
@@ -1630,7 +1765,17 @@ impl Worker {
         };
         // Best effort: without a db the index just does not survive a restart.
         let _ = save_full(&self.db, &table, &self.roots, &stamp);
+        // What changed since the table it replaces (not the first walk, nor one after
+        // the rules changed: that is the index changing, not the files).
+        let changes = if sh.ready.load(Relaxed) && self.rules_ok {
+            Table::diff(&sh.table.read(), &table)
+        } else {
+            Vec::new()
+        };
+        table.log = Some(Vec::new());
         *sh.table.write() = table;
+        self.rules_ok = true;
+        self.journal(changes, &[]);
         sh.missed.store(false, Relaxed);
         sh.scans.fetch_add(1, Relaxed);
         sh.ready.store(true, Relaxed);
@@ -1731,10 +1876,12 @@ impl Worker {
                 }
             }
             sh.progress.store(t.live, Relaxed);
-            t.take_dirty()
+            (t.take_dirty(), t.take_log())
         };
+        let (changes, log) = changes;
         self.scanned = self.now();
         let _ = save_changes(&self.db, changes, Some(self.scanned));
+        self.journal(log, &[]);
         sh.missed.store(false, Relaxed);
         sh.scans.fetch_add(1, Relaxed);
         sh.swapped.store(true, Relaxed);
@@ -1745,7 +1892,7 @@ impl Worker {
     /// with its whole subtree), else drop. File system reads happen without the
     /// lock; the table is then updated under one short write lock. While a root is
     /// missing nothing is dropped: an unplugged volume is offline, not emptied.
-    fn apply(&self, paths: HashSet<PathBuf>) {
+    fn apply(&self, paths: HashSet<PathBuf>, renames: &[(PathBuf, PathBuf)]) {
         if !self.online() {
             self.shared.offline.store(true, Relaxed);
             return;
@@ -1811,10 +1958,26 @@ impl Worker {
                     }
                 }
             }
-            t.take_dirty()
+            (t.take_dirty(), t.take_log())
         };
+        let (changes, log) = changes;
         if !changes.is_empty() {
             let _ = save_changes(&self.db, changes, None);
+        }
+        self.journal(log, renames);
+    }
+
+    /// Journals what the table logged (renames: as the watcher paired them).
+    fn journal(&self, changes: Vec<Change>, renames: &[(PathBuf, PathBuf)]) {
+        if changes.is_empty() {
+            return;
+        }
+        let events = journal::events_from(changes, renames, journal::now_ms());
+        match &self.opts.journal {
+            Some(j) => {
+                let _ = j.record_all(&events);
+            }
+            None => journal::record_all(events),
         }
     }
 }

@@ -44,6 +44,8 @@ extern "system" {
 pub enum Event {
     /// Paths that changed (created, deleted, renamed from or to, modified).
     Paths(Vec<PathBuf>),
+    /// Renames as (old, new) pairs (both paths are also in the `Paths` sent before).
+    Renamed(Vec<(PathBuf, PathBuf)>),
     /// More changes than the buffer holds: some were lost.
     Overflow,
     /// The watch ended (the folder or its volume went away).
@@ -118,12 +120,17 @@ pub fn watch(
                     .flat_map(|w| w.to_ne_bytes())
                     .take((returned as usize).min(len))
                     .collect();
-                let paths: Vec<PathBuf> = parse(&bytes)
+                let records: Vec<(u32, PathBuf)> = parse_actions(&bytes)
                     .into_iter()
-                    .map(|name| root.join(std::ffi::OsString::from_wide(&name)))
+                    .map(|(action, name)| (action, root.join(std::ffi::OsString::from_wide(&name))))
                     .collect();
+                let renames = rename_pairs(&records);
+                let paths: Vec<PathBuf> = records.into_iter().map(|(_, p)| p).collect();
                 if !paths.is_empty() {
                     send(Event::Paths(paths));
+                }
+                if !renames.is_empty() {
+                    send(Event::Renamed(renames));
                 }
             }
         })?;
@@ -157,6 +164,23 @@ impl Drop for Watch {
 /// stored). Every offset and length is checked: a short or garbled buffer ends the
 /// list, never reads past it.
 pub fn parse(buf: &[u8]) -> Vec<Vec<u16>> {
+    parse_actions(buf).into_iter().map(|(_, n)| n).collect()
+}
+
+const FILE_ACTION_RENAMED_OLD_NAME: u32 = 4;
+const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
+
+/// (old, new) for each renamed-from record followed by its renamed-to record.
+pub fn rename_pairs(records: &[(u32, PathBuf)]) -> Vec<(PathBuf, PathBuf)> {
+    records
+        .windows(2)
+        .filter(|w| w[0].0 == FILE_ACTION_RENAMED_OLD_NAME && w[1].0 == FILE_ACTION_RENAMED_NEW_NAME)
+        .map(|w| (w[0].1.clone(), w[1].1.clone()))
+        .collect()
+}
+
+/// [`parse`] with each record's action (FILE_ACTION_*).
+pub fn parse_actions(buf: &[u8]) -> Vec<(u32, Vec<u16>)> {
     let u32_at = |at: usize| -> Option<u32> {
         Some(u32::from_ne_bytes(
             buf.get(at..at.checked_add(4)?)?.try_into().ok()?,
@@ -173,13 +197,14 @@ pub fn parse(buf: &[u8]) -> Vec<Vec<u16>> {
             break;
         };
         if !name.is_empty() && name.len() % 2 == 0 {
-            names.push(
+            names.push((
+                u32_at(at + 4).unwrap_or(0),
                 name.as_chunks::<2>()
                     .0
                     .iter()
                     .map(|c| u16::from_ne_bytes(*c))
                     .collect(),
-            );
+            ));
         }
         if next == 0 || next % 4 != 0 {
             break;
@@ -224,6 +249,17 @@ mod tests {
             .collect();
         assert_eq!(names, ["old", "new name"]);
         assert_eq!(parse(&first).len(), 1);
+        // The actions come along; a renamed-from record then a renamed-to one is a pair.
+        let records: Vec<(u32, PathBuf)> = parse_actions(&buf)
+            .into_iter()
+            .map(|(a, n)| (a, PathBuf::from(String::from_utf16_lossy(&n))))
+            .collect();
+        assert_eq!(records.iter().map(|r| r.0).collect::<Vec<_>>(), [4, 5]);
+        assert_eq!(
+            rename_pairs(&records),
+            [(PathBuf::from("old"), PathBuf::from("new name"))]
+        );
+        assert!(rename_pairs(&records[1..]).is_empty());
         // Truncated, lying lengths, huge offsets, odd offsets: no panic.
         for cut in 0..buf.len() {
             let _ = parse(&buf[..cut]);

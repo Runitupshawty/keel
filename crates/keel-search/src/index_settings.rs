@@ -24,6 +24,8 @@ pub struct IndexSettings {
     pub auto_remove_offline: bool,
     /// The Exclude tab, for every folder and volume above.
     pub exclude: ExcludeSettings,
+    /// The index journal ([`crate::journal`]).
+    pub journal: JournalSettings,
 }
 
 impl Default for IndexSettings {
@@ -35,7 +37,36 @@ impl Default for IndexSettings {
             auto_include_removable: false,
             auto_remove_offline: false,
             exclude: ExcludeSettings::default(),
+            journal: JournalSettings::default(),
         }
+    }
+}
+
+/// The journal's size cap when nothing else is set, in MB.
+pub const DEFAULT_JOURNAL_MB: u32 = 64;
+
+/// The index journal: every change the index applies, kept up to a size.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct JournalSettings {
+    pub enabled: bool,
+    /// The size cap in MB; the oldest entries go first.
+    pub max_mb: u32,
+}
+
+impl Default for JournalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_mb: DEFAULT_JOURNAL_MB,
+        }
+    }
+}
+
+impl JournalSettings {
+    /// The cap in bytes (at least 1 MB).
+    pub fn max_bytes(&self) -> u64 {
+        u64::from(self.max_mb.max(1)) * 1024 * 1024
     }
 }
 

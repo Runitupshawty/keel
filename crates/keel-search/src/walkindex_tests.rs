@@ -511,6 +511,181 @@ fn an_overflow_rescans_or_is_noted() {
     assert_eq!(s.status(), None);
 }
 
+/// A journal of the test's own, next to its index.
+fn journal_of(d: &Dirs) -> Arc<Journal> {
+    Arc::new(Journal::open(&d.idx.join(journal::FILE_NAME), 1 << 20).unwrap())
+}
+
+/// (action, path below the root with `/`, old path below the root) of every entry,
+/// oldest first.
+fn entries(j: &Journal, d: &Dirs) -> Vec<(journal::Action, String, Option<String>)> {
+    // The index keeps roots resolved (macOS: `/private/var` for `/var`).
+    let roots = normalize_roots(vec![d.root.clone()]);
+    let roots = [journal::path_text(&d.root), journal::path_text(&roots[0])];
+    let rel = |p: &str| {
+        roots
+            .iter()
+            .find_map(|r| p.strip_prefix(r.as_str()))
+            .unwrap_or(p)
+            .trim_start_matches(['/', '\\'])
+            .replace('\\', "/")
+    };
+    j.query(&journal::Filter {
+        oldest_first: true,
+        ..journal::Filter::default()
+    })
+    .unwrap()
+    .iter()
+    .map(|e| (e.action, rel(&e.path), e.old_path.as_deref().map(rel)))
+    .collect()
+}
+
+/// Waits until the journal holds this entry.
+fn journaled(j: &Journal, d: &Dirs, action: journal::Action, path: &str, old: Option<&str>) {
+    let want = (action, path.to_owned(), old.map(str::to_owned));
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        let got = entries(j, d);
+        if got.contains(&want) {
+            return;
+        }
+        assert!(Instant::now() < end, "wanted {want:?}, journal has {got:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn set_readonly(path: &Path, on: bool) {
+    let mut perm = std::fs::metadata(path).unwrap().permissions();
+    perm.set_readonly(on);
+    std::fs::set_permissions(path, perm).unwrap();
+}
+
+/// Each action the watcher applies is journaled once, a renamed folder as one entry;
+/// the first walk is not journaled; the journal outlives the index.
+fn journal_follows_the_watcher(opts: WalkOptions) {
+    use journal::Action::*;
+    let d = Dirs::sample();
+    let j = journal_of(&d);
+    let s = d.open_with(WalkOptions {
+        journal: Some(j.clone()),
+        ..opts
+    });
+    assert!(!s.shared.unwatched.load(Relaxed), "watcher failed to start");
+    assert!(j.is_empty().unwrap(), "the first walk is not a change");
+    d.file("new.txt", b"x");
+    journaled(&j, &d, Create, "new.txt", None);
+    std::fs::write(d.root.join("docs/Report.PDF"), b"1234567890").unwrap();
+    journaled(&j, &d, Modify, "docs/Report.PDF", None);
+    let main = d.root.join("src").join("main.rs");
+    set_readonly(&main, true);
+    journaled(&j, &d, Attributes, "src/main.rs", None);
+    set_readonly(&main, false);
+    rename(
+        &d.root.join("docs").join("report notes.txt"),
+        &d.root.join("docs").join("minutes.txt"),
+    );
+    journaled(
+        &j,
+        &d,
+        Rename,
+        "docs/minutes.txt",
+        Some("docs/report notes.txt"),
+    );
+    std::fs::remove_file(d.root.join("docs/old/report.pdf")).unwrap();
+    journaled(&j, &d, Delete, "docs/old/report.pdf", None);
+    let before = entries(&j, &d).len();
+    rename(&d.root.join("src"), &d.root.join("source"));
+    journaled(&j, &d, Rename, "source", Some("src"));
+    std::thread::sleep(BATCH * 2);
+    let after = entries(&j, &d);
+    assert!(
+        after[before..]
+            .iter()
+            .all(|(a, p, _)| !p.contains("main.rs") || *a == Attributes || *a == Modify),
+        "the files of a renamed folder are not listed: {after:?}"
+    );
+    assert!(s.info(&d.root.join("source").join("main.rs")).is_some());
+    let rc = |rel: &str| j.recently_changed(&s.roots()[0].join(rel)).unwrap();
+    assert!(rc("new.txt").is_some());
+    assert!(rc("docs/old").is_none());
+    drop(s);
+    drop(j);
+    // A restart keeps the journal.
+    let j = journal_of(&d);
+    assert_eq!(entries(&j, &d), after);
+}
+
+#[test]
+fn the_journal_follows_the_home_watcher() {
+    journal_follows_the_watcher(WalkOptions {
+        max_age_secs: None,
+        ..WalkOptions::default()
+    });
+}
+
+#[test]
+fn the_journal_follows_a_configured_folder_watcher() {
+    // ReadDirectoryChangesW with its rename pairs on Windows.
+    journal_follows_the_watcher(configured(|o, _| o.scan.monitor = true));
+}
+
+#[test]
+fn rescans_journal_what_changed_while_unwatched() {
+    use journal::Action::*;
+    for fast in [false, true] {
+        let d = Dirs::sample();
+        let j = journal_of(&d);
+        let s = d.open_with(WalkOptions {
+            journal: Some(j.clone()),
+            ..configured(|o, _| o.scan.fast_rescan = fast)
+        });
+        scans(&s, 1);
+        assert!(j.is_empty().unwrap());
+        // Folder times have millisecond precision in the index.
+        std::thread::sleep(Duration::from_millis(50));
+        d.file("docs/new.txt", b"x");
+        std::fs::remove_file(d.root.join("src").join("main.rs")).unwrap();
+        rename(
+            &d.root.join("docs").join("report notes.txt"),
+            &d.root.join("report notes.txt"),
+        );
+        if !fast {
+            // In place: only a full walk sees it.
+            std::fs::write(d.root.join("docs/Report.PDF"), b"1234567").unwrap();
+        }
+        s.rescan();
+        scans(&s, 2);
+        let got = entries(&j, &d);
+        let has = |a, p: &str, o: Option<&str>| {
+            assert!(
+                got.contains(&(a, p.to_owned(), o.map(str::to_owned))),
+                "fast {fast}: {a:?} {p} missing from {got:?}"
+            );
+        };
+        has(Create, "docs/new.txt", None);
+        has(Delete, "src/main.rs", None);
+        if cfg!(any(windows, target_os = "macos")) {
+            // Same size, modified and created time: the same file moved.
+            has(Rename, "report notes.txt", Some("docs/report notes.txt"));
+        }
+        if !fast {
+            has(Modify, "docs/Report.PDF", None);
+        }
+        // A rules change walks again without journaling the difference.
+        drop(s);
+        let n = got.len();
+        let s = d.open_with(WalkOptions {
+            journal: Some(j.clone()),
+            ..configured(|o, ex| {
+                o.scan.fast_rescan = fast;
+                ex.files = vec!["*.txt".into()];
+            })
+        });
+        scans(&s, 1);
+        assert_eq!(entries(&j, &d).len(), n, "fast {fast}");
+    }
+}
+
 #[test]
 fn merged_hits_are_ranked_once_each() {
     let hit = |p: &str| Hit {

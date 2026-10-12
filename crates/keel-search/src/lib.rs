@@ -9,6 +9,7 @@ mod exclude;
 mod folders;
 mod fuzzy;
 mod index_settings;
+pub mod journal;
 #[cfg(target_os = "linux")]
 mod locate;
 #[cfg(windows)]
@@ -28,7 +29,8 @@ pub use exclude::{attr, ExcludeRules};
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, ScanOptions, Schedule, VolumeRoot,
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions,
+    Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
 };
 #[cfg(windows)]
 pub use ntfs::{
