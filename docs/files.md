@@ -93,6 +93,20 @@ Reading the whole file table needs administrator rights. Until you grant them Ke
 
 On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files…" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
 
+## Quick Search window, tray and window options
+
+The **Quick Search window** is a small window with only a search field and the results, like Everything's main window. Open it from the command palette ("Quick Search window") or with the optional **Quick Search hotkey** in Settings → General (empty by default; same rules as the global hotkey). Type to search the system index; Enter opens a file in its default app, a folder in a new tab of the main window, and Open location shows the result in the main window. Esc or the close button hides it and keeps the query for next time. The window belongs to the running Keel and its profile.
+
+Settings → General also has:
+
+- **Open searches in new windows**: Ctrl+F (Search files) opens the search in a new Keel window (`keel --new-window --search ""` in the current folder and profile) instead of a tab. Searches handed over from the command line stay in the window that got them.
+- **Always on top**: keeps the main window and the Quick Search window above other windows; also "Always on top (toggle)" in the command palette and the Quick Search field's right-click menu.
+- **Run in background when closed** (Windows): Keel puts an icon in the notification area; closing the window hides it instead of exiting. A single click on the icon shows Keel; its right-click menu has **Show Keel**, **New window** and **Exit**. No extra dependency is used: the icon is the Windows notification icon API. On macOS and Linux this setting is not shown and closing exits as before.
+
+## Result omissions
+
+Omissions hide exact results from searches without touching the files or the index (Everything's result omissions). In a search tab or the Quick Search window, right-click results and choose **Omit results** (kept in the profile's settings) or **Omit results temporarily** (until Keel exits). **Manage omissions** (right-click menu, command palette, Settings → General) lists both kinds with **Restore** per path and **Clear**; **Show omitted results** turns them all back on without forgetting them; **Omission mode** makes Delete in a search tab omit the selected results temporarily instead of deleting the files. Omissions are applied in the search worker, so they also apply to remote searches, and they match exact paths only (omitting a folder does not hide what is inside it). Saved omissions are stored in `config.toml` under `[omissions]`, per profile.
+
 ## Finding folders and files (Ctrl+P)
 
 Ctrl+P opens the finder. Type a few letters of a folder's or a file's name (in order, not necessarily next to each other; the whole path counts) and press Enter: a folder opens, and a file opens its folder with the file selected and the preview shown. Ctrl+Enter opens the result in a new tab, Shift+Enter in the other pane (in a new tab when there is one pane). Each result shows its icon, its name and, dimmed, the folder it is in. Tab switches between **Folders**, **Files** and **Both** (the default); the choice is kept per profile.

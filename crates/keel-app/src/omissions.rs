@@ -21,14 +21,40 @@ impl Omissions {
         Filter(if self.show_omitted {
             HashSet::new()
         } else {
-            self.permanent.iter().chain(&self.temporary).cloned().collect()
+            self.permanent
+                .iter()
+                .chain(&self.temporary)
+                .cloned()
+                .collect()
         })
     }
 
+    /// Same omitted paths, toggle and omission mode (each window's dialog state aside).
+    pub fn same_lists(&self, other: &Self) -> bool {
+        self.permanent == other.permanent
+            && self.temporary == other.temporary
+            && self.show_omitted == other.show_omitted
+            && self.mode == other.mode
+    }
+
+    /// Takes `other`'s lists, toggle and mode; keeps this window's dialog open or closed.
+    pub fn copy_lists(&mut self, other: &Self) {
+        *self = Self {
+            manage: self.manage,
+            ..other.clone()
+        };
+    }
+
     pub fn add(&mut self, paths: Vec<VPath>, temporary: bool) {
-        let list = if temporary { &mut self.temporary } else { &mut self.permanent };
+        let list = if temporary {
+            &mut self.temporary
+        } else {
+            &mut self.permanent
+        };
         for path in paths {
-            if !list.contains(&path) { list.push(path); }
+            if !list.contains(&path) {
+                list.push(path);
+            }
         }
     }
 
@@ -36,27 +62,46 @@ impl Omissions {
         let mut open = self.manage;
         let mut changed = false;
         if open {
-            egui::Window::new("Manage omissions").open(&mut open).show(ctx, |ui| {
-                ui.label("Exact result paths only. Files and folders are never deleted.");
-                changed |= ui.checkbox(&mut self.show_omitted, "Show omitted results").changed();
-                ui.checkbox(&mut self.mode, "Omission mode: Delete omits results temporarily");
-                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                    for (label, list) in [("Saved in this profile", &mut self.permanent), ("Temporary (this process)", &mut self.temporary)] {
-                        ui.heading(label);
-                        let mut remove = None;
-                        for (i, path) in list.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Restore").clicked() { remove = Some(i); }
-                                ui.label(path.display());
-                            });
-                        }
-                        if let Some(i) = remove { list.remove(i); changed = true; }
-                        if !list.is_empty() && ui.button(format!("Clear {label}")).clicked() {
-                            list.clear(); changed = true;
-                        }
-                    }
+            egui::Window::new("Manage omissions")
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("Exact result paths only. Files and folders are never deleted.");
+                    changed |= ui
+                        .checkbox(&mut self.show_omitted, "Show omitted results")
+                        .changed();
+                    ui.checkbox(
+                        &mut self.mode,
+                        "Omission mode: Delete omits results temporarily",
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for (label, list) in [
+                                ("Saved in this profile", &mut self.permanent),
+                                ("Temporary (this process)", &mut self.temporary),
+                            ] {
+                                ui.heading(label);
+                                let mut remove = None;
+                                for (i, path) in list.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        if ui.small_button("Restore").clicked() {
+                                            remove = Some(i);
+                                        }
+                                        ui.label(path.display());
+                                    });
+                                }
+                                if let Some(i) = remove {
+                                    list.remove(i);
+                                    changed = true;
+                                }
+                                if !list.is_empty() && ui.button(format!("Clear {label}")).clicked()
+                                {
+                                    list.clear();
+                                    changed = true;
+                                }
+                            }
+                        });
                 });
-            });
         }
         self.manage = open;
         changed
@@ -112,8 +157,16 @@ mod tests {
         let mut o = Omissions::default();
         o.add(vec![VPath::local("/x/a.txt")], false);
         o.add(vec![VPath::local("/x/b.txt")], true);
-        let hits = vec![hit("/x/a.txt"), hit("/x/b.txt"), hit("/x/c.txt"), hit("/x/a.txt.bak")];
-        assert_eq!(paths(&o.filter().apply(hits.clone())), paths(&[hit("/x/c.txt"), hit("/x/a.txt.bak")]));
+        let hits = vec![
+            hit("/x/a.txt"),
+            hit("/x/b.txt"),
+            hit("/x/c.txt"),
+            hit("/x/a.txt.bak"),
+        ];
+        assert_eq!(
+            paths(&o.filter().apply(hits.clone())),
+            paths(&[hit("/x/c.txt"), hit("/x/a.txt.bak")])
+        );
         // Show omitted: nothing is dropped, the lists are kept.
         o.show_omitted = true;
         assert_eq!(o.filter().apply(hits.clone()).len(), 4);
@@ -123,13 +176,28 @@ mod tests {
     }
 
     #[test]
+    fn windows_share_lists_but_not_the_dialog() {
+        let mut main = Omissions {
+            manage: true,
+            ..Default::default()
+        };
+        let mut quick = Omissions::default();
+        assert!(quick.same_lists(&main), "the open dialog is not a difference");
+        main.add(vec![VPath::local("/x/a.txt")], true);
+        assert!(!quick.same_lists(&main));
+        quick.copy_lists(&main);
+        assert!(quick.same_lists(&main));
+        assert!(!quick.manage, "the quick window's dialog stays closed");
+    }
+
+    #[test]
     fn add_skips_duplicates_per_list() {
         let mut o = Omissions::default();
         let a = VPath::local("/x/a.txt");
         o.add(vec![a.clone(), a.clone()], false);
         o.add(vec![a.clone()], false);
         o.add(vec![a.clone()], true);
-        assert_eq!(o.permanent, [a.clone()]);
+        assert_eq!(o.permanent.as_slice(), std::slice::from_ref(&a));
         assert_eq!(o.temporary, [a]);
     }
 

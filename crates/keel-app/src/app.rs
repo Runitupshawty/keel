@@ -83,7 +83,10 @@ pub struct App {
     quick: Option<crate::quick_search::QuickSearch>,
     tray: Option<crate::tray::Tray>,
     tray_attempted: bool,
+    /// Tray → Exit: the next close request really closes.
     exiting: bool,
+    /// The window level last sent (Always on top), so it is sent once per change.
+    on_top_applied: Option<bool>,
     /// The opt-in update check and its banner (off in tests: no persist).
     updates: Option<crate::update::Updates>,
     #[cfg(test)]
@@ -176,6 +179,7 @@ impl App {
             tray: None,
             tray_attempted: false,
             exiting: false,
+            on_top_applied: None,
             updates,
             #[cfg(test)]
             panic_next_frame: false,
@@ -234,9 +238,17 @@ impl App {
     }
 
     fn window_events(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(crate::quick_search::level(self.state.settings.always_on_top)));
+        let on_top = self.state.settings.always_on_top;
+        if self.on_top_applied != Some(on_top) {
+            self.on_top_applied = Some(on_top);
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                crate::quick_search::level(on_top),
+            ));
+        }
         if !self.state.settings.run_in_background {
-            if self.tray.take().is_some() { crate::single_instance::bring_to_front(ctx); }
+            if self.tray.take().is_some() {
+                crate::single_instance::bring_to_front(ctx);
+            }
             self.tray_attempted = false;
         } else if cfg!(windows) && self.persist.is_some() && !self.tray_attempted {
             self.tray_attempted = true;
@@ -250,7 +262,9 @@ impl App {
             match event {
                 crate::tray::Event::Show => crate::single_instance::bring_to_front(ctx),
                 crate::tray::Event::NewWindow => {
-                    if let Err(e) = crate::quick_search::new_window(None, None) { self.state.toasts.error(e.to_string()); }
+                    if let Err(e) = crate::quick_search::new_window(None, None) {
+                        self.state.toasts.error(e.to_string());
+                    }
                 }
                 crate::tray::Event::Exit => {
                     self.exiting = true;
@@ -531,8 +545,12 @@ impl App {
         // --- Task 24 ---
         self.drag_out.check(ctx, s);
         if let Some(h) = &mut self.hotkey {
-            for e in h.sync(&s.settings.hotkey, &s.settings.quick_hotkey) { s.toasts.error(e); }
-            if h.events.try_iter().next().is_some() { s.quick_requested = true; }
+            for e in h.sync(&s.settings.hotkey, &s.settings.quick_hotkey) {
+                s.toasts.error(e);
+            }
+            if h.events.try_iter().next().is_some() {
+                s.quick_requested = true;
+            }
         }
         // --- end Task 24 ---
         if let Some(drag) = egui::DragAndDrop::payload::<DragPayload>(ctx) {
@@ -579,7 +597,9 @@ impl App {
             s.run(p, action);
         }
         s.settings_ui(ctx);
-        if s.settings.omissions.ui(ctx) { s.refresh_omissions(); }
+        if s.settings.omissions.ui(ctx) {
+            s.refresh_omissions();
+        }
         s.remotes.modals(ctx, &mut s.settings, &s.tx);
         s.cloud_modals(ctx);
         let error = ctx.style().visuals.error_fg_color;
@@ -603,14 +623,25 @@ impl eframe::App for App {
             self.recover();
         }
         if std::mem::take(&mut self.state.quick_requested) {
-            if self.quick.is_none() { self.quick = Some(crate::quick_search::QuickSearch::new(&self.state)); }
-            if let Some(quick) = &mut self.quick { quick.open = true; }
-            ctx.send_viewport_cmd_to(crate::quick_search::id(), egui::ViewportCommand::Minimized(false));
+            if self.quick.is_none() {
+                self.quick = Some(crate::quick_search::QuickSearch::new(&self.state));
+            }
+            if let Some(quick) = &mut self.quick {
+                quick.open = true;
+            }
+            ctx.send_viewport_cmd_to(
+                crate::quick_search::id(),
+                egui::ViewportCommand::Minimized(false),
+            );
             ctx.send_viewport_cmd_to(crate::quick_search::id(), egui::ViewportCommand::Focus);
         }
-        if let Some(quick) = &mut self.quick { quick.show(ctx, &mut self.state); }
+        if let Some(quick) = &mut self.quick {
+            quick.show(ctx, &mut self.state);
+        }
         if let Some(dir) = self.state.search_window.take() {
-            if let Err(e) = crate::quick_search::new_window(Some(&dir), Some("")) { self.state.toasts.error(e.to_string()); }
+            if let Err(e) = crate::quick_search::new_window(Some(&dir), Some("")) {
+                self.state.toasts.error(e.to_string());
+            }
         }
         crate::crash::modal(ctx, &mut self.report, &mut self.state.settings.crash_prompt);
         if self.report.is_none() {

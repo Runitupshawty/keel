@@ -624,7 +624,12 @@ pub fn context_menu(
     if search {
         if on_item {
             item(ui, "Omit results", "", Action::OmitResults(false));
-            item(ui, "Omit results temporarily", "", Action::OmitResults(true));
+            item(
+                ui,
+                "Omit results temporarily",
+                "",
+                Action::OmitResults(true),
+            );
         }
         item(ui, "Manage omissions", "", Action::ManageOmissions);
         item(ui, "Show omitted results (toggle)", "", Action::ShowOmitted);

@@ -76,9 +76,14 @@ impl Hotkey {
     pub fn sync(&mut self, text: &str, quick: &str) -> Vec<String> {
         let mut errors = Vec::new();
         for (slot, text) in [text, quick].into_iter().enumerate() {
-            if let Some(e) = self.sync_slot(text, slot) { errors.push(e); }
+            if let Some(e) = self.sync_slot(text, slot) {
+                errors.push(e);
+            }
         }
-        self.quick_id.store(self.current[1].map_or(0, |key| key.id()), std::sync::atomic::Ordering::Relaxed);
+        self.quick_id.store(
+            self.current[1].map_or(0, |key| key.id()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         errors
     }
 

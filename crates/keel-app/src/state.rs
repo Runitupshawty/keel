@@ -1062,7 +1062,13 @@ impl AppState {
         tab.loading = true;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
-            Some(searcher) => self.search.search(searcher, text, self.next_req, replaces, self.settings.omissions.filter()),
+            Some(searcher) => self.search.search(
+                searcher,
+                text,
+                self.next_req,
+                replaces,
+                self.settings.omissions.filter(),
+            ),
             None => crate::remotes::spawn_search(
                 self.router.clone(),
                 tab.dir.clone(),
@@ -1590,9 +1596,14 @@ impl AppState {
     }
 
     pub fn run(&mut self, p: usize, action: Action) {
-        let action = if action == Action::Delete && self.tab(p).is_search() && self.settings.omissions.mode {
+        let action = if action == Action::Delete
+            && self.tab(p).is_search()
+            && self.settings.omissions.mode
+        {
             Action::OmitResults(true)
-        } else { action };
+        } else {
+            action
+        };
         let p = if self.dual { p } else { 0 };
         // Targets come from the visible rows; make sure they match this listing.
         let show_hidden = self.show_hidden;
@@ -2271,7 +2282,12 @@ impl AppState {
             }
             Action::OmitResults(temporary) => {
                 if self.tab(p).is_search() {
-                    let paths = self.tab(p).targets().iter().map(|e| e.path.clone()).collect();
+                    let paths = self
+                        .tab(p)
+                        .targets()
+                        .iter()
+                        .map(|e| e.path.clone())
+                        .collect();
                     self.settings.omissions.add(paths, temporary);
                     self.refresh_omissions();
                 }

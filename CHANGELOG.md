@@ -2,6 +2,14 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A **Quick Search window**: a small window with only a search field and the results, opened from the command palette or an optional **Quick Search hotkey** (Settings → General). Esc hides it. See [Quick Search window](docs/files.md#quick-search-window-tray-and-window-options).
+- **Open searches in new windows**, **Always on top** and, on Windows, **Run in background when closed** with a notification-area icon (single click shows Keel; menu: Show Keel, New window, Exit) in Settings → General.
+- **Result omissions**: Omit results and Omit results temporarily in a search's right-click menu, a **Manage omissions** dialog, **Show omitted results**, and an omission mode where Delete omits instead of deleting. Saved per profile; applied in the search worker. See [Result omissions](docs/files.md#result-omissions).
+
 ## [0.22.0] - 2026-10-11
 
 ### Added

@@ -292,7 +292,14 @@ impl SearchWorker {
     }
 
     /// Queues query `id`, superseding `replaces` (the tab's previous request).
-    pub fn search(&self, searcher: Arc<dyn Searcher>, text: String, id: u64, replaces: u64, omissions: crate::omissions::Filter) {
+    pub fn search(
+        &self,
+        searcher: Arc<dyn Searcher>,
+        text: String,
+        id: u64,
+        replaces: u64,
+        omissions: crate::omissions::Filter,
+    ) {
         {
             let mut live = self.live.lock();
             live.remove(&replaces);
@@ -452,7 +459,9 @@ mod tests {
                 Msg::Search { id: got, result } => {
                     assert_eq!(got, id);
                     let hits = result.unwrap();
-                    hits.iter().map(|h| h.path.name().to_owned()).collect::<Vec<_>>()
+                    hits.iter()
+                        .map(|h| h.path.name().to_owned())
+                        .collect::<Vec<_>>()
                 }
                 _ => panic!("unexpected message"),
             };

@@ -1,7 +1,11 @@
 //! Windows notification icon using the already-approved windows crate (MIT/Apache-2.0).
 //! No extra tray dependencies; other platforms retain normal close behavior.
 #[derive(Clone, Copy)]
-pub enum Event { Show, NewWindow, Exit }
+pub enum Event {
+    Show,
+    NewWindow,
+    Exit,
+}
 
 #[cfg(windows)]
 pub use native::Tray;
@@ -10,14 +14,24 @@ pub use native::Tray;
 pub struct Tray;
 #[cfg(not(windows))]
 impl Tray {
-    pub fn new(_: &egui::Context) -> Result<Self, String> { Err("Tray is Windows only".into()) }
-    pub fn events(&self) -> Vec<Event> { Vec::new() }
+    pub fn new(_: &egui::Context) -> Result<Self, String> {
+        Err("Tray is Windows only".into())
+    }
+    pub fn events(&self) -> Vec<Event> {
+        Vec::new()
+    }
 }
 
 #[cfg(windows)]
 mod native {
     use super::Event;
-    use windows::{core::w, Win32::{Foundation::*, UI::{Shell::*, WindowsAndMessaging::*}}};
+    use windows::{
+        core::w,
+        Win32::{
+            Foundation::*,
+            UI::{Shell::*, WindowsAndMessaging::*},
+        },
+    };
 
     const CALLBACK: u32 = WM_APP + 76;
     struct State {
@@ -38,20 +52,46 @@ mod native {
         pub fn new(ctx: &egui::Context) -> Result<Self, String> {
             // SAFETY: all window and shell calls stay on the UI thread. State outlives HWND.
             unsafe {
-                let class = WNDCLASSW { lpfnWndProc: Some(wndproc), lpszClassName: w!("KeelTrayWindow"), ..Default::default() };
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(wndproc),
+                    lpszClassName: w!("KeelTrayWindow"),
+                    ..Default::default()
+                };
                 RegisterClassW(&class); // Already registered after toggling the setting is fine.
-                let hwnd = CreateWindowExW(WINDOW_EX_STYLE::default(), w!("KeelTrayWindow"), w!("Keel tray"), WINDOW_STYLE::default(), 0, 0, 0, 0, None, None, None, None)
-                    .map_err(|e| e.to_string())?;
+                let hwnd = CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("KeelTrayWindow"),
+                    w!("Keel tray"),
+                    WINDOW_STYLE::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
                 let (tx, rx) = crossbeam_channel::unbounded();
                 let mut icon = NOTIFYICONDATAW {
                     cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                    hWnd: hwnd, uID: 1, uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+                    hWnd: hwnd,
+                    uID: 1,
+                    uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                     uCallbackMessage: CALLBACK,
                     hIcon: LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
                     ..Default::default()
                 };
-                for (dst, src) in icon.szTip.iter_mut().zip("Keel".encode_utf16()) { *dst = src; }
-                let mut state = Box::new(State { ctx: ctx.clone(), tx, icon, taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")) });
+                for (dst, src) in icon.szTip.iter_mut().zip("Keel".encode_utf16()) {
+                    *dst = src;
+                }
+                let mut state = Box::new(State {
+                    ctx: ctx.clone(),
+                    tx,
+                    icon,
+                    taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+                });
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&mut *state as *mut State) as isize);
                 if !Shell_NotifyIconW(NIM_ADD, &state.icon).as_bool() {
                     let _ = DestroyWindow(hwnd);
@@ -61,7 +101,9 @@ mod native {
             }
         }
 
-        pub fn events(&self) -> Vec<Event> { self.rx.try_iter().collect() }
+        pub fn events(&self) -> Vec<Event> {
+            self.rx.try_iter().collect()
+        }
     }
 
     impl Drop for Tray {
@@ -93,8 +135,21 @@ mod native {
                             let mut pos = POINT::default();
                             let _ = GetCursorPos(&mut pos);
                             let _ = SetForegroundWindow(hwnd);
-                            let picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pos.x, pos.y, 0, hwnd, None);
-                            event = match picked.0 { 1 => Some(Event::Show), 2 => Some(Event::NewWindow), 3 => Some(Event::Exit), _ => None };
+                            let picked = TrackPopupMenu(
+                                menu,
+                                TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                pos.x,
+                                pos.y,
+                                0,
+                                hwnd,
+                                None,
+                            );
+                            event = match picked.0 {
+                                1 => Some(Event::Show),
+                                2 => Some(Event::NewWindow),
+                                3 => Some(Event::Exit),
+                                _ => None,
+                            };
                             let _ = DestroyMenu(menu);
                             let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
                         }
@@ -102,7 +157,10 @@ mod native {
                     }
                     _ => None,
                 };
-                if let Some(event) = event { let _ = s.tx.send(event); s.ctx.request_repaint(); }
+                if let Some(event) = event {
+                    let _ = s.tx.send(event);
+                    s.ctx.request_repaint();
+                }
                 return LRESULT(0);
             }
         }
