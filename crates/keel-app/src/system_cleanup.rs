@@ -311,9 +311,8 @@ pub fn hyperv_manifest(system32: &Path) -> Option<String> {
     if direct.is_file() {
         return Some(direct.to_string_lossy().into_owned());
     }
-    let version = |name: &str| -> Option<Vec<u32>> {
-        name.split('.').map(|n| n.parse().ok()).collect()
-    };
+    let version =
+        |name: &str| -> Option<Vec<u32>> { name.split('.').map(|n| n.parse().ok()).collect() };
     let newest = std::fs::read_dir(&dir)
         .ok()?
         .flatten()
@@ -330,8 +329,11 @@ pub fn hyperv_manifest(system32: &Path) -> Option<String> {
 /// profiler DLL would be loaded into the elevated process.
 fn unsafe_env(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    n.starts_with("COR_") || n.starts_with("CORECLR_") || n.starts_with("COMPLUS_")
-        || n.starts_with("DOTNET_") || n == "PSMODULEPATH"
+    n.starts_with("COR_")
+        || n.starts_with("CORECLR_")
+        || n.starts_with("COMPLUS_")
+        || n.starts_with("DOTNET_")
+        || n == "PSMODULEPATH"
 }
 
 /// The commands `task` runs, in order (built here, and again by the elevated helper, which

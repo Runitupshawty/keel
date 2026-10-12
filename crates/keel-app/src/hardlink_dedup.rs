@@ -190,11 +190,13 @@ fn plan_by(groups: &[DupGroup], vol: impl Fn(&Path) -> Option<String>) -> DedupP
 }
 
 /// Whether the two files hold the same bytes (read side by side, 1 MiB at a time).
+#[cfg(test)]
 pub fn same_content(a: &Path, b: &Path, cancel: &AtomicBool) -> anyhow::Result<bool> {
     same_bytes(&File::open(a)?, &File::open(b)?, cancel)
 }
 
-/// [`same_content`] of two open files, read from where they are.
+/// Whether two open files hold the same bytes (read side by side from where they are, 1
+/// MiB at a time).
 fn same_bytes(a: &File, b: &File, cancel: &AtomicBool) -> anyhow::Result<bool> {
     let (mut fa, mut fb) = (a, b);
     if fa.metadata()?.len() != fb.metadata()?.len() {
@@ -988,7 +990,9 @@ mod tests {
             assert!(!same_file(&pair.keep, &pair.dup));
         } else {
             // Windows: the open handle refuses writers until the duplicate is replaced.
-            assert!(cfg!(windows), "only Windows refuses the writer");
+            if !cfg!(windows) {
+                panic!("only Windows refuses the writer");
+            }
             r.unwrap();
         }
         assert_eq!(fs::read(&pair.dup).unwrap(), b"version one");
@@ -1002,7 +1006,11 @@ mod tests {
         for which in ["keep", "dup"] {
             let d = tmp(&format!("race-swap-{which}"));
             let pair = pair_in(&d, b"version one");
-            let target = if which == "keep" { &pair.keep } else { &pair.dup };
+            let target = if which == "keep" {
+                &pair.keep
+            } else {
+                &pair.dup
+            };
             let swapped = Cell::new(false);
             let r = link_with(&pair, &AtomicBool::new(false), &|| {
                 // An editor saving: write a new file, rename it over the old one.
@@ -1016,7 +1024,11 @@ mod tests {
                 assert!(e.contains("changed while it was compared"), "{which}: {e}");
                 assert!(!same_file(&pair.keep, &pair.dup), "{which}");
                 assert_eq!(fs::read(target).unwrap(), b"version two", "{which}");
-                let other = if which == "keep" { &pair.dup } else { &pair.keep };
+                let other = if which == "keep" {
+                    &pair.dup
+                } else {
+                    &pair.keep
+                };
                 assert_eq!(fs::read(other).unwrap(), b"version one", "{which}");
             } else {
                 r.unwrap();
@@ -1032,7 +1044,9 @@ mod tests {
         let d = tmp("ro-keep");
         let pair = pair_in(&d, b"same");
         set_readonly(&pair.keep, true).unwrap();
-        let e = link(&pair, &AtomicBool::new(false)).unwrap_err().to_string();
+        let e = link(&pair, &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("read-only") && e.contains("keep.bin"), "{e}");
         assert!(!same_file(&pair.keep, &pair.dup));
         set_readonly(&pair.keep, false).unwrap();
@@ -1084,7 +1098,9 @@ mod tests {
         let plan = plan(&[group(10, &[&pair.keep, &pair.dup])]);
         assert!(plan.pairs.is_empty());
         assert_eq!(plan.skipped, [(VPath::local(&pair.dup), want)]);
-        let e = link(&pair, &AtomicBool::new(false)).unwrap_err().to_string();
+        let e = link(&pair, &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string();
         assert!(e.contains(want.text()), "{e}");
         assert!(!same_file(&pair.keep, &pair.dup));
         // Twins with nothing of their own link.

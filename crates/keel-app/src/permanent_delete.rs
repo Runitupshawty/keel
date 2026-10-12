@@ -70,7 +70,9 @@ pub enum Kind {
     File,
     /// A symbolic link or junction (`dir`: a Windows link to a folder): the link goes,
     /// never what it points to.
-    Link { dir: bool },
+    Link {
+        dir: bool,
+    },
     /// A folder, also a cloud placeholder folder: what it holds is walked (and counted)
     /// like any other folder's.
     Folder,
@@ -560,10 +562,7 @@ mod tests {
         assert!(now.same_as(&m));
         // Something new after the last walk: the folders holding it are not deleted.
         std::fs::write(d.join("t/sub/new.bin"), b"new").unwrap();
-        let gone = walked[0]
-            .iter()
-            .rev()
-            .try_for_each(|(p, k)| remove(p, *k));
+        let gone = walked[0].iter().rev().try_for_each(|(p, k)| remove(p, *k));
         assert!(gone.is_err());
         assert!(d.join("t/sub/new.bin").exists());
         assert!(!d.join("t/sub/a.bin").exists());
