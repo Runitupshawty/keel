@@ -690,6 +690,7 @@ pub fn context_menu(
                     item(ui, "Merge into…", "", op(Kind::Merge));
                     item(ui, "Flatten…", "", op(Kind::Flatten));
                     item(ui, "Organize by…", "", op(Kind::Organize));
+                    item(ui, "Remove empty folders…", "", op(Kind::RemoveEmpty));
                 }
                 item(ui, "Attributes…", "", op(Kind::Attributes));
                 item(ui, "Create link…", "", op(Kind::Link));

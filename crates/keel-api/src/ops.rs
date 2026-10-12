@@ -150,6 +150,8 @@ pub static OPS: &[Operation] = &[
         FlattenParams => PlanPreview, plan_flatten, json!({"path": example_dir(), "on_conflict": "skip"})),
     now!("plan.organize", "Previews organizing a folder's files into subfolders by type (Images, Videos, Audio, Documents, Archives, Other), year or year-month of the modified date; missing subfolders are made. Call execute to apply.",
         OrganizeParams => PlanPreview, plan_organize, json!({"path": example_dir(), "by": "year"})),
+    now!("plan.remove_empty", "Previews removing the empty folders below a folder: every folder holding no files and no links, at any depth, goes to the Recycle Bin or Trash (the outermost of each empty branch, whole). Call execute to apply.",
+        RemoveEmptyParams => PlanPreview, plan_remove_empty, json!({"path": example_dir()})),
     now!("plan.set_attributes", "Previews setting attributes on files or folders on the host: hidden (Windows, macOS), read-only, or the Unix mode bits (octal). Not recursive. Call execute to apply.",
         AttributesParams => PlanPreview, plan_set_attributes, json!({"paths": [example_file()], "readonly": true})),
     now!("plan.link", "Previews making a link on the host: a symbolic link (on Windows only with Developer Mode or elevation), a junction to a folder (Windows) or a hard link to a file. Call execute to apply.",
@@ -1860,6 +1862,13 @@ fn plan_organize(ctx: &Ctx, p: OrganizeParams) -> Result<PlanPreview> {
         },
     };
     file_plan(ctx, keel_core::Op::arrange(what, conflict(p.on_conflict)))
+}
+
+fn plan_remove_empty(ctx: &Ctx, p: RemoveEmptyParams) -> Result<PlanPreview> {
+    let what = keel_core::FolderOp::RemoveEmpty {
+        folder: real_path(ctx, &p.path)?,
+    };
+    file_plan(ctx, keel_core::Op::arrange(what, keel_core::OnConflict::Skip))
 }
 
 fn plan_set_attributes(ctx: &Ctx, p: AttributesParams) -> Result<PlanPreview> {

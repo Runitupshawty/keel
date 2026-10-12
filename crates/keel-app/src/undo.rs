@@ -603,6 +603,23 @@ impl Planned {
                 Ok((Op::Rename(steps.clone()), renamed(&steps, stat)))
             }
             L::Arrange {
+                what: keel_core::FolderOp::RemoveEmpty { .. },
+                ..
+            } => {
+                // The empty branches went to the trash: they come back from there.
+                if self.prune.iter().any(|p| p.to_local_path().is_none()) {
+                    return Err(crate::state::PERMANENT.into());
+                }
+                if !keel_vfs::trashbin::KNOWS_ORIGIN {
+                    return Err("removed folders on macOS (restore them from the Trash)".into());
+                }
+                let deleted: Vec<_> = (self.prune.iter())
+                    .filter(|p| stat(p).is_none())
+                    .map(|p| (p.clone(), None))
+                    .collect();
+                Ok((Op::Trash, trashed(&deleted, self.since, stat)?))
+            }
+            L::Arrange {
                 what, on_conflict, ..
             } => {
                 let paths = self.moves.iter().flat_map(|(a, b)| [a, b]);
@@ -642,6 +659,7 @@ impl Planned {
                     keel_core::FolderOp::Merge { .. } => Arranged::Merge,
                     keel_core::FolderOp::Flatten { .. } => Arranged::Flatten,
                     keel_core::FolderOp::Organize { .. } => Arranged::Organize,
+                    keel_core::FolderOp::RemoveEmpty { .. } => unreachable!("matched above"),
                 };
                 let removed = (self.prune.iter())
                     .filter(|d| stat(d).is_none())

@@ -574,3 +574,57 @@ fn folder_operations_refuse_archives_and_remote_attributes() {
     let err = validate_preview_execute(&lib, op).unwrap_err();
     assert!(format!("{err:#}").contains("this computer"), "{err:#}");
 }
+
+/// Task 85: remove empty folders lists the outermost folder of each empty branch, refuses a
+/// changed disk, and sends what it lists to the trash.
+#[test]
+fn remove_empty_trashes_each_empty_branch_whole() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("tree with spaces");
+    for d in ["a/b/c", "d/e", "g", "kept/inner"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    write(&root.join("d/f.txt"), "f");
+    write(&root.join("kept/inner/x.txt"), "x");
+    let (_data, lib, _src) = library_with(folder("f", &root));
+    let at = |p: &str| v(&root.join(p));
+    let op = Op::arrange(FolderOp::RemoveEmpty { folder: v(&root) }, OnConflict::Skip);
+    let plan = validate_preview_execute(&lib, op.clone()).unwrap();
+    let listed: Vec<(Action, VPath)> = plan
+        .changes
+        .iter()
+        .map(|c| (c.action, c.from.clone()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (Action::RemoveFolder, at("a")),
+            (Action::RemoveFolder, at("d/e")),
+            (Action::RemoveFolder, at("g")),
+        ]
+    );
+    let headline = plan.headline().unwrap();
+    assert!(headline.starts_with("Remove 3 empty folders below"), "{headline}");
+
+    // A file that came into a listed folder since the preview: refused, with the fresh
+    // preview (which no longer lists that branch).
+    write(&root.join("a/b/new.txt"), "n");
+    let err = plan.execute(&lib, true).unwrap_err();
+    let fresh = err.downcast::<PlanChanged>().unwrap().0;
+    assert!(fresh.changes.iter().all(|c| c.from != at("a")));
+    assert!(fresh.changes.iter().any(|c| c.from == at("a/b/c")));
+    std::fs::remove_file(root.join("a/b/new.txt")).unwrap();
+
+    let info = run(&lib, op.clone());
+    if info.status != JobStatus::Done {
+        // No Recycle Bin or Trash here (a CI runner without one): nothing else to check.
+        eprintln!("skipped: {}", info.log);
+        assert!(root.join("a/b/c").is_dir(), "nothing removed for good");
+        return;
+    }
+    assert_eq!(dirs(&root), ["d", "kept", "kept/inner"]);
+    assert!(root.join("d/f.txt").exists() && root.join("kept/inner/x.txt").exists());
+    // Nothing left to remove.
+    let err = validate_preview_execute(&lib, op).unwrap_err();
+    assert!(format!("{err:#}").contains("no empty folders"), "{err:#}");
+}

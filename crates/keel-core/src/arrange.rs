@@ -17,6 +17,9 @@ pub enum FolderOp {
     Flatten { folder: VPath },
     /// `folder`'s files move into subfolders named by `by` (made when missing).
     Organize { folder: VPath, by: OrganizeBy },
+    /// Every empty folder below `folder` (one holding no files and no links, at any depth)
+    /// goes to the Recycle Bin or Trash: the outermost of each empty branch, whole.
+    RemoveEmpty { folder: VPath },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +39,7 @@ impl FolderOp {
             FolderOp::Merge { .. } => "merge",
             FolderOp::Flatten { .. } => "flatten",
             FolderOp::Organize { .. } => "organize",
+            FolderOp::RemoveEmpty { .. } => "remove empty folders",
         }
     }
 
@@ -43,7 +47,9 @@ impl FolderOp {
     pub fn roots(&self) -> Vec<&VPath> {
         match self {
             FolderOp::Merge { folders, into } => folders.iter().chain([into]).collect(),
-            FolderOp::Flatten { folder } | FolderOp::Organize { folder, .. } => vec![folder],
+            FolderOp::Flatten { folder }
+            | FolderOp::Organize { folder, .. }
+            | FolderOp::RemoveEmpty { folder } => vec![folder],
         }
     }
 }
@@ -61,7 +67,8 @@ pub(crate) struct Planned {
 
 /// What the operation does on the disk as it is now: the moves (sorted by item, so the job
 /// finds an item's folder by binary search) and the folders to remove when left empty
-/// (deepest first). Links are never moved and never followed.
+/// (deepest first; for [`FolderOp::RemoveEmpty`], the empty branches to trash). Links are
+/// never moved and never followed.
 pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>, Vec<VPath>)> {
     let provider = |p: &VPath| {
         router
@@ -162,6 +169,15 @@ pub(crate) fn generate(router: &Router, what: &FolderOp) -> Result<(Vec<Planned>
                 });
             }
         }
+        FolderOp::RemoveEmpty { folder: root } => {
+            let pr = folder(root)?;
+            for e in pr.list(root)? {
+                if e.kind == Kind::Dir && !e.is_link {
+                    empty_branches(&*pr, e.path, 0, &mut prune);
+                }
+            }
+            prune.sort_by(|a, b| key(a).cmp(&key(b)));
+        }
     }
     prune.retain(|d| {
         !links
@@ -227,6 +243,39 @@ pub(crate) fn group_of(
             }
         },
     }
+}
+
+/// Adds `dir` to `out` when nothing but empty folders is under it (it goes whole), else the
+/// empty branches inside it; true when `dir` itself is empty. A link, a file or a folder
+/// that cannot be listed keeps its folder (and every folder above it).
+fn empty_branches(provider: &dyn Provider, dir: VPath, depth: usize, out: &mut Vec<VPath>) -> bool {
+    if depth > 256 {
+        return false;
+    }
+    let Ok(entries) = provider.list(&dir) else {
+        return false;
+    };
+    let mut empty = true;
+    let mut inner = Vec::new();
+    for e in entries {
+        if e.kind == Kind::Dir && !e.is_link {
+            empty &= empty_branches(provider, e.path, depth + 1, &mut inner);
+        } else {
+            empty = false;
+        }
+    }
+    if empty {
+        out.push(dir);
+    } else {
+        out.append(&mut inner);
+    }
+    empty
+}
+
+/// Whether `dir` still holds nothing but empty folders (checked again just before it goes
+/// to the trash).
+pub(crate) fn still_empty(provider: &dyn Provider, dir: &VPath) -> bool {
+    empty_branches(provider, dir.clone(), 0, &mut Vec::new())
 }
 
 /// Bytes and files under a folder, through its provider (links not followed).
@@ -304,6 +353,12 @@ impl crate::Plan {
                         counted(groups.len(), "folder"),
                     )
                 }
+                FolderOp::RemoveEmpty { folder } => format!(
+                    "Remove {} below {}: to the {}",
+                    counted(n(Action::RemoveFolder), "empty folder"),
+                    folder.display(),
+                    keel_vfs::trashbin::label()
+                ),
             },
             Op::SetAttributes { paths, attrs } => format!(
                 "Set the attributes of {}: {}",

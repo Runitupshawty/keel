@@ -315,11 +315,19 @@ fn preview(lib: &Shared, op: Op) -> Result<Plan> {
         } => {
             let router = lib.router.read().clone();
             let (planned, mut prune) = crate::arrange::generate(&router, &what)?;
-            anyhow::ensure!(
-                !planned.is_empty(),
-                "nothing to {}: no files to move",
-                what.verb()
-            );
+            if let FolderOp::RemoveEmpty { folder } = &what {
+                anyhow::ensure!(
+                    !prune.is_empty(),
+                    "no empty folders below {}",
+                    folder.display()
+                );
+            } else {
+                anyhow::ensure!(
+                    !planned.is_empty(),
+                    "nothing to {}: no files to move",
+                    what.verb()
+                );
+            }
             sizes = planned.iter().map(|p| (p.files, p.bytes)).collect();
             let renamed;
             (landing, renamed) = land(lib, &planned, on_conflict, what.verb())?;
@@ -1360,7 +1368,7 @@ impl Job for ExecJob {
         };
         let result = self
             .steps(ctx, &items, marked)
-            .map(|()| prune(ctx, &self.op));
+            .and_then(|()| prune(ctx, &self.op));
         let summary = match &result {
             Ok(()) if self.skipped == 0 => "ok".to_owned(),
             Ok(()) => format!("{} skipped", self.skipped),
@@ -1437,22 +1445,46 @@ fn delete_entries(ctx: &JobCtx, op: &Op, batch: &[VPath]) -> Result<Vec<bool>> {
 }
 
 /// A merge or flatten removes the folders it emptied, deepest first; one left with
-/// something in it (an item skipped, a link) stays.
-fn prune(ctx: &JobCtx, op: &Op) {
-    let Op::Arrange { prune, .. } = op else {
-        return;
+/// something in it (an item skipped, a link) stays. Remove empty folders sends each empty
+/// branch to the trash, after checking again that nothing came into it.
+fn prune(ctx: &JobCtx, op: &Op) -> Result<()> {
+    let Op::Arrange { prune, what, .. } = op else {
+        return Ok(());
     };
     let router = ctx.router();
-    let removed: Vec<VPath> = prune
-        .iter()
-        .filter(|d| {
-            router
-                .provider_for(d)
-                .is_some_and(|p| p.remove_empty_dir(d).is_ok())
-        })
-        .cloned()
-        .collect();
+    let trash = matches!(what, FolderOp::RemoveEmpty { .. });
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+    for d in prune {
+        if trash && ctx.stopping() {
+            reindex(ctx, &removed, false);
+            return Err(Cancelled.into());
+        }
+        let Some(p) = router.provider_for(d) else {
+            continue;
+        };
+        let gone = if trash {
+            if p.stat(d).is_err() {
+                continue;
+            }
+            if !crate::arrange::still_empty(&*p, d) {
+                ctx.log(&format!("kept {}: no longer empty", d.display()))?;
+                continue;
+            }
+            p.remove(d).map_err(|e| failed.push(format!("{}: {e:#}", d.display())))
+        } else {
+            p.remove_empty_dir(d).map_err(|_| ())
+        };
+        if gone.is_ok() {
+            removed.push(d.clone());
+        }
+    }
     reindex(ctx, &removed, false);
+    match failed.as_slice() {
+        [] => Ok(()),
+        [one] => anyhow::bail!("{one}"),
+        [first, rest @ ..] => anyhow::bail!("{first} (and {} more)", rest.len()),
+    }
 }
 
 /// One step of a top-level path that is not a copy or move; false when it no longer exists

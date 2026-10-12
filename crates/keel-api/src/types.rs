@@ -427,6 +427,13 @@ pub struct FlattenParams {
     pub on_conflict: Option<OnConflict>,
 }
 
+/// `plan.remove_empty`: every empty folder below the folder goes to the trash.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveEmptyParams {
+    pub path: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OrganizeBy {

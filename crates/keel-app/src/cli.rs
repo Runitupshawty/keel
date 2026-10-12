@@ -192,6 +192,8 @@ pub enum PlanCmd {
         #[arg(long, value_enum)]
         on_conflict: Option<Conflict>,
     },
+    /// Remove the empty folders below a folder (to the Recycle Bin or Trash).
+    RemoveEmpty { folder: String },
     /// Organize a folder's files into subfolders by type, year or year-month.
     Organize {
         folder: String,

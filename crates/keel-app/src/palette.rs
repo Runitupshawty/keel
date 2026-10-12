@@ -81,6 +81,11 @@ fn context_items() -> Vec<Item> {
             Library(LibCmd::FolderOp(Kind::Attributes)),
         ),
         ("Create link…", "", Library(LibCmd::FolderOp(Kind::Link))),
+        (
+            "Remove empty folders…",
+            "",
+            Library(LibCmd::FolderOp(Kind::RemoveEmpty)),
+        ),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),
