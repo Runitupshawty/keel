@@ -19,6 +19,7 @@ keel-api = { path = "../crates/keel-api", features = ["fuzzing"] }
 keel-net = { path = "../crates/keel-net", features = ["fuzzing"] }
 keel-daemon = { path = "../crates/keel-daemon", features = ["fuzzing"] }
 keel-preview = { path = "../crates/keel-preview", features = ["fuzzing"] }
+keel-props = { path = "../crates/keel-props", features = ["fuzzing"] }
 
 # Not a member of the Keel workspace: it needs nightly and libFuzzer.
 [workspace]
@@ -142,6 +143,34 @@ bench = false
 [[bin]]
 name = "preview"
 path = "fuzz_targets/preview.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_signature"
+path = "fuzz_targets/file_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lnk"
+path = "fuzz_targets/lnk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pe_version"
+path = "fuzz_targets/pe_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_tags"
+path = "fuzz_targets/audio_tags.rs"
 test = false
 doc = false
 bench = false

@@ -1,0 +1,32 @@
+[package]
+publish = false
+name = "keel-props"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "File properties beyond the index: signatures, shortcuts, PE versions, text stats, hashes, audio tags, the Windows Property System"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`; also `fixtures::*`.
+fuzzing = []
+
+[dependencies]
+# Hashes: all already in Cargo.lock (MIT OR Apache-2.0, RustCrypto and the crc crates).
+md-5 = "0.11"
+sha1.workspace = true
+sha2.workspace = true
+crc32fast = "1"
+crc = "3"
+# ANSI strings in .lnk files and ID3v1 tags (Windows-1252).
+encoding_rs = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_UI_Shell_PropertiesSystem"] }
+
+[dev-dependencies]
+tempfile = "3"
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }

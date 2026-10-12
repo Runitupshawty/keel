@@ -4978,6 +4978,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-props"
+version = "0.22.0"
+dependencies = [
+ "crc",
+ "crc32fast",
+ "encoding_rs",
+ "keel-vfs",
+ "md-5",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "keel-search"
 version = "0.22.0"
 dependencies = [
