@@ -11,12 +11,28 @@
 //! The command line is split into words first (Windows: the C runtime's rules, Unix: a
 //! shell's quotes and backslashes), then each placeholder is replaced inside its word, so a
 //! path with spaces, quotes or any Unicode stays one argument. The program runs directly,
-//! not through a shell. When it is a shell, the script it gets is quoted for that shell:
-//! `cmd /c …` (Windows) wraps every word holding a placeholder in double quotes and refuses
-//! values with `%` or `"` (cmd would expand or end them); `sh|bash|zsh|dash|ksh -c '…'`
-//! gets each value single-quoted; `powershell|pwsh -Command …` gets each value as a
-//! single-quoted string with its quotes (also the typographic ones) doubled. Inside those
-//! scripts placeholders go without quotes of their own.
+//! not through a shell. When a shell or interpreter reads a script, the values in it are
+//! quoted for it or refused; programs that only start another (sudo, doas, env, nice, time,
+//! xargs, find -exec, wsl -e, …) are looked through, the first shell or interpreter named
+//! deciding:
+//! - `cmd /c …` (Windows) becomes `cmd [switches] /d /v:off /s /c "<script>"`: AutoRun and
+//!   delayed expansion off (with `/v:on` typed, a `!` in a value is refused), and the
+//!   script in one more pair of quotes that `/s` makes cmd strip exactly. Every word holding
+//!   a placeholder is wrapped in double quotes; values with `%` or `"` are refused (cmd
+//!   would expand or end them).
+//! - POSIX shells (`sh`, `bash`, `zsh`, `dash`, `ksh`, …) with a `-c` switch, also in a
+//!   cluster (`-lc`, `-ec`, `-xc`): the script gets each value single-quoted.
+//! - `powershell` / `pwsh`: after `-Command` (and, for Windows PowerShell, from the first
+//!   word that is not a switch, its default) each value becomes a single-quoted string with
+//!   its quotes (also the typographic ones) doubled; `-File` and pwsh's default take plain
+//!   arguments; `-EncodedCommand` and the values of PowerShell's own switches take none.
+//! - fish, csh and other shells, `python -c`, `perl -e`, `node -e`, `ruby -e`, `php -r`,
+//!   awk programs and the like, and programs that join their arguments into a command line
+//!   for a shell (`ssh`, `watch`, `su`, `wsl` without `-e`): values inside their scripts
+//!   are refused (pass them as arguments after the script instead).
+//!
+//! Inside those scripts placeholders go without quotes of their own: one inside the
+//! script's quotes is refused.
 
 use crate::keys::Action;
 use keel_vfs::VPath;
@@ -183,20 +199,486 @@ pub enum Shell {
     Pwsh,
 }
 
-/// The shell `program` is (by its file name).
-pub fn shell_of(program: &str) -> Shell {
+/// A program's file name, lowercase, without `.exe`.
+fn stem(program: &str) -> String {
     let name = program
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(program)
         .to_ascii_lowercase();
-    let stem = name.strip_suffix(".exe").unwrap_or(&name);
-    match stem {
+    match name.strip_suffix(".exe") {
+        Some(s) => s.to_owned(),
+        None => name,
+    }
+}
+
+/// The shell `program` is (by its file name).
+pub fn shell_of(program: &str) -> Shell {
+    match stem(program).as_str() {
         "cmd" if cfg!(windows) => Shell::Cmd,
-        "sh" | "bash" | "zsh" | "dash" | "ksh" => Shell::Posix,
-        "powershell" | "pwsh" => Shell::Pwsh,
+        s if POSIX_SHELLS.contains(&s) => Shell::Posix,
+        "powershell" | "pwsh" | "powershell_ise" => Shell::Pwsh,
         _ => Shell::Direct,
     }
+}
+
+/// Shells whose `-c` script Keel quotes values for (POSIX single quotes).
+const POSIX_SHELLS: &[&str] = &[
+    "sh", "bash", "rbash", "zsh", "dash", "ksh", "ksh93", "mksh", "pdksh", "lksh", "ash",
+    "yash", "posh", "busybox-sh",
+];
+
+/// Shells with other quoting rules: values are refused in their `-c` script.
+const OTHER_SHELLS: &[&str] = &["fish", "csh", "tcsh", "nu", "elvish", "xonsh", "rc", "es"];
+
+/// Interpreters that take a script on the command line, with the switches that give it.
+/// Values are refused inside such a script (pass them as arguments after it instead).
+const INLINE: &[(&str, &[&str])] = &[
+    ("python", &["-c"]),
+    ("python2", &["-c"]),
+    ("python3", &["-c"]),
+    ("py", &["-c"]),
+    ("pypy", &["-c"]),
+    ("pypy3", &["-c"]),
+    ("perl", &["-e", "-E"]),
+    ("ruby", &["-e"]),
+    ("node", &["-e", "-p", "--eval", "--print"]),
+    ("nodejs", &["-e", "-p", "--eval", "--print"]),
+    ("bun", &["-e", "-p", "--eval", "--print"]),
+    ("deno", &["eval"]),
+    ("php", &["-r"]),
+    ("lua", &["-e"]),
+    ("luajit", &["-e"]),
+    ("osascript", &["-e"]),
+    ("rscript", &["-e"]),
+    ("tclsh", &["-c"]),
+];
+
+/// awk and its kin: the first operand is the program (unless `-f` names a file).
+const AWKS: &[&str] = &["awk", "gawk", "mawk", "nawk"];
+
+/// Programs that join their arguments into one command line for a shell (here or on
+/// another computer): values after them are refused, as Keel cannot know that shell.
+const JOINERS: &[&str] = &["watch", "ssh", "parallel", "su", "runuser", "script", "wsl"];
+
+/// How the values of one word's placeholders are put in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Put {
+    /// As they are: the word is one argument.
+    Plain,
+    /// The word is a POSIX shell script: single-quoted.
+    Posix,
+    /// The word is (part of) a PowerShell script: single-quoted PowerShell strings.
+    Pwsh,
+    /// No value may go in: why.
+    Refuse(String),
+}
+
+/// How each word of a command line (the program first, already expanded) takes values.
+/// Programs that start another (sudo, doas, env, nice, time, xargs, find -exec, …) are
+/// looked through: the first word naming a shell or interpreter decides how what follows
+/// it is read; everything before it stays plain arguments.
+fn puts(words: &[String]) -> Vec<Put> {
+    let mut put = vec![Put::Plain; words.len()];
+    let mut i = 0;
+    while i < words.len() {
+        let name = stem(&words[i]);
+        let name = name.as_str();
+        if name == "cmd" && cfg!(windows) {
+            if i > 0 {
+                refuse_after(&mut put, i, "cmd started by another program");
+            }
+            return put;
+        }
+        if POSIX_SHELLS.contains(&name) || OTHER_SHELLS.contains(&name) {
+            if let Some(at) = posix_script(words, i) {
+                put[at] = if POSIX_SHELLS.contains(&name) {
+                    Put::Posix
+                } else {
+                    Put::Refuse(format!(
+                        "{name} quotes differently from a POSIX shell: pass the value as an \
+                         argument after the script"
+                    ))
+                };
+            }
+            return put;
+        }
+        if matches!(name, "powershell" | "pwsh" | "powershell_ise") {
+            powershell(words, i, name != "pwsh", &mut put);
+            return put;
+        }
+        if let Some((_, switches)) = INLINE
+            .iter()
+            .find(|(n, _)| *n == name || (n.starts_with("python") && name.starts_with(n)))
+        {
+            inline_script(words, i, switches, &mut put);
+            return put;
+        }
+        if AWKS.contains(&name) {
+            awk_program(words, i, &mut put);
+            return put;
+        }
+        if name == "env" {
+            // `env -S "…"` splits its string into a command line.
+            for (j, w) in words.iter().enumerate().skip(i + 1) {
+                if w == "-S" || w.starts_with("-S") || w.starts_with("--split-string") {
+                    let at = if w == "-S" { j + 1 } else { j };
+                    if at < put.len() {
+                        put[at] = Put::Refuse("env -S splits it into a command line".into());
+                    }
+                }
+            }
+        }
+        if name == "flock" {
+            // `flock … -c "…"` runs the string through sh -c.
+            if let Some(j) = (i + 1..words.len()).find(|&j| words[j] == "-c" || words[j] == "--command") {
+                if j + 1 < put.len() {
+                    put[j + 1] = Put::Posix;
+                }
+                return put;
+            }
+        }
+        if JOINERS.contains(&name) {
+            if name == "wsl" {
+                // `wsl -e` / `--exec` runs the rest directly: keep looking after it.
+                if let Some(j) = (i + 1..words.len()).find(|&j| words[j] == "-e" || words[j] == "--exec") {
+                    i = j + 1;
+                    continue;
+                }
+            }
+            refuse_after(&mut put, i, &format!("{name} joins its arguments into a command line for a shell"));
+            return put;
+        }
+        i += 1;
+    }
+    put
+}
+
+/// Values after word `i` are refused.
+fn refuse_after(put: &mut [Put], i: usize, why: &str) {
+    for p in put.iter_mut().skip(i + 1) {
+        *p = Put::Refuse(format!(
+            "{why}: Keel cannot quote a value for it (run the program directly)"
+        ));
+    }
+}
+
+/// The script word of a POSIX-style shell at `i`: the first operand after its options
+/// when one of them is a short-option cluster holding `c` (`-c`, `-lc`, `-ec`, `-xc`).
+fn posix_script(words: &[String], i: usize) -> Option<usize> {
+    let mut script = false;
+    let mut j = i + 1;
+    while j < words.len() {
+        let w = words[j].as_str();
+        if w == "--" || w == "-" {
+            j += 1;
+            break;
+        }
+        if w.len() < 2 || !(w.starts_with('-') || w.starts_with('+')) {
+            break;
+        }
+        if w.starts_with("--") {
+            // Long options; two take a value.
+            j += if matches!(w, "--rcfile" | "--init-file") { 2 } else { 1 };
+            continue;
+        }
+        let letters = &w[1..];
+        if w.starts_with('-') && letters.contains('c') {
+            script = true;
+        }
+        // `-o option`, `+o option`, `-O shopt`: the next word is the option's name.
+        j += if letters.ends_with(['o', 'O']) { 2 } else { 1 };
+    }
+    (script && j < words.len()).then_some(j)
+}
+
+/// PowerShell at `i`: `-Command` (and Windows PowerShell's default when the first word is
+/// not a switch) makes every later word script; `-EncodedCommand` takes no values; `-File`
+/// and `pwsh`'s default make the rest arguments. Switches start with `-` or `/`; a value
+/// given to one of PowerShell's own switches takes no placeholders (so a switch Keel takes
+/// for one with a value never leaves the word after it unquoted).
+fn powershell(words: &[String], i: usize, windows_powershell: bool, put: &mut [Put]) {
+    const VALUED: &[&str] = &[
+        "executionpolicy",
+        "windowstyle",
+        "version",
+        "inputformat",
+        "outputformat",
+        "psconsolefile",
+        "configurationname",
+        "workingdirectory",
+        "settingsfile",
+        "configurationfile",
+        "custompipename",
+    ];
+    fn set_from(put: &mut [Put], j: usize, p: &Put) {
+        for q in put.iter_mut().skip(j) {
+            *q = p.clone();
+        }
+    }
+    let switch = Put::Refuse("a PowerShell switch takes no placeholders".into());
+    set_from(put, i + 1, &switch);
+    let mut j = i + 1;
+    while j < words.len() {
+        let w = words[j].as_str();
+        let Some(name) = w.strip_prefix(['-', '/']).filter(|n| !n.is_empty()) else {
+            // The first word that is not a switch: Windows PowerShell's -Command, pwsh's
+            // -File.
+            let rest = if windows_powershell {
+                Put::Pwsh
+            } else {
+                Put::Plain
+            };
+            set_from(put, j, &rest);
+            return;
+        };
+        let name = name.trim_start_matches('-').to_ascii_lowercase();
+        let is = |full: &str, min: usize| name.len() >= min && full.starts_with(name.as_str());
+        if name == "cwa" || (name.len() > "command".len() && is("commandwithargs", 8)) {
+            // The script, then its arguments.
+            set_from(put, j + 1, &Put::Plain);
+            if let Some(p) = put.get_mut(j + 1) {
+                *p = Put::Pwsh;
+            }
+            return;
+        }
+        if is("command", 1) {
+            set_from(put, j + 1, &Put::Pwsh);
+            return;
+        }
+        if name == "e" || name == "ec" || is("encodedcommand", 2) {
+            let why = "an encoded PowerShell command takes no values: use -Command";
+            set_from(put, j + 1, &Put::Refuse(why.into()));
+            return;
+        }
+        if is("file", 1) {
+            // The script file, then its arguments.
+            set_from(put, j + 1, &Put::Plain);
+            return;
+        }
+        let valued = matches!(name.as_str(), "ep" | "ex" | "wd")
+            || VALUED
+                .iter()
+                .any(|v| is(v, 2) || (name.len() == 1 && v.starts_with(name.as_str())));
+        j += if valued { 2 } else { 1 };
+    }
+}
+
+/// An interpreter at `i` whose script comes after one of `switches` (or glued to a short
+/// one: `-c'…'`): values are refused in that script.
+fn inline_script(words: &[String], i: usize, switches: &[&str], put: &mut [Put]) {
+    let why = |name: &str| {
+        Put::Refuse(format!(
+            "a value inside a {name} script could run as code: pass it as an argument after \
+             the script (sys.argv, ARGV, process.argv…)"
+        ))
+    };
+    let name = stem(&words[i]);
+    for j in i + 1..words.len() {
+        let w = words[j].as_str();
+        if switches.contains(&w) {
+            if j + 1 < put.len() {
+                put[j + 1] = why(&name);
+            }
+            return;
+        }
+        let glued = switches
+            .iter()
+            .any(|s| s.len() == 2 && s.starts_with('-') && w.len() > 2 && w.starts_with(s));
+        if glued {
+            put[j] = why(&name);
+            return;
+        }
+    }
+}
+
+/// awk at `i`: its first operand is the program unless `-f` gives a file.
+fn awk_program(words: &[String], i: usize, put: &mut [Put]) {
+    let mut j = i + 1;
+    while j < words.len() {
+        let w = words[j].as_str();
+        if w == "--" {
+            j += 1;
+            break;
+        }
+        if w == "-f" || w.starts_with("-f") || w.starts_with("--file") {
+            return;
+        }
+        if matches!(w, "-F" | "-v") {
+            j += 2;
+            continue;
+        }
+        if w.len() > 1 && w.starts_with('-') {
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    if j < put.len() {
+        put[j] = Put::Refuse(
+            "a value inside an awk program could run as code: pass it as an operand or with \
+             -v instead"
+                .into(),
+        );
+    }
+}
+
+/// Where a placeholder of `word` stands inside quotes of the script language: there the
+/// quoted value would itself be inside quotes (a POSIX `"…"` or a PowerShell `"…"` still
+/// expands `$(…)`), so it is refused. `pwsh`: PowerShell's quotes (typographic too, and
+/// `''` / `` ` `` escapes); else POSIX quotes.
+fn placeholder_in_quotes(word: &str, pwsh: bool) -> bool {
+    let (mut single, mut double) = (false, false);
+    let mut chars = word.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' if !single && !double => {
+                chars.next(); // `%%` or a placeholder outside quotes
+            }
+            '%' => {
+                if matches!(chars.peek(), Some('p' | 'n' | 's' | 'd' | 'e')) {
+                    return true;
+                }
+                chars.next();
+            }
+            '\\' if !pwsh && !single => {
+                chars.next_if(|&c| c != '%');
+            }
+            '`' if pwsh && !single => {
+                chars.next_if(|&c| c != '%');
+            }
+            '\'' if !double => single = !single,
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' if pwsh && !double => {
+                single = !single
+            }
+            '"' if !single => double = !double,
+            '\u{201C}' | '\u{201D}' | '\u{201E}' if pwsh && !single => double = !double,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Expands `template` for `target`.
+pub fn expand(template: &str, target: &Target) -> Result<Expanded, String> {
+    let words = split(template)?;
+    let Some(first) = words.first() else {
+        return Err("The command line is empty".into());
+    };
+    let program = substitute(first, target, &|v| Ok(v.to_owned()))?;
+    if program.trim().is_empty() {
+        return Err("The command line names no program".into());
+    }
+    if shell_of(&program) == Shell::Cmd {
+        return Ok(Expanded {
+            argv: vec![program],
+            raw: Some(cmd_script(template, target)?),
+            dir: target.folder.clone(),
+        });
+    }
+    let mut named = words.clone();
+    named[0] = program.clone();
+    let mut argv = vec![program];
+    for (w, put) in words.iter().zip(puts(&named)).skip(1) {
+        let pwsh = put == Put::Pwsh;
+        argv.push(match put {
+            Put::Plain => substitute(w, target, &|v| Ok(v.to_owned()))?,
+            _ if !has_placeholder(w) => substitute(w, target, &|v| Ok(v.to_owned()))?,
+            Put::Refuse(why) => return Err(format!("{w}: {why}")),
+            Put::Posix | Put::Pwsh if placeholder_in_quotes(w, pwsh) => {
+                return Err(format!(
+                    "{w}: put the placeholder outside quotes in the script; Keel quotes the \
+                     value itself"
+                ))
+            }
+            Put::Posix => substitute(w, target, &|v| Ok(quote_posix(v)))?,
+            Put::Pwsh => substitute(w, target, &|v| Ok(quote_powershell(v)))?,
+        });
+    }
+    Ok(Expanded {
+        argv,
+        raw: None,
+        dir: target.folder.clone(),
+    })
+}
+
+/// Whether `w` is cmd.exe's script switch (`/c`, `/k`, or `/r`, which is `/c`), maybe with
+/// text glued to it.
+fn cmd_switch(w: &str) -> bool {
+    let w = w.to_ascii_lowercase();
+    ["/c", "/k", "/r"].iter().any(|s| w.starts_with(s))
+}
+
+/// `cmd /c`: the command line after the program, for cmd.exe. The switches typed before
+/// `/c` stay, then `/d` (no AutoRun), `/v:off` (unless `/v:on` was typed: then a `!` in a
+/// value is refused), `/s` and the script switch, and the script in one more pair of
+/// double quotes, which `/s` makes cmd strip exactly (without `/s` it strips the first and
+/// last quote only sometimes, which unquotes a value starting the script). Script words
+/// are kept as typed (an `&` stays an operator, a `"&"` a name); a word with a placeholder
+/// is replaced whole by its value in double quotes; `%%` elsewhere is a percent sign.
+fn cmd_script(template: &str, target: &Target) -> Result<String, String> {
+    let words: Vec<_> = split_windows_spans(template).into_iter().skip(1).collect();
+    let Some(at) = words.iter().position(|(w, _)| cmd_switch(w)) else {
+        if words.iter().any(|(w, _)| has_placeholder(w)) {
+            return Err("cmd without /c or /k gets no values: write cmd /c <command>".into());
+        }
+        return Ok(words
+            .iter()
+            .map(|(_, span)| template[span.clone()].to_owned())
+            .collect::<Vec<_>>()
+            .join(" "));
+    };
+    let (switch, _) = &words[at];
+    if switch.len() != 2 {
+        return Err(format!(
+            "{switch}: put a space after {} (cmd /c <command>)",
+            &switch[..2]
+        ));
+    }
+    let (mut delayed, mut autorun_off, mut strip) = (false, false, false);
+    let mut line = String::new();
+    for (w, span) in &words[..at] {
+        if has_placeholder(w) || w.contains('%') {
+            return Err(format!("{w}: placeholders go after {switch}"));
+        }
+        let lower = w.to_ascii_lowercase();
+        if lower.starts_with("/v") {
+            delayed = lower != "/v:off";
+        }
+        autorun_off |= lower == "/d";
+        strip |= lower == "/s";
+        line += &template[span.clone()];
+        line.push(' ');
+    }
+    if !autorun_off {
+        line += "/d ";
+    }
+    if !delayed {
+        line += "/v:off ";
+    }
+    if !strip {
+        line += "/s ";
+    }
+    line += &format!("{switch} \"");
+    let mut parts = Vec::new();
+    for (word, span) in &words[at + 1..] {
+        parts.push(if has_placeholder(word) {
+            let value = substitute(word, target, &|v| check_cmd(v, delayed).map(|()| v.to_owned()))?;
+            quote_cmd(&value)
+        } else if word.contains('%') {
+            let value = substitute(word, target, &|v| Ok(v.to_owned()))?;
+            if value.contains([' ', '\t']) {
+                format!("\"{value}\"")
+            } else {
+                value
+            }
+        } else {
+            template[span.clone()].to_owned()
+        });
+    }
+    line += &parts.join(" ");
+    line.push('"');
+    Ok(line)
 }
 
 /// One run: the program, its arguments, and the folder it runs in.
@@ -238,92 +720,6 @@ pub fn split(line: &str) -> Result<Vec<String>, String> {
     } else {
         split_unix(line)
     }
-}
-
-/// Expands `template` for `target`.
-pub fn expand(template: &str, target: &Target) -> Result<Expanded, String> {
-    let words = split(template)?;
-    let Some(first) = words.first() else {
-        return Err("The command line is empty".into());
-    };
-    let program = substitute(first, target, &|v| Ok(v.to_owned()))?;
-    if program.trim().is_empty() {
-        return Err("The command line names no program".into());
-    }
-    let shell = shell_of(&program);
-    let rest = &words[1..];
-    let plain = |w: &String| substitute(w, target, &|v| Ok(v.to_owned()));
-    let mut argv = vec![program];
-    let mut raw = None;
-    // Where the script starts (the word after the switch), for the shells.
-    let script_at = |switch: &dyn Fn(&str) -> bool| rest.iter().position(|w| switch(w.as_str()));
-    match shell {
-        Shell::Direct => {
-            for w in rest {
-                argv.push(plain(w)?);
-            }
-        }
-        Shell::Cmd => {
-            let switch = |w: &str| w.eq_ignore_ascii_case("/c") || w.eq_ignore_ascii_case("/k");
-            match script_at(&|w| switch(w)) {
-                None => {
-                    for w in rest {
-                        argv.push(plain(w)?);
-                    }
-                }
-                Some(_) => raw = Some(cmd_script(template, target)?),
-            }
-        }
-        Shell::Posix => {
-            let at = script_at(&|w| w == "-c");
-            for (i, w) in rest.iter().enumerate() {
-                argv.push(match at {
-                    Some(at) if i == at + 1 => substitute(w, target, &|v| Ok(quote_posix(v)))?,
-                    _ => plain(w)?,
-                });
-            }
-        }
-        Shell::Pwsh => {
-            let at = script_at(&|w| {
-                let w = w.to_ascii_lowercase();
-                w.len() >= 2 && "-command".starts_with(&w) && w.starts_with("-c")
-            });
-            for (i, w) in rest.iter().enumerate() {
-                argv.push(match at {
-                    Some(at) if i > at => substitute(w, target, &|v| Ok(quote_powershell(v)))?,
-                    _ => plain(w)?,
-                });
-            }
-        }
-    }
-    Ok(Expanded {
-        argv,
-        raw,
-        dir: target.folder.clone(),
-    })
-}
-
-/// `cmd /c`: the command line after the program, for cmd.exe. Words are kept as typed (an
-/// `&` stays an operator, a `"&"` a name); a word with a placeholder is replaced whole by
-/// its value in double quotes; `%%` elsewhere is a percent sign.
-fn cmd_script(template: &str, target: &Target) -> Result<String, String> {
-    let mut parts = Vec::new();
-    for (word, span) in split_windows_spans(template).into_iter().skip(1) {
-        parts.push(if has_placeholder(&word) {
-            let value = substitute(&word, target, &|v| check_cmd(v).map(|()| v.to_owned()))?;
-            quote_cmd(&value)
-        } else if word.contains('%') {
-            let value = substitute(&word, target, &|v| Ok(v.to_owned()))?;
-            if value.contains([' ', '\t']) {
-                format!("\"{value}\"")
-            } else {
-                value
-            }
-        } else {
-            template[span].to_owned()
-        });
-    }
-    Ok(parts.join(" "))
 }
 
 fn has_placeholder(word: &str) -> bool {
@@ -561,10 +957,11 @@ pub fn quote_powershell(s: &str) -> String {
     out
 }
 
-/// Why cmd.exe cannot be given `value` safely (it expands `%` even inside quotes, and a
-/// `"` would end them).
-fn check_cmd(value: &str) -> Result<(), String> {
-    match value.chars().find(|c| matches!(c, '%' | '"' | '\n' | '\r')) {
+/// Why cmd.exe cannot be given `value` safely (it expands `%` even inside quotes, a `"`
+/// would end them, and with delayed expansion on (`delayed`) it expands `!…!` too).
+fn check_cmd(value: &str, delayed: bool) -> Result<(), String> {
+    let bad = |c: char| matches!(c, '%' | '"' | '\n' | '\r') || (delayed && c == '!');
+    match value.chars().find(|&c| bad(c)) {
         Some(c) => Err(format!(
             "{value} holds {c:?}, which cmd.exe would read as part of the command: run the \
              program directly, without cmd /c"
@@ -1107,19 +1504,99 @@ mod tests {
         let t = file(r"C:\a b&c\x (1).txt", "x (1).txt", r"C:\a b&c", "txt");
         let e = expand(r#"cmd /d /c del /q "%p" & echo %%x %d\*.bak"#, &t).unwrap();
         assert_eq!(e.argv, ["cmd"]);
+        // The script in one more pair of quotes, which /s makes cmd strip exactly.
         assert_eq!(
             e.raw.as_deref(),
-            Some(r#"/d /c del /q "C:\a b&c\x (1).txt" & echo %x "C:\a b&c\*.bak""#)
+            Some(r#"/d /v:off /s /c "del /q "C:\a b&c\x (1).txt" & echo %x "C:\a b&c\*.bak"""#)
         );
         let drive = Target::of(Path::new(r"C:\"), true);
         let e = expand("cmd /c dir %p", &drive).unwrap();
-        assert_eq!(e.raw.as_deref(), Some(r#"/c dir "C:\\""#));
+        assert_eq!(e.raw.as_deref(), Some(r#"/d /v:off /s /c "dir "C:\\"""#));
         let pct = file(r"C:\100% done.txt", "n", r"C:\", "txt");
         assert!(expand("cmd /c type %p", &pct)
             .unwrap_err()
             .contains("cmd.exe"));
         // Run directly, the same path is fine.
         assert!(expand("notepad %p", &pct).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_scripts_that_start_with_a_quote_keep_it() {
+        let t = file(
+            r"C:\d\x & calc & (1) ^ y.txt",
+            "x & calc & (1) ^ y.txt",
+            r"C:\d",
+            "txt",
+        );
+        // "Open with the associated app": the value starts the script.
+        let e = expand("cmd /c %p", &t).unwrap();
+        assert_eq!(
+            e.raw.as_deref(),
+            Some(r#"/d /v:off /s /c ""C:\d\x & calc & (1) ^ y.txt"""#)
+        );
+        let e = expand(r#"cmd /c "%p""#, &t).unwrap();
+        assert_eq!(
+            e.raw.as_deref(),
+            Some(r#"/d /v:off /s /c ""C:\d\x & calc & (1) ^ y.txt"""#)
+        );
+        // A quoted program first.
+        let e = expand(r#"cmd /C "C:\Program Files\Tool\tool.exe" %p"#, &t).unwrap();
+        assert_eq!(
+            e.raw.as_deref(),
+            Some(r#"/d /v:off /s /C ""C:\Program Files\Tool\tool.exe" "C:\d\x & calc & (1) ^ y.txt"""#)
+        );
+        // `!` is plain text with delayed expansion off; refused once /v:on is typed.
+        let bang = file(r"C:\d\Report!x!final.txt", "n", r"C:\d", "txt");
+        let e = expand("cmd /c del %p", &bang).unwrap();
+        assert!(e.raw.unwrap().contains("/v:off"));
+        let e = expand("cmd /v:on /c del %p", &bang).unwrap_err();
+        assert!(e.contains('!'), "{e}");
+        let e = expand("cmd /V:ON /c echo hi", &bang).unwrap();
+        assert_eq!(e.raw.as_deref(), Some(r#"/V:ON /d /s /c "echo hi""#));
+        // A switch glued to the script, or no script switch at all: refused.
+        assert!(expand(r#"cmd /c"%p""#, &t).unwrap_err().contains("space"));
+        assert!(expand("cmd %p", &t).unwrap_err().contains("/c"));
+        assert!(expand("cmd /q %p /c dir", &t).is_err());
+    }
+
+    /// The scripts above, run by cmd.exe on names holding `&`, `(`, `)`, `^` and spaces.
+    #[cfg(windows)]
+    #[test]
+    fn cmd_runs_names_with_operators_as_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let no = std::sync::atomic::AtomicBool::new(false);
+        let cleanup = |command: &str| UserCleanup {
+            title: "t".into(),
+            command: command.into(),
+            ..UserCleanup::default()
+        };
+        // A batch file run by its name (the value starts the script).
+        let script = dir.path().join("run me & mkdir hacked & (1) ^ x.cmd");
+        std::fs::write(&script, "@mkdir \"%~dp0ran\"\r\n").unwrap();
+        let p = prepare(0, &cleanup("cmd /c %p"), &[(script.clone(), false)]).unwrap();
+        run(&p, &|_| {}, &no).unwrap();
+        assert!(dir.path().join("ran").is_dir(), "{}", p.runs[0].line());
+        assert!(!dir.path().join("hacked").exists(), "{}", p.runs[0].line());
+        // A quoted program first, the value after it.
+        let tool = dir.path().join("copy it.cmd");
+        std::fs::write(&tool, "@copy /y \"%~1\" \"%~dp0copied.txt\" >nul\r\n").unwrap();
+        let data = dir.path().join("a & mkdir hacked2 & (1) ^ b.txt");
+        std::fs::write(&data, "payload").unwrap();
+        let p = prepare(
+            0,
+            &cleanup(r#"cmd /c "%d\copy it.cmd" %p"#),
+            &[(data, false)],
+        )
+        .unwrap();
+        run(&p, &|_| {}, &no).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("copied.txt")).unwrap(),
+            "payload",
+            "{}",
+            p.runs[0].line()
+        );
+        assert!(!dir.path().join("hacked2").exists());
     }
 
     #[test]
@@ -1278,5 +1755,122 @@ mod tests {
         assert!(crate::jobs::is_cancel(
             &run(&p, &|_| {}, &stop).unwrap_err()
         ));
+    }
+
+    /// The script word of `template` read back by a POSIX shell, for each tricky value.
+    fn posix_script_reads_back(template: &str, at: usize) {
+        for &v in TRICKY {
+            let t = file(v, "n", "/d", "");
+            let e = expand(template, &t).unwrap_or_else(|e| panic!("{template}: {e}"));
+            let script = split_unix(&e.argv[at]).unwrap();
+            assert!(script.iter().any(|w| w == v), "{template} {v:?}: {script:?}");
+        }
+    }
+
+    #[test]
+    fn shell_switch_clusters_and_wrappers_still_get_quoted_values() {
+        for (template, at) in [
+            (r#"bash -lc "trash %p""#, 2),
+            (r#"sh -ec "rm -- %p""#, 2),
+            (r#"bash -xc "rm -- %p""#, 2),
+            (r#"bash -o pipefail -c "rm -- %p""#, 4),
+            (r#"bash --norc -c "rm -- %p""#, 3),
+            (r#"sudo sh -c "rm -- %p""#, 3),
+            (r#"sudo -u root -- bash -c "rm -- %p""#, 6),
+            (r#"doas sh -c "rm -- %p""#, 3),
+            (r#"env LANG=C bash -c "rm -- %p""#, 4),
+            (r#"nice -n 5 sh -c "rm -- %p""#, 5),
+            (r#"time sh -c "rm -- %p""#, 3),
+            (r#"xargs -0 sh -c "rm -- %p""#, 4),
+            (r#"wsl -e sh -c "rm -- %p""#, 4),
+            (r#"/usr/bin/zsh -c "rm -- %p""#, 2),
+            (r#"flock /tmp/lock -c "rm -- %p""#, 3),
+        ] {
+            posix_script_reads_back(template, at);
+        }
+        // Values after the script are arguments: plain.
+        let t = file("$(x) y", "n", "/d", "");
+        let e = expand(r#"sh -c "rm -- \"$1\"" sh %p"#, &t).unwrap();
+        assert_eq!(e.argv[4], "$(x) y");
+        let e = expand("bash script.sh %p", &t).unwrap();
+        assert_eq!(e.argv[2], "$(x) y");
+        // A placeholder inside the script's own quotes would be quoted twice: refused.
+        let e = expand(r#"sh -c "rm \"%p\"""#, &t).unwrap_err();
+        assert!(e.contains("outside quotes"), "{e}");
+    }
+
+    #[test]
+    fn scripts_of_other_interpreters_take_no_values() {
+        let t = file("x');import os;os.system('id", "n", "/d", "");
+        for template in [
+            r#"python3 -c "import os; os.remove('%p')""#,
+            r#"python -c "print(1)%p""#,
+            r#"perl -e "unlink '%p'""#,
+            r#"node -e "require('fs').rmSync('%p')""#,
+            r#"ruby -e "File.delete('%p')""#,
+            r#"php -r "unlink('%p');""#,
+            r#"awk "BEGIN { system(\"rm %p\") }""#,
+            r#"fish -c "rm %p""#,
+            r#"sudo fish -c "rm %p""#,
+            "ssh host rm %p",
+            "watch rm %p",
+            "wsl rm %p",
+            r#"env -S "rm %p""#,
+            "su root -c %p",
+        ] {
+            assert!(expand(template, &t).is_err(), "{template}");
+        }
+        // As arguments after the script they are fine.
+        for template in [
+            r#"python3 -c "import os,sys; os.remove(sys.argv[1])" %p"#,
+            r#"perl -e "unlink $ARGV[0]" %p"#,
+            r#"awk "{ print }" %p"#,
+            "wsl -e rm -- %p",
+            "rm -- %p",
+            "grep -l sh %p",
+        ] {
+            let e = expand(template, &t).unwrap_or_else(|e| panic!("{template}: {e}"));
+            assert_eq!(e.argv.last().unwrap(), &t.full, "{template}");
+        }
+    }
+
+    #[test]
+    fn powershell_without_command_still_gets_quoted_values() {
+        let t = file("C:\\d\\a;Stop-Computer;$(x).txt", "n", "C:\\d", "txt");
+        let quoted = quote_powershell(&t.full);
+        // Windows PowerShell's default is -Command; `/` switches too.
+        for template in [
+            "powershell Remove-Item -LiteralPath %p",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass Remove-Item -LiteralPath %p",
+            "powershell /Command Remove-Item -LiteralPath %p",
+            "powershell /c Remove-Item -LiteralPath %p",
+            "powershell -nop -w hidden -c Remove-Item -LiteralPath %p",
+            "pwsh -c Remove-Item -LiteralPath %p",
+            "sudo pwsh -Command Remove-Item -LiteralPath %p",
+        ] {
+            let e = expand(template, &t).unwrap_or_else(|e| panic!("{template}: {e}"));
+            assert_eq!(e.argv.last().unwrap(), &quoted, "{template}");
+        }
+        // A script file and its arguments: plain (pwsh's default is -File).
+        for template in [
+            "pwsh -File clean.ps1 %p",
+            "pwsh clean.ps1 %p",
+            "powershell -File clean.ps1 %p",
+            r#"pwsh -cwa "Remove-Item -LiteralPath $args[0]" %p"#,
+        ] {
+            let e = expand(template, &t).unwrap_or_else(|e| panic!("{template}: {e}"));
+            assert_eq!(e.argv.last().unwrap(), &t.full, "{template}");
+        }
+        // No values in an encoded command, in a switch's value, or inside the script's
+        // own quotes.
+        for template in [
+            "powershell -EncodedCommand AAAA %p",
+            "powershell -ec AAAA %p",
+            "pwsh -WorkingDirectory %d -Command Get-ChildItem",
+            r#"pwsh -Command "Remove-Item \"%p\"""#,
+            r#"pwsh -Command "Remove-Item '%p'""#,
+        ] {
+            assert!(expand(template, &t).is_err(), "{template}");
+        }
     }
 }
