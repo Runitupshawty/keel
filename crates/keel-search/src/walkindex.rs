@@ -709,7 +709,8 @@ pub(crate) fn merge_hits(query: &Query, hits: Vec<Hit>) -> Vec<Hit> {
         let rank = quality.as_ref().map_or(2, |m| m.quality(h.path.name()));
         (rank, path.to_lowercase(), same)
     };
-    let mut keyed: Vec<((u8, String, String), Hit)> = hits.into_iter().map(|h| (key(&h), h)).collect();
+    let mut keyed: Vec<((u8, String, String), Hit)> =
+        hits.into_iter().map(|h| (key(&h), h)).collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     let mut seen = HashSet::new();
     keyed
@@ -777,7 +778,9 @@ fn meta_of(md: &std::fs::Metadata, path: &Path) -> Meta {
 type Rules = Option<Arc<ExcludeRules>>;
 
 fn rules_key(rules: &Rules) -> String {
-    rules.as_ref().map_or_else(|| "standard".into(), |r| r.key())
+    rules
+        .as_ref()
+        .map_or_else(|| "standard".into(), |r| r.key())
 }
 
 /// A walk of `root` (to `depth` levels) by `rules`.
@@ -935,7 +938,9 @@ fn save_full(path: &Path, t: &Table, roots: &[PathBuf], stamp: &Stamp) -> anyhow
                 tx.prepare("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
             for slot in 0..t.entries.len() as u32 {
                 if let Some((parent, name, is_dir, size, mtime, created, attrs)) = t.row(slot) {
-                    insert.execute(params![slot, parent, name, is_dir, size, mtime, created, attrs])?;
+                    insert.execute(params![
+                        slot, parent, name, is_dir, size, mtime, created, attrs
+                    ])?;
                 }
             }
         }
@@ -976,7 +981,9 @@ fn save_changes(
         for (slot, row) in changes {
             match row {
                 Some((parent, name, is_dir, size, mtime, created, attrs)) => {
-                    upsert.execute(params![slot, parent, name, is_dir, size, mtime, created, attrs])?;
+                    upsert.execute(params![
+                        slot, parent, name, is_dir, size, mtime, created, attrs
+                    ])?;
                 }
                 None => {
                     delete.execute([slot])?;
@@ -1247,7 +1254,11 @@ pub(crate) fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
                 std::fs::canonicalize(&abs)
                     .ok()
                     .or_else(|| {
-                        Some(std::fs::canonicalize(abs.parent()?).ok()?.join(abs.file_name()?))
+                        Some(
+                            std::fs::canonicalize(abs.parent()?)
+                                .ok()?
+                                .join(abs.file_name()?),
+                        )
                     })
                     .unwrap_or(abs),
             );
@@ -1298,7 +1309,10 @@ impl Searcher for WalkIndexSearcher {
                 roots.join(", ")
             ))
         } else if sh.building.load(Relaxed) {
-            Some(format!("indexing {} files\u{2026}", sh.progress.load(Relaxed)))
+            Some(format!(
+                "indexing {} files\u{2026}",
+                sh.progress.load(Relaxed)
+            ))
         } else if sh.missed.load(Relaxed) {
             Some("some changes were missed (the change buffer overflowed); they show after the next rescan".into())
         } else if sh.unwatched.load(Relaxed) {
@@ -1679,7 +1693,11 @@ impl Worker {
                     continue;
                 }
                 t.set_meta(c.slot, c.meta);
-                let names: HashSet<String> = c.kids.iter().map(|(n, _, _)| clean(n).into_owned()).collect();
+                let names: HashSet<String> = c
+                    .kids
+                    .iter()
+                    .map(|(n, _, _)| clean(n).into_owned())
+                    .collect();
                 let gone: Vec<u32> = t
                     .children
                     .get(&c.slot)

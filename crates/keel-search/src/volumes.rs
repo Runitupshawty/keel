@@ -73,7 +73,9 @@ pub fn same_root(a: &Path, b: &Path) -> bool {
 #[cfg(windows)]
 fn list() -> Vec<VolumeInfo> {
     use windows::core::HSTRING;
-    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
+    use windows::Win32::Storage::FileSystem::{
+        GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+    };
     const DRIVE_REMOVABLE: u32 = 2;
     const DRIVE_FIXED: u32 = 3;
     const DRIVE_REMOTE: u32 = 4;
@@ -124,7 +126,16 @@ fn list() -> Vec<VolumeInfo> {
 /// Network file systems by their `/proc/mounts` type.
 #[cfg(any(target_os = "linux", test))]
 const NETWORK_FS: &[&str] = &[
-    "nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "afs", "ncpfs", "davfs", "fuse.rclone",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "fuse.sshfs",
+    "afs",
+    "ncpfs",
+    "davfs",
+    "fuse.rclone",
 ];
 
 /// `/proc/mounts` lines: removable mounts (under `/media`, `/run/media`) and network
@@ -136,7 +147,9 @@ fn parse_mounts(text: &str) -> Vec<VolumeInfo> {
         let mut out = Vec::with_capacity(b.len());
         let mut i = 0;
         while i < b.len() {
-            let octal = b.get(i + 1..i + 4).filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)));
+            let octal = b
+                .get(i + 1..i + 4)
+                .filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)));
             match (b[i], octal) {
                 (b'\\', Some(d)) => {
                     let v = d.iter().fold(0u32, |a, c| a * 8 + u32::from(c - b'0'));
@@ -159,7 +172,9 @@ fn parse_mounts(text: &str) -> Vec<VolumeInfo> {
         };
         let dir = unescape(dir);
         let network = NETWORK_FS.contains(&fs);
-        let removable = ["/media/", "/run/media/"].iter().any(|p| dir.starts_with(p));
+        let removable = ["/media/", "/run/media/"]
+            .iter()
+            .any(|p| dir.starts_with(p));
         if !(network || removable) || seen.iter().any(|v| v.root == Path::new(&dir)) {
             continue;
         }
@@ -220,10 +235,18 @@ C:\\134 /mnt/c 9p rw 0 0
 garbage
 ";
         let v = parse_mounts(text);
-        let roots: Vec<_> = v.iter().map(|v| v.root.to_string_lossy().into_owned()).collect();
+        let roots: Vec<_> = v
+            .iter()
+            .map(|v| v.root.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             roots,
-            ["/media/me/MY USB", "/run/media/me/disk", "/mnt/nfs", "/srv/share"]
+            [
+                "/media/me/MY USB",
+                "/run/media/me/disk",
+                "/mnt/nfs",
+                "/srv/share"
+            ]
         );
         assert_eq!(v[0].kind, VolumeKind::Removable);
         assert_eq!((v[0].fs.as_str(), v[0].label.as_str()), ("vfat", "MY USB"));
@@ -246,6 +269,9 @@ garbage
         assert_eq!(vol(VolumeKind::Fixed, "NTFS").needs_walk(), !cfg!(windows));
         assert!(same_root(Path::new("E:\\"), Path::new("e:")));
         assert!(!same_root(Path::new("E:\\"), Path::new("F:\\")));
-        assert!(SystemVolumes.volumes().is_empty(), "never real drives in tests");
+        assert!(
+            SystemVolumes.volumes().is_empty(),
+            "never real drives in tests"
+        );
     }
 }

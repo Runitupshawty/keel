@@ -101,8 +101,7 @@ pub fn watch(
                 }
                 if ok == 0 {
                     let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) && len > NETWORK_MAX
-                    {
+                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) && len > NETWORK_MAX {
                         len = NETWORK_MAX;
                         buf.truncate(len / 8);
                         continue;
@@ -159,7 +158,9 @@ impl Drop for Watch {
 /// list, never reads past it.
 pub fn parse(buf: &[u8]) -> Vec<Vec<u16>> {
     let u32_at = |at: usize| -> Option<u32> {
-        Some(u32::from_ne_bytes(buf.get(at..at.checked_add(4)?)?.try_into().ok()?))
+        Some(u32::from_ne_bytes(
+            buf.get(at..at.checked_add(4)?)?.try_into().ok()?,
+        ))
     };
     let mut names = Vec::new();
     let mut at = 0usize;

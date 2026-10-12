@@ -35,7 +35,10 @@ struct Planned {
 fn plan(s: &mut IndexSettings, volumes: &[VolumeInfo]) -> (Vec<Planned>, Vec<PathBuf>, bool) {
     let mut changed = false;
     for v in volumes.iter().filter(|v| v.needs_walk()) {
-        if s.volumes.iter().any(|e| same_root(Path::new(&e.root), &v.root)) {
+        if s.volumes
+            .iter()
+            .any(|e| same_root(Path::new(&e.root), &v.root))
+        {
             continue;
         }
         let auto = match v.kind {
@@ -52,7 +55,11 @@ fn plan(s: &mut IndexSettings, volumes: &[VolumeInfo]) -> (Vec<Planned>, Vec<Pat
             changed = true;
         }
     }
-    let online = |e: &VolumeRoot| volumes.iter().find(|v| same_root(Path::new(&e.root), &v.root));
+    let online = |e: &VolumeRoot| {
+        volumes
+            .iter()
+            .find(|v| same_root(Path::new(&e.root), &v.root))
+    };
     let mut deleted = Vec::new();
     if s.auto_remove_offline {
         s.volumes.retain(|e| {
@@ -155,9 +162,7 @@ impl Inner {
         let mut kept: Vec<Open> = Vec::new();
         let mut reopened = false;
         for p in planned {
-            let same = open
-                .iter()
-                .position(|o| o.planned == p && o.rules == rules);
+            let same = open.iter().position(|o| o.planned == p && o.rules == rules);
             if let Some(i) = same {
                 kept.push(open.swap_remove(i));
                 continue;
@@ -170,7 +175,9 @@ impl Inner {
             };
             // Close an older index of this root (other options) before reopening.
             open.retain(|o| !same_root(&o.planned.root, &p.root));
-            if let Ok(index) = WalkIndexSearcher::open_with(self.dir.clone(), vec![p.root.clone()], opts) {
+            if let Ok(index) =
+                WalkIndexSearcher::open_with(self.dir.clone(), vec![p.root.clone()], opts)
+            {
                 kept.push(Open {
                     planned: p,
                     rules: rules.clone(),
@@ -205,7 +212,12 @@ impl FolderIndexes {
     /// The indexes `settings` ask for, with their dbs in `dir`, kept in line with the
     /// mounted volumes by a background poll. Lists volumes: off the UI thread.
     pub fn open(dir: PathBuf, settings: IndexSettings) -> Self {
-        let this = Self::with(dir, settings, Arc::new(SystemVolumes), Arc::new(SystemClock));
+        let this = Self::with(
+            dir,
+            settings,
+            Arc::new(SystemVolumes),
+            Arc::new(SystemClock),
+        );
         let (weak, stop) = (Arc::downgrade(&this.inner), this.stop.clone());
         let _ = std::thread::Builder::new()
             .name("keel-volumes".into())
@@ -303,7 +315,9 @@ impl Searcher for FolderIndexes {
                 _ => None,
             })
             .reduce(|a, b| a + b);
-        done.map_or(SearchState::Unavailable, |done| SearchState::Indexing { done })
+        done.map_or(SearchState::Unavailable, |done| SearchState::Indexing {
+            done,
+        })
     }
 
     fn status(&self) -> Option<String> {
@@ -469,7 +483,10 @@ mod tests {
         assert!(changed, "the new removable volume was added");
         assert!(deleted.is_empty());
         assert!(s.volumes.iter().any(|v| v.root == "/v/usb"));
-        assert!(!s.volumes.iter().any(|v| v.root == "/v/share"), "shares by hand");
+        assert!(
+            !s.volumes.iter().any(|v| v.root == "/v/share"),
+            "shares by hand"
+        );
         // Settled: nothing changes the second time.
         let (_, _, changed) = plan(&mut s, &vols);
         assert!(!changed);
@@ -482,7 +499,11 @@ mod tests {
         assert!(changed);
         assert_eq!(planned.len(), 2, "only the folders: {planned:?}");
         assert_eq!(deleted.len(), 3);
-        assert_eq!(s.volumes.len(), 1, "the offline ones are gone, /v/off stays");
+        assert_eq!(
+            s.volumes.len(),
+            1,
+            "the offline ones are gone, /v/off stays"
+        );
     }
 
     #[test]
@@ -500,7 +521,10 @@ mod tests {
         if cfg!(windows) {
             let ntfs = vol(Path::new("C:\\"), VolumeKind::Fixed, "NTFS");
             let mut s = IndexSettings::default();
-            assert!(plan(&mut s, &[ntfs]).0.is_empty(), "the NTFS index covers it");
+            assert!(
+                plan(&mut s, &[ntfs]).0.is_empty(),
+                "the NTFS index covers it"
+            );
         }
     }
 
@@ -514,7 +538,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("plan.txt"), b"x").unwrap();
         let source = Arc::new(Fake::default());
-        source.0.lock().push(vol(&usb, VolumeKind::Removable, "exFAT"));
+        source
+            .0
+            .lock()
+            .push(vol(&usb, VolumeKind::Removable, "exFAT"));
         let mut settings = IndexSettings {
             auto_include_removable: true,
             ..IndexSettings::default()
@@ -547,9 +574,18 @@ mod tests {
         // With Automatically remove offline volumes: dropped with its saved index.
         let mut s = added.clone();
         s.auto_remove_offline = true;
-        let dbs = || std::fs::read_dir(&idx).unwrap().filter(|e| {
-            e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".db")
-        }).count();
+        let dbs = || {
+            std::fs::read_dir(&idx)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".db")
+                })
+                .count()
+        };
         assert_eq!(dbs(), 2);
         f.set_index_settings(&s);
         assert_eq!(f.roots(), [folder.clone()]);

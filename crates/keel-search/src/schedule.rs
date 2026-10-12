@@ -135,10 +135,7 @@ mod tests {
         let clock = FakeClock::new(MIDNIGHT, 2 * 3600);
         let s = Schedule::Daily("03:30".into());
         // Scanned at 00:00 UTC (02:00 local): due the same day at 01:30 UTC.
-        assert_eq!(
-            s.next_after(MIDNIGHT, &clock),
-            Some(MIDNIGHT + 3600 + 1800)
-        );
+        assert_eq!(s.next_after(MIDNIGHT, &clock), Some(MIDNIGHT + 3600 + 1800));
         // Scanned at 02:00 UTC (04:00 local), after today's run: tomorrow.
         let late = MIDNIGHT + 2 * 3600;
         assert_eq!(

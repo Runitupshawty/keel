@@ -91,7 +91,11 @@ fn settle(s: &WalkIndexSearcher, query: &Query, want: &[&str]) {
 fn scans(s: &WalkIndexSearcher, n: usize) {
     let end = Instant::now() + Duration::from_secs(60);
     while s.shared.scans.load(Relaxed) < n {
-        assert!(Instant::now() < end, "still {} scans", s.shared.scans.load(Relaxed));
+        assert!(
+            Instant::now() < end,
+            "still {} scans",
+            s.shared.scans.load(Relaxed)
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -328,9 +332,15 @@ fn excludes_apply_at_index_time_and_a_rule_change_rebuilds() {
     // The saved index was walked with other rules: walked again.
     settle(&s, &q("index.js"), &[]);
     assert!(names(&s, &q("cache")).is_empty());
-    assert!(names(&s, &q("node_modules")).is_empty(), "the folder itself");
+    assert!(
+        names(&s, &q("node_modules")).is_empty(),
+        "the folder itself"
+    );
     if cfg!(not(windows)) {
-        assert!(names(&s, &q("report.secret")).is_empty(), "dot names are hidden");
+        assert!(
+            names(&s, &q("report.secret")).is_empty(),
+            "dot names are hidden"
+        );
     }
     assert_eq!(names(&s, &q("a.jpg")), ["a.jpg"]);
     drop(s);
@@ -424,7 +434,11 @@ fn fast_rescan_lists_only_folders_whose_time_moved() {
     assert!(names(&s, &q("main.rs")).is_empty());
     assert_eq!(names(&s, &q("x.md")), ["x.md"]);
     assert_eq!(names(&s, &q("folder:deep")), ["deep"]);
-    assert_eq!(s.info(&old).unwrap().size, 1, "an unchanged folder is not listed");
+    assert_eq!(
+        s.info(&old).unwrap().size,
+        1,
+        "an unchanged folder is not listed"
+    );
     // A full rebuild sees it; so does the next start's catch-up rescan (saved rows).
     s.rebuild();
     scans(&s, 3);
@@ -447,7 +461,10 @@ fn an_offline_root_stays_searchable_and_is_rescanned_when_back() {
     rename(&d.root, &away);
     // Offline at start: the last scan is served, nothing is walked or deleted.
     let s = d.open_with(opts());
-    assert_eq!(s.offline_roots(), vec![normalize_roots(vec![d.root.clone()])[0].clone()]);
+    assert_eq!(
+        s.offline_roots(),
+        vec![normalize_roots(vec![d.root.clone()])[0].clone()]
+    );
     assert!(s.status().unwrap().contains("offline"), "{:?}", s.status());
     assert_eq!(s.state(), SearchState::Ready);
     assert_eq!(names(&s, &q("main.rs")), ["main.rs"]);
@@ -467,8 +484,8 @@ fn an_offline_root_stays_searchable_and_is_rescanned_when_back() {
     // Offline with no saved index: not ready, and says why.
     let other = Dirs::new();
     std::fs::remove_dir_all(&other.root).unwrap();
-    let s = WalkIndexSearcher::open_with(other.idx.clone(), vec![other.root.clone()], opts())
-        .unwrap();
+    let s =
+        WalkIndexSearcher::open_with(other.idx.clone(), vec![other.root.clone()], opts()).unwrap();
     s.tick();
     assert!(!s.available());
     assert_eq!(s.state(), SearchState::Unavailable);

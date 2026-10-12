@@ -105,7 +105,8 @@ impl ExcludeRules {
         let full = norm(&path.to_string_lossy());
         let name = full.rsplit('/').next().unwrap_or(&full);
         let under = |dir: &str, p: &str| {
-            p == dir || (p.len() > dir.len() && p.starts_with(dir) && p[dir.len()..].starts_with('/'))
+            p == dir
+                || (p.len() > dir.len() && p.starts_with(dir) && p[dir.len()..].starts_with('/'))
         };
         if is_dir
             && (self.folder_paths.iter().any(|f| under(f, &full))
@@ -209,9 +210,15 @@ mod tests {
         });
         assert!(!r.admit(&p(r"c:\data\cache"), true, 0));
         assert!(!r.admit(&p(r"C:\DATA\Cache\deep"), true, 0), "below it too");
-        assert!(r.admit(&p(r"C:\Data\Cached"), true, 0), "not a prefix of a name");
+        assert!(
+            r.admit(&p(r"C:\Data\Cached"), true, 0),
+            "not a prefix of a name"
+        );
         assert!(!r.admit(&p("/src/app/node_modules"), true, 0));
-        assert!(r.admit(&p("/src/app/node_modules"), false, 0), "a file of that name");
+        assert!(
+            r.admit(&p("/src/app/node_modules"), false, 0),
+            "a file of that name"
+        );
         assert!(!r.admit(&p("/x/Y.TmpDir"), true, 0));
         assert!(!r.admit(&p(r"D:\proj\build\out"), true, 0));
         assert!(r.admit(&p(r"D:\proj\build"), true, 0));
@@ -222,7 +229,10 @@ mod tests {
         let r = rules(|s| s.include_only_folders = vec!["/vol/Photos".into(), "/vol/b/c".into()]);
         assert!(r.admit(&p("/vol/photos"), true, 0));
         assert!(r.admit(&p("/vol/Photos/2024/a.jpg"), false, 0));
-        assert!(r.admit(&p("/vol/b"), true, 0), "above an include-only folder");
+        assert!(
+            r.admit(&p("/vol/b"), true, 0),
+            "above an include-only folder"
+        );
         assert!(!r.admit(&p("/vol/b/x.txt"), false, 0), "a file beside it");
         assert!(!r.admit(&p("/vol/music"), true, 0));
         assert!(!r.admit(&p("/vol/photosx"), true, 0));

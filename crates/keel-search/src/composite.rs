@@ -4,8 +4,8 @@
 //! re-probes it at most every [`REPROBE`], so starting or quitting Everything
 //! after Keel takes effect within one query or 30 s.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -58,7 +58,11 @@ impl Composite {
             self.fallback
                 .get_or_init(|| {
                     let fallback = open();
-                    let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    let pending = self
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
                     if let Some(settings) = pending {
                         fallback.set_index_settings(&settings);
                     }
@@ -156,7 +160,11 @@ impl Searcher for Composite {
     fn set_index_settings(&self, settings: &IndexSettings) {
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings.clone());
         if let Some(fallback) = self.fallback.get() {
-            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             if let Some(settings) = pending {
                 fallback.set_index_settings(&settings);
             }
@@ -487,7 +495,10 @@ mod tests {
                 ..Fixed::default()
             }),
         );
-        assert_eq!(hit_names(&merged, "notes"), ["notes", "notes.txt", "my notes"]);
+        assert_eq!(
+            hit_names(&merged, "notes"),
+            ["notes", "notes.txt", "my notes"]
+        );
         // The NTFS index still building: the folders answer, and both notes show.
         let building = Merge::new(
             Box::new(Fixed {

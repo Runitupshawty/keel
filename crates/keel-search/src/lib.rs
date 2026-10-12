@@ -21,19 +21,19 @@ mod spotlight;
 mod volumes;
 mod walkindex;
 
+pub use composite::Merge;
 #[cfg(windows)]
 pub use everything::EverythingSearcher;
+pub use exclude::{attr, ExcludeRules};
+pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
+pub use index_settings::{
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, ScanOptions, Schedule, VolumeRoot,
+};
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
     FROZEN_STATUS,
-};
-pub use composite::Merge;
-pub use exclude::{attr, ExcludeRules};
-pub use folders::FolderIndexes;
-pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, Schedule, ScanOptions, VolumeRoot,
 };
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
 pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
@@ -212,7 +212,9 @@ pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
                 composite::REPROBE,
             ))
         }
-        (Err(_), Some(dir)) => with_folders(Box::new(NtfsSearcher::open(dir.clone())), &dir, settings),
+        (Err(_), Some(dir)) => {
+            with_folders(Box::new(NtfsSearcher::open(dir.clone())), &dir, settings)
+        }
         (Err(error), None) => walk_index_or(Unavailable::new(format!(
             "Everything search is unavailable: {error:#}"
         ))),
@@ -228,7 +230,11 @@ pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
 }
 
 /// `main` searched together with the folder and volume indexes (dbs in `dir`).
-fn with_folders(main: Box<dyn Searcher>, dir: &Path, settings: &IndexSettings) -> Box<dyn Searcher> {
+fn with_folders(
+    main: Box<dyn Searcher>,
+    dir: &Path,
+    settings: &IndexSettings,
+) -> Box<dyn Searcher> {
     let folders = FolderIndexes::open(dir.join("folders"), settings.clone());
     Box::new(Merge::new(main, Box::new(folders)))
 }
