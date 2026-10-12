@@ -408,7 +408,7 @@ fn drop_zone(
         })
     });
     if let Some((rect, target)) = into {
-        let stroke = Stroke::new(2.0, accent);
+        let stroke = Stroke::new(2.0_f32, accent);
         ui.painter()
             .rect_stroke(rect, PILL_RADIUS, stroke, egui::StrokeKind::Inside);
         if released {
@@ -422,8 +422,8 @@ fn drop_zone(
     let y = (rows.iter().find(|(i, ..)| *i >= gap))
         .map_or(last.1.bottom(), |(_, rect, _)| rect.top());
     let line = [pos2(zone.left() + PAD_X, y), pos2(zone.right() - PAD_X, y)];
-    ui.painter().line_segment(line, Stroke::new(2.0, accent));
-    ui.painter().circle_stroke(line[0], 3.0, Stroke::new(1.5, accent));
+    ui.painter().line_segment(line, Stroke::new(2.0_f32, accent));
+    ui.painter().circle_stroke(line[0], 3.0, Stroke::new(1.5_f32, accent));
     if !released {
         return;
     }
@@ -599,9 +599,9 @@ fn usage_line(ui: &egui::Ui, rect: Rect, used: f32, eject: bool) {
     };
     let track = v.widgets.noninteractive.bg_stroke.color;
     let painter = ui.painter();
-    painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(2.0, track));
+    painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(2.0_f32, track));
     let end = left + (right - left) * used.clamp(0.0, 1.0);
-    painter.line_segment([pos2(left, y), pos2(end, y)], Stroke::new(2.0, fill));
+    painter.line_segment([pos2(left, y), pos2(end, y)], Stroke::new(2.0_f32, fill));
 }
 
 /// The eject button of drive `what`.
@@ -734,19 +734,19 @@ impl AppState {
     pub(crate) fn sidebar_cmd(&mut self, p: usize, cmd: SidebarCmd) {
         match cmd {
             SidebarCmd::Pin { pane, paths, at } => {
-                let entries = self.panes.get(pane).map(|pane| &pane.tab().entries);
+                let entries = self.panes.get(pane).map(|pane| pane.tab().entries());
                 let dirs = entries.map_or_else(Vec::new, |e| folders_in(e, &paths));
                 self.pin_all(dirs, at);
             }
             SidebarCmd::PinSelection => {
                 let tab = self.tab(p);
-                let picked: Vec<VPath> = (tab.entries.iter())
+                let picked: Vec<VPath> = (tab.entries().iter())
                     .filter(|e| tab.selected.contains(&e.name))
                     .map(|e| e.path.clone())
                     .collect();
                 let dirs = match picked.is_empty() {
                     true => vec![tab.dir.clone()],
-                    false => folders_in(&tab.entries, &picked),
+                    false => folders_in(tab.entries(), &picked),
                 };
                 self.pin_all(dirs, None);
             }
@@ -871,7 +871,7 @@ mod tests {
             crate::tab::test_entry(&dir, "Photos", Kind::Dir, 0),
             crate::tab::test_entry(&dir, "notes.md", Kind::File, 3),
         ];
-        s.tab_mut(0).entries = entries.clone();
+        s.tab_mut(0).set_entries(entries.clone());
         let labels = |s: &AppState| -> Vec<String> {
             (s.settings.sidebar.favorites.iter())
                 .map(Favorite::label)
