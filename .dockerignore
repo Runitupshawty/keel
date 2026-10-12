@@ -1,0 +1,13 @@
+.git
+.github
+target
+fuzz/target
+crates/keel-web/dist
+tests/web-e2e/node_modules
+tests/web-e2e/out
+tmp
+*.log
+*.zip
+*.tar.gz
+sdk/typescript/node_modules
+sdk/typescript/dist

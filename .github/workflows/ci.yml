@@ -8,6 +8,33 @@ permissions:
   contents: read
 
 jobs:
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build daemon image
+        run: docker build -t keel-daemon .
+      - name: Check non-root runtime and daemon flags
+        run: |
+          test "$(docker run --rm --entrypoint id keel-daemon -u)" = 10001
+          docker run --rm keel-daemon --help
+      - name: Serve the embedded web client
+        run: |
+          docker run -d --name keel -p 127.0.0.1:7421:7421 -v keel-state:/var/lib/keel keel-daemon
+          trap 'docker logs keel; docker rm -f keel; docker volume rm keel-state' EXIT
+          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://localhost:7421/ -o /tmp/index.html
+          grep -q boot.js /tmp/index.html
+          curl --fail http://localhost:7421/keel_web_bg.wasm -o /dev/null
+          docker exec keel test -s /var/lib/keel/config/daemon.token
+          docker cp keel:/var/lib/keel/config/daemon.token /tmp/keel-token
+          docker stop keel
+          test "$(docker inspect --format '{{.State.ExitCode}}' keel)" = 0
+          docker start keel
+          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://localhost:7421/ -o /dev/null
+          docker cp keel:/var/lib/keel/config/daemon.token /tmp/keel-token-after
+          cmp /tmp/keel-token /tmp/keel-token-after
+
   build:
     strategy:
       fail-fast: false
@@ -201,7 +228,7 @@ jobs:
 
   # The single required status check for branch protection.
   check:
-    needs: [build, wasm, mount, deny]
+    needs: [build, wasm, mount, deny, docker]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok

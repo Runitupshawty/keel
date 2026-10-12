@@ -139,7 +139,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Agent skill | landed | [SD-STATUS] | **Has** (unreleased): [agent-skill.md](agent-skill.md), installable from `skills/keel` |
 | Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
 | Self-update and a nightly channel | nightly | [SD-REL] | **Part**: opt-in update check and Windows self-install; no nightly channel |
-| Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Part**: `keel-daemon --web`; no container image |
+| Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Has**: `keel-daemon --web`; non-root Docker build recipe ([daemon.md](daemon.md#docker)); no published registry image |
 | Extensions (WASM, SDK) | in progress | [SD-STATUS] | **Lacks** (spec 2.10 Extensions) |
 | macOS, Windows, Linux desktop builds | v1 all three; v2 nightlies for macOS arm64 and Linux x64 only | [SD-README], [SD-REL] | **Has**: all three in every release |
 | No telemetry, no account | v2 described; v1 had an opt-out | [SD-README], [SD-REL] | **Has**: never had any |
