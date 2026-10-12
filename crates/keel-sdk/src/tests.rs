@@ -73,11 +73,7 @@ fn mock(n: usize) -> Fixture {
     mock_with(n, None, None)
 }
 
-fn mock_with(
-    n: usize,
-    gate: Option<mpsc::Receiver<()>>,
-    fail: Option<ApiError>,
-) -> Fixture {
+fn mock_with(n: usize, gate: Option<mpsc::Receiver<()>>, fail: Option<ApiError>) -> Fixture {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let gate = gate.map(|g| Arc::new(Mutex::new(g)));
     let s = seen.clone();
@@ -150,8 +146,16 @@ fn every_sort_maps_and_others_are_refused() {
         (KEEL_SORT_PATH_DESCENDING, SystemSort::Path, false),
         (KEEL_SORT_SIZE_ASCENDING, SystemSort::Size, true),
         (KEEL_SORT_SIZE_DESCENDING, SystemSort::Size, false),
-        (KEEL_SORT_DATE_MODIFIED_ASCENDING, SystemSort::DateModified, true),
-        (KEEL_SORT_DATE_MODIFIED_DESCENDING, SystemSort::DateModified, false),
+        (
+            KEEL_SORT_DATE_MODIFIED_ASCENDING,
+            SystemSort::DateModified,
+            true,
+        ),
+        (
+            KEEL_SORT_DATE_MODIFIED_DESCENDING,
+            SystemSort::DateModified,
+            false,
+        ),
     ] {
         assert_eq!(sort_of(sort), Some((field, ascending)));
         assert!(f.sdk.set_sort(sort));
@@ -202,7 +206,10 @@ fn getters_check_index_and_request_flags() {
     let f = mock(12);
     assert!(f.sdk.query(true, None));
     // Default flags: name and path, so the full path too, but not size or date.
-    assert_eq!(f.sdk.full_path(0).as_deref(), Some("/nowhere-keel-sdk/file-0000.txt"));
+    assert_eq!(
+        f.sdk.full_path(0).as_deref(),
+        Some("/nowhere-keel-sdk/file-0000.txt")
+    );
     assert_eq!(f.sdk.file_name(1).as_deref(), Some("file-0001.txt"));
     assert_eq!(f.sdk.path(1).as_deref(), Some("/nowhere-keel-sdk"));
     assert_eq!(f.sdk.size(0), None);
@@ -224,7 +231,11 @@ fn getters_check_index_and_request_flags() {
     );
     assert_eq!(f.sdk.size(3), None, "not yet queried with them");
     assert!(f.sdk.query(true, None));
-    assert_eq!(f.sdk.settings().flags & 0x8000_0000, 0, "unknown bits dropped");
+    assert_eq!(
+        f.sdk.settings().flags & 0x8000_0000,
+        0,
+        "unknown bits dropped"
+    );
     assert_eq!(f.sdk.size(3), Some(3));
     assert_eq!(f.sdk.size(9), Some(0), "a folder");
     assert_eq!(
@@ -249,7 +260,10 @@ fn getters_check_index_and_request_flags() {
 #[test]
 fn errors_map_to_keel_codes() {
     let cases = [
-        (ApiError::invalid_params("bad regex"), KEEL_ERROR_INVALIDPARAMETER),
+        (
+            ApiError::invalid_params("bad regex"),
+            KEEL_ERROR_INVALIDPARAMETER,
+        ),
         (
             ApiError::new(ApiError::TIMEOUT, "keel-daemon: late"),
             KEEL_ERROR_TIMEOUT,
@@ -259,7 +273,10 @@ fn errors_map_to_keel_codes() {
             KEEL_ERROR_UNSUPPORTED,
         ),
         (ApiError::failed("keel-daemon: pipe broken"), KEEL_ERROR_IPC),
-        (ApiError::failed("Everything: not running"), KEEL_ERROR_SEARCH),
+        (
+            ApiError::failed("Everything: not running"),
+            KEEL_ERROR_SEARCH,
+        ),
     ];
     for (e, code) in cases {
         let f = mock_with(3, None, Some(e.clone()));
@@ -362,17 +379,19 @@ fn a_newer_query_or_reset_cancels_a_running_one() {
     let f = mock_with(5, Some(gate), None);
     let (tx, rx) = mpsc::channel();
     let tx2 = tx.clone();
-    assert!(f
-        .sdk
-        .query(false, Some(Box::new(move |c| tx.send(("first", c)).unwrap()))));
+    assert!(f.sdk.query(
+        false,
+        Some(Box::new(move |c| tx.send(("first", c)).unwrap()))
+    ));
     // Wait until the first one is in the daemon.
     while f.seen.lock().calls.is_empty() {
         std::thread::sleep(Duration::from_millis(5));
     }
     f.sdk.set_search("file-0001");
-    assert!(f
-        .sdk
-        .query(false, Some(Box::new(move |c| tx2.send(("second", c)).unwrap()))));
+    assert!(f.sdk.query(
+        false,
+        Some(Box::new(move |c| tx2.send(("second", c)).unwrap()))
+    ));
     open.send(()).unwrap();
     open.send(()).unwrap();
     let mut got = [
@@ -386,7 +405,9 @@ fn a_newer_query_or_reset_cancels_a_running_one() {
     let (open, gate) = mpsc::channel();
     let f = mock_with(5, Some(gate), None);
     let (tx, rx) = mpsc::channel();
-    assert!(f.sdk.query(false, Some(Box::new(move |c| tx.send(c).unwrap()))));
+    assert!(f
+        .sdk
+        .query(false, Some(Box::new(move |c| tx.send(c).unwrap()))));
     f.sdk.reset();
     open.send(()).unwrap();
     assert_eq!(

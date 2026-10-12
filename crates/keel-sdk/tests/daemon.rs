@@ -158,7 +158,11 @@ fn searches_a_temp_folder_through_the_c_abi() {
         assert_eq!(full_path(1), umlaut.display().to_string());
         assert_eq!(
             full_path_w(1),
-            umlaut.display().to_string().encode_utf16().collect::<Vec<_>>()
+            umlaut
+                .display()
+                .to_string()
+                .encode_utf16()
+                .collect::<Vec<_>>()
         );
         let mut name = [0u8; 64];
         let n = keel_get_result_file_name(0, name.as_mut_ptr().cast::<c_char>(), 64);
@@ -264,7 +268,11 @@ fn searches_a_temp_folder_through_the_c_abi() {
         assert_eq!(keel_get_last_error(), KEEL_OK);
         assert_eq!(keel_get_num_results(), 0);
         assert!(query());
-        assert_eq!(keel_get_num_results(), 4, "the empty search, the same daemon");
+        assert_eq!(
+            keel_get_num_results(),
+            4,
+            "the empty search, the same daemon"
+        );
         keel_cleanup();
 
         // The daemon gone: an IPC error.
@@ -272,7 +280,10 @@ fn searches_a_temp_folder_through_the_c_abi() {
         drop(daemon);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while keel_api::client::Client::connect(&name).is_ok() {
-            assert!(std::time::Instant::now() < deadline, "the socket is still served");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the socket is still served"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(keel_set_profile(c_profile.as_ptr()), 1);

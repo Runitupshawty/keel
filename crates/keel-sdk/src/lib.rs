@@ -296,10 +296,7 @@ impl Sdk {
         if !keel_api::config::valid_profile(profile) {
             self.fail(
                 KEEL_ERROR_INVALIDPARAMETER,
-                format!(
-                    "profile \"{profile}\": {}",
-                    keel_api::config::PROFILE_RULE
-                ),
+                format!("profile \"{profile}\": {}", keel_api::config::PROFILE_RULE),
             );
             return false;
         }
@@ -420,8 +417,8 @@ impl Sdk {
                 ascending: Some(ascending),
                 ..SystemSearchParams::default()
             };
-            let params = serde_json::to_value(&params)
-                .map_err(|e| (KEEL_ERROR_MEMORY, e.to_string()))?;
+            let params =
+                serde_json::to_value(&params).map_err(|e| (KEEL_ERROR_MEMORY, e.to_string()))?;
             let answer = backend
                 .call("system.search", params)
                 .map_err(|e| code_of(&e))?;
@@ -435,12 +432,8 @@ impl Sdk {
             out.capped = page.capped;
             out.backend = page.backend;
             let got = page.hits.len().min(count);
-            out.items.extend(
-                page.hits
-                    .into_iter()
-                    .take(count)
-                    .map(|h| item(h, s.flags)),
-            );
+            out.items
+                .extend(page.hits.into_iter().take(count).map(|h| item(h, s.flags)));
             offset += got;
             if got == 0 || got < count || out.items.len() >= max || offset >= page.total {
                 break;
