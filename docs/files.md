@@ -17,6 +17,7 @@ Reference for the file panes and everything around them. The [getting-started gu
 | Shift+F10 | The Windows menu for the selection (Windows; see [Windows shell menu](#windows-shell-menu)) |
 | Ctrl+Shift+Z | Show or hide the drop zone |
 | Ctrl+Shift+S | Stash the selection in the drop zone |
+| Ctrl+Shift+U | The [Disk Usage window](#the-disk-usage-window) |
 | Ctrl+Shift+Alt+K | Global hotkey: bring Keel to the front (configurable) |
 
 The full list, with your bindings, is in the command palette (Ctrl+Shift+P). Cmd replaces Ctrl on macOS.
@@ -120,7 +121,7 @@ Sizes are apparent sizes (a file's length, not the space it takes on disk). A fi
 
 ### Disk usage scans
 
-`keel du --scan <folders or drives…>` (or `--all-drives`) runs Keel's disk usage scanner, the engine behind the coming Disk Usage window (Phase 17). It needs no library and works the way WinDirStat does:
+`keel du --scan <folders or drives…>` (or `--all-drives`) runs Keel's disk usage scanner, the engine behind the [Disk Usage window](#the-disk-usage-window). It needs no library and works the way WinDirStat does:
 
 - **Several roots at once**, folders and whole drives, walked in parallel (one task per folder on a work-stealing pool, so a wide drive keeps every core busy) into one result. `--all-drives` scans every local fixed drive (elsewhere than Windows: every mounted volume that is not removable or a network share).
 - **Size on disk** next to the size: on Windows the allocation the folder listing reports (no file is opened), and for compressed and sparse files `GetCompressedFileSizeW` rounded up to the volume's cluster; elsewhere the blocks the file has.
@@ -134,6 +135,19 @@ Sizes are apparent sizes (a file's length, not the space it takes on disk). A fi
 - `--json` prints the same as one JSON document ([api.md](api.md#cli)).
 
 A folder that cannot be read counts as empty and the last line says how many there were; folders deeper than 512 levels are not entered.
+
+### The Disk Usage window
+
+**Ctrl+Shift+U**, **Disk usage** in the command palette, or **Analyze disk usage** on a drive's right-click menu in the sidebar opens the Disk Usage window, WinDirStat's view of what fills a drive. **Analyze this folder's disk usage** in the palette scans the active pane's folder. It uses the scanner above with its defaults: links are not followed, hard links count once, cloud placeholders are never downloaded.
+
+- **Select drives** (the window's first button, and what Ctrl+Shift+U shows when nothing has been scanned yet): **All local drives**, **Individual drives** (tick them; each shows its used space as a bar and its free space; double-click a drive to scan just that one), or **Folders** (**Add folders…** picks one or more). A scan runs in the background with its files, bytes, files per second, time and the folder being read; **Pause**, **Resume** and **Stop** (which shows what was found so far, marked incomplete). **Rescan** walks the same drives and folders again. You can close the window while it scans.
+- **Layout**: the tree top-left, the file types top-right and the treemap below (WinDirStat's), the treemap on the left with the lists stacked on the right, or the lists only. The splitters are remembered.
+- **The tree** lists the scanned drives and folders with their folders and files, biggest first. Click the triangle (or double-click, or press Enter or Right) to open a folder; Left closes it or goes to the parent. Columns: **Name**, **Subtree %** (a bar of the item's share of its folder, colored by depth), **Percentage** (of the whole scan, or of the parent folder: Options), **Size**, **Size on disk**, **Items**, **Files**, **Folders**, **Last change** (the newest change anywhere below), **Attributes** (R read-only, H hidden, S system, A archive, C compressed, P sparse, L link, O offline), **Owner**, **Last accessed** and **Created**. The last three are read from the drive for the rows on screen only. Right-click a column header (or use **Columns**) to choose the columns; click a header to sort by it, again to reverse. Hovering a row shows its path and its share of its folder and of everything scanned. Free space and unknown space are listed last under each drive scanned from its root.
+- **Size** or **Size on disk** above the lists switches every size, share, sort and sum between the files' lengths and the space they take on the drive.
+- **Selecting**: click, Ctrl+click and Shift+click (or the arrow keys with Shift, Space, Ctrl+A); the status line adds up the selection (an item inside a selected folder counts once). Right-click a row for **Show in Keel**, **Open in a new tab**, **Copy path** and **Search for .ext in a new tab**; double-click a file to show it in the pane.
+- **File types** lists every extension with its color (by size rank, the treemap's colors), the description your system gives it, its bytes, its share and its file count. **Options → Group unregistered extensions** puts every extension your system has no file type for in one **Unregistered** row; files without an extension always have their own row. Selecting a file in the tree selects its type, and selecting a type marks its files in the tree (their names in the accent color). Double-click a type to list only its files in the tree (Esc shows everything again); its right-click menu also opens a search tab for it.
+- **Options** also has grid lines, striped rows and seconds in the times. The window's layout, columns and options are saved in the settings (`[disk_usage]`).
+- After a click in the window the keyboard is the window's (arrows, Page Up/Down, Home, End, Enter, Space, Esc to close); the palette, Settings and the other window-wide shortcuts still work. A click in a pane gives the keys back to it.
 
 ## Folder operations
 
