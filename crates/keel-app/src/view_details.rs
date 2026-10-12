@@ -95,6 +95,15 @@ pub fn ui(
         });
     }
 
+    // --- Task 83 ---: the Sizes view's Table / Treemap / Sunburst / Flame graph switch.
+    if sizes && crate::treemap::sizes_view::ui(ui, id.0, tab, lib, walked) {
+        tab.renaming = renaming;
+        if walk_wanted(tab, lib, walked) && crate::sizes::walks_on_its_own(&tab.dir) {
+            out.push(Action::CalculateSizes { fresh: false });
+        }
+        return;
+    }
+
     // Column widths are remembered per table: a folder tab that becomes the Recycle Bin
     // (or a search) gets the wide Original location (Folder) column, not the Ext width.
     let mut table = TableBuilder::new(ui)
