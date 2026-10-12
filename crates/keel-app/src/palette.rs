@@ -81,6 +81,12 @@ fn context_items() -> Vec<Item> {
             Library(LibCmd::FolderOp(Kind::Attributes)),
         ),
         ("Create link…", "", Library(LibCmd::FolderOp(Kind::Link))),
+        // --- Task 85 ---
+        (
+            crate::folder_ops::FOLDER_DATES,
+            "",
+            Library(LibCmd::FolderOp(Kind::FolderDates)),
+        ),
     ]
     .map(|(label, shortcut, action)| Item {
         label: label.to_owned(),

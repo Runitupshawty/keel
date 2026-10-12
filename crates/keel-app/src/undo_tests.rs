@@ -270,6 +270,8 @@ fn library_operations_record_what_their_job_did() {
         prune: Vec::new(),
         taken: Vec::new(),
         before: Vec::new(),
+        dated: Vec::new(),
+        dates: Vec::new(),
     };
     let copy = planned(
         L::Copy {
@@ -732,6 +734,8 @@ fn start_plan(lib: &keel_core::Library, op: keel_core::Op) -> (Planned, keel_cor
         prune: pick(keel_core::Action::RemoveFolder),
         taken: Vec::new(),
         before: Vec::new(),
+        dated: pick(keel_core::Action::SetFolderDate),
+        dates: Vec::new(),
     };
     u.read_before(stat_fn(&Router::new()));
     let id = plan.execute(lib, true).unwrap();
@@ -985,4 +989,37 @@ fn attributes_and_links_undone() {
     undo(&Router::new(), &e).unwrap();
     assert!(!tmp.path().join("link").exists());
     assert_eq!(tree(tmp.path()), before, "what it pointed to stays");
+}
+
+/// Task 85: folder dates undone get every folder's old time back; a folder changed since
+/// refuses the undo.
+#[test]
+fn folder_dates_undone() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("r");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let old = UNIX_EPOCH + Duration::from_secs(1_300_000_000);
+    let f = std::fs::File::create(root.join("sub/a.txt")).unwrap();
+    f.set_modified(old).unwrap();
+    drop(f);
+    let time = |p: &std::path::Path| std::fs::metadata(p).unwrap().modified().unwrap();
+    let before = (time(&root), time(&root.join("sub")));
+    let (_data, lib) = library();
+    let e = run_plan(&lib, keel_core::Op::folder_dates(VPath::local(&root)));
+    assert_eq!((time(&root), time(&root.join("sub"))), (old, old));
+    assert_eq!(e.noun(), "folder dates");
+    assert_eq!(e.done_text(), "Set the dates of 2 folders");
+    assert_eq!(
+        e.preview(),
+        "Undo folder dates: set 2 folders back as they were?"
+    );
+    undo(&Router::new(), &e).unwrap();
+    assert_eq!((time(&root), time(&root.join("sub"))), before);
+
+    // Again, then a file added: that folder changed since, so nothing is set back.
+    let e = run_plan(&lib, keel_core::Op::folder_dates(VPath::local(&root)));
+    std::fs::write(root.join("sub/new.txt"), "n").unwrap();
+    let refused = e.check(stat_fn(&Router::new())).unwrap_err();
+    assert!(refused.why.contains("changed since"), "{refused:?}");
 }

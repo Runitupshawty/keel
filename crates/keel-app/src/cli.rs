@@ -218,6 +218,9 @@ pub enum PlanCmd {
         #[arg(long, value_enum)]
         kind: LinkKind,
     },
+    /// Set each folder at and under FOLDER to the modified time of the newest file below
+    /// it (links are not followed; a folder with no file below keeps its time).
+    FolderDates { folder: String },
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq)]
@@ -721,6 +724,10 @@ mod tests {
             })
         );
         assert_eq!(
+            cmd(&["plan", "folder-dates", "d"]),
+            Command::Plan(PlanCmd::FolderDates { folder: "d".into() })
+        );
+        assert_eq!(
             cmd(&["execute", "abc", "--hash", "def"]),
             Command::Execute {
                 plan: Some("abc".into()),
@@ -835,6 +842,7 @@ mod tests {
             &["plan", "merge", "a"],
             &["plan", "organize", "d"],
             &["plan", "link", "t", "l"],
+            &["plan", "folder-dates"],
         ] {
             let err = parse(bad).unwrap_err();
             assert_eq!(err.exit_code(), 2, "{bad:?}");

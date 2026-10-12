@@ -216,12 +216,14 @@ pub fn set_folder_modified(dir: &Path, time: std::time::SystemTime) -> Result<()
         use std::os::windows::fs::OpenOptionsExt;
         // FILE_WRITE_ATTRIBUTES; FILE_FLAG_BACKUP_SEMANTICS (a folder) and
         // FILE_FLAG_OPEN_REPARSE_POINT (never what a junction points to).
-        open.access_mode(0x0100).custom_flags(0x0200_0000 | 0x0020_0000);
+        open.access_mode(0x0100)
+            .custom_flags(0x0200_0000 | 0x0020_0000);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        open.read(true).custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY);
+        open.read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY);
     }
     #[cfg(not(any(windows, unix)))]
     open.read(true);

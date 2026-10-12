@@ -296,6 +296,27 @@ fn folder_operations_from_the_command_line() {
     let out = env.run(&["plan", "organize", &s(empty.path()), "--by", "year"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to organize"));
+    // Task 85: folder dates to the newest file below.
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_300_000_000);
+    let deep = root.join("box/Documents/deep.txt");
+    std::fs::File::options()
+        .write(true)
+        .open(&deep)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(root.join("box/Documents/photo.jpg"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let preview = env.ok(&["plan", "folder-dates", &boxed]);
+    assert!(preview.contains("set_folder_date"), "{preview}");
+    run(&["plan", "folder-dates", &boxed]);
+    let when = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+    assert_eq!(when(&root.join("box/Documents")), old);
+    assert_eq!(when(&root.join("box")), old);
 }
 
 struct Mcp {

@@ -153,7 +153,11 @@ mod tests {
 
     #[test]
     fn times_round_trip_both_sides_of_the_epoch() {
-        for t in [at(0), at(1_700_000_000), UNIX_EPOCH - Duration::from_secs(86_400)] {
+        for t in [
+            at(0),
+            at(1_700_000_000),
+            UNIX_EPOCH - Duration::from_secs(86_400),
+        ] {
             assert_eq!(ns_time(crate::unix_ns(t)), t);
         }
     }

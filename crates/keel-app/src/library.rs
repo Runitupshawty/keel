@@ -2489,6 +2489,11 @@ impl AppState {
                 };
                 let dirs: Vec<bool> = picked.iter().map(|(_, d)| *d).collect();
                 match crate::folder_ops::FolderDialog::new(kind, paths, &dirs) {
+                    // Nothing to pick: straight to the preview.
+                    Ok(d) if !d.kind.asks() => match d.op() {
+                        Ok(op) => self.plan(op),
+                        Err(why) => self.toasts.error(why),
+                    },
                     Ok(d) => self.dialog = Some(crate::dialogs::Dialog::FolderOp(Box::new(d))),
                     Err(why) => self.toasts.error(why),
                 }
@@ -2517,6 +2522,7 @@ impl AppState {
                 let plan = dialog.plan.clone();
                 let (existed, permanent) = plan.undo_facts();
                 let (moves, made, prune) = plan.arranged();
+                let dated = plan.dated();
                 let mut undo = match self.library.undo_op.take() {
                     _ if permanent => {
                         self.undo.refuse(crate::state::PERMANENT);
@@ -2532,6 +2538,8 @@ impl AppState {
                         prune,
                         taken: Vec::new(),
                         before: Vec::new(),
+                        dated,
+                        dates: Vec::new(),
                     }),
                 };
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());

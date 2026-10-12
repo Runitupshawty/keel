@@ -549,6 +549,9 @@ fn command(
                         }),
                     )
                 }
+                PlanCmd::FolderDates { folder } => {
+                    ("plan.folder_dates", json!({"path": abs(&folder)}))
+                }
             };
             let preview = b.call(method, params)?;
             if json {

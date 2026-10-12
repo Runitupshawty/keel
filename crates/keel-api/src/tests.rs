@@ -2073,6 +2073,34 @@ fn folder_operations_preview_then_execute() {
     assert!(refused.is_err());
 }
 
+/// Task 85: `plan.folder_dates` previews each folder's new and old time and sets them.
+#[test]
+fn folder_dates_preview_then_execute() {
+    let f = fixture(None);
+    let docs = f.files.path().join("docs");
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_400_000_000);
+    for name in ["invoice-2026.pdf", "notes.txt"] {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(docs.join(name))
+            .unwrap();
+        file.set_modified(old).unwrap();
+    }
+    let preview = call(&f.ctx, "plan.folder_dates", json!({"path": s(&docs)})).unwrap();
+    let changes = preview["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "{preview}");
+    assert_eq!(changes[0]["action"], "set_folder_date");
+    let detail = changes[0]["detail"].as_str().unwrap();
+    assert!(detail.starts_with("2014-05-13T16:53:20Z, was "), "{detail}");
+    let summary = preview["summary"].as_str().unwrap();
+    assert!(summary.starts_with("Set the dates of 1 folder in"), "{summary}");
+    let info = run_file_plan(&f, &preview);
+    assert_eq!(info.status, keel_core::JobStatus::Done, "{}", info.log);
+    assert_eq!(std::fs::metadata(&docs).unwrap().modified().unwrap(), old);
+    let again = call(&f.ctx, "plan.folder_dates", json!({"path": s(&docs)}));
+    assert_eq!(again.unwrap_err().code, ApiError::INVALID_PARAMS);
+}
+
 /// Task 62: words find the text inside documents (a hit with a snippet), `contents: false`
 /// searches names only, `contents.set` turns a source off and back to its default, and
 /// `library.stats` counts the text.

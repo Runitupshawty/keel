@@ -48,10 +48,10 @@ mod text_job;
 mod totals;
 
 pub use arrange::{attributes_text, FolderOp, OrganizeBy};
-pub use folder_dates::{ns_time, FolderDate};
 pub use backup::{
     BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
 };
+pub use folder_dates::{ns_time, FolderDate};
 pub use fsid::unix_ns;
 pub use hash::{
     background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,
