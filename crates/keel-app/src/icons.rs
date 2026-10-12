@@ -114,6 +114,9 @@ pub fn folder_open() -> ImageSource<'static> {
 
 /// The icon of a place in the sidebar (a user folder, a drive, the Trash) drawn `px`
 /// physical pixels wide: Keel Finder's own icon for it, else the (open) folder icon.
+// The Phase 14 sidebar draws its own glyphs (`sidebar_glyphs`); Finder icons for its rows
+// are not wired in yet.
+#[allow(dead_code)]
 pub fn place(path: &VPath, open: bool, px: f32) -> ImageSource<'static> {
     match finder_on() {
         Some(light) => finder::source(&finder::folder(path, open), light, finder::bucket(px)),
