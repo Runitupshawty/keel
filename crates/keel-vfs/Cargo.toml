@@ -116,6 +116,11 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_KeyboardAndMouse",
     # Task 43: the shell context menu (PIDLs).
     "Win32_UI_Shell_Common",
+    # Task 85: restores create their file relative to the checked folder's handle
+    # (NtCreateFile) and refuse a virtual disk whose file is on the source volume.
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Storage_Vhd",
 ] }
 windows-core = "0.58"
 

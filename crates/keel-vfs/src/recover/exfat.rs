@@ -8,13 +8,15 @@
 use super::alloc::Alloc;
 use super::{
     civil, read_up_to, u16_at, u32_at, u64_at, utf16_units, Candidate, Confidence, Data, Extent,
-    FsKind, RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
+    FsKind, List, RecoverError, Result, Scan, MAX_DEPTH, MAX_MAP_BYTES, ROOT_FOLDER,
 };
 use std::collections::HashSet;
 use std::io::{Read, Seek};
 
 /// Most entries read from one folder (exFAT allows 256 MiB of them).
 const MAX_DIR_ENTRIES: u64 = 1 << 21;
+/// Most fragments one file's data is followed through (more: left out as damaged).
+const MAX_RUNS: usize = 1 << 16;
 
 #[derive(Debug)]
 pub(crate) struct Geo {
@@ -76,19 +78,19 @@ struct Walk<'a, R> {
     seen: HashSet<u64>,
     /// FAT steps left for files' chains (bounds the work a looping FAT can cause).
     budget: u64,
-    out: Vec<Candidate>,
+    list: List,
     bad_sets: usize,
     no_data: usize,
 }
 
 /// A folder to read: first cluster, length (None: follow the chain), no FAT chain,
-/// path, depth, deleted.
-type Folder = (u64, Option<u64>, bool, String, usize, bool);
+/// index in the folder table, depth, deleted.
+type Item = (u64, Option<u64>, bool, u32, usize, bool);
 
-pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
+pub(crate) fn scan<R: Read + Seek>(r: &mut R, limit: u64) -> Result<Scan> {
     let boot = read_up_to(r, 0, 512)?;
     let geo = geometry(&boot).ok_or(RecoverError::UnknownFs)?;
-    let need = ((geo.clusters + 2) * 4).min(geo.fat_len);
+    let need = ((geo.clusters + 2) * 4).min(geo.fat_len).min(MAX_MAP_BYTES);
     let fat = read_up_to(r, geo.fat_off, need)?;
     let budget = fat.len() as u64 + (1 << 22);
     let mut walk = Walk {
@@ -98,7 +100,7 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
         alloc: None,
         seen: HashSet::new(),
         budget,
-        out: Vec::new(),
+        list: List::new(limit),
         bad_sets: 0,
         no_data: 0,
     };
@@ -111,16 +113,16 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
     }
     walk.alloc = walk.bitmap(&root);
     // Live folders first: a deleted folder's clusters may now belong to a live one.
-    let (mut live, mut deleted): (Vec<Folder>, Vec<Folder>) = (Vec::new(), Vec::new());
-    walk.folder(&root, "", 0, false, &mut live, &mut deleted);
-    while let Some((first, len, nofat, path, depth, in_deleted)) =
+    let (mut live, mut deleted): (Vec<Item>, Vec<Item>) = (Vec::new(), Vec::new());
+    walk.folder(&root, ROOT_FOLDER, 0, false, &mut live, &mut deleted);
+    while let Some((first, len, nofat, folder, depth, in_deleted)) =
         live.pop().or_else(|| deleted.pop())
     {
-        if walk.out.len() >= MAX_CANDIDATES {
+        if walk.list.full() {
             break;
         }
         let entries = walk.folder_entries(first, len, nofat);
-        walk.folder(&entries, &path, depth, in_deleted, &mut live, &mut deleted);
+        walk.folder(&entries, folder, depth, in_deleted, &mut live, &mut deleted);
     }
     let mut notes: Vec<String> = Vec::new();
     if walk.alloc.is_none() {
@@ -138,16 +140,8 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
             walk.no_data
         ));
     }
-    if walk.out.len() >= MAX_CANDIDATES {
-        notes.push(format!("the list stops at {MAX_CANDIDATES} files"));
-    }
-    Ok(Scan {
-        fs: FsKind::Exfat,
-        cluster_size: walk.geo.cluster,
-        volume_size: walk.geo.total,
-        candidates: walk.out,
-        notes,
-    })
+    let Walk { geo, list, .. } = walk;
+    Ok(list.finish(FsKind::Exfat, geo.cluster, geo.total, notes))
 }
 
 impl<R: Read + Seek> Walk<'_, R> {
@@ -189,6 +183,9 @@ impl<R: Read + Seek> Walk<'_, R> {
             have += 1;
             if have == n {
                 break;
+            }
+            if runs.len() > MAX_RUNS {
+                return None;
             }
             let next = match nofat || self.budget == 0 {
                 true => None,
@@ -258,7 +255,9 @@ impl<R: Read + Seek> Walk<'_, R> {
     fn bitmap(&mut self, root: &[(u64, [u8; 32])]) -> Option<Alloc> {
         let (_, e) = root.iter().find(|(_, e)| e[0] == 0x81)?;
         let first = u64::from(u32_at(e, 20));
-        let len = u64_at(e, 24).min(self.geo.clusters.div_ceil(8));
+        let len = u64_at(e, 24)
+            .min(self.geo.clusters.div_ceil(8))
+            .min(MAX_MAP_BYTES);
         let runs = self.runs(first, len, false)?;
         let mut bytes = Vec::new();
         for (s, k) in runs {
@@ -276,11 +275,11 @@ impl<R: Read + Seek> Walk<'_, R> {
     fn folder(
         &mut self,
         entries: &[(u64, [u8; 32])],
-        path: &str,
+        folder: u32,
         depth: usize,
         in_deleted: bool,
-        live: &mut Vec<Folder>,
-        deleted: &mut Vec<Folder>,
+        live: &mut Vec<Item>,
+        deleted: &mut Vec<Item>,
     ) {
         let mut i = 0;
         while i < entries.len() {
@@ -310,10 +309,10 @@ impl<R: Read + Seek> Walk<'_, R> {
             i += count + 1;
             let gone = !f.in_use || in_deleted;
             if f.dir {
-                if depth < MAX_DEPTH && self.is_cluster(f.first) {
-                    let child = match path {
-                        "" => f.name.clone(),
-                        p => format!("{p}/{}", f.name),
+                // A cluster read already is not read again: no need to name it.
+                if depth < MAX_DEPTH && self.is_cluster(f.first) && !self.seen.contains(&f.first) {
+                    let Some(child) = self.list.folder(folder, f.name) else {
+                        return;
                     };
                     let item = (f.first, Some(f.size), f.nofat, child, depth + 1, gone);
                     match gone {
@@ -325,9 +324,6 @@ impl<R: Read + Seek> Walk<'_, R> {
             }
             if !gone {
                 continue;
-            }
-            if self.out.len() >= MAX_CANDIDATES {
-                return;
             }
             let Some(runs) = self.runs(f.first, f.size, f.nofat) else {
                 self.no_data += 1;
@@ -345,9 +341,9 @@ impl<R: Read + Seek> Walk<'_, R> {
                     len: k * self.geo.cluster,
                 })
                 .collect();
-            self.out.push(Candidate {
+            let added = self.list.push(Candidate {
                 name: f.name,
-                folder: Some(path.to_owned()),
+                folder: Some(folder),
                 first_char_unknown: false,
                 size: f.size,
                 created: f.created,
@@ -361,6 +357,9 @@ impl<R: Read + Seek> Walk<'_, R> {
                 },
                 location: *off,
             });
+            if !added {
+                return;
+            }
         }
     }
 }

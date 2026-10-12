@@ -146,9 +146,12 @@ pub enum RecoverCmd {
     Scan {
         /// A drive letter, a device or an image file.
         source: String,
+        /// Save the list here (a file on another drive) instead of in Keel's data folder.
+        #[arg(long, value_name = "FILE")]
+        save: Option<String>,
     },
     /// Restore files from the last scan into a folder on another drive (never onto the
-    /// drive scanned).
+    /// drive scanned); the drive is read again to find them.
     Restore {
         /// Ids from `keel recover scan`.
         #[arg(required = true)]
@@ -156,6 +159,9 @@ pub enum RecoverCmd {
         /// An existing folder on another drive.
         #[arg(long, value_name = "DIR")]
         to: String,
+        /// The list `keel recover scan --save` wrote (default: the last scan's).
+        #[arg(long, value_name = "FILE")]
+        from: Option<String>,
     },
 }
 
@@ -666,14 +672,39 @@ mod tests {
         assert_eq!(
             cmd(&["recover", "scan", "E:"]),
             Command::Recover(RecoverCmd::Scan {
-                source: "E:".into()
+                source: "E:".into(),
+                save: None
+            })
+        );
+        assert_eq!(
+            cmd(&["recover", "scan", "C:", "--save", "D:/scan.json"]),
+            Command::Recover(RecoverCmd::Scan {
+                source: "C:".into(),
+                save: Some("D:/scan.json".into())
             })
         );
         assert_eq!(
             cmd(&["recover", "restore", "3", "12", "--to", "D:/out"]),
             Command::Recover(RecoverCmd::Restore {
                 ids: vec![3, 12],
-                to: "D:/out".into()
+                to: "D:/out".into(),
+                from: None
+            })
+        );
+        assert_eq!(
+            cmd(&[
+                "recover",
+                "restore",
+                "3",
+                "--to",
+                "D:/out",
+                "--from",
+                "D:/scan.json"
+            ]),
+            Command::Recover(RecoverCmd::Restore {
+                ids: vec![3],
+                to: "D:/out".into(),
+                from: Some("D:/scan.json".into())
             })
         );
         assert!(parse(&["recover", "restore", "x", "--to", "d"]).is_err());

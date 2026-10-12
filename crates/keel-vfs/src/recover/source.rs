@@ -9,12 +9,13 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// The volume a path lives on: the volume serial number on Windows, the device number
-/// elsewhere (a block device's own number for the device itself). A volume image counts
-/// as the volume holding the image file.
+/// elsewhere (a disk device's own number for the device itself, the block device's for a
+/// macOS raw `/dev/rdiskN` node). A volume image counts as the volume holding the image
+/// file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VolumeId(pub(crate) u64);
 
-/// The volume `path` (a file or folder that exists) is on.
+/// The volume `path` (a file, a folder or a disk device that exists) is on.
 pub fn volume_of(path: &Path) -> io::Result<VolumeId> {
     #[cfg(windows)]
     if let Some(letter) = drive_letter(&path.to_string_lossy()) {
@@ -27,20 +28,82 @@ pub fn volume_of(path: &Path) -> io::Result<VolumeId> {
 fn sys_volume_of(path: &Path) -> io::Result<VolumeId> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let m = std::fs::metadata(path)?;
-    Ok(VolumeId(if m.file_type().is_block_device() {
-        m.rdev()
-    } else {
-        m.dev()
-    }))
+    let kind = m.file_type();
+    if kind.is_file() || kind.is_dir() {
+        return Ok(VolumeId(m.dev()));
+    }
+    if kind.is_block_device() {
+        return Ok(VolumeId(m.rdev()));
+    }
+    if kind.is_char_device() {
+        // A raw disk node (macOS, the BSDs): the files of the volume it holds report the
+        // number of its block twin (`/dev/rdisk4s1` -> `/dev/disk4s1`), not its own.
+        let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        if let Some(twin) = block_twin(&real) {
+            if let Ok(b) = std::fs::metadata(&twin) {
+                if b.file_type().is_block_device() {
+                    return Ok(VolumeId(b.rdev()));
+                }
+            }
+        }
+        return Ok(VolumeId(m.rdev()));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "{} is not a file, a folder or a disk device",
+            path.display()
+        ),
+    ))
+}
+
+/// The block device a raw (character) disk node stands for: `rdiskN...` to `diskN...` in
+/// the same folder.
+#[cfg(any(unix, test))]
+pub(crate) fn block_twin(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("rdisk")?;
+    Some(path.with_file_name(format!("disk{rest}")))
+}
+
+/// The volume an open file or folder is on (the handle, not a path looked up again).
+pub(crate) fn volume_of_file(file: &File) -> io::Result<VolumeId> {
+    sys_volume_of_file(file)
+}
+
+#[cfg(unix)]
+fn sys_volume_of_file(file: &File) -> io::Result<VolumeId> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(VolumeId(file.metadata()?.dev()))
+}
+
+#[cfg(windows)]
+fn sys_volume_of_file(file: &File) -> io::Result<VolumeId> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a handle owned by `file`, which outlives the call; `info` is written once.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
+        .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xFFFF))?;
+    Ok(VolumeId(u64::from(info.dwVolumeSerialNumber)))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sys_volume_of_file(_: &File) -> io::Result<VolumeId> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "volume ids are not available on this platform",
+    ))
 }
 
 #[cfg(windows)]
 fn sys_volume_of(path: &Path) -> io::Result<VolumeId> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    use windows::Win32::Foundation::HANDLE;
+    use std::os::windows::fs::OpenOptionsExt;
     use windows::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
     // No access asked (attributes only); links and junctions are followed to the volume
     // the data would land on.
@@ -49,11 +112,7 @@ fn sys_volume_of(path: &Path) -> io::Result<VolumeId> {
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
         .open(path)?;
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: a handle owned by `file`, which outlives the call; `info` is written once.
-    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
-        .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xFFFF))?;
-    Ok(VolumeId(u64::from(info.dwVolumeSerialNumber)))
+    sys_volume_of_file(&file)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -264,6 +323,37 @@ mod tests {
         assert_eq!(r.seek(SeekFrom::End(-4)).unwrap(), 199_996);
         r.read_exact(&mut b).unwrap();
         assert_eq!(b, data[199_996..]);
+    }
+
+    #[test]
+    fn raw_disk_nodes_map_to_their_block_twin() {
+        assert_eq!(
+            block_twin(Path::new("/dev/rdisk4s1")),
+            Some(PathBuf::from("/dev/disk4s1"))
+        );
+        assert_eq!(
+            block_twin(Path::new("/dev/rdisk12")),
+            Some(PathBuf::from("/dev/disk12"))
+        );
+        assert_eq!(block_twin(Path::new("/dev/disk4s1")), None);
+        assert_eq!(block_twin(Path::new("/dev/sdb1")), None);
+    }
+
+    /// A character device counts as the device it is, never as the folder of nodes (devfs)
+    /// it sits in, and a fifo is no volume at all.
+    #[cfg(unix)]
+    #[test]
+    fn character_devices_are_their_own_volume() {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata("/dev/null").unwrap();
+        assert_eq!(volume_of(Path::new("/dev/null")).unwrap(), VolumeId(m.rdev()));
+        assert_ne!(VolumeId(m.rdev()), VolumeId(m.dev()));
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(volume_of(&fifo).is_err());
     }
 
     #[test]

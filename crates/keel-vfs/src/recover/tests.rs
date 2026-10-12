@@ -26,7 +26,7 @@ fn find<'a>(s: &'a Scan, name: &str) -> &'a Candidate {
 }
 
 fn names(s: &Scan) -> Vec<String> {
-    s.candidates.iter().map(Candidate::path).collect()
+    s.candidates.iter().map(|c| s.path(c)).collect()
 }
 
 fn content(r: &mut Cursor<Vec<u8>>, c: &Candidate) -> Vec<u8> {
@@ -285,7 +285,250 @@ fn ntfs_path_unknown_when_the_parent_record_was_reused() {
     nt.delete(dir);
     let (s, _) = scan_image(nt.image());
     assert_eq!(find(&s, "orphan.txt").folder, None);
-    assert_eq!(find(&s, "orphan.txt").path(), "?/orphan.txt");
+    assert_eq!(s.path(find(&s, "orphan.txt")), "?/orphan.txt");
+}
+
+/// A FAT12 volume with 4 KiB clusters written entry by entry, for layouts the image
+/// builders refuse: folders spanning chains, thousands of entries, shared clusters.
+struct RawFat {
+    img: Vec<u8>,
+}
+
+const RAW_CLUSTER: usize = 4096;
+const RAW_FAT_OFF: usize = 512;
+const RAW_ROOT_OFF: usize = 3 * 512;
+const RAW_DATA_OFF: usize = 5 * 512;
+
+impl RawFat {
+    /// `clusters` data clusters (under 680: one FAT of two sectors), a 32-entry root.
+    fn new(clusters: usize) -> Self {
+        let total = 5 + clusters * 8;
+        let mut img = vec![0u8; total * 512];
+        img[..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
+        img[3..11].copy_from_slice(b"MSWIN4.1");
+        img[11..13].copy_from_slice(&512u16.to_le_bytes());
+        img[13] = 8;
+        img[14..16].copy_from_slice(&1u16.to_le_bytes());
+        img[16] = 1;
+        img[17..19].copy_from_slice(&32u16.to_le_bytes());
+        img[19..21].copy_from_slice(&(total as u16).to_le_bytes());
+        img[21] = 0xF8;
+        img[22..24].copy_from_slice(&2u16.to_le_bytes());
+        img[510..512].copy_from_slice(&[0x55, 0xAA]);
+        Self { img }
+    }
+
+    fn set_fat(&mut self, n: u32, v: u16) {
+        let off = RAW_FAT_OFF + n as usize + n as usize / 2;
+        let cur = u16::from_le_bytes([self.img[off], self.img[off + 1]]);
+        let v = v & 0xFFF;
+        let new = match n & 1 {
+            1 => (cur & 0x000F) | (v << 4),
+            _ => (cur & 0xF000) | v,
+        };
+        self.img[off..off + 2].copy_from_slice(&new.to_le_bytes());
+    }
+
+    /// A folder in clusters `first..first + n`, chained, holding `entries`.
+    fn folder(&mut self, first: u32, entries: &[[u8; 32]]) {
+        let n = (entries.len() * 32).div_ceil(RAW_CLUSTER).max(1) as u32;
+        for c in first..first + n {
+            self.set_fat(c, if c + 1 < first + n { (c + 1) as u16 } else { 0xFFF });
+        }
+        let base = RAW_DATA_OFF + (first as usize - 2) * RAW_CLUSTER;
+        for (i, e) in entries.iter().enumerate() {
+            self.img[base + i * 32..base + i * 32 + 32].copy_from_slice(e);
+        }
+    }
+
+    fn root(&mut self, entries: &[[u8; 32]]) {
+        assert!(entries.len() <= 32);
+        for (i, e) in entries.iter().enumerate() {
+            let at = RAW_ROOT_OFF + i * 32;
+            self.img[at..at + 32].copy_from_slice(e);
+        }
+    }
+}
+
+fn short_entry(name: &[u8; 11], attr: u8, first: u32, size: u32) -> [u8; 32] {
+    let mut e = [0u8; 32];
+    e[..11].copy_from_slice(name);
+    e[11] = attr;
+    e[20..22].copy_from_slice(&((first >> 16) as u16).to_le_bytes());
+    e[26..28].copy_from_slice(&(first as u16).to_le_bytes());
+    e[28..32].copy_from_slice(&size.to_le_bytes());
+    e
+}
+
+/// The LFN entries and the short entry of a live folder named `long`.
+fn long_dir_entries(long: &str, short: &[u8; 11], first: u32) -> Vec<[u8; 32]> {
+    let mut units: Vec<u16> = long.encode_utf16().collect();
+    let parts = units.len().div_ceil(13);
+    if !units.len().is_multiple_of(13) {
+        units.push(0);
+    }
+    units.resize(parts * 13, 0xFFFF);
+    let chk = fat::lfn_checksum(short);
+    let mut out: Vec<[u8; 32]> = (0..parts)
+        .map(|i| {
+            let ord = parts - i;
+            let mut e = [0u8; 32];
+            e[0] = ord as u8 | if i == 0 { 0x40 } else { 0 };
+            e[11] = 0x0F;
+            e[13] = chk;
+            for (k, &u) in units[(ord - 1) * 13..ord * 13].iter().enumerate() {
+                let at = match k {
+                    0..5 => 1 + 2 * k,
+                    5..11 => 14 + 2 * (k - 5),
+                    _ => 28 + 2 * (k - 11),
+                };
+                e[at..at + 2].copy_from_slice(&u.to_le_bytes());
+            }
+            e
+        })
+        .collect();
+    out.push(short_entry(short, 0x10, first, 0));
+    out
+}
+
+/// 63 nested folders, each named with 255 three-byte characters (a path of about 48 KB),
+/// and in the deepest one `files` erased entries: each one a candidate.
+fn deep_wide_fat(files: usize) -> Vec<u8> {
+    const LEVELS: u32 = 63;
+    let name = "\u{20AC}".repeat(255);
+    let mut fat = RawFat::new(400);
+    let short = |i: u32| -> [u8; 11] {
+        let mut s = *b"DIR        ";
+        s[3..8].copy_from_slice(format!("{i:05}").as_bytes());
+        s
+    };
+    fat.root(&long_dir_entries(&name, &short(1), 2)[..]);
+    for level in 1..LEVELS {
+        let c = 1 + level;
+        let mut entries = vec![short_entry(b".          ", 0x10, c, 0)];
+        entries.extend(long_dir_entries(&name, &short(level + 1), c + 1));
+        fat.folder(c, &entries);
+    }
+    let mut deepest = vec![short_entry(b".          ", 0x10, 1 + LEVELS, 0)];
+    deepest.extend((0..files).map(|_| {
+        let mut e = short_entry(b"XILE    TXT", 0x20, 0, 0);
+        e[0] = 0xE5;
+        e
+    }));
+    fat.folder(1 + LEVELS, &deepest);
+    fat.img
+}
+
+#[test]
+fn a_deep_folder_of_many_entries_costs_its_entries_not_its_depth() {
+    // Each of these candidates once held its own copy of the 48 KB path: about 1 GB.
+    let files = 20_000;
+    let img = deep_wide_fat(files);
+    let s = scan_limited(&mut Cursor::new(img.clone()), 16 << 20).unwrap();
+    assert_eq!(s.fs, FsKind::Fat12);
+    assert!(s.notes.is_empty(), "{:?}", s.notes);
+    assert_eq!(s.candidates.len(), files);
+    assert_eq!(s.folders.len(), 64, "the root and 63 folders, each once");
+    let folder = s.candidates[0].folder.unwrap();
+    assert!(s.candidates.iter().all(|c| c.folder == Some(folder)));
+    let path = s.folder_path(folder).unwrap();
+    assert_eq!(path.len(), 63 * 765 + 62);
+    assert_eq!(s.path(&s.candidates[0]), format!("{path}/_ILE.TXT"));
+
+    // Under a smaller limit the scan stops early and says so.
+    let s = scan_limited(&mut Cursor::new(img), 1 << 20).unwrap();
+    assert!(!s.candidates.is_empty() && s.candidates.len() < files);
+    assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
+    assert!(s.notes[0].contains("memory limit"), "{:?}", s.notes);
+}
+
+#[test]
+fn thousands_of_folders_on_one_cluster_are_bounded() {
+    // 20,000 live folder entries all naming cluster 300 (read once) and a deleted file.
+    let mut fat = RawFat::new(400);
+    fat.root(&[short_entry(b"TOP        ", 0x10, 2, 0)]);
+    let mut top: Vec<[u8; 32]> = (0..20_000u32)
+        .map(|i| {
+            let mut name = *b"SUB        ";
+            name[3..8].copy_from_slice(format!("{i:05}").as_bytes());
+            short_entry(&name, 0x10, 300, 0)
+        })
+        .collect();
+    let mut gone = short_entry(b"XONE    TXT", 0x20, 0, 0);
+    gone[0] = 0xE5;
+    top.push(gone);
+    fat.folder(2, &top);
+    fat.folder(300, &[short_entry(b".          ", 0x10, 300, 0)]);
+    let s = scan_limited(&mut Cursor::new(fat.img.clone()), 64 << 20).unwrap();
+    assert_eq!(names(&s), ["TOP/_ONE.TXT"]);
+    assert!(s.folders.len() <= 20_002, "{}", s.folders.len());
+    // A limit below what the folder table needs stops the scan with a note.
+    let s = scan_limited(&mut Cursor::new(fat.img), 256 << 10).unwrap();
+    assert!(s.notes.iter().any(|n| n.contains("memory limit")), "{:?}", s.notes);
+}
+
+#[test]
+fn ntfs_and_exfat_files_share_their_folder() {
+    let mut nt = NtfsImg::new();
+    let mut dir = NT_ROOT;
+    for i in 0..10 {
+        dir = nt.add_dir(dir, &format!("level {i}"));
+    }
+    for i in 0..5 {
+        let f = nt.add_file(dir, &format!("f{i}.txt"), None, b"x", false);
+        nt.delete(f);
+    }
+    let (s, _) = scan_image(nt.image());
+    assert_eq!(s.candidates.len(), 5);
+    assert_eq!(s.folders.len(), 11);
+    let folder = s.candidates[0].folder;
+    assert!(s.candidates.iter().all(|c| c.folder == folder));
+    assert_eq!(
+        s.path(&s.candidates[0]),
+        "level 0/level 1/level 2/level 3/level 4/level 5/level 6/level 7/level 8/level 9/f0.txt"
+    );
+
+    let mut ex = ExImg::new();
+    let mut dir = ex.root();
+    for i in 0..4 {
+        dir = ex.add_dir(dir, &format!("d{i}")).0;
+    }
+    for i in 0..3 {
+        let f = ex.add_file(dir, &format!("e{i}.bin"), b"y", Layout::Contiguous);
+        ex.delete(&f);
+    }
+    let (s, _) = scan_image(ex.image());
+    assert_eq!(s.candidates.len(), 3);
+    assert_eq!(s.folders.len(), 5);
+    assert!(s.candidates.iter().all(|c| c.folder == s.candidates[0].folder));
+    assert_eq!(s.path(&s.candidates[2]), "d0/d1/d2/d3/e2.bin");
+}
+
+#[test]
+fn folder_paths_of_a_damaged_table_end() {
+    let folder = |name: &str, parent: Option<u32>| Folder {
+        name: name.into(),
+        parent,
+    };
+    let s = Scan {
+        fs: FsKind::Fat16,
+        cluster_size: 512,
+        volume_size: 0,
+        candidates: Vec::new(),
+        folders: vec![
+            folder("", None),
+            folder("a", Some(0)),
+            folder("loop", Some(2)),
+            folder("ahead", Some(9)),
+            folder("b", Some(1)),
+        ],
+        notes: Vec::new(),
+    };
+    assert_eq!(s.folder_path(0).as_deref(), Some(""));
+    assert_eq!(s.folder_path(4).as_deref(), Some("a/b"));
+    assert_eq!(s.folder_path(2), None);
+    assert_eq!(s.folder_path(3), None);
+    assert_eq!(s.folder_path(99), None);
 }
 
 #[test]

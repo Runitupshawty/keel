@@ -170,7 +170,7 @@ fn recover(
         return;
     };
     for c in found.candidates.iter().take(64) {
-        let _ = c.path();
+        let _ = found.path(c);
         let _ = crate::recover::read_data(&mut r, c, &mut Capped(1 << 20));
     }
 }

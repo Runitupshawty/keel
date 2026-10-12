@@ -9,7 +9,7 @@ use super::alloc::Alloc;
 use super::utf16_units;
 use super::{
     filetime, read_at, read_up_to, u16_at, u32_at, u64_at, Candidate, Confidence, Data, Extent,
-    FsKind, RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
+    FsKind, List, RecoverError, Result, Scan, MAX_DEPTH, MAX_MAP_BYTES, ROOT_FOLDER,
 };
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -289,7 +289,7 @@ struct Counts {
     no_data: usize,
 }
 
-pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
+pub(crate) fn scan<R: Read + Seek>(r: &mut R, limit: u64) -> Result<Scan> {
     let boot = read_up_to(r, 0, 512)?;
     let geo = geometry(&boot).ok_or(RecoverError::UnknownFs)?;
     let corrupt = |why: &str| RecoverError::Corrupt("NTFS", why.into());
@@ -307,11 +307,14 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
         _ => return Err(corrupt("the $MFT record is damaged")),
     };
     let mut dirs: HashMap<u64, Dir> = HashMap::new();
-    let mut found: Vec<Found> = Vec::new();
+    let mut list = List::new(limit);
+    // Per candidate: its parent folder reference and the allocated runs of its data.
+    let mut refs: Vec<(u64, u16)> = Vec::new();
+    let mut held: Vec<ClusterRuns> = Vec::new();
     let mut bitmap: Option<DataAttr> = None;
     let mut counts = Counts::default();
     let mut recno = 0u64;
-    for (lcn, len) in mft {
+    'records: for (lcn, len) in mft {
         let bytes = len.saturating_mul(geo.cluster);
         let in_run = bytes / geo.record;
         let Some(start) = lcn.and_then(|l| l.checked_mul(geo.cluster)) else {
@@ -319,8 +322,8 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
             continue;
         };
         for i in 0..in_run {
-            if found.len() >= MAX_CANDIDATES {
-                break;
+            if list.full() {
+                break 'records;
             }
             let Some(off) = start.checked_add(i * geo.record) else {
                 break;
@@ -346,6 +349,9 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
             }
             if record.dir {
                 if let Some(n) = record.name() {
+                    if !list.charge(std::mem::size_of::<Dir>() + n.name.len() + 32) {
+                        break 'records;
+                    }
                     dirs.insert(
                         no,
                         Dir {
@@ -362,26 +368,32 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
             if record.in_use || record.names.is_empty() {
                 continue;
             }
-            match deleted_file(&geo, no, record, &mut counts) {
-                Some(f) => found.push(f),
-                None => continue,
+            let Some(f) = deleted_file(&geo, no, record, &mut counts) else {
+                continue;
+            };
+            let runs = f.clusters.len() * std::mem::size_of::<(u64, u64)>();
+            if !list.charge(runs + 32) || !list.push(f.candidate) {
+                break 'records;
             }
+            refs.push((f.parent, f.parent_seq));
+            held.push(f.clusters);
         }
     }
     let alloc = bitmap.and_then(|b| read_bitmap(r, &geo, &b));
-    let candidates = found
+    let mut memo = HashMap::new();
+    let folders: Vec<Option<u32>> = refs
         .into_iter()
-        .map(|mut f| {
-            f.candidate.folder = folder_path(&dirs, f.parent, f.parent_seq);
-            if !f.clusters.is_empty() {
-                f.candidate.confidence = match &alloc {
-                    Some(a) => a.confidence(&f.clusters),
-                    None => Confidence::Unknown,
-                };
-            }
-            f.candidate
-        })
-        .collect::<Vec<_>>();
+        .map(|(parent, seq)| folder_of(&mut list, &dirs, &mut memo, parent, seq))
+        .collect();
+    for ((c, folder), clusters) in list.candidates_mut().iter_mut().zip(folders).zip(held) {
+        c.folder = folder;
+        if !clusters.is_empty() {
+            c.confidence = match &alloc {
+                Some(a) => a.confidence(&clusters),
+                None => Confidence::Unknown,
+            };
+        }
+    }
     let mut notes: Vec<String> = Vec::new();
     if alloc.is_none() {
         notes.push("$Bitmap could not be read: confidence unknown".into());
@@ -404,16 +416,7 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
             counts.no_data
         ));
     }
-    if candidates.len() >= MAX_CANDIDATES {
-        notes.push(format!("the list stops at {MAX_CANDIDATES} files"));
-    }
-    Ok(Scan {
-        fs: FsKind::Ntfs,
-        cluster_size: geo.cluster,
-        volume_size: geo.total,
-        candidates,
-        notes,
-    })
+    Ok(list.finish(FsKind::Ntfs, geo.cluster, geo.total, notes))
 }
 
 fn deleted_file(geo: &Geo, no: u64, record: Record, counts: &mut Counts) -> Option<Found> {
@@ -517,7 +520,7 @@ fn extents(
 
 /// `$Bitmap`'s content, at most one bit per cluster.
 fn read_bitmap<R: Read + Seek>(r: &mut R, geo: &Geo, attr: &DataAttr) -> Option<Alloc> {
-    let want = geo.clusters.div_ceil(8);
+    let want = geo.clusters.div_ceil(8).min(MAX_MAP_BYTES);
     let bytes = match attr {
         DataAttr::Resident(b) => b.clone(),
         DataAttr::NonResident { runs, .. } => {
@@ -544,25 +547,56 @@ fn read_bitmap<R: Read + Seek>(r: &mut R, geo: &Geo, attr: &DataAttr) -> Option<
     (!bytes.is_empty()).then(|| Alloc::from_bitmap(&bytes, 0, geo.clusters))
 }
 
-/// The folder path of a parent reference: names up to the root, each folder record's
-/// sequence number matching the reference (one more for a deleted folder, which NTFS
-/// bumps on delete).
-fn folder_path(dirs: &HashMap<u64, Dir>, parent: u64, seq: u16) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
+/// Folders already placed in the list's table: (record, sequence number wanted) to the
+/// folder index and depth, or None when that reference leads nowhere.
+type Placed = HashMap<(u64, u16), Option<(u32, usize)>>;
+
+/// The folder of a parent reference, as an index in the list's folder table: names up to
+/// the root, each folder record's sequence number matching the reference (one more for a
+/// deleted folder, which NTFS bumps on delete), at most [`MAX_DEPTH`] deep. Each folder is
+/// added to the table once and shared by every file in it.
+fn folder_of(
+    list: &mut List,
+    dirs: &HashMap<u64, Dir>,
+    placed: &mut Placed,
+    parent: u64,
+    seq: u16,
+) -> Option<u32> {
+    // Up to the root or a folder placed already.
+    let mut chain: Vec<(u64, u16)> = Vec::new();
     let (mut cur, mut want) = (parent, seq);
-    for _ in 0..MAX_DEPTH {
+    let base = loop {
         if cur == ROOT {
-            parts.reverse();
-            return Some(parts.join("/"));
+            break Some((ROOT_FOLDER, 0));
         }
-        let d = dirs.get(&cur)?;
-        let same = want == 0 || d.seq == want || (!d.in_use && d.seq == want.wrapping_add(1));
-        if !same {
+        if let Some(&known) = placed.get(&(cur, want)) {
+            break known;
+        }
+        if chain.len() >= MAX_DEPTH {
+            // Too deep or a loop: unknown, but nothing is remembered (a shallower walk
+            // through these records may still reach the root).
             return None;
         }
-        parts.push(&d.name);
-        cur = d.parent;
-        want = d.parent_seq;
+        let Some(d) = dirs.get(&cur) else {
+            break None;
+        };
+        let same = want == 0 || d.seq == want || (!d.in_use && d.seq == want.wrapping_add(1));
+        if !same {
+            break None;
+        }
+        chain.push((cur, want));
+        (cur, want) = (d.parent, d.parent_seq);
+    };
+    // Down again, adding each folder under the one above it.
+    let mut at = base;
+    for &(no, want) in chain.iter().rev() {
+        at = match at {
+            Some((p, depth)) if depth < MAX_DEPTH => list
+                .folder(p, dirs[&no].name.clone())
+                .map(|i| (i, depth + 1)),
+            _ => None,
+        };
+        placed.insert((no, want), at);
     }
-    None
+    at.map(|(i, _)| i)
 }
