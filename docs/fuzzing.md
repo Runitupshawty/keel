@@ -37,6 +37,7 @@ crate's `fuzzing` feature.
 | `probe` | `keel_core::fuzz::probe` | ffprobe JSON as the video metadata reader takes it |
 | `query` | `keel_core::fuzz::query` | the library search box (`LibraryQuery::parse`, media filters, `content:` terms) and the SQL it becomes; every FTS5 MATCH string it builds (names and the text inside documents) must run without an error |
 | `backup` | `keel_core::fuzz::backup` | a library backup (`.keelbackup`): the zip, the manifest and its bounds (`inspect`), then a restore into a scratch data folder (hashes, database checks) |
+| `link` | `keel_core::fuzz::link` | `keel:` links (the URL protocol, from web pages and other apps): a parsed link only searches or shows a local absolute folder (no network or device path, no `..`), and its own URL reads back the same |
 | `rpc` | `keel_api::fuzz::rpc` | JSON-RPC lines from the daemon socket, each request's params decoded by its operation |
 | `mcp` | `keel_api::fuzz::mcp` | an MCP stdio session, with and without `--allow-execute` |
 | `wire` | `keel_net::fuzz::wire` | keel-net messages (CBOR): requests, Spacedrop offers, sync pages (applied to a library), pairing tickets |

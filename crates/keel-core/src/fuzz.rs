@@ -119,6 +119,36 @@ pub fn backup(data: &[u8]) {
     });
 }
 
+/// A `keel:` link (the URL protocol, from web pages and other apps): whatever it says, a
+/// parsed link searches or shows a local absolute folder without `..`, and reads back the
+/// same from its own URL.
+pub fn link(data: &[u8]) {
+    use crate::link::{parse_for, Link};
+    let text = String::from_utf8_lossy(data);
+    for windows in [true, false] {
+        let Ok(link) = parse_for(&text, windows) else {
+            continue;
+        };
+        let path = match &link {
+            Link::Search { query, path } => {
+                assert!(!query.trim().is_empty() && !query.chars().any(char::is_control));
+                path.as_ref()
+            }
+            Link::Open { path } => Some(path),
+        };
+        if let Some(path) = path {
+            let p = path.to_string_lossy();
+            assert!(!p.starts_with("//") && !p.starts_with(r"\\"), "{p}");
+            assert!(!p.split(['/', '\\']).any(|c| c == ".."), "{p}");
+        }
+        // Encoding can make the URL longer than the link's limit; below it, it reads back.
+        let url = link.to_url();
+        if url.chars().count() <= crate::link::MAX_LEN {
+            assert_eq!(parse_for(&url, windows), Ok(link.clone()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -149,5 +179,9 @@ mod tests {
     #[test]
     fn fuzz_backup() {
         run("backup", super::backup);
+    }
+    #[test]
+    fn fuzz_link() {
+        run("link", super::link);
     }
 }
