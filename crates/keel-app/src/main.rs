@@ -14,6 +14,7 @@ mod clouds;
 mod color_theme; // Task 47: VS Code color themes
 mod crash;
 mod devices;
+mod disk_usage;
 mod dialogs;
 mod dropzone;
 mod folder_ops; // Task 60: folder operation dialogs
