@@ -604,7 +604,10 @@ fn remove_empty_trashes_each_empty_branch_whole() {
         ]
     );
     let headline = plan.headline().unwrap();
-    assert!(headline.starts_with("Remove 3 empty folders below"), "{headline}");
+    assert!(
+        headline.starts_with("Remove 3 empty folders below"),
+        "{headline}"
+    );
 
     // A file that came into a listed folder since the preview: refused, with the fresh
     // preview (which no longer lists that branch).

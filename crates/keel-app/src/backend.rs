@@ -1425,10 +1425,9 @@ fn plan_params(op: &Op) -> (&'static str, Value) {
                     "plan.organize",
                     json!({"path": folder.display(), "by": by, "on_conflict": c}),
                 ),
-                keel_core::FolderOp::RemoveEmpty { folder } => (
-                    "plan.remove_empty",
-                    json!({"path": folder.display()}),
-                ),
+                keel_core::FolderOp::RemoveEmpty { folder } => {
+                    ("plan.remove_empty", json!({"path": folder.display()}))
+                }
             };
             return (method, params);
         }

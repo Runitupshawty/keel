@@ -148,7 +148,10 @@ fn walk(
 ) -> Result<()> {
     for root in paths {
         let depth = if recurse { usize::MAX } else { 1 };
-        for e in walkdir::WalkDir::new(root).follow_links(false).max_depth(depth) {
+        for e in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .max_depth(depth)
+        {
             if cancel.load(Ordering::Relaxed) {
                 return Err(Cancelled.into());
             }
@@ -367,7 +370,11 @@ mod sys {
 
     /// Runs `f` on `path` opened for the compression controls; a read-only file has its
     /// read-only attribute lifted for the time of it.
-    fn with_open<T>(path: &Path, dir: bool, f: impl FnOnce(&std::fs::File) -> Result<T>) -> Result<T> {
+    fn with_open<T>(
+        path: &Path,
+        dir: bool,
+        f: impl FnOnce(&std::fs::File) -> Result<T>,
+    ) -> Result<T> {
         let long = crate::local::long(path)?;
         match open(&long, dir) {
             Ok(file) => f(&file),
@@ -439,7 +446,9 @@ mod sys {
             Err(e)
                 if matches!(
                     code(&e),
-                    ERROR_OBJECT_NOT_EXTERNALLY_BACKED | ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED
+                    ERROR_OBJECT_NOT_EXTERNALLY_BACKED
+                        | ERROR_INVALID_FUNCTION
+                        | ERROR_NOT_SUPPORTED
                 ) =>
             {
                 Ok(())

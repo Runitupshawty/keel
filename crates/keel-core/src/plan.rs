@@ -1471,7 +1471,8 @@ fn prune(ctx: &JobCtx, op: &Op) -> Result<()> {
                 ctx.log(&format!("kept {}: no longer empty", d.display()))?;
                 continue;
             }
-            p.remove(d).map_err(|e| failed.push(format!("{}: {e:#}", d.display())))
+            p.remove(d)
+                .map_err(|e| failed.push(format!("{}: {e:#}", d.display())))
         } else {
             p.remove_empty_dir(d).map_err(|_| ())
         };

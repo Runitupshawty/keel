@@ -652,7 +652,10 @@ pub struct Prepared {
 /// Expands cleanup `index` for `picked`.
 pub fn prepare(index: usize, c: &UserCleanup, picked: &[Picked]) -> Result<Prepared, String> {
     if c.command.trim().is_empty() {
-        return Err(format!("\"{}\" has no command line (Settings → Cleanups)", c.title));
+        return Err(format!(
+            "\"{}\" has no command line (Settings → Cleanups)",
+            c.title
+        ));
     }
     let runs = targets(c, picked)?
         .iter()
@@ -739,7 +742,11 @@ pub fn run(
         let mut cmd = command(e, c.console);
         if !c.console {
             cmd.stdout(Stdio::null());
-            cmd.stderr(if c.wait { Stdio::piped() } else { Stdio::null() });
+            cmd.stderr(if c.wait {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            });
         }
         match cmd.spawn() {
             Err(err) => failed.push(format!("{}: {err}", e.argv[0])),
@@ -851,7 +858,10 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
             selected -= 1;
         }
         if ui
-            .add_enabled(some && selected + 1 < list.len(), egui::Button::new("Move down"))
+            .add_enabled(
+                some && selected + 1 < list.len(),
+                egui::Button::new("Move down"),
+            )
             .clicked()
         {
             list.swap(selected, selected + 1);
@@ -983,7 +993,11 @@ mod tests {
     fn posix_quoting_round_trips() {
         for &a in TRICKY {
             let line = format!("prog {} next", quote_posix(a));
-            assert_eq!(split_unix(&line).unwrap(), ["prog", a, "next"], "{a:?} → {line}");
+            assert_eq!(
+                split_unix(&line).unwrap(),
+                ["prog", a, "next"],
+                "{a:?} → {line}"
+            );
         }
         assert_eq!(quote_posix("/usr/bin/x"), "/usr/bin/x");
         assert_eq!(quote_posix("it's"), r"'it'\''s'");
@@ -995,7 +1009,10 @@ mod tests {
             split_windows(r#"del /q "C:\My Files\%n"  x"#),
             ["del", "/q", r"C:\My Files\%n", "x"]
         );
-        assert_eq!(split_windows(r#"a\\\"b "c\\" d\e"#), [r#"a\"b"#, r"c\", r"d\e"]);
+        assert_eq!(
+            split_windows(r#"a\\\"b "c\\" d\e"#),
+            [r#"a\"b"#, r"c\", r"d\e"]
+        );
         assert_eq!(split_windows(r#""" x"#), ["", "x"]);
         assert!(split_windows("   ").is_empty());
     }
@@ -1022,9 +1039,20 @@ mod tests {
         };
         assert_eq!(
             words("x %p %n %s %d %e 100%% %d/%n.bak").unwrap(),
-            ["x", "/m d/ünï.txt", "ünï.txt", "/m d/ünï.txt", "/m d", "txt", "100%", "/m d/ünï.txt.bak"]
+            [
+                "x",
+                "/m d/ünï.txt",
+                "ünï.txt",
+                "/m d/ünï.txt",
+                "/m d",
+                "txt",
+                "100%",
+                "/m d/ünï.txt.bak"
+            ]
         );
-        assert!(words("x %q").unwrap_err().contains("%q is not a placeholder"));
+        assert!(words("x %q")
+            .unwrap_err()
+            .contains("%q is not a placeholder"));
         assert!(words("x 100%").unwrap_err().contains("lone %"));
     }
 
@@ -1083,7 +1111,9 @@ mod tests {
         let e = expand("cmd /c dir %p", &drive).unwrap();
         assert_eq!(e.raw.as_deref(), Some(r#"/c dir "C:\\""#));
         let pct = file(r"C:\100% done.txt", "n", r"C:\", "txt");
-        assert!(expand("cmd /c type %p", &pct).unwrap_err().contains("cmd.exe"));
+        assert!(expand("cmd /c type %p", &pct)
+            .unwrap_err()
+            .contains("cmd.exe"));
         // Run directly, the same path is fine.
         assert!(expand("notepad %p", &pct).is_ok());
     }
@@ -1091,7 +1121,10 @@ mod tests {
     #[test]
     fn shells_are_known_by_file_name() {
         assert_eq!(shell_of("/bin/bash"), Shell::Posix);
-        assert_eq!(shell_of(r"C:\Program Files\PowerShell\7\pwsh.exe"), Shell::Pwsh);
+        assert_eq!(
+            shell_of(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            Shell::Pwsh
+        );
         assert_eq!(shell_of("git"), Shell::Direct);
         assert_eq!(shell_of("CMD.EXE") == Shell::Cmd, cfg!(windows));
     }
@@ -1139,7 +1172,9 @@ mod tests {
             drives: true,
             ..folders_only
         };
-        assert!(targets(&drives_only, &picked).unwrap_err().contains("drives"));
+        assert!(targets(&drives_only, &picked)
+            .unwrap_err()
+            .contains("drives"));
     }
 
     #[test]
@@ -1161,8 +1196,15 @@ mod tests {
         let f = dir.path().join("x.log");
         std::fs::write(&f, "x").unwrap();
         let mut c = UserCleanup::default();
-        assert!(prepare(0, &c, &[(f.clone(), false)]).unwrap_err().contains("no command"));
-        c.command = if cfg!(windows) { "cmd /c del %p" } else { "rm -- %p" }.into();
+        assert!(prepare(0, &c, &[(f.clone(), false)])
+            .unwrap_err()
+            .contains("no command"));
+        c.command = if cfg!(windows) {
+            "cmd /c del %p"
+        } else {
+            "rm -- %p"
+        }
+        .into();
         let p = prepare(3, &c, &[(f.clone(), false)]).unwrap();
         assert_eq!(p.index, 3);
         assert_eq!(p.runs.len(), 1);
@@ -1202,6 +1244,8 @@ mod tests {
         let err = run(&p, &|_| {}, &no).unwrap_err();
         assert!(format!("{err:#}").contains("exit code 3"), "{err:#}");
         let stop = std::sync::atomic::AtomicBool::new(true);
-        assert!(crate::jobs::is_cancel(&run(&p, &|_| {}, &stop).unwrap_err()));
+        assert!(crate::jobs::is_cancel(
+            &run(&p, &|_| {}, &stop).unwrap_err()
+        ));
     }
 }

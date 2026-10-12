@@ -1,12 +1,12 @@
 //! Virtual filesystem providers and shared file operation types for Keel.
 
 pub mod archive;
-/// NTFS and WOF compression (Task 85; works on Windows).
-pub mod compress;
 #[cfg(windows)]
 pub mod clipboard;
 #[cfg(feature = "cloud")]
 pub mod cloud;
+/// NTFS and WOF compression (Task 85; works on Windows).
+pub mod compress;
 // --- Task 24 ---
 #[cfg(windows)]
 pub mod desktop;

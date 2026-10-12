@@ -124,10 +124,9 @@ impl FolderDialog {
                 self.conflict,
             ),
             Kind::Flatten => Op::arrange(FolderOp::Flatten { folder: one() }, self.conflict),
-            Kind::RemoveEmpty => Op::arrange(
-                FolderOp::RemoveEmpty { folder: one() },
-                OnConflict::Skip,
-            ),
+            Kind::RemoveEmpty => {
+                Op::arrange(FolderOp::RemoveEmpty { folder: one() }, OnConflict::Skip)
+            }
             Kind::Organize => Op::arrange(
                 FolderOp::Organize {
                     folder: one(),

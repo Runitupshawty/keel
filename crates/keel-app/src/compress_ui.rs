@@ -80,8 +80,14 @@ pub fn ui(ui: &mut egui::Ui, d: &mut CompressDialog, cancel: &mut bool) -> Optio
         many => format!("{} items", many.len()),
     });
     ui.add_space(4.0);
-    ui.radio_value(&mut d.what, Do::Compress(Algorithm::Lznt1), "Compress: LZNT1 (NTFS)")
-        .on_hover_text("Any file, read and written as usual; new files in a compressed folder are compressed too");
+    ui.radio_value(
+        &mut d.what,
+        Do::Compress(Algorithm::Lznt1),
+        "Compress: LZNT1 (NTFS)",
+    )
+    .on_hover_text(
+        "Any file, read and written as usual; new files in a compressed folder are compressed too",
+    );
     for alg in &Algorithm::ALL[1..] {
         ui.radio_value(&mut d.what, Do::Compress(*alg), format!("Compress: {}", alg.label()))
             .on_hover_text(match alg {
@@ -96,11 +102,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut CompressDialog, cancel: &mut bool) -> Optio
     if d.recurse != d.counting_recurse {
         d.count(ui.ctx());
     }
-    let counted = d
-        .counted
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    let counted = d.counted.lock().unwrap_or_else(|e| e.into_inner()).clone();
     ui.add_space(4.0);
     match &counted {
         None => {

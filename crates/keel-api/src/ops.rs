@@ -1868,7 +1868,10 @@ fn plan_remove_empty(ctx: &Ctx, p: RemoveEmptyParams) -> Result<PlanPreview> {
     let what = keel_core::FolderOp::RemoveEmpty {
         folder: real_path(ctx, &p.path)?,
     };
-    file_plan(ctx, keel_core::Op::arrange(what, keel_core::OnConflict::Skip))
+    file_plan(
+        ctx,
+        keel_core::Op::arrange(what, keel_core::OnConflict::Skip),
+    )
 }
 
 fn plan_set_attributes(ctx: &Ctx, p: AttributesParams) -> Result<PlanPreview> {
