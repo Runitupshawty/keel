@@ -2224,7 +2224,10 @@ fn views_are_created_updated_and_deleted() {
         json!({"name": "Invoices", "query": "invoice ext:pdf", "folder": "Work"}),
     )
     .unwrap();
-    assert_eq!(preview["summary"], "Save the view Work/Invoices: invoice ext:pdf");
+    assert_eq!(
+        preview["summary"],
+        "Save the view Work/Invoices: invoice ext:pdf"
+    );
     assert_eq!(call(&f.ctx, "views.list", Value::Null).unwrap(), json!([]));
     let created = apply(
         &f.ctx,
@@ -2286,7 +2289,10 @@ fn views_are_created_updated_and_deleted() {
     assert_eq!(updated["query"], "invoice ext:pdf");
     assert_eq!(updated["sort"], "modified:desc");
     assert_eq!(updated["shortcut"], "");
-    assert_eq!(updated["matching"], json!({"whole_words": true, "regex": true}));
+    assert_eq!(
+        updated["matching"],
+        json!({"whole_words": true, "regex": true})
+    );
     let e = call(&f.ctx, "views.update", json!({"id": 999, "name": "x"})).unwrap_err();
     assert_eq!(e.code, ApiError::NOT_FOUND);
     // The shortcut is free again.
@@ -2324,6 +2330,9 @@ fn views_are_created_updated_and_deleted() {
     crate::mcp::serve(&mut ctx, input.as_bytes(), &mut out, Default::default()).unwrap();
     let out = String::from_utf8(out).unwrap();
     for tool in ["views_create", "views_update", "views_delete", "views_list"] {
-        assert!(out.contains(&format!("\"name\":\"{tool}\"")), "{tool} missing");
+        assert!(
+            out.contains(&format!("\"name\":\"{tool}\"")),
+            "{tool} missing"
+        );
     }
 }

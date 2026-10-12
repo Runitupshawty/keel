@@ -959,8 +959,9 @@ fn view_place(v: &keel_core::View) -> String {
 
 /// Refuses a shortcut another view already has, at the preview.
 fn free_shortcut(ctx: &Ctx, v: &keel_core::View) -> Result<()> {
-    let clash = (ctx.lib.views()?.into_iter())
-        .find(|o| o.id != v.id && !v.shortcut.is_empty() && o.shortcut.eq_ignore_ascii_case(&v.shortcut));
+    let clash = (ctx.lib.views()?.into_iter()).find(|o| {
+        o.id != v.id && !v.shortcut.is_empty() && o.shortcut.eq_ignore_ascii_case(&v.shortcut)
+    });
     match clash {
         Some(o) => Err(ApiError::invalid_params(format!(
             "the shortcut {} is taken by the view {:?}",
