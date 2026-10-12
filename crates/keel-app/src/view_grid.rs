@@ -437,7 +437,6 @@ pub fn label_lines(name: &str, max_w: f32, width: impl Fn(&str) -> f32) -> Vec<S
 /// What every tile of one frame shares.
 struct Look {
     opts: IconOptions,
-    cell: Vec2,
     line_h: f32,
     font: egui::FontId,
     muted: egui::Color32,
@@ -606,7 +605,6 @@ pub fn ui(
 
     let look = Look {
         opts,
-        cell,
         line_h,
         font,
         muted: cx.theme.muted(),
