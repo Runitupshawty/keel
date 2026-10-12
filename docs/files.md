@@ -437,6 +437,17 @@ Scripts and agents can also run scans through the API: `du.scan`, `du.result` an
 
 A folder that cannot be read counts as empty and the last line says how many there were; folders deeper than 512 levels are not entered.
 
+#### Phones and cameras
+
+On Windows the scanner also reads **portable devices**: phones, cameras and media players that Explorer shows under This PC (MTP and PTP, through Windows Portable Devices). Each storage of a device (internal storage, an SD card) is a root of its own, and the scan root list the Disk Usage window's drive picker will show has the local drives followed by every connected device's storages, named like "Pixel 7: Internal shared storage".
+
+- **Read only.** Keel opens a device with read access only and only lists it: it never creates, changes, moves or deletes anything on a device and never reads a file's content. File operations do not apply to items on a device; their paths (`mtp://<device>/<storage>/…`) are for display.
+- **What is listed:** every folder and file with its name (the original file name, with its extension, when the device gives one), size, last change date (else the creation date) and the hidden and system flags; a device has no clusters, so size on disk is the size. Free space and unknown space are shown when the device states its capacity.
+- **Slow but bounded.** A device answers one request per item, so a full phone can take minutes; it is listed on a thread of its own while folders and drives scan in parallel. Pause and cancel apply; the walk stops after 30 minutes (folders not reached are marked as not scanned), never goes deeper than 512 levels and never enters an item a device lists twice.
+- **Unlock the phone** and choose "File transfer" on it first: a locked phone shows no storages, and one that refuses access says so.
+- Refreshing a folder on a device finds it again by name and lists it again; a folder gone from the device is removed. A scan file keeps which device and storage each root was.
+- Elsewhere than Windows no devices are listed yet (libmtp or gphoto2 may come later).
+
 ### Disk usage analysis tabs
 
 The Disk Usage window shows these tabs for the scan it holds; clicking a file or folder in any of them selects it in the tree and the treemap. Sizes are typed like `10 MB` (KB, MB, GB, TB are powers of 1000, KiB, MiB, GiB, TiB powers of 1024).

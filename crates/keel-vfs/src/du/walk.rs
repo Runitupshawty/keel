@@ -4,18 +4,19 @@
 //! deepest items up.
 
 use super::filter::Compiled;
+use super::mtp::{self, Backend, Session};
 use super::sys::{self, Raw};
 use super::{
-    attr, flag, LinkKind, Node, NodeId, NodeKind, Root, RootInfo, ScanHandle, ScanInfo,
-    ScanOptions, Tree, NONE, TOP,
+    attr, flag, DeviceRoot, LinkKind, Node, NodeId, NodeKind, Root, RootInfo, ScanHandle, ScanInfo,
+    ScanOptions, Space, Tree, NONE, TOP,
 };
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Folders deeper than this below a root are not entered ([`flag::TOO_DEEP`]).
 pub(super) const MAX_DEPTH: usize = 512;
@@ -96,6 +97,19 @@ struct Job {
     drive: bool,
 }
 
+/// A portable device's folder (or storage) to list.
+struct DeviceJob {
+    node: NodeId,
+    device_id: String,
+    /// The object id on the device.
+    object: String,
+    /// Its display path (`mtp://device/storage/...`).
+    path: PathBuf,
+    depth: usize,
+    /// A storage root with space stated: gets free and unknown items.
+    drive: bool,
+}
+
 /// One folder's children before they go into the arena.
 #[derive(Default)]
 struct Batch {
@@ -117,6 +131,8 @@ struct Walker<'a> {
     base: Vec<u128>,
     unreadable: AtomicU64,
     excluded: AtomicU64,
+    /// A device walk ran out of time.
+    timed_out: AtomicBool,
 }
 
 /// A file's extension as the file types list groups it: lowercase, after the last dot,
@@ -161,6 +177,7 @@ impl<'a> Walker<'a> {
             base,
             unreadable: AtomicU64::new(0),
             excluded: AtomicU64::new(0),
+            timed_out: AtomicBool::new(false),
         }
     }
 
@@ -397,6 +414,106 @@ impl<'a> Walker<'a> {
         b.nodes.push(n);
     }
 
+    /// Walks device folders, one device connection per job, one request at a time.
+    fn devices(&self, backend: &dyn Backend, jobs: Vec<DeviceJob>, deadline: Option<Instant>) {
+        for job in jobs {
+            match backend.open(&job.device_id) {
+                Ok(mut s) => self.device(&mut *s, job, deadline),
+                Err(e) => {
+                    tracing::debug!("du: {}: {e:#}", job.path.display());
+                    self.unreadable.fetch_add(1, Ordering::Relaxed);
+                    self.mark(job.node, flag::UNREADABLE);
+                }
+            }
+        }
+    }
+
+    /// Lists a device folder and everything below it, depth first, with an explicit stack
+    /// (no recursion); stops at a cancel or the deadline (the folders not listed are
+    /// flagged incomplete). An object listed a second time (a device bug that would loop)
+    /// is left out.
+    fn device(&self, s: &mut dyn Session, start: DeviceJob, deadline: Option<Instant>) {
+        let late = || deadline.is_some_and(|d| Instant::now() >= d);
+        let stop = || self.handle.is_cancelled() || late();
+        let mut seen: HashSet<String> = HashSet::from([start.object.clone()]);
+        let mut stack = vec![start];
+        while let Some(job) = stack.pop() {
+            if !self.handle.checkpoint() || stop() {
+                if late() && !self.handle.is_cancelled() {
+                    self.timed_out.store(true, Ordering::Relaxed);
+                }
+                self.mark(job.node, flag::INCOMPLETE);
+                continue;
+            }
+            self.handle.at(&job.path);
+            let objects = match s.children(&job.object, &stop) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("du: {}: {e:#}", job.path.display());
+                    self.unreadable.fetch_add(1, Ordering::Relaxed);
+                    self.mark(job.node, flag::UNREADABLE);
+                    continue;
+                }
+            };
+            if stop() {
+                // Part of a listing: dropped, the folder is not scanned.
+                stack.push(job);
+                continue;
+            }
+            let mut b = Batch {
+                nodes: Vec::with_capacity(objects.len() + 2),
+                ..Batch::default()
+            };
+            // The object ids of `b.subdirs`, in order.
+            let mut folders = Vec::new();
+            for o in objects {
+                if !seen.insert(o.id.clone()) {
+                    tracing::debug!("du: {}: object {} listed again", job.path.display(), o.id);
+                    continue;
+                }
+                let e = o.entry();
+                let raw = Raw {
+                    name: e.name.into(),
+                    dir: e.folder,
+                    attrs: e.attrs,
+                    link: None,
+                    size: e.size,
+                    // A device has no clusters: what a file takes is its length.
+                    alloc: Some(e.size),
+                    mtime: e.modified,
+                    id: None,
+                    nlink: 0,
+                };
+                let before = b.subdirs.len();
+                self.entry(raw, &job.path, 1, job.depth, None, &mut b);
+                if b.subdirs.len() > before {
+                    folders.push(o.id);
+                }
+            }
+            if job.drive && self.opts.free_and_unknown {
+                b.nodes.push(Node::new(NodeKind::Free, "<Free space>"));
+                b.nodes.push(Node::new(NodeKind::Unknown, "<Unknown>"));
+            }
+            let (files, dirs, bytes) = (b.files, b.folders, b.bytes);
+            let subdirs = std::mem::take(&mut b.subdirs);
+            let Some(first) = self.push(job.node, b) else {
+                continue;
+            };
+            self.handle.add(files, dirs, bytes);
+            // Reversed: the first folder is listed first.
+            for ((i, sub), object) in subdirs.into_iter().zip(folders).rev() {
+                stack.push(DeviceJob {
+                    node: first + i as NodeId,
+                    device_id: job.device_id.clone(),
+                    object,
+                    path: sub.path,
+                    depth: job.depth + 1,
+                    drive: false,
+                });
+            }
+        }
+    }
+
     /// Appends `b`'s nodes as the children of `parent`; their first id (None when the
     /// arena is full: `parent` is flagged incomplete).
     fn push(&self, parent: NodeId, mut b: Batch) -> Option<NodeId> {
@@ -449,12 +566,65 @@ fn file_flags(attrs: u32) -> u16 {
 }
 
 pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> Result<Tree> {
+    scan_with(roots, opts, handle, &mtp::System)
+}
+
+/// When a device walk must stop.
+fn deadline(opts: &ScanOptions) -> Option<Instant> {
+    (opts.device_time_limit_secs > 0)
+        .then(|| Instant::now().checked_add(Duration::from_secs(opts.device_time_limit_secs)))
+        .flatten()
+}
+
+/// Each device root's device name and storage, asked before anything is walked.
+fn resolve(devices: &dyn Backend, roots: &[DeviceRoot]) -> Result<Vec<(String, mtp::Storage)>> {
+    let mut out = Vec::with_capacity(roots.len());
+    for d in roots {
+        let mut s = devices
+            .open(&d.device_id)
+            .context("the portable device is not connected")?;
+        let storage = s
+            .storage(&d.storage_id)
+            .context("the storage is no longer on the portable device")?;
+        out.push((s.name(), storage));
+    }
+    Ok(out)
+}
+
+/// A device storage's space, asked again (None when the device does not say).
+fn device_space(devices: &dyn Backend, d: &DeviceRoot) -> Option<Space> {
+    mtp::on_device_thread(|| {
+        let mut s = devices.open(&d.device_id).ok()?;
+        s.storage(&d.storage_id).ok()?.space
+    })
+}
+
+pub(super) fn scan_with(
+    roots: &[Root],
+    opts: &ScanOptions,
+    handle: &ScanHandle,
+    devices: &dyn Backend,
+) -> Result<Tree> {
     let filters = Compiled::new(&opts.filters)?;
     let mut paths: Vec<PathBuf> = Vec::new();
+    let mut devs: Vec<DeviceRoot> = Vec::new();
     for r in roots {
         let found = match r {
             Root::Path(p) => vec![std::path::absolute(p).with_context(|| p.display().to_string())?],
             Root::AllLocalDrives => sys::local_drives(),
+            Root::Mtp {
+                device_id,
+                storage_id,
+            } => {
+                let d = DeviceRoot {
+                    device_id: device_id.clone(),
+                    storage_id: storage_id.clone(),
+                };
+                if !devs.contains(&d) {
+                    devs.push(d);
+                }
+                continue;
+            }
         };
         for p in found {
             let k = super::filter::key(&p);
@@ -464,10 +634,14 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
         }
     }
     anyhow::ensure!(
-        !paths.is_empty(),
+        !paths.is_empty() || !devs.is_empty(),
         "nothing to scan: no local drives were found"
     );
-    anyhow::ensure!(paths.len() < 1 << 20, "too many roots");
+    anyhow::ensure!(paths.len() + devs.len() < 1 << 20, "too many roots");
+    let storages = match devs.is_empty() {
+        true => Vec::new(),
+        false => mtp::on_device_thread(|| resolve(devices, &devs))?,
+    };
     let pool = pool(opts.threads)?;
     handle.start();
     let started = now_ns().div_euclid(1_000_000_000);
@@ -490,6 +664,7 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
             node: id,
             path: p.clone(),
             space,
+            device: None,
         });
         jobs.push(Job {
             node: id,
@@ -498,17 +673,66 @@ pub(super) fn scan(roots: &[Root], opts: &ScanOptions, handle: &ScanHandle) -> R
             drive: space.is_some(),
         });
     }
+    let mut device_jobs = Vec::new();
+    for (d, (device, storage)) in devs.iter().zip(storages) {
+        let id = nodes.len() as NodeId;
+        let base = format!(
+            "mtp://{}/{}",
+            mtp::clean_name(&device),
+            mtp::clean_name(&storage.name)
+        );
+        // Two alike devices: each root keeps a path of its own.
+        let mut path = PathBuf::from(&base);
+        let mut k = 2;
+        while (infos.iter()).any(|r| super::filter::key(&r.path) == super::filter::key(&path)) {
+            path = PathBuf::from(format!("{base} ({k})"));
+            k += 1;
+        }
+        let mut n = Node::new(NodeKind::Root, path.display().to_string());
+        n.parent = TOP;
+        n.attributes = attr::DIRECTORY;
+        nodes.push(n);
+        let space = storage.space.filter(|_| opts.free_and_unknown);
+        infos.push(RootInfo {
+            node: id,
+            path: path.clone(),
+            space,
+            device: Some(d.clone()),
+        });
+        device_jobs.push(DeviceJob {
+            node: id,
+            device_id: d.device_id.clone(),
+            object: d.storage_id.clone(),
+            path,
+            depth: 0,
+            drive: space.is_some(),
+        });
+    }
     nodes[0].first_child = 1;
-    nodes[0].child_count = paths.len() as u32;
+    nodes[0].child_count = infos.len() as u32;
     let arena = Arena::new(nodes, Vec::new());
     let walker = Walker::new(opts, &filters, handle, &arena, Vec::new());
-    pool.install(|| jobs.into_par_iter().for_each(|j| walker.walk(j, 0, None)));
+    let walk_paths = || pool.install(|| jobs.into_par_iter().for_each(|j| walker.walk(j, 0, None)));
+    if device_jobs.is_empty() {
+        walk_paths();
+    } else {
+        // Devices are listed on a thread of their own while the folders are walked.
+        let until = deadline(opts);
+        std::thread::scope(|s| {
+            let folders = s.spawn(walk_paths);
+            mtp::on_device_thread(|| walker.devices(devices, device_jobs, until));
+            if let Err(p) = folders.join() {
+                std::panic::resume_unwind(p);
+            }
+        });
+    }
     let info = ScanInfo {
         started,
         elapsed: Duration::ZERO,
         complete: true,
         unreadable: walker.unreadable.load(Ordering::Relaxed),
         excluded: walker.excluded.load(Ordering::Relaxed),
+        timed_out: walker.timed_out.load(Ordering::Relaxed),
     };
     drop(walker);
     let (nodes, exts, ids) = arena.into_parts();
@@ -593,18 +817,31 @@ fn finish(tree: &mut Tree, handle: &ScanHandle) {
 }
 
 pub(super) fn refresh(tree: &mut Tree, id: NodeId, handle: &ScanHandle) -> Result<()> {
+    refresh_with(tree, id, handle, &mtp::System)
+}
+
+pub(super) fn refresh_with(
+    tree: &mut Tree,
+    id: NodeId,
+    handle: &ScanHandle,
+    devices: &dyn Backend,
+) -> Result<()> {
     let node = tree.get(id).context("no such item in the scan")?.clone();
     match node.kind {
         NodeKind::Dead => anyhow::bail!("the item was removed by an earlier refresh"),
         NodeKind::Top => {
-            *tree = tree.rescan(handle)?;
+            *tree = scan_with(&tree.scan_roots(), &tree.options, handle, devices)?;
             return Ok(());
         }
         NodeKind::Free | NodeKind::Unknown => {
             handle.start();
             for r in &mut tree.roots {
                 if r.node == node.parent && r.space.is_some() {
-                    r.space = sys::space(&r.path).or(r.space);
+                    let now = match &r.device {
+                        Some(d) => device_space(devices, d),
+                        None => sys::space(&r.path),
+                    };
+                    r.space = now.or(r.space);
                 }
             }
             tree.update_pseudo();
@@ -612,6 +849,9 @@ pub(super) fn refresh(tree: &mut Tree, id: NodeId, handle: &ScanHandle) -> Resul
             return Ok(());
         }
         _ => {}
+    }
+    if let Some(d) = tree.root_of(id).and_then(|r| r.device.clone()) {
+        return refresh_device(tree, id, d, handle, devices);
     }
     let path = tree.path(id).context("the item has no path")?;
     let opts = tree.options.clone();
@@ -672,6 +912,109 @@ pub(super) fn refresh(tree: &mut Tree, id: NodeId, handle: &ScanHandle) -> Resul
     };
     pool.install(|| walker.walk(job, depth, None));
     tree.info.excluded += walker.excluded.load(Ordering::Relaxed);
+    drop(walker);
+    let (nodes, exts, ids) = arena.into_parts();
+    tree.nodes = nodes;
+    tree.exts = exts;
+    link_up(tree, ids);
+    finish(tree, handle);
+    Ok(())
+}
+
+/// An item on a device: its folder (a file's folder) is found again by its names from the
+/// storage down and listed again; a folder that is gone is removed.
+fn refresh_device(
+    tree: &mut Tree,
+    id: NodeId,
+    dev: DeviceRoot,
+    handle: &ScanHandle,
+    devices: &dyn Backend,
+) -> Result<()> {
+    let target = match tree.node(id).is_container() {
+        true => id,
+        false => tree.node(id).parent,
+    };
+    let mut names = Vec::new();
+    let mut at = target;
+    while tree.node(at).kind == NodeKind::Dir {
+        names.push(tree.node(at).name.to_string());
+        at = tree.node(at).parent;
+    }
+    names.reverse();
+    let is_root = tree.node(target).kind == NodeKind::Root;
+    let path = tree.path(target).context("the item has no path")?;
+    let depth = tree.depth(target);
+    let opts = tree.options.clone();
+    let filters = Compiled::new(&opts.filters)?;
+    handle.start();
+    // The folder's object id, by name from the storage down (and the storage's space).
+    let found = mtp::on_device_thread(|| -> Result<(Option<String>, Option<Space>)> {
+        let mut s =
+            (devices.open(&dev.device_id)).context("the portable device is not connected")?;
+        let space = match is_root {
+            true => s.storage(&dev.storage_id)?.space,
+            false => None,
+        };
+        let mut object = dev.storage_id.clone();
+        for name in &names {
+            let want = super::filter::name_key(name);
+            let next = (s.children(&object, &|| false)?).into_iter().find(|k| {
+                let e = k.entry();
+                e.folder && super::filter::name_key(&e.name) == want
+            });
+            match next {
+                Some(k) => object = k.id,
+                None => return Ok((None, space)),
+            }
+        }
+        Ok((Some(object), space))
+    });
+    let (object, space) = match found {
+        Ok(v) => v,
+        Err(e) => {
+            handle.finish();
+            return Err(e);
+        }
+    };
+    let Some(object) = object else {
+        // Gone from the device.
+        kill(tree, target, true);
+        finish(tree, handle);
+        return Ok(());
+    };
+    kill(tree, target, false);
+    {
+        let n = &mut tree.nodes[target as usize];
+        n.flags &= !(flag::UNREADABLE | flag::INCOMPLETE | flag::TOO_DEEP);
+        n.first_child = NONE;
+        n.child_count = 0;
+    }
+    let mut drive = false;
+    if is_root {
+        if let Some(r) = tree.roots.iter_mut().find(|r| r.node == target) {
+            if r.space.is_some() {
+                r.space = space.or(r.space);
+                drive = true;
+            }
+        }
+    }
+    let arena = Arena::new(
+        std::mem::take(&mut tree.nodes),
+        std::mem::take(&mut tree.exts),
+    );
+    let walker = Walker::new(&opts, &filters, handle, &arena, Vec::new());
+    let job = DeviceJob {
+        node: target,
+        device_id: dev.device_id,
+        object,
+        path,
+        depth,
+        drive,
+    };
+    let until = deadline(&opts);
+    mtp::on_device_thread(|| walker.devices(devices, vec![job], until));
+    tree.info.excluded += walker.excluded.load(Ordering::Relaxed);
+    tree.info.timed_out |= walker.timed_out.load(Ordering::Relaxed);
     drop(walker);
     let (nodes, exts, ids) = arena.into_parts();
     tree.nodes = nodes;

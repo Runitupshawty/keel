@@ -20,6 +20,10 @@
 //! - **Filters** leave items out of the tree entirely (see [`Filters`]).
 //! - Free and unknown space are pseudo items of a drive root ([`NodeKind::Free`],
 //!   [`NodeKind::Unknown`] = used − scanned on-disk size); they are not in any total.
+//! - **Portable devices** (Windows): each storage of a phone or camera is a root
+//!   ([`Root::Mtp`]), listed read-only through Windows Portable Devices on a thread of its
+//!   own, alongside the folder walk, within [`ScanOptions::device_time_limit_secs`]
+//!   (see [`mtp`]). [`list_scannable_roots`] offers drives and device storages.
 //!
 //! Node ids are stable until [`Tree::compact`] (saving and loading compact). Refreshing a
 //! branch marks its old items [`NodeKind::Dead`] and appends the new ones.
@@ -30,9 +34,12 @@ mod export_tests;
 mod file;
 mod filter;
 pub mod report;
+pub mod mtp;
 mod sys;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mtp;
 mod walk;
 // The Disk Usage window's analysis tabs (Task 84).
 pub mod analysis;
@@ -258,6 +265,19 @@ pub enum Root {
     /// Every local fixed drive (Windows), or every user mount that is not removable or a
     /// network share (elsewhere).
     AllLocalDrives,
+    /// A storage of a portable device (a phone's internal storage, a camera's card), by the
+    /// ids [`mtp::devices`] gives. Windows only; elsewhere scanning one fails.
+    Mtp {
+        device_id: String,
+        storage_id: String,
+    },
+}
+
+/// Which device storage a root is ([`RootInfo::device`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRoot {
+    pub device_id: String,
+    pub storage_id: String,
 }
 
 /// How a scan walks. Kept with the tree (a refresh walks the same way) and in scan files.
@@ -277,6 +297,10 @@ pub struct ScanOptions {
     pub threads: usize,
     /// Free and unknown pseudo items for drive roots (default on).
     pub free_and_unknown: bool,
+    /// A portable device's walk stops after this many seconds (the folders not read are
+    /// flagged [`flag::INCOMPLETE`] and [`ScanInfo::timed_out`] is set); 0: no limit.
+    /// Devices list slowly (one request per item), so a full phone can take minutes.
+    pub device_time_limit_secs: u64,
 }
 
 impl Default for ScanOptions {
@@ -290,6 +314,7 @@ impl Default for ScanOptions {
             filters: Filters::default(),
             threads: 0,
             free_and_unknown: true,
+            device_time_limit_secs: 30 * 60,
         }
     }
 }
@@ -298,10 +323,14 @@ impl Default for ScanOptions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RootInfo {
     pub node: NodeId,
+    /// A folder or drive; for a device storage a display path, `mtp://<device>/<storage>`,
+    /// that is not on any filesystem (see [`RootInfo::device`]).
     pub path: PathBuf,
     /// The drive's size and free space when the root is a drive (and free and unknown
-    /// items are on).
+    /// items are on); a device storage's when the device states them.
     pub space: Option<Space>,
+    /// The device storage this root is; None for folders and drives.
+    pub device: Option<DeviceRoot>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +352,8 @@ pub struct ScanInfo {
     pub unreadable: u64,
     /// Items the filters left out.
     pub excluded: u64,
+    /// A portable device's walk ran out of [`ScanOptions::device_time_limit_secs`].
+    pub timed_out: bool,
 }
 
 /// A finished (or cancelled) scan.
@@ -440,7 +471,9 @@ impl Tree {
         None
     }
 
-    /// An item's path (None for the top item and pseudo items).
+    /// An item's path (None for the top item and pseudo items). Below a device storage it
+    /// is a display path under `mtp://` that no file operation can use: check
+    /// [`Tree::on_device`] first.
     pub fn path(&self, id: NodeId) -> Option<PathBuf> {
         let mut names = Vec::new();
         let mut at = id;
@@ -455,6 +488,24 @@ impl Tree {
         }
         let root = self.roots.iter().find(|r| r.node == at)?;
         Some(names.iter().rev().fold(root.path.clone(), |p, n| p.join(n)))
+    }
+
+    /// The item is on a portable device (listed read-only; no file operation applies).
+    pub fn on_device(&self, id: NodeId) -> bool {
+        self.root_of(id).is_some_and(|r| r.device.is_some())
+    }
+
+    /// The roots to scan to get this tree again.
+    pub(crate) fn scan_roots(&self) -> Vec<Root> {
+        (self.roots.iter())
+            .map(|r| match &r.device {
+                Some(d) => Root::Mtp {
+                    device_id: d.device_id.clone(),
+                    storage_id: d.storage_id.clone(),
+                },
+                None => Root::Path(r.path.clone()),
+            })
+            .collect()
     }
 
     /// The item at `path` (a root or below one).
@@ -487,12 +538,7 @@ impl Tree {
 
     /// Scans the same roots again with the same options.
     pub fn rescan(&self, handle: &ScanHandle) -> anyhow::Result<Tree> {
-        let roots: Vec<Root> = self
-            .roots
-            .iter()
-            .map(|r| Root::Path(r.path.clone()))
-            .collect();
-        scan(&roots, &self.options, handle)
+        scan(&self.scan_roots(), &self.options, handle)
     }
 
     /// Scans `id` again: a folder's subtree, or one file or link; an item that is gone is
@@ -787,6 +833,62 @@ pub fn scan(roots: &[Root], options: &ScanOptions, handle: &ScanHandle) -> anyho
 /// not removable media or network shares.
 pub fn local_drives() -> Vec<PathBuf> {
     sys::local_drives()
+}
+
+/// What a scannable root is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScannableKind {
+    /// A local fixed drive.
+    Drive,
+    /// A storage of a portable device (phone, camera).
+    Device,
+}
+
+/// One choice of the scan root picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScannableRoot {
+    pub root: Root,
+    pub kind: ScannableKind,
+    /// `C:\`, or "Pixel 7: Internal shared storage".
+    pub label: String,
+    /// Size and free space when known.
+    pub space: Option<Space>,
+}
+
+/// The local fixed drives, then every storage of every connected portable device (Windows;
+/// none elsewhere). A device that cannot be listed is left out. Talks to every device: call
+/// it off the UI thread.
+pub fn list_scannable_roots() -> Vec<ScannableRoot> {
+    scannable_roots_with(&mtp::System)
+}
+
+pub(crate) fn scannable_roots_with(devices: &dyn mtp::Backend) -> Vec<ScannableRoot> {
+    let mut out: Vec<ScannableRoot> = (sys::local_drives().into_iter())
+        .map(|p| ScannableRoot {
+            label: p.display().to_string(),
+            space: sys::space(&p),
+            root: Root::Path(p),
+            kind: ScannableKind::Drive,
+        })
+        .collect();
+    let found = mtp::on_device_thread(|| devices.devices()).unwrap_or_else(|e| {
+        tracing::debug!("du: portable devices: {e:#}");
+        Vec::new()
+    });
+    for d in found {
+        for s in d.storages {
+            out.push(ScannableRoot {
+                label: format!("{}: {}", d.name, s.name),
+                space: s.space,
+                root: Root::Mtp {
+                    device_id: d.id.clone(),
+                    storage_id: s.id,
+                },
+                kind: ScannableKind::Device,
+            });
+        }
+    }
+    out
 }
 
 /// Controls a running scan (pause, resume, cancel) and reads its progress; cheap to clone
