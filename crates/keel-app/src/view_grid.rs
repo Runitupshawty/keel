@@ -12,8 +12,7 @@ use crate::tab::Tab;
 use crate::view_prefs::{Arrange, IconOptions, LabelPos, MAX_ICON, MAX_SPACING, MIN_ICON};
 use crate::worker::ThumbPool;
 use crossbeam_channel::Sender;
-use eg        bg.context_menu(|ui| {
-            ui.menu_button("Arrange", |ui| arrange_menu(ui, &mut menu_opts, &mut menu_act));::{pos2, vec2, Key, Rect, TextureHandle, Vec2};
+use egui::{pos2, vec2, Key, Rect, TextureHandle, Vec2};
 use keel_preview::Preview;
 use keel_vfs::{Entry, Kind, Router, VPath};
 use std::collections::{BTreeMap, HashMap, HashSet};
