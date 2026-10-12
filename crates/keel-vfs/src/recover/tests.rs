@@ -38,7 +38,17 @@ fn content(r: &mut Cursor<Vec<u8>>, c: &Candidate) -> Vec<u8> {
 
 /// No panic on any prefix of the image; every candidate reads or fails cleanly.
 fn survives_truncation(img: &[u8]) {
-    let cuts = [0, 100, 511, 512, 1000, 4096, img.len() / 3, img.len() / 2, img.len() - 1];
+    let cuts = [
+        0,
+        100,
+        511,
+        512,
+        1000,
+        4096,
+        img.len() / 3,
+        img.len() / 2,
+        img.len() - 1,
+    ];
     for cut in cuts {
         let mut r = Cursor::new(img[..cut.min(img.len())].to_vec());
         if let Ok(s) = scan(&mut r) {
@@ -62,7 +72,12 @@ fn fat_finds_deleted_files_with_names_and_folders() {
         let inner = pattern(700, 2);
         let c = fat.add_file(docs, Some("inner file.bin"), b"INNERF~1BIN", &inner);
         let (old, old_entry) = fat.add_dir(root, Some("Old stuff"), b"OLDSTU~1   ");
-        let d = fat.add_file(old, Some("gone.txt"), b"GONE    TXT", b"in a deleted folder");
+        let d = fat.add_file(
+            old,
+            Some("gone.txt"),
+            b"GONE    TXT",
+            b"in a deleted folder",
+        );
         for f in [&a, &b, &c, &d, &old_entry] {
             fat.delete(f);
         }
@@ -109,7 +124,12 @@ fn fat_finds_deleted_files_with_names_and_folders() {
 fn fat_confidence_drops_when_clusters_are_reused() {
     let mut fat = FatImg::new(16);
     let root = fat.root();
-    let f = fat.add_file(root, Some("two clusters.bin"), b"TWOCLU~1BIN", &pattern(1000, 3));
+    let f = fat.add_file(
+        root,
+        Some("two clusters.bin"),
+        b"TWOCLU~1BIN",
+        &pattern(1000, 3),
+    );
     fat.delete(&f);
     let first = f.clusters[0];
     let (s, _) = scan_image(fat.img.clone());
@@ -119,7 +139,10 @@ fn fat_confidence_drops_when_clusters_are_reused() {
     assert_eq!(find(&s, "two clusters.bin").confidence, Confidence::Partial);
     fat.reuse(first, &[0xBB; 1024]);
     let (s, _) = scan_image(fat.img.clone());
-    assert_eq!(find(&s, "two clusters.bin").confidence, Confidence::Overwritten);
+    assert_eq!(
+        find(&s, "two clusters.bin").confidence,
+        Confidence::Overwritten
+    );
 }
 
 #[test]
@@ -375,7 +398,9 @@ fn restore_refuses_the_source_volume() {
     let err = restore(src.reader(), id, &s.candidates[0], dest.path()).unwrap_err();
     assert!(matches!(err, RecoverError::SameVolume));
     assert_eq!(std::fs::read_dir(dest.path()).unwrap().count(), 0);
-    let err = Source::open(img_dir.path().to_str().unwrap()).err().unwrap();
+    let err = Source::open(img_dir.path().to_str().unwrap())
+        .err()
+        .unwrap();
     assert!(matches!(err, RecoverError::Unrecoverable(_)), "{err}");
 }
 

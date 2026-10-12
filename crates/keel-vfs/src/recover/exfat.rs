@@ -33,8 +33,7 @@ pub(crate) fn geometry(b: &[u8]) -> Option<Geo> {
         return None;
     }
     let (bps_shift, spc_shift, nfats) = (u32::from(b[108]), u32::from(b[109]), b[110]);
-    if !(9..=12).contains(&bps_shift) || spc_shift > 25 - bps_shift || !(1..=2).contains(&nfats)
-    {
+    if !(9..=12).contains(&bps_shift) || spc_shift > 25 - bps_shift || !(1..=2).contains(&nfats) {
         return None;
     }
     let bps = 1u64 << bps_shift;
@@ -296,7 +295,9 @@ impl<R: Read + Seek> Walk<'_, R> {
                 continue;
             }
             let count = usize::from(e[1]);
-            let Some(set) = entries.get(i..=i + count).filter(|_| (2..=18).contains(&count))
+            let Some(set) = entries
+                .get(i..=i + count)
+                .filter(|_| (2..=18).contains(&count))
             else {
                 i += 1;
                 continue;
@@ -403,7 +404,11 @@ fn file_set(set: &[(u64, [u8; 32])]) -> Option<FileSet> {
         if n[0] & 0x7F != 0x41 {
             return None;
         }
-        units.extend(n[2..32].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])));
+        units.extend(
+            n[2..32]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]])),
+        );
     }
     units.truncate(name_len);
     if set_checksum(set) != u16_at(p, 2) {

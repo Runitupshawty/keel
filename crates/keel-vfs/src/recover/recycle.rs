@@ -111,9 +111,12 @@ fn list_one(dir: &Path) -> std::io::Result<Vec<Item>> {
     let mut items = Vec::new();
     for (path, name) in names {
         let mut bytes = Vec::new();
-        let read = std::fs::File::open(&path)
-            .and_then(|f| f.take(MAX_INFO).read_to_end(&mut bytes));
-        let Ok(info) = read.map_err(RecoverError::from).and_then(|_| parse_info(&bytes)) else {
+        let read =
+            std::fs::File::open(&path).and_then(|f| f.take(MAX_INFO).read_to_end(&mut bytes));
+        let Ok(info) = read
+            .map_err(RecoverError::from)
+            .and_then(|_| parse_info(&bytes))
+        else {
             continue;
         };
         let data = dir.join(format!("$R{}", &name[2..]));

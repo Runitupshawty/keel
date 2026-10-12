@@ -268,7 +268,12 @@ impl FatImg {
         FatFile { entries, clusters }
     }
 
-    pub fn add_dir(&mut self, parent: FatDir, long: Option<&str>, short: &[u8; 11]) -> (FatDir, FatFile) {
+    pub fn add_dir(
+        &mut self,
+        parent: FatDir,
+        long: Option<&str>,
+        short: &[u8; 11],
+    ) -> (FatDir, FatFile) {
         let clusters = self.alloc(1);
         let c = clusters[0];
         let dir = FatDir(c);
@@ -340,7 +345,8 @@ const EX_FAT_OFF: usize = 24 * 512;
 const EX_HEAP_OFF: usize = 32 * 512;
 const EX_CLUSTERS: u32 = 1000;
 /// 2026-10-12 12:34:56 as an exFAT timestamp.
-pub const EX_TS: u32 = ((2026 - 1980) << 25) | (10 << 21) | (12 << 16) | (12 << 11) | (34 << 5) | 28;
+pub const EX_TS: u32 =
+    ((2026 - 1980) << 25) | (10 << 21) | (12 << 16) | (12 << 11) | (34 << 5) | 28;
 
 #[allow(clippy::new_without_default)]
 impl ExImg {
@@ -445,7 +451,15 @@ impl ExImg {
         out
     }
 
-    fn set(&mut self, dir: ExDir, name: &str, attrs: u16, first: u32, len: u64, nofat: bool) -> (usize, usize) {
+    fn set(
+        &mut self,
+        dir: ExDir,
+        name: &str,
+        attrs: u16,
+        first: u32,
+        len: u64,
+        nofat: bool,
+    ) -> (usize, usize) {
         let units = utf16(name);
         let names = units.len().div_ceil(15);
         let mut set = vec![[0u8; 32]; 2 + names];
@@ -745,8 +759,10 @@ impl NtfsImg {
                     self.mark(c, true);
                 }
                 let take = (len as usize * NT_CLUSTER).min(content.len() - written);
-                self.data
-                    .push((lcn as usize * NT_CLUSTER, content[written..written + take].to_vec()));
+                self.data.push((
+                    lcn as usize * NT_CLUSTER,
+                    content[written..written + take].to_vec(),
+                ));
                 written += take;
             }
             attrs.push(nonresident_attr(0x80, &runs, content.len() as u64));
@@ -907,7 +923,12 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         let mut fat = FatImg::compact(kind);
         let root = fat.root();
         fat.add_file(root, Some("live file.txt"), b"LIVEFI~1TXT", b"live");
-        let a = fat.add_file(root, Some("deleted long name.bin"), b"DELETE~1BIN", &[7; 1100]);
+        let a = fat.add_file(
+            root,
+            Some("deleted long name.bin"),
+            b"DELETE~1BIN",
+            &[7; 1100],
+        );
         let b = fat.add_file(root, None, b"SHORT   TXT", b"short");
         let (dir, dir_entry) = fat.add_dir(root, Some("Folder"), b"FOLDER     ");
         let c = fat.add_file(dir, Some("inside.txt"), b"INSIDE  TXT", b"inside");
@@ -923,14 +944,25 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     let b = ex.add_file(root, "chained.bin", &[2; 4000], Layout::Chained);
     let c = ex.add_file(root, "fragmented.dat", &[3; 8200], Layout::Fragmented);
     let (dir, dir_set) = ex.add_dir(root, "Folder");
-    let d = ex.add_file(dir, "a name of more than fifteen characters.txt", &[4; 50], Layout::Contiguous);
+    let d = ex.add_file(
+        dir,
+        "a name of more than fifteen characters.txt",
+        &[4; 50],
+        Layout::Contiguous,
+    );
     for f in [&a, &b, &c, &d, &dir_set] {
         ex.delete(f);
     }
     out.push(("recover_exfat", "exfat.img".into(), ex.image()));
     let mut nt = NtfsImg::new();
     nt.add_file(NT_ROOT, "live.txt", None, b"live", false);
-    let small = nt.add_file(NT_ROOT, "small.txt", Some("SMALL~1.TXT"), b"resident", false);
+    let small = nt.add_file(
+        NT_ROOT,
+        "small.txt",
+        Some("SMALL~1.TXT"),
+        b"resident",
+        false,
+    );
     let big = nt.add_file(NT_ROOT, "big.bin", None, &[5; 2100], true);
     let dir = nt.add_dir(NT_ROOT, "Folder");
     let inner = nt.add_file(dir, "inner.txt", None, &[6; 700], false);
@@ -938,7 +970,15 @@ pub fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         nt.delete(f);
     }
     out.push(("recover_ntfs", "ntfs.img".into(), nt.image()));
-    out.push(("recycle_bin", "v1".into(), info_v1(r"C:\Data\old report.doc", 4096)));
-    out.push(("recycle_bin", "v2".into(), info_v2(r"C:\Data\Pictures\photo.jpg", 123_456)));
+    out.push((
+        "recycle_bin",
+        "v1".into(),
+        info_v1(r"C:\Data\old report.doc", 4096),
+    ));
+    out.push((
+        "recycle_bin",
+        "v2".into(),
+        info_v2(r"C:\Data\Pictures\photo.jpg", 123_456),
+    ));
     out
 }

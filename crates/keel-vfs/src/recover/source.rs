@@ -119,9 +119,9 @@ impl Source {
         }
         let device = !meta.is_file();
         let file = File::open(&path).map_err(|e| match e.kind() {
-            io::ErrorKind::PermissionDenied if device => RecoverError::NeedsAdmin(
-                "reading a device directly needs root: run keel with sudo",
-            ),
+            io::ErrorKind::PermissionDenied if device => {
+                RecoverError::NeedsAdmin("reading a device directly needs root: run keel with sudo")
+            }
             _ => RecoverError::Io(e),
         })?;
         let id = volume_of(&path)?;

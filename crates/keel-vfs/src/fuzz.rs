@@ -161,7 +161,10 @@ type Volume = crate::recover::BlockReader<io::Cursor<Vec<u8>>>;
 
 /// Scans, then reads the first 64 candidates' data into a sink that refuses more than
 /// 1 MiB (a sparse run may declare any length).
-fn recover(data: &[u8], scan: impl Fn(&mut Volume) -> crate::recover::Result<crate::recover::Scan>) {
+fn recover(
+    data: &[u8],
+    scan: impl Fn(&mut Volume) -> crate::recover::Result<crate::recover::Scan>,
+) {
     let mut r = crate::recover::BlockReader::new(io::Cursor::new(data.to_vec()));
     let Ok(found) = scan(&mut r) else {
         return;

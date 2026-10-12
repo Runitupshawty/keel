@@ -665,7 +665,9 @@ mod tests {
         );
         assert_eq!(
             cmd(&["recover", "scan", "E:"]),
-            Command::Recover(RecoverCmd::Scan { source: "E:".into() })
+            Command::Recover(RecoverCmd::Scan {
+                source: "E:".into()
+            })
         );
         assert_eq!(
             cmd(&["recover", "restore", "3", "12", "--to", "D:/out"]),

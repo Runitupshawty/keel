@@ -43,7 +43,9 @@ pub(crate) const MAX_DEPTH: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoverError {
-    #[error("not an NTFS, exFAT or FAT volume (pass a volume or a volume image, not a whole disk)")]
+    #[error(
+        "not an NTFS, exFAT or FAT volume (pass a volume or a volume image, not a whole disk)"
+    )]
     UnknownFs,
     #[error("damaged {0} volume: {1}")]
     Corrupt(&'static str, String),
@@ -203,7 +205,9 @@ pub fn scan_fat<R: Read + Seek>(r: &mut R) -> Result<Scan> {
 pub fn read_data<R: Read + Seek, W: Write>(r: &mut R, c: &Candidate, out: &mut W) -> Result<u64> {
     match &c.data {
         Data::Resident(bytes) => {
-            let n = bytes.len().min(usize::try_from(c.size).unwrap_or(usize::MAX));
+            let n = bytes
+                .len()
+                .min(usize::try_from(c.size).unwrap_or(usize::MAX));
             out.write_all(&bytes[..n])?;
             Ok(n as u64)
         }

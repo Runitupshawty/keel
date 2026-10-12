@@ -8,7 +8,9 @@
 
 use crate::cli::RecoverCmd;
 use crate::commands::{FAILED, OK, USAGE};
-use keel_vfs::recover::{self, recycle, Candidate, Confidence, RecoverError, Scan, Source, VolumeId};
+use keel_vfs::recover::{
+    self, recycle, Candidate, Confidence, RecoverError, Scan, Source, VolumeId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -88,8 +90,9 @@ fn scan(source: &str, json: bool) -> Result<i32, Fail> {
     let found = recover::scan(src.reader())?;
     // The drive's own Recycle Bin, as far as this user may read it.
     let bin = match is_drive {
-        true => recycle::list(&Path::new(&format!("{spec}\\")).join("$Recycle.Bin"))
-            .unwrap_or_default(),
+        true => {
+            recycle::list(&Path::new(&format!("{spec}\\")).join("$Recycle.Bin")).unwrap_or_default()
+        }
         false => Vec::new(),
     };
     let saved = Saved {
@@ -226,17 +229,23 @@ fn print_recycle(items: &[recycle::Item], json: bool, alone: bool) {
             time_text(i.info.deleted, false),
             crate::view_details::size_text_of(i.info.size),
             i.info.original,
-            if i.data_file.is_none() { "  (its data file is gone)" } else { "" },
+            if i.data_file.is_none() {
+                "  (its data file is gone)"
+            } else {
+                ""
+            },
         );
     }
 }
 
 fn restore(ids: &[usize], to: &Path, json: bool) -> Result<i32, Fail> {
     let file = last_scan_file()?;
-    let text = std::fs::read(&file)
-        .map_err(|_| Fail::Usage("no scan to restore from: run `keel recover scan` first".into()))?;
-    let saved: Saved = serde_json::from_slice(&text)
-        .map_err(|_| Fail::Usage("the saved scan is unreadable: run `keel recover scan` again".into()))?;
+    let text = std::fs::read(&file).map_err(|_| {
+        Fail::Usage("no scan to restore from: run `keel recover scan` first".into())
+    })?;
+    let saved: Saved = serde_json::from_slice(&text).map_err(|_| {
+        Fail::Usage("the saved scan is unreadable: run `keel recover scan` again".into())
+    })?;
     let count = saved.scan.candidates.len();
     if let Some(bad) = ids.iter().find(|&&id| id == 0 || id > count) {
         return Err(Fail::Usage(format!(
@@ -266,12 +275,20 @@ fn restore(ids: &[usize], to: &Path, json: bool) -> Result<i32, Fail> {
         match recover::restore(src.reader(), id_, c, to) {
             Ok(path) => {
                 if !json {
-                    println!("Restored {} to {} ({})", c.path(), path.display(), c.confidence.label());
+                    println!(
+                        "Restored {} to {} ({})",
+                        c.path(),
+                        path.display(),
+                        c.confidence.label()
+                    );
                     if c.confidence != Confidence::Good {
-                        println!("  Its clusters were {}: parts of it may be other data.", match c.confidence {
-                            Confidence::Unknown => "not all known to be free",
-                            _ => "partly or wholly reused",
-                        });
+                        println!(
+                            "  Its clusters were {}: parts of it may be other data.",
+                            match c.confidence {
+                                Confidence::Unknown => "not all known to be free",
+                                _ => "partly or wholly reused",
+                            }
+                        );
                     }
                 }
                 done.push(json!({ "id": id, "path": path, "confidence": c.confidence }));
@@ -308,7 +325,10 @@ mod tests {
         let saved: Saved =
             serde_json::from_slice(&std::fs::read(last_scan_file().ok().unwrap()).unwrap())
                 .unwrap();
-        assert_eq!(saved.source, std::path::absolute(&image).unwrap().display().to_string());
+        assert_eq!(
+            saved.source,
+            std::path::absolute(&image).unwrap().display().to_string()
+        );
         assert_eq!(saved.scan.candidates.len(), 1);
         assert_eq!(saved.scan.candidates[0].name, "notes.txt");
 
@@ -317,7 +337,10 @@ mod tests {
         assert!(matches!(restore(&[2], &out, false), Err(Fail::Usage(_))));
         assert!(matches!(restore(&[0], &out, false), Err(Fail::Usage(_))));
         let missing = dir.path().join("missing");
-        assert!(matches!(restore(&[1], &missing, false), Err(Fail::Usage(_))));
+        assert!(matches!(
+            restore(&[1], &missing, false),
+            Err(Fail::Usage(_))
+        ));
         // The image is on the same volume as the temp folder: refused, nothing written.
         assert!(matches!(
             restore(&[1], &out, false),

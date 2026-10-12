@@ -9,8 +9,8 @@
 
 use super::alloc::Alloc;
 use super::{
-    civil, read_up_to, u16_at, u32_at, Candidate, Confidence, Data, Extent, FsKind,
-    RecoverError, Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
+    civil, read_up_to, u16_at, u32_at, Candidate, Confidence, Data, Extent, FsKind, RecoverError,
+    Result, Scan, MAX_CANDIDATES, MAX_DEPTH,
 };
 use std::collections::HashSet;
 use std::io::{Read, Seek};
@@ -216,7 +216,10 @@ pub(crate) fn scan<R: Read + Seek>(r: &mut R) -> Result<Scan> {
         let entries = walk.entries(&loc);
         if let DirLoc::First(_) = loc {
             // A deleted folder's cluster starts with its "." entry, unless reused.
-            if entries.first().is_none_or(|(_, e)| &e[..11] != b".          ") {
+            if entries
+                .first()
+                .is_none_or(|(_, e)| &e[..11] != b".          ")
+            {
                 continue;
             }
         }
@@ -326,7 +329,9 @@ impl<R: Read + Seek> Walk<'_, R> {
                     let child = join(path, &name);
                     match deleted {
                         true => stack.1.push((DirLoc::First(start), child, depth + 1, true)),
-                        false => stack.0.push((DirLoc::Chain(start), child, depth + 1, false)),
+                        false => stack
+                            .0
+                            .push((DirLoc::Chain(start), child, depth + 1, false)),
                     }
                 }
                 continue;
@@ -387,9 +392,9 @@ fn is_dot(e: &[u8; 32]) -> bool {
 
 /// The checksum of a short name that its LFN entries carry.
 pub(crate) fn lfn_checksum(name11: &[u8]) -> u8 {
-    name11
-        .iter()
-        .fold(0u8, |s, &b| ((s & 1) << 7).wrapping_add(s >> 1).wrapping_add(b))
+    name11.iter().fold(0u8, |s, &b| {
+        ((s & 1) << 7).wrapping_add(s >> 1).wrapping_add(b)
+    })
 }
 
 /// A character Windows puts in a short name.
@@ -429,7 +434,11 @@ fn long_name(e: &[u8; 32], lfns: &[[u8; 32]], erased: bool) -> Option<String> {
     let mut units = Vec::with_capacity(lfns.len() * 13);
     for l in lfns.iter().rev() {
         for range in [1..11, 14..26, 28..32] {
-            units.extend(l[range].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])));
+            units.extend(
+                l[range]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]])),
+            );
         }
     }
     let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
