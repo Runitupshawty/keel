@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::tests::{eventually, walk};
+use crate::index::tests::{eventually, eventually_reaches, walk};
 use crate::library::tests::folder;
 use crate::media::tests::{exif_jpeg, png};
 use crate::JobStatus;
@@ -141,8 +141,8 @@ fn a_stopped_job_resumes_from_its_checkpoint() {
     }
     let (lib, id) = library(data.path(), files.path());
     let job = lib.media_job(&id).unwrap();
-    eventually("first checkpoint", || {
-        media_rows(&lib, &id) >= CHECKPOINT_EVERY as i64
+    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
+        media_rows(&lib, &id)
     });
     // Pause (user activity), then close: the job stops at its pause.
     lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);

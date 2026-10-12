@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::tests::{eventually, walk, write};
+use crate::index::tests::{eventually, eventually_reaches, walk, write};
 use crate::library::tests::{folder, remote};
 use crate::{JobStatus, LibraryQuery};
 use std::time::Duration;
@@ -218,8 +218,8 @@ fn a_stopped_job_resumes_from_its_checkpoint() {
     }
     let (lib, id) = library(data.path(), files.path());
     let job = lib.index_text(&id).unwrap().unwrap();
-    eventually("first checkpoint", || {
-        rows(&lib, &id) >= CHECKPOINT_EVERY as i64
+    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
+        rows(&lib, &id)
     });
     // Pause (user activity), then close: the job stops at its pause.
     lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
