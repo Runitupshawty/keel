@@ -266,6 +266,7 @@ mod tests {
         let req = Request {
             folder: Some(std::env::temp_dir()),
             search: Some("needle".into()),
+            disk_usage: true,
             select: None,
         };
         let (_server, rx) = served(&name);
@@ -290,6 +291,7 @@ mod tests {
         let req = Request {
             folder: Some(folder.clone()),
             search: None,
+            disk_usage: false,
             select: None,
         };
         let (_server, rx) = served(&name);

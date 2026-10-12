@@ -124,8 +124,8 @@ impl Registry for CurrentUser {
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::ERROR_SUCCESS;
         use windows::Win32::System::Registry::{
-            RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-            KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+            RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+            REG_OPTION_NON_VOLATILE, REG_SZ,
         };
         let (k, n, v) = (wide(key), name.map(wide), wide(value));
         let mut hkey = HKEY::default();
@@ -207,7 +207,9 @@ pub fn setting(ui: &mut egui::Ui) {
         let exe = std::env::current_exe().ok();
         let known = ui.data(|d| d.get_temp::<(State, Option<String>)>(id));
         let (now, error) = known.unwrap_or_else(|| {
-            let s = exe.as_deref().map_or(State::Off, |e| state(&CurrentUser, e));
+            let s = exe
+                .as_deref()
+                .map_or(State::Off, |e| state(&CurrentUser, e));
             (s, None)
         });
         ui.vertical(|ui| {
@@ -234,7 +236,9 @@ pub fn setting(ui: &mut egui::Ui) {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
             let now = match r.changed() {
-                true => exe.as_deref().map_or(State::Off, |e| state(&CurrentUser, e)),
+                true => exe
+                    .as_deref()
+                    .map_or(State::Off, |e| state(&CurrentUser, e)),
                 false => now,
             };
             ui.data_mut(|d| d.insert_temp(id, (now, error)));
@@ -282,7 +286,10 @@ mod tests {
         let mut reg = Fake::default();
         install(&mut reg, &exe()).unwrap();
         assert_eq!(reg.0.len(), 3 * 2 * 3);
-        assert!(reg.0.keys().all(|(k, _)| k.starts_with(r"software\classes\")));
+        assert!(reg
+            .0
+            .keys()
+            .all(|(k, _)| k.starts_with(r"software\classes\")));
         let cmd = |place: &str, verb: &str| {
             reg.get(&format!(r"{ROOT}\{place}\{verb}\command"), None)
                 .unwrap()
@@ -296,8 +303,11 @@ mod tests {
             r#""C:\Program Files\Keel\keel.exe" --disk-usage "%V""#
         );
         assert_eq!(
-            reg.get(r"Software\Classes\Directory\Background\shell\Keel.Search", None)
-                .as_deref(),
+            reg.get(
+                r"Software\Classes\Directory\Background\shell\Keel.Search",
+                None
+            )
+            .as_deref(),
             Some("Search in Keel")
         );
         assert_eq!(
