@@ -775,7 +775,7 @@ impl Library {
             .collect())
     }
 
-    /// The record's content id: `None` before hashing, or when `now` (the file's mtime in
+    /// The record's content id: `None` before hashing, after drift, or when `now` (the file's mtime in
     /// ns and size as it is now) differs from the record. `now: None` (an offline file):
     /// the content id as last indexed.
     pub fn content_id(
@@ -790,7 +790,8 @@ impl Library {
             .store
             .get()?
             .query_row(
-                "SELECT cas_id, coalesce(mtime, 0), size FROM record WHERE id = ?1",
+                "SELECT CASE WHEN drift IS NULL THEN cas_id END, coalesce(mtime, 0), size
+                 FROM record WHERE id = ?1",
                 [record.id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -826,7 +827,7 @@ impl Library {
             .store
             .get()?
             .query_row(
-                "SELECT cas_id FROM record WHERE id = ?1",
+                "SELECT CASE WHEN drift IS NULL THEN cas_id END FROM record WHERE id = ?1",
                 [record.id],
                 |r| r.get(0),
             )
@@ -937,7 +938,7 @@ impl Library {
             .store
             .get()?
             .query_row(
-                "SELECT cas_id, path FROM record WHERE id = ?1",
+                "SELECT CASE WHEN drift IS NULL THEN cas_id END, path FROM record WHERE id = ?1",
                 [record.id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

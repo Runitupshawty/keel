@@ -837,3 +837,24 @@ fn recount_100k() {
     assert_eq!(summary.single_domain, 0);
     assert_eq!(summary.unbacked, 50_000);
 }
+
+#[test]
+fn bughunt_drifted_record_does_not_inherit_old_content_copies() {
+    let files = tempfile::tempdir().unwrap();
+    write(&files.path().join("changed.txt"), "same");
+    write(&files.path().join("copy1.txt"), "same");
+    write(&files.path().join("copy2.txt"), "same");
+    let data = tempfile::tempdir().unwrap();
+    let (lib, s) = library(data.path(), &[files.path()]);
+    let changed = rec(&s[0], "changed.txt");
+    s[0].store
+        .get()
+        .unwrap()
+        .execute("UPDATE record SET drift = 1 WHERE id = ?1", [changed.id])
+        .unwrap();
+    assert_eq!(lib.redundancy(&changed).unwrap().copies, 1);
+    assert!(lib.last_copy(&changed).unwrap());
+    assert_eq!(lib.content_id(&changed, None).unwrap(), None);
+    assert_eq!(lib.redundancy_bounded(&changed, 50).unwrap().0.copies, 1);
+    assert_eq!(lib.redundancy(&rec(&s[0], "copy1.txt")).unwrap().copies, 2);
+}
