@@ -443,6 +443,7 @@ keel mount <source id or label> <K:|folder> [--subtree PATH]
 keel unmount <K:|folder>
 keel mounts
 keel daemon start|stop|status|rotate-token
+keel journal [--watch] [--action create,delete,rename,modify,attributes] [--since WHEN] [--until WHEN] [--path REGEX] [--search TEXT] [--max N] [--csv] [--json]
 keel mcp [--allow-execute]
 keel op [list]
 keel op <name> [--params <json> | --params-file <file>] [--execute]
@@ -475,6 +476,22 @@ a daemon too. Release builds on Windows are GUI programs that attach to the call
 console, which does not wait for them: pipe the output (`keel … | more`, PowerShell
 `keel … | Out-Host`) to see it in order. Redirected output (`--json` into a file or a
 program, `keel mcp` under an agent) is unaffected.
+
+### `keel journal`
+
+Prints the [index journal](files.md#index-journal) of Keel's own index, read straight from
+its file (no library or daemon needed): the newest `--max` entries (100; `0` for all) that
+pass the filters, oldest first, one per line (`time  action  path  (from old path)`).
+`--action` takes `create`, `delete`, `rename`, `modify`, `attributes` (repeat it or
+separate with commas); `--since` and `--until` take `today`, `yesterday`, `now`, a span
+back from now (`90s`, `30m`, `2h`, `7d`, `1w`), a local date (`2026-10-12`; for `--until`
+the whole day) or a date and time (`"2026-10-12 14:00"`); `--path` is a regular expression
+on the path or the old path (any case on Windows); `--search` is part of a path, any case.
+`--json` prints one JSON object per entry and line (`id`, `time` in ms since the epoch,
+`action`, `path`, `old_path`, `is_dir`, `size`); `--csv` prints CSV with a header.
+`--watch` then keeps printing new entries as the index applies them (checked twice a
+second) until Ctrl+C. A missing journal prints nothing. Exit codes: 0, 1 the journal could
+not be read, 2 usage (an unknown action, a time or pattern that does not parse).
 
 ### `keel op`: any operation by name
 
