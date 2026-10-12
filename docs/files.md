@@ -205,7 +205,27 @@ Settings → General → **Search**: **Search as you type** (on; off, Enter runs
 
 On Windows, when Everything is not running, Keel uses its own index: it reads the NTFS file table and keeps it current from the USN journal, and stores it in the cache folder. Queries are substring, glob (`*.pdf`) or `regex:`, with `folder:` and `in:<path>` filters, and the [search toggles](#the-search-tab).
 
-Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
+Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once and runs a helper (`keel --index-service`) that only reads: it copies each volume's file table records to Keel over a pipe that only your account and administrators can open, and Keel, running as you, builds the full index from them; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
+
+The helper does as little as it can with administrator rights. It reads the first record of the file table and, on a volume whose table is so fragmented that its list of extents does not fit there, the extra records that hold the rest of that list, to find where the table lies. Before a record leaves the helper it blanks everything the index does not use: the contents of small files and alternate data streams kept inside the record, extended attributes, security descriptors and the unused tail of the record. Names, sizes, dates and attributes go through. Keel then checks everything it receives as untrusted input (only the volumes it asked for, records in order, every record through the same parser that is fuzzed against hostile bytes, names that are a single path component) before it builds and saves the index.
+
+The full index lists every file on the volume, also those in folders your account cannot open (another user's profile, for example), with their sizes and dates. Search results leave those out, as Explorer would ([Folders you cannot open](#folders-you-cannot-open)).
+
+### The index service
+
+Instead of the one-shot helper you can install the **Keel index service** (Settings → General → **Index service** → **Install…**, or `keel --install-service`): a Windows service (`KeelIndex`, LocalSystem, started on demand) that does only the elevated reads (the file table's raw records, the change journal, and the size and dates of changed files) for the one account that installed it, over a private named pipe. Like the one-shot helper it parses nothing a disk holds: Keel, running as you, parses and checks it all. Your normal Keel then builds the full index and keeps it current with no administrator prompt, like the Everything Service. **Uninstall…** (or `keel --uninstall-service`) removes it. What it does, its pipe protocol and its security review are in [The Keel index service](index-service.md).
+
+### Folders you cannot open
+
+The full index holds every name on the drive, including files in other users' folders and system folders. Search results leave out anything inside a folder your account cannot list, as Explorer would: each result's folders are checked with your rights (the answer for each folder is kept for five minutes). This is on by default; Settings → General → **Index privacy** → "Hide files in folders you cannot open" turns it off. When many matches are hidden a search can return fewer results than its limit.
+
+### What the index stores
+
+The helper reads each volume's file table (the MFT) record by record through the volume handle, and keeps for every file and folder: its name and folder, size, size on disk (the clusters in use, so a compressed or sparse file counts what it really takes; a small file kept inside its MFT record counts its size rounded up to 8 bytes, as Windows reports it, and a file compressed with `compact /exe` counts its compressed contents), date created, modified and accessed, attributes, the number of hard links and of alternate data streams, and the reparse tag of links and junctions. A file with several hard links is listed once, by its first name. NTFS's own system files (`$MFT`, `$LogFile`, `$Extend` and what is under it) are left out. A record being written while it is read fails its check and is skipped; the journal replay that follows every build brings the file back. If the volume cannot be read this way (an unusual layout, such as a file table with a hole or one whose extents end before its size), the helper lists it with `FSCTL_ENUM_USN_DATA` instead, which gives names and attributes only; sizes and dates then come in as files change. Keel never takes a partial read of the file table as a complete index.
+
+Every folder also carries totals of everything below it: size, size on disk, files, folders and the newest change. They are counted when the index is built or loaded and kept current from the journal: each change record dates the file (**recently changed**: when Keel last saw it change) and the folders it left or entered, and Keel looks up the new size and dates of each changed file by its file id (up to 20,000 files per two-second poll; past that, the rest keep their old size until they change again). Any column can also keep a ready-made sort order that is updated with each batch of changes, so sorting a large result by size or date does not sort it again. Sorting and filtering search results by these columns comes with the search language.
+
+The index file has a version: an index written by an older Keel is upgraded when it is opened (its new columns stay empty until the next **Index all drives**), and one written by a newer Keel is rebuilt.
 
 On macOS and Linux Keel uses Spotlight (`mdfind`) or `plocate`/`locate` when they answer. Otherwise (and on Windows when nothing else works) it keeps its own **name index** of your home folder: a walk that skips hidden and git-ignored entries, saved in the cache folder (`<cache>/index/walk-<hash>.db`) so the next start is instant, and kept current from file system events in half-second batches. It is rebuilt when it is older than 7 days. The status bar says "indexing N files…" while it builds; searches work as soon as the first build finishes. Queries use the same syntax as above (substring, `*.pdf`, `regex:`, `folder:`, `in:<path>`).
 
@@ -431,6 +451,7 @@ Symbolic links on Windows need Developer Mode (Settings → System → For devel
 keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--filelist FILE] [--check-update] [--here]
 keel --url LINK
 keel --register-url-protocol | --unregister-url-protocol
+keel --install-service | --uninstall-service
 keel es [switches] [search]
 ```
 
@@ -445,6 +466,7 @@ keel es [switches] [search]
 | `--url LINK` | Open a `keel:` link ([Links](#keel-links)); nothing else may be on the command line |
 | `--register-url-protocol`, `--unregister-url-protocol` | Windows: make this Keel open `keel:` links for your user, or stop (removes the handler only when it is this Keel's) |
 | `es …` | Search the whole disk from the terminal with Everything's `es.exe` switches ([`keel es`](api.md#keel-es-everything-style-search)) |
+| `--install-service`, `--uninstall-service` | Windows: install or remove the [Keel index service](index-service.md) for your account (asks for administrator rights) and exit |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |

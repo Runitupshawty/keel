@@ -17,16 +17,32 @@ mod index_settings;
 pub mod journal;
 #[cfg(target_os = "linux")]
 mod locate;
+/// The raw MFT record parser: used by the Windows index, built everywhere for fuzzing.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/mft.rs"]
+mod mft;
 #[cfg(windows)]
 mod ntfs;
 #[cfg(windows)]
 mod rdcw;
 mod schedule;
+/// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/proto.rs"]
+mod proto;
+/// Where the MFT lies on a volume and the raw read of its records.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/raw.rs"]
+mod raw;
 #[cfg(target_os = "macos")]
 mod spotlight;
 mod terms;
 mod volumes;
 mod walkindex;
+/// What the elevated index helper hands the unelevated Keel: raw MFT records.
+#[cfg(any(windows, test, feature = "fuzzing"))]
+#[path = "ntfs/wire.rs"]
+mod wire;
 
 pub use composite::Merge;
 #[cfg(windows)]
@@ -41,8 +57,9 @@ pub use index_settings::{
 };
 #[cfg(windows)]
 pub use ntfs::{
-    index_dir, is_elevated, request_full_index, run_index_service, NtfsSearcher, FALLBACK_STATUS,
-    FROZEN_STATUS,
+    index_dir, install_service, is_elevated, request_full_index, request_service_change,
+    run_index_service, run_service, service_state, set_hide_unlistable, uninstall_service,
+    NtfsSearcher, ServiceState, FALLBACK_STATUS, FROZEN_STATUS,
 };
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
 pub use terms::Highlighter;

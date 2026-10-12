@@ -59,6 +59,8 @@ crate's `fuzzing` feature.
 | `content_match` | `keel_props::fuzz::content_match` | content search: the first byte picks the encoding (`content:`, `utf8content:`, `utf16content:`, `utf16becontent:`, `ansicontent:`, `binary:`, `hex:`) and options (case, whole words, regex, line mode), the bytes up to a NUL are the pattern, the rest is the file, searched streamed, as library text and under a byte cap |
 | `recycle_info` | `keel_props::fuzz::recycle_info` | Windows Recycle Bin `$I` records (versions 1 and 2) |
 | `trash_info` | `keel_props::fuzz::trash_info` | freedesktop.org `.trashinfo` files (group, percent-encoded path, deletion date with or without a zone) |
+| `mft_record` | `keel_search::fuzz::mft_record` | NTFS MFT `FILE` records as the index service reads them from a volume: the update sequence, every attribute (standard information, file names, data streams, reparse point, attribute list), data runs, and records cut into 1 KiB pieces merged into files (extension records, hard links); each piece also blanked as the elevated helper does before sending it (the parse must not change), framed and decoded again as Keel receives it, and the whole input decoded as a helper frame |
+| `index_proto` | `keel_search::fuzz::index_proto` | the index service's pipe protocol as both ends read it: length-prefixed frames (bounded in size), every request and response (drive letters, counts checked against the bytes left, file names that must be one path component), and each message that decodes encoded again to the same message |
 
 keel-app is a binary, so its parsers (the Linux clipboard's `text/uri-list` and
 `x-special/gnome-copied-files`, `.desktop` files and `mimeapps.list`, icon theme SVG checks,

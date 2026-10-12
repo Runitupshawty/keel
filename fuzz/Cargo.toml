@@ -171,6 +171,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "mft_record"
+path = "fuzz_targets/mft_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "query_parse"
 path = "fuzz_targets/query_parse.rs"
 test = false
@@ -236,6 +243,13 @@ bench = false
 [[bin]]
 name = "link"
 path = "fuzz_targets/link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index_proto"
+path = "fuzz_targets/index_proto.rs"
 test = false
 doc = false
 bench = false

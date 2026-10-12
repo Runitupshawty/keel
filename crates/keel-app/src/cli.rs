@@ -36,6 +36,21 @@ pub struct Cli {
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
+    /// Windows: install the Keel index service for you (asks for administrator rights
+    /// once; then the full drive index needs no prompt).
+    #[arg(long, conflicts_with = "uninstall_service")]
+    pub install_service: bool,
+    /// Windows: remove the Keel index service (asks for administrator rights).
+    #[arg(long)]
+    pub uninstall_service: bool,
+    /// Internal: the account the index service serves (`--install-service`,
+    /// `--run-service`).
+    #[arg(long, value_name = "SID", hide = true)]
+    pub service_user: Option<String>,
+    /// Internal: run as the KeelIndex service (only the Service Control Manager starts
+    /// this).
+    #[arg(long, hide = true, requires = "service_user")]
+    pub run_service: bool,
     /// Check once whether a newer Keel release is out (one request to GitHub) and exit.
     #[arg(long)]
     pub check_update: bool,
@@ -782,6 +797,7 @@ const TAKE_VALUE: &[&str] = &[
     "--search",
     "--filelist",
     "--index-service",
+    "--service-user",
     "--url",
 ];
 
@@ -1170,6 +1186,10 @@ mod tests {
                 search: None,
                 index_service: None,
                 filelist: None,
+                install_service: false,
+                uninstall_service: false,
+                service_user: None,
+                run_service: false,
                 check_update: false,
                 here: false,
                 url: None,
@@ -1210,6 +1230,24 @@ mod tests {
             .render_help()
             .to_string();
         assert!(!help.contains("index-service"), "hidden from --help");
+    }
+
+    #[test]
+    fn parses_service_flags() {
+        let cli = parse(&["--install-service"]).unwrap();
+        assert!(cli.install_service && !cli.uninstall_service);
+        assert!(parse(&["--uninstall-service"]).unwrap().uninstall_service);
+        assert!(parse(&["--install-service", "--uninstall-service"]).is_err());
+        let sid = "S-1-5-21-1-2-3-1001";
+        let cli = parse(&["--run-service", "--service-user", sid]).unwrap();
+        assert!(cli.run_service);
+        assert_eq!(cli.service_user.as_deref(), Some(sid));
+        assert!(parse(&["--run-service"]).is_err(), "needs the user");
+        let help = <Cli as clap::CommandFactory>::command()
+            .render_help()
+            .to_string();
+        assert!(help.contains("--install-service") && help.contains("--uninstall-service"));
+        assert!(!help.contains("run-service") && !help.contains("service-user"));
     }
 
     #[test]
