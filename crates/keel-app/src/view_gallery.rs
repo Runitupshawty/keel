@@ -24,10 +24,13 @@ pub fn wants_preview(pane: &Pane) -> bool {
 }
 
 /// The gallery always shows an item: the first one gets the cursor when none has it.
-pub fn ensure_cursor(tab: &mut Tab) {
-    if tab.cursor_pos().is_none() && !tab.visible_cached().is_empty() {
+/// True when it moved the cursor.
+pub fn ensure_cursor(tab: &mut Tab) -> bool {
+    let none = tab.cursor_pos().is_none() && !tab.visible_cached().is_empty();
+    if none {
         tab.move_cursor(Nav::Home, false);
     }
+    none
 }
 
 /// The strip's scroll offset that keeps thumbnail `pos` in view of `width` points.
@@ -66,7 +69,10 @@ pub fn ui(
     out: &mut Vec<Action>,
 ) {
     tab.visible(cx.show_hidden);
-    ensure_cursor(tab);
+    if ensure_cursor(tab) {
+        // The preview follows the cursor at the start of a frame.
+        ui.ctx().request_repaint();
+    }
     let full = ui.available_rect_before_wrap();
     let n = tab.visible_cached().len();
     if n == 0 {

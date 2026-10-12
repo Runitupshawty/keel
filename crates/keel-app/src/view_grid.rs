@@ -722,6 +722,7 @@ pub fn ui(
                     cols,
                 );
                 cx.views.set_positions(&dir, moved);
+                ui.ctx().request_repaint();
             }
         }
     }
