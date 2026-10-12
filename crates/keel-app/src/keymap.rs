@@ -682,6 +682,7 @@ pub fn commands() -> Vec<Command> {
             .global()
             .typing(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
+        cmd("view.options", "View options", ViewOptions, &["Ctrl+J"]).global(),
         // --- Task 65 ---
         cmd(
             "view.grid",

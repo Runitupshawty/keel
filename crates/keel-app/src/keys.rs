@@ -11,6 +11,8 @@ use std::path::PathBuf;
 pub enum Action {
     /// Parent folder (Alt+Up, toolbar).
     Up,
+    /// Task 66: show or hide the View Options panel (Ctrl+J).
+    ViewOptions,
     /// Turn the daily update check on (the first-start question).
     EnableUpdateCheck,
     /// Parent folder, or in a search tab: delete the last query character.

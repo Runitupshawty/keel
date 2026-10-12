@@ -2,8 +2,78 @@
 //! Pure state; `AppState` spawns the listing workers.
 
 use keel_vfs::{Entry, Kind, VPath};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ops::Range;
 use std::time::Instant;
+
+/// Task 66: Alt+click expands at most this many folders (a whole drive is not listed).
+pub const MAX_EXPANDED: usize = 512;
+
+/// Task 66: folders expanded inline in the list view. Their children follow the folder's
+/// own entries in `Tab::entries` (`top..`), named by their path from the tab's folder
+/// (`"src/main.rs"`), so selection, rename and every action work on them unchanged.
+#[derive(Default)]
+struct Tree {
+    /// Expanded folders by row name.
+    nodes: BTreeMap<String, Node>,
+    /// The folder's own entries are `entries[..top]`.
+    top: usize,
+}
+
+struct Node {
+    dir: VPath,
+    state: NodeState,
+    /// Alt+click: folders inside are expanded too as they arrive.
+    all: bool,
+    /// Its listing, names already prefixed with the node's name.
+    children: Option<Listing>,
+    /// Where `children` sit in `Tab::entries`.
+    range: Range<usize>,
+}
+
+/// Where an expanded folder's listing stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodeState {
+    /// To be listed (the state asks the listing worker).
+    Wanted,
+    Loading,
+    Listed,
+    Failed(String),
+}
+
+/// What `visible()` was last computed for.
+#[derive(Clone, PartialEq)]
+struct CacheKey {
+    generation: u64,
+    filter: String,
+    mode: Mode,
+    show_hidden: bool,
+    totals: u64,
+    /// The tree's generation while the triangles show.
+    tree: Option<u64>,
+    groups: u64,
+}
+
+impl CacheKey {
+    /// Same inputs but the filter.
+    fn same_rows(&self, o: &CacheKey) -> bool {
+        (
+            self.generation,
+            self.mode,
+            self.show_hidden,
+            self.totals,
+            self.tree,
+            self.groups,
+        ) == (
+            o.generation,
+            o.mode,
+            o.show_hidden,
+            o.totals,
+            o.tree,
+            o.groups,
+        )
+    }
+}
 
 /// A folder listing plus each name lowercased and the default (Name) order, both computed
 /// on the listing worker, so the UI thread never case-folds or sorts 100k names on a
@@ -161,12 +231,25 @@ pub struct Tab {
     totals: std::collections::HashMap<String, u64>,
     totals_gen: u64,
     generation: u64,
-    cache_key: Option<(u64, String, Mode, bool, u64)>,
+    cache_key: Option<CacheKey>,
     cache: Vec<usize>,
     /// Bumped whenever `cache` changes (Task 32: the media view's layout cache).
     cache_gen: u64,
     /// The Journal tab's filters and entries (unused elsewhere).
     pub journal: Box<crate::journal_ui::JournalView>,
+    // --- Task 66 ---
+    tree: Tree,
+    tree_gen: u64,
+    /// The list view shows disclosure triangles (set by the pane before drawing).
+    pub disclosure: bool,
+    /// Group by: each top-level entry's group (set by `list_view::prepare`).
+    groups: Option<crate::list_view::Groups>,
+    group_key: Option<u64>,
+    group_gen: u64,
+    /// (position in `visible_cached()`, group) where each shown group starts.
+    group_starts: Vec<(usize, u32)>,
+    /// Creation times read off the UI thread.
+    pub meta: crate::list_view::Meta,
 }
 
 impl Tab {
@@ -238,6 +321,14 @@ impl Tab {
             cache: Vec::new(),
             cache_gen: 0,
             journal: Default::default(),
+            tree: Tree::default(),
+            tree_gen: 0,
+            disclosure: false,
+            groups: None,
+            group_key: None,
+            group_gen: 0,
+            group_starts: Vec::new(),
+            meta: Default::default(),
         }
     }
 
@@ -268,9 +359,10 @@ impl Tab {
         self.kind == TabKind::Dir && self.dir.scheme == keel_vfs::trashbin::SCHEME
     }
 
-    /// The name shown for `e`: search rows are keyed by full path but show the file name.
+    /// The name shown for `e`: search rows are keyed by full path but show the file name,
+    /// rows inside an expanded folder by their path from this folder (Task 66).
     pub fn shown_name<'a>(&self, e: &'a Entry) -> &'a str {
-        if self.is_search() {
+        if self.is_search() || e.name.contains('/') {
             e.path.name()
         } else {
             &e.name
@@ -322,7 +414,8 @@ impl Tab {
         self.set_listing(Listing::new(entries));
     }
 
-    /// Replaces the listing; selection names that no longer exist are dropped.
+    /// Replaces the listing; selection names that no longer exist are dropped. Expanded
+    /// folders that are still there keep their rows and are listed again.
     pub fn set_listing(&mut self, listing: Listing) {
         crate::devices::note_listing(&self.dir, &listing.entries);
         crate::finder_icons::note_listing(&self.dir, &listing.entries);
@@ -330,6 +423,26 @@ impl Tab {
         let old_lower = std::mem::replace(&mut self.lower, listing.lower);
         self.order = listing.order;
         self.generation += 1;
+        self.tree.top = self.entries.len();
+        self.groups = None;
+        self.group_key = None;
+        self.group_gen += 1;
+        if !self.tree.nodes.is_empty() {
+            let dirs: HashSet<&str> = (self.entries.iter())
+                .filter(|e| e.kind == Kind::Dir)
+                .map(|e| e.name.as_str())
+                .collect();
+            self.tree.nodes.retain(|name, _| {
+                let first = name.split('/').next().unwrap_or(name);
+                dirs.contains(first)
+            });
+            for node in self.tree.nodes.values_mut() {
+                if node.state != NodeState::Loading {
+                    node.state = NodeState::Wanted;
+                }
+            }
+            self.rebuild_tail();
+        }
         if old.len() > 10_000 {
             // Freeing 100k entries takes milliseconds: not on the UI thread.
             std::thread::spawn(move || drop((old, old_lower)));
@@ -372,55 +485,99 @@ impl Tab {
         }
     }
 
-    /// Indices into `entries()` after hidden/filter/sort, dirs first. Cached until the
-    /// entries, filter, sort or `show_hidden` change; a filter that only grew narrows the
-    /// cached rows instead of sorting again. Selection is trimmed to the visible rows.
+    /// Indices into `entries()` after hidden/filter/sort, dirs first; the children of
+    /// expanded folders under them while the triangles show (Task 66), and with Group by
+    /// the rows in group order, sorted within each group. Cached until the entries,
+    /// filter, sort, tree, grouping or `show_hidden` change; a filter that only grew
+    /// narrows the cached rows instead of sorting again. Selection is trimmed to the
+    /// visible rows.
     pub fn visible(&mut self, show_hidden: bool) -> &[usize] {
         let mode = self.mode();
-        let key = (
-            self.generation,
-            self.filter.clone(),
+        let tree_on = self.tree_on();
+        let key = CacheKey {
+            generation: self.generation,
+            filter: self.filter.clone(),
             mode,
             show_hidden,
-            self.totals_gen,
-        );
+            totals: self.totals_gen,
+            tree: tree_on.then_some(self.tree_gen),
+            groups: self.group_gen,
+        };
+        let top = self.tree.top;
+        let ranks: Option<&[u32]> = (self.groups.as_ref())
+            .map(|g| g.rank.as_slice())
+            .filter(|r| r.len() == top);
         match &self.cache_key {
             Some(old) if *old == key => return &self.cache,
-            Some((g, f, s, h, t))
-                if (*g, *s, *h, *t) == (key.0, key.2, key.3, key.4)
-                    && key.1.to_lowercase().starts_with(&f.to_lowercase()) =>
+            // Children follow their folder: a narrower filter could keep orphans.
+            Some(old)
+                if !tree_on
+                    && old.same_rows(&key)
+                    && key
+                        .filter
+                        .to_lowercase()
+                        .starts_with(&old.filter.to_lowercase()) =>
             {
-                let needle = key.1.to_lowercase();
+                let needle = key.filter.to_lowercase();
                 let lower = &self.lower;
                 self.cache.retain(|&i| lower[i].contains(&needle));
+                self.group_starts = match ranks {
+                    Some(r) => starts(self.cache.iter().map(|&i| r[i])),
+                    None => Vec::new(),
+                };
             }
             _ => {
                 let sort_key = (self.generation, self.totals_gen, mode);
                 if self.sorted_key != Some(sort_key) {
+                    let order = &self.order;
                     self.sorted = match mode {
-                        (SortKey::Name, true, false) => self.order.clone(),
+                        (SortKey::Name, true, false) => order.clone(),
                         (SortKey::Name, false, false) => {
                             // Folders stay first; each group reversed.
-                            let dirs = self
-                                .order
+                            let dirs = order
                                 .iter()
                                 .take_while(|&&i| self.entries[i].kind == Kind::Dir)
                                 .count();
-                            let (d, f) = self.order.split_at(dirs);
+                            let (d, f) = order.split_at(dirs);
                             d.iter().rev().chain(f.iter().rev()).copied().collect()
                         }
-                        mode => sorted(&self.entries, &self.lower, mode, &self.totals),
+                        mode => {
+                            sorted(&self.entries[..top], &self.lower[..top], mode, &self.totals)
+                        }
                     };
                     self.sorted_key = Some(sort_key);
                 }
                 let needle = self.filter.to_lowercase();
                 let (entries, lower) = (&self.entries, &self.lower);
-                self.cache = self
-                    .sorted
-                    .iter()
-                    .copied()
-                    .filter(|&i| (show_hidden || !entries[i].hidden) && lower[i].contains(&needle))
-                    .collect();
+                let pass =
+                    |i: usize| (show_hidden || !entries[i].hidden) && lower[i].contains(&needle);
+                let cx = TreeCx {
+                    tree: &self.tree,
+                    entries,
+                    lower,
+                    mode,
+                    totals: &self.totals,
+                    pass: &pass,
+                };
+                let mut rows: Vec<(u32, usize)> = Vec::new();
+                for &i in &self.sorted {
+                    if !pass(i) {
+                        continue;
+                    }
+                    let rank = ranks.map_or(0, |r| r[i]);
+                    rows.push((rank, i));
+                    if tree_on {
+                        cx.children(&entries[i].name, rank, &mut rows);
+                    }
+                }
+                if ranks.is_some() {
+                    // Stable: the sort order holds inside each group.
+                    rows.sort_by_key(|r| r.0);
+                    self.group_starts = starts(rows.iter().map(|r| r.0));
+                } else {
+                    self.group_starts.clear();
+                }
+                self.cache = rows.into_iter().map(|r| r.1).collect();
             }
         }
         self.cache_key = Some(key);
@@ -446,9 +603,9 @@ impl Tab {
         self.cache_gen
     }
 
-    /// Changes with every new listing.
+    /// Changes with every new listing (and every change of the expanded folders' rows).
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.generation + self.tree_gen
     }
 
     /// Changes directory: pushes history, clears selection/filter, marks loading.
@@ -528,6 +685,11 @@ impl Tab {
         self.error = None;
         self.loading = true;
         self.scroll_to = Some(0);
+        // --- Task 66 ---: a new folder starts collapsed.
+        if !self.tree.nodes.is_empty() {
+            self.tree.nodes.clear();
+            self.rebuild_tail();
+        }
         // --- Task 23 ---
         crate::view_columns::collapse(self);
     }
@@ -563,12 +725,23 @@ impl Tab {
             return;
         }
         let cur = self.cursor_pos();
+        // Task 66: Right expands the folder at the cursor, Left collapses it or goes to
+        // the folder a row is in.
+        if self.disclosure && !extend && matches!(nav, Nav::Left | Nav::Right) {
+            if let Some(c) = cur {
+                self.disclose(c, nav == Nav::Right);
+            }
+            return;
+        }
         let page = self.page_rows.max(1);
         let step = self.row_step.max(1);
+        let grouped = step > 1 && !self.group_starts.is_empty();
         let pos = match (nav, cur) {
             (Nav::Home, _) => 0,
             (Nav::End, _) => len - 1,
             (_, None) => 0,
+            (Nav::Prev, Some(c)) if grouped => self.grouped_step(c, step, false),
+            (Nav::Next, Some(c)) if grouped => self.grouped_step(c, step, true),
             (Nav::Prev, Some(c)) => c.saturating_sub(step),
             (Nav::Next, Some(c)) => (c + step).min(len - 1),
             (Nav::Left, Some(c)) => c.saturating_sub(1),
@@ -592,6 +765,287 @@ impl Tab {
         }
         self.cursor = Some(name);
         self.scroll_to = Some(pos);
+    }
+
+    /// Selects the row at visible position `pos` alone (cursor and anchor too).
+    fn select_pos(&mut self, pos: usize) {
+        let name = self.entries[self.cache[pos]].name.clone();
+        self.selected = [name.clone()].into();
+        self.anchor = Some(name.clone());
+        self.cursor = Some(name);
+        self.scroll_to = Some(pos);
+    }
+
+    /// Right (`open`) / Left on the row at visible position `pos` (Task 66).
+    fn disclose(&mut self, pos: usize, open: bool) {
+        let e = &self.entries[self.cache[pos]];
+        let name = e.name.clone();
+        let dir = e.kind == Kind::Dir;
+        if open {
+            if dir && !self.is_expanded(&name) {
+                self.expand(&name, false);
+            }
+        } else if self.is_expanded(&name) {
+            self.collapse(&name);
+        } else if let Some((parent, _)) = name.rsplit_once('/') {
+            let at = (self.cache.iter()).position(|&i| self.entries[i].name == parent);
+            if let Some(at) = at {
+                self.select_pos(at);
+            }
+        }
+    }
+
+    /// Up/Down in a grouped grid: rows restart at each group, so the column is kept
+    /// within a group and carried into the next or previous one.
+    fn grouped_step(&self, pos: usize, step: usize, down: bool) -> usize {
+        let len = self.cache.len();
+        let starts: Vec<usize> = self.group_starts.iter().map(|g| g.0).collect();
+        let g = starts.partition_point(|&s| s <= pos).saturating_sub(1);
+        let bounds = |g: usize| (starts[g], starts.get(g + 1).copied().unwrap_or(len));
+        let (start, end) = bounds(g);
+        let col = (pos - start) % step;
+        let last_row = |(s, e): (usize, usize)| s + (e - 1 - s) / step * step;
+        if down {
+            if pos + step < end {
+                pos + step
+            } else if g + 1 < starts.len() {
+                let (s, e) = bounds(g + 1);
+                (s + col).min(e - 1)
+            } else if pos < last_row((start, end)) {
+                end - 1
+            } else {
+                pos
+            }
+        } else if pos >= start + step {
+            pos - step
+        } else if g > 0 {
+            let (s, e) = bounds(g - 1);
+            (last_row((s, e)) + col).min(e - 1)
+        } else {
+            pos
+        }
+    }
+
+    // --- Task 66: disclosure triangles ---
+
+    /// The triangles show and something is expanded.
+    fn tree_on(&self) -> bool {
+        self.disclosure && !self.tree.nodes.is_empty() && !self.is_search() && !self.sizes_view
+    }
+
+    /// How deep row `e` is inside expanded folders (0: this folder's own entries).
+    pub fn depth(&self, e: &Entry) -> usize {
+        if self.is_search() {
+            0
+        } else {
+            e.name.matches('/').count()
+        }
+    }
+
+    pub fn is_expanded(&self, name: &str) -> bool {
+        self.tree.nodes.contains_key(name)
+    }
+
+    /// The listing state of expanded folder `name`.
+    pub fn node_state(&self, name: &str) -> Option<&NodeState> {
+        self.tree.nodes.get(name).map(|n| &n.state)
+    }
+
+    /// Expands folder row `name` (listed on the next tick); `all` (Alt+click) expands the
+    /// folders inside it too, up to `MAX_EXPANDED`.
+    pub fn expand(&mut self, name: &str, all: bool) {
+        if let Some(node) = self.tree.nodes.get_mut(name) {
+            if all && !node.all {
+                node.all = true;
+                let dirs: Vec<String> = (node.children.iter())
+                    .flat_map(|l| l.entries.iter())
+                    .filter(|e| e.kind == Kind::Dir && !e.is_link)
+                    .map(|e| e.name.clone())
+                    .collect();
+                for d in dirs {
+                    self.expand(&d, true);
+                }
+            }
+            return;
+        }
+        if self.tree.nodes.len() >= MAX_EXPANDED || self.is_search() {
+            return;
+        }
+        let Some(e) = self.entries.iter().find(|e| e.name == name) else {
+            return;
+        };
+        if e.kind != Kind::Dir {
+            return;
+        }
+        let node = Node {
+            dir: e.path.clone(),
+            state: NodeState::Wanted,
+            all,
+            children: None,
+            range: 0..0,
+        };
+        self.tree.nodes.insert(name.to_owned(), node);
+        self.tree_gen += 1;
+    }
+
+    /// Collapses folder row `name` and every folder inside it; a listing still running for
+    /// them is ignored when it answers. A cursor inside moves to the folder.
+    pub fn collapse(&mut self, name: &str) {
+        let prefix = format!("{name}/");
+        let before = self.tree.nodes.len();
+        self.tree
+            .nodes
+            .retain(|n, _| n != name && !n.starts_with(&prefix));
+        if self.tree.nodes.len() == before {
+            return;
+        }
+        if self
+            .cursor
+            .as_deref()
+            .is_some_and(|c| c.starts_with(&prefix))
+        {
+            self.cursor = Some(name.to_owned());
+            self.selected.insert(name.to_owned());
+        }
+        if self
+            .anchor
+            .as_deref()
+            .is_some_and(|c| c.starts_with(&prefix))
+        {
+            self.anchor = Some(name.to_owned());
+        }
+        self.selected.retain(|n| !n.starts_with(&prefix));
+        self.rebuild_tail();
+    }
+
+    /// The triangle: expands or collapses `name`; with `all` (Alt+click) every folder below.
+    pub fn toggle_expanded(&mut self, name: &str, all: bool) {
+        if self.is_expanded(name) {
+            self.collapse(name);
+        } else {
+            self.expand(name, all);
+        }
+    }
+
+    /// Expanded folders waiting for a listing (marked as being listed). Empty while the
+    /// triangles do not show.
+    pub fn take_wanted(&mut self) -> Vec<VPath> {
+        if !self.disclosure {
+            return Vec::new();
+        }
+        (self.tree.nodes.values_mut())
+            .filter(|n| n.state == NodeState::Wanted)
+            .map(|n| {
+                n.state = NodeState::Loading;
+                n.dir.clone()
+            })
+            .collect()
+    }
+
+    /// A listing of `dir` arrived: the expanded folders on it take it. False when none
+    /// waited for it (collapsed meanwhile: the answer is dropped).
+    pub fn fill_child(&mut self, dir: &VPath, result: &anyhow::Result<Listing>) -> bool {
+        let names: Vec<String> = (self.tree.nodes.iter())
+            .filter(|(_, n)| n.dir == *dir && n.state != NodeState::Listed)
+            .map(|(name, _)| name.clone())
+            .collect();
+        if names.is_empty() {
+            return false;
+        }
+        let mut more = Vec::new();
+        for name in names {
+            let Some(node) = self.tree.nodes.get_mut(&name) else {
+                continue;
+            };
+            match result {
+                Ok(listing) => {
+                    let mut listing = listing.clone();
+                    for e in &mut listing.entries {
+                        e.name = format!("{name}/{}", e.name);
+                    }
+                    if node.all {
+                        more.extend(
+                            (listing.entries.iter())
+                                .filter(|e| e.kind == Kind::Dir && !e.is_link)
+                                .map(|e| e.name.clone()),
+                        );
+                    }
+                    node.children = Some(listing);
+                    node.state = NodeState::Listed;
+                }
+                Err(e) => node.state = NodeState::Failed(format!("{e:#}")),
+            }
+        }
+        self.rebuild_tail();
+        for name in more {
+            self.expand(&name, true);
+        }
+        true
+    }
+
+    /// Lays the expanded folders' children out after the folder's own entries again.
+    fn rebuild_tail(&mut self) {
+        let top = self.tree.top;
+        self.entries.truncate(top);
+        self.lower.truncate(top);
+        for node in self.tree.nodes.values_mut() {
+            let start = self.entries.len();
+            if let Some(l) = &node.children {
+                self.entries.extend(l.entries.iter().cloned());
+                self.lower.extend(l.lower.iter().cloned());
+            }
+            node.range = start..self.entries.len();
+        }
+        self.tree_gen += 1;
+        // Rows of the old tail may be gone: nothing reads the old rows until `visible()`.
+        self.cache.clear();
+        self.cache_key = None;
+        self.cache_gen += 1;
+        self.group_starts.clear();
+    }
+
+    // --- Task 66: Group by ---
+
+    /// The grouping (`list_view::prepare`): `key` identifies its inputs.
+    pub fn set_groups(&mut self, key: Option<u64>, groups: Option<crate::list_view::Groups>) {
+        if key == self.group_key && groups.is_some() == self.groups.is_some() {
+            return;
+        }
+        self.group_key = key;
+        self.groups = groups;
+        self.group_gen += 1;
+    }
+
+    pub fn group_key(&self) -> Option<u64> {
+        self.group_key
+    }
+
+    /// Where each shown group starts in `visible_cached()`, and its group (empty when not
+    /// grouped).
+    pub fn group_starts(&self) -> &[(usize, u32)] {
+        &self.group_starts
+    }
+
+    /// Items in shown group `g` (`group_starts()[g]`), rows inside expanded folders not
+    /// counted.
+    pub fn group_count(&self, g: usize) -> usize {
+        let Some(&(start, _)) = self.group_starts.get(g) else {
+            return 0;
+        };
+        let end = (self.group_starts.get(g + 1)).map_or(self.cache.len(), |s| s.0);
+        let top = self.tree.top;
+        self.cache[start..end].iter().filter(|&&i| i < top).count()
+    }
+
+    pub fn group_label(&self, group: u32) -> &str {
+        (self.groups.as_ref())
+            .and_then(|g| g.labels.get(group as usize))
+            .map_or("", String::as_str)
+    }
+
+    /// The folder's own entries (`entries()[..top_len()]`; expanded folders' rows follow).
+    pub fn top_len(&self) -> usize {
+        self.tree.top
     }
 
     /// Space: toggle the cursor row.
@@ -650,7 +1104,7 @@ impl Tab {
         if self
             .cache_key
             .as_ref()
-            .is_none_or(|k| k.0 != self.generation)
+            .is_none_or(|k| k.generation != self.generation)
         {
             return Vec::new();
         }
@@ -705,6 +1159,53 @@ pub fn hits_listing(hits: Vec<keel_search::Hit>) -> Listing {
 
 /// Sort key, ascending, and folders mixed with files (the Sizes view).
 type Mode = (SortKey, bool, bool);
+
+/// (position, group) where the group changes along `ranks`.
+fn starts(ranks: impl Iterator<Item = u32>) -> Vec<(usize, u32)> {
+    let mut out: Vec<(usize, u32)> = Vec::new();
+    for (pos, r) in ranks.enumerate() {
+        if out.last().is_none_or(|l| l.1 != r) {
+            out.push((pos, r));
+        }
+    }
+    out
+}
+
+/// What laying out an expanded folder's rows reads.
+struct TreeCx<'a> {
+    tree: &'a Tree,
+    entries: &'a [Entry],
+    lower: &'a [String],
+    mode: Mode,
+    totals: &'a std::collections::HashMap<String, u64>,
+    pass: &'a dyn Fn(usize) -> bool,
+}
+
+impl TreeCx<'_> {
+    /// Rows of expanded folder `name` (and of the folders expanded inside it), sorted like
+    /// the folder's own rows, in group `rank`.
+    fn children(&self, name: &str, rank: u32, rows: &mut Vec<(u32, usize)>) {
+        let Some(node) = self.tree.nodes.get(name) else {
+            return;
+        };
+        let r = node.range.clone();
+        let order: Vec<usize> = match (self.mode, &node.children) {
+            ((SortKey::Name, true, false), Some(l)) => l.order.clone(),
+            _ => sorted(
+                &self.entries[r.clone()],
+                &self.lower[r.clone()],
+                self.mode,
+                self.totals,
+            ),
+        };
+        for c in order.into_iter().map(|o| r.start + o) {
+            if (self.pass)(c) {
+                rows.push((rank, c));
+                self.children(&self.entries[c].name, rank, rows);
+            }
+        }
+    }
+}
 
 /// Every index of `entries` in `(key, asc)` order, folders first unless `mixed`. By size a
 /// folder counts its total from `totals` (by name); folders without one come last.
@@ -944,6 +1445,309 @@ mod tests {
         if !cfg!(debug_assertions) {
             let budget = Duration::from_millis(16);
             assert!(refresh < budget && narrow < budget && widen < budget);
+        }
+    }
+
+    fn cursor(tab: &Tab) -> &str {
+        tab.cursor.as_deref().unwrap_or("")
+    }
+
+    /// Task 66: Right expands the folder at the cursor, its listing arrives through the
+    /// listing worker, Left goes to the folder a row is in and then collapses it.
+    #[test]
+    fn disclosure_expands_and_collapses_with_the_keyboard() {
+        let mut tab = tab();
+        tab.disclosure = true;
+        tab.visible(false);
+        tab.click("data", false, false);
+        tab.move_cursor(Nav::Right, false);
+        assert!(tab.is_expanded("data"));
+        let sub = tab.dir.join("data");
+        assert_eq!(tab.take_wanted(), std::slice::from_ref(&sub));
+        assert!(tab.take_wanted().is_empty(), "listed once");
+        assert_eq!(tab.node_state("data"), Some(&NodeState::Loading));
+        let listing = Listing::new(vec![
+            test_entry(&sub, "z.txt", Kind::File, 1),
+            test_entry(&sub, "inner", Kind::Dir, 0),
+            test_entry(&sub, "a.txt", Kind::File, 2),
+        ]);
+        assert!(tab.fill_child(&sub, &Ok(listing)));
+        assert_eq!(
+            names(&mut tab),
+            [
+                "data",
+                "data/inner",
+                "data/a.txt",
+                "data/z.txt",
+                "alpha.txt",
+                "beta.rs",
+                "gamma.md"
+            ]
+        );
+        let child = tab
+            .entries()
+            .iter()
+            .find(|e| e.name == "data/a.txt")
+            .unwrap();
+        assert_eq!((tab.shown_name(child), tab.depth(child)), ("a.txt", 1));
+        assert_eq!(child.path, sub.join("a.txt"));
+        // Sorted like the folder's own rows.
+        tab.sort = (SortKey::Size, false);
+        assert_eq!(
+            names(&mut tab)[..4],
+            ["data", "data/inner", "data/a.txt", "data/z.txt"]
+        );
+        tab.sort = (SortKey::Name, false);
+        assert_eq!(
+            names(&mut tab)[..4],
+            ["data", "data/inner", "data/z.txt", "data/a.txt"]
+        );
+        tab.sort = (SortKey::Name, true);
+        tab.visible(false);
+        // Down into the folder; Left goes to it, Left again collapses it.
+        tab.move_cursor(Nav::Next, false);
+        tab.move_cursor(Nav::Next, false);
+        assert_eq!(cursor(&tab), "data/a.txt");
+        let targets: Vec<VPath> = tab.targets().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(targets, [sub.join("a.txt")]);
+        tab.move_cursor(Nav::Left, false);
+        assert_eq!(cursor(&tab), "data");
+        tab.move_cursor(Nav::Left, false);
+        assert!(!tab.is_expanded("data"));
+        assert_eq!(
+            names(&mut tab),
+            ["data", "alpha.txt", "beta.rs", "gamma.md"]
+        );
+        // Right on a file does nothing; the triangles off, Left/Right move as before.
+        tab.move_cursor(Nav::End, false);
+        tab.move_cursor(Nav::Right, false);
+        assert_eq!(cursor(&tab), "gamma.md");
+        tab.disclosure = false;
+        tab.move_cursor(Nav::Left, false);
+        assert_eq!(cursor(&tab), "beta.rs");
+    }
+
+    /// Task 66: a listing that answers after its folder collapsed is dropped; a failed
+    /// one says why.
+    #[test]
+    fn collapsing_cancels_and_failures_are_kept() {
+        let mut tab = tab();
+        tab.disclosure = true;
+        let sub = tab.dir.join("data");
+        tab.expand("data", false);
+        assert_eq!(tab.take_wanted(), std::slice::from_ref(&sub));
+        tab.collapse("data");
+        let late = Listing::new(vec![test_entry(&sub, "x", Kind::File, 1)]);
+        assert!(!tab.fill_child(&sub, &Ok(late)));
+        assert_eq!(names(&mut tab).len(), 4);
+        tab.expand("data", false);
+        tab.take_wanted();
+        assert!(tab.fill_child(&sub, &Err(anyhow::anyhow!("denied"))));
+        assert!(matches!(tab.node_state("data"), Some(NodeState::Failed(w)) if w == "denied"));
+        // Files and unknown rows never expand.
+        tab.expand("alpha.txt", false);
+        tab.expand("nope", false);
+        assert!(!tab.is_expanded("alpha.txt") && !tab.is_expanded("nope"));
+    }
+
+    /// Task 66: Alt+click expands every folder below as it is listed; collapsing the top
+    /// collapses them all and brings a cursor inside back to it. A refresh keeps the
+    /// expanded rows and lists them again; a folder that went away is dropped.
+    #[test]
+    fn expand_all_refresh_and_collapse() {
+        let mut tab = tab();
+        tab.disclosure = true;
+        let sub = tab.dir.join("data");
+        let inner = sub.join("inner");
+        tab.expand("data", true);
+        tab.take_wanted();
+        let listing = Listing::new(vec![test_entry(&sub, "inner", Kind::Dir, 0)]);
+        tab.fill_child(&sub, &Ok(listing));
+        assert!(tab.is_expanded("data/inner"), "expanded as it arrived");
+        assert_eq!(tab.take_wanted(), std::slice::from_ref(&inner));
+        let listing = Listing::new(vec![test_entry(&inner, "deep.txt", Kind::File, 1)]);
+        tab.fill_child(&inner, &Ok(listing));
+        assert_eq!(
+            names(&mut tab)[..3],
+            ["data", "data/inner", "data/inner/deep.txt"]
+        );
+        let deep = tab
+            .entries()
+            .iter()
+            .find(|e| e.name.ends_with("deep.txt"))
+            .unwrap();
+        assert_eq!(tab.depth(deep), 2);
+        // Refresh: the rows stay while the folders are listed again.
+        let top: Vec<Entry> = tab.entries()[..tab.top_len()].to_vec();
+        tab.set_entries(top.clone());
+        assert_eq!(names(&mut tab).len(), 6);
+        let mut again = tab.take_wanted();
+        again.sort_by_key(|d| d.display());
+        assert_eq!(again, [sub.clone(), inner.clone()]);
+        // Collapse with the cursor deep inside.
+        tab.visible(false);
+        tab.click("data/inner/deep.txt", false, false);
+        tab.collapse("data");
+        assert_eq!(cursor(&tab), "data");
+        assert!(!tab.is_expanded("data/inner"));
+        assert_eq!(names(&mut tab).len(), 4);
+        // The folder went away: its node goes too.
+        tab.expand("data", false);
+        tab.set_entries(top.into_iter().filter(|e| e.name != "data").collect());
+        assert!(!tab.is_expanded("data"));
+        // Navigating starts collapsed.
+        tab.navigate(VPath::parse("mem://t/elsewhere").unwrap());
+        assert!(tab.take_wanted().is_empty());
+    }
+
+    fn grouped_tab() -> Tab {
+        let dir = VPath::parse("mem://g/").unwrap();
+        let mut tab = Tab::new(dir.clone());
+        tab.set_entries(vec![
+            test_entry(&dir, "a.txt", Kind::File, 5),
+            test_entry(&dir, "b.md", Kind::File, 1),
+            test_entry(&dir, "c.txt", Kind::File, 9),
+            test_entry(&dir, "d", Kind::Dir, 0),
+            test_entry(&dir, "e.md", Kind::File, 7),
+        ]);
+        group_by_kind(&mut tab);
+        tab
+    }
+
+    fn group_by_kind(tab: &mut Tab) {
+        use crate::list_view::{groups_of, GroupBy, GroupInputs};
+        let created = Default::default();
+        let inp = GroupInputs {
+            today: chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+            created: &created,
+            tags: &|_| None,
+            bytes: &|_| None,
+        };
+        let groups = groups_of(GroupBy::Kind, &tab.entries()[..tab.top_len()], &inp);
+        tab.set_groups(Some(tab.generation()), Some(groups));
+    }
+
+    fn labels(tab: &Tab) -> Vec<(usize, &str)> {
+        (tab.group_starts().iter())
+            .map(|&(pos, g)| (pos, tab.group_label(g)))
+            .collect()
+    }
+
+    /// Task 66: Group by orders the groups, the sort orders the rows inside each group.
+    #[test]
+    fn group_by_is_independent_of_the_sort() {
+        let mut tab = grouped_tab();
+        assert_eq!(names(&mut tab), ["d", "b.md", "e.md", "a.txt", "c.txt"]);
+        assert_eq!(
+            labels(&tab),
+            [(0, "Folder"), (1, "Markdown document"), (3, "Plain text")]
+        );
+        tab.sort = (SortKey::Size, false);
+        assert_eq!(names(&mut tab), ["d", "e.md", "b.md", "c.txt", "a.txt"]);
+        assert_eq!(labels(&tab).len(), 3);
+        // A filter narrows the groups too; empty groups have no header.
+        tab.filter = "t".into();
+        assert_eq!(names(&mut tab), ["c.txt", "a.txt"]);
+        assert_eq!(labels(&tab), [(0, "Plain text")]);
+        tab.filter = "tx".into();
+        assert_eq!(names(&mut tab), ["c.txt", "a.txt"]);
+        tab.filter.clear();
+        // Ungrouped: back to folders first, then the sort.
+        tab.set_groups(None, None);
+        assert_eq!(names(&mut tab), ["d", "c.txt", "e.md", "a.txt", "b.md"]);
+        assert!(tab.group_starts().is_empty());
+        // A new listing drops groups computed for the old one.
+        group_by_kind(&mut tab);
+        let entries = tab.entries().to_vec();
+        tab.set_entries(entries);
+        assert!(tab.group_key().is_none());
+        tab.visible(false);
+        assert!(tab.group_starts().is_empty());
+    }
+
+    /// Task 66: rows of an expanded folder stay under it, in its group.
+    #[test]
+    fn expanded_rows_stay_in_their_folders_group() {
+        let mut tab = grouped_tab();
+        tab.disclosure = true;
+        let sub = tab.dir.join("d");
+        tab.expand("d", false);
+        tab.take_wanted();
+        let listing = Listing::new(vec![test_entry(&sub, "x.pdf", Kind::File, 1)]);
+        tab.fill_child(&sub, &Ok(listing));
+        assert_eq!(
+            names(&mut tab),
+            ["d", "d/x.pdf", "b.md", "e.md", "a.txt", "c.txt"]
+        );
+        assert_eq!(
+            labels(&tab),
+            [(0, "Folder"), (2, "Markdown document"), (4, "Plain text")]
+        );
+        assert_eq!(
+            tab.group_count(0),
+            1,
+            "rows inside the folder are not counted"
+        );
+        assert_eq!(tab.group_count(1), 2);
+    }
+
+    /// Task 66: Up/Down in a grouped grid keep the column inside a group and carry it
+    /// into the next or previous group, whose rows start under its header.
+    #[test]
+    fn grouped_grid_rows_move_by_group() {
+        let mut tab = grouped_tab();
+        tab.visible(false);
+        // Two tiles a row: [d] / [b.md e.md] / [a.txt c.txt].
+        tab.row_step = 2;
+        tab.click("d", false, false);
+        tab.move_cursor(Nav::Next, false);
+        assert_eq!(cursor(&tab), "b.md");
+        tab.click("e.md", false, false);
+        tab.move_cursor(Nav::Next, false);
+        assert_eq!(cursor(&tab), "c.txt");
+        tab.move_cursor(Nav::Next, false);
+        assert_eq!(cursor(&tab), "c.txt", "last row stays");
+        tab.move_cursor(Nav::Prev, false);
+        assert_eq!(cursor(&tab), "e.md");
+        tab.move_cursor(Nav::Prev, false);
+        assert_eq!(cursor(&tab), "d");
+        tab.move_cursor(Nav::Prev, false);
+        assert_eq!(cursor(&tab), "d");
+    }
+
+    /// Task 66: a 100,000-entry folder with Group by: grouping once per listing, and the
+    /// usual keystroke cost when nothing is expanded. Release only, like `perf_100k`.
+    #[test]
+    #[ignore]
+    fn perf_100k_grouped() {
+        use std::time::{Duration, Instant};
+        let dir = VPath::parse("mem://t/").unwrap();
+        let entries: Vec<Entry> = (0..100_000)
+            .map(|i| {
+                let kind = if i % 10 == 0 { Kind::Dir } else { Kind::File };
+                let ext = ["txt", "pdf", "png", "rs"][i % 4];
+                test_entry(
+                    &dir,
+                    &format!("File {i} report-{}.{ext}", i % 977),
+                    kind,
+                    i as u64,
+                )
+            })
+            .collect();
+        let mut tab = Tab::new(dir);
+        tab.disclosure = true;
+        tab.set_listing(Listing::new(entries));
+        let t = Instant::now();
+        group_by_kind(&mut tab);
+        tab.visible(false);
+        let group = t.elapsed();
+        let t = Instant::now();
+        tab.filter = "report-9".into();
+        tab.visible(false);
+        let keystroke = t.elapsed();
+        eprintln!("100k entries grouped by kind: group {group:?}, keystroke {keystroke:?}");
+        if !cfg!(debug_assertions) {
+            assert!(keystroke < Duration::from_millis(16));
         }
     }
 

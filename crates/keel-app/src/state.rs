@@ -706,6 +706,20 @@ impl AppState {
     }
     // --- end Task 23 ---
 
+    /// Task 66: lists the folders just expanded in the shown tabs' list views.
+    fn list_trees(&mut self) {
+        let mut want = Vec::new();
+        for p in 0..2 {
+            if p == 0 || self.dual {
+                let pane = &mut self.panes[p];
+                want.extend(pane.tabs[pane.active].take_wanted());
+            }
+        }
+        for dir in want {
+            self.want_listing(dir, None);
+        }
+    }
+
     fn list_active(&mut self, p: usize) {
         let t = self.panes[p].active;
         self.list(p, t);
@@ -1414,6 +1428,8 @@ impl AppState {
             self.inflight.remove(&dir);
         }
         let still_loading = self.inflight.contains_key(&dir);
+        // Task 66: folders expanded in a list view take their listing.
+        crate::list_view::fill_trees(&mut self.panes, &dir, &result);
         // Tabs may have been reordered or closed since the request: match by folder, and
         // never let an older answer replace a newer one (A -> B -> A).
         let hits: Vec<(usize, usize)> = (0..2)
@@ -1654,6 +1670,7 @@ impl AppState {
         }
         self.tick_drives(now);
         self.list_columns(None); // Task 23
+        self.list_trees(); // Task 66
         let mut next_search: Option<Instant> = None;
         for p in 0..2 {
             for t in 0..self.panes[p].tabs.len() {
@@ -1915,6 +1932,7 @@ impl AppState {
                     self.open_entry(p, e);
                 }
             }
+            Action::ViewOptions => crate::list_view::toggle_options(&self.ctx),
             Action::Move(nav, extend) => {
                 let rows = self.show_hidden;
                 let tab = self.tab_mut(p);
@@ -2199,7 +2217,7 @@ impl AppState {
                     .iter()
                     .map(|e| crate::bulk_rename::Item {
                         path: e.path.clone(),
-                        name: e.name.clone(),
+                        name: tab.shown_name(e).to_owned(),
                         is_dir: e.kind == Kind::Dir,
                         modified: e.modified,
                     })
@@ -2210,7 +2228,7 @@ impl AppState {
                     .entries()
                     .iter()
                     .filter(|e| !picked.contains(&e.path))
-                    .filter_map(|e| Some((e.path.parent()?, e.name.clone())))
+                    .filter_map(|e| Some((e.path.parent()?, tab.shown_name(e).to_owned())))
                     .collect();
                 self.dialog = Some(Dialog::BulkRename(Box::new(
                     crate::bulk_rename::BulkRename::new(items, others),

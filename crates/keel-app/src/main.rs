@@ -44,6 +44,7 @@ mod keymap; // Phase 16 Task 76: configurable keys
 mod keys;
 mod library;
 mod library_ui;
+mod list_view; // Task 66: list view columns, Group by, View Options
 mod media;
 mod media_viewer;
 mod mount_ui;

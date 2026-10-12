@@ -590,7 +590,8 @@ impl App {
                         library: &s.library,
                         drives: &s.sidebar.drives,
                         searcher: s.searcher.as_ref().map(|x| x.name()),
-                        tags_column: s.settings.library.tags_column,
+                        tags_column: &mut s.settings.library.tags_column,
+                        list: &mut s.settings.list,
                         media: &mut s.media,
                         sizes: &s.sizes,
                         keys: s.active == p,
@@ -703,6 +704,12 @@ impl App {
         if s.settings.omissions.ui(ctx) {
             s.refresh_omissions();
         }
+        // Task 66: the View Options panel (Ctrl+J).
+        let tags = s
+            .library
+            .is_open()
+            .then_some(&mut s.settings.library.tags_column);
+        crate::list_view::options_window(ctx, &mut s.settings.list, tags);
         s.remotes.modals(ctx, &mut s.settings, &s.tx);
         s.cloud_modals(ctx);
         let error = ctx.style().visuals.error_fg_color;

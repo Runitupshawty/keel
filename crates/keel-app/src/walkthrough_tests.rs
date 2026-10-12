@@ -3499,8 +3499,11 @@ fn organize_by_type_then_undo() {
     }
     shot(&mut h, "organize-preview");
     key(&mut h, NONE, Key::Enter);
-    assert!(wait(&mut h, 30, &|_| a.join("Other/garden.rs").exists()));
-    assert!(a.join("Documents/notes.md").exists() && a.join("Archives/site.zip").exists());
+    assert!(wait(&mut h, 30, &|_| {
+        a.join("Other/garden.rs").exists()
+            && a.join("Documents/notes.md").exists()
+            && a.join("Archives/site.zip").exists()
+    }));
     assert!(wait(&mut h, 20, &|s| s.undo.label().as_deref()
         == Some("Undo organize")));
     key(&mut h, CMD, Key::Z);
@@ -3639,4 +3642,31 @@ fn finder_toolbar() {
     click_last(&mut h, "Done");
     h.run_steps(2);
     assert!(!has(&h, "Restore Default"), "closed");
+}
+
+/// Task 66: a right-click on a column header opens the column chooser (a popup below the
+/// header); ticking Date Created adds that column, and Details stays usable.
+#[test]
+fn header_right_click_chooses_columns() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+    let cfg = std::env::temp_dir().join(format!("keel-walk-{}-header", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cfg);
+    std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    assert!(!has(&h, "Created"), "not a default column");
+    let at = pos(&h, "Modified", 0);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    assert!(has(&h, "Show columns"), "{}", dump(&h, "olumn"));
+    assert!(has(&h, "Date Created"));
+    click_last(&mut h, "Date Created");
+    h.run_steps(3);
+    assert!(
+        has(&h, "Created"),
+        "the column shows: {}",
+        dump(&h, "Created")
+    );
+    assert!(has(&h, "Modified"), "the others stay");
+    let _ = std::fs::remove_dir_all(&cfg);
 }

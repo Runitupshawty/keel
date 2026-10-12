@@ -236,6 +236,27 @@ fn recents_merge_opens_and_executed_operations() {
     let _ = &f.data;
 }
 
+/// Task 66: the list view's Date Last Opened column reads when each record was opened.
+#[test]
+fn last_opened_by_path() {
+    let f = fixture();
+    let lib = &f.lib;
+    assert!(lib.last_opened().unwrap().is_empty());
+    lib.note_open(&r(&f.src, "a.txt")).unwrap();
+    lib.note_open(&r(&f.src, "sub/d.txt")).unwrap();
+    let opened = lib.last_opened().unwrap();
+    let paths: Vec<VPath> = opened.iter().map(|o| o.0.clone()).collect();
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains(&VPath::local(f.files.path().join("a.txt"))));
+    assert!(paths.contains(&VPath::local(f.files.path().join("sub").join("d.txt"))));
+    assert!(opened.iter().all(|o| o.1 > 0));
+    // A record that is gone drops out.
+    std::fs::remove_file(f.files.path().join("a.txt")).unwrap();
+    walk(&f.src, &lib.router()).unwrap();
+    assert_eq!(lib.last_opened().unwrap().len(), 1);
+    let _ = &f.data;
+}
+
 #[test]
 fn views_are_saved_listed_updated_and_deleted() {
     let f = fixture();

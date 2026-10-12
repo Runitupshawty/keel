@@ -56,8 +56,11 @@ pub struct ViewCx<'a> {
     pub drives: &'a [crate::sidebar::Drive],
     /// The platform search backend's name (the search tab's backend picker).
     pub searcher: Option<&'static str>,
-    /// Details view: the Tags column.
-    pub tags_column: bool,
+    /// Details view: the Tags column (the library setting; Task 66: the header menu
+    /// toggles it).
+    pub tags_column: &'a mut bool,
+    /// Task 66: the list view's columns, dates and Group by (setting `[list]`).
+    pub list: &'a mut crate::list_view::ListOptions,
     // --- Task 32 ---
     pub media: &'a mut crate::media::Media,
     /// Task 46: folder totals walked this session.
@@ -225,6 +228,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     let tab_idx = pane.active;
     let tab = &mut pane.tabs[tab_idx];
     tab.sizes_view = pane.view == ViewMode::Sizes && !search;
+    crate::list_view::prepare(ui.ctx(), tab, pane.view, search, cx); // Task 66
     if let Some(banner) = &cx.banner {
         ui.horizontal(|ui| {
             if tab.loading {
