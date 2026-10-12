@@ -213,15 +213,21 @@ fn stream_mft(conn: &mut impl Write, backend: &dyn Elevated, letter: char) -> io
 /// The service's backend: the volumes of this machine, read as SYSTEM.
 #[derive(Default)]
 pub(crate) struct LocalVolumes {
-    handles: Mutex<HashMap<char, Arc<Volume>>>,
+    /// Open volume handles by letter, with the serial the letter had when opened.
+    handles: Mutex<HashMap<char, (u32, Arc<Volume>)>>,
 }
 
 impl LocalVolumes {
     /// A volume handle (cached), only for a letter that is a fixed NTFS volume now.
     fn volume(&self, letter: char) -> io::Result<Arc<Volume>> {
-        if let Some(v) = self.handles.lock().get(&letter) {
+        if let Some((_, v)) = self.handles.lock().get(&letter) {
             return Ok(v.clone());
         }
+        let serial = self
+            .volumes()
+            .into_iter()
+            .find_map(|(l, serial)| (l == letter).then_some(serial))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         let volume = Arc::new(Volume::open(letter)?);
         if !volume.privileged() {
             return Err(io::Error::new(
@@ -229,7 +235,7 @@ impl LocalVolumes {
                 "the service cannot open the volume",
             ));
         }
-        self.handles.lock().insert(letter, volume.clone());
+        self.handles.lock().insert(letter, (serial, volume.clone()));
         Ok(volume)
     }
 }
@@ -238,9 +244,10 @@ impl Elevated for LocalVolumes {
     fn volumes(&self) -> Vec<(char, u32)> {
         let ids = win::fixed_ntfs_volumes();
         // A letter that now names another volume (or none) loses its cached handle.
-        self.handles
-            .lock()
-            .retain(|letter, _| ids.iter().any(|id| id.letter == *letter));
+        self.handles.lock().retain(|letter, (serial, _)| {
+            ids.iter()
+                .any(|id| id.letter == *letter && id.serial == *serial)
+        });
         ids.into_iter().map(|id| (id.letter, id.serial)).collect()
     }
 

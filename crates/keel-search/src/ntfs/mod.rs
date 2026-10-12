@@ -675,6 +675,8 @@ struct Worker {
     service: Option<service::Client<std::fs::File>>,
     /// When connecting to it was last tried.
     service_tried: Option<Instant>,
+    /// The service was connected at the last poll.
+    served: bool,
 }
 
 /// The background thread: bring saved volumes current (or build them when
@@ -691,6 +693,7 @@ fn run(weak: Weak<Shared>) {
         rescanned: None,
         service: None,
         service_tried: None,
+        served: false,
     };
     let mut first = true;
     loop {
@@ -700,7 +703,15 @@ fn run(weak: Weak<Shared>) {
         let started = Instant::now();
         // Output of an elevated `--index-service` run replaces what we have.
         let adopted = adopt(&shared.dir);
-        if first || !adopted.is_empty() {
+        // The index service just became reachable (installed while Keel runs): build
+        // what is missing or stale through it.
+        let served = worker.service().is_some();
+        let new_service = served && !worker.served;
+        worker.served = served;
+        if new_service {
+            worker.frozen.clear();
+        }
+        if first || !adopted.is_empty() || new_service {
             first = false;
             worker.refresh(&shared, &adopted);
         }

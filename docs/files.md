@@ -91,6 +91,14 @@ On Windows, when Everything is not running, Keel uses its own index: it reads th
 
 Reading the whole file table needs administrator rights. Until you grant them Keel indexes your home folder (recursively) plus one level of each drive's root. Settings → General → **Index all drives (administrator)** asks Windows for elevation once, runs a helper (`keel --index-service`) that builds the full index, and hands the files back to your user; later starts need no elevation. The status bar names the active backend and shows its state. If Everything is running it is used instead and the button is greyed out.
 
+### The index service
+
+Instead of the one-shot helper you can install the **Keel index service** (Settings → General → **Index service** → **Install…**, or `keel --install-service`): a Windows service (`KeelIndex`, LocalSystem, started on demand) that does only the elevated reads (the file table, the change journal, and the size and dates of changed files) for the one account that installed it, over a private named pipe. Your normal Keel then builds the full index and keeps it current with no administrator prompt, like the Everything Service. **Uninstall…** (or `keel --uninstall-service`) removes it. What it does, its pipe protocol and its security review are in [The Keel index service](index-service.md).
+
+### Folders you cannot open
+
+The full index holds every name on the drive, including files in other users' folders and system folders. Search results leave out anything inside a folder your account cannot list, as Explorer would: each result's folders are checked with your rights (the answer for each folder is kept for five minutes). This is on by default; Settings → General → **Index privacy** → "Hide files in folders you cannot open" turns it off. When many matches are hidden a search can return fewer results than its limit.
+
 ### What the index stores
 
 The helper reads each volume's file table (the MFT) record by record through the volume handle, and keeps for every file and folder: its name and folder, size, size on disk (the clusters in use, so a compressed or sparse file counts what it really takes; a small file kept inside its MFT record counts its size rounded up to 8 bytes, as Windows reports it, and a file compressed with `compact /exe` counts its compressed contents), date created, modified and accessed, attributes, the number of hard links and of alternate data streams, and the reparse tag of links and junctions. A file with several hard links is listed once, by its first name. NTFS's own system files (`$MFT`, `$LogFile`, `$Extend` and what is under it) are left out. A record being written while it is read fails its check and is skipped; the journal replay that follows every build brings the file back. If the volume cannot be read this way (an unusual layout), the helper lists it with `FSCTL_ENUM_USN_DATA` instead, which gives names and attributes only; sizes and dates then come in as files change.
@@ -148,6 +156,7 @@ Symbolic links on Windows need Developer Mode (Settings → System → For devel
 
 ```
 keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] [--here]
+keel --install-service | --uninstall-service
 ```
 
 | Flag | Meaning |
@@ -156,6 +165,7 @@ keel [FOLDER] [--new-window] [--profile NAME] [--search QUERY] [--check-update] 
 | `--new-window` | Start a separate window even if Keel is already running |
 | `--profile NAME` | Use the profile `NAME` ([Profiles](#profiles)) |
 | `--search QUERY` | Open a search tab with this query (in FOLDER when given) |
+| `--install-service`, `--uninstall-service` | Windows: install or remove the [Keel index service](index-service.md) for your account (asks for administrator rights) and exit |
 | `--check-update` | Ask GitHub once whether a newer release is out, print the answer and exit ([Updates](../README.md#updates)) |
 | `--here` | Linux build inside WSL: open FOLDER in this Linux window instead of the Windows Keel (also `KEEL_WSL_NATIVE=1`; see [WSL](wsl.md#keel-inside-wsl)) |
 | `--version`, `--help` | Print and exit; `--version` also prints whether this binary is signed |

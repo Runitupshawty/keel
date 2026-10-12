@@ -85,6 +85,13 @@ use std::path::Path;
 fn main() -> eframe::Result<()> {
     // --- Task 24 ---
     let cli = cli::Cli::from_env();
+    // `keel --run-service --service-user <SID>`: the KeelIndex service process, which
+    // only the Service Control Manager starts. Nothing else of Keel runs in it.
+    #[cfg(windows)]
+    if cli.run_service {
+        let sid = cli.service_user.clone().unwrap_or_default();
+        std::process::exit(i32::from(keel_search::run_service(&sid).is_err()));
+    }
     if let Some(name) = &cli.profile {
         profiles::set_current(name);
     }
@@ -128,6 +135,15 @@ fn main() -> eframe::Result<()> {
         .with_writer(|| keel_api::crash::tee(std::io::stdout()))
         .init();
     crash::install_panic_hook();
+    // `keel --install-service` / `--uninstall-service`: through the UAC prompt.
+    if cli.install_service || cli.uninstall_service {
+        #[cfg(windows)]
+        keel_vfs::desktop::attach_parent_console();
+        std::process::exit(index_ui::service_cli(
+            cli.install_service,
+            cli.service_user.as_deref(),
+        ));
+    }
     // --- Task 24 ---
     // `keel --index-service <dir>`: the elevated indexer, no window.
     if let Some(dir) = &cli.index_service {
@@ -154,6 +170,7 @@ fn main() -> eframe::Result<()> {
     // Startup reads (before the window exists): settings, last session. Both are small
     // local files; saved folders are not checked here (a dead share would block).
     let (settings, settings_notice) = Settings::load();
+    index_ui::apply_hide_unlistable(settings.index_hide_unlistable);
     // --- Task 24 ---
     // A running Keel takes the request (FOLDER / --search) and this process exits.
     let server = if settings.single_instance {

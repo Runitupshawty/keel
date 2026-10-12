@@ -1,5 +1,6 @@
 //! The search backend in the UI (Task 24 follow-up to Task 25): the status-bar indicator
-//! and backend note, and Settings → General's "Index all drives (administrator)".
+//! and backend note, and Settings → General's "Index all drives (administrator)", the
+//! index service (Install / Uninstall) and "Hide files in folders you cannot open".
 
 use crate::state::{AppState, Msg};
 use crossbeam_channel::Sender;
@@ -116,6 +117,154 @@ fn start_full_index(tx: Sender<Msg>, ctx: egui::Context) {
 #[cfg(not(windows))]
 fn start_full_index(_: Sender<Msg>, _: egui::Context) {}
 
+/// Keel's own index leaves out files in folders this user cannot open (Settings →
+/// General → Index privacy; on by default).
+pub fn apply_hide_unlistable(on: bool) {
+    #[cfg(windows)]
+    keel_search::set_hide_unlistable(on);
+    #[cfg(not(windows))]
+    let _ = on;
+}
+
+/// An install or uninstall of the index service is running (one at a time).
+#[cfg(windows)]
+static SERVICE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// What Settings shows for the index service's state.
+#[cfg(windows)]
+pub fn service_label(state: keel_search::ServiceState) -> &'static str {
+    use keel_search::ServiceState as S;
+    match state {
+        S::NotInstalled => "Not installed",
+        S::Stopped => "Installed (starts with Keel)",
+        S::Starting => "Starting…",
+        S::Running => "Running",
+        S::Stopping => "Stopping…",
+        S::Unknown => "Unknown",
+    }
+}
+
+/// The service state, asked of Windows at most every 2 s (Settings redraws often).
+#[cfg(windows)]
+fn cached_service_state() -> keel_search::ServiceState {
+    use parking_lot::Mutex;
+    use std::time::Instant;
+    static CACHE: Mutex<Option<(Instant, keel_search::ServiceState)>> = Mutex::new(None);
+    let mut cache = CACHE.lock();
+    match *cache {
+        Some((at, state)) if at.elapsed() < Duration::from_secs(2) => state,
+        _ => {
+            let state = keel_search::service_state();
+            *cache = Some((Instant::now(), state));
+            state
+        }
+    }
+}
+
+/// Settings → General → Index service: its state and Install… / Uninstall… (each
+/// asks Windows for administrator rights once).
+#[cfg(windows)]
+pub fn service_row(ui: &mut egui::Ui, tx: &Sender<Msg>) {
+    use keel_search::ServiceState as S;
+    let state = cached_service_state();
+    let busy = SERVICE_BUSY.load(Ordering::Acquire);
+    ui.horizontal(|ui| {
+        ui.label(service_label(state)).on_hover_text(
+            "A Windows service that reads the drives' file tables for you, so the full \
+             index needs no administrator prompt after it is installed",
+        );
+        let (text, install, tip) = if state == S::NotInstalled {
+            (
+                "Install…",
+                true,
+                "Install the Keel index service for your account (administrator prompt)",
+            )
+        } else {
+            (
+                "Uninstall…",
+                false,
+                "Stop and remove the Keel index service (administrator prompt)",
+            )
+        };
+        let r = ui.add_enabled(!busy && state != S::Unknown, egui::Button::new(text));
+        if r.on_hover_text(tip).clicked() {
+            start_service_change(install, tx.clone(), ui.ctx().clone());
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn service_row(_: &mut egui::Ui, _: &Sender<Msg>) {}
+
+#[cfg(windows)]
+fn start_service_change(install: bool, tx: Sender<Msg>, ctx: egui::Context) {
+    if SERVICE_BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("keel-index-service".into())
+        .spawn(move || {
+            let msg = match (keel_search::request_service_change(install), install) {
+                (Ok(()), true) => Msg::Info("Keel index service installed".into()),
+                (Ok(()), false) => Msg::Info("Keel index service removed".into()),
+                (Err(e), _) => Msg::Toast(format!("Index service: {e:#}")),
+            };
+            SERVICE_BUSY.store(false, Ordering::Release);
+            crate::worker::send(&tx, &ctx, msg);
+        });
+    if let Err(e) = spawned {
+        SERVICE_BUSY.store(false, Ordering::Release);
+        tracing::error!("spawn keel-index-service: {e}");
+    }
+}
+
+/// `keel --install-service` / `--uninstall-service`: does it when elevated (`user`:
+/// the account to serve, from the unelevated Keel that asked), else asks for elevation
+/// and runs itself again. Returns the exit code.
+pub fn service_cli(install: bool, user: Option<&str>) -> i32 {
+    #[cfg(windows)]
+    {
+        let done = if keel_search::is_elevated() {
+            if install {
+                keel_search::install_service(user)
+                    .map(|exe| format!("Installed the Keel index service ({})", exe.display()))
+            } else {
+                keel_search::uninstall_service().map(|was| {
+                    if was {
+                        "Removed the Keel index service".to_owned()
+                    } else {
+                        "The Keel index service was not installed".to_owned()
+                    }
+                })
+            }
+        } else {
+            keel_search::request_service_change(install).map(|()| {
+                if install {
+                    "Installed the Keel index service".to_owned()
+                } else {
+                    "Removed the Keel index service".to_owned()
+                }
+            })
+        };
+        match done {
+            Ok(message) => {
+                println!("{message}");
+                0
+            }
+            Err(e) => {
+                eprintln!("keel: {e:#}");
+                1
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (install, user);
+        eprintln!("keel: the index service is Windows only");
+        2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +332,15 @@ mod tests {
         assert!(!frame(&mut s));
         s.jump.indexing = false;
         assert!(frame(&mut s));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_states_have_labels() {
+        use keel_search::ServiceState as S;
+        assert_eq!(service_label(S::NotInstalled), "Not installed");
+        assert_eq!(service_label(S::Running), "Running");
+        assert_eq!(service_label(S::Stopped), "Installed (starts with Keel)");
     }
 
     #[test]

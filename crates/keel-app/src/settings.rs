@@ -80,6 +80,8 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// Keel's own index: leave out files in folders this user cannot open (Windows).
+    pub index_hide_unlistable: bool,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +216,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            index_hide_unlistable: true,
         }
     }
 }
@@ -731,6 +734,23 @@ pub fn window(
                     if cfg!(windows) {
                         ui.label("Search index");
                         crate::index_ui::full_index_button(ui, searcher, tx);
+                        ui.end_row();
+                        ui.label("Index service");
+                        crate::index_ui::service_row(ui, tx);
+                        ui.end_row();
+                        ui.label("Index privacy");
+                        let hide = ui
+                            .checkbox(
+                                &mut s.index_hide_unlistable,
+                                "Hide files in folders you cannot open",
+                            )
+                            .on_hover_text(
+                                "Search results leave out files in other users' folders and \
+                                 system folders that Explorer would not show you",
+                            );
+                        if hide.changed() {
+                            crate::index_ui::apply_hide_unlistable(s.index_hide_unlistable);
+                        }
                         ui.end_row();
                     }
                 });

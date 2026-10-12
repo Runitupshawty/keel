@@ -7,6 +7,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - Keel's own Windows index reads each volume's file table (MFT) directly when it runs as administrator (**Index all drives**), and keeps every file's size, size on disk, dates created, modified and accessed, attributes, hard link and alternate stream counts and reparse tag, plus per-folder totals (size, size on disk, files, folders, newest change) kept current from the USN journal. Each journal record also dates the file (recently changed) and the folders it changed. See [Search without Everything](docs/files.md#search-without-everything).
+- The **Keel index service** (Windows): Settings → General → **Index service** → **Install…** (or `keel --install-service`) installs a `KeelIndex` service, started on demand, that reads the drives' file tables and change journals for the account that installed it, so the full drive index is built and kept current without an administrator prompt. **Uninstall…** or `keel --uninstall-service` removes it; the one-shot **Index all drives (administrator)** stays. Its pipe answers only that account and SYSTEM, hands back metadata only (never file contents), and every answer is checked again by Keel. See [The Keel index service](docs/index-service.md).
+- Search results from Keel's own index leave out files in folders your account cannot open (other users' profiles, system folders), as Explorer would; on by default, Settings → General → **Index privacy** turns it off.
+- A fuzz target for the index service's protocol (`index_proto`).
 
 ### Changed
 
