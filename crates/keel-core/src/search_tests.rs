@@ -1099,3 +1099,20 @@ fn repeated_numeric_and_date_filters_intersect() {
     assert_eq!(q.taken.min, Some(days_from_civil(2024, 1, 1) * 86_400));
     assert_eq!(q.taken.max, Some(days_from_civil(2025, 1, 1) * 86_400 - 1));
 }
+
+#[test]
+fn bughunt_invalid_calendar_days_are_rejected() {
+    for date in ["2026-02-29", "2024-02-30", "2026-04-31"] {
+        assert!(
+            LibraryQuery::parse_at(&format!("dm:{date}"), NOW, 0).is_err(),
+            "{date}"
+        );
+        assert!(
+            LibraryQuery::parse_at(&format!("taken:{date}"), NOW, 0).is_err(),
+            "{date}"
+        );
+    }
+    assert!(LibraryQuery::parse_at("dm:2024-02-29", NOW, 0).is_ok());
+    assert!(LibraryQuery::parse_at("dm:2000-02-29", NOW, 0).is_ok());
+    assert!(LibraryQuery::parse_at("dm:1900-02-29", NOW, 0).is_err());
+}

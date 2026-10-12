@@ -318,6 +318,11 @@ fn date_range(s: &str, now: i64, offset: i64) -> Option<(i64, i64)> {
             Some((day(y, m, 1), day(ny, nm, 1)))
         }
         [y, m, d] if (1..=12).contains(&m) && (1..=31).contains(&d) => {
+            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            let length = days_from_civil(ny, nm, 1) - days_from_civil(y, m, 1);
+            if d > length {
+                return None;
+            }
             Some((day(y, m, d), day(y, m, d) + DAY))
         }
         _ => None,
