@@ -1,0 +1,1 @@
+case:ww:regex:^(a|b)[0-9]{2,}$ $1: nopath:wfn:x.txt no-!:!x #:>100 len:<=5 hex:4b65656c

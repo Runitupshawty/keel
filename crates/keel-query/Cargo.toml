@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "keel-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`.
+fuzzing = []
+
+[dependencies]
+# Wildcards, whole words and `regex:` terms; compiled with size limits.
+regex.workspace = true
+# Date constants and calendar arithmetic (already in the tree; `clock` for the local offset).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
