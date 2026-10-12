@@ -133,6 +133,17 @@ pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
     };
     let mut out: Out = Box::new(std::io::stdout());
     match cmd {
+        Command::Search {
+            query,
+            max,
+            etp: Some(server),
+            etp_tls,
+        } => {
+            return match etp_search(&cfg, &query, max, &server, etp_tls, json, &mut out) {
+                Ok(()) => OK,
+                Err(e) => report(Fail::Api(e), json, &mut out),
+            };
+        }
         Command::Daemon(d) => return daemon(d, &cfg, json, &mut out),
         Command::Mcp { allow_execute } => return mcp(&cfg, allow_execute),
         Command::Op {
@@ -244,6 +255,116 @@ fn abs(p: &str) -> String {
 
 fn abs_all(ps: &[String]) -> Vec<String> {
     ps.iter().map(|p| abs(p)).collect()
+}
+
+/// The ETP server `keel search --etp [SERVER]` searches: SERVER, or `[search] etp` when it
+/// is empty. The FTP remote with that host and port (or `[search] etp_remote`) lends its
+/// user, keychain password and TLS setting, and the results open through it;
+/// `KEEL_ETP_PASSWORD` overrides the password.
+fn etp_target(
+    cfg: &HostConfig,
+    server: &str,
+    tls: bool,
+    env_password: Option<String>,
+) -> anyhow::Result<keel_search::etp::Target> {
+    use anyhow::Context;
+    let (server, tls, pin, remote) = if server.trim().is_empty() {
+        let saved = cfg.search_etp.as_ref().context(
+            "no ETP server: give one (--etp HOST:PORT) or set [search] etp in config.toml",
+        )?;
+        (
+            saved.server.clone(),
+            saved.tls || tls,
+            saved.pin.clone(),
+            saved.remote.clone(),
+        )
+    } else {
+        (server.to_owned(), tls, None, None)
+    };
+    let mut t = keel_search::etp::Target::parse(&server)?;
+    t.tls = tls;
+    t.pin = pin;
+    let ftp = |r: &&keel_vfs::RemoteHost| r.protocol != keel_vfs::RemoteProtocol::Sftp;
+    let found = match &remote {
+        Some(name) => Some(
+            cfg.remotes
+                .iter()
+                .filter(ftp)
+                .find(|r| &r.id == name || &r.label == name)
+                .with_context(|| format!("[search] etp_remote: no FTP remote {name}"))?,
+        ),
+        None => cfg
+            .remotes
+            .iter()
+            .filter(ftp)
+            .find(|r| r.host.eq_ignore_ascii_case(&t.host) && r.port == t.port),
+    };
+    if let Some(r) = found {
+        if t.user.is_empty() {
+            t.user = r.user.clone();
+        }
+        t.tls |= r.protocol == keel_vfs::RemoteProtocol::Ftps;
+        t.authority = Some(r.id.clone());
+        if t.password.is_empty() && t.user == r.user && !r.user.is_empty() {
+            t.password = keel_vfs::sftp::auth::load_secret(&r.id, "password").unwrap_or_default();
+        }
+    }
+    if let Some(p) = env_password.filter(|p| !p.is_empty()) {
+        t.password = p;
+    }
+    Ok(t)
+}
+
+/// `keel search QUERY --etp [SERVER]`: one search on an ETP server.
+fn etp_search(
+    cfg: &HostConfig,
+    query: &str,
+    max: Option<usize>,
+    server: &str,
+    tls: bool,
+    json: bool,
+    out: &mut Out,
+) -> Result<(), ApiError> {
+    use keel_search::Searcher;
+    let fail = |e: anyhow::Error| ApiError::failed(format!("{e:#}"));
+    let password = std::env::var("KEEL_ETP_PASSWORD").ok();
+    let target = etp_target(cfg, server, tls, password).map_err(fail)?;
+    let etp = keel_search::etp::EtpSearcher::new(target);
+    let max = u32::try_from(max.unwrap_or(100).max(1)).unwrap_or(u32::MAX);
+    let hits = etp
+        .query(&keel_search::Query {
+            text: query.to_owned(),
+            max,
+            ..keel_search::Query::default()
+        })
+        .map_err(fail)?;
+    if json {
+        let docs: Vec<Value> = hits
+            .iter()
+            .map(|h| {
+                json!({
+                    "path": h.path.display(),
+                    "name": h.path.name(),
+                    "is_dir": h.is_dir,
+                    "size": h.size,
+                    "modified": h.modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs()),
+                })
+            })
+            .collect();
+        print_json(&Value::Array(docs), out);
+    } else {
+        for h in &hits {
+            let size = if h.is_dir {
+                "<dir>".to_owned()
+            } else {
+                h.size.to_string()
+            };
+            let _ = writeln!(out, "{size:>12}  {}", h.path.display());
+        }
+    }
+    Ok(())
 }
 
 fn print_json(v: &Value, out: &mut Out) {
@@ -393,7 +514,7 @@ fn command(
     out: &mut Out,
 ) -> Result<Option<Value>, Fail> {
     let doc = match cmd {
-        Command::Search { query, max } => {
+        Command::Search { query, max, .. } => {
             let hits = b.call("search", json!({"query": query, "max": max}))?;
             if json {
                 return Ok(Some(hits));
@@ -1317,5 +1438,47 @@ fn daemon(cmd: DaemonCmd, cfg: &HostConfig, json: bool, out: &mut Out) -> i32 {
             eprintln!("keel: keel-daemon is still running");
             FAILED
         }
+    }
+}
+
+#[cfg(test)]
+mod etp_tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> (tempfile::TempDir, HostConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profiles/work");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("config.toml"), toml).unwrap();
+        let cfg = HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        (dir, cfg)
+    }
+
+    const NAS: &str = "[[remotes]]\nid = \"nas\"\nlabel = \"NAS\"\nhost = \"FILES.example\"\n\
+        port = 2121\nuser = \"\"\nauth = \"Agent\"\nbookmarks = []\nprotocol = \"ftps\"\n";
+
+    #[test]
+    fn etp_targets_from_the_command_line_and_the_settings() {
+        let (_d, c) = cfg(NAS);
+        assert_eq!(c.remotes.len(), 1, "{c:?}");
+        // The FTP remote with that host and port lends its id and TLS.
+        let t = etp_target(&c, "files.example:2121", false, None).unwrap();
+        assert_eq!((t.authority.as_deref(), t.tls), (Some("nas"), true));
+        let t = etp_target(&c, "other.example", false, Some("pw".into())).unwrap();
+        assert_eq!((t.authority, t.tls, t.port), (None, false, 21));
+        assert_eq!(t.password, "pw");
+        assert!(etp_target(&c, "", false, None).is_err(), "no [search] etp");
+        // `[search] etp` when no server is given; `etp_remote` by label.
+        let (_d, c) = cfg(&format!(
+            "[search]\netp = \"me@other.example:2121\"\netp_pin = \"AB\"\netp_remote = \"NAS\"\n{NAS}"
+        ));
+        let t = etp_target(&c, "", false, None).unwrap();
+        assert_eq!(
+            (t.host.as_str(), t.user.as_str(), t.pin.as_deref()),
+            ("other.example", "me", Some("AB"))
+        );
+        assert_eq!((t.authority.as_deref(), t.tls), (Some("nas"), true));
+        let (_d, c) = cfg("[search]\netp = \"h\"\netp_remote = \"missing\"\n");
+        assert!(etp_target(&c, "", false, None).is_err());
     }
 }

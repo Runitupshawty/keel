@@ -50,12 +50,21 @@ pub struct Cli {
 /// library in this process. Exit codes: 0 ok, 1 operation error, 2 usage.
 #[derive(Subcommand, Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Search the library index.
+    /// Search the library index; with `--etp`, an ETP server (Everything's ETP/FTP server,
+    /// or keel-daemon --etp) instead.
     Search {
         query: String,
         /// At most N hits (default 100).
         #[arg(long, value_name = "N")]
         max: Option<usize>,
+        /// Search this ETP server (`[USER@]HOST[:PORT]`, as Everything's `-connect`); without
+        /// a value, the one `[search] etp` names in config.toml. The password comes from
+        /// `KEEL_ETP_PASSWORD`, or the keychain of the FTP remote with that host and port.
+        #[arg(long, value_name = "SERVER", num_args = 0..=1, default_missing_value = "")]
+        etp: Option<String>,
+        /// With --etp: explicit TLS (AUTH TLS), never falling back to plain FTP.
+        #[arg(long, requires = "etp")]
+        etp_tls: bool,
     },
     /// Folder sizes: each child of PATH by size, biggest first (from the library index;
     /// a folder outside the library is walked).
@@ -622,9 +631,25 @@ mod tests {
             cmd(&["search", "two words", "--max", "5"]),
             Command::Search {
                 query: "two words".into(),
-                max: Some(5)
+                max: Some(5),
+                etp: None,
+                etp_tls: false,
             }
         );
+        assert_eq!(
+            cmd(&["search", "x", "--etp", "me@files.example:2121", "--etp-tls"]),
+            Command::Search {
+                query: "x".into(),
+                max: None,
+                etp: Some("me@files.example:2121".into()),
+                etp_tls: true,
+            }
+        );
+        assert!(matches!(
+            cmd(&["search", "x", "--etp"]),
+            Command::Search { etp: Some(e), .. } if e.is_empty()
+        ));
+        assert!(parse(&["search", "x", "--etp-tls"]).is_err(), "needs --etp");
         assert_eq!(
             cmd(&["library", "backup", "b.keelbackup"]),
             Command::Library(LibraryCmd::Backup {

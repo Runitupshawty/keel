@@ -3,7 +3,8 @@
 //! `<config dir>/profiles/<profile>/config.toml` (`[library] name`, `remote_poll_secs`,
 //! `[devices] enabled`,
 //! `[devices] inbox`, `auto_accept`, `relay`, `sync` and `sync_secs`, `[[remotes]]`,
-//! `[[clouds]]`); `[web] allow_downloads`; the daemon's
+//! `[[clouds]]`); `[web] allow_downloads`; `[search] etp` (with `etp_tls`, `etp_pin`,
+//! `etp_remote`); the daemon's
 //! socket name and WebSocket token.
 
 use std::path::PathBuf;
@@ -92,6 +93,25 @@ pub struct HostConfig {
     /// `[web] allow_downloads`: keel-daemon --web's Everything-compatible search may send
     /// the files it finds (default off).
     pub allow_downloads: bool,
+    /// `[search] etp` (`[user@]host[:port]`), `etp_tls`, `etp_pin` and `etp_remote`: the ETP
+    /// server (Everything's, or keel-daemon --etp) `keel search --etp` searches when given
+    /// no server.
+    pub search_etp: Option<EtpSearch>,
+}
+
+/// An ETP server to search (`[search] etp` and its companions).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EtpSearch {
+    /// `[user@]host[:port]` (a password here works, but the keychain of `remote` or
+    /// `KEEL_ETP_PASSWORD` keeps it out of the file).
+    pub server: String,
+    /// Explicit TLS (`AUTH TLS`), never falling back to plain FTP.
+    pub tls: bool,
+    /// The SHA-256 fingerprint of a certificate trusted although the OS does not.
+    pub pin: Option<String>,
+    /// The id or label of the `[[remotes]]` FTP host the results open through (its user,
+    /// password and TLS setting apply too).
+    pub remote: Option<String>,
 }
 
 /// The entries of the array `key` that parse as `T` (a broken one is skipped).
@@ -196,6 +216,24 @@ impl HostConfig {
             allow_downloads: get("web", "allow_downloads")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            search_etp: get("search", "etp")
+                .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
+                .filter(|s| !s.is_empty())
+                .map(|server| {
+                    let text = |k: &str| {
+                        get("search", k)
+                            .and_then(|v| v.as_str().map(str::trim).map(str::to_owned))
+                            .filter(|s| !s.is_empty())
+                    };
+                    EtpSearch {
+                        server,
+                        tls: get("search", "etp_tls")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        pin: text("etp_pin"),
+                        remote: text("etp_remote"),
+                    }
+                }),
         }
     }
 
@@ -384,5 +422,30 @@ sync_secs = 1
         assert!(!read().allow_downloads, "only true turns them on");
         std::fs::write(p.join("config.toml"), "[web]\nallow_downloads = true\n").unwrap();
         assert!(read().allow_downloads);
+    }
+
+    #[test]
+    fn an_etp_server_to_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = || HostConfig::read("work", dir.path().into(), dir.path().join("data"));
+        assert_eq!(read().search_etp, None);
+        let p = dir.path().join("profiles/work");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("config.toml"), "[search]\netp = \"  \"\n").unwrap();
+        assert_eq!(read().search_etp, None, "empty is none");
+        std::fs::write(
+            p.join("config.toml"),
+            "[search]\netp = \"me@files.example:2121\"\netp_tls = true\netp_pin = \"AB:CD\"\netp_remote = \"nas\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read().search_etp,
+            Some(EtpSearch {
+                server: "me@files.example:2121".into(),
+                tls: true,
+                pin: Some("AB:CD".into()),
+                remote: Some("nas".into()),
+            })
+        );
     }
 }
