@@ -465,7 +465,11 @@ pub fn authorized(header: Option<&str>, token: &str, login: Option<&(String, Str
 }
 
 /// [`authorized`], and by which credential.
-pub fn signed_in(header: Option<&str>, token: &str, login: Option<&(String, String)>) -> Option<Who> {
+pub fn signed_in(
+    header: Option<&str>,
+    token: &str,
+    login: Option<&(String, String)>,
+) -> Option<Who> {
     let header = header.map(str::trim)?;
     let (scheme, rest) = header.split_once(' ').unwrap_or((header, ""));
     let rest = rest.trim();
@@ -476,7 +480,9 @@ pub fn signed_in(header: Option<&str>, token: &str, login: Option<&(String, Stri
         return None;
     }
     use base64::Engine;
-    let raw = base64::engine::general_purpose::STANDARD.decode(rest).ok()?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(rest)
+        .ok()?;
     let text = String::from_utf8(raw).ok()?;
     let (user, password) = text.split_once(':')?;
     let by_token = crate::ws::same(password.as_bytes(), token.as_bytes());
@@ -512,7 +518,12 @@ pub const RECENT_MAX: usize = 20_000;
 /// daemon's user can read; the daemon token, which is the whole API anyway, is not held
 /// to it.
 #[derive(Default)]
-pub struct Recent(parking_lot::Mutex<(std::collections::VecDeque<String>, std::collections::HashSet<String>)>);
+pub struct Recent(
+    parking_lot::Mutex<(
+        std::collections::VecDeque<String>,
+        std::collections::HashSet<String>,
+    )>,
+);
 
 impl Recent {
     /// How paths are compared: Windows ignores case and takes `/` for `\`.

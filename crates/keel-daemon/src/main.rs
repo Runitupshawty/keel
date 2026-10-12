@@ -99,12 +99,8 @@ fn main() -> ExitCode {
         eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");
         return ExitCode::FAILURE;
     }
-    if args.web.is_some_and(|a| !a.ip().is_loopback()) {
-        eprintln!(
-            "keel-daemon: warning: {}",
-            keel_daemon::everything::UNENCRYPTED
-        );
-    }
+    // A non-loopback --web needs `[web] allow_plaintext = true` (`Daemon::start` refuses it
+    // otherwise and warns once it serves).
     if !args.web_host.is_empty() && args.web.is_none() {
         eprintln!("keel-daemon: --web-host needs --web");
         return ExitCode::FAILURE;

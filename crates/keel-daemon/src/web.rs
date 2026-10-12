@@ -159,7 +159,11 @@ impl AuthGuard {
             g.by_addr
                 .retain(|_, f| now.saturating_duration_since(f.last) < FORGET_AFTER);
             if g.by_addr.len() >= MAX_TRACKED {
-                let oldest = g.by_addr.iter().min_by_key(|(_, f)| f.last).map(|(k, _)| *k);
+                let oldest = g
+                    .by_addr
+                    .iter()
+                    .min_by_key(|(_, f)| f.last)
+                    .map(|(k, _)| *k);
                 if let Some(k) = oldest {
                     g.by_addr.remove(&k);
                 }
@@ -749,7 +753,8 @@ fn everything_file(
         return refuse(stream, "400 Bad Request", host, "path=<the file> needed");
     };
     if who == everything::Who::Login
-        && (!ev.gate.recent.contains(&path) || keel_api::files::in_keel_folders(shared.ctx(), &path))
+        && (!ev.gate.recent.contains(&path)
+            || keel_api::files::in_keel_folders(shared.ctx(), &path))
     {
         return refuse(
             stream,
@@ -992,12 +997,17 @@ mod tests {
         let g = AuthGuard::default();
         let t = Instant::now();
         for i in 0..GLOBAL_FAILS as u32 {
-            assert!(g.check(IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8]), t).is_ok());
+            assert!(g
+                .check(IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8]), t)
+                .is_ok());
             g.failed(IpAddr::from([10, 0, (i / 250) as u8, (i % 250) as u8]), t);
         }
         let fresh = ip("203.0.113.7");
         assert_eq!(g.check(fresh, t), Err(GLOBAL_WINDOW));
-        assert!(g.check(fresh, t + GLOBAL_WINDOW).is_ok(), "the window passed");
+        assert!(
+            g.check(fresh, t + GLOBAL_WINDOW).is_ok(),
+            "the window passed"
+        );
     }
 
     #[test]

@@ -2282,7 +2282,9 @@ fn keel_folders_are_told_from_the_rest() {
     let data = f.ctx.data_dir.clone().unwrap();
     let inside = |p: &std::path::Path| crate::files::in_keel_folders(&f.ctx, &s(p));
     assert!(inside(&f.cfg.path().join("daemon.token")));
-    assert!(inside(&data.join("test").join("library.db")));
+    let key = data.join("device.key");
+    std::fs::write(&key, b"k").unwrap();
+    assert!(inside(&key));
     assert!(inside(&data));
     assert!(!inside(&f.files.path().join("docs/invoice-2026.pdf")));
     assert!(
