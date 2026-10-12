@@ -319,8 +319,7 @@ impl<R: Read + Seek> Walk<'_, R> {
             let start = (hi << 16) | lo;
             if attr & 0x10 != 0 {
                 // A cluster read already is not read again: no need to name it.
-                if self.fat.is_cluster(start) && depth < MAX_DEPTH && !self.seen.contains(&start)
-                {
+                if self.fat.is_cluster(start) && depth < MAX_DEPTH && !self.seen.contains(&start) {
                     let Some(child) = self.list.folder(folder, name) else {
                         return;
                     };

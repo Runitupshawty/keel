@@ -355,13 +355,7 @@ struct ScanJson<'a> {
 
 /// The scan (and the drive's Recycle Bin items): one JSON document with `json`, written
 /// as it goes.
-fn print_scan(
-    source: &str,
-    s: &Scan,
-    bin: &[recycle::Item],
-    saved: Option<&Path>,
-    json: bool,
-) {
+fn print_scan(source: &str, s: &Scan, bin: &[recycle::Item], saved: Option<&Path>, json: bool) {
     if json {
         let doc = ScanJson {
             source,
@@ -532,7 +526,10 @@ fn restore(ids: &[usize], to: &Path, from: Option<&Path>, json: bool) -> Result<
     // The saved list only names the files: where their data is comes from reading the
     // volume again here, so an edited list can only pick files that are really there.
     if !json {
-        eprintln!("Reading {} again to find the files...", shown(&saved.source));
+        eprintln!(
+            "Reading {} again to find the files...",
+            shown(&saved.source)
+        );
     }
     let fresh = recover::scan(src.reader())?;
     if fresh.fs != saved.fs {
@@ -602,18 +599,26 @@ mod tests {
     use super::*;
     use keel_vfs::recover::testimg::{NtfsImg, NT_ROOT};
 
+    /// A file beside an image cannot change the image, so `--save` may name one there; a
+    /// folder that does not exist is a usage error and nothing is written.
     #[test]
-    fn image_scan_does_not_save_on_its_source_volume() {
+    fn image_scan_saves_beside_the_image_into_an_existing_folder_only() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("volume.img");
         let nt = NtfsImg::new();
         std::fs::write(&image, nt.image()).unwrap();
-        let save = dir.path().join("scan.json");
+        let missing = dir.path().join("no such folder").join("scan.json");
         assert!(matches!(
-            scan(image.to_str().unwrap(), Some(&save), false),
+            scan(image.to_str().unwrap(), Some(&missing), false),
             Err(Fail::Usage(_))
         ));
-        assert!(!save.exists());
+        assert!(!missing.exists());
+        let save = dir.path().join("scan.json");
+        assert_eq!(
+            scan(image.to_str().unwrap(), Some(&save), true).ok(),
+            Some(OK)
+        );
+        assert!(save.exists());
     }
 
     #[test]
@@ -627,7 +632,11 @@ mod tests {
         std::fs::write(&image, nt.image()).unwrap();
         assert_eq!(scan(image.to_str().unwrap(), None, false).ok(), Some(OK));
         let file = last_saved().unwrap();
-        assert_eq!(file, default_places()[0], "an image: saved in the data folder");
+        assert_eq!(
+            file,
+            default_places()[0],
+            "an image: saved in the data folder"
+        );
         let saved: Saved = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         assert_eq!(
             saved.source,
@@ -641,8 +650,14 @@ mod tests {
 
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
-        assert!(matches!(restore(&[2], &out, None, false), Err(Fail::Usage(_))));
-        assert!(matches!(restore(&[0], &out, None, false), Err(Fail::Usage(_))));
+        assert!(matches!(
+            restore(&[2], &out, None, false),
+            Err(Fail::Usage(_))
+        ));
+        assert!(matches!(
+            restore(&[0], &out, None, false),
+            Err(Fail::Usage(_))
+        ));
         let missing = dir.path().join("missing");
         assert!(matches!(
             restore(&[1], &missing, None, false),

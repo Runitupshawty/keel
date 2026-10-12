@@ -83,7 +83,8 @@ mod sys {
 
     pub fn create_new(dir: &File, name: &str) -> io::Result<File> {
         let c = c_name(name)?;
-        let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let flags =
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         // SAFETY: a directory descriptor owned by `dir` and a NUL-terminated name, both
         // alive for the call; the descriptor returned is owned by the File from here on.
         let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o644 as libc::c_uint) };
@@ -177,17 +178,16 @@ mod sys {
         STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
     };
     use windows::Win32::Storage::FileSystem::{
-        GetFinalPathNameByHandleW, SetFileInformationByHandle, FileDispositionInfo, DELETE,
+        FileDispositionInfo, GetFinalPathNameByHandleW, SetFileInformationByHandle, DELETE,
         FILE_ADD_FILE, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
         FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE, VOLUME_NAME_GUID,
     };
-    use windows::Win32::System::IO::IO_STATUS_BLOCK;
     use windows::Win32::Storage::Vhd::{
         GetStorageDependencyInformation, GET_STORAGE_DEPENDENCY_FLAG_HOST_VOLUMES,
-        STORAGE_DEPENDENCY_INFO, STORAGE_DEPENDENCY_INFO_TYPE_2,
-        STORAGE_DEPENDENCY_INFO_VERSION_2,
+        STORAGE_DEPENDENCY_INFO, STORAGE_DEPENDENCY_INFO_TYPE_2, STORAGE_DEPENDENCY_INFO_VERSION_2,
     };
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
     /// The folder, held without delete sharing so it cannot be renamed or replaced while
     /// the restore runs.
@@ -415,7 +415,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = DestDir::open(dir.path(), VolumeId(u64::MAX)).unwrap();
         let (name, path, file) = d.create_free("a.txt").unwrap();
-        assert_eq!((name.as_str(), path.clone()), ("a.txt", dir.path().join("a.txt")));
+        assert_eq!(
+            (name.as_str(), path.clone()),
+            ("a.txt", dir.path().join("a.txt"))
+        );
         drop(file);
         let (name2, path2, file2) = d.create_free("a.txt").unwrap();
         assert_eq!(name2, "a (2).txt");

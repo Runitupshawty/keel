@@ -346,7 +346,10 @@ mod tests {
     fn character_devices_are_their_own_volume() {
         use std::os::unix::fs::MetadataExt;
         let m = std::fs::metadata("/dev/null").unwrap();
-        assert_eq!(volume_of(Path::new("/dev/null")).unwrap(), VolumeId(m.rdev()));
+        assert_eq!(
+            volume_of(Path::new("/dev/null")).unwrap(),
+            VolumeId(m.rdev())
+        );
         assert_ne!(VolumeId(m.rdev()), VolumeId(m.dev()));
         let dir = tempfile::tempdir().unwrap();
         let fifo = dir.path().join("fifo");

@@ -333,7 +333,14 @@ impl RawFat {
     fn folder(&mut self, first: u32, entries: &[[u8; 32]]) {
         let n = (entries.len() * 32).div_ceil(RAW_CLUSTER).max(1) as u32;
         for c in first..first + n {
-            self.set_fat(c, if c + 1 < first + n { (c + 1) as u16 } else { 0xFFF });
+            self.set_fat(
+                c,
+                if c + 1 < first + n {
+                    (c + 1) as u16
+                } else {
+                    0xFFF
+                },
+            );
         }
         let base = RAW_DATA_OFF + (first as usize - 2) * RAW_CLUSTER;
         for (i, e) in entries.iter().enumerate() {
@@ -464,7 +471,11 @@ fn thousands_of_folders_on_one_cluster_are_bounded() {
     assert!(s.folders.len() <= 20_002, "{}", s.folders.len());
     // A limit below what the folder table needs stops the scan with a note.
     let s = scan_limited(&mut Cursor::new(fat.img), 256 << 10).unwrap();
-    assert!(s.notes.iter().any(|n| n.contains("memory limit")), "{:?}", s.notes);
+    assert!(
+        s.notes.iter().any(|n| n.contains("memory limit")),
+        "{:?}",
+        s.notes
+    );
 }
 
 #[test]
@@ -500,7 +511,10 @@ fn ntfs_and_exfat_files_share_their_folder() {
     let (s, _) = scan_image(ex.image());
     assert_eq!(s.candidates.len(), 3);
     assert_eq!(s.folders.len(), 5);
-    assert!(s.candidates.iter().all(|c| c.folder == s.candidates[0].folder));
+    assert!(s
+        .candidates
+        .iter()
+        .all(|c| c.folder == s.candidates[0].folder));
     assert_eq!(s.path(&s.candidates[2]), "d0/d1/d2/d3/e2.bin");
 }
 
