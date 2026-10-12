@@ -174,3 +174,24 @@ path = "fuzz_targets/audio_tags.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_match"
+path = "fuzz_targets/content_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recycle_info"
+path = "fuzz_targets/recycle_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "trash_info"
+path = "fuzz_targets/trash_info.rs"
+test = false
+doc = false
+bench = false
