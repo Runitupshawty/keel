@@ -1177,7 +1177,7 @@ pub fn palette_items(selection: bool) -> Vec<crate::palette::Item> {
         .into_iter()
         .map(|(label, action)| crate::palette::Item {
             label,
-            shortcut: "",
+            shortcut: String::new(),
             action,
         })
         .collect()
