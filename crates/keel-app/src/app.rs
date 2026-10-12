@@ -255,10 +255,7 @@ impl App {
         let terminal = s.terminal.focused(ctx);
         s.assign_keys(ctx, keys_on && !terminal); // Task 58
         ctx.data_mut(|d| {
-            d.insert_temp(
-                crate::search_tab::settings_id(),
-                s.settings.search.clone(),
-            )
+            d.insert_temp(crate::search_tab::settings_id(), s.settings.search.clone())
         });
         if keys_on && !terminal && s.panes[s.active].tab().is_search() {
             for action in keys::search_toggles(ctx) {

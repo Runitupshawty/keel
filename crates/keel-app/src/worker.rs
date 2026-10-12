@@ -456,7 +456,11 @@ mod tests {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = SearchWorker::new(tx, egui::Context::default());
         let slow = Arc::new(Slow(Mutex::default()));
-        worker.search(slow.clone(), "a".into(), 1, 0);
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Query::default()
+        };
+        worker.search(slow.clone(), q("a"), 1, 0);
         // Wait until "a" is really running (a slow machine may not have scheduled the
         // worker yet; a later query for the same tab would then supersede it).
         let until = std::time::Instant::now() + Duration::from_secs(5);
@@ -468,9 +472,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         // While "a" runs, the tab types "ab" then "abc"; another tab searches "x".
-        worker.search(slow.clone(), "ab".into(), 2, 1);
-        worker.search(slow.clone(), "x".into(), 3, 0);
-        worker.search(slow.clone(), "abc".into(), 4, 2);
+        worker.search(slow.clone(), q("ab"), 2, 1);
+        worker.search(slow.clone(), q("x"), 3, 0);
+        worker.search(slow.clone(), q("abc"), 4, 2);
         let mut answered = Vec::new();
         while answered.len() < 3 {
             match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {

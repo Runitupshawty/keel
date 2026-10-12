@@ -269,7 +269,11 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
     }
     ui.separator();
     if more {
-        item(ui, egui::Button::new("Load more results"), Action::SearchMore);
+        item(
+            ui,
+            egui::Button::new("Load more results"),
+            Action::SearchMore,
+        );
     }
     let open =
         egui::Button::new("Open path").shortcut_text(crate::keys::shortcut_label("Ctrl+Enter"));
@@ -534,10 +538,8 @@ mod tests {
 
     impl Fixture {
         fn new(tag: &str, files: &[&str]) -> Self {
-            let base = std::env::temp_dir().join(format!(
-                "keel-search-tab-{tag}-{}",
-                std::process::id()
-            ));
+            let base =
+                std::env::temp_dir().join(format!("keel-search-tab-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let root = base.join("tree");
             for f in files {
@@ -545,8 +547,9 @@ mod tests {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, b"12345").unwrap();
             }
-            let index = keel_search::WalkIndexSearcher::open(base.join("index"), vec![root.clone()])
-                .unwrap();
+            let index =
+                keel_search::WalkIndexSearcher::open(base.join("index"), vec![root.clone()])
+                    .unwrap();
             assert!(index.wait_ready(Duration::from_secs(60)));
             let mut state = AppState::new(
                 egui::Context::default(),
@@ -630,7 +633,12 @@ mod tests {
         let off = Toggles::default();
         assert_eq!(
             f.search("report", off),
-            ["Report.pdf", "report notes.txt", "report.pdf", "reportage.md"]
+            [
+                "Report.pdf",
+                "report notes.txt",
+                "report.pdf",
+                "reportage.md"
+            ]
         );
         // Match Case, from its action (Ctrl+I).
         f.search("Report", off);
@@ -729,7 +737,10 @@ mod tests {
         assert_eq!(limit, 4 * PAGE);
         // Sizes and dates came along (the walk index has them).
         let tab = f.state.tab(0);
-        assert!(tab.entries().iter().all(|e| e.size == 5 && e.modified.is_some()));
+        assert!(tab
+            .entries()
+            .iter()
+            .all(|e| e.size == 5 && e.modified.is_some()));
         // Editing the query starts from the first page again.
         f.state.run(0, Action::Type("0".into()));
         assert!(matches!(

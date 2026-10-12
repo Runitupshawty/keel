@@ -124,14 +124,24 @@ fn toggles_reach_everything_when_enabled() {
     // Everything sees a new file within moments.
     let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while find(tag.clone(), |_| {}) == 0 {
-        assert!(std::time::Instant::now() < end, "Everything did not index {tag}");
+        assert!(
+            std::time::Instant::now() < end,
+            "Everything did not index {tag}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let accented = format!("caf\u{e9} {tag}");
     assert_eq!(find(accented.clone(), |q| q.match_diacritics = true), 1);
-    assert_eq!(find(format!("cafe {tag}"), |q| q.match_diacritics = true), 0);
+    assert_eq!(
+        find(format!("cafe {tag}"), |q| q.match_diacritics = true),
+        0
+    );
     let folder = format!("keel-everything-toggles-{id} {tag}");
-    assert_eq!(find(folder.clone(), |_| {}), 0, "the folder is not in the name");
+    assert_eq!(
+        find(folder.clone(), |_| {}),
+        0,
+        "the folder is not in the name"
+    );
     assert_eq!(find(folder, |q| q.match_path = true), 1);
     assert_eq!(find(tag[..6].to_owned(), |q| q.whole_word = true), 0);
     assert_eq!(find(tag.clone(), |q| q.whole_word = true), 1);
