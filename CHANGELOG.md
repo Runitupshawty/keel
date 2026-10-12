@@ -4,9 +4,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## Unreleased
 
-### Fixed
-- Validate protocol links before CLI dispatch; reject raw quotes, whitespace, malformed encoding and extra arguments. Encoded flags remain search text. 
-
 ### Added
 
 - **`keel es`**: search the whole disk from a terminal with the switches of Everything's `es.exe`, through the same backend as the window (Everything, Keel's NTFS index, Spotlight, `locate` or the folder index), or the library with `-library`. Match switches (`-case`, `-w`, `-p`, `-diacritics`, `-regex`, `-prefix`, `-suffix`), `-n`/`-o`, `-path`, `-parent-path`, `-parent`, `/ad` and `/a-d`, sorting (`-sort`, DIR-style `/o`), columns (`-name`, `-path-column`, `-full-path-and-name`, `-extension`, `-size`, `-date-modified`), `-size-format`, `-date-format`, CSV, TSV, EFU, JSON, M3U and text output to the terminal or a file (`-export-csv <file>`, …), `-no-header`, `-utf8-bom`, `-count`, `-get-result-count`, `-get-total-size`, `-get-folder-size`, `-timeout` and `-no-result-error`; `-ipc1`/`-ipc2`/`-ipc3` are accepted and ignored. `-p` needs Everything (Keel's own index matches names) and says so. See [api.md](docs/api.md#keel-es-everything-style-search).
@@ -16,6 +13,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Fixed
 
+- The `keel:` handler now runs `keel.exe --url-handler -- "<link>"` and Keel refuses the command line unless the link is the only argument: a link with an unencoded `"` (a `.url` file, an Office hyperlink, `start`) could add options or run a subcommand such as `keel es -export-txt` or `keel op --execute`. Links are validated before any command is read: raw quotes, whitespace, controls, malformed encoding and unknown actions are refused, and encoded text stays search text. Run `keel --register-url-protocol` again to update an existing registration (an old `--url "%1"` one is safe too).
+- A `keel.portable` saved as UTF-16 (Notepad "Unicode", PowerShell 5.1 `>`) made Keel panic at startup; it is now read, and an unreadable folder name falls back to `keel-data` with a notice.
 - `keel FOLDER --search QUERY` searched the whole disk; it now searches only in FOLDER (the query starts with `in:"FOLDER"`, which shows in the search box).
 - With `KEEL_CONFIG_DIR` set, the window's size and position (eframe's `app.ron`) were still saved in eframe's own folder; they now go to `<KEEL_CONFIG_DIR>/window`.
 
