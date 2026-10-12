@@ -218,14 +218,15 @@ fn tab_pos(h: &H, title: &str) -> Pos2 {
 }
 
 /// A part of the path bar (pane 0: leftmost): the pane's own crumbs, else (Finder-style
-/// chrome) the path bar along the bottom of the window, whose buttons read "NAME: PATH".
-fn crumb(h: &H, name: &str) -> Pos2 {
+/// chrome) the path bar along the bottom of the window, whose buttons read "NAME: PATH"
+/// and open on a double-click. Returns the place and whether it takes a double-click.
+fn crumb(h: &H, name: &str) -> (Pos2, bool) {
     let crumbs: Vec<Pos2> = in_panes(h, name, 24.0)
         .into_iter()
         .filter(|p| p.y < 50.0)
         .collect();
     if let Some(at) = crumbs.first() {
-        return *at;
+        return (*at, false);
     }
     let prefix = format!("{name}: ");
     let mut bar: Vec<Pos2> = h
@@ -234,8 +235,8 @@ fn crumb(h: &H, name: &str) -> Pos2 {
         .map(|n| center_of(&n))
         .collect();
     bar.sort_by(|a, b| a.x.total_cmp(&b.x));
-    *bar.first()
-        .unwrap_or_else(|| panic!("no crumb {name:?}"))
+    let at = *bar.first().unwrap_or_else(|| panic!("no crumb {name:?}"));
+    (at, true)
 }
 
 fn click_at(h: &mut H, at: Pos2, mods: Modifiers, button: PointerButton) {
@@ -391,8 +392,11 @@ fn breadcrumb_click() {
     let shed = root.join("Documents").join("Projects").join("shed");
     let mut h = app(&shed, &root.join("Pictures"));
     // The left pane's crumbs come first.
-    let at = crumb(&h, "Documents");
+    let (at, double) = crumb(&h, "Documents");
     click_at(&mut h, at, NONE, PointerButton::Primary);
+    if double {
+        click_at(&mut h, at, NONE, PointerButton::Primary);
+    }
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &root.join("Documents"))));
     shot(&mut h, "breadcrumb-click");
 }
