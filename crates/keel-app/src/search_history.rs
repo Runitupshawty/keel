@@ -101,7 +101,8 @@ impl History {
     pub fn trim(&mut self, max: usize) {
         let max = max.min(MAX_LIMIT);
         if self.entries.len() > max {
-            self.entries.sort_by_key(|e| std::cmp::Reverse((e.last, e.count)));
+            self.entries
+                .sort_by_key(|e| std::cmp::Reverse((e.last, e.count)));
             self.entries.truncate(max);
         }
     }
