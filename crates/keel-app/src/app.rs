@@ -232,9 +232,8 @@ impl App {
         }
         let s = &mut self.state;
         crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
-        // Task 64: the style and accent; views read the theme in the colors it is drawn in.
-        crate::design::sync(ctx, &s.settings, &s.theme);
-        let shown = crate::design::shown(ctx, &s.theme);
+        crate::design::sync(ctx, &s.settings, &s.theme); // Task 64: style and accent
+        let shown = crate::design::shown(ctx, &s.theme); // the theme as it is drawn
         sync_zoom(ctx, &mut s.settings.ui_scale, &mut self.seen_zoom);
         s.drain();
         s.tick();

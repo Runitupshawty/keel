@@ -14,7 +14,9 @@ use crate::theme::{ratio, rgb, Theme};
 use egui::{vec2, Color32, Context, CornerRadius, FontFamily, FontId, Id, Margin, TextStyle, Vec2};
 use std::sync::OnceLock;
 
-/// The spacing scale (4 px base); gaps between and around controls come from it.
+/// The spacing scale (4 px base); gaps between and around controls come from it. The
+/// whole scale is defined; not every step has a user yet.
+#[allow(dead_code)]
 pub mod space {
     pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
@@ -30,6 +32,7 @@ pub mod space {
 
 /// Window chrome only the Finder style has (the unified toolbar and the sidebar of the
 /// tasks after 64 read these).
+#[allow(dead_code)]
 pub mod finder {
     /// A sidebar row.
     pub const SIDEBAR_ROW: f32 = 24.0;
@@ -249,7 +252,9 @@ impl Tokens {
     }
 }
 
-/// Finder's tag colors (none is a tag without a color).
+/// Finder's tag colors (none is a tag without a color), for the sidebar's Tags section
+/// and tag dots (Phase 14 tasks after this one).
+#[allow(dead_code)]
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TagColor {
@@ -263,6 +268,7 @@ pub enum TagColor {
     Gray,
 }
 
+#[allow(dead_code)]
 impl TagColor {
     pub const ALL: [TagColor; 8] = [
         TagColor::Red,
@@ -305,6 +311,7 @@ impl TagColor {
 }
 
 /// Black or white, whichever reads better on `fill`.
+#[allow(dead_code)]
 pub fn on_color(fill: Color32) -> Color32 {
     if ratio(Color32::BLACK, fill) >= ratio(Color32::WHITE, fill) {
         Color32::BLACK
@@ -753,7 +760,10 @@ mod tests {
         assert_eq!(t.rows.list, 22.0);
         assert_eq!(t.interact_height + t.item_spacing.y, finder::SIDEBAR_ROW);
         let s = &t.text;
-        assert_eq!((s.small, s.monospace, s.body, s.heading), (11.0, 12.0, 13.0, 15.0));
+        assert_eq!(
+            (s.small, s.monospace, s.body, s.heading),
+            (11.0, 12.0, 13.0, 15.0)
+        );
         let mut style = egui::Style::default();
         t.apply_spacing(&mut style);
         assert_eq!(style.text_styles[&TextStyle::Body].size, 13.0);
@@ -761,17 +771,27 @@ mod tests {
     }
 
     fn stock(name: &str) -> Theme {
-        let (_, text) = crate::theme::BUILTIN.iter().find(|(n, _)| *n == name).unwrap();
+        let (_, text) = crate::theme::BUILTIN
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap();
         toml::from_str(text).unwrap()
     }
 
     /// Accents a user may have: every macOS and GNOME one, a pale and a dark custom.
     fn accents() -> Vec<[u8; 3]> {
         let mut all: Vec<[u8; 3]> = (-1..=6).filter_map(mac_accent).collect();
-        for n in ["blue", "teal", "green", "yellow", "orange", "red", "pink", "purple", "slate"] {
+        for n in [
+            "blue", "teal", "green", "yellow", "orange", "red", "pink", "purple", "slate",
+        ] {
             all.push(gnome_accent(n).unwrap());
         }
-        all.extend([[0xff, 0xff, 0xff], [0, 0, 0], [0xff, 0xf0, 0x80], [0x10, 0x20, 0x40]]);
+        all.extend([
+            [0xff, 0xff, 0xff],
+            [0, 0, 0],
+            [0xff, 0xf0, 0x80],
+            [0x10, 0x20, 0x40],
+        ]);
         all
     }
 
@@ -789,7 +809,10 @@ mod tests {
                     accent,
                     os: None,
                 };
-                sets.push((format!("classic {name} {accent:?}"), Palette::of(&theme, &look)));
+                sets.push((
+                    format!("classic {name} {accent:?}"),
+                    Palette::of(&theme, &look),
+                ));
             }
             for a in accents() {
                 let look = Look {
@@ -821,8 +844,20 @@ mod tests {
                 check("focus ring", p.focus_ring, on, bg, 3.0);
             }
             check("label", p.label, "selection", p.selection, 4.5);
-            check("on selected", p.on_selected, "selected", p.selected_focused, 4.5);
-            check("label", p.label, "unfocused selection", p.selected_unfocused, 4.5);
+            check(
+                "on selected",
+                p.on_selected,
+                "selected",
+                p.selected_focused,
+                4.5,
+            );
+            check(
+                "label",
+                p.label,
+                "unfocused selection",
+                p.selected_unfocused,
+                4.5,
+            );
             if set.starts_with("finder") {
                 check("focus ring", p.focus_ring, "selection", p.selection, 3.0);
             }

@@ -861,7 +861,11 @@ mod tests {
         let (fresh, _) = Settings::load();
         assert_eq!((fresh.style, fresh.accent), (Style::Finder, Accent::Auto));
         let old: Settings = toml::from_str("theme = 'light'").unwrap();
-        assert_eq!(old.style, Style::Classic, "an existing profile keeps its look");
+        assert_eq!(
+            old.style,
+            Style::Classic,
+            "an existing profile keeps its look"
+        );
         std::fs::create_dir_all(Settings::path().parent().unwrap()).unwrap();
         std::fs::write(Settings::path(), "theme = \"light\"\n").unwrap();
         assert_eq!(Settings::load().0.style, Style::Classic);
