@@ -2,6 +2,13 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Updating Keel restarted only the default profile's keel-daemon, without the arguments it ran with (`--web`, `--web-host`, a profile): a daemon serving the phone web client came back without it, and other profiles' daemons did not come back. `install.ps1` and `install.sh` now start every daemon they stopped again with its own arguments.
+- On Windows, a script that piped `install.ps1`'s output (`| Out-String`, `| tail`) waited until the keel-daemon the installer restarted exited, because the daemon inherited the pipe. The daemon now starts detached, holding none of the installer's output.
+
 ## [0.22.0] - 2026-10-11
 
 ### Added
@@ -35,7 +42,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Known limitations
 
-- On Windows, a script that pipes `install.ps1`'s output (`| tail`, `| Out-String`) can wait until the daemon the installer restarted exits, because the restarted daemon inherits the pipe: redirect the installer's output to a file instead. The installer restarts the default profile's daemon without the arguments it ran with (for example `--web`): a daemon started by a scheduled task or a service should be restarted by that task.
 - `keel --version | head -1` and other commands whose reader closes the pipe early end with "failed printing to stdout" instead of exiting quietly.
 - No OCR: images and scanned PDFs (pages without a text layer) are not searched by their content. Older formats without a reader (`.doc`, `.ppt`, `.rtf`, e-books) are skipped, and so are legacy Excel workbooks (`.xls`): their reader loads the whole workbook into memory when it opens it, with no way to bound it first. Previewing a crafted `.xls` can still exhaust memory.
 - The text of network shares, SFTP, cloud and device sources is read only when their Contents switch is on.
