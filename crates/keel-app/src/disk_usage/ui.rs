@@ -17,26 +17,16 @@ use std::collections::{BTreeSet, HashMap};
 const ROW_H: f32 = 22.0;
 const INDENT: f32 = 14.0;
 
-/// WinDirStat's 13 file type colors, by size rank (the treemap uses the same).
-pub const PALETTE: [[u8; 3]; 13] = [
-    [0, 0, 255],
-    [255, 0, 0],
-    [0, 255, 0],
-    [0, 255, 255],
-    [255, 0, 255],
-    [255, 255, 0],
-    [150, 150, 255],
-    [255, 150, 150],
-    [150, 255, 150],
-    [150, 255, 255],
-    [255, 150, 255],
-    [255, 255, 150],
-    [255, 255, 255],
-];
+pub use crate::treemap::shade::PALETTE;
 
-/// The color of the file type ranked `rank` by size (the 13th and later share the last).
-pub fn type_color(rank: usize) -> Color32 {
-    let [r, g, b] = PALETTE[rank.min(PALETTE.len() - 1)];
+/// The color of the file type ranked `rank` by size, as the treemap colors it: the palette
+/// (WinDirStat's 13 colors unless edited in the chart options) repeats after its last.
+pub fn type_color(palette: &[[u8; 3]], rank: usize) -> Color32 {
+    if rank == usize::MAX {
+        return Color32::GRAY;
+    }
+    let palette = if palette.is_empty() { &PALETTE[..] } else { palette };
+    let [r, g, b] = palette[rank % palette.len()];
     Color32::from_rgb(r, g, b)
 }
 
@@ -85,6 +75,7 @@ pub fn window(
     out: &mut Vec<Action>,
 ) {
     du.poll(ctx, settings);
+    du.palette.clone_from(&settings.chart_options.palette);
     if let Some(f) = &mut du.fallback {
         if let Some(done) = f.ui(ctx) {
             du.fallback = None;
@@ -212,7 +203,7 @@ fn body(
                 .resizable(true)
                 .default_height(settings.treemap_size)
                 .height_range(80.0..=2000.0)
-                .show_inside(ui, |ui| treemap_area(ui, du, group));
+                .show_inside(ui, |ui| treemap_area(ui, du, settings));
             remember(&mut settings.treemap_size, r.response.rect.height());
             let r = egui::SidePanel::right("keel-du-types")
                 .resizable(true)
@@ -228,7 +219,7 @@ fn body(
                 .resizable(true)
                 .default_width(settings.treemap_size.max(200.0))
                 .width_range(160.0..=2000.0)
-                .show_inside(ui, |ui| treemap_area(ui, du, group));
+                .show_inside(ui, |ui| treemap_area(ui, du, settings));
             remember(&mut settings.treemap_size, r.response.rect.width());
             let r = egui::TopBottomPanel::top("keel-du-tree-top")
                 .resizable(true)
@@ -387,31 +378,19 @@ fn status(ui: &mut Ui, du: &DiskUsage) {
     });
 }
 
-/// The treemap's place (Task 83's chart is drawn here). It gets the scan
-/// (`model.tree`), the selection (`model.cursor`, `model.selected`), the file types to
-/// outline (`model.highlight_extensions`) and the type colors by rank (`ranks`,
-/// [`type_color`]); an item picked in it is returned and shown in the tree
-/// ([`Model::reveal`]).
-pub fn treemap_slot(ui: &mut Ui, model: &Model, ranks: &HashMap<String, usize>) -> Option<NodeId> {
-    let _ = (model, ranks);
-    let rect = ui.available_rect_before_wrap();
-    let r = ui.allocate_rect(rect, Sense::hover()).named("Treemap");
-    ui.painter()
-        .rect_filled(r.rect, 4.0, ui.visuals().extreme_bg_color);
-    ui.painter().text(
-        r.rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "Treemap",
-        egui::TextStyle::Body.resolve(ui.style()),
-        ui.visuals().weak_text_color(),
-    );
-    None
-}
-
-fn treemap_area(ui: &mut Ui, du: &mut DiskUsage, group: bool) {
-    du.types(group);
-    let Some(model) = &du.model else { return };
-    if let Some(id) = treemap_slot(ui, model, du.ranks()) {
+/// The treemap's place: the chart of the scan ([`super::chart`]). An item picked in it is
+/// shown in the tree list and the file types list ([`Model::reveal`]).
+fn treemap_area(ui: &mut Ui, du: &mut DiskUsage, settings: &mut DuSettings) {
+    du.types(settings.group_unregistered);
+    let DiskUsage {
+        model,
+        chart,
+        generation,
+        ranks,
+        ..
+    } = du;
+    let Some(model) = model.as_ref() else { return };
+    if let Some(id) = super::chart::show(ui, chart, model, *generation, ranks, settings) {
         if let Some(m) = &mut du.model {
             m.reveal(id);
         }
@@ -430,6 +409,7 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
     du.types(group);
     let Some(model) = &du.model else { return };
     let types = du.types_cached();
+    let palette = &du.palette;
     let physical = model.physical;
     let total: u64 = types.iter().map(|t| t.bytes(physical)).sum();
     let selected = |t: &FileType| !t.extensions.is_disjoint(&model.highlight_extensions);
@@ -466,7 +446,7 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                 row.set_selected(selected(t));
                 row.col(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, type_color(rank));
+                    ui.painter().rect_filled(rect, 2.0, type_color(palette, rank));
                 });
                 row.col(|ui| {
                     ui.add(egui::Label::new(&t.label).truncate());
@@ -671,6 +651,7 @@ fn tree_area(
     }
     let scroll = std::mem::take(&mut du.scroll_tree);
     let ranks = du.ranks();
+    let palette = &du.palette;
     let Some(model) = &du.model else { return };
     let mut events = Vec::new();
     let muted = theme.muted();
@@ -799,12 +780,12 @@ fn tree_area(
                                         let rank = ranks
                                             .get(ext.unwrap_or(""))
                                             .copied()
-                                            .unwrap_or(PALETTE.len());
+                                            .unwrap_or(usize::MAX);
                                         let (rect, _) = ui.allocate_exact_size(
                                             egui::vec2(6.0, 14.0),
                                             Sense::hover(),
                                         );
-                                        ui.painter().rect_filled(rect, 1.0, type_color(rank));
+                                        ui.painter().rect_filled(rect, 1.0, type_color(palette, rank));
                                         ui.add(
                                             egui::Image::new(crate::icons::file_icon(&n.name))
                                                 .fit_to_exact_size(egui::vec2(16.0, 16.0)),

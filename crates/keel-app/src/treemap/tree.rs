@@ -14,10 +14,8 @@ pub type NodeId = u64;
 pub const SPECIAL: char = '/';
 
 /// Any tree a scan keeps can be shown by implementing this: nodes by index, each with the
-/// index of its parent (None for the root or roots).
-// The Disk Usage window's scan (Task 81) converts through this; the Sizes view builds a
-// `Tree` directly.
-#[cfg_attr(not(test), allow(dead_code))]
+/// index of its parent (None for the root or roots). The Disk Usage window's scan converts
+/// through this (`disk_usage::chart`); the Sizes view builds a `Tree` directly.
 pub trait WeightedTree {
     fn len(&self) -> usize;
     fn id(&self, i: usize) -> NodeId;
@@ -51,6 +49,8 @@ pub struct Tree {
     pub keys: Vec<String>,
     key_index: HashMap<String, u32>,
     by_id: HashMap<NodeId, u32>,
+    /// Color ranks the caller decided (see [`Tree::set_key_ranks`]).
+    fixed_ranks: Option<Vec<u32>>,
 }
 
 impl Tree {
@@ -109,7 +109,6 @@ impl Tree {
 
     /// Copies any [`WeightedTree`]; several roots get a common root labelled `root_label`.
     /// Parents may come after their children; a node whose parent chain loops is dropped.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_source(src: &impl WeightedTree, root_label: &str) -> Self {
         let n = src.len();
         let roots: Vec<usize> = (0..n).filter(|&i| src.parent(i).is_none()).collect();
@@ -242,9 +241,33 @@ impl Tree {
         parts.join(" › ")
     }
 
+    /// Fixes the color rank of every key to what `rank` says (None: no color of its own,
+    /// the neutral one), whatever part of the tree is shown. The Disk Usage window uses
+    /// this so a file type has the color its row in the file types list has.
+    pub fn set_key_ranks(&mut self, rank: impl Fn(&str) -> Option<u32>) {
+        let ranks = (self.keys.iter())
+            .map(|k| {
+                if k.starts_with(SPECIAL) {
+                    u32::MAX
+                } else {
+                    rank(k).unwrap_or(u32::MAX)
+                }
+            })
+            .collect();
+        self.fixed_ranks = Some(ranks);
+    }
+
+    /// The index of a color key, if any node carries it.
+    pub fn key_id(&self, key: &str) -> Option<u32> {
+        self.key_index.get(key).copied()
+    }
+
     /// Ranks of the color keys by the bytes of the leaves below `root` carrying them,
     /// biggest first (special keys rank `u32::MAX`; keys absent below `root` follow).
     pub fn key_ranks(&self, root: u32) -> Vec<u32> {
+        if let Some(fixed) = &self.fixed_ranks {
+            return fixed.clone();
+        }
         let mut bytes = vec![0u64; self.keys.len()];
         let mut stack = vec![root];
         while let Some(n) = stack.pop() {

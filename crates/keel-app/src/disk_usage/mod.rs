@@ -1,8 +1,8 @@
 //! Phase 17 Task 82: the **Disk Usage** window (Ctrl+Shift+U, the palette, a drive's
 //! context menu "Analyze disk usage"). It scans drives and folders with
 //! [`keel_vfs::du`] on a worker and shows the result as WinDirStat does: the directory
-//! tree top-left, the file types top-right and the treemap below ([`ui::treemap_slot`],
-//! filled by Task 83), all sharing one selection ([`Model`]).
+//! tree top-left, the file types top-right and the treemap below ([`chart`], Task 83's
+//! widgets: treemap, sunburst or flame graph), all sharing one selection ([`Model`]).
 //!
 //! - **Select drives** ([`picker`]): all local drives, some drives (used / free bars,
 //!   double-click scans one), or folders.
@@ -17,6 +17,7 @@
 //! once, cloud placeholders never read). A newer scan replaces an older one: the older
 //! one is cancelled and its result, should it still arrive, is dropped with its channel.
 
+pub mod chart;
 pub mod model;
 mod os;
 pub mod picker;
@@ -145,6 +146,12 @@ pub struct DuSettings {
     pub types_width: f32,
     pub treemap_size: f32,
     pub tree_height: f32,
+    /// The chart in the treemap's place, and its options (style, layout, colors).
+    pub chart: crate::treemap::widget::Chart,
+    pub chart_options: crate::treemap::Options,
+    /// Each drive's free space and unknown space as tiles of the chart.
+    pub chart_free: bool,
+    pub chart_unknown: bool,
 }
 
 impl Default for DuSettings {
@@ -161,6 +168,10 @@ impl Default for DuSettings {
             types_width: 360.0,
             treemap_size: 260.0,
             tree_height: 320.0,
+            chart: Default::default(),
+            chart_options: Default::default(),
+            chart_free: true,
+            chart_unknown: true,
         }
     }
 }
@@ -246,6 +257,10 @@ pub struct DiskUsage {
     pub rect: Option<egui::Rect>,
     /// Bring the window to the front next frame.
     pub raise: bool,
+    /// The chart in the treemap's place.
+    pub chart: chart::Host,
+    /// The treemap's colors by size rank (the file types list's swatches follow them).
+    pub palette: Vec<[u8; 3]>,
     pub tab: Tab,
     pub tabs: Tabs,
     /// Operations through the library's previews, one at a time.
