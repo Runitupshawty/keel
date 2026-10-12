@@ -15,7 +15,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - The elevated system cleanup helper runs nothing a program without administrator rights could swap after you confirm: the diskpart script goes to diskpart on standard input instead of a file in your temporary folder, programs start by their full System32 path, PowerShell gets only the system module folder with auto-loading off and the Hyper-V module from System32, .NET profiler variables are not inherited, and the helper writes its report only directly into its own temporary folder (not through a link, never into a folder its command line names).
 - Replace with hard links keeps both files open from the byte compare until the duplicate is replaced (refusing writers on Windows) and checks that the link is the kept file compared and that neither changed, so an edit or save during a long compare can no longer replace the duplicate with the changed file. A read-only kept copy is refused; pairs whose permissions, owner or attributes differ, or whose duplicate has alternate data streams, are left alone.
-- Delete permanently lists OneDrive and other cloud placeholder folders like any folder and says how many cloud items it deletes (it counted them as one empty file and then deleted their contents), walks without recursion, and deletes exactly the items it counted, one at a time.
+- Delete permanently refuses OneDrive and other cloud placeholders (folders that are reparse points but no links, offline and on-access files) instead of counting them as one empty file and then deleting their contents, walks without recursion, and deletes exactly the items it counted, one at a time.
 
 ### Fixed
 

@@ -1,11 +1,13 @@
 //! Task 85: **Delete permanently** for local files and folders. Never on a key: the
 //! palette and the context menu's "More delete options" submenu only. The targets are
-//! measured on a worker first (files, folders and bytes, links not followed, cloud
-//! placeholder folders listed like any folder), then a dialog names the count and the
-//! bytes (and how many are cloud files) and asks to type `delete <count>`; the job measures
-//! again, deletes nothing when the targets changed since, and then deletes exactly the
-//! items it walked, deepest first, one at a time (never a recursive delete). Nothing goes
-//! to the Recycle Bin or Trash and the undo journal says it cannot be undone.
+//! measured on a worker first (files, folders and bytes, links not followed), then a
+//! dialog names the count and the bytes and asks to type `delete <count>`; the job
+//! measures again, deletes nothing when the targets changed since, and then deletes exactly
+//! the items it walked, deepest first, one at a time (never a recursive delete). A cloud
+//! placeholder (a OneDrive-style folder, or a file offline or fetched on access) and any
+//! other folder that is a reparse point and not a link is never entered: the measure fails
+//! and nothing is deleted. Nothing goes to the Recycle Bin or Trash and the undo journal
+//! says it cannot be undone.
 
 use crate::jobs::items;
 use crate::keys::Action;
@@ -23,9 +25,6 @@ pub struct Measured {
     pub files: u64,
     pub folders: u64,
     pub bytes: u64,
-    /// Of those, cloud files and folders (OneDrive and other sync apps' placeholders):
-    /// deleting them deletes them from the cloud too.
-    pub cloud: u64,
 }
 
 impl Measured {
@@ -73,8 +72,8 @@ pub enum Kind {
     Link {
         dir: bool,
     },
-    /// A folder, also a cloud placeholder folder: what it holds is walked (and counted)
-    /// like any other folder's.
+    /// An ordinary folder (never a reparse point that is not a link): what it holds is
+    /// walked and counted.
     Folder,
 }
 
@@ -84,49 +83,52 @@ const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
 
-/// What an item with Windows attributes `attrs` is, and whether it is a cloud file or
-/// folder (a reparse point that is not a link, as OneDrive's placeholders are, or one whose
-/// bytes are fetched on access). `link`: a name-surrogate reparse point (symbolic link,
-/// junction: Rust's `FileType::is_symlink`). Never a leaf for a folder that is not a link:
-/// its content is listed (or the measure fails), so it is never deleted unseen.
+/// What an item with Windows attributes `attrs` is. `link`: a name-surrogate reparse point
+/// (symbolic link, junction: Rust's `FileType::is_symlink`), which is one item and never
+/// followed. Any other cloud placeholder (OneDrive and other sync apps: a folder that is a
+/// reparse point, or a file or folder offline or fetched on access) is `Err(())`: deleting
+/// it deletes it from the cloud, and a folder of that kind lists what the cloud holds, not
+/// what is here. A plain file with a reparse point (compressed by the system, say) is an
+/// ordinary file.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn classify(attrs: u32, link: bool) -> (Kind, bool) {
+pub fn classify(attrs: u32, link: bool) -> Result<Kind, ()> {
     let dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
     if link {
-        return (Kind::Link { dir }, false);
+        return Ok(Kind::Link { dir });
     }
-    let cloud = attrs
-        & (FILE_ATTRIBUTE_REPARSE_POINT
-            | FILE_ATTRIBUTE_OFFLINE
+    let recalled = attrs
+        & (FILE_ATTRIBUTE_OFFLINE
             | FILE_ATTRIBUTE_RECALL_ON_OPEN
             | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
         != 0;
-    (if dir { Kind::Folder } else { Kind::File }, cloud)
+    if recalled || (dir && attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0) {
+        return Err(());
+    }
+    Ok(if dir { Kind::Folder } else { Kind::File })
 }
 
 #[cfg(windows)]
-fn kind_of(meta: &std::fs::Metadata) -> (Kind, bool) {
+fn kind_of(meta: &std::fs::Metadata) -> Result<Kind, ()> {
     use std::os::windows::fs::MetadataExt;
     classify(meta.file_attributes(), meta.file_type().is_symlink())
 }
 
 #[cfg(not(windows))]
-fn kind_of(meta: &std::fs::Metadata) -> (Kind, bool) {
+fn kind_of(meta: &std::fs::Metadata) -> Result<Kind, ()> {
     let ft = meta.file_type();
-    let kind = if ft.is_symlink() {
+    Ok(if ft.is_symlink() {
         Kind::Link { dir: false }
     } else if ft.is_dir() {
         Kind::Folder
     } else {
         Kind::File
-    };
-    (kind, false)
+    })
 }
 
 /// Counts what `paths` hold (worker: walks the disk). Links and junctions count as one
-/// item and are never followed; every other folder, cloud placeholder folders too, is
-/// listed, and one that cannot be listed fails the measure (its content would be deleted
-/// unseen).
+/// item and are never followed; every other folder is listed, and one that cannot be
+/// listed fails the measure (its content would be deleted unseen). A cloud placeholder or
+/// other reparse-point folder fails it too, before anything is listed below it.
 pub fn measure(paths: &[VPath], cancel: &AtomicBool) -> anyhow::Result<Measured> {
     Ok(scan(paths, cancel)?.0)
 }
@@ -163,8 +165,13 @@ fn walk(
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "operation cancelled");
         let meta = std::fs::symlink_metadata(&path)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        let (kind, cloud) = kind_of(&meta);
-        m.cloud += u64::from(cloud);
+        let Ok(kind) = kind_of(&meta) else {
+            anyhow::bail!(
+                "{} is a cloud placeholder or reparse point: Delete permanently never goes \
+                 into those (use Delete, or remove it in the app that syncs it)",
+                path.display()
+            );
+        };
         match kind {
             Kind::Folder => {
                 m.folders += 1;
@@ -383,7 +390,6 @@ mod tests {
             files,
             folders,
             bytes,
-            cloud: 0,
         }
     }
 
@@ -425,7 +431,6 @@ mod tests {
             files: 1,
             folders: 0,
             bytes: 10,
-            cloud: 0,
         });
         assert_eq!(one.phrase(), "delete 1");
         assert!(
@@ -495,32 +500,26 @@ mod tests {
     }
 
     #[test]
-    fn cloud_placeholders_are_folders_and_files_never_leaves() {
+    fn cloud_placeholders_are_refused_and_links_and_plain_reparse_files_are_not() {
         const DIR: u32 = 0x10;
         const REPARSE: u32 = 0x400;
         const NORMAL: u32 = 0x80;
-        // A OneDrive placeholder folder: listed and counted, flagged as cloud.
-        assert_eq!(classify(DIR | REPARSE, false), (Kind::Folder, true));
+        // A OneDrive placeholder folder (or any folder that is a reparse point but no
+        // link): never entered.
+        assert_eq!(classify(DIR | REPARSE, false), Err(()));
+        assert_eq!(classify(DIR | 0x4_0000, false), Err(()));
         // A junction or folder symbolic link: the link itself, never followed.
-        assert_eq!(
-            classify(DIR | REPARSE, true),
-            (Kind::Link { dir: true }, false)
-        );
-        assert_eq!(classify(REPARSE, true), (Kind::Link { dir: false }, false));
-        assert_eq!(classify(DIR, false), (Kind::Folder, false));
-        assert_eq!(classify(NORMAL, false), (Kind::File, false));
-        // Online-only and offline files.
-        assert_eq!(classify(NORMAL | 0x40_0000, false), (Kind::File, true));
-        assert_eq!(classify(NORMAL | 0x1000, false), (Kind::File, true));
-        // The confirmation says so.
-        let mut m = measured(3, 1, 10);
-        m.cloud = 2;
-        let text = Confirm::new(m).text();
-        assert!(
-            text.contains("2 of them are cloud files or folders"),
-            "{text}"
-        );
-        assert!(!Confirm::new(measured(3, 1, 10)).text().contains("cloud"));
+        assert_eq!(classify(DIR | REPARSE, true), Ok(Kind::Link { dir: true }));
+        assert_eq!(classify(REPARSE, true), Ok(Kind::Link { dir: false }));
+        assert_eq!(classify(DIR, false), Ok(Kind::Folder));
+        assert_eq!(classify(NORMAL, false), Ok(Kind::File));
+        // A file with a reparse point alone (system compression, say) is a plain file.
+        assert_eq!(classify(NORMAL | REPARSE, false), Ok(Kind::File));
+        // Online-only, recall-on-open and offline files.
+        assert_eq!(classify(NORMAL | 0x40_0000, false), Err(()));
+        assert_eq!(classify(NORMAL | REPARSE | 0x40_0000, false), Err(()));
+        assert_eq!(classify(NORMAL | 0x4_0000, false), Err(()));
+        assert_eq!(classify(NORMAL | 0x1000, false), Err(()));
     }
 
     #[test]
@@ -589,7 +588,7 @@ mod tests {
         std::fs::set_permissions(d.join("t/ro.txt"), perm).unwrap();
         let paths = vec![VPath::local(d.join("t"))];
         let m = measure(&paths, &AtomicBool::new(false)).unwrap();
-        assert_eq!((m.files, m.folders, m.bytes, m.cloud), (2, 1, 2, 0));
+        assert_eq!((m.files, m.folders, m.bytes), (2, 1, 2));
         run(&m, &|_| {}, &AtomicBool::new(false)).unwrap();
         assert!(!d.join("t").exists());
         assert!(
