@@ -242,6 +242,65 @@ pub fn is_fixed_disk(path: &Path) -> bool {
         .any(|root| path.starts_with(root))
 }
 
+/// What a drive in `drives()` is: the sidebar gives removable and optical ones an eject
+/// button and network ones a network icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    Fixed,
+    Removable,
+    Optical,
+    Network,
+}
+
+/// The kind of the drive mounted at `mount` (`E:\` on Windows). May block on a dead mapped
+/// drive; call off the UI thread.
+#[cfg(windows)]
+pub fn drive_kind(mount: &Path) -> DriveKind {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows::Win32::System::WindowsProgramming::{DRIVE_CDROM, DRIVE_REMOTE, DRIVE_REMOVABLE};
+    let letter = match mount.components().next() {
+        Some(Component::Prefix(pre)) => match pre.kind() {
+            Prefix::Disk(l) | Prefix::VerbatimDisk(l) => l,
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => return DriveKind::Network,
+            _ => return DriveKind::Fixed,
+        },
+        _ => return DriveKind::Fixed,
+    };
+    let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", letter as char))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `root` is a valid NUL-terminated UTF-16 string that outlives the call.
+    match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
+        DRIVE_REMOVABLE => DriveKind::Removable,
+        DRIVE_CDROM => DriveKind::Optical,
+        DRIVE_REMOTE => DriveKind::Network,
+        _ => DriveKind::Fixed,
+    }
+}
+
+/// Outside Windows: by mount root (removable media under `/Volumes`, `/media` and
+/// `/run/media`, network shares under `/net`).
+#[cfg(not(windows))]
+pub fn drive_kind(mount: &Path) -> DriveKind {
+    mount_kind(&mount.to_string_lossy())
+}
+
+/// `drive_kind` outside Windows, on the mount point's text.
+pub fn mount_kind(mount: &str) -> DriveKind {
+    let under = |root: &str| mount.starts_with(&format!("{root}/"));
+    if under("/net") {
+        DriveKind::Network
+    } else if under("/Volumes") || under("/media") || under("/run/media") {
+        DriveKind::Removable
+    } else {
+        DriveKind::Fixed
+    }
+}
+
 impl Provider for LocalProvider {
     fn scheme(&self) -> &'static str {
         "file"
@@ -527,6 +586,23 @@ mod mount_tests {
             ("/run/user/1000/doc", "fuse.portal", false),
         ] {
             assert!(!user_mount(mount, fs, ro), "{mount} hidden");
+        }
+    }
+
+    #[test]
+    fn mount_kinds_by_root() {
+        use super::{mount_kind, DriveKind};
+        for (mount, kind) in [
+            ("/", DriveKind::Fixed),
+            ("/home", DriveKind::Fixed),
+            ("/Volumes/USB", DriveKind::Removable),
+            ("/media/usb", DriveKind::Removable),
+            ("/run/media/me/USB", DriveKind::Removable),
+            ("/net/server/share", DriveKind::Network),
+            ("/Volumesx", DriveKind::Fixed),
+            ("/mnt/data", DriveKind::Fixed),
+        ] {
+            assert_eq!(mount_kind(mount), kind, "{mount}");
         }
     }
 }

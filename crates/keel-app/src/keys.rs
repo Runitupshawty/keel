@@ -236,6 +236,8 @@ pub enum Action {
     // --- Task 36 ---
     /// Devices sidebar, pair / shares dialogs, Spacedrop (`devices.rs`).
     Devices(crate::devices::DevCmd),
+    /// Phase 14: the sidebar's Favorites, section headers and eject (`sidebar.rs`).
+    Sidebar(crate::sidebar_prefs::SidebarCmd),
     /// Mount… on a library source (`mount_ui.rs`).
     Mount(crate::mount_ui::MountCmd),
 }

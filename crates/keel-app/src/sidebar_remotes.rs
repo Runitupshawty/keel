@@ -1,12 +1,19 @@
-//! Sidebar "Remotes" section: one row per configured host with a status dot, its bookmarks
-//! nested below, and a right-click menu (connect, disconnect, edit, ssh, copy address).
-//! The "Cloud" section: one row per account with a status dot (reconnect, edit, remove).
+//! The sidebar's hosts and cloud accounts (Phase 14: rows of its Locations section). A
+//! host: a row with a status dot, its bookmarks nested below, and a right-click menu
+//! (connect, disconnect, edit, ssh, copy address). An account: a row with a status dot
+//! (reconnect, edit, remove).
 
 use crate::clouds::{has_quota, needs_sign_in, quota_text, root_of, CloudCmd, QuotaSlot};
 use crate::keys::Action;
 use crate::remotes::{home_of, remote_path, RemoteCmd};
+use crate::sidebar;
+use crate::sidebar_glyphs::Glyph;
+use egui::{Id, Sense};
 use keel_vfs::{CloudAccount, ConnStatus, RemoteHost, RemoteProtocol, VPath};
 use std::collections::HashMap;
+
+/// A row that clicks and takes the keyboard focus (`Sense::click`).
+const CLICK: Sense = Sense::CLICK.union(Sense::FOCUSABLE);
 
 /// What the sidebar shows for one host (rebuilt from config + status every frame).
 #[derive(Clone, Debug, PartialEq)]
@@ -62,33 +69,15 @@ fn dot_color(ui: &egui::Ui, s: ConnStatus) -> egui::Color32 {
     }
 }
 
+/// The hosts in the sidebar's Locations: a row per host with its status dot, its bookmarks
+/// below it. Nothing while none is configured (Locations offers "Add server or cloud…").
 pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<Action>) {
-    if rows.is_empty() {
-        ui.horizontal(|ui| {
-            ui.weak("None configured");
-            if ui.small_button("Add…").clicked() {
-                out.push(Action::Remote {
-                    host: String::new(),
-                    cmd: RemoteCmd::Add,
-                });
-            }
-        });
-        return;
-    }
     for row in rows {
-        let r = ui
-            .horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(rect.center(), 4.5, dot_color(ui, row.status));
-                let on_host = current.scheme == row.home.scheme && current.authority == row.id;
-                ui.add(
-                    egui::Button::new(row.label.as_str())
-                        .frame(false)
-                        .selected(on_host),
-                )
-            })
-            .inner;
+        let on_host = current.scheme == row.home.scheme && current.authority == row.id;
+        let on_bookmark = row.bookmarks.iter().any(|(_, p)| p == current);
+        let glyph = Glyph::Dot(dot_color(ui, row.status));
+        let id = Id::new(("sidebar-remote", &row.id));
+        let r = sidebar::row(ui, id, glyph, &row.label, on_host && !on_bookmark, CLICK, |_| ());
         let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected".to_owned(),
             _ => row.detail.clone(),
@@ -124,19 +113,9 @@ pub fn ui(ui: &mut egui::Ui, rows: &[RemoteRow], current: &VPath, out: &mut Vec<
         });
         ui.indent(("remote-bookmarks", &row.id), |ui| {
             for (label, path) in &row.bookmarks {
-                let icon = if path == current {
-                    crate::icons::folder_open()
-                } else {
-                    crate::icons::folder()
-                };
-                let r = ui
-                    .add(
-                        egui::Button::image_and_text(
-                            egui::Image::new(icon).fit_to_exact_size([16.0, 16.0].into()),
-                            label.as_str(),
-                        )
-                        .frame(false),
-                    )
+                let id = Id::new(("sidebar-bookmark", &row.id, label));
+                let here = path == current;
+                let r = sidebar::row(ui, id, Glyph::Folder, label, here, CLICK, |_| ())
                     .on_hover_text(&path.path);
                 if r.clicked() {
                     out.push(Action::Navigate(path.clone()));
@@ -184,36 +163,19 @@ pub fn cloud_rows(
         .collect()
 }
 
-/// Hovering a row asks for its storage quota (cached for `clouds::QUOTA_TTL`). Share
-/// links are in the file context menu ("Copy link").
+/// The cloud accounts in the sidebar's Locations, a row each with its status dot. Hovering
+/// a row asks for its storage quota (cached for `clouds::QUOTA_TTL`). Share links are in
+/// the file context menu ("Copy link").
 pub fn cloud_ui(ui: &mut egui::Ui, rows: &[CloudRow], current: &VPath, out: &mut Vec<Action>) {
     let cmd = |id: &str, cmd| Action::Cloud {
         id: id.to_owned(),
         cmd,
     };
-    if rows.is_empty() {
-        ui.horizontal(|ui| {
-            ui.weak("None configured");
-            if ui.small_button("Add…").clicked() {
-                out.push(cmd("", CloudCmd::Add));
-            }
-        });
-        return;
-    }
     for row in rows {
-        let r = ui
-            .horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(rect.center(), 4.5, dot_color(ui, row.status));
-                let here = current.scheme == "cloud" && current.authority == row.id;
-                ui.add(
-                    egui::Button::new(row.label.as_str())
-                        .frame(false)
-                        .selected(here),
-                )
-            })
-            .inner;
+        let here = current.scheme == "cloud" && current.authority == row.id;
+        let glyph = Glyph::Dot(dot_color(ui, row.status));
+        let id = Id::new(("sidebar-cloud", &row.id));
+        let r = sidebar::row(ui, id, glyph, &row.label, here, CLICK, |_| ());
         let mut tip = match row.status {
             ConnStatus::Disconnected => "Not connected yet".to_owned(),
             _ => row.detail.clone(),

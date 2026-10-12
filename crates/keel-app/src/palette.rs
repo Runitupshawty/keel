@@ -138,6 +138,12 @@ fn global_items() -> Vec<Item> {
         ("Sizes view", "", View(crate::pane::ViewMode::Sizes)),
         ("Details view", "", View(crate::pane::ViewMode::Details)),
         ("Settings", "Ctrl+,", Settings),
+        // Phase 14: the selected folders, or the current one.
+        (
+            "Add to Sidebar",
+            "",
+            Sidebar(crate::sidebar_prefs::SidebarCmd::PinSelection),
+        ),
         // --- Task 29 ---
         ("Library overview", "", Library(LibCmd::Overview)),
         ("Add library source…", "", Library(LibCmd::AddSource)),

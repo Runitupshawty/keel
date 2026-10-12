@@ -45,6 +45,8 @@ mod session;
 mod settings;
 mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
+mod sidebar_glyphs; // Phase 14: the sidebar's icons
+mod sidebar_prefs; // Phase 14: Favorites and hidden sections per profile
 mod sidebar_remotes;
 mod sizes; // Task 46: folder sizes
 mod state;

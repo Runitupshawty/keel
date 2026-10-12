@@ -332,15 +332,28 @@ fn tab_walks_every_control_and_comes_back() {
     assert!(at("Refresh (F5)") < at("Type a path (Ctrl+L)"));
     assert!(at("Type a path (Ctrl+L)") < at("Name, sorted ascending"));
     assert!(at("Name, sorted ascending") < at("Modified"));
-    // The sidebar is one stop (Home); its other items are reached with the arrow keys.
-    // The drive is "C:" on Windows and "/" elsewhere.
-    let sidebar = ["Home", "Documents", "Pictures", "Backup", "C:", "/", "Add…"];
+    // The sidebar is one stop (the Favorites header); its other items are reached with the
+    // arrow keys. The drive is "C:" on Windows and "/" elsewhere.
+    let sidebar = [
+        "Documents",
+        "Pictures",
+        "Favorites",
+        "Recents",
+        "Home",
+        "Backup",
+        "Locations",
+        "C:",
+        "/",
+        keel_vfs::trashbin::label(),
+        "Add server or cloud…",
+        "Library",
+    ];
     assert_eq!(
-        names.iter().filter(|n| **n == "Home").count(),
+        names.iter().filter(|n| **n == "Favorites").count(),
         1,
         "{names:#?}"
     );
-    for item in ["Backup", "C:"] {
+    for item in ["Home", "Backup", "C:", "Locations"] {
         assert!(!names.contains(&item), "{item}: {names:#?}");
     }
     // Each pane's tab and current path part; the sidebar's Documents and Pictures are not.
@@ -388,14 +401,14 @@ fn tab_walks_every_control_and_comes_back() {
     assert_eq!(norm(&back), norm(&walk), "Shift+Tab reaches the same stops");
     assert_eq!(back.len(), walk.len(), "{back:#?}");
     // Into the sidebar: Down moves inside it, Tab leaves it in one press.
-    while focus(&h).map(|f| f.1) != Some("Home".into()) {
+    while focus(&h).map(|f| f.1) != Some("Favorites".into()) {
         press(&mut h, Modifiers::NONE, Key::Tab);
     }
     let cursor = h.state().state.tab(0).cursor.clone();
     press(&mut h, Modifiers::NONE, Key::ArrowDown);
     assert_eq!(
         focus(&h).map(|f| f.1),
-        Some("Documents".into()),
+        Some("Recents".into()),
         "Down in the sidebar"
     );
     assert_eq!(

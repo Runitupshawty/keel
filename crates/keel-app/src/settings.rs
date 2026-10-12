@@ -80,6 +80,8 @@ pub struct Settings {
     pub crash_prompt: bool,
     /// Ctrl+P lists folders, files or both (Tab in the popup switches).
     pub jump_filter: crate::jump::JumpFilter,
+    /// `[sidebar]`: Favorites in their order and hidden sections (Phase 14).
+    pub sidebar: crate::sidebar_prefs::SidebarSettings,
 }
 
 /// Open with: most recently used apps per lowercase extension ("" = no extension), newest
@@ -214,6 +216,7 @@ impl Default for Settings {
             updates: Default::default(),
             crash_prompt: true,
             jump_filter: Default::default(),
+            sidebar: Default::default(),
         }
     }
 }

@@ -6,11 +6,10 @@ use crate::a11y::Named;
 use crate::keys::Action;
 use crate::library::{
     count, protection_lines, reclaimable, source_count_rows, source_rows, state_text, volume_rows,
-    Dot, Hashing, LibCmd, LibraryUi, FAVORITES_QUERY, RECENTS_QUERY,
+    Dot, Hashing, LibCmd, LibraryUi, FAVORITES_QUERY,
 };
 use crate::pane::ViewCx;
 use crate::state::AppState;
-use crate::theme::Theme;
 use egui::{Color32, RichText};
 use humansize::{format_size, DECIMAL};
 use keel_core::{JobStatus, SourceDef, SourceKind, Tag, VolumeState};
@@ -125,19 +124,15 @@ pub fn assign_bar(
     });
 }
 
-fn section(ui: &mut egui::Ui, title: &str, theme: &Theme) {
-    ui.label(RichText::new(title).small().strong().color(theme.muted()));
-}
+/// Tags shown in the sidebar before "All Tags…".
+pub const SIDEBAR_TAGS: usize = 8;
 
-/// The sidebar's library sections (above Quick access).
-pub fn sidebar(
-    ui: &mut egui::Ui,
-    l: &LibraryUi,
-    theme: &Theme,
-    current: &VPath,
-    out: &mut Vec<Action>,
-) {
-    section(ui, "Library", theme);
+/// The sidebar's Library section (Phase 14): Overview, ★ Favorites, the sources and the
+/// saved views (its header is drawn by `sidebar`).
+pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<Action>) {
+    use crate::sidebar::row;
+    use crate::sidebar_glyphs::Glyph;
+    use egui::{Id, Sense};
     if !l.is_open() {
         match (&l.error, l.opening) {
             (_, true) => {
@@ -151,51 +146,36 @@ pub fn sidebar(
                 ui.weak("Off (Settings → Library)");
             }
         }
-        ui.add_space(8.0);
         return;
     }
-    let row = |ui: &mut egui::Ui, text: &str, cmd: LibCmd, out: &mut Vec<Action>| {
-        if ui.add(egui::Button::new(text).frame(false)).clicked() {
+    let entry = |ui: &mut egui::Ui, glyph, text: &str, cmd: LibCmd, out: &mut Vec<Action>| {
+        let id = Id::new(("sidebar-lib", text));
+        if row(ui, id, glyph, text, false, Sense::click(), |_| ()).clicked() {
             out.push(lib(cmd));
         }
     };
-    row(ui, "Overview", LibCmd::Overview, out);
-    row(
-        ui,
-        "★ Favorites",
-        LibCmd::Query(FAVORITES_QUERY.into()),
-        out,
-    );
-    row(ui, "Recents", LibCmd::Query(RECENTS_QUERY.into()), out);
-    ui.add_space(6.0);
-    section(ui, "Sources", theme);
+    entry(ui, Glyph::Overview, "Overview", LibCmd::Overview, out);
+    let favorites = LibCmd::Query(FAVORITES_QUERY.into());
+    entry(ui, Glyph::Star, "★ Favorites", favorites, out);
     for s in source_rows(&l.sources) {
-        let r = ui
-            .horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size([16.0, 16.0].into(), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(rect.center(), 4.5, dot_color(ui, s.dot));
-                // Task 56: a styled source root shows its folder icon.
-                if let Some(style) = l.style_of(&keel_vfs::library::path(&s.id.0, "")) {
-                    crate::folder_style::slot(ui, crate::icons::folder(), Some(style));
-                }
-                let here =
-                    current.scheme == keel_vfs::library::SCHEME && current.authority == s.id.0;
-                let r = ui.add(
-                    egui::Button::new(s.label.as_str())
-                        .frame(false)
-                        .selected(here),
-                );
-                if let Some(b) = crate::mount_ui::badge_for(ui.ctx(), &s.id.0) {
-                    ui.add(egui::Label::new(RichText::new(b).small().weak()));
-                }
-                if s.dot == Dot::Indexing {
-                    ui.add(egui::Label::new(RichText::new(&s.detail).small().weak()).truncate());
-                }
-                r
-            })
-            .inner
-            .on_hover_text(&s.detail);
+        let on = current.scheme == keel_vfs::library::SCHEME && current.authority == s.id.0;
+        let style = l.style_of(&keel_vfs::library::path(&s.id.0, ""));
+        let badge = crate::mount_ui::badge_for(ui.ctx(), &s.id.0);
+        let glyph = Glyph::Dot(dot_color(ui, s.dot));
+        let id = Id::new(("sidebar-source", &s.id.0));
+        let r = row(ui, id, glyph, &s.label, on, Sense::click(), |ui| {
+            if s.dot == Dot::Indexing {
+                ui.spinner();
+            }
+            if let Some(b) = &badge {
+                ui.add(egui::Label::new(RichText::new(b).small().weak()));
+            }
+            // Task 56: a styled source root shows its folder icon.
+            if let Some(style) = style {
+                crate::folder_style::slot(ui, crate::icons::folder(), Some(style));
+            }
+        })
+        .on_hover_text(&s.detail);
         if r.clicked() {
             out.push(lib(LibCmd::OpenSource(s.id.clone())));
         } else if r.middle_clicked() {
@@ -221,28 +201,42 @@ pub fn sidebar(
             crate::mount_ui::source_menu(ui, &s.id.0, out);
         });
     }
-    if ui.small_button("Add source…").clicked() {
-        out.push(lib(LibCmd::AddSource));
+    // Saved views (Phase 16 makes them Smart Folders).
+    for v in &l.views {
+        entry(ui, Glyph::View, &v.name, LibCmd::Query(v.query.clone()), out);
     }
-    if !l.tags.is_empty() {
-        ui.add_space(6.0);
-        section(ui, "Tags", theme);
-        ui.horizontal_wrapped(|ui| {
-            for tag in &l.tags {
-                if chip(ui, tag).clicked() {
-                    out.push(lib(LibCmd::Query(format!("tag:\"{}\"", tag.name))));
-                }
-            }
-        });
-    }
-    if !l.views.is_empty() {
-        ui.add_space(6.0);
-        section(ui, "Views", theme);
-        for v in &l.views {
-            row(ui, &v.name, LibCmd::Query(v.query.clone()), out);
+    entry(ui, Glyph::Plus, "Add source…", LibCmd::AddSource, out);
+}
+
+/// The sidebar's Tags section (Phase 14): the first tags with their color dots; "All
+/// Tags…" lists every one. A click lists everything with that tag.
+pub fn sidebar_tags(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
+    use crate::sidebar::row;
+    use crate::sidebar_glyphs::Glyph;
+    use egui::{Id, Sense};
+    let query = |tag: &Tag| lib(LibCmd::Query(format!("tag:\"{}\"", tag.name)));
+    for tag in l.tags.iter().take(SIDEBAR_TAGS) {
+        let glyph = Glyph::Dot(color_of(tag.color.as_deref()));
+        let id = Id::new(("sidebar-tag", &tag.name));
+        if row(ui, id, glyph, &tag.name, false, Sense::click(), |_| ()).clicked() {
+            out.push(query(tag));
         }
     }
-    ui.add_space(8.0);
+    ui.scope(|ui| {
+        ui.visuals_mut().button_frame = false;
+        ui.menu_button("All Tags…", |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for tag in &l.tags {
+                        if chip(ui, tag).clicked() {
+                            out.push(query(tag));
+                            ui.close_menu();
+                        }
+                    }
+                });
+        });
+    });
 }
 
 const CARD_W: f32 = 240.0;
