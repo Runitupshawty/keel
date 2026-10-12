@@ -26,6 +26,8 @@ rusqlite.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+# The in-tree fuzz runs' harness (`keel_vfs::fuzz_harness`).
+keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }
 toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -35,7 +37,3 @@ windows = { workspace = true, features = ["Win32_Security", "Win32_System_IO", "
 [features]
 # `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/` (docs/fuzzing.md).
 fuzzing = []
-
-[dev-dependencies]
-# The in-tree fuzz runs' harness (`keel_vfs::fuzz_harness`).
-keel-vfs = { path = "../keel-vfs", default-features = false, features = ["test-util"] }
