@@ -344,10 +344,12 @@ mod tests {
         assert_eq!(found.len(), 3);
         // Nothing longer than "d" is shared ("De" vs "Do").
         assert_eq!(tab_complete(text, &found), None);
-        let found = matches("do", &all);
+        // "Do" adds nothing to "do"; two names sharing more complete to what they share.
+        assert_eq!(tab_complete("/home/u/do", &matches("do", &all)), None);
+        let two = names(&[("Downloads", true), ("Download stash", true)]);
         assert_eq!(
-            tab_complete("/home/u/do", &found).as_deref(),
-            Some("/home/u/Do")
+            tab_complete("/home/u/do", &matches("do", &two)).as_deref(),
+            Some("/home/u/Download")
         );
         assert_eq!(tab_complete("/x/zz", &[]), None);
         // A file completes without a separator.
