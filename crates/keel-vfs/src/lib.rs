@@ -30,7 +30,7 @@ pub mod path;
 #[cfg(windows)]
 pub mod pipe;
 pub mod quiet_panic;
-/// Deleted-file recovery: NTFS, exFAT and FAT volumes, the Recycle Bin (read-only).
+/// Deleted-file recovery (read-only): NTFS, exFAT and FAT volumes, the Recycle Bin.
 pub mod recover;
 pub use path::VPath;
 pub mod entry;
