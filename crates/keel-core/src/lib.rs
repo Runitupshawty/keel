@@ -18,7 +18,11 @@ mod arrange;
 pub mod backup;
 /// Filter chips for library search (shared with keel-web by path).
 pub mod chips;
+/// Get Info comments by record.
+mod comments;
 mod db;
+/// Finder tag colors and macOS native tags (`com.apple.metadata:_kMDItemUserTags`).
+pub mod finder_tags;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -49,6 +53,8 @@ pub use arrange::{attributes_text, FolderOp, OrganizeBy};
 pub use backup::{
     BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
 };
+pub use comments::MAX_COMMENT;
+pub use finder_tags::{FinderColor, FinderTag};
 pub use fsid::unix_ns;
 pub use hash::{
     background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,
