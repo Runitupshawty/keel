@@ -3326,8 +3326,11 @@ fn organize_by_type_then_undo() {
     }
     shot(&mut h, "organize-preview");
     key(&mut h, NONE, Key::Enter);
-    assert!(wait(&mut h, 30, &|_| a.join("Other/garden.rs").exists()));
-    assert!(a.join("Documents/notes.md").exists() && a.join("Archives/site.zip").exists());
+    assert!(wait(&mut h, 30, &|_| {
+        a.join("Other/garden.rs").exists()
+            && a.join("Documents/notes.md").exists()
+            && a.join("Archives/site.zip").exists()
+    }));
     assert!(wait(&mut h, 20, &|s| s.undo.label().as_deref()
         == Some("Undo organize")));
     key(&mut h, CMD, Key::Z);
