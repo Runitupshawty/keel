@@ -1100,7 +1100,8 @@ mod tests {
         );
         assert_eq!(a1, a0, "a keeps the first free cell");
         assert!(
-            (b1.x - a1.x).abs() < 0.5 && b1.y > a1.y + 1.0,
+            // Labels are centred: "a" and "b" differ a little in width.
+            (b1.x - a1.x).abs() < 4.0 && b1.y > a1.y + 100.0,
             "b two rows down"
         );
     }
