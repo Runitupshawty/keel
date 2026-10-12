@@ -103,7 +103,9 @@ fn read_start(path: &Path) -> String {
 fn decode(buf: &[u8]) -> String {
     let utf16 = |bytes: &[u8], be: bool| {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| match be {
                 true => u16::from_be_bytes([c[0], c[1]]),
                 false => u16::from_le_bytes([c[0], c[1]]),
