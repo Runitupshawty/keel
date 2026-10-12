@@ -108,6 +108,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "finder_tags"
+path = "fuzz_targets/finder_tags.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rpc"
 path = "fuzz_targets/rpc.rs"
 test = false

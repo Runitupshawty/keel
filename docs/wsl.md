@@ -15,7 +15,7 @@ From there it is a folder like a network share (`\\server\share`): the local pro
 - **No Recycle Bin.** A delete in a WSL folder is permanent, and the prompt says so: "Delete 3 items in Ubuntu (WSL) permanently? WSL folders have no Recycle Bin; this cannot be undone." It cannot be undone with Ctrl+Z. A selection that mixes WSL items with others is offered the Recycle Bin, which refuses the WSL items ("This location has no Recycle Bin; nothing deleted"), as on every other network share.
 - **The folder may not update by itself.** Windows does not always report changes made inside a distribution to the folder watcher; press F5 to refresh.
 - **Search does not cover it.** Everything and Keel's NTFS index do not index WSL folders, so the search tab (Ctrl+F) does not find files there. Filter by typing in a folder, or search from the Linux side.
-- **Linux permissions.** File ownership and mode bits are Linux's; **Properties** shows what Windows reports (size, dates, read-only), not the owner or the mode.
+- **Linux permissions.** File ownership and mode bits are Linux's; **Get Info** shows what Windows reports (size, dates, read-only, the Windows access list), not the Linux owner or mode.
 - **Folder sizes** are not computed on their own there, as on any network share; **Calculate sizes** works on request.
 
 ## `keel` inside WSL

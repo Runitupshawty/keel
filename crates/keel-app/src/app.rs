@@ -541,6 +541,8 @@ impl App {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("keel-open-with"), recent));
         // Task 56: the library's folder styles for context menus and Ctrl+P.
         crate::folder_style::publish(ctx, &s.library);
+        // Task 67: tags for the context menu's color dots.
+        crate::tag_dots::publish(ctx, &s.library);
         s.viewer_ui(ctx); // Task 32
         if let Some(action) = crate::dialogs::show(ctx, &mut s.dialog) {
             out.push((s.active, action));
@@ -549,6 +551,7 @@ impl App {
         let mut acts = Vec::new();
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
+        crate::dialogs::properties::windows(ctx, s, &mut acts); // Task 67
         out.extend(acts.into_iter().map(|a| (s.active, a)));
         if s.jump.open {
             if let Some(action) = s.jump.ui(ctx) {

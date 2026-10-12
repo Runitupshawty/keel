@@ -245,6 +245,19 @@ pub enum LibCmd {
     FolderOp(crate::folder_ops::Kind),
     /// Preview this operation (a folder operation dialog's answer).
     Plan(Op),
+    // --- Task 67 ---
+    /// A color dot: toggle the tag of that Finder color on `paths` (None: the selection).
+    ToggleColor {
+        color: keel_core::FinderColor,
+        paths: Option<Vec<VPath>>,
+    },
+    /// The tag picker for these items (Get Info's Tags…).
+    TagPickerFor(Vec<VPath>),
+    /// Get Info's comment on an item (blank clears it).
+    SetComment {
+        path: VPath,
+        text: String,
+    },
 }
 
 /// How `LibraryUi::open` reaches the library.
@@ -291,6 +304,8 @@ pub fn refresh_for(kind: &str) -> Refresh {
         "devices.settings_set" => Refresh::Nothing,
         // A backup changes nothing shown; a restore makes another library.
         "library.backup" | "library.restore" => Refresh::Nothing,
+        // Comments are not shown in listings (Get Info reads them itself).
+        "library.set_comment" => Refresh::Nothing,
         "volumes.set" | "protection.recount" => Refresh::Protection,
         "recents.note" => Refresh::Recents,
         _ => Refresh::All,
@@ -356,6 +371,9 @@ pub enum LibMsg {
         about: String,
         name: String,
     },
+    /// Task 67: native Finder tags read or written (macOS), by local path.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Native(Vec<(VPath, Vec<keel_core::FinderTag>)>),
 }
 
 /// An opened library: where it is, its running jobs and their events, and why a wanted
@@ -798,7 +816,8 @@ pub struct AddSource {
 pub struct TagPicker {
     pub targets: Vec<VPath>,
     pub new_name: String,
-    pub new_color: [u8; 3],
+    /// Task 67: a new tag's color, one of Finder's eight (None: no color).
+    pub new_color: keel_core::FinderColor,
 }
 
 /// Task 58: tag assign mode. Number keys 1–9 (Shift: 10–18) toggle the first tags on
@@ -888,8 +907,10 @@ pub struct LibraryUi {
     /// Type chips).
     pub top_ext: Vec<String>,
     pub views: Vec<View>,
-    /// Tags (Favorites included) by real path.
-    pub tagged: HashMap<VPath, Vec<TagId>>,
+    /// Tags (Favorites included) by real path (shared with the context menu each frame).
+    pub tagged: Arc<HashMap<VPath, Vec<TagId>>>,
+    /// Task 67: native Finder tags of listed local files, by path (macOS).
+    pub native: crate::tag_dots::Native,
     /// Task 56: folder colors and icons by `folder_style::key` of the real path.
     pub styles: crate::folder_style::Styles,
     /// Paired devices library sync is on with (the Overview says so).
@@ -975,7 +996,8 @@ impl LibraryUi {
             tags: Vec::new(),
             top_ext: Vec::new(),
             views: Vec::new(),
-            tagged: HashMap::new(),
+            tagged: Default::default(),
+            native: Default::default(),
             styles: Default::default(),
             jobs: BTreeMap::new(),
             events: None,
@@ -1068,7 +1090,7 @@ impl LibraryUi {
         self.volumes.clear();
         self.forget_badges();
         self.jobs.clear();
-        self.tagged.clear();
+        self.tagged = Default::default();
         self.styles = Default::default();
         self.tags.clear();
         self.top_ext.clear();
@@ -1715,10 +1737,10 @@ impl AppState {
             } => {
                 l.tags = tags;
                 l.views = views;
-                if l.tagged != tagged {
+                if *l.tagged != tagged {
                     self.preview.inspector.refresh();
                 }
-                l.tagged = tagged;
+                l.tagged = Arc::new(tagged);
                 l.styles = styles;
             }
             LibMsg::TopExt(top) => l.top_ext = top,
@@ -1788,6 +1810,7 @@ impl AppState {
                 }
             }
             LibMsg::Libraries(list) => l.libraries = list,
+            LibMsg::Native(read) => l.native_read(read),
             LibMsg::Note(text) => self.toasts.info(text),
             LibMsg::RestorePicked { file, about, name } => {
                 self.dialog = Some(crate::dialogs::Dialog::RestoreLibrary {
@@ -2247,6 +2270,10 @@ impl AppState {
     }
 
     pub fn library_cmd(&mut self, p: usize, cmd: LibCmd) {
+        // Task 67: on macOS a color dot tags local files outside the library too.
+        if let LibCmd::ToggleColor { color, paths } = cmd {
+            return self.toggle_color(p, color, paths);
+        }
         let always = matches!(
             cmd,
             LibCmd::Switch(_)
@@ -2376,12 +2403,35 @@ impl AppState {
                 pane.active = pane.tabs.len() - 1;
                 self.ctx.request_repaint();
             }
+            LibCmd::TagPickerFor(paths) => {
+                let sources = &self.library.sources;
+                let real: Option<Vec<VPath>> = paths.iter().map(|x| real_of(sources, x)).collect();
+                match real.filter(|r| !r.is_empty()) {
+                    Some(targets) => {
+                        self.library.picker = Some(TagPicker {
+                            targets,
+                            new_name: String::new(),
+                            new_color: NEW_TAG_COLOR,
+                        })
+                    }
+                    None => self.toasts.error("That source is no longer in the library"),
+                }
+            }
+            LibCmd::SetComment { path, text } => {
+                let sources = self.library.sources.clone();
+                self.library
+                    .spawn_try("keel-library-comment", "Comment", move |b| {
+                        b.set_comment(&sources, &path, &text)?;
+                        Ok(None)
+                    });
+            }
+            LibCmd::ToggleColor { .. } => unreachable!("handled above"),
             LibCmd::TagPicker => {
                 if let Some(targets) = self.library_targets(p) {
                     self.library.picker = Some(TagPicker {
                         targets,
                         new_name: String::new(),
-                        new_color: [0x3b, 0x82, 0xf6],
+                        new_color: NEW_TAG_COLOR,
                     });
                 }
             }
@@ -2401,7 +2451,7 @@ impl AppState {
                 let Some(targets) = self.library_targets(p) else {
                     return;
                 };
-                let tagged = &mut self.library.tagged;
+                let tagged = Arc::make_mut(&mut self.library.tagged);
                 let on = !targets
                     .iter()
                     .all(|t| tagged.get(t).is_some_and(|tags| tags.contains(&tag)));
@@ -2464,6 +2514,11 @@ impl AppState {
                     return;
                 }
                 let targets = self.library.picker.as_ref().map(|x| x.targets.clone());
+                let finder =
+                    keel_core::FinderColor::nearest(Some(color.as_str()).filter(|c| !c.is_empty()));
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let paths = targets.clone().unwrap_or_default();
+                crate::tag_dots::write_through(&tx, &ctx, paths, name.clone(), finder, true);
                 let sources = self.library.sources.clone();
                 self.library
                     .spawn_try("keel-library-tag", "New tag", move |b| {
@@ -2787,6 +2842,12 @@ impl AppState {
     fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
         self.undo
             .refuse("tags and favorites (set or clear them again instead)");
+        // Task 67: local files carry the tag in Finder too (macOS).
+        if let Some(t) = self.library.tags.iter().find(|t| t.id == tag) {
+            let color = keel_core::FinderColor::nearest(t.color.as_deref());
+            let (tx, ctx, name) = (self.tx.clone(), self.ctx.clone(), t.name.clone());
+            crate::tag_dots::write_through(&tx, &ctx, targets.clone(), name, color, on);
+        }
         let (sources, tags) = (self.library.sources.clone(), self.library.tags.clone());
         self.library.spawn_try("keel-library-tag", "Tag", move |b| {
             b.set_tag(&sources, &tags, &targets, tag, on)?;
@@ -2794,7 +2855,77 @@ impl AppState {
         });
         self.library.refresh_meta_soon();
     }
+
+    /// Task 67: a color dot (context menu, Get Info) toggles the tag of that Finder color
+    /// on `paths` (None: the selection): the library's tag of that color (created, named
+    /// after the color, when there is none) for items in a library source, and on macOS
+    /// the native tag of local files, also outside the library.
+    fn toggle_color(&mut self, p: usize, color: keel_core::FinderColor, paths: Option<Vec<VPath>>) {
+        let paths = paths.unwrap_or_else(|| {
+            let targets = self.tab(p).targets();
+            targets.iter().map(|e| e.path.clone()).collect()
+        });
+        if paths.is_empty() || color == keel_core::FinderColor::None {
+            return;
+        }
+        let l = &self.library;
+        let usable = l.is_open() && !l.lost;
+        let real: Option<Vec<VPath>> = (paths.iter())
+            .map(|x| {
+                real_of(&l.sources, x).filter(|r| usable && source_of(&l.sources, r).is_some())
+            })
+            .collect();
+        let native = cfg!(target_os = "macos") && paths.iter().all(|x| x.to_local_path().is_some());
+        let Some(real) = real else {
+            if !native {
+                return self.toasts.error(TAG_OUTSIDE);
+            }
+            // Native tags only: the item is in no library source.
+            let carries = |x: &VPath| {
+                (l.native.get(x)).is_some_and(|n| {
+                    n.iter()
+                        .any(|t| keel_core::finder_tags::same_name(&t.name, color.name()))
+                })
+            };
+            let on = !paths.iter().all(carries);
+            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+            let name = color.name().to_owned();
+            return crate::tag_dots::write_through(&tx, &ctx, paths, name, color, on);
+        };
+        let tag = crate::tag_dots::tag_for(&l.tags, color)
+            .or_else(|| crate::tag_dots::named(&l.tags, color));
+        match tag.map(|t| t.id) {
+            Some(tag) => {
+                let on = !(real.iter()).all(|r| l.tagged.get(r).is_some_and(|t| t.contains(&tag)));
+                self.set_tag(real, tag, on);
+            }
+            None => {
+                self.undo
+                    .refuse("tags and favorites (set or clear them again instead)");
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let name = color.name().to_owned();
+                crate::tag_dots::write_through(&tx, &ctx, real.clone(), name.clone(), color, true);
+                let sources = self.library.sources.clone();
+                let hex = color.hex().unwrap_or_default();
+                self.library.spawn_try("keel-library-tag", "Tag", move |b| {
+                    b.create_tag(&sources, &name, hex, Some(&real))?;
+                    Ok(None)
+                });
+                self.library.refresh_meta_soon();
+            }
+        }
+    }
 }
+
+/// A new tag's color in the tag picker.
+const NEW_TAG_COLOR: keel_core::FinderColor = keel_core::FinderColor::Blue;
+
+/// Why a color dot cannot tag an item.
+pub const TAG_OUTSIDE: &str = if cfg!(target_os = "macos") {
+    "Add the folder's drive to the library to tag items that are not on this Mac"
+} else {
+    "Add the folder's drive to the library to tag it"
+};
 
 const DIGITS: [egui::Key; 10] = [
     egui::Key::Num0,

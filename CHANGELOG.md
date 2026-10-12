@@ -42,6 +42,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Favorites** you arrange yourself, kept per profile (`[sidebar]` in `config.toml`): a new profile starts with Recents, Applications (macOS) or Programs (Windows), Desktop, Documents, Downloads and Home. Drag folders from a pane into the list to add them (a drop on the middle of a folder row copies or moves into it instead), drag rows to reorder them, and right-click for **Remove from Sidebar**, **Move up**, **Move down** and **Open in new tab**. **Add to Sidebar** in the command palette adds the selected folders, or the current folder; the Favorites header's context menu has **Add current folder** and **Restore default favorites**.
 - An **eject** button on removable drives and optical discs in Locations (Windows: the shell's Eject; macOS: `diskutil eject`; Linux: `gio mount --eject` or `umount`). Mapped network drives show a network icon.
 - **Tags** in the sidebar show their color dots, with **All Tags…** for the full list.
+- **Get Info** (the Properties dialog before it) is a Finder-style info window with sections that open and close: General (kind, size, where, created, modified, tags, **Locked**), More Info (the photo and video metadata the library keeps), Name & Extension (rename, with **Hide extension** to edit the name alone), Comments (kept in the library), Open with, Preview and Sharing & Permissions (the Windows access list in Explorer's words, or the Unix owner, group and mode). Several windows can be open at once; Ctrl+Alt+I (Option+Cmd+I) opens one that follows the selection. It works for files, folders, drives (capacity and free space, never walked) and several items (a summary). See [Get Info](docs/files.md#get-info).
+- Tags take one of Finder's eight colors (red, orange, yellow, green, blue, purple, gray, none) in the tag picker, and tagged items show colored dots after their names in the Details, Icons and Columns views. A row of color dots at the end of a file's context menu toggles the tag of that color on the selection. See [Tags and Finder colors](docs/files.md#tags-and-finder-colors).
+- On macOS, the Finder tags (the `com.apple.metadata:_kMDItemUserTags` attribute) of files on this Mac are read and shown with the library's, and tag changes made in Keel are written to them, so tags go both ways between Keel and Finder.
+- Comments on library items in the API: `library.comment` and `library.set_comment` (previewed). See [api.md](docs/api.md).
+- Ctrl+Shift+I also shows the Inspector.
+- A `finder_tags` fuzz target for the reader of the macOS tag attribute ([fuzzing.md](docs/fuzzing.md)).
 
 ### Changed
 
@@ -49,6 +55,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - In a search tab Ctrl+I is Match case (Everything's key); the Inspector stays on Ctrl+I elsewhere and in the command palette. The toggles' keys and Load more are listed in Settings → Keyboard like every other command and work in search tabs only.
 - Keel's own index matches letters with their accented forms by default (Match diacritics off, like Everything).
 - The sidebar's Quick access, Drives, WSL, Open archives, Remotes, Cloud and Devices sections are now one **Locations** section; Quick access became Favorites (the Recycle Bin or Trash is now in Locations, and Pictures is no longer there by default: drag it in to keep it). The library's Recents moved from the Library section to Favorites, and its tags to their own Tags section. While no host or cloud account is set up, Locations shows **Add server or cloud…** instead of two "None configured" lines; paired devices show while devices are on.
+- The context menu's **Properties** is now **Get Info**; Explorer's Properties sheet is behind Get Info's **Windows Security…** button.
+- Source stores are now at version 13 (comments): a store this Keel opened is refused by an older Keel ("newer than this Keel").
+- A new tag's color is one of Finder's eight instead of any color; folder colors keep their palette.
 
 ### Fixed
 

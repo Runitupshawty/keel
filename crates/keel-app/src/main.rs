@@ -56,6 +56,8 @@ mod sidebar_remotes;
 mod sizes; // Task 46: folder sizes
 mod state;
 mod tab;
+/// Task 67: Finder tag colors, dots and macOS native tags.
+mod tag_dots;
 mod term_pane;
 mod theme;
 mod toast;

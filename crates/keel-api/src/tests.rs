@@ -149,6 +149,8 @@ fn registry_is_preview_first() {
         "library.folder_style",
         "library.set_folder_style",
         "system.search",
+        "library.comment",
+        "library.set_comment",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -286,6 +288,37 @@ fn mutating_calls_only_preview_until_executed() {
     let removed = apply(&f.ctx, "sources.remove", json!({"id": id}));
     assert_eq!(removed["removed"]["id"], id);
     assert!(f.ctx.lib.sources().is_empty());
+}
+
+/// Task 67: a Get Info comment, previewed then set, read back and cleared.
+#[test]
+fn comments_are_previewed_set_read_and_cleared() {
+    let f = fixture(None);
+    add_and_index(&f);
+    let notes = s(&f.files.path().join("docs/notes.txt"));
+    let read = || call(&f.ctx, "library.comment", json!({ "path": notes })).unwrap();
+    assert_eq!(read().get("comment"), None);
+    let params = json!({"path": notes, "comment": "Send to the printer"});
+    let preview = call(&f.ctx, "library.set_comment", params.clone()).unwrap();
+    assert_eq!(preview["changes"][0]["action"], "comment");
+    assert_eq!(read().get("comment"), None, "a preview sets nothing");
+    let set = apply(&f.ctx, "library.set_comment", params);
+    assert_eq!(set["comment"], "Send to the printer");
+    assert_eq!(read(), set);
+    apply(
+        &f.ctx,
+        "library.set_comment",
+        json!({"path": notes, "comment": ""}),
+    );
+    assert_eq!(read().get("comment"), None);
+    let outside = tempfile::tempdir().unwrap();
+    let err = call(
+        &f.ctx,
+        "library.set_comment",
+        json!({"path": s(outside.path()), "comment": "x"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ApiError::NOT_FOUND);
 }
 
 /// Task 56: a folder's color and icon, previewed then set; omitted fields stay, "" clears.

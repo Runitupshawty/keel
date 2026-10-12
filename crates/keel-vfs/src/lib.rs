@@ -38,6 +38,8 @@ pub mod local;
 pub mod provider;
 pub mod router;
 pub mod sftp;
+/// Get Info's Sharing & Permissions: owner, ACL or mode of a local path.
+pub mod sharing;
 /// Explorer's Properties sheet and context menu (Windows).
 #[cfg(windows)]
 pub mod shell;

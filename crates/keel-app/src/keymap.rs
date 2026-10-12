@@ -370,7 +370,13 @@ pub fn commands() -> Vec<Command> {
         cmd("file.rename", "Rename", Rename, &["F2"]).ctx(),
         cmd("file.bulk_rename", "Bulk rename…", BulkRename, &["Ctrl+F2"]).ctx(),
         cmd("file.trash", "Move to trash", Delete, &["Delete"]).ctx(),
-        cmd("file.properties", "Properties", Properties, &[]).ctx(),
+        cmd(
+            "file.properties",
+            "Get Info (Properties)",
+            Properties,
+            &[],
+        )
+        .ctx(),
         cmd("archive.extract_here", "Extract here", ExtractHere, &[]).ctx(),
         cmd(
             "archive.extract_folder",
@@ -507,10 +513,18 @@ pub fn commands() -> Vec<Command> {
             "view.inspector",
             "Show inspector",
             ToggleInspector,
-            &["Ctrl+I"],
+            &["Ctrl+I", "Ctrl+Shift+I"],
         )
         .global()
         .typing(),
+        // Task 67: the info window that follows the selection.
+        cmd(
+            "info.follow",
+            "Info window following the selection",
+            InfoFollow,
+            &["Ctrl+Alt+I"],
+        )
+        .global(),
         cmd(
             "dropzone.toggle",
             "Toggle drop zone",
@@ -1390,6 +1404,10 @@ mod tests {
         shift: true,
         ..Modifiers::COMMAND
     };
+    const CMD_ALT: Modifiers = Modifiers {
+        alt: true,
+        ..Modifiers::COMMAND
+    };
     #[cfg(target_os = "macos")]
     const HIDDEN_OLD: (Modifiers, Key) = (CMD_SHIFT, Key::Period);
     #[cfg(not(target_os = "macos"))]
@@ -1413,6 +1431,8 @@ mod tests {
             (CMD, Key::Enter, Action::OpenLocation),
             (CMD, Key::F, Action::Search),
             (CMD, Key::E, Action::FocusFilter),
+            (CMD_ALT, Key::I, Action::InfoFollow),
+            (CMD_SHIFT, Key::I, Action::ToggleInspector),
             (CMD, Key::I, Action::ToggleInspector),
             (CMD, Key::L, Action::FocusPath),
             (CMD, Key::T, Action::NewTab),
@@ -1498,7 +1518,14 @@ mod tests {
             .filter(|k| k.typing)
             .map(|k| k.action.clone())
             .collect();
-        typing.dedup();
+        // The Inspector has two keys.
+        let mut once: Vec<Action> = Vec::new();
+        for a in typing {
+            if !once.contains(&a) {
+                once.push(a);
+            }
+        }
+        let typing = once;
         assert_eq!(typing.len(), OLD_WHILE_TYPING.len());
         for a in OLD_WHILE_TYPING {
             assert!(typing.contains(a), "{a:?}");

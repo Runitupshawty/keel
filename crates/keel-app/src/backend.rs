@@ -487,6 +487,19 @@ pub enum VolumeChange {
     Domain(String),
 }
 
+/// The record of an item in a library source, for its comment.
+fn commented(
+    lib: &Library,
+    sources: &[SourceSummary],
+    path: &VPath,
+) -> Result<keel_core::RecordRef> {
+    let real = real_of(sources, path)
+        .filter(|r| crate::library::source_of(sources, r).is_some())
+        .with_context(|| format!("{} is not in a library source", path.display()))?;
+    (lib.record_at(&real)?)
+        .with_context(|| format!("{} is not in the library index yet", path.display()))
+}
+
 impl LibraryBackend {
     pub fn is_daemon(&self) -> bool {
         matches!(self, LibraryBackend::Daemon(_))
@@ -702,6 +715,39 @@ impl LibraryBackend {
                     params["icon"] = json!(i.unwrap_or_default());
                 }
                 r.apply("library.set_folder_style", params)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Task 67: the Get Info comment on an item of a library source (None: no comment).
+    /// An item outside every source, or not indexed yet, is an error saying so.
+    pub fn comment(&self, sources: &[SourceSummary], path: &VPath) -> Result<Option<String>> {
+        match self {
+            LibraryBackend::InProcess(lib) => {
+                let record = commented(lib, sources, path)?;
+                lib.comment(&record)
+            }
+            LibraryBackend::Daemon(r) => {
+                let path = real_paths(sources, std::slice::from_ref(path))?;
+                let info: api::CommentInfo =
+                    r.call("library.comment", json!({ "path": path[0] }))?;
+                Ok(info.comment)
+            }
+        }
+    }
+
+    /// Task 67: sets (blank: clears) the Get Info comment on an item of a library source.
+    pub fn set_comment(&self, sources: &[SourceSummary], path: &VPath, text: &str) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => {
+                let record = commented(lib, sources, path)?;
+                lib.set_comment(&record, text)
+            }
+            LibraryBackend::Daemon(r) => {
+                let path = real_paths(sources, std::slice::from_ref(path))?;
+                let params = json!({ "path": path[0], "comment": text });
+                r.apply("library.set_comment", params)?;
                 Ok(())
             }
         }
@@ -1012,9 +1058,11 @@ impl LibraryBackend {
         color: &str,
         targets: Option<&[VPath]>,
     ) -> Result<()> {
+        // Task 67: "" is no color (the picker's None).
+        let color = Some(color).filter(|c| !c.is_empty());
         match self {
             LibraryBackend::InProcess(lib) => {
-                let tag = lib.create_tag(name, Some(color), None)?;
+                let tag = lib.create_tag(name, color, None)?;
                 if let Some(targets) = targets {
                     crate::library::apply_tag(lib, sources, targets, tag, true)?;
                 }

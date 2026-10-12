@@ -37,11 +37,6 @@ pub enum Dialog {
         /// The user typed in the name field: a format change leaves it alone.
         edited: bool,
     },
-    /// Properties of `paths`; `info` arrives from a worker.
-    Properties {
-        paths: Vec<VPath>,
-        info: Option<Result<properties::Props, String>>,
-    },
     /// Bulk rename (Ctrl+F2).
     BulkRename(Box<crate::bulk_rename::BulkRename>),
     /// Open with…: `recent` apps for the extension, then the system's `(name, app)` list.
@@ -278,13 +273,6 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });
-            }
-            Dialog::Properties { paths, info } => {
-                properties::ui(ui, paths, info, &mut out);
-                ui.add_space(8.0);
-                let close = ui.button("Close");
-                crate::a11y::first_focus(&close);
-                cancel |= close.clicked();
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::ExportList(d) => out = crate::filelist_ui::dialog_ui(ui, d, &mut cancel),

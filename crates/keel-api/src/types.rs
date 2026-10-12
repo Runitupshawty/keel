@@ -1301,6 +1301,25 @@ pub struct SetFolderStyleParams {
     pub icon: Option<String>,
 }
 
+/// `library.comment` / `library.set_comment`: a file's or folder's Get Info comment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CommentInfo {
+    pub path: String,
+    /// Absent: no comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+/// `library.set_comment`: blank clears it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetCommentParams {
+    /// An indexed file or folder in a library source.
+    pub path: String,
+    /// The comment (at most 64 KiB), or `""` to clear it.
+    pub comment: String,
+}
+
 /// A saved view (sidebar).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ViewInfo {

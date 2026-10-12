@@ -125,7 +125,12 @@ pub enum Action {
     OpenWithSystem(PathBuf),
     /// A recent app from the context menu, on the current targets.
     OpenWithRecent(String),
+    /// Get Info (Task 67): an info window for the selection (several can be open).
     Properties,
+    /// Task 67: the info window that follows the selection (Alt+Ctrl+I), on or off.
+    InfoFollow,
+    /// Task 67: Get Info's Locked box: read-only on or off for a local item.
+    SetLocked(PathBuf, bool),
     /// Explorer's own Properties sheet (Windows).
     ShellProperties(PathBuf),
     /// "More options": the Windows shell menu for the targets (`shell_menu`). `extended`:

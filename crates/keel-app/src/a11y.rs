@@ -270,6 +270,11 @@ pub fn first_focus(r: &Response) {
 /// Esc closes the window titled `title` (an `egui::Window`, which has no Esc of its own)
 /// when it is the frontmost one and no popup or modal is above it. Call before showing it.
 pub fn esc_closes(ctx: &Context, title: &str, open: &mut bool) {
+    esc_closes_id(ctx, Id::new(title), open);
+}
+
+/// `esc_closes` for a window with its own id (`egui::Window::id`).
+pub fn esc_closes_id(ctx: &Context, id: Id, open: &mut bool) {
     // Raw: the list may have consumed Esc already (it clears the filter too).
     let esc = ctx.input(|i| {
         (i.raw.events.iter()).any(|e| {
@@ -286,7 +291,7 @@ pub fn esc_closes(ctx: &Context, title: &str, open: &mut bool) {
     if !*open || !esc {
         return;
     }
-    let layer = LayerId::new(egui::Order::Middle, Id::new(title));
+    let layer = LayerId::new(egui::Order::Middle, id);
     let front = ctx.memory(|m| {
         let top = (m.layer_ids())
             .filter(|l| l.order == egui::Order::Middle && m.areas().is_visible(l))

@@ -118,6 +118,10 @@ pub static OPS: &[Operation] = &[
         FolderStyleParams => Vec<FolderStyleInfo>, folder_style, json!({"path": example_dir()})),
     previewed!("library.set_folder_style", "Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon); an omitted field stays, \"\" clears it. Changes only the library.",
         SetFolderStyleParams => FolderStyleInfo, set_folder_style_preview, set_folder_style, json!({"path": example_dir(), "color": "#3b82f6", "icon": "📷"})),
+    now!("library.comment", "The Get Info comment on an indexed file or folder (absent: none); read-only.",
+        PathParams => CommentInfo, library_comment, json!({"path": example_file()})),
+    previewed!("library.set_comment", "Sets the Get Info comment on an indexed file or folder (\"\" clears it). Changes only the library.",
+        SetCommentParams => CommentInfo, set_comment_preview, set_comment, json!({"path": example_file(), "comment": "Send to the printer"})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
@@ -762,6 +766,56 @@ fn tags_tagged(ctx: &Ctx, _: NoParams) -> Result<Vec<TaggedPath>> {
 // --- folder styles ---
 
 /// The indexed folder at `path` (a source's root included).
+/// The indexed file or folder at `path`, for comments.
+fn commented_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
+    let p = vpath(path)?;
+    locate(ctx, &p).map_err(|_| {
+        ApiError::not_found(format!(
+            "{path} is in no library source: add the folder's drive to the library to comment on it"
+        ))
+    })?;
+    ctx.lib
+        .record_at(&p)?
+        .ok_or_else(|| ApiError::not_found(format!("{path} is not in the library index yet")))
+}
+
+fn library_comment(ctx: &Ctx, p: PathParams) -> Result<CommentInfo> {
+    let record = commented_at(ctx, &p.path)?;
+    Ok(CommentInfo {
+        path: vpath(&p.path)?.display(),
+        comment: ctx.lib.comment(&record)?,
+    })
+}
+
+fn set_comment_preview(ctx: &Ctx, p: &SetCommentParams) -> Result<Preview> {
+    commented_at(ctx, &p.path)?;
+    if p.comment.len() > keel_core::MAX_COMMENT {
+        return Err(ApiError::invalid_params("a comment is at most 64 KiB"));
+    }
+    let path = vpath(&p.path)?.display();
+    let what = match p.comment.trim().is_empty() {
+        true => "no comment".to_owned(),
+        false => format!("{:?}", p.comment),
+    };
+    Ok(Preview {
+        pin: None,
+        summary: format!("Set the comment of {path}: {what}"),
+        changes: vec![change("comment", Some(path), Some(what))],
+        warnings: Vec::new(),
+    })
+}
+
+fn set_comment(ctx: &Ctx, p: SetCommentParams) -> Result<CommentInfo> {
+    let record = commented_at(ctx, &p.path)?;
+    ctx.lib
+        .set_comment(&record, &p.comment)
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    Ok(CommentInfo {
+        path: vpath(&p.path)?.display(),
+        comment: ctx.lib.comment(&record)?,
+    })
+}
+
 fn folder_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
     let p = vpath(path)?;
     locate(ctx, &p).map_err(|_| {

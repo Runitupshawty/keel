@@ -119,6 +119,16 @@ pub fn backup(data: &[u8]) {
     });
 }
 
+/// The macOS tag attribute (a binary plist of tag strings): read, and what reads written
+/// again and read back the same.
+pub fn finder_tags(data: &[u8]) {
+    use crate::finder_tags::{decode, encode};
+    if let Ok(tags) = decode(data) {
+        let again = decode(&encode(&tags)).expect("written tags read back");
+        assert_eq!(again, tags);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use keel_vfs::fuzz_harness::{run, Capped};
@@ -149,5 +159,9 @@ mod tests {
     #[test]
     fn fuzz_backup() {
         run("backup", super::backup);
+    }
+    #[test]
+    fn fuzz_finder_tags() {
+        run("finder_tags", super::finder_tags);
     }
 }

@@ -254,6 +254,8 @@ pub fn ui(
                 let style = (e.kind == Kind::Dir)
                     .then(|| real.as_ref().and_then(|r| lib.style_of(r)))
                     .flatten();
+                // Task 67: tag color dots after the name.
+                let dots = lib.dots(&e.path);
                 row.col(|ui| {
                     tint(ui);
                     let snippet = tab.snippets.get(&e.path).filter(|_| search);
@@ -290,23 +292,32 @@ pub fn ui(
                                     );
                                 }
                             }
-                            _ if style.is_some_and(|s| s.color.is_some()) => {
-                                // The name leaves room for the color dot after it.
-                                ui.scope(|ui| {
-                                    ui.set_max_width((ui.available_width() - 14.0).max(0.0));
-                                    ui.add(egui::Label::new(cell(shown, color)).truncate());
-                                });
-                                crate::folder_style::dot(ui, style);
-                            }
-                            _ if search && tab.highlight.is_some() => {
-                                // Task 76: the parts the query matched.
-                                let marks = (tab.highlight.as_ref())
-                                    .map_or_else(Vec::new, |h| h.marks(shown));
-                                let job = crate::search_tab::highlighted(ui, shown, &marks, color);
-                                ui.add(egui::Label::new(job).truncate());
-                            }
                             _ => {
-                                ui.add(egui::Label::new(cell(shown, color)).truncate());
+                                // The name leaves room for the folder's color dot and the
+                                // tag dots after it.
+                                let colored = style.is_some_and(|s| s.color.is_some());
+                                let room = crate::tag_dots::width(dots.len())
+                                    + if colored { 14.0 } else { 0.0 };
+                                ui.scope(|ui| {
+                                    ui.set_max_width((ui.available_width() - room).max(0.0));
+                                    match tab.highlight.as_ref().filter(|_| search) {
+                                        // Task 76: the parts the query matched.
+                                        Some(h) => {
+                                            let marks = h.marks(shown);
+                                            let job = crate::search_tab::highlighted(
+                                                ui, shown, &marks, color,
+                                            );
+                                            ui.add(egui::Label::new(job).truncate());
+                                        }
+                                        None => {
+                                            ui.add(egui::Label::new(cell(shown, color)).truncate());
+                                        }
+                                    }
+                                });
+                                if colored {
+                                    crate::folder_style::dot(ui, style);
+                                }
+                                crate::tag_dots::show(ui, &dots);
                             }
                         }
                         if let Some(s) = offline {

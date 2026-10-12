@@ -386,3 +386,12 @@ CREATE TRIGGER record_text_ad AFTER DELETE ON record BEGIN
     DELETE FROM record_text_body WHERE record = old.id;
     DELETE FROM record_text WHERE record = old.id;
 END;
+
+-- @source 13
+-- Comments (Task 67, Get Info): a file's or folder's comment, by record like tag links and
+-- folder styles: a move or rename the index records keeps it, the record leaving the index
+-- drops it. (Merging with another branch that also added a source migration 13: renumber.)
+CREATE TABLE record_comment(record INTEGER PRIMARY KEY, text TEXT NOT NULL);
+CREATE TRIGGER record_comment_ad AFTER DELETE ON record BEGIN
+    DELETE FROM record_comment WHERE record = old.id;
+END;
