@@ -199,15 +199,22 @@ mod tests {
         assert!(records("0123456789\n", 10).is_ok());
         assert!(records("0123456789", 10).is_ok());
         assert!(records("01234567890", 10).is_err());
-        let err = records("\"a\nb\nc\nd\ne\nf\ng\n", 8).unwrap_err().to_string();
+        let err = records("\"a\nb\nc\nd\ne\nf\ng\n", 8)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("record from line 1"), "{err}");
     }
 
     #[test]
     fn fields_are_quoted_when_needed() {
         let mut out = String::new();
-        for (f, always) in [("a", false), ("a,b", false), ("q\"", false), (" x", false), ("p", true)]
-        {
+        for (f, always) in [
+            ("a", false),
+            ("a,b", false),
+            ("q\"", false),
+            (" x", false),
+            ("p", true),
+        ] {
             push_field(&mut out, f, ',', always);
             out.push('|');
         }

@@ -27,7 +27,9 @@ fn digits(s: &[u8], n: usize) -> Option<(i64, &[u8])> {
     if s.len() < n || !s[..n].iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let v = s[..n].iter().fold(0i64, |v, &b| v * 10 + i64::from(b - b'0'));
+    let v = s[..n]
+        .iter()
+        .fold(0i64, |v, &b| v * 10 + i64::from(b - b'0'));
     Some((v, &s[n..]))
 }
 
@@ -56,7 +58,10 @@ fn parse_iso(text: &str) -> Option<u64> {
                 // 100 ns ticks: the first 7 digits count, the rest are dropped.
                 let mut ticks = 0;
                 for i in 0..7 {
-                    ticks = ticks * 10 + r.get(i).filter(|_| i < n).map_or(0, |b| i64::from(b - b'0'));
+                    ticks = ticks * 10
+                        + r.get(i)
+                            .filter(|_| i < n)
+                            .map_or(0, |b| i64::from(b - b'0'));
                 }
                 frac = ticks;
                 rest = &r[n..];
@@ -89,7 +94,20 @@ fn parse_iso(text: &str) -> Option<u64> {
         _ => return None,
     };
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     if !(1..=12).contains(&month)
         || day < 1
         || day > month_days[month as usize - 1]
@@ -100,8 +118,8 @@ fn parse_iso(text: &str) -> Option<u64> {
     {
         return None;
     }
-    let unix = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second
-        - offset;
+    let unix =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
     let ticks = (unix + EPOCH_DIFF).checked_mul(TICKS)?.checked_add(frac)?;
     u64::try_from(ticks).ok().filter(|&t| t != 0)
 }
@@ -195,13 +213,26 @@ mod tests {
         assert_eq!(parse_date("2024-03-05T15:07:09+01:00"), Some(T));
         assert_eq!(parse_date("2024-03-05T13:07:09-0100"), Some(T));
         assert_eq!(parse_date("2024-03-05T14:07"), Some(T - 9 * 10_000_000));
-        assert_eq!(parse_date("2024-03-05"), Some(T - (14 * 3600 + 7 * 60 + 9) * 10_000_000));
+        assert_eq!(
+            parse_date("2024-03-05"),
+            Some(T - (14 * 3600 + 7 * 60 + 9) * 10_000_000)
+        );
         assert_eq!(parse_date("2024-03-05T14:07:09.25Z"), Some(T + 2_500_000));
-        assert_eq!(parse_date("2024-03-05T14:07:09.123456789Z"), Some(T + 1_234_567));
+        assert_eq!(
+            parse_date("2024-03-05T14:07:09.123456789Z"),
+            Some(T + 1_234_567)
+        );
         assert_eq!(format_iso(T), "2024-03-05T14:07:09Z");
         assert_eq!(format_iso(T + 2_500_000), "2024-03-05T14:07:09.25Z");
         assert_eq!(format_iso(T + 1), "2024-03-05T14:07:09.0000001Z");
-        for t in [T, T + 1, T + 1_234_567, 1, 116_444_736_000_000_000, 2_650_467_743_999_999_999] {
+        for t in [
+            T,
+            T + 1,
+            T + 1_234_567,
+            1,
+            116_444_736_000_000_000,
+            2_650_467_743_999_999_999,
+        ] {
             assert_eq!(parse_date(&format_iso(t)), Some(t), "{t}");
         }
         assert_eq!(format_iso(116_444_736_000_000_000), "1970-01-01T00:00:00Z");

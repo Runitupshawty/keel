@@ -67,7 +67,10 @@ fn reads_everything_efu() {
     assert!(e[0].is_dir);
     assert_eq!((e[0].modified, e[0].created), (Some(T), Some(T)));
     assert_eq!(e[1].name(), "notepad.exe");
-    assert_eq!((e[1].size, e[1].modified, e[1].attributes), (Some(201_216), Some(T), Some(32)));
+    assert_eq!(
+        (e[1].size, e[1].modified, e[1].attributes),
+        (Some(201_216), Some(T), Some(32))
+    );
     assert!(!e[1].is_dir);
     assert_eq!(e[2].path, r#"C:\a "quoted" name.txt"#);
     assert_eq!(e[2].created, None);
@@ -81,7 +84,10 @@ fn efu_columns_in_any_order_and_extra_properties() {
     let list = efu("\u{feff}size,ATTRIBUTES,Length,filename,Album\n12,0x10,3:01,/a/b,\"X, Y\"\n");
     assert_eq!(list.columns, ["Length", "Album"]);
     let e = &list.entries[0];
-    assert_eq!((e.path.as_str(), e.size, e.is_dir), ("/a/b", Some(12), true));
+    assert_eq!(
+        (e.path.as_str(), e.size, e.is_dir),
+        ("/a/b", Some(12), true)
+    );
     assert_eq!(e.extra, ["3:01", "X, Y"]);
     // A short row leaves the rest empty.
     let short = efu("Filename,Size,Comment\n/x\n");
@@ -105,7 +111,10 @@ fn txt_csv_and_m3u() {
     )
     .unwrap();
     let paths: Vec<&str> = txt.entries.iter().map(|e| e.path.as_str()).collect();
-    assert_eq!(paths, [r"C:\one.txt", r"C:\two words.txt", "/var", "#not a comment"]);
+    assert_eq!(
+        paths,
+        [r"C:\one.txt", r"C:\two words.txt", "/var", "#not a comment"]
+    );
     assert!(txt.entries[2].is_dir);
 
     let m3u = read(
@@ -135,7 +144,10 @@ fn txt_csv_and_m3u() {
         &Limits::default(),
     )
     .unwrap();
-    assert_eq!((tsv.entries[0].path.as_str(), tsv.entries[0].size), ("/x y/z", Some(9)));
+    assert_eq!(
+        (tsv.entries[0].path.as_str(), tsv.entries[0].size),
+        ("/x y/z", Some(9))
+    );
 }
 
 #[test]
@@ -166,7 +178,10 @@ fn efu_round_trip() {
         text.contains(r#""C:\Music\Song, ""live"".mp3",4096,133541212290000000,133541212280000000,32,"Song, live""#),
         "{text}"
     );
-    assert!(text.contains("\"C:\\Music\",,133541212290000000,,16,\r\n"), "{text}");
+    assert!(
+        text.contains("\"C:\\Music\",,133541212290000000,,16,\r\n"),
+        "{text}"
+    );
     let back = efu(&text);
     assert_eq!(back, list);
     // With a BOM, and the header option cannot drop EFU's header.
@@ -179,7 +194,10 @@ fn efu_round_trip() {
 fn csv_and_tsv_use_iso_dates() {
     let list = sample();
     let csv = exported(&list, Format::Csv, true, false);
-    assert!(csv.contains(",4096,2024-03-05T14:07:09Z,2024-03-05T14:07:08Z,32,"), "{csv}");
+    assert!(
+        csv.contains(",4096,2024-03-05T14:07:09Z,2024-03-05T14:07:08Z,32,"),
+        "{csv}"
+    );
     let back = read(csv.as_bytes(), ListKind::Csv, &Limits::default()).unwrap();
     assert_eq!(back, list, "CSV reads back the same");
     let headless = exported(&list, Format::Csv, false, false);
@@ -187,7 +205,10 @@ fn csv_and_tsv_use_iso_dates() {
 
     let tsv = exported(&list, Format::Tsv, true, false);
     let lines: Vec<&str> = tsv.split("\r\n").collect();
-    assert_eq!(lines[0], "Filename\tSize\tDate Modified\tDate Created\tAttributes\tTitle");
+    assert_eq!(
+        lines[0],
+        "Filename\tSize\tDate Modified\tDate Created\tAttributes\tTitle"
+    );
     assert_eq!(
         lines[2],
         "\"C:\\Music\\Song, \"\"live\"\".mp3\"\t4096\t2024-03-05T14:07:09Z\t2024-03-05T14:07:08Z\t32\tSong, live"
@@ -204,7 +225,13 @@ fn txt_m3u_and_json() {
     let txt = exported(&list, Format::Txt, true, false);
     assert_eq!(
         txt,
-        [r"C:\Music", r#"C:\Music\Song, "live".mp3"#, "/home/user name/notes.txt", ""].join(eol)
+        [
+            r"C:\Music",
+            r#"C:\Music\Song, "live".mp3"#,
+            "/home/user name/notes.txt",
+            ""
+        ]
+        .join(eol)
     );
     let m3u = exported(&list, Format::M3u8, true, true);
     assert!(m3u.starts_with(&format!("\u{feff}#EXTM3U{eol}C:\\Music{eol}")));
@@ -302,7 +329,12 @@ fn searching_a_list() {
     let capped = FileListSearcher::new("x", efu(text)).with_cap(3);
     assert_eq!(capped.query(&one).unwrap().len(), 3);
     assert!(s.status().unwrap().contains("5 entries"));
-    assert!(s.query(&Query { text: "regex:(".into(), ..Query::default() }).is_err());
+    assert!(s
+        .query(&Query {
+            text: "regex:(".into(),
+            ..Query::default()
+        })
+        .is_err());
 }
 
 struct TempDir(std::path::PathBuf);
@@ -380,18 +412,29 @@ fn create_walks_in_path_order_with_metadata() {
     assert!(mp3.modified.is_some());
     assert_eq!(mp3.attributes.map(|a| a & ATTR_DIRECTORY), Some(0));
     let docs = &list.entries[2];
-    assert_eq!((docs.size, docs.attributes.map(|a| a & ATTR_DIRECTORY)), (None, Some(ATTR_DIRECTORY)));
+    assert_eq!(
+        (docs.size, docs.attributes.map(|a| a & ATTR_DIRECTORY)),
+        (None, Some(ATTR_DIRECTORY))
+    );
     // Made into an EFU and read back: the same list.
     let mut out = Vec::new();
     write_efu(&list, &mut out).unwrap();
-    assert_eq!(read(&out[..], ListKind::Efu, &Limits::default()).unwrap(), list);
+    assert_eq!(
+        read(&out[..], ListKind::Efu, &Limits::default()).unwrap(),
+        list
+    );
     // Bounded too.
     let small = Limits {
         max_rows: 3,
         ..Limits::default()
     };
     assert!(create(&d.0, &CreateOptions::default(), &small).is_err());
-    assert!(create(&d.0.join("a.mp3"), &CreateOptions::default(), &Limits::default()).is_err());
+    assert!(create(
+        &d.0.join("a.mp3"),
+        &CreateOptions::default(),
+        &Limits::default()
+    )
+    .is_err());
 }
 
 #[test]
@@ -407,7 +450,12 @@ fn create_filters() {
             o.include_files = split_wildcards("*.MP3; *.flac");
             o.no_folders = true;
         }),
-        ["a.mp3", "music/c.mp3", "music/live/d.flac", "node_modules/pkg/e.mp3"]
+        [
+            "a.mp3",
+            "music/c.mp3",
+            "music/live/d.flac",
+            "node_modules/pkg/e.mp3"
+        ]
     );
     assert_eq!(
         opts(|o| {
@@ -419,7 +467,15 @@ fn create_filters() {
     );
     assert_eq!(
         opts(|o| o.exclude_files = split_wildcards("*.mp3,*.flac")),
-        ["b.txt", "docs/", "docs/f.txt", "music/", "music/live/", "node_modules/", "node_modules/pkg/"]
+        [
+            "b.txt",
+            "docs/",
+            "docs/f.txt",
+            "music/",
+            "music/live/",
+            "node_modules/",
+            "node_modules/pkg/"
+        ]
     );
     assert_eq!(
         opts(|o| o.no_subfolders = true),
@@ -427,12 +483,23 @@ fn create_filters() {
     );
     assert_eq!(
         opts(|o| o.no_files = true),
-        ["docs/", "music/", "music/live/", "node_modules/", "node_modules/pkg/"]
+        [
+            "docs/",
+            "music/",
+            "music/live/",
+            "node_modules/",
+            "node_modules/pkg/"
+        ]
     );
     // Only what is inside a matching folder; others are walked to find them.
     assert_eq!(
         opts(|o| o.include_folders = split_wildcards("live;pkg")),
-        ["music/live/", "music/live/d.flac", "node_modules/pkg/", "node_modules/pkg/e.mp3"]
+        [
+            "music/live/",
+            "music/live/d.flac",
+            "node_modules/pkg/",
+            "node_modules/pkg/e.mp3"
+        ]
     );
     // A wildcard with a separator matches the path below the root.
     assert_eq!(
@@ -453,10 +520,31 @@ fn read_file_by_extension_and_sniffing() {
     d.file("noext", b"\"Filename\",\"Size\"\n/a,1\n/b,2\n");
     d.file("other.lst", b"Filename,Size\n");
     let limits = Limits::default();
-    assert_eq!(read_file(&d.0.join("list.efu"), &limits).unwrap().entries.len(), 1);
-    assert_eq!(read_file(&d.0.join("list.txt"), &limits).unwrap().entries.len(), 2);
-    assert_eq!(read_file(&d.0.join("noext"), &limits).unwrap().entries.len(), 2);
-    assert!(read_file(&d.0.join("other.lst"), &limits).unwrap().entries.is_empty());
+    assert_eq!(
+        read_file(&d.0.join("list.efu"), &limits)
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
+    assert_eq!(
+        read_file(&d.0.join("list.txt"), &limits)
+            .unwrap()
+            .entries
+            .len(),
+        2
+    );
+    assert_eq!(
+        read_file(&d.0.join("noext"), &limits)
+            .unwrap()
+            .entries
+            .len(),
+        2
+    );
+    assert!(read_file(&d.0.join("other.lst"), &limits)
+        .unwrap()
+        .entries
+        .is_empty());
     assert!(read_file(&d.0.join("missing.efu"), &limits).is_err());
     assert!(read_file(&d.0, &limits).is_err(), "a folder is not a list");
 }

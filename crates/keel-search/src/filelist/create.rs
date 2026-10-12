@@ -75,7 +75,8 @@ impl Wildcards {
 
     /// `rel`: the path below the root with `/` separators.
     fn matches(&self, name: &str, rel: &str) -> bool {
-        self.names.iter().any(|re| re.is_match(name)) || self.paths.iter().any(|re| re.is_match(rel))
+        self.names.iter().any(|re| re.is_match(name))
+            || self.paths.iter().any(|re| re.is_match(rel))
     }
 }
 
@@ -110,7 +111,11 @@ pub fn create(root: &Path, opts: &CreateOptions, limits: &Limits) -> anyhow::Res
         let Ok(md) = child.metadata() else { continue };
         let link = md.file_type().is_symlink();
         // A link counts as what it points at, but is never walked into.
-        let target = if link { std::fs::metadata(child.path()).ok() } else { None };
+        let target = if link {
+            std::fs::metadata(child.path()).ok()
+        } else {
+            None
+        };
         let md = target.as_ref().unwrap_or(&md);
         if md.is_dir() {
             if exclude_folders.matches(&name, &rel) {

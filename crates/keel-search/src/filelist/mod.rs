@@ -126,7 +126,10 @@ pub fn read_file(path: &Path, limits: &Limits) -> anyhow::Result<FileList> {
             let head = r.fill_buf()?;
             let line = head.split(|&b| b == b'\n').next().unwrap_or_default();
             let line = String::from_utf8_lossy(line).to_ascii_lowercase();
-            match line.split(',').any(|c| c.trim().trim_matches('"') == "filename") {
+            match line
+                .split(',')
+                .any(|c| c.trim().trim_matches('"') == "filename")
+            {
                 true => ListKind::Efu,
                 false => ListKind::Txt,
             }
@@ -242,12 +245,7 @@ fn push(list: &mut FileList, entry: Entry, limits: &Limits) -> anyhow::Result<()
     Ok(())
 }
 
-fn read_table(
-    r: impl BufRead,
-    delim: u8,
-    efu: bool,
-    limits: &Limits,
-) -> anyhow::Result<FileList> {
+fn read_table(r: impl BufRead, delim: u8, efu: bool, limits: &Limits) -> anyhow::Result<FileList> {
     let mut records = csv::Records::new(r, delim, limits.max_line);
     let mut list = FileList::default();
     let Some(header) = records.next_record()? else {

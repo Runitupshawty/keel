@@ -88,9 +88,7 @@ impl Searcher for FileListSearcher {
         // Quality, then path without regard to case, then list order; no per-entry copies
         // (an empty query over a big list ranks every entry).
         let order = |a: &(u8, usize), b: &(u8, usize)| {
-            let lower = |i: usize| {
-                (self.list.entries[i].path.chars()).flat_map(char::to_lowercase)
-            };
+            let lower = |i: usize| (self.list.entries[i].path.chars()).flat_map(char::to_lowercase);
             (a.0.cmp(&b.0))
                 .then_with(|| lower(a.1).cmp(lower(b.1)))
                 .then(a.1.cmp(&b.1))

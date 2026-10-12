@@ -144,8 +144,19 @@ fn table(
 ) -> std::io::Result<()> {
     let mut line = String::new();
     if header {
-        let names = ["Filename", "Size", "Date Modified", "Date Created", "Attributes"];
-        for (i, name) in names.iter().copied().chain(list.columns.iter().map(String::as_str)).enumerate() {
+        let names = [
+            "Filename",
+            "Size",
+            "Date Modified",
+            "Date Created",
+            "Attributes",
+        ];
+        for (i, name) in names
+            .iter()
+            .copied()
+            .chain(list.columns.iter().map(String::as_str))
+            .enumerate()
+        {
             if i > 0 {
                 line.push(delim);
             }
@@ -174,7 +185,12 @@ fn table(
         }
         for i in 0..list.columns.len() {
             line.push(delim);
-            push_field(&mut line, e.extra.get(i).map_or("", String::as_str), delim, false);
+            push_field(
+                &mut line,
+                e.extra.get(i).map_or("", String::as_str),
+                delim,
+                false,
+            );
         }
         line.push_str("\r\n");
         w.write_all(line.as_bytes())?;
