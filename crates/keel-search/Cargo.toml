@@ -20,6 +20,9 @@ parking_lot.workspace = true
 # Regex name patterns for the home-folder walk and the persistent name index.
 regex = "1"
 rusqlite.workspace = true
+# The ETP client (`etp`): TLS through keel-vfs's FTPS connector, which implements
+# suppaftp's TLS traits (already in the tree through keel-vfs).
+suppaftp = { version = "12", default-features = false, features = ["secure"] }
 
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true

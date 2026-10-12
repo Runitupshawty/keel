@@ -1,11 +1,13 @@
 //! File search backends (Everything or Keel's own NTFS index on Windows, Spotlight
 //! on macOS, locate or a home-directory walk on Linux) and folder-path fuzzy
-//! matching for Keel.
+//! matching for Keel; an ETP server (Everything's, or keel-daemon's) as a backend
+//! ([`etp::EtpSearcher`]).
 
 #[cfg(windows)]
 mod composite;
 #[cfg(windows)]
 mod everything;
+pub mod etp;
 mod fuzzy;
 #[cfg(target_os = "linux")]
 mod locate;
