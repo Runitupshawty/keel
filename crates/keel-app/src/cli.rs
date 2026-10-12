@@ -39,6 +39,15 @@ pub struct Cli {
     /// Linux inside WSL: open FOLDER in this Linux window, not in the Windows Keel.
     #[arg(long)]
     pub here: bool,
+    /// Open a keel: link (keel:search?q=QUERY[&path=FOLDER], keel:open?path=FOLDER).
+    #[arg(long, value_name = "LINK", conflicts_with_all = ["folder", "search"])]
+    pub url: Option<String>,
+    /// Windows: open keel: links with this Keel (per user).
+    #[arg(long, conflicts_with = "unregister_url_protocol")]
+    pub register_url_protocol: bool,
+    /// Windows: stop opening keel: links with this Keel.
+    #[arg(long)]
+    pub unregister_url_protocol: bool,
     /// Subcommands: print machine-readable JSON.
     #[arg(long, global = true)]
     pub json: bool,
@@ -50,6 +59,13 @@ pub struct Cli {
 /// library in this process. Exit codes: 0 ok, 1 operation error, 2 usage.
 #[derive(Subcommand, Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Search the system index (Everything, Keel's own index, Spotlight or locate) with
+    /// es.exe's switches; `keel es -help` lists them.
+    #[command(disable_help_flag = true)]
+    Es {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// Search the library index.
     Search {
         query: String,
@@ -360,6 +376,18 @@ impl Cli {
         is_dir: impl Fn(&Path) -> bool,
     ) -> Result<Self, clap::Error> {
         let mut args: Vec<OsString> = args.into_iter().collect();
+        // `keel es …`: es.exe's switches go to `es` as typed (clap would take `--` and
+        // `-h` itself).
+        if let Some(i) = es_index(&args) {
+            let rest: Vec<String> = (args.split_off(i + 1).iter())
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let mut cli = Self::try_parse_from(args)?;
+            if let Some(Command::Es { args }) = &mut cli.command {
+                *args = rest;
+            }
+            return Ok(cli);
+        }
         if let Some(i) = lone_subcommand(&args).filter(|_| interactive) {
             let always = ALWAYS_COMMANDS.iter().any(|c| args[i] == **c);
             if !always && is_dir(Path::new(&args[i])) {
@@ -370,8 +398,14 @@ impl Cli {
     }
 
     /// The request, with FOLDER made absolute against this process's working folder (the
-    /// running instance has its own).
+    /// running instance has its own). A `--url` link that is refused opens nothing (logged).
     pub fn request(&self) -> Request {
+        if let Some(url) = &self.url {
+            return crate::url_protocol::request(url).unwrap_or_else(|e| {
+                tracing::warn!("--url: {e}");
+                Request::default()
+            });
+        }
         Request {
             folder: self
                 .folder
@@ -385,12 +419,40 @@ impl Cli {
 
 /// Subcommands a lone name always means (never a folder of that name): what agents and
 /// scripts run, and what would surprise as a window.
-const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search"];
+const ALWAYS_COMMANDS: &[&str] = &["mcp", "execute", "daemon", "search", "es"];
+
+/// Options that take the next argument as their value.
+const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service", "--url"];
+
+/// `query` searched only in `dir`: `in:"<dir>" <query>` (every system search backend reads
+/// `in:`), unless the query already has an `in:`.
+pub fn scoped_query(dir: &Path, query: &str) -> String {
+    if keel_search::take_within(query).0.is_some() {
+        return query.to_owned();
+    }
+    format!("in:\"{}\" {query}", dir.display())
+}
+
+/// The index of `es` when it is the subcommand: the first argument that is not an option
+/// or an option's value.
+fn es_index(args: &[OsString]) -> Option<usize> {
+    let mut i = 1;
+    while i < args.len() {
+        let arg = args[i].to_str()?;
+        match arg {
+            a if TAKE_VALUE.contains(&a) => i += 2,
+            "--" => return None,
+            a if a.starts_with('-') => i += 1,
+            "es" => return Some(i),
+            _ => return None,
+        }
+    }
+    None
+}
 
 /// The index of the only positional argument in `args` when it is the last argument and a
 /// subcommand's name.
 fn lone_subcommand(args: &[OsString]) -> Option<usize> {
-    const TAKE_VALUE: &[&str] = &["--profile", "--search", "--index-service"];
     let mut positional = None;
     let mut i = 1;
     while i < args.len() {
@@ -432,9 +494,11 @@ pub fn profile() -> String {
 impl AppState {
     /// Opens what `req` (`Request::checked`) asks for in the active pane: FOLDER in a new
     /// tab (with the file selected), then a search tab (from that folder, else the current
-    /// one) running QUERY.
+    /// one) running QUERY, only in FOLDER when one was given (`in:"FOLDER"` leads the query,
+    /// so the scope shows and can be edited).
     pub fn external(&mut self, req: Request) {
         let p = self.active;
+        let scope = req.folder.clone();
         if let Some(dir) = req.folder {
             let dir = VPath::local(dir);
             match req.select {
@@ -444,6 +508,10 @@ impl AppState {
         }
         if let Some(text) = req.search {
             self.run(p, Action::Search);
+            let text = match scope {
+                Some(dir) => scoped_query(&dir, &text),
+                None => text,
+            };
             if let TabKind::Search { query, due, .. } = &mut self.tab_mut(p).kind {
                 *query = text;
                 *due = Some(Instant::now());
@@ -473,6 +541,9 @@ mod tests {
                 index_service: None,
                 check_update: false,
                 here: false,
+                url: None,
+                register_url_protocol: false,
+                unregister_url_protocol: false,
                 json: false,
                 command: None,
             }
@@ -553,7 +624,9 @@ mod tests {
         assert_eq!(tabs[1].dir, VPath::local(&dir));
         assert_eq!(tabs[2].dir, VPath::local(&dir), "search starts in FOLDER");
         assert!(
-            matches!(&tabs[2].kind, TabKind::Search { query, due: Some(_), .. } if query == "needle")
+            matches!(&tabs[2].kind, TabKind::Search { query, due: Some(_), .. }
+                if *query == format!("in:\"{}\" needle", dir.display())),
+            "the search runs only in FOLDER"
         );
         assert_eq!(state.panes[0].active, 2);
         // Nothing asked: nothing opens.
@@ -905,5 +978,70 @@ mod tests {
             (cli.command, cli.folder),
             (None, Some(PathBuf::from("./shares")))
         );
+    }
+
+    #[test]
+    fn es_takes_its_switches_as_typed() {
+        let parse = |args: &[&str]| {
+            let args = std::iter::once("keel").chain(args.iter().copied());
+            Cli::parse_args(args.map(OsString::from), true, |_| true).unwrap()
+        };
+        let es = |cli: Cli| match cli.command {
+            Some(Command::Es { args }) => args,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            es(parse(&["es", "-n", "5", "--", "-h", "/ad", "two words"])),
+            ["-n", "5", "--", "-h", "/ad", "two words"]
+        );
+        assert_eq!(es(parse(&["es"])), Vec::<String>::new());
+        assert_eq!(es(parse(&["es", "-help"])), ["-help"]);
+        let cli = parse(&["--profile", "work", "--json", "es", "-csv", "--json", "x"]);
+        assert_eq!((cli.profile.as_deref(), cli.json), (Some("work"), true));
+        assert_eq!(es(cli), ["-csv", "--json", "x"]);
+        // A folder named es is not opened by `keel es` (it is always the subcommand), and
+        // `es` as an option's value is not the subcommand.
+        assert_eq!(es(parse(&["es"])), Vec::<String>::new());
+        let cli = parse(&["--search", "es"]);
+        assert_eq!((cli.command, cli.search.as_deref()), (None, Some("es")));
+        // Plain clap parsing (no `parse_args`) keeps hyphenated values too.
+        let cli = Cli::try_parse_from(["keel", "es", "-n", "5", "x"]).unwrap();
+        assert_eq!(es(cli), ["-n", "5", "x"]);
+    }
+
+    #[test]
+    fn url_opens_a_keel_link() {
+        let (dir, enc) = if cfg!(windows) {
+            (PathBuf::from(r"C:\Users\Public"), r"C:\Users\Public")
+        } else {
+            (PathBuf::from("/tmp"), "/tmp")
+        };
+        let cli = parse(&["--url", &format!("keel:search?q=a+b&path={enc}")]).unwrap();
+        assert_eq!(
+            cli.request(),
+            Request {
+                folder: Some(dir.clone()),
+                search: Some("a b".into()),
+                select: None
+            }
+        );
+        let cli = parse(&["--url", &format!("keel:open?path={enc}")]).unwrap();
+        assert_eq!(cli.request().folder, Some(dir));
+        // A refused link opens nothing.
+        let cli = parse(&["--url", "keel:open?path=%5C%5Chost%5Cshare"]).unwrap();
+        assert_eq!(cli.request(), Request::default());
+        // Not with a folder or a search of its own.
+        assert!(parse(&["--url", "keel:search?q=x", "D:\\"]).is_err());
+        assert!(parse(&["--url", "keel:search?q=x", "--search", "y"]).is_err());
+        let cli = parse(&["--register-url-protocol"]).unwrap();
+        assert!(cli.register_url_protocol && !cli.unregister_url_protocol);
+        assert!(parse(&["--register-url-protocol", "--unregister-url-protocol"]).is_err());
+    }
+
+    #[test]
+    fn scoped_queries_lead_with_the_folder() {
+        let dir = Path::new("/x y");
+        assert_eq!(scoped_query(dir, "a b"), "in:\"/x y\" a b");
+        assert_eq!(scoped_query(dir, "in:/other a"), "in:/other a");
     }
 }

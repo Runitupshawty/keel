@@ -57,6 +57,9 @@ fn filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
 }
 
 fn main() -> ExitCode {
+    // `keel.portable` beside the executable: settings, libraries and index beside it (as
+    // for the window). First, before any thread starts.
+    keel_core::portable::apply();
     let args = Args::parse();
     tracing_subscriber::fmt()
         .with_writer(|| keel_api::crash::tee(std::io::stderr()))

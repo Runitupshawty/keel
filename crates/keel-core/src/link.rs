@@ -158,7 +158,7 @@ fn local_path(p: &str, windows: bool) -> Result<PathBuf, LinkError> {
         return bad("it holds control characters");
     }
     let sep = |c: char| c == '/' || (windows && c == '\\');
-    if p.starts_with(&sep) && p[1..].starts_with(&sep) {
+    if p.starts_with(sep) && p[1..].starts_with(sep) {
         return bad("network and device paths are not opened from links");
     }
     if p.split(sep).any(|part| part == "..") {

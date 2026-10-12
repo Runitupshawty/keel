@@ -69,6 +69,8 @@ mod x11_clipboard;
 // --- Task 24 ---
 mod cli;
 mod commands; // Task 37
+mod es; // Task 79: `keel es`
+mod url_protocol; // Task 79: keel: links
 mod dragout;
 mod hotkey;
 mod index_ui;
@@ -83,6 +85,9 @@ use settings::Settings;
 use std::path::Path;
 
 fn main() -> eframe::Result<()> {
+    // Task 79: `keel.portable` beside the executable keeps everything beside it. First, before
+    // any thread starts (it sets the folder variables).
+    keel_core::portable::apply();
     // --- Task 24 ---
     let cli = cli::Cli::from_env();
     if let Some(name) = &cli.profile {
@@ -113,6 +118,9 @@ fn main() -> eframe::Result<()> {
         std::process::exit(commands::run(cmd, &cli::profile(), cli.json));
     }
     // --- end Task 37 ---
+    if cli.register_url_protocol || cli.unregister_url_protocol {
+        std::process::exit(url_protocol::cli(cli.register_url_protocol));
+    }
     if cli.check_update {
         #[cfg(windows)]
         keel_vfs::desktop::attach_parent_console();
@@ -189,6 +197,8 @@ fn main() -> eframe::Result<()> {
     }
     let opts = eframe::NativeOptions {
         viewport,
+        // With KEEL_CONFIG_DIR (portable mode, tests) the window state lives there too.
+        persistence_path: settings::config_dir_override().map(|d| d.join("window")),
         ..Default::default()
     };
     let boot = app::Boot {

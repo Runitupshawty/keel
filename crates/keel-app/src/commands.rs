@@ -75,7 +75,7 @@ impl Drop for Local {
 /// keel-daemon for the profile, else the library in-process (keel-net only then, so one
 /// node per profile).
 /// `wait`: how long the daemon's answers are waited for.
-fn connect(cfg: &HostConfig, wait: Duration) -> anyhow::Result<Box<dyn Backend>> {
+pub(crate) fn connect(cfg: &HostConfig, wait: Duration) -> anyhow::Result<Box<dyn Backend>> {
     if let Ok(mut client) = Client::connect(&cfg.socket_name()) {
         client.timeout = wait;
         return Ok(Box::new(client));
@@ -124,6 +124,10 @@ impl From<Usage> for Fail {
 type Out = Box<dyn Write>;
 
 pub fn run(cmd: Command, profile: &str, json: bool) -> i32 {
+    // `keel es` searches the system index: no library unless it asks for `-library`.
+    if let Command::Es { args } = &cmd {
+        return crate::es::run(args, profile, json);
+    }
     let cfg = match HostConfig::load(profile) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -699,7 +703,7 @@ fn command(
             }
             Some(done)
         }
-        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } => {
+        Command::Daemon(_) | Command::Mcp { .. } | Command::Op { .. } | Command::Es { .. } => {
             unreachable!("handled by run")
         }
     };

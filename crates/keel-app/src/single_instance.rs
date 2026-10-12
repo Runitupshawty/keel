@@ -28,9 +28,18 @@ const READ_WAIT: Duration = Duration::from_secs(2);
 /// Longest request line read (a path and a query).
 const MAX_LINE: u64 = 64 * 1024;
 
-/// The socket name: per user, and per profile (`keel_api::socket::name`).
+/// The socket name: per user, and per profile (`keel_api::socket::name`). A portable Keel
+/// (Task 79) also keys it by its folder, so it never hands its requests to an installed
+/// Keel (or another portable copy) with other settings.
 pub fn name(profile: &str) -> String {
-    socket::name("keel", profile)
+    socket::name("keel", &key(profile, keel_core::portable::active()))
+}
+
+fn key(profile: &str, portable: Option<&keel_core::portable::Dirs>) -> String {
+    match portable {
+        Some(dirs) => format!("{profile}\0{}", dirs.root.display()),
+        None => profile.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +256,17 @@ pub fn bring_to_front(ctx: &egui::Context) {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn a_portable_keel_is_its_own_instance() {
+        let dirs = keel_core::portable::Dirs::under(std::path::PathBuf::from("/media/stick/keel-data"));
+        assert_eq!(key("work", None), "work");
+        let portable = key("work", Some(&dirs));
+        assert_ne!(portable, "work");
+        assert!(portable.starts_with("work\0/"), "{portable:?}");
+        let other = keel_core::portable::Dirs::under(std::path::PathBuf::from("/other"));
+        assert_ne!(portable, key("work", Some(&other)));
+    }
 
     fn test_name(what: &str) -> String {
         format!("keel-test-{what}-{}", std::process::id())
