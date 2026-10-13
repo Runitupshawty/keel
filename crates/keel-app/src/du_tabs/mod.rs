@@ -281,12 +281,9 @@ impl Export {
         self.status.clear();
         self.job = Some(Worker::spawn(ctx, "keel-du-export", move |_| {
             // The OS dialog blocks: on this worker, never the UI thread.
-            let Some(path) = rfd::FileDialog::new()
-                .set_title("Save report")
-                .set_file_name(name)
-                .add_filter(kind, &[ext])
-                .save_file()
-            else {
+            let Some(path) = crate::platform::file_dialog("Save report", |d| {
+                d.set_file_name(name).add_filter(kind, &[ext]).save_file()
+            }) else {
                 return Ok(None);
             };
             save(&path, write)?;

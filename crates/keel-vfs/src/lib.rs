@@ -25,6 +25,7 @@ pub mod fuzz;
 /// Corpus, mutator, watchdog and allocation cap for the in-tree fuzz runs of every crate.
 #[cfg(any(test, feature = "test-util"))]
 pub mod fuzz_harness;
+pub mod headless;
 pub mod library;
 /// In-memory provider for tests.
 #[cfg(any(test, feature = "test-util"))]

@@ -1,19 +1,46 @@
 //! OS launches: default app, open-with (apps for a file, launch with one), reveal in the system file manager. Each starts a process and returns without waiting.
 //! Call through `worker::spawn_local` so remote paths materialise off the UI thread.
+//! None starts under tests (`keel_vfs::headless`).
 
-use std::ffi::OsString;
+use keel_vfs::headless;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 pub fn open(path: &Path) -> io::Result<()> {
-    open::that_detached(path)
+    open_target(path)
 }
 
-/// Starts `cmd` and waits for it on a helper thread, so an exited child is reaped (no
-/// zombie on macOS/Linux).
-fn run(mut cmd: Command) -> io::Result<()> {
-    let mut child = cmd.spawn()?;
+/// Opens a file, folder or URL (`https:`, `mailto:`, `ms-settings:`) with its default app.
+pub fn open_target(target: impl AsRef<OsStr>) -> io::Result<()> {
+    let target = target.as_ref();
+    if headless::skip(format_args!("open {}", target.to_string_lossy())) {
+        return Ok(());
+    }
+    open::that_detached(target)
+}
+
+/// An OS file dialog titled `title`, for `show` to set up and run; None (as if cancelled)
+/// under tests.
+pub fn file_dialog<T>(title: &str, show: impl FnOnce(rfd::FileDialog) -> Option<T>) -> Option<T> {
+    if headless::skip(format_args!("file dialog {title}")) {
+        return None;
+    }
+    show(rfd::FileDialog::new().set_title(title))
+}
+
+/// Starts `cmd` (see [`reap`]).
+pub fn run(mut cmd: Command) -> io::Result<()> {
+    if headless::skip(format_args!("{cmd:?}")) {
+        return Ok(());
+    }
+    reap(cmd.spawn()?)
+}
+
+/// Waits for `child` on a helper thread, so an exited child is reaped (no zombie on
+/// macOS/Linux).
+fn reap(mut child: Child) -> io::Result<()> {
     std::thread::Builder::new()
         .name("keel-reap".into())
         .spawn(move || child.wait())
@@ -364,14 +391,30 @@ mod tests {
 
     #[test]
     fn launched_children_are_reaped() {
-        let cmd = if cfg!(windows) {
+        let mut cmd = if cfg!(windows) {
             let mut c = Command::new("cmd");
             c.args(["/C", "exit"]);
             c
         } else {
             Command::new("true")
         };
-        run(cmd).unwrap();
+        reap(headless::hidden(&mut cmd).spawn().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn launches_are_recorded_not_started() {
+        let path = std::env::temp_dir().join("keel-headless-launch.txt");
+        open(&path).unwrap();
+        reveal(&path).unwrap();
+        open_with("keel-headless-editor", std::slice::from_ref(&path)).unwrap();
+        assert_eq!(file_dialog("Pick", |d| d.pick_file()), None);
+        let skipped = headless::skipped();
+        let ours = |s: &&String| s.contains("keel-headless-");
+        assert!(skipped.iter().filter(ours).count() >= 3, "{skipped:?}");
+        assert!(
+            skipped.contains(&"file dialog Pick".to_owned()),
+            "{skipped:?}"
+        );
     }
 
     #[test]

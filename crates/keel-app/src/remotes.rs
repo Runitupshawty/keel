@@ -901,11 +901,13 @@ fn secret_field(ui: &mut egui::Ui, secret: &mut String, editing: bool) {
 fn pick_key(ctx: egui::Context) -> Receiver<Option<PathBuf>> {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let started = spawn("keel-pick-key", move || {
-        let mut dialog = rfd::FileDialog::new().set_title("SSH private key");
-        if let Some(ssh) = directories::BaseDirs::new().map(|b| b.home_dir().join(".ssh")) {
-            dialog = dialog.set_directory(ssh);
-        }
-        let _ = tx.send(dialog.pick_file());
+        let picked = crate::platform::file_dialog("SSH private key", |mut dialog| {
+            if let Some(ssh) = directories::BaseDirs::new().map(|b| b.home_dir().join(".ssh")) {
+                dialog = dialog.set_directory(ssh);
+            }
+            dialog.pick_file()
+        });
+        let _ = tx.send(picked);
         ctx.request_repaint();
     });
     if !started {

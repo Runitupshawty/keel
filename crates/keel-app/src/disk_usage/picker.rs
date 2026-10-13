@@ -80,9 +80,7 @@ impl Picker {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         crate::worker::spawn("keel-du-pick", move || {
-            let picked = rfd::FileDialog::new()
-                .set_title("Folders to scan")
-                .pick_folders()
+            let picked = crate::platform::file_dialog("Folders to scan", |d| d.pick_folders())
                 .unwrap_or_default();
             let _ = tx.send(picked);
             ctx.request_repaint();

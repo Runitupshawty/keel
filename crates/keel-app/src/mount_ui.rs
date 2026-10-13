@@ -421,9 +421,7 @@ impl AppState {
         {
             let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
             worker::spawn("keel-mount-pick", move || {
-                if let Some(dir) = rfd::FileDialog::new()
-                    .set_title("Mount folder")
-                    .pick_folder()
+                if let Some(dir) = crate::platform::file_dialog("Mount folder", |d| d.pick_folder())
                 {
                     let msg = MountMsg::Picked(dir.display().to_string());
                     worker::send(&tx, &ctx, Msg::Mount(msg));

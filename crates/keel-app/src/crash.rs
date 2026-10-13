@@ -86,7 +86,7 @@ fn encode(s: &str) -> String {
 }
 
 fn open(target: impl AsRef<std::ffi::OsStr>) {
-    if let Err(e) = open::that_detached(target.as_ref()) {
+    if let Err(e) = crate::platform::open_target(target.as_ref()) {
         tracing::warn!("open {}: {e}", target.as_ref().to_string_lossy());
     }
 }

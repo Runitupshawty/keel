@@ -735,7 +735,8 @@ fn du_scan(a: DuArgs, json: bool, out: &mut Out) -> Result<i32, Fail> {
     }
     if let Some(uri) = mail {
         // A new mail with no recipient, nothing attached: nothing is sent from here.
-        let opened = uri.and_then(|uri| open::that_detached(&uri).map_err(anyhow::Error::from));
+        let opened =
+            uri.and_then(|uri| crate::platform::open_target(&uri).map_err(anyhow::Error::from));
         if let Err(e) = opened {
             errors.push(format!("cannot open a new mail: {e:#}"));
         }

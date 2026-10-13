@@ -173,6 +173,11 @@ fn main() -> eframe::Result<()> {
         keel_vfs::desktop::attach_parent_console();
         std::process::exit(update::cli());
     }
+    // Tests run the real binary with KEEL_HEADLESS=1: nothing past here (no window, no
+    // hand-off to one, no elevated helper).
+    if keel_vfs::headless::skip("Keel window") {
+        return Ok(());
+    }
     // Task 51: inside WSL, `keel <folder>` opens it in the Windows Keel.
     #[cfg(target_os = "linux")]
     if let Some(code) = wsl::hand_off(&cli) {

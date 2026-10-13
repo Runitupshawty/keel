@@ -1368,11 +1368,9 @@ impl KeymapUi {
             );
             let _ = r.named("Search commands");
             if ui.button("Import…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Import keymap")
-                    .add_filter("Keymap", &["toml"])
-                    .pick_file()
-                {
+                if let Some(path) = crate::platform::file_dialog("Import keymap", |d| {
+                    d.add_filter("Keymap", &["toml"]).pick_file()
+                }) {
                     self.notice = Some(match import_file(&path) {
                         Ok((imported, notes)) => {
                             *map = imported;
@@ -1390,12 +1388,11 @@ impl KeymapUi {
                 }
             }
             if ui.button("Export…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Export keymap")
-                    .set_file_name("keel-keymap.toml")
-                    .add_filter("Keymap", &["toml"])
-                    .save_file()
-                {
+                if let Some(path) = crate::platform::file_dialog("Export keymap", |d| {
+                    d.set_file_name("keel-keymap.toml")
+                        .add_filter("Keymap", &["toml"])
+                        .save_file()
+                }) {
                     self.notice = Some(
                         match crate::settings::write_atomic(&path, export_text(map).as_bytes()) {
                             Ok(()) => (format!("Exported to {}", path.display()), false),

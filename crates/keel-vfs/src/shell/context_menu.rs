@@ -320,6 +320,9 @@ impl ShellMenu {
         if let Some(v) = self.verb(id).filter(|v| filtered(v)) {
             anyhow::bail!("\"{v}\" is Keel's own command");
         }
+        if crate::headless::skip(format_args!("shell menu command {id}")) {
+            return Ok(());
+        }
         let offset = (id - FIRST) as usize;
         let info = CMINVOKECOMMANDINFOEX {
             cbSize: std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32,

@@ -19,6 +19,9 @@ use windows::{
 pub fn properties(path: &Path) -> Result<()> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     anyhow::ensure!(!wide[..wide.len() - 1].contains(&0), "path contains NUL");
+    if crate::headless::skip(format_args!("properties {}", path.display())) {
+        return Ok(());
+    }
     // SAFETY: COM init on this thread (an S_FALSE/RPC_E_CHANGED_MODE result is harmless);
     // `wide` is NUL-terminated and outlives the call.
     unsafe {

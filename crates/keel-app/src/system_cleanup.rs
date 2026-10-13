@@ -902,6 +902,9 @@ fn nanos() -> u128 {
 #[cfg(windows)]
 fn run_elevated(task: &Task) -> anyhow::Result<Outcome> {
     use anyhow::Context as _;
+    if keel_vfs::headless::skip(format_args!("system cleanup {}", task.title())) {
+        anyhow::bail!("no system cleanup while headless");
+    }
     if keel_search::is_elevated() {
         return run_task(task);
     }
@@ -1093,9 +1096,11 @@ pub fn launch_for(os: Os, l: Launcher, drive: Option<&str>) -> Option<Launch> {
 
 fn launch(l: Launcher, drive: Option<&str>) -> std::io::Result<()> {
     match launch_for(OS, l, drive) {
-        Some(Launch::Url(url)) => open::that_detached(url),
+        Some(Launch::Url(url)) => crate::platform::open_target(url),
         Some(Launch::Program(exe, args)) => {
-            std::process::Command::new(exe).args(args).spawn().map(drop)
+            let mut cmd = std::process::Command::new(exe);
+            cmd.args(args);
+            crate::platform::run(cmd)
         }
         None => Err(std::io::Error::other("not on this system")),
     }
@@ -1298,10 +1303,9 @@ impl AppState {
             }
             SysCmd::PickVhd => {
                 worker::spawn("keel-pick", move || {
-                    let picked = rfd::FileDialog::new()
-                        .set_title("Optimize virtual disk")
-                        .add_filter("Virtual disks", &["vhd", "vhdx"])
-                        .pick_file();
+                    let picked = crate::platform::file_dialog("Optimize virtual disk", |d| {
+                        d.add_filter("Virtual disks", &["vhd", "vhdx"]).pick_file()
+                    });
                     if let Some(path) = picked {
                         worker::send(&tx, &ctx, Msg::System(SysMsg::VhdPicked(path)));
                     }
