@@ -2500,6 +2500,7 @@ impl AppState {
                         "Delete the freeze of {label} made {at}? The files and the current \
                          index are not touched."
                     ),
+                    yes: "Delete",
                     on_yes: Action::Library(LibCmd::DeleteFreezeConfirmed(id, freeze)),
                 });
             }
